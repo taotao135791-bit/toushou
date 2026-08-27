@@ -28,10 +28,10 @@ const execFileAsync = promisify(execFile)
 
 /** Commits made by commit-tree need an identity; never rely on user config. */
 const CHECKPOINT_GIT_ENV = {
-  GIT_AUTHOR_NAME: 'AdPilot',
-  GIT_AUTHOR_EMAIL: 'adpilot@localhost',
-  GIT_COMMITTER_NAME: 'AdPilot',
-  GIT_COMMITTER_EMAIL: 'adpilot@localhost'
+  GIT_AUTHOR_NAME: '投手',
+  GIT_AUTHOR_EMAIL: 'toushou@localhost',
+  GIT_COMMITTER_NAME: '投手',
+  GIT_COMMITTER_EMAIL: 'toushou@localhost'
 }
 
 interface GitResult {

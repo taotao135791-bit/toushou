@@ -1,7 +1,7 @@
 {
-  "name": "adpilot",
+  "name": "toushou",
   "version": "0.1.0",
-  "description": "A desktop-native advertising optimization agent.",
+  "description": "桌面原生广告优化师 Agent",
   "author": "OMP GUI Team",
   "private": true,
   "main": "dist-electron/main/index.js",

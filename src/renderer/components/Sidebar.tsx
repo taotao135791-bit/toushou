@@ -498,7 +498,7 @@ export default function Sidebar() {
       <div className="app-drag flex items-center justify-between px-3.5 pb-3">
         <div className="flex items-center gap-2.5">
           <Logo size={22} className="shrink-0" />
-          <span className="text-[13.5px] font-semibold tracking-tight text-cream">AdPilot</span>
+          <span className="text-[13.5px] font-semibold tracking-tight text-cream">投手</span>
         </div>
       </div>
 

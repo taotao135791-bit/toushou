@@ -1,7 +1,7 @@
 {
-  "appId": "com.adpilot.desktop",
-  "productName": "AdPilot",
-  "artifactName": "AdPilot-${arch}.${ext}",
+  "appId": "com.toushou.desktop",
+  "productName": "投手",
+  "artifactName": "TouShou-${arch}.${ext}",
   "directories": {
     "output": "release"
   },

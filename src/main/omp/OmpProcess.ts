@@ -178,7 +178,7 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
   if (opts.thinkingLevel) {
     args.push('--thinking', opts.thinkingLevel)
   }
-  // Inject the AdPilot ad-optimizer persona and steer the reply language.
+  // Inject the 投手 ad-optimizer persona and steer the reply language.
   args.push(...buildAgentArgs(opts.language))
 
   const approvalConfigFile = writeApprovalConfig(sessionId, approval)

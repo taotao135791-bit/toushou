@@ -16,7 +16,7 @@ export function maybeNotifyTurnFinished(event: SessionEvent): void {
   const win = BrowserWindow.getAllWindows()[0]
   if (win && !win.isDestroyed() && win.isFocused()) return
 
-  const title = getSession(event.sessionId)?.title || 'AdPilot'
+  const title = getSession(event.sessionId)?.title || '投手'
   // Privacy: by default the notification body is generic ("Agent turn finished.")
   // and never leaks assistant response content — previews are opt-in. Previews
   // may surface in the OS notification center / lock screen.
@@ -50,7 +50,7 @@ export function maybeNotifyUiRequest(event: SessionEvent): void {
   if (win && !win.isDestroyed() && win.isFocused()) return
 
   const zh = getStore('language') !== 'en'
-  const title = getSession(event.sessionId)?.title || 'AdPilot'
+  const title = getSession(event.sessionId)?.title || '投手'
   const detail = (event.title || '').slice(0, 100)
   const body = zh
     ? `等待你的操作：${detail || '插件请求'}`
