@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Keep the CI token read-only. Release publishing receives its own narrowly
+# scoped write token in release.yml.
+permissions:
+  contents: read
+
+# A newer push makes an older run for the same branch obsolete, while runs for
+# different pull requests remain independent.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Typecheck · Test · Build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The exact pnpm version (including its integrity hash) is declared once
+      # in package.json#packageManager. Do not add a `version` input here:
+      # pnpm/action-setup rejects conflicting duplicate declarations.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Pinned-release compatibility gate. Installs an exact OMP version, verifies
+  # it exists, prints the version, then runs the real-binary suite. Missing or
+  # wrong-version binary fails the job — no green empty runs.
+  omp-pinned:
+    name: OMP pinned compatibility
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # Current OMP releases dispatch their CLI through Bun.
+      - name: Set up Bun for OMP
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Read pinned OMP version
+        id: pinned
+        run: |
+          VERSION=$(cat .omp-compat-version | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Pinned OMP version: $VERSION"
+      - name: Install pinned OMP
+        run: npm install -g "@oh-my-pi/pi-coding-agent@${{ steps.pinned.outputs.version }}"
+      - name: Verify OMP version
+        run: |
+          command -v omp
+          INSTALLED=$(omp --version)
+          echo "OMP version tested: $INSTALLED"
+          if [ "$INSTALLED" != "omp/${{ steps.pinned.outputs.version }}" ]; then
+            echo "Expected omp/${{ steps.pinned.outputs.version }}, got $INSTALLED"
+            exit 1
+          fi
+      - name: Compatibility suite
+        env:
+          # Current OMP is the release gate; legacy Pi remains an explicit
+          # optional compatibility lane when its binary is installed.
+          OMP_REQUIRED: omp
+        run: pnpm test:omp
+
+  # Latest-canary early-warning job. Uses the most recent release; failures do
+  # not block merge but surface upcoming breakage.
+  omp-latest-canary:
+    name: OMP latest canary
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # Current OMP releases dispatch their CLI through Bun.
+      - name: Set up Bun for OMP
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install latest OMP
+        run: npm install -g @oh-my-pi/pi-coding-agent@latest
+      - name: Print OMP version
+        run: |
+          command -v omp
+          echo "OMP latest version tested: $(omp --version)"
+      - name: Compatibility suite
+        run: pnpm test:omp

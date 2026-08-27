@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible problem in OMP GUI.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please remove API keys, tokens, provider credentials, private file paths,
+        and session content. Do not use this form for a security vulnerability.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A concise description of the observed behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: app_version
+    attributes:
+      label: OMP GUI version or commit
+      placeholder: e.g. 0.12.0 or abc1234
+    validations:
+      required: true
+  - type: input
+    id: runtime_version
+    attributes:
+      label: OMP/Pi runtime version
+      placeholder: e.g. output of omp --version
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS Apple Silicon
+        - macOS Intel
+        - Other / not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Remove secrets, provider names if sensitive, and personal paths.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: This is not a security vulnerability, and I removed secrets/private data.
+          required: true

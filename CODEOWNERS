@@ -1,0 +1,31 @@
+# Replace or extend @taotao135791-bit with the maintainer team as ownership is
+# delegated. These rules take effect once "Require review from Code Owners" is
+# enabled in the main-branch protection/ruleset configuration.
+
+# Default integration owner.
+* @taotao135791-bit
+
+# Repository governance, automation, packaging, and releases.
+/.github/ @taotao135791-bit
+/AGENTS.md @taotao135791-bit
+/CONTRIBUTING.md @taotao135791-bit
+/SECURITY.md @taotao135791-bit
+/electron-builder.json @taotao135791-bit
+/package.json @taotao135791-bit
+/pnpm-lock.yaml @taotao135791-bit
+
+# Security-sensitive host and shared contracts.
+/src/main/ @taotao135791-bit
+/src/shared/ @taotao135791-bit
+/src/renderer/types/ @taotao135791-bit
+
+# User-facing renderer ownership.
+/src/renderer/ @taotao135791-bit
+
+# Runtime extensions and release resources.
+/resources/omp-approval/ @taotao135791-bit
+/build/ @taotao135791-bit
+
+# Security and protocol documentation.
+/docs/security-model.md @taotao135791-bit
+/docs/protocol-facts.md @taotao135791-bit

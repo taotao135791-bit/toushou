@@ -1,0 +1,261 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light theme — warm paper, editorial neutrals, terracotta accent */
+    --bg-app: 250 249 247;
+    --bg-sidebar: 244 243 240;
+    --bg-elev: 255 255 255;
+    --bg-sunken: 240 239 236;
+    --bubble: 238 234 228;
+    --text: 28 27 25;
+    --text-dim: 110 107 100;
+    --text-faint: 164 160 152;
+    --line: rgba(28, 27, 25, 0.06);
+    --line-strong: rgba(28, 27, 25, 0.14);
+    --overlay: rgba(28, 27, 25, 0.04);
+    --overlay-strong: rgba(28, 27, 25, 0.07);
+    --accent: 217 119 87;
+    --accent-bright: 199 101 69;
+    --accent-deep: 176 90 58;
+    --accent-soft: rgba(217, 119, 87, 0.12);
+    --shadow-pop: 0 1px 2px rgba(28, 27, 25, 0.05), 0 12px 32px rgba(28, 27, 25, 0.12);
+    --shadow-card: 0 1px 2px rgba(28, 27, 25, 0.04), 0 4px 16px rgba(28, 27, 25, 0.05);
+    --shadow-composer: 0 2px 8px rgba(28, 27, 25, 0.04), 0 12px 32px rgba(28, 27, 25, 0.08);
+    --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .dark {
+    --bg-app: 20 19 17;
+    --bg-sidebar: 24 23 21;
+    --bg-elev: 29 28 26;
+    --bg-sunken: 16 15 14;
+    --bubble: 46 44 40;
+    --text: 235 231 228;
+    --text-dim: 158 152 145;
+    --text-faint: 110 105 99;
+    --line: rgba(235, 231, 228, 0.07);
+    --line-strong: rgba(235, 231, 228, 0.13);
+    --overlay: rgba(235, 231, 228, 0.045);
+    --overlay-strong: rgba(235, 231, 228, 0.08);
+    --accent: 224 138 106;
+    --accent-bright: 233 158 128;
+    --accent-deep: 204 116 82;
+    --accent-soft: rgba(224, 138, 106, 0.14);
+    --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.3), 0 16px 40px rgba(0, 0, 0, 0.45);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 20px rgba(0, 0, 0, 0.24);
+    --shadow-composer: 0 2px 8px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.42);
+  }
+
+  html, body, #root {
+    @apply h-full;
+  }
+
+  body {
+    @apply bg-ink-950 text-cream antialiased;
+    font-feature-settings: 'ss01', 'cv11';
+    text-rendering: optimizeLegibility;
+  }
+
+  /* CJK readability: slightly looser line height */
+  html[lang^='zh'] body {
+    line-height: 1.7;
+  }
+
+  ::selection {
+    @apply bg-accent/20 text-cream;
+  }
+
+  /* Uniform micro-transition for buttons/cards; utility classes override per-property */
+  button {
+    transition: all 120ms var(--ease);
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-overlay-strong;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--line-strong);
+  }
+}
+
+@layer components {
+  /* Markdown body — hand-rolled, no typography plugin */
+  .md {
+    @apply text-[14px] leading-[1.85] text-cream/90;
+  }
+  .md > * + * {
+    @apply mt-3;
+  }
+  .md h1, .md h2, .md h3, .md h4 {
+    @apply font-semibold tracking-tight text-cream;
+  }
+  .md h1 { @apply text-lg; }
+  .md h2 { @apply text-base; }
+  .md h3, .md h4 { @apply text-[15px]; }
+  .md p { @apply leading-[1.85]; }
+  .md ul { @apply list-disc space-y-1 pl-5 marker:text-cream-faint; }
+  .md ol { @apply list-decimal space-y-1 pl-5 marker:text-cream-faint; }
+  .md a {
+    @apply text-accent underline decoration-accent/40 underline-offset-2 transition hover:decoration-accent;
+  }
+  .md code {
+    @apply rounded bg-overlay px-1.5 py-0.5 font-mono text-[0.82em] text-accent-deep;
+  }
+  .md pre code {
+    @apply bg-transparent p-0 text-cream/90;
+  }
+  .md blockquote {
+    @apply border-l-2 border-accent/40 pl-3 text-cream-dim;
+  }
+  .md table {
+    @apply w-full border-collapse text-[0.9em];
+  }
+  .md th, .md td {
+    @apply border border-line px-2.5 py-1.5 text-left;
+  }
+  .md th {
+    @apply bg-overlay font-medium;
+  }
+  .md hr {
+    @apply border-line;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Window chrome: macOS hiddenInset title bar needs explicit drag regions */
+  .app-drag {
+    -webkit-app-region: drag;
+  }
+  .app-no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  /* Keyboard hint — mono, bordered chip */
+  .kbd {
+    @apply rounded border border-line bg-overlay px-1 py-px font-mono text-[10px] leading-4 text-cream-faint;
+  }
+
+  /* Consistent focus ring for interactive controls */
+  .focus-ring {
+    outline: none;
+  }
+  .focus-ring:focus-visible {
+    box-shadow: 0 0 0 2px rgb(var(--bg-app)), 0 0 0 4px rgb(var(--accent) / 0.55);
+  }
+
+  .msg-in {
+    animation: msg-in 0.18s ease-out;
+  }
+  @keyframes msg-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .fade-in {
+    animation: fade-in 0.3s var(--ease);
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  /* staggered entrance for hero cards: .rise + inline animation-delay */
+  .rise {
+    animation: rise 0.5s var(--ease) both;
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* "working" indicator — three pulsing dots */
+  .think-dot {
+    animation: think-pulse 1.2s ease-in-out infinite;
+  }
+  .think-dot:nth-child(2) { animation-delay: 0.15s; }
+  .think-dot:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes think-pulse {
+    0%, 60%, 100% { opacity: 0.25; }
+    30% { opacity: 1; }
+  }
+}
+
+/* react-grid-layout overrides — unlayered on purpose so they beat the vendor
+   stylesheet (imported by BoardsPage) regardless of bundle order. */
+.react-grid-item.react-grid-placeholder {
+  border-radius: 16px;
+  background: rgb(var(--accent)) !important;
+  opacity: 0.18;
+}
+.react-grid-item.react-draggable-dragging {
+  z-index: 20;
+}
+.react-grid-item > .react-resizable-handle {
+  z-index: 30;
+}
+.react-grid-item > .react-resizable-handle::after {
+  width: 8px;
+  height: 8px;
+  border-color: rgb(var(--text-faint));
+}
+
+/* Board appearance is persisted as bounded tokens (not arbitrary CSS). These
+   scoped overrides let every existing widget body inherit its chosen palette
+   while keeping the rest of the app's design system untouched. */
+.board-widget .text-cream,
+.board-widget .text-cream\/90 {
+  color: var(--board-widget-text) !important;
+}
+.board-widget .text-cream-dim {
+  color: color-mix(in srgb, var(--board-widget-text) 72%, transparent) !important;
+}
+.board-widget .text-cream-faint {
+  color: color-mix(in srgb, var(--board-widget-text) 48%, transparent) !important;
+}
+.board-widget .text-accent {
+  color: var(--board-widget-accent) !important;
+}
+.board-widget .fill-cream {
+  fill: var(--board-widget-text) !important;
+}
+.board-widget .fill-cream-dim {
+  fill: color-mix(in srgb, var(--board-widget-text) 72%, transparent) !important;
+}
+.board-widget .fill-cream-faint {
+  fill: color-mix(in srgb, var(--board-widget-text) 48%, transparent) !important;
+}
+.board-widget .bg-accent-soft {
+  background-color: color-mix(in srgb, var(--board-widget-accent) 14%, transparent) !important;
+}
+.board-widget .border-line {
+  border-color: var(--board-widget-border) !important;
+}

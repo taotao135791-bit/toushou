@@ -1,0 +1,26 @@
+name: Security contact request
+description: Request a private channel for a possible vulnerability. Do not disclose details here.
+title: "[Security contact]: "
+labels:
+  - security
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include the vulnerability, proof of concept, secrets, logs,
+        paths, or user data in this public form. A maintainer will provide a
+        private reporting channel.
+  - type: input
+    id: contact
+    attributes:
+      label: Preferred safe contact method
+      description: For example, your GitHub handle. Do not enter an API key, token, or sensitive identifier.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have not included vulnerability details or sensitive data.
+          required: true
