@@ -2,7 +2,7 @@
   "name": "toushou",
   "version": "0.1.0",
   "description": "桌面原生广告优化师 Agent",
-  "author": "OMP GUI Team",
+  "author": "投手团队",
   "private": true,
   "main": "dist-electron/main/index.js",
   "scripts": {
