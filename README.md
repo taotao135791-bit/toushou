@@ -6,20 +6,18 @@
 
 ## 下载安装
 
-当前版本 v0.1.0，安装包在本仓库 `release/` 目录：
+当前版本 v0.1.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.1.0) 下载：
 
-| 平台 | 文件 | 大小 | SHA-256 |
+| 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | `release/TouShou-arm64.dmg` | 136 MB | `bf50625403eab96bebb60b13ff29fed790d7700a15284b817225a56468d060e5` |
-| macOS（Intel） | `release/TouShou-x64.dmg` | 143 MB | `daa8623d2f3b94f195e3f1477cca4621d79519e46d69f255368043c52b9ec299` |
-| Windows（x64） | `release/TouShou-x64.exe` | 110 MB | `976891ad2272ef4e1820f079c4f830db321b992c6dc52592ea6a61258d449e19` |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.0/TouShou-arm64.dmg) | 136 MB | `bf50625403eab96bebb60b13ff29fed790d7700a15284b817225a56468d060e5` |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.0/TouShou-x64.dmg) | 143 MB | `daa8623d2f3b94f195e3f1477cca4621d79519e46d69f255368043c52b9ec299` |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.0/TouShou-x64.exe) | 110 MB | `976891ad2272ef4e1820f079c4f830db321b992c6dc52592ea6a61258d449e19` |
 
 安装方式：
 
 - **macOS**：打开 DMG，把"投手"拖入"应用程序"。应用未做公证，首次打开若被拦截：右键点击应用 → **打开** → **打开**，或在终端执行 `xattr -cr /Applications/投手.app`
 - **Windows**：双击 `TouShou-x64.exe` 按引导安装。安装包未签名，SmartScreen 提示时选择"更多信息" → **仍要运行**
-
-> 发布到 GitHub Releases 后，本节可替换为各平台的直链下载地址。
 
 ## 核心能力
 
