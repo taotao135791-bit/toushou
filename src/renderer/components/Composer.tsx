@@ -88,6 +88,13 @@ function atToken(text: string, caret: number): { query: string; start: number } 
   return { query, start: at }
 }
 
+/** Fit the single-line textarea to its content (capped at the 160px max). */
+function autosize(el: HTMLTextAreaElement | null) {
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+}
+
 export default function Composer({
   onSend,
   onStop,
@@ -145,7 +152,7 @@ export default function Composer({
     setImageError(null)
     setMenuDismissed(false)
     setAtDismissed(false)
-    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    autosize(textareaRef.current)
   }
 
   // The Composer stays mounted while the selected transcript changes. Hydrate
@@ -163,10 +170,7 @@ export default function Composer({
     setImageError(null)
     setLoadedSessionId(currentSessionId)
     requestAnimationFrame(() => {
-      const el = textareaRef.current
-      if (!el) return
-      el.style.height = 'auto'
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+      autosize(textareaRef.current)
     })
   }, [currentSessionId])
 
@@ -181,8 +185,7 @@ export default function Composer({
       if (!el) return
       el.focus()
       el.setSelectionRange(el.value.length, el.value.length)
-      el.style.height = 'auto'
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+      autosize(el)
     })
   }, [composerPrefill, setComposerPrefill])
 
@@ -272,8 +275,7 @@ export default function Composer({
       if (!el) return
       el.focus()
       el.setSelectionRange(pos, pos)
-      el.style.height = 'auto'
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+      autosize(el)
     })
   }
 
@@ -380,6 +382,22 @@ export default function Composer({
       ? images.map((i) => ({ type: 'image' as const, data: i.data, mimeType: i.mimeType }))
       : undefined
 
+  /** Steer accepted: append the steer bubble + trajectory fact, clear stale errors. */
+  const commitAcceptedSteer = (sessionId: string, text: string, imgs?: PromptImage[]) => {
+    const latest = useAppStore.getState()
+    if (!latest.sessions.some((session) => session.id === sessionId)) return false
+    latest.addMessage(sessionId, {
+      id: crypto.randomUUID(),
+      role: 'user',
+      kind: 'steer',
+      content: text,
+      images: imgs?.map(({ data, mimeType }) => ({ data, mimeType }))
+    })
+    latest.recordSteer(sessionId, text)
+    latest.setSessionError(sessionId, null)
+    return true
+  }
+
   const handleSend = () => {
     const trimmed = text.trim()
     if (!trimmed || disabled) return
@@ -448,21 +466,11 @@ export default function Composer({
       .then((result) => {
         const latest = useAppStore.getState()
         if (result.ok) {
-          if (!latest.sessions.some((session) => session.id === sessionId)) {
+          if (commitAcceptedSteer(sessionId, m.text, m.images)) {
+            latest.removeQueuedMessage(sessionId, m.id)
+          } else {
             latest.releaseQueuedMessage(sessionId, m.id)
-            return
           }
-          latest.removeQueuedMessage(sessionId, m.id)
-          latest.addMessage(sessionId, {
-            id: crypto.randomUUID(),
-            role: 'user',
-            kind: 'steer',
-            content: m.text,
-            images: m.images?.map(({ data, mimeType }) => ({ data, mimeType }))
-          })
-          // A trajectory fact exists only after OMP accepted the Steer.
-          latest.recordSteer(sessionId, m.text)
-          latest.setSessionError(sessionId, null)
           return
         }
 
@@ -501,17 +509,7 @@ export default function Composer({
     }).then((result) => {
       const latest = useAppStore.getState()
       if (result.ok) {
-        if (!latest.sessions.some((session) => session.id === sessionId)) return
-        latest.addMessage(sessionId, {
-          id: crypto.randomUUID(),
-          role: 'user',
-          kind: 'steer',
-          content: trimmed,
-          images: imgs?.map(({ data, mimeType }) => ({ data, mimeType }))
-        })
-        // A trajectory fact exists only after OMP accepted the Steer.
-        latest.recordSteer(sessionId, trimmed)
-        latest.setSessionError(sessionId, null)
+        commitAcceptedSteer(sessionId, trimmed, imgs)
         return
       }
 
@@ -580,10 +578,7 @@ export default function Composer({
   }
 
   const handleInput = () => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+    autosize(textareaRef.current)
   }
 
   const canSend = !disabled && Boolean(text.trim())

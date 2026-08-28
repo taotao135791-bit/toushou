@@ -1,4 +1,4 @@
-import { ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, useState } from 'react'
+import { ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, memo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Check, Copy } from 'lucide-react'
@@ -14,13 +14,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   const [copied, setCopied] = useState(false)
   const t = useT()
 
-  let lang = ''
-  let raw = ''
-  if (isValidElement<CodeChildProps>(children)) {
-    const child = children as ReactElement<CodeChildProps>
-    lang = /language-(\w+)/.exec(child.props.className || '')?.[1] || ''
-    raw = String(child.props.children ?? '').replace(/\n$/, '')
-  }
+  const { lang, raw } = extractCode(children)
 
   const copy = () => {
     navigator.clipboard.writeText(raw)
@@ -71,30 +65,41 @@ function ExternalLink({ href, onClick, ...props }: ComponentPropsWithoutRef<'a'>
   return <a {...props} href={href} target="_blank" rel="noopener noreferrer" onClick={openInBrowser} />
 }
 
-export default function Markdown({ content }: { content: string }) {
+/** Lang and raw text of a fenced code block, from the <code> child of a <pre>. */
+function extractCode(children: ReactNode): { lang: string; raw: string } {
+  if (!isValidElement<CodeChildProps>(children)) return { lang: '', raw: '' }
+  const child = children as ReactElement<CodeChildProps>
+  return {
+    lang: /language-(\w+)/.exec(child.props.className || '')?.[1] || '',
+    raw: String(child.props.children ?? '').replace(/\n$/, '')
+  }
+}
+
+const remarkPlugins = [remarkGfm]
+
+const components = {
+  a: ExternalLink,
+  pre: ({ children }: { children?: ReactNode }) => {
+    const { lang, raw } = extractCode(children)
+    // Rich blocks (mermaid, …) by fence language; unknown → CodeBlock
+    const Renderer = raw.trim() ? richRenderers[lang] : undefined
+    if (Renderer) return <Renderer raw={raw} />
+    return <CodeBlock>{children}</CodeBlock>
+  }
+}
+
+/**
+ * Memoized on `content`: during streaming only the in-flight message's
+ * string changes, so every historical message skips re-parsing its markdown.
+ */
+const Markdown = memo(function Markdown({ content }: { content: string }) {
   return (
     <div className="md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ExternalLink,
-          pre: ({ children }) => {
-            let lang = ''
-            let raw = ''
-            if (isValidElement<CodeChildProps>(children)) {
-              const child = children as ReactElement<CodeChildProps>
-              lang = /language-(\w+)/.exec(child.props.className || '')?.[1] || ''
-              raw = String(child.props.children ?? '').replace(/\n$/, '')
-            }
-            // Rich blocks (mermaid, …) by fence language; unknown → CodeBlock
-            const Renderer = raw.trim() ? richRenderers[lang] : undefined
-            if (Renderer) return <Renderer raw={raw} />
-            return <CodeBlock>{children}</CodeBlock>
-          }
-        }}
-      >
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
         {content}
       </ReactMarkdown>
     </div>
   )
-}
+})
+
+export default Markdown

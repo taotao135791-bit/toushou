@@ -36,6 +36,7 @@ import {
 } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
+import { useConfirmId } from '../lib/confirmClick'
 import Logo from '../components/Logo'
 import { PluginStudioDialog } from '../components/PluginStudioDialog'
 
@@ -77,7 +78,8 @@ function hasFileDrag(e: React.DragEvent | DragEvent): boolean {
 }
 
 export default function PackagesPage() {
-  const { packages, setPackages } = useAppStore()
+  const packages = useAppStore((s) => s.packages)
+  const setPackages = useAppStore((s) => s.setPackages)
   const t = useT()
   const [source, setSource] = useState('')
   const [sourceMode, setSourceMode] = useState<SourceMode>('github')
@@ -97,7 +99,6 @@ export default function PackagesPage() {
   const [studioTarget, setStudioTarget] = useState<StudioTarget>(null)
   const [managedBusyId, setManagedBusyId] = useState<string | null>(null)
   const [managedError, setManagedError] = useState<string | null>(null)
-  const [confirmDeleteManagedId, setConfirmDeleteManagedId] = useState<string | null>(null)
   const [kimiStatus, setKimiStatus] = useState<KimiComputerUseStatus | null>(null)
   const [kimiPending, setKimiPending] = useState(false)
   const [kimiError, setKimiError] = useState<string | null>(null)
@@ -105,7 +106,6 @@ export default function PackagesPage() {
   const refreshGeneration = useRef(0)
   const managedRefreshGeneration = useRef(0)
   const kimiRefreshGeneration = useRef(0)
-  const confirmManagedDeleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const isCurrentOmp = packageCapabilities.profile === 'current'
   const isLegacyPi = packageCapabilities.profile === 'legacy'
@@ -175,12 +175,6 @@ export default function PackagesPage() {
     if (isCurrentOmp && tab === 'marketplace') setTab('installed')
   }, [isCurrentOmp, tab])
 
-  useEffect(() => {
-    return () => {
-      if (confirmManagedDeleteTimer.current) clearTimeout(confirmManagedDeleteTimer.current)
-    }
-  }, [])
-
   const refreshAll = async () => {
     await Promise.all([refresh(), refreshManagedPlugins(), refreshKimiStatus()])
   }
@@ -240,14 +234,6 @@ export default function PackagesPage() {
 
   const deleteManagedPlugin = async (id: string) => {
     if (managedBusyId) return
-    if (confirmDeleteManagedId !== id) {
-      setConfirmDeleteManagedId(id)
-      if (confirmManagedDeleteTimer.current) clearTimeout(confirmManagedDeleteTimer.current)
-      confirmManagedDeleteTimer.current = setTimeout(() => setConfirmDeleteManagedId(null), 3000)
-      return
-    }
-    setConfirmDeleteManagedId(null)
-    if (confirmManagedDeleteTimer.current) clearTimeout(confirmManagedDeleteTimer.current)
     setManagedError(null)
     setManagedBusyId(id)
     try {
@@ -260,6 +246,7 @@ export default function PackagesPage() {
       setManagedBusyId(null)
     }
   }
+  const deleteManagedConfirm = useConfirmId((id: string) => void deleteManagedPlugin(id))
 
   const toggleKimiBridge = async () => {
     if (!kimiStatus || kimiPending) return
@@ -562,7 +549,7 @@ export default function PackagesPage() {
                   <div className="mt-3 grid gap-2">
                     {managedPlugins.map((plugin) => {
                       const busy = managedBusyId === plugin.id
-                      const confirmingDelete = confirmDeleteManagedId === plugin.id
+                      const confirmingDelete = deleteManagedConfirm.confirmingId === plugin.id
                       return (
                         <div key={plugin.id} className="flex items-center gap-2 rounded-xl border border-line bg-ink-900/60 px-3 py-2.5">
                           <Code2 size={13} className="shrink-0 text-accent" />
@@ -598,7 +585,7 @@ export default function PackagesPage() {
                               {busy ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
                             </button>
                             <button
-                              onClick={() => void deleteManagedPlugin(plugin.id)}
+                              onClick={() => deleteManagedConfirm.click(plugin.id)}
                               disabled={busy}
                               title={confirmingDelete ? t('plugins.write.deleteConfirm') : t('plugins.write.delete')}
                               className={`rounded-md p-1.5 transition disabled:opacity-50 ${

@@ -47,6 +47,7 @@ import { buildBoardChatPrompt } from '@shared/boardChat'
 import { DatasetImportError } from '@shared/datasets'
 import { useT, I18nKey } from '../i18n'
 import { useAppStore } from '../store'
+import { useConfirm, useConfirmId } from '../lib/confirmClick'
 import { WidgetBody } from './boards/WidgetBody'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
 import 'react-grid-layout/css/styles.css'
@@ -182,8 +183,6 @@ export default function BoardsPage() {
   const [detailDesc, setDetailDesc] = useState('')
   const [detailStyle, setDetailStyle] = useState<BoardStyle>({})
   const [configWidgetId, setConfigWidgetId] = useState<string | null>(null)
-  const [confirmDeleteBoard, setConfirmDeleteBoard] = useState(false)
-  const [confirmClear, setConfirmClear] = useState(false)
   const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [saveFailed, setSaveFailed] = useState(false)
@@ -193,14 +192,8 @@ export default function BoardsPage() {
   const [fileDrag, setFileDrag] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
-  const [confirmDeleteDatasetId, setConfirmDeleteDatasetId] = useState<string | null>(null)
-  const [confirmDeleteWidgetId, setConfirmDeleteWidgetId] = useState<string | null>(null)
   const boardAreaRef = useRef<HTMLDivElement>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const confirmDeleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const confirmClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const confirmDatasetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const confirmWidgetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveFailedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileDragDepth = useRef(0)
   const datasetRefreshGeneration = useRef(0)
@@ -250,10 +243,6 @@ export default function BoardsPage() {
   useEffect(() => {
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current)
-      if (confirmDeleteTimer.current) clearTimeout(confirmDeleteTimer.current)
-      if (confirmClearTimer.current) clearTimeout(confirmClearTimer.current)
-      if (confirmDatasetTimer.current) clearTimeout(confirmDatasetTimer.current)
-      if (confirmWidgetTimer.current) clearTimeout(confirmWidgetTimer.current)
       if (saveFailedTimer.current) clearTimeout(saveFailedTimer.current)
     }
   }, [])
@@ -308,8 +297,8 @@ export default function BoardsPage() {
     setBoardMenuOpen(false)
     setToolsMenuOpen(false)
     setGalleryOpen(false)
-    setConfirmDeleteBoard(false)
-    setConfirmClear(false)
+    deleteBoardConfirm.reset()
+    clearConfirm.reset()
   }
 
   // The toolbar menus are transient controls, so keyboard users need the
@@ -323,8 +312,8 @@ export default function BoardsPage() {
       setBoardMenuOpen(false)
       setToolsMenuOpen(false)
       setGalleryOpen(false)
-      setConfirmDeleteBoard(false)
-      setConfirmClear(false)
+      deleteBoardConfirm.reset()
+      clearConfirm.reset()
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -333,7 +322,7 @@ export default function BoardsPage() {
 
   const switchBoard = (id: string) => {
     closeMenus()
-    setConfirmDeleteWidgetId(null)
+    deleteWidgetConfirm.reset()
     setConfigWidgetId(null)
     setCurrentId(id)
   }
@@ -414,16 +403,8 @@ export default function BoardsPage() {
   }
 
   // Two-stage confirm, same pattern as the old page / PackagesPage.
-  const handleDeleteBoard = async () => {
+  const performDeleteBoard = async () => {
     if (!current) return
-    if (!confirmDeleteBoard) {
-      setConfirmDeleteBoard(true)
-      if (confirmDeleteTimer.current) clearTimeout(confirmDeleteTimer.current)
-      confirmDeleteTimer.current = setTimeout(() => setConfirmDeleteBoard(false), 3000)
-      return
-    }
-    setConfirmDeleteBoard(false)
-    if (confirmDeleteTimer.current) clearTimeout(confirmDeleteTimer.current)
     setBoardMenuOpen(false)
     const id = current.id
     try {
@@ -440,6 +421,7 @@ export default function BoardsPage() {
     setBoards(next)
     setCurrentId(next[0]?.id ?? null)
   }
+  const deleteBoardConfirm = useConfirm(() => void performDeleteBoard())
 
   // ----------------------------------------------------------------- widgets
 
@@ -459,17 +441,10 @@ export default function BoardsPage() {
 
   const removeWidget = (widgetId: string) => {
     if (!currentId) return
-    if (confirmDeleteWidgetId !== widgetId) {
-      setConfirmDeleteWidgetId(widgetId)
-      if (confirmWidgetTimer.current) clearTimeout(confirmWidgetTimer.current)
-      confirmWidgetTimer.current = setTimeout(() => setConfirmDeleteWidgetId(null), 3000)
-      return
-    }
-    setConfirmDeleteWidgetId(null)
-    if (confirmWidgetTimer.current) clearTimeout(confirmWidgetTimer.current)
     setConfigWidgetId((id) => (id === widgetId ? null : id))
     mutateBoard(currentId, (b) => ({ ...b, widgets: b.widgets.filter((w) => w.id !== widgetId) }))
   }
+  const deleteWidgetConfirm = useConfirmId((widgetId: string) => removeWidget(widgetId))
 
   const updateWidgetConfig = (widgetId: string, config: Record<string, unknown>) => {
     if (!currentId) return
@@ -539,20 +514,13 @@ export default function BoardsPage() {
     mutateBoard(current.id, (b) => ({ ...b, widgets: reflowWidgets(b.widgets) }))
   }
 
-  const handleClearWidgets = () => {
+  const performClearWidgets = () => {
     if (!current) return
-    if (!confirmClear) {
-      setConfirmClear(true)
-      if (confirmClearTimer.current) clearTimeout(confirmClearTimer.current)
-      confirmClearTimer.current = setTimeout(() => setConfirmClear(false), 3000)
-      return
-    }
-    setConfirmClear(false)
-    if (confirmClearTimer.current) clearTimeout(confirmClearTimer.current)
     setToolsMenuOpen(false)
     setConfigWidgetId(null)
     mutateBoard(current.id, (b) => ({ ...b, widgets: [] }))
   }
+  const clearConfirm = useConfirm(performClearWidgets)
 
   const toggleFullscreen = () => {
     if (document.fullscreenElement) void document.exitFullscreen()
@@ -671,7 +639,7 @@ export default function BoardsPage() {
   const openDatasetsPanel = () => {
     setToolsMenuOpen(false)
     setRenamingId(null)
-    setConfirmDeleteDatasetId(null)
+    deleteDatasetConfirm.reset()
     setDatasetsOpen(true)
   }
 
@@ -693,15 +661,7 @@ export default function BoardsPage() {
   }
 
   // Two-stage confirm, same as board/widget deletes.
-  const handleDeleteDataset = async (id: string) => {
-    if (confirmDeleteDatasetId !== id) {
-      setConfirmDeleteDatasetId(id)
-      if (confirmDatasetTimer.current) clearTimeout(confirmDatasetTimer.current)
-      confirmDatasetTimer.current = setTimeout(() => setConfirmDeleteDatasetId(null), 3000)
-      return
-    }
-    setConfirmDeleteDatasetId(null)
-    if (confirmDatasetTimer.current) clearTimeout(confirmDatasetTimer.current)
+  const deleteDatasetConfirm = useConfirmId(async (id: string) => {
     try {
       const result = await window.electronAPI.deleteBoardDataset(id)
       if (!result.ok) {
@@ -712,7 +672,7 @@ export default function BoardsPage() {
     } catch {
       flashToast(t('boards.datasets.deleteFailed'), false)
     }
-  }
+  })
 
   // ------------------------------------------------------------------ render
 
@@ -734,7 +694,7 @@ export default function BoardsPage() {
 
   const renderWidget = (widget: BoardWidget) => {
     const padding = widget.style?.padding ?? 12
-    const confirmingDelete = confirmDeleteWidgetId === widget.id
+    const confirmingDelete = deleteWidgetConfirm.confirmingId === widget.id
     return (
     <div
       key={widget.id}
@@ -769,7 +729,7 @@ export default function BoardsPage() {
             <Settings2 size={11} />
           </button>
           <button
-            onClick={() => removeWidget(widget.id)}
+            onClick={() => deleteWidgetConfirm.click(widget.id)}
             title={confirmingDelete ? t('boards.deleteWidgetConfirm') : t('boards.deleteWidget')}
             className={`rounded-md p-1 transition ${
               confirmingDelete
@@ -896,15 +856,15 @@ export default function BoardsPage() {
                   {t('boards.chat.ask')}
                 </button>
                 <button
-                  onClick={() => void handleDeleteBoard()}
+                  onClick={deleteBoardConfirm.click}
                   className={`${menuItemClass} ${
-                    confirmDeleteBoard
+                    deleteBoardConfirm.confirming
                       ? 'bg-red-500/15 text-red-500'
                       : 'text-red-500/80 hover:bg-red-500/10 hover:text-red-500'
                   }`}
                 >
                   <Trash2 size={12} />
-                  {confirmDeleteBoard ? t('boards.deleteBoardConfirm') : t('boards.deleteBoard')}
+                  {deleteBoardConfirm.confirming ? t('boards.deleteBoardConfirm') : t('boards.deleteBoard')}
                 </button>
               </div>
             )}
@@ -1048,15 +1008,15 @@ export default function BoardsPage() {
                   {t('boards.resetLayout')}
                 </button>
                 <button
-                  onClick={handleClearWidgets}
+                  onClick={clearConfirm.click}
                   className={`${menuItemClass} ${
-                    confirmClear
+                    clearConfirm.confirming
                       ? 'bg-red-500/15 text-red-500'
                       : 'text-red-500/80 hover:bg-red-500/10 hover:text-red-500'
                   }`}
                 >
                   <Trash2 size={12} />
-                  {confirmClear ? t('boards.clearConfirm') : t('boards.clearWidgets')}
+                  {clearConfirm.confirming ? t('boards.clearConfirm') : t('boards.clearWidgets')}
                 </button>
               </div>
             )}
@@ -1098,7 +1058,7 @@ export default function BoardsPage() {
                 title={t('boards.more')}
                 onClick={() => {
                   setGalleryOpen(false)
-                  setConfirmClear(false)
+                  clearConfirm.reset()
                   setToolsMenuOpen(!toolsMenuOpen)
                 }}
               >
@@ -1181,14 +1141,14 @@ export default function BoardsPage() {
                         <Pencil size={11} />
                       </button>
                       <button
-                        onClick={() => void handleDeleteDataset(d.id)}
+                        onClick={() => void deleteDatasetConfirm.click(d.id)}
                         title={
-                          confirmDeleteDatasetId === d.id
+                          deleteDatasetConfirm.confirmingId === d.id
                             ? t('boards.datasets.deleteConfirm')
                             : t('boards.datasets.delete')
                         }
                         className={`rounded-md p-1 transition ${
-                          confirmDeleteDatasetId === d.id
+                          deleteDatasetConfirm.confirmingId === d.id
                             ? 'bg-red-500/15 text-red-500'
                             : 'text-cream-faint hover:bg-red-500/15 hover:text-red-500'
                         }`}

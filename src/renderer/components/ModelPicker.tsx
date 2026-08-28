@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Check, ChevronUp, Cpu, KeyRound } from 'lucide-react'
 import { PI_PROVIDERS, SessionState } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import MenuPortal from './MenuPortal'
@@ -41,7 +42,19 @@ export default function ModelPicker({ sessionId }: ModelPickerProps) {
     loadRuntimeModels,
     pendingModel,
     setPendingModel
-  } = useAppStore()
+  } = useAppStore(
+    useShallow((s) => ({
+      models: s.models,
+      modelConfig: s.modelConfig,
+      loadModelState: s.loadModelState,
+      setCurrentSessionModel: s.setCurrentSessionModel,
+      runtimeOverview: s.runtimeOverview,
+      runtimeModels: s.runtimeModels,
+      loadRuntimeModels: s.loadRuntimeModels,
+      pendingModel: s.pendingModel,
+      setPendingModel: s.setPendingModel
+    }))
+  )
   const [open, setOpen] = useState(false)
   const [sessionModel, setSessionModel] = useState<{ provider: string; id: string; name: string } | null>(null)
   const [failed, setFailed] = useState(false)

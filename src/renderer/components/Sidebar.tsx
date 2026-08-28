@@ -23,54 +23,57 @@ import {
   Loader2
 } from 'lucide-react'
 import { HistorySessionDescriptor } from '@shared/types'
-import { useAppStore } from '../store'
+import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { createSessionForCurrentProject } from '../lib/session'
 import { recordsForWorkspace } from '../lib/sessionRegistry'
 import { formatRelativeTime } from '../lib/time'
 import { getSessionStatus } from '../lib/sessionStatus'
+import { basename } from '../lib/path'
+import { useConfirmId } from '../lib/confirmClick'
 import Logo from './Logo'
+
+const EMPTY_MESSAGES: Record<string, MessageLike[]> = {}
 
 export default function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const t = useT()
-  const {
-    currentWorkspace,
-    sessions,
-    currentSessionId,
-    cliAvailable,
-    sessionRecords,
-    rightPanelOpen,
-    language,
-    theme,
-    busy,
-    messages,
-    pinnedSessionIds,
-    archivedSessionIds,
-    unreadSessionIds,
-    uiRequests,
-    historyLoading,
-    recentProjects,
-    recentWorkspaces,
-    selectWorkspace,
-    activateRecentWorkspace,
-    setCurrentSessionId,
-    setSessions,
-    setRightPanelOpen,
-    setLanguage,
-    setTheme,
-    togglePinSession,
-    setSessionArchived,
-    addSession,
-    setMessages,
-    loadHistorySessions,
-    removeHistorySession,
-    setRecentProjects,
-    setRecentWorkspaces,
-    removeRecentProject,
-    setSetupComplete
-  } = useAppStore()
+  // Atomic slices: streaming message deltas land only while a search is open
+  // (the search reads transcript tails), never on the default grouped view.
+  const currentWorkspace = useAppStore((s) => s.currentWorkspace)
+  const sessions = useAppStore((s) => s.sessions)
+  const currentSessionId = useAppStore((s) => s.currentSessionId)
+  const cliAvailable = useAppStore((s) => s.cliAvailable)
+  const sessionRecords = useAppStore((s) => s.sessionRecords)
+  const rightPanelOpen = useAppStore((s) => s.rightPanelOpen)
+  const language = useAppStore((s) => s.language)
+  const theme = useAppStore((s) => s.theme)
+  const busy = useAppStore((s) => s.busy)
+  const pinnedSessionIds = useAppStore((s) => s.pinnedSessionIds)
+  const archivedSessionIds = useAppStore((s) => s.archivedSessionIds)
+  const unreadSessionIds = useAppStore((s) => s.unreadSessionIds)
+  const uiRequests = useAppStore((s) => s.uiRequests)
+  const historyLoading = useAppStore((s) => s.historyLoading)
+  const recentProjects = useAppStore((s) => s.recentProjects)
+  const recentWorkspaces = useAppStore((s) => s.recentWorkspaces)
+  const selectWorkspace = useAppStore((s) => s.selectWorkspace)
+  const activateRecentWorkspace = useAppStore((s) => s.activateRecentWorkspace)
+  const setCurrentSessionId = useAppStore((s) => s.setCurrentSessionId)
+  const setSessions = useAppStore((s) => s.setSessions)
+  const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
+  const setLanguage = useAppStore((s) => s.setLanguage)
+  const setTheme = useAppStore((s) => s.setTheme)
+  const togglePinSession = useAppStore((s) => s.togglePinSession)
+  const setSessionArchived = useAppStore((s) => s.setSessionArchived)
+  const addSession = useAppStore((s) => s.addSession)
+  const setMessages = useAppStore((s) => s.setMessages)
+  const loadHistorySessions = useAppStore((s) => s.loadHistorySessions)
+  const removeHistorySession = useAppStore((s) => s.removeHistorySession)
+  const setRecentProjects = useAppStore((s) => s.setRecentProjects)
+  const setRecentWorkspaces = useAppStore((s) => s.setRecentWorkspaces)
+  const removeRecentProject = useAppStore((s) => s.removeRecentProject)
+  const setSetupComplete = useAppStore((s) => s.setSetupComplete)
 
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -78,10 +81,9 @@ export default function Sidebar() {
   const [projectsExpanded, setProjectsExpanded] = useState(false)
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null)
   const [restoreFailedHistoryId, setRestoreFailedHistoryId] = useState<string | null>(null)
-  const [confirmDeleteHistoryId, setConfirmDeleteHistoryId] = useState<string | null>(null)
-  const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState<string | null>(null)
   const [deleteFailedHistoryId, setDeleteFailedHistoryId] = useState<string | null>(null)
-  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const searching = query.trim().length > 0
+  const searchMessages = useAppStore((s) => (searching ? s.messages : EMPTY_MESSAGES))
   // One-time bootstrap of the most-recent workspace: only before the initial
   // hydration completes. A user explicitly clearing the current workspace must
   // NOT be yanked back to projects[0]. This effect runs ONCE on mount (deps
@@ -151,7 +153,7 @@ export default function Sidebar() {
       const { session, messages: restored, historicalAgents } = result
       // The main process titles a resumed session after the project dir;
       // prefer the richer title from the history entry when there is one.
-      const projectName = grant.displayPath.split('/').filter(Boolean).pop()
+      const projectName = basename(grant.displayPath)
       const title =
         (!session.title || session.title === projectName) && info.title !== 'Untitled'
           ? info.title
@@ -173,15 +175,6 @@ export default function Sidebar() {
 
   const handleDeleteHistory = async (info: HistorySessionDescriptor) => {
     if (historyLoading || !currentWorkspace) return
-    if (confirmDeleteHistoryId !== info.id) {
-      setConfirmDeleteHistoryId(info.id)
-      setDeleteFailedHistoryId(null)
-      if (confirmTimer.current) clearTimeout(confirmTimer.current)
-      confirmTimer.current = setTimeout(() => setConfirmDeleteHistoryId(null), 3000)
-      return
-    }
-    setConfirmDeleteHistoryId(null)
-    if (confirmTimer.current) clearTimeout(confirmTimer.current)
     const ok = await window.electronAPI.deleteSessionFile(currentWorkspace.id, info.id)
     // Only the history entry goes away on success — a failed delete keeps the
     // item and surfaces a user-visible error (never silent success).
@@ -193,6 +186,13 @@ export default function Sidebar() {
       setTimeout(() => setDeleteFailedHistoryId((id) => (id === info.id ? null : id)), 3000)
     }
   }
+
+  const deleteHistoryConfirm = useConfirmId((id: string) => {
+    setDeleteFailedHistoryId(null)
+    const info = visibleHistory.find((entry) => entry.id === id)
+    if (info) void handleDeleteHistory(info)
+  })
+  const deleteSessionConfirm = useConfirmId((id: string) => handleDeleteSession(id))
 
   const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   const archivedSet = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds])
@@ -219,11 +219,11 @@ export default function Sidebar() {
     if (!q) return scopedLiveSessions
     return scopedLiveSessions.filter((s) => {
       if (s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q)) return true
-      const list = messages[s.id]
+      const list = searchMessages[s.id]
       const last = list?.[list.length - 1]
       return last ? last.content.toLowerCase().includes(q) : false
     })
-  }, [scopedLiveSessions, query, messages])
+  }, [scopedLiveSessions, query, searchMessages])
 
   // Pinned sessions first, each group keeping its original order
   const pinnedSessions = useMemo(
@@ -270,7 +270,7 @@ export default function Sidebar() {
     const group = scopedLiveSessions.filter((s) => s.cwd === cwd && !archivedSet.has(s.id))
     const pinned = group.filter((s) => pinnedSet.has(s.id))
     const normal = group.filter((s) => !pinnedSet.has(s.id))
-    const name = cwd.split('/').filter(Boolean).pop() ?? cwd
+    const name = basename(cwd) || cwd
     return (
       <div key={cwd} className="mt-2">
         <div className="truncate px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-cream-faint/80">
@@ -280,9 +280,6 @@ export default function Sidebar() {
       </div>
     )
   }
-
-  // Search results never fold; the default grouped view shows every session.
-  const searching = query.trim().length > 0
 
   const PROJECT_FOLD_LIMIT = 5
   const visibleProjects = projectsExpanded
@@ -410,23 +407,15 @@ export default function Sidebar() {
           onClick={(e) => {
             e.stopPropagation()
             // Two-stage confirm: deleting kills the live pi process.
-            if (confirmDeleteSessionId !== session.id) {
-              setConfirmDeleteSessionId(session.id)
-              if (confirmTimer.current) clearTimeout(confirmTimer.current)
-              confirmTimer.current = setTimeout(() => setConfirmDeleteSessionId(null), 3000)
-              return
-            }
-            if (confirmTimer.current) clearTimeout(confirmTimer.current)
-            setConfirmDeleteSessionId(null)
-            handleDeleteSession(session.id)
+            deleteSessionConfirm.click(session.id)
           }}
           title={
-            confirmDeleteSessionId === session.id
+            deleteSessionConfirm.confirmingId === session.id
               ? t('sidebar.deleteConfirm')
               : t('sidebar.deleteSession')
           }
           className={
-            confirmDeleteSessionId === session.id
+            deleteSessionConfirm.confirmingId === session.id
               ? 'shrink-0 rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
               : `${iconBtn} hover:bg-red-500/15 hover:text-red-500`
           }
@@ -439,7 +428,7 @@ export default function Sidebar() {
 
   const renderHistoryRow = (info: HistorySessionDescriptor) => {
     const resuming = resumingHistoryId === info.id
-    const confirming = confirmDeleteHistoryId === info.id
+    const confirming = deleteHistoryConfirm.confirmingId === info.id
     const failed = restoreFailedHistoryId === info.id
     return (
       <div
@@ -474,7 +463,7 @@ export default function Sidebar() {
           <button
             onClick={(e) => {
               e.stopPropagation()
-              void handleDeleteHistory(info)
+              deleteHistoryConfirm.click(info.id)
             }}
             title={confirming ? t('history.deleteConfirm') : t('history.delete')}
             className={
@@ -576,7 +565,7 @@ export default function Sidebar() {
         {recentProjects.length > 0 && (
           <div className="mt-1 space-y-0.5">
             {visibleProjects.map((path) => {
-              const name = path.split('/').filter(Boolean).pop() ?? path
+              const name = basename(path) || path
               return (
                 <div
                   key={path}

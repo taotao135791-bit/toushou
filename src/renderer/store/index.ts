@@ -5,6 +5,7 @@ import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
 import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
+import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
 
 export interface MessageLike {
@@ -833,7 +834,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get()
     const session = state.sessions.find((s) => s.id === sessionId)
     if (!session) return
-    const projectName = session.cwd.split('/').filter(Boolean).pop() || ''
+    const projectName = basename(session.cwd)
     if (session.title.trim() && session.title !== projectName) return
     const list = state.messages[sessionId] || []
     if (list.filter((m) => m.role === 'user').length !== 1) return

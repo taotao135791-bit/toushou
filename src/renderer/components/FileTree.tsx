@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, ChevronDown, Folder, File, Loader2 } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { WorkspaceRequestFence } from '../lib/workspaceRequest'
@@ -14,7 +15,14 @@ interface TreeNode {
 }
 
 export default function FileTree() {
-  const { currentWorkspace, selectedFile, setSelectedFile, setActiveRightTab } = useAppStore()
+  const { currentWorkspace, selectedFile, setSelectedFile, setActiveRightTab } = useAppStore(
+    useShallow((s) => ({
+      currentWorkspace: s.currentWorkspace,
+      selectedFile: s.selectedFile,
+      setSelectedFile: s.setSelectedFile,
+      setActiveRightTab: s.setActiveRightTab
+    }))
+  )
   const [tree, setTree] = useState<TreeNode[]>([])
   const [loading, setLoading] = useState(false)
   const requestFence = useRef(new WorkspaceRequestFence()).current

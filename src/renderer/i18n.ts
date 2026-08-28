@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { Language } from '../shared/types'
 import { useAppStore } from './store'
 
@@ -1543,6 +1544,8 @@ export function translate(
 /** React hook: const t = useT(); t('sidebar.newChat') */
 export function useT() {
   const language = useAppStore((s) => s.language)
-  return (key: I18nKey, vars?: Record<string, string | number>) =>
-    translate(language, key, vars)
+  return useCallback(
+    (key: I18nKey, vars?: Record<string, string | number>) => translate(language, key, vars),
+    [language]
+  )
 }

@@ -1,5 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode, useEffect } from 'react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
+import { useShallow } from 'zustand/react/shallow'
+import { SessionEvent } from '@shared/types'
 import { useAppStore } from './store'
 import { useT } from './i18n'
 import { createSessionForCurrentProject } from './lib/session'
@@ -59,7 +61,17 @@ function App() {
     setSetupComplete,
     applySessionEvent,
     registerSessions
-  } = useAppStore()
+  } = useAppStore(
+    useShallow((s) => ({
+      setupComplete: s.setupComplete,
+      setTheme: s.setTheme,
+      setLanguage: s.setLanguage,
+      setCliAvailable: s.setCliAvailable,
+      setSetupComplete: s.setSetupComplete,
+      applySessionEvent: s.applySessionEvent,
+      registerSessions: s.registerSessions
+    }))
+  )
   const t = useT()
   const navigate = useNavigate()
 
@@ -100,10 +112,65 @@ function App() {
     // arrives before the create-session response is committed locally.
     syncLiveSessions()
 
-    const unsubscribe = window.electronAPI.onSessionEvent((event) => {
-      applySessionEvent(event)
-      if (event.type === 'connected') syncLiveSessions()
-    })
+    // Micro-batch streaming text: consecutive assistant message/thinking
+    // deltas coalesce inside a 32ms window (one store write + render per
+    // batch instead of one per token). Any other event flushes the batch
+    // first, so global event order — and thus transcript order — stays exact.
+    let pendingDeltas: SessionEvent[] = []
+    let flushTimer: ReturnType<typeof setTimeout> | null = null
+
+    const flushDeltas = () => {
+      if (flushTimer) {
+        clearTimeout(flushTimer)
+        flushTimer = null
+      }
+      if (pendingDeltas.length === 0) return
+      const batch = pendingDeltas
+      pendingDeltas = []
+      const merged: SessionEvent[] = []
+      for (const event of batch) {
+        const last = merged[merged.length - 1]
+        if (
+          last &&
+          last.type === 'message' &&
+          event.type === 'message' &&
+          last.role === 'assistant' &&
+          event.role === 'assistant' &&
+          last.sessionId === event.sessionId
+        ) {
+          last.content += event.content
+        } else if (
+          last &&
+          last.type === 'thinking' &&
+          event.type === 'thinking' &&
+          last.sessionId === event.sessionId
+        ) {
+          last.delta += event.delta
+        } else {
+          merged.push({ ...event })
+        }
+      }
+      for (const event of merged) applySessionEvent(event)
+    }
+
+    const onEvent = (event: SessionEvent) => {
+      const isDelta =
+        (event.type === 'message' && event.role === 'assistant') || event.type === 'thinking'
+      if (!isDelta) {
+        flushDeltas()
+        applySessionEvent(event)
+        if (event.type === 'connected') syncLiveSessions()
+        return
+      }
+      pendingDeltas.push(event)
+      if (pendingDeltas.length >= 64) {
+        flushDeltas()
+      } else if (flushTimer === null) {
+        flushTimer = setTimeout(flushDeltas, 32)
+      }
+    }
+
+    const unsubscribe = window.electronAPI.onSessionEvent(onEvent)
 
     // Native login flow state (Settings → Authentication)
     const unsubscribeLogin = window.electronAPI.onLoginState((loginState) => {
@@ -131,6 +198,7 @@ function App() {
     })
 
     return () => {
+      flushDeltas()
       unsubscribe()
       unsubscribeNotify()
       unsubscribeLogin()

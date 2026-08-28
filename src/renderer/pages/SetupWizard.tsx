@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Download, CheckCircle, AlertCircle, Loader2, Terminal, ArrowRight } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import Logo from '../components/Logo'
@@ -11,7 +12,15 @@ export default function SetupWizard() {
     setCliAvailable,
     setSetupComplete,
     setInstallStatus
-  } = useAppStore()
+  } = useAppStore(
+    useShallow((s) => ({
+      cliAvailable: s.cliAvailable,
+      installStatus: s.installStatus,
+      setCliAvailable: s.setCliAvailable,
+      setSetupComplete: s.setSetupComplete,
+      setInstallStatus: s.setInstallStatus
+    }))
+  )
   const t = useT()
 
   // The real command is copied verbatim but never displayed, keeping the

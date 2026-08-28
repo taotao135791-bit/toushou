@@ -1,4 +1,4 @@
-import { ReactNode, useMemo } from 'react'
+import { memo, ReactNode, useMemo } from 'react'
 import MessageItem from './MessageItem'
 import { ToolGroup } from './TurnRow'
 import { MessageLike, useAppStore } from '../store'
@@ -20,7 +20,7 @@ function gapBefore(prev: MessageLike | undefined, nextIsUser: boolean): string {
   return 'mt-7'
 }
 
-export default function MessageList({ messages, sessionId = null }: MessageListProps) {
+function MessageList({ messages, sessionId = null }: MessageListProps) {
   const streaming = useAppStore((s) => (sessionId ? Boolean(s.busy[sessionId]) : false))
   // Live progress / frozen summary derive from the single execution projection
   // — never from a second per-turn counter store.
@@ -86,3 +86,5 @@ export default function MessageList({ messages, sessionId = null }: MessageListP
   }
   return <div className="flex flex-col px-6 py-8">{nodes}</div>
 }
+
+export default memo(MessageList)

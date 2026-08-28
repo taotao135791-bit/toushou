@@ -9,6 +9,7 @@ import {
   Trash2
 } from 'lucide-react'
 import { CliCapabilities, CliInfo, PermissionMode, UpdaterStatus } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
 import CurrentOmpSettings from '../components/CurrentOmpSettings'
@@ -52,7 +53,16 @@ const PERMISSION_MODES: { value: PermissionMode; label: I18nKey; note: I18nKey }
 ]
 
 export default function SettingsPage() {
-  const { theme, language, setTheme, setLanguage, permissionMode, setPermissionMode } = useAppStore()
+  const { theme, language, setTheme, setLanguage, permissionMode, setPermissionMode } = useAppStore(
+    useShallow((s) => ({
+      theme: s.theme,
+      language: s.language,
+      setTheme: s.setTheme,
+      setLanguage: s.setLanguage,
+      permissionMode: s.permissionMode,
+      setPermissionMode: s.setPermissionMode
+    }))
+  )
   const t = useT()
   const [cli, setCli] = useState<CliInfo | null>(null)
   const [caps, setCaps] = useState<CliCapabilities | null>(null)

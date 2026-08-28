@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { FileText, X, Eye, FileDiff } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT, translate } from '../i18n'
 import FileTree from './FileTree'
@@ -15,7 +16,17 @@ export default function RightPanel() {
     setActiveRightTab,
     setRightPanelOpen,
     setPreviewContent
-  } = useAppStore()
+  } = useAppStore(
+    useShallow((s) => ({
+      activeRightTab: s.activeRightTab,
+      currentWorkspace: s.currentWorkspace,
+      selectedFile: s.selectedFile,
+      previewContent: s.previewContent,
+      setActiveRightTab: s.setActiveRightTab,
+      setRightPanelOpen: s.setRightPanelOpen,
+      setPreviewContent: s.setPreviewContent
+    }))
+  )
   const t = useT()
 
   useEffect(() => {

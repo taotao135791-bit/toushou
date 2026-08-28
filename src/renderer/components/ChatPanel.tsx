@@ -1,11 +1,12 @@
 import { useRef, useEffect, useState } from 'react'
 import { FolderOpen, Download, Loader2, ChevronRight, ChevronDown } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
-import { useAppStore } from '../store'
+import { MessageLike, UiRequest, useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
 import { createSessionForCurrentProject } from '../lib/session'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { exportFilename } from '../lib/exportFilename'
+import { basename } from '../lib/path'
 import MessageList from './MessageList'
 import ExecutionActivity from './ExecutionActivity'
 import Composer from './Composer'
@@ -13,27 +14,33 @@ import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
 import Logo from './Logo'
 
+const EMPTY_MESSAGES: MessageLike[] = []
+const EMPTY_UI_REQUESTS: UiRequest[] = []
+
 export default function ChatPanel() {
-  const {
-    currentSessionId,
-    currentWorkspace,
-    sessions,
-    messages,
-    packages,
-    cliAvailable,
-    busy,
-    uiRequests,
-    selectWorkspace
-  } = useAppStore()
   const t = useT()
+  const currentSessionId = useAppStore((s) => s.currentSessionId)
+  const currentWorkspace = useAppStore((s) => s.currentWorkspace)
+  const sessions = useAppStore((s) => s.sessions)
+  const packages = useAppStore((s) => s.packages)
+  const cliAvailable = useAppStore((s) => s.cliAvailable)
+  const selectWorkspace = useAppStore((s) => s.selectWorkspace)
+  // Per-session slices only: streaming deltas of OTHER sessions must not
+  // re-render this chat, and unrelated store writes must not either.
+  const sessionMessages = useAppStore((s) =>
+    currentSessionId ? s.messages[currentSessionId] ?? EMPTY_MESSAGES : EMPTY_MESSAGES
+  )
+  const isBusy = useAppStore((s) =>
+    currentSessionId ? Boolean(s.busy[currentSessionId]) : false
+  )
 
   const currentSession = sessions.find((s) => s.id === currentSessionId)
-  const sessionMessages = currentSessionId ? messages[currentSessionId] || [] : []
-  const isBusy = currentSessionId ? Boolean(busy[currentSessionId]) : false
   const isCompacting = useAppStore((s) =>
     currentSessionId ? Boolean(s.compacting[currentSessionId]) : false
   )
-  const pendingUi = currentSessionId ? (uiRequests[currentSessionId] || [])[0] : undefined
+  const pendingUi = useAppStore((s) =>
+    currentSessionId ? (s.uiRequests[currentSessionId] ?? EMPTY_UI_REQUESTS)[0] : undefined
+  )
   const sessionError = useAppStore((s) =>
     currentSessionId ? s.sessionErrors[currentSessionId] : undefined
   )
@@ -51,6 +58,9 @@ export default function ChatPanel() {
   const [exportSuccessPath, setExportSuccessPath] = useState<string | null>(null)
   const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(null)
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const stoppingBusy = useAppStore((s) =>
+    stoppingSessionId ? Boolean(s.busy[stoppingSessionId]) : false
+  )
   // Session-less send failure (create threw — e.g. a stale workspace grant)
   const [sendError, setSendError] = useState<I18nKey | null>(null)
 
@@ -59,13 +69,13 @@ export default function ChatPanel() {
   // A terminal runtime event confirms Stop. Until then the local state gives
   // immediate feedback and prevents a second abort click.
   useEffect(() => {
-    if (!stoppingSessionId || busy[stoppingSessionId]) return
+    if (!stoppingSessionId || stoppingBusy) return
     setStoppingSessionId(null)
     if (stopTimerRef.current) {
       clearTimeout(stopTimerRef.current)
       stopTimerRef.current = null
     }
-  }, [busy, stoppingSessionId])
+  }, [stoppingBusy, stoppingSessionId])
 
   useEffect(
     () => () => {
@@ -260,7 +270,7 @@ export default function ChatPanel() {
     await selectWorkspace()
   }
 
-  const projectName = currentWorkspace ? currentWorkspace.displayPath.split('/').filter(Boolean).pop() : null
+  const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
   const exportedFilename = exportSuccessPath ? exportFilename(exportSuccessPath) : null
   const enabledCount = packages.filter((p) => p.enabled).length
   const showHero = sessionMessages.length === 0

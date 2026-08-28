@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import {
   AlertTriangle,
   ArrowRight,
@@ -16,6 +16,7 @@ import {
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { formatSeconds } from '../lib/time'
+import { useConfirm } from '../lib/confirmClick'
 import Markdown from './Markdown'
 import { SaveMessageToBoardDialog } from './SaveMessageToBoardDialog'
 
@@ -26,14 +27,12 @@ interface MessageItemProps {
   sessionId?: string | null
 }
 
-export default function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps) {
+function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps) {
   const [copied, setCopied] = useState(false)
-  const [confirmRollback, setConfirmRollback] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [thinkingOpen, setThinkingOpen] = useState(false)
   const [boardDialogOpen, setBoardDialogOpen] = useState(false)
   const [boardSaved, setBoardSaved] = useState(false)
-  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const t = useT()
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
@@ -120,18 +119,9 @@ export default function MessageItem({ message, index = -1, sessionId = null }: M
   }
 
   // Two-stage confirm, same pattern as the packages page uninstall button.
-  const handleRollbackClick = () => {
-    if (restoring) return
-    if (!confirmRollback) {
-      setConfirmRollback(true)
-      if (confirmTimer.current) clearTimeout(confirmTimer.current)
-      confirmTimer.current = setTimeout(() => setConfirmRollback(false), 3000)
-      return
-    }
-    if (confirmTimer.current) clearTimeout(confirmTimer.current)
-    setConfirmRollback(false)
-    void runRollback()
-  }
+  const { confirming: confirmRollback, click: handleRollbackClick } = useConfirm(() => {
+    if (!restoring) void runRollback()
+  })
 
   if (isUser) {
     const isSteer = message.kind === 'steer'
@@ -312,3 +302,9 @@ export default function MessageItem({ message, index = -1, sessionId = null }: M
     </div>
   )
 }
+
+/**
+ * Memoized: historical message objects keep their identity across streaming
+ * deltas, so only the in-flight message (and patched rows) re-render.
+ */
+export default memo(MessageItem)

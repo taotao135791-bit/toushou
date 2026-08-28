@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { ToolCallRecord } from '../lib/toolCalls'
 import { getToolRenderer } from './tools'
@@ -27,7 +27,7 @@ function summarizeInput(tool: string, input: unknown): string | null {
   }
 }
 
-export default function ToolCallCard({ toolCall }: ToolCallCardProps) {
+function ToolCallCard({ toolCall }: ToolCallCardProps) {
   const [expanded, setExpanded] = useState(false)
   const summary = summarizeInput(toolCall.tool, toolCall.input)
   const running = toolCall.output === undefined
@@ -69,3 +69,6 @@ export default function ToolCallCard({ toolCall }: ToolCallCardProps) {
     </div>
   )
 }
+
+/** Memoized: a tool record's identity is stable until its result lands. */
+export default memo(ToolCallCard)

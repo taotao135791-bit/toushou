@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Check, KeyRound, ShieldCheck } from 'lucide-react'
 import { ModelConfig, PI_PROVIDERS, PiModel } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 
@@ -50,7 +51,13 @@ const THINKING_LEVELS: Array<ModelConfig['defaultThinkingLevel']> = [
  * This component must never touch current-OMP runtime APIs.
  */
 export default function LegacyPiSettings() {
-  const { models, modelConfig, loadModelState } = useAppStore()
+  const { models, modelConfig, loadModelState } = useAppStore(
+    useShallow((s) => ({
+      models: s.models,
+      modelConfig: s.modelConfig,
+      loadModelState: s.loadModelState
+    }))
+  )
   const t = useT()
   const [keyInput, setKeyInput] = useState('')
   const [keyState, setKeyState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')

@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.1.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.1.0) 下载：
+当前版本 v0.1.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.1.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.0/TouShou-arm64.dmg) | 136 MB | `bf50625403eab96bebb60b13ff29fed790d7700a15284b817225a56468d060e5` |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.0/TouShou-x64.dmg) | 143 MB | `daa8623d2f3b94f195e3f1477cca4621d79519e46d69f255368043c52b9ec299` |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.0/TouShou-x64.exe) | 110 MB | `976891ad2272ef4e1820f079c4f830db321b992c6dc52592ea6a61258d449e19` |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.1/TouShou-arm64.dmg) | 136 MB | `ede68df1731f865c7b2df790be4a63201c5a3b81b2e7df9119ea3df8012ac636` |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.1/TouShou-x64.dmg) | 143 MB | `79b1d05e2c776b50156dfbe99c1a8673904679f71a4ac171759ad78f23c1998b` |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.1/TouShou-x64.exe) | 110 MB | `a273809da52498af03b9c94c6c4d87587c7dc48e546a3656b5fa586e2e14a8a6` |
+
+v0.1.1：流式输出渲染提速（消息增量微批合并、按会话订阅、历史消息不再重复解析），并收敛了前端重复写法。
 
 安装方式：
 
