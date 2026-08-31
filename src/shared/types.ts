@@ -1073,6 +1073,46 @@ export type BoardNoteAppendResult =
     }
 
 // ---------------------------------------------------------------------------
+// Board design (userData/board-design.md) — a line-based, strictly bounded
+// markdown document supplying appearance DEFAULTS for every board. A widget's
+// own style overrides the design; fields the design omits fall back to the
+// built-in defaults. Parse/validate lives in shared/boardDesign.ts and reuses
+// the BoardStyle / BoardWidgetStyle validators, so the value domain here is
+// exactly the no-arbitrary-CSS token model above.
+// ---------------------------------------------------------------------------
+
+export interface BoardDesignSpec {
+  board: BoardStyle
+  widget: BoardWidgetStyle
+}
+
+/** One parse finding; `error` findings block a save, `warning` ones do not. */
+export interface BoardDesignIssue {
+  level: 'error' | 'warning'
+  /** 1-based line in the markdown source. */
+  line: number
+  message: string
+}
+
+/** Read payload: file contents plus their parsed meaning. */
+export interface BoardDesignDocument {
+  path: string
+  markdown: string
+  spec: BoardDesignSpec
+  issues: BoardDesignIssue[]
+}
+
+export type BoardDesignSaveResult =
+  | { ok: true; spec: BoardDesignSpec; issues: BoardDesignIssue[] }
+  | { ok: false; error: 'invalid-request' | 'invalid-design' | 'write-failed'; issues: BoardDesignIssue[] }
+
+/** Push payload after the design file changes on disk (any source). */
+export interface BoardDesignChange {
+  spec: BoardDesignSpec
+  issues: BoardDesignIssue[]
+}
+
+// ---------------------------------------------------------------------------
 // Board datasets — imported ad-backend CSV/XLSX exports that counter/chart
 // widgets can bind to. Persisted under userData/board-datasets.json; parsing
 // and aggregation live in shared/datasets.ts.

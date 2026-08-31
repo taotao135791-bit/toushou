@@ -30,7 +30,8 @@ import {
   ManagedPluginDescriptor,
   ManagedPluginDetail,
   ManagedPluginSaveResult,
-  ManagedPluginActionResult
+  ManagedPluginActionResult,
+  BoardDesignChange
 } from '../shared/types'
 import {
   detectCli,
@@ -97,6 +98,7 @@ import { PackageActionGrantManager, matchesPackageActionTarget } from './package
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, deleteBoard, listBoards, saveBoard } from './boards'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
+import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
 import { maybeNotifyTurnFinished, maybeNotifyUiRequest } from './notify'
@@ -152,6 +154,23 @@ function broadcastLoginState(state: LoginState): void {
   if (win && !win.isDestroyed()) {
     win.webContents.send(IPC_CHANNELS.AUTH_LOGIN_STATE, state)
   }
+}
+
+/** Board design file edits (external editor or in-app save) reach every window. */
+function broadcastBoardDesign(change: BoardDesignChange): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.BOARDS_DESIGN_CHANGED, change)
+    }
+  }
+}
+
+/** The design watcher is lazy: it starts with the first design read/subscribe. */
+let boardDesignWatching = false
+function ensureBoardDesignWatch(): void {
+  if (boardDesignWatching) return
+  boardDesignWatching = true
+  watchBoardDesign(broadcastBoardDesign)
 }
 
 const MAX_READ_FILE_BYTES = 2 * 1024 * 1024
@@ -311,7 +330,7 @@ async function confirmPackageAction(
   const verb = verbs[action]
   const codeWarning =
     action === 'install' || action === 'update'
-      ? 'Plugins can run code with this app\'s permissions. Review the source before continuing.'
+      ? 'Plugins can run code with the agent runtime\'s permissions. Review the source before continuing.'
       : 'This changes the plugin state managed by Oh My Pi.'
   const options = {
     type: action === 'remove' ? 'warning' as const : 'question' as const,
@@ -1562,6 +1581,30 @@ export function registerIpc() {
       return renameDataset(id, name)
     }
   )
+
+  // Board design (userData/board-design.md) — bounded appearance tokens, never
+  // arbitrary CSS. Both writer paths (in-app dialog, chat "apply" card) go
+  // through saveBoardDesign; a document with parse errors is refused. Reading
+  // starts the lazy watcher so external edits broadcast boards:design-changed.
+  ipcMain.handle(IPC_CHANNELS.BOARDS_GET_DESIGN, async () => {
+    ensureBoardDesignWatch()
+    return readBoardDesign()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE_DESIGN, async (_event, markdown: unknown) => {
+    const result = saveBoardDesign(markdown)
+    if (result.ok) {
+      // The watcher's self-write skip would otherwise leave OTHER windows
+      // stale; the saving renderer is updated by this response anyway.
+      broadcastBoardDesign({ spec: result.spec, issues: result.issues })
+    }
+    return result
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BOARDS_REVEAL_DESIGN, async () => {
+    ensureBoardDesignWatch()
+    return revealBoardDesign()
+  })
 
   ipcMain.handle(IPC_CHANNELS.DIALOG_SELECT_FOLDER, async () => {
     const result = await dialog.showOpenDialog({

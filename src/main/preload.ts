@@ -46,6 +46,9 @@ import {
   BoardNoteAppendRequest,
   BoardNoteAppendResult,
   BoardDataset,
+  BoardDesignChange,
+  BoardDesignDocument,
+  BoardDesignSaveResult,
   CustomProviderSpec,
   CustomProvidersListResult,
   CustomProviderSaveResult,
@@ -162,6 +165,14 @@ export interface ElectronAPI {
   importBoardDataset: (fileGrantId: string) => Promise<DatasetImportResult>
   deleteBoardDataset: (id: string) => Promise<DatasetMutationResult>
   renameBoardDataset: (id: string, name: string) => Promise<DatasetMutationResult>
+  /** Board appearance defaults document (template when the file is absent). */
+  getBoardDesign: () => Promise<BoardDesignDocument>
+  /** Validated write of board-design.md; refuses documents with parse errors. */
+  saveBoardDesign: (markdown: string) => Promise<BoardDesignSaveResult>
+  /** Reveal board-design.md in the OS file manager (writes the template first if missing). */
+  revealBoardDesign: () => Promise<boolean>
+  /** Fired when board-design.md changes on disk (any source). */
+  onBoardDesignChanged: (callback: (change: BoardDesignChange) => void) => () => void
   selectFolder: () => Promise<string | null>
   selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
   /** Pick an image file; resolves its base64 bytes (null when cancelled). */
@@ -395,6 +406,16 @@ const api: ElectronAPI = {
   deleteBoardDataset: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_DATASETS_DELETE, id),
   renameBoardDataset: (id: string, name: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.BOARDS_DATASETS_RENAME, id, name),
+  getBoardDesign: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_GET_DESIGN),
+  saveBoardDesign: (markdown: string) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE_DESIGN, markdown),
+  revealBoardDesign: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REVEAL_DESIGN),
+  onBoardDesignChanged: (callback: (change: BoardDesignChange) => void) => {
+    const handler = (_event: IpcRendererEvent, change: BoardDesignChange) => callback(change)
+    ipcRenderer.on(IPC_CHANNELS.BOARDS_DESIGN_CHANGED, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.BOARDS_DESIGN_CHANGED, handler)
+    }
+  },
   selectFolder: () => ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_FOLDER),
   selectFile: (filters?: { name: string; extensions: string[] }[]) =>
     ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_FILE, filters),

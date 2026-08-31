@@ -483,6 +483,8 @@ const en = {
   'plugins.source.githubPlaceholder': 'owner/repository or GitHub repository URL',
   'plugins.source.npmPlaceholder': '@scope/plugin or plugin@version',
   'plugins.source.githubHint': 'Repository roots are normalized to the runtime’s github:owner/repository form.',
+  'plugins.source.githubHintLegacy':
+    'Legacy mode: paste the full https://github.com/owner/repository URL — bare owner/repo is treated as an npm package and fails.',
   'plugins.source.npmHint': 'Paste an npm package name; version tags are supported.',
   'plugins.write.title': 'Handwritten plugins',
   'plugins.write.new': 'Write plugin',
@@ -497,7 +499,7 @@ const en = {
   'plugins.write.deleteConfirm': 'Confirm delete?',
   'plugins.write.dialogNew': 'Write a plugin',
   'plugins.write.dialogEdit': 'Edit plugin',
-  'plugins.write.dialogHint': '投手 keeps this source in its own app data folder and only links it after your confirmation.',
+  'plugins.write.dialogHint': 'Toushou keeps this source in its own app data folder and only links it after your confirmation.',
   'plugins.write.name': 'Package name',
   'plugins.write.displayName': 'Display name (optional)',
   'plugins.write.description': 'Description',
@@ -525,6 +527,34 @@ const en = {
   'plugins.kimi.status.bridge-unreachable': 'Bridge unavailable',
   'plugins.kimi.status.configuration-error': 'Configuration needs attention',
   'plugins.kimi.statusUnavailable': 'Status check failed. Try again.',
+  'plugins.guide.open': 'Plugin guide',
+  'plugins.guide.title': 'Plugin interface guide',
+  'plugins.guide.hint': 'What a plugin package looks like, and what it can and cannot do.',
+  'plugins.guide.sourcesTitle': 'Install sources',
+  'plugins.guide.sources.omp.github':
+    'GitHub: owner/repo, owner/repo#ref, or a repository URL (including /tree/<ref>) — normalized to github:owner/repo.',
+  'plugins.guide.sources.omp.npm': 'npm: a package name or name@version; the legacy npm: prefix is stripped.',
+  'plugins.guide.sources.omp.local':
+    'Local folder: an absolute or relative path, passed through unchanged. GitHub /blob/ file URLs are rejected.',
+  'plugins.guide.sources.legacy.github':
+    'GitHub: paste the full https://github.com/owner/repository URL — legacy Pi does not support bare owner/repo.',
+  'plugins.guide.sources.legacy.npm': 'npm: a package name or npm:name; version tags are supported.',
+  'plugins.guide.sources.legacy.local': 'Local: pick a folder, or a single .ts/.js file that loads as one extension.',
+  'plugins.guide.manifestTitle': 'Minimal package.json',
+  'plugins.guide.manifestNote':
+    'Toushou reads name, description, version and the pi/omp resource declarations without validating them; undeclared resources fall back to the extensions/, skills/, prompts/ and themes/ convention folders.',
+  'plugins.guide.limitsTitle': 'Capabilities and limits',
+  'plugins.guide.limits.api':
+    'An extension default-exports a function that receives the runtime extension API: register slash commands, handle events, contribute skills, prompts and themes.',
+  'plugins.guide.limits.bridge':
+    'The only GUI bridge is the bounded extension_ui_request protocol: select, confirm, input, editor, notify and user-mediated open_url.',
+  'plugins.guide.limits.noDeps':
+    'A plugin cannot declare or install npm dependencies; peer-declare the runtime core packages instead of bundling them.',
+  'plugins.guide.limits.session': 'Installs, syncs and removals take effect in a new session or after a runtime reload.',
+  'plugins.guide.limits.trust':
+    'Installing is a trust decision: plugin code runs in the agent runtime process with the runtime’s permissions. Review the source first.',
+  'plugins.guide.more': 'Full specification: docs/plugin-interface-spec.md in the Toushou repository.',
+  'plugins.guide.close': 'Close',
 
   // Widget-grid boards
   'boards.title': 'Boards',
@@ -609,6 +639,22 @@ const en = {
   'boards.chat.loadFailed': 'Could not load boards. Your reply has not been saved.',
   'boards.chat.boardFull': 'This board already has the maximum number of widgets.',
   'boards.chat.trimmed': 'Long replies are shortened to fit a board note.',
+  'boards.design.open': 'Board design',
+  'boards.design.title': 'Board design (design.md)',
+  'boards.design.hint':
+    'Appearance defaults for every board — one "key: value" token per line. A widget’s own appearance settings override these. The file is watched, so external edits apply automatically.',
+  'boards.design.reveal': 'Show in folder',
+  'boards.design.askAi': 'Ask AI to edit',
+  'boards.design.saved': 'Design saved.',
+  'boards.design.saveFailed': "Couldn't save the design — fix the errors above.",
+  'boards.design.valid': 'No issues found.',
+  'boards.design.line': 'Line {line}',
+  'boards.design.blockTitle': 'Board design',
+  'boards.design.apply': 'Apply to boards',
+  'boards.design.applying': 'Applying…',
+  'boards.design.applied': 'Applied',
+  'boards.design.invalid': 'This block has errors and cannot be applied.',
+  'boards.design.empty': 'No style tokens in this block.',
   'boards.config.source': 'Data source',
   'boards.config.sourceManual': 'Manual',
   'boards.config.sourceDataset': 'Dataset',
@@ -1235,6 +1281,8 @@ const zh: Record<I18nKey, string> = {
   'plugins.source.githubPlaceholder': 'owner/仓库，或 GitHub 仓库链接',
   'plugins.source.npmPlaceholder': '@scope/plugin 或 plugin@版本',
   'plugins.source.githubHint': '仓库根链接会自动转换为运行时的 github:owner/repository 格式。',
+  'plugins.source.githubHintLegacy':
+    'legacy 模式：请粘贴完整的 https://github.com/owner/仓库 地址；裸 owner/repo 会被当作 npm 包而失败。',
   'plugins.source.npmHint': '粘贴 npm 包名；支持版本标签。',
   'plugins.write.title': '手写插件',
   'plugins.write.new': '编写插件',
@@ -1277,6 +1325,33 @@ const zh: Record<I18nKey, string> = {
   'plugins.kimi.status.bridge-unreachable': '桥接不可用',
   'plugins.kimi.status.configuration-error': '配置需要处理',
   'plugins.kimi.statusUnavailable': '状态检测失败，请重试。',
+  'plugins.guide.open': '插件规范',
+  'plugins.guide.title': '插件接口规范',
+  'plugins.guide.hint': '插件包长什么样、能做什么、不能做什么。',
+  'plugins.guide.sourcesTitle': '安装来源',
+  'plugins.guide.sources.omp.github':
+    'GitHub：owner/repo、owner/repo#ref 或仓库链接（含 /tree/<分支>），会自动转换为 github:owner/repo。',
+  'plugins.guide.sources.omp.npm': 'npm：包名或 包名@版本；旧版 npm: 前缀会自动去掉。',
+  'plugins.guide.sources.omp.local':
+    '本地文件夹：绝对或相对路径原样传递；GitHub 的 /blob/ 文件链接会被拒绝。',
+  'plugins.guide.sources.legacy.github':
+    'GitHub：请粘贴完整的 https://github.com/owner/仓库 地址，legacy 模式不支持裸 owner/repo 写法。',
+  'plugins.guide.sources.legacy.npm': 'npm：包名或 npm:包名；支持版本标签。',
+  'plugins.guide.sources.legacy.local': '本地：选择一个文件夹，或单个 .ts/.js 文件（作为单个扩展加载）。',
+  'plugins.guide.manifestTitle': '最小 package.json',
+  'plugins.guide.manifestNote':
+    '投手只读取 name、description、version 和 pi/omp 资源声明，不做校验；未声明的资源回退到 extensions/、skills/、prompts/、themes/ 约定目录。',
+  'plugins.guide.limitsTitle': '能力与限制',
+  'plugins.guide.limits.api':
+    '扩展默认导出一个接收运行时扩展 API 的函数：注册斜杠命令、订阅事件，并提供技能、提示词和主题。',
+  'plugins.guide.limits.bridge':
+    '唯一的 GUI 桥是受限的 extension_ui_request 协议：select、confirm、input、editor、notify 和需用户点击的 open_url。',
+  'plugins.guide.limits.noDeps': '插件不能声明或安装 npm 依赖；运行时核心包请用 peerDependencies 声明，不要打包。',
+  'plugins.guide.limits.session': '安装、同步和卸载在新会话或运行时重载后生效。',
+  'plugins.guide.limits.trust':
+    '安装即信任：插件代码运行在 Agent 运行时进程中，拥有运行时的权限。安装前请审查源码。',
+  'plugins.guide.more': '完整规范见仓库中的 docs/plugin-interface-spec.md。',
+  'plugins.guide.close': '关闭',
 
   // Widget 网格看板
   'boards.title': '看板',
@@ -1361,6 +1436,22 @@ const zh: Record<I18nKey, string> = {
   'boards.chat.loadFailed': '无法加载看板，这条回复尚未保存。',
   'boards.chat.boardFull': '这个看板的组件数量已达上限。',
   'boards.chat.trimmed': '较长回复会截断到看板笔记的可保存上限。',
+  'boards.design.open': '看板设计',
+  'boards.design.title': '看板设计（design.md）',
+  'boards.design.hint':
+    '所有看板的外观默认值，每行一个 "key: value"。组件自己的外观设置优先于此。文件会被监听，外部修改会自动生效。',
+  'boards.design.reveal': '在文件夹中显示',
+  'boards.design.askAi': '让 AI 帮我改',
+  'boards.design.saved': '设计已保存。',
+  'boards.design.saveFailed': '设计保存失败，请先修复上面的错误。',
+  'boards.design.valid': '未发现问题。',
+  'boards.design.line': '第 {line} 行',
+  'boards.design.blockTitle': '看板设计',
+  'boards.design.apply': '应用到看板',
+  'boards.design.applying': '应用中…',
+  'boards.design.applied': '已应用',
+  'boards.design.invalid': '此代码块有错误，无法应用。',
+  'boards.design.empty': '此代码块没有任何样式字段。',
   'boards.config.source': '数据来源',
   'boards.config.sourceManual': '手动',
   'boards.config.sourceDataset': '数据集',

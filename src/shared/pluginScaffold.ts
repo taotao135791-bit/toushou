@@ -88,6 +88,10 @@ function renderPackageJson(spec: PluginScaffoldSpec): string {
     manifest.peerDependencies = { '@mariozechner/pi-coding-agent': '*' }
   }
   manifest.pi = pi
+  // Current OMP reads its own manifest key first; mirror the pi declarations
+  // so scaffolded packages are recognized by both hosts (same shape as the
+  // managed-plugin manifest in src/main/managedPlugins.ts).
+  manifest.omp = pi
   manifest.files = files
   return JSON.stringify(manifest, null, 2) + '\n'
 }

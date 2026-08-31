@@ -75,6 +75,7 @@ describe('scaffoldPlugin', () => {
       skills: ['skills'],
       prompts: ['prompts']
     })
+    expect(manifest.omp).toEqual(manifest.pi)
     const skill = readFileSync(path.join(res.dir, 'skills/pi-demo/SKILL.md'), 'utf-8')
     expect(skill).toContain('---\nname: pi-demo\ndescription: demo package\n---')
     const ext = readFileSync(path.join(res.dir, 'extensions/index.ts'), 'utf-8')
@@ -89,6 +90,7 @@ describe('scaffoldPlugin', () => {
     expect(res.files).toEqual(['package.json', 'README.md', 'skills/pi-demo/SKILL.md'])
     const manifest = JSON.parse(readFileSync(path.join(res.dir, 'package.json'), 'utf-8'))
     expect(manifest.pi).toEqual({ skills: ['skills'] })
+    expect(manifest.omp).toEqual({ skills: ['skills'] })
     expect(manifest.files).toEqual(['skills'])
     expect(manifest.peerDependencies).toBeUndefined()
     expect(existsSync(path.join(res.dir, 'extensions'))).toBe(false)

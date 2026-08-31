@@ -133,3 +133,8 @@ include at least:
 
 Until those pieces exist, use a native OMP/Pi package and the supported host
 UI subset only.
+
+## See also
+
+- `plugin-interface-spec.md` — install sources, manifest shape, extension API
+  surface, and known limitations of native runtime packages.

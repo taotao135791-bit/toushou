@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildBoardChatPrompt } from '../boardChat'
+import { buildBoardChatPrompt, buildBoardDesignPrompt } from '../boardChat'
 import { BoardDataset, KanbanBoard } from '../types'
 
 const board: KanbanBoard = {
@@ -52,5 +52,21 @@ describe('buildBoardChatPrompt', () => {
 
   it('uses a Chinese reviewable draft when the app language is Chinese', () => {
     expect(buildBoardChatPrompt(board, datasets, 'zh')).toContain('本地看板快照')
+  })
+})
+
+describe('buildBoardDesignPrompt', () => {
+  it('carries the bounded token domain and the current design, demanding one reviewable block', () => {
+    const prompt = buildBoardDesignPrompt('# Board Design\n\n## widget\nradius: 14\n')
+    expect(prompt).toContain('radius')
+    expect(prompt).toContain('titleAlign')
+    expect(prompt).toContain('radius: 14')
+    expect(prompt).toContain('```board-design')
+    expect(prompt).toContain('apply it myself')
+  })
+
+  it('bounds an oversized current design', () => {
+    const prompt = buildBoardDesignPrompt(`## widget\naccent: #7aa2f7\n${'x'.repeat(20_000)}`)
+    expect(prompt.length).toBeLessThanOrEqual(12_000)
   })
 })

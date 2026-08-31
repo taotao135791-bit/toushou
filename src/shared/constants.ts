@@ -65,6 +65,12 @@ export const IPC_CHANNELS = {
   BOARDS_DATASETS_IMPORT: 'boards:datasets-import',
   BOARDS_DATASETS_DELETE: 'boards:datasets-delete',
   BOARDS_DATASETS_RENAME: 'boards:datasets-rename',
+  /** userData/board-design.md — bounded appearance defaults for all boards. */
+  BOARDS_GET_DESIGN: 'boards:get-design',
+  BOARDS_SAVE_DESIGN: 'boards:save-design',
+  BOARDS_REVEAL_DESIGN: 'boards:reveal-design',
+  /** Main → renderer push when the design file changes on disk. */
+  BOARDS_DESIGN_CHANGED: 'boards:design-changed',
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
   DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_SELECT_IMAGE: 'dialog:select-image',

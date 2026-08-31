@@ -70,7 +70,7 @@ function extractCode(children: ReactNode): { lang: string; raw: string } {
   if (!isValidElement<CodeChildProps>(children)) return { lang: '', raw: '' }
   const child = children as ReactElement<CodeChildProps>
   return {
-    lang: /language-(\w+)/.exec(child.props.className || '')?.[1] || '',
+    lang: /language-([\w-]+)/.exec(child.props.className || '')?.[1] || '',
     raw: String(child.props.children ?? '').replace(/\n$/, '')
   }
 }

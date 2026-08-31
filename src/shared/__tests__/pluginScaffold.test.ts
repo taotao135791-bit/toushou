@@ -105,6 +105,7 @@ describe('planPluginFiles', () => {
     ])
     const manifest = JSON.parse(files[0].content)
     expect(manifest.pi).toEqual({ skills: ['skills'] })
+    expect(manifest.omp).toEqual(manifest.pi)
     expect(manifest.files).toEqual(['skills'])
     expect(manifest.peerDependencies).toBeUndefined()
   })
@@ -122,6 +123,11 @@ describe('planPluginFiles', () => {
       author: 'Jane',
       license: 'MIT',
       pi: {
+        extensions: ['extensions/index.ts'],
+        skills: ['skills'],
+        prompts: ['prompts']
+      },
+      omp: {
         extensions: ['extensions/index.ts'],
         skills: ['skills'],
         prompts: ['prompts']

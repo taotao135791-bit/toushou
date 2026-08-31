@@ -120,3 +120,40 @@ export function buildBoardChatPrompt(
       ]
   return content.filter(Boolean).join('\n').slice(0, MAX_TEXT)
 }
+
+/**
+ * A bounded, reviewable draft asking the agent to restyle boards via the
+ * board-design.md format. The prompt spells out the complete token domain so
+ * the answer stays inside the no-arbitrary-CSS model, and it demands exactly
+ * one ```board-design fence, which the chat UI renders as a card the person
+ * must explicitly apply — the agent can never change boards by itself.
+ */
+export function buildBoardDesignPrompt(currentMarkdown: string): string {
+  const current = currentMarkdown.trim().slice(0, 4_000)
+  return [
+    'Help me restyle my boards by rewriting their design file. It is NOT CSS — only the bounded tokens below are allowed, one `key: value` per line.',
+    '',
+    'Sections and keys:',
+    '- `## board`: `background` (six-digit hex, e.g. #101014), `grid` (none | dots | lines)',
+    '- `## widget`: `accent` / `surface` / `text` / `border` (six-digit hex), `radius` (integer 0-32), `padding` (integer 6-32), `titleAlign` (left | center | right), `shadow` (none | soft | strong)',
+    '',
+    'Example shape:',
+    '# Board Design',
+    '## board',
+    'background: #101014',
+    'grid: dots',
+    '## widget',
+    'accent: #7aa2f7',
+    'radius: 12',
+    'shadow: soft',
+    '',
+    'Current design file:',
+    '```',
+    current,
+    '```',
+    '',
+    'Reply with exactly ONE ```board-design code block containing the COMPLETE new design file (keep the keys you want unchanged). No other code blocks. I will review your suggestion and apply it myself — you cannot change the boards directly.'
+  ]
+    .join('\n')
+    .slice(0, MAX_TEXT)
+}

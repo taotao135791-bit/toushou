@@ -18,6 +18,7 @@ import {
   Maximize,
   Minimize,
   MoreHorizontal,
+  Palette,
   Pencil,
   Plus,
   RefreshCw,
@@ -29,7 +30,7 @@ import {
   X,
   type LucideIcon
 } from 'lucide-react'
-import { BoardDataset, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
+import { BoardDataset, BoardDesignSpec, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
 import {
   BOARD_LIMITS,
   GRID_COLS,
@@ -50,6 +51,7 @@ import { useAppStore } from '../store'
 import { useConfirm, useConfirmId } from '../lib/confirmClick'
 import { WidgetBody } from './boards/WidgetBody'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
+import { BoardDesignDialog } from './boards/BoardDesignDialog'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 
@@ -99,6 +101,24 @@ function hasFileDrag(e: DragEvent): boolean {
 }
 
 type BoardCssProperties = CSSProperties & Record<`--${string}`, string | number>
+
+/**
+ * The design file supplies defaults; the widget's own style wins field by
+ * field, and anything neither provides keeps the built-in fallbacks inside
+ * widgetCardStyle/boardCanvasStyle.
+ */
+function mergeWidgetStyle(
+  design: BoardWidgetStyle | undefined,
+  style: BoardWidgetStyle | undefined
+): BoardWidgetStyle | undefined {
+  if (!design) return style
+  return { ...design, ...style }
+}
+
+function mergeBoardStyle(design: BoardStyle | undefined, style: BoardStyle | undefined): BoardStyle | undefined {
+  if (!design) return style
+  return { ...design, ...style }
+}
 
 function widgetCardStyle(style?: BoardWidgetStyle): BoardCssProperties {
   const shadow =
@@ -192,6 +212,8 @@ export default function BoardsPage() {
   const [fileDrag, setFileDrag] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  const [design, setDesign] = useState<BoardDesignSpec | null>(null)
+  const [designOpen, setDesignOpen] = useState(false)
   const boardAreaRef = useRef<HTMLDivElement>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveFailedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -238,6 +260,23 @@ export default function BoardsPage() {
     const onChange = () => setIsFullscreen(document.fullscreenElement !== null)
     document.addEventListener('fullscreenchange', onChange)
     return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  // Board design defaults: load once, then follow the file (dialog saves,
+  // chat "apply", and external edits all broadcast boards:design-changed).
+  useEffect(() => {
+    let alive = true
+    window.electronAPI
+      .getBoardDesign()
+      .then((doc) => {
+        if (alive) setDesign(doc.spec)
+      })
+      .catch(() => {})
+    const off = window.electronAPI.onBoardDesignChanged((change) => setDesign(change.spec))
+    return () => {
+      alive = false
+      off()
+    }
   }, [])
 
   useEffect(() => {
@@ -693,12 +732,13 @@ export default function BoardsPage() {
   )
 
   const renderWidget = (widget: BoardWidget) => {
-    const padding = widget.style?.padding ?? 12
+    const effectiveStyle = mergeWidgetStyle(design?.widget, widget.style)
+    const padding = effectiveStyle?.padding ?? 12
     const confirmingDelete = deleteWidgetConfirm.confirmingId === widget.id
     return (
     <div
       key={widget.id}
-      style={widgetCardStyle(widget.style)}
+      style={widgetCardStyle(effectiveStyle)}
       className="board-widget group/widget relative flex flex-col overflow-hidden border border-line bg-ink-850"
     >
       <div
@@ -711,7 +751,7 @@ export default function BoardsPage() {
         className="flex shrink-0 items-center gap-1"
       >
         <span
-          style={{ textAlign: widget.style?.titleAlign ?? 'left' }}
+          style={{ textAlign: effectiveStyle?.titleAlign ?? 'left' }}
           className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-[0.1em] text-cream-faint"
         >
           {widget.title || t(widgetNameKey(widget.type))}
@@ -827,6 +867,13 @@ export default function BoardsPage() {
             {t('boards.datasets.loadFailed')} · {t('boards.retry')}
           </button>
         )}
+        <button
+          onClick={() => setDesignOpen(true)}
+          title={t('boards.design.open')}
+          className="app-no-drag shrink-0 rounded-md p-1.5 text-cream-faint transition hover:bg-overlay hover:text-cream"
+        >
+          <Palette size={14} />
+        </button>
         {current && (
           <div className="app-no-drag relative shrink-0">
             <button
@@ -838,8 +885,7 @@ export default function BoardsPage() {
               className="rounded-md p-1.5 text-cream-faint transition hover:bg-overlay hover:text-cream"
             >
               <MoreHorizontal size={14} />
-            </button>
-            {boardMenuOpen && (
+            </button>{boardMenuOpen && (
               <div className="absolute right-0 top-9 z-30 w-44 rounded-xl border border-line bg-ink-900 p-1 shadow-pop">
                 <button
                   onClick={openDetail}
@@ -874,7 +920,7 @@ export default function BoardsPage() {
 
       <div
         ref={boardAreaRef}
-        style={boardCanvasStyle(current?.style)}
+        style={boardCanvasStyle(mergeBoardStyle(design?.board, current?.style))}
         className="relative flex-1 overflow-hidden bg-ink-950"
       >
         <div className="h-full overflow-y-auto">
@@ -1275,6 +1321,13 @@ export default function BoardsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {designOpen && (
+        <BoardDesignDialog
+          onClose={() => setDesignOpen(false)}
+          onSaved={() => flashToast(t('boards.design.saved'))}
+        />
       )}
 
       {composeOpen && (

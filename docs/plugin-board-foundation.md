@@ -104,7 +104,38 @@ widgets, bind datasets, alter style, or delete boards. If a future structured
 board-plan protocol is needed, it needs a versioned schema, a preview/diff,
 per-operation confirmation, validation in Main, and fixture tests first.
 
-## 5. Contributor checklist
+## 5. Board design file (board-design.md)
+
+Board appearance defaults live in a single Main-owned document,
+`userData/board-design.md`, parsed and formatted by `shared/boardDesign.ts`.
+The format is deliberately line-based and strict: `#`/`##` section headers
+(`board`, `widget`), one `key: value` token per line, `> ` comments; unknown
+keys are warnings and out-of-domain values are errors that drop the field.
+
+The value domain is exactly the §3 token model — the parser reuses
+`validateBoardStyle` / `validateBoardWidgetStyle`, so a design file can carry
+six-digit hex colors, bounded radius/padding integers, and the small
+titleAlign/shadow/grid enums, and nothing else. No arbitrary CSS, URLs, or
+selectors can enter the renderer through this file.
+
+Merge semantics at render time: the design supplies **defaults**, a widget's
+or board's own `style` fields override it field by field, and anything neither
+provides falls back to the built-in defaults. Persisted
+`kanban-boards.json` documents are never rewritten when the design changes.
+
+Two writer paths converge on the same Main entry point
+(`boards:save-design`), which refuses to persist a document with parse errors:
+
+1. The in-app design dialog (or any external editor — Main watches the file
+   and broadcasts `boards:design-changed` so open boards follow).
+2. Chat: the design dialog can prefill a bounded format brief
+   (`buildBoardDesignPrompt`); the agent answers with one
+   ```` ```board-design ```` fence, which the chat UI renders as a card showing
+   the parsed tokens and issues. Clicking **Apply to boards** is the required
+   human confirmation — this is the §4-compliant way an assistant may change
+   board styling: proposal only, never a silent mutation.
+
+## 6. Contributor checklist
 
 For any change touching these surfaces:
 
@@ -116,3 +147,8 @@ For any change touching these surfaces:
   preload;
 - add focused tests for parsers, validation, and state transitions;
 - run at least `pnpm typecheck` and the relevant Vitest suites before review.
+
+## See also
+
+- `plugin-interface-spec.md` — install sources, manifest shape, extension API
+  surface, and known limitations of native runtime packages.

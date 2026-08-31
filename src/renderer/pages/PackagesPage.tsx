@@ -23,7 +23,8 @@ import {
   MonitorSmartphone,
   Download,
   Pencil,
-  Code2
+  Code2,
+  BookOpen
 } from 'lucide-react'
 import {
   CommunityPackageInfo,
@@ -39,6 +40,7 @@ import { useT, I18nKey } from '../i18n'
 import { useConfirmId } from '../lib/confirmClick'
 import Logo from '../components/Logo'
 import { PluginStudioDialog } from '../components/PluginStudioDialog'
+import { PluginGuideDialog } from '../components/PluginGuideDialog'
 
 type PageTab = 'installed' | 'marketplace'
 type SourceMode = 'github' | 'npm'
@@ -102,6 +104,7 @@ export default function PackagesPage() {
   const [kimiStatus, setKimiStatus] = useState<KimiComputerUseStatus | null>(null)
   const [kimiPending, setKimiPending] = useState(false)
   const [kimiError, setKimiError] = useState<string | null>(null)
+  const [guideOpen, setGuideOpen] = useState(false)
   const fileDragDepth = useRef(0)
   const refreshGeneration = useRef(0)
   const managedRefreshGeneration = useRef(0)
@@ -456,8 +459,17 @@ export default function PackagesPage() {
             <>
               {/* Install */}
               <section className="rounded-[16px] border border-line bg-ink-850 p-4 shadow-card">
-                <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-cream-faint">
-                  {isCurrentOmp ? t('plugins.omp.installTitle') : t('plugins.installTitle')}
+                <div className="mb-2.5 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-cream-faint">
+                    {isCurrentOmp ? t('plugins.omp.installTitle') : t('plugins.installTitle')}
+                  </span>
+                  <button
+                    onClick={() => setGuideOpen(true)}
+                    className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
+                  >
+                    <BookOpen size={12} />
+                    {t('plugins.guide.open')}
+                  </button>
                 </div>
                 <div className="mb-2.5 flex w-fit gap-1 rounded-full border border-line bg-ink-900 p-1">
                   {(['github', 'npm'] as const).map((mode) => (
@@ -521,7 +533,11 @@ export default function PackagesPage() {
                   </button>
                 </div>
                 <p className="mt-2 text-[11px] leading-4 text-cream-faint">
-                  {sourceMode === 'github' ? t('plugins.source.githubHint') : t('plugins.source.npmHint')}
+                  {sourceMode === 'github'
+                    ? isLegacyPi
+                      ? t('plugins.source.githubHintLegacy')
+                      : t('plugins.source.githubHint')
+                    : t('plugins.source.npmHint')}
                 </p>
                 {logBlock}
               </section>
@@ -796,6 +812,10 @@ export default function PackagesPage() {
             {t('plugins.dropToInstall')}
           </div>
         </div>
+      )}
+
+      {guideOpen && (
+        <PluginGuideDialog profile={packageCapabilities.profile} onClose={() => setGuideOpen(false)} />
       )}
 
       {studioTarget !== null && (
