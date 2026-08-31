@@ -87,11 +87,15 @@ describe('findExecutableInDirs on POSIX', () => {
 describe('executableSearchDirs', () => {
   it('includes the omp installer default dir on win32', () => {
     const dirs = executableSearchDirs('win32', { PATH: '', LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local' })
-    expect(dirs).toContain('C:\\Users\\a\\AppData\\Local\\omp')
+    // path.join uses the host's separator, so compare normalized forms —
+    // this test must pass on POSIX CI runners too.
+    const normalized = dirs.map((dir) => dir.replace(/\\/g, '/'))
+    expect(normalized).toContain('C:/Users/a/AppData/Local/omp')
   })
 
   it('does not add the win32 default dir on POSIX', () => {
     const dirs = executableSearchDirs('darwin', { PATH: '' })
-    expect(dirs.some((dir) => dir.endsWith('omp'))).toBe(false)
+    const normalized = dirs.map((dir) => dir.replace(/\\/g, '/'))
+    expect(normalized.some((dir) => dir.endsWith('/omp'))).toBe(false)
   })
 })
