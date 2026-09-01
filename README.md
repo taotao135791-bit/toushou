@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.2.4，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.4) 下载：
+当前版本 v0.2.5，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.5) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.4/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.4/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.4/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.5/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.5/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.5/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.2.5：修复 Node 在 Windows 下执行 npm `.cmd` 启动器的兼容性判断，确保 OMP 兼容性套件真实执行。
 
 v0.2.4：修复 Windows CI 兼容性测试的 shell 环境变量传递，确保 Windows 兼容性检查和发布稳定完成。
 

@@ -106,7 +106,11 @@ export function runOmp(env: NodeJS.ProcessEnv, bin: string, args: string[]): str
 /** True when `<bin> --version` reports a usable binary. */
 export function binaryAvailable(bin: string): boolean {
   try {
-    execFileSync(bin, ['--version'], { timeout: 10_000, stdio: 'pipe' })
+    // Windows npm installs expose CLI entrypoints as `.cmd` shims. Node's
+    // execFileSync needs an explicit shell for those shims even when the same
+    // command works from PowerShell or Git Bash.
+    const shell = process.platform === 'win32' && bin.toLowerCase().endsWith('.cmd')
+    execFileSync(bin, ['--version'], { timeout: 10_000, stdio: 'pipe', shell })
     return true
   } catch {
     return false
