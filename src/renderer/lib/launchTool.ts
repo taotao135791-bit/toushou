@@ -8,11 +8,16 @@ import { createSessionForCurrentProject } from './session'
  * The caller navigates to the chat on success — prefill survives the route
  * change because it lives in the store, not the component.
  */
-export async function launchTool(command: string): Promise<string | null> {
+export async function launchComposerPrompt(text: string): Promise<string | null> {
   const id = await createSessionForCurrentProject()
   if (!id) return null
   const store = useAppStore.getState()
-  store.setComposerPrefill(command)
+  store.setComposerPrefill(text)
   store.setComposerAutosend(true)
   return id
+}
+
+/** Slash-command launch used by the Tools panel and plugins page. */
+export async function launchTool(command: string): Promise<string | null> {
+  return launchComposerPrompt(command)
 }

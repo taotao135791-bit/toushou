@@ -4,7 +4,9 @@ import {
   parseSkillMetadata,
   sanitizeSkillFileName,
   skillExtensionOf,
-  skillKindForExtension
+  skillKindForExtension,
+  formatSkillChatPrompt,
+  stripSkillFrontMatter
 } from '../skills'
 
 describe('skillExtensionOf / skillKindForExtension', () => {
@@ -80,6 +82,42 @@ describe('parseSkillMetadata', () => {
     )
     expect(meta.name).toBe('tool')
     expect(meta.description.length).toBeLessThanOrEqual(160)
+  })
+})
+
+describe('formatSkillChatPrompt', () => {
+  it('strips front matter and wraps a Chinese SOP prompt', () => {
+    const raw = ['---', 'name: 起量打法', 'author: Leo', '---', '', '# 第一步', '先看 CPI'].join('\n')
+    expect(stripSkillFrontMatter(raw)).toContain('# 第一步')
+    expect(stripSkillFrontMatter(raw)).not.toContain('author: Leo')
+    const prompt = formatSkillChatPrompt('起量打法', raw, 'zh')
+    expect(prompt).toContain('请严格按下面这份团队打法')
+    expect(prompt).toContain('# 起量打法')
+    expect(prompt).toContain('先看 CPI')
+    expect(prompt).not.toContain('author: Leo')
+  })
+
+  it('uses the English wrapper when language is en', () => {
+    const prompt = formatSkillChatPrompt('ROI tool', 'Check ROAS first.', 'en')
+    expect(prompt).toContain('Follow this team skill/playbook exactly')
+    expect(prompt).toContain('# ROI tool')
+    expect(prompt).toContain('Check ROAS first.')
+  })
+
+  it('wraps the live test SOP file the same way the UI will', async () => {
+    const { readFileSync } = await import('node:fs')
+    const file = '/Users/leo/Library/Application Support/toushou/skills/对话联动测试.md'
+    let raw: string
+    try {
+      raw = readFileSync(file, 'utf-8')
+    } catch {
+      return
+    }
+    const prompt = formatSkillChatPrompt('对话联动测试', raw, 'zh')
+    expect(prompt.startsWith('请严格按下面这份团队打法')).toBe(true)
+    expect(prompt).toContain('# 对话联动测试')
+    expect(prompt).toContain('SKILL_CHAT_OK')
+    expect(prompt).not.toContain('author: Codex')
   })
 })
 

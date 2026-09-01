@@ -15,14 +15,16 @@ import { GithubSkillFile, GithubSkillSource, SkillEntry } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { formatRelativeTime } from '../lib/time'
+import { launchComposerPrompt } from '../lib/launchTool'
+import { formatSkillChatPrompt } from '@shared/skills'
 import Markdown from '../components/Markdown'
 
 /**
  * SKILL 目录 — the team library of self-made assets. Markdown docs open in
  * an in-page viewer (sandboxed renderer); single-file HTML tools are served
  * by Main over loopback and open in the hardened browser panel. The page is
- * deliberately read-mostly: sharing itself happens through the folder (for
- * example a shared git clone), and import copies a picked file in.
+ * deliberately read-mostly for sharing (import copies a picked file in);
+ * Markdown cards can also launch a new chat with the SOP auto-sent.
  */
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -50,6 +52,7 @@ export default function SkillsPage() {
   } | null>(null)
   const [githubSelected, setGithubSelected] = useState<Set<string>>(new Set())
   const [githubDone, setGithubDone] = useState<{ imported: number; skipped: number } | null>(null)
+  const [launchingId, setLaunchingId] = useState<string | null>(null)
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const refresh = useCallback(() => {
@@ -126,6 +129,29 @@ export default function SkillsPage() {
       setViewer({ entry: result.entry, content: result.content })
     } else {
       flashNotice(setViewerFailed)
+    }
+  }
+
+  const useInChat = async (entry: SkillEntry, knownContent?: string) => {
+    if (entry.kind !== 'markdown' || launchingId) return
+    setLaunchingId(entry.id)
+    try {
+      let content = knownContent
+      if (content == null) {
+        const result = await window.electronAPI.readSkill(entry.id)
+        if (!result.ok) {
+          flashNotice(setViewerFailed)
+          return
+        }
+        content = result.content
+      }
+      const prompt = formatSkillChatPrompt(entry.name, content, language)
+      const id = await launchComposerPrompt(prompt)
+      if (id) navigate('/')
+    } catch {
+      flashNotice(setViewerFailed)
+    } finally {
+      setLaunchingId(null)
     }
   }
 
@@ -269,11 +295,15 @@ export default function SkillsPage() {
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {entries.map((entry) => (
-              <button
+              <div
                 key={entry.id}
-                onClick={() => void openSkill(entry)}
                 className="flex flex-col items-start gap-2 rounded-xl border border-line bg-ink-850 p-4 text-left shadow-card transition hover:border-accent/40"
               >
+                <button
+                  type="button"
+                  onClick={() => void openSkill(entry)}
+                  className="flex w-full flex-col items-start gap-2 text-left"
+                >
                 <div className="flex w-full items-center gap-2">
                   {entry.kind === 'html' ? (
                     <Code2 size={14} className="shrink-0 text-accent" />
@@ -299,7 +329,24 @@ export default function SkillsPage() {
                   <span>·</span>
                   <span>{formatRelativeTime(entry.updatedAtMillis, language)}</span>
                 </p>
-              </button>
+                </button>
+                {entry.kind === 'markdown' && (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void useInChat(entry)
+                    }}
+                    disabled={launchingId !== null}
+                    className="mt-1 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-[11px] text-cream transition hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {launchingId === entry.id ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : null}
+                    {t('skills.useInChat')}
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}
@@ -312,6 +359,19 @@ export default function SkillsPage() {
             <span className="min-w-0 truncate text-[13px] font-medium text-cream">
               {viewer.entry.name}
             </span>
+            {viewer.entry.kind === 'markdown' && (
+              <button
+                type="button"
+                onClick={() => void useInChat(viewer.entry, viewer.content)}
+                disabled={launchingId !== null}
+                className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-cream transition hover:border-accent/40 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {launchingId === viewer.entry.id ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : null}
+                {t('skills.useInChat')}
+              </button>
+            )}
             <button
               onClick={() => setViewer(null)}
               className="ml-auto rounded-lg border border-transparent p-1.5 text-cream-faint transition hover:bg-overlay hover:text-cream"

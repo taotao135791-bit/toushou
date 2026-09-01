@@ -1,4 +1,4 @@
-import { SkillEntry, SkillKind } from './types'
+import { Language, SkillEntry, SkillKind } from './types'
 
 /**
  * SKILL 目录 (team skill library) — shared pure logic.
@@ -141,6 +141,48 @@ export function parseSkillMetadata(content: string, fileName: string): SkillMeta
     }
   }
   return meta
+}
+
+/** Drop a leading YAML-ish front-matter block so chat prompts stay on the SOP. */
+export function stripSkillFrontMatter(content: string): string {
+  const lines = content.split('\n')
+  if (lines[0]?.trim() !== '---') return content.replace(/^\uFEFF/, '')
+  for (let i = 1; i < lines.length && i <= 20; i++) {
+    if (lines[i].trim() === '---') {
+      return lines.slice(i + 1).join('\n').replace(/^\n+/, '')
+    }
+  }
+  return content.replace(/^\uFEFF/, '')
+}
+
+/**
+ * Wrap a library Markdown document as a chat prompt. The agent is told to
+ * follow this SOP rather than invent a different process; HTML tools are
+ * not sent this way (they open in the browser panel).
+ */
+export function formatSkillChatPrompt(
+  name: string,
+  content: string,
+  language: Language = 'zh'
+): string {
+  const body = stripSkillFrontMatter(content).trim()
+  const title = name.trim() || 'SKILL'
+  if (language === 'en') {
+    return [
+      'Follow this team skill/playbook exactly. Do not invent a different process. If anything is missing, ask me before acting.',
+      '',
+      '# ' + title,
+      '',
+      body
+    ].join('\n')
+  }
+  return [
+    '请严格按下面这份团队打法（SKILL）执行，不要另起一套流程。如果信息不够，先问我再动手。',
+    '',
+    '# ' + title,
+    '',
+    body
+  ].join('\n')
 }
 
 /** Build a list entry from already-validated primitives (Main-side reader). */
