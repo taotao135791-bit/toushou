@@ -306,6 +306,7 @@ jobs:
       - name: OMP compatibility suite
         # Use the resolved absolute launcher path. Node's execFileSync is more
         # reliable with an explicit .cmd path than with Windows PATH/PATHEXT.
+        shell: bash
         run: OMP_REQUIRED="${OMP_BIN}" OMP_BIN="${OMP_BIN}" pnpm test:omp
 
       - name: Build app
