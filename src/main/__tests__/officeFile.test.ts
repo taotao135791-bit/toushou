@@ -25,6 +25,7 @@ import {
 } from '../officeFile'
 import { getOperationGrantManager } from '../operationGrant'
 import { sheetJsToUniver } from '../../shared/officeWorkbook'
+import { expectSamePath } from './pathAssertions'
 
 let dir: string
 
@@ -94,7 +95,7 @@ describe('officeOpenDialog + read grant', () => {
     expect(picked?.name).toBe('picked.xlsx')
     const manager = getOperationGrantManager()
     expect(await manager.consumeOfficeFile(picked!.grant.id, 8)).toBeNull()
-    expect(await manager.consumeOfficeFile(picked!.grant.id, 7)).toBe(realpathSync(file))
+    expectSamePath(await manager.consumeOfficeFile(picked!.grant.id, 7), realpathSync(file))
     // One-shot: a second consume fails.
     expect(await manager.consumeOfficeFile(picked!.grant.id, 7)).toBeNull()
   })
@@ -154,7 +155,7 @@ describe('officeSaveDialog + save grant', () => {
     const picked = await officeSaveDialog('w', 3)
     expect(picked?.name).toBe('out.xlsx')
     const manager = getOperationGrantManager()
-    expect(await manager.consumeOfficeSaveTarget(picked!.grant.id, 3)).toBe(path.join(realpathSync(dir), 'out.xlsx'))
+    expectSamePath(await manager.consumeOfficeSaveTarget(picked!.grant.id, 3), path.join(realpathSync(dir), 'out.xlsx'))
   })
 
   it('keeps a csv target', async () => {
@@ -163,7 +164,7 @@ describe('officeSaveDialog + save grant', () => {
     const picked = await officeSaveDialog('w', 4)
     expect(picked?.name).toBe('out.csv')
     const manager = getOperationGrantManager()
-    expect(await manager.consumeOfficeSaveTarget(picked!.grant.id, 4)).toBe(path.join(realpathSync(dir), 'out.csv'))
+    expectSamePath(await manager.consumeOfficeSaveTarget(picked!.grant.id, 4), path.join(realpathSync(dir), 'out.csv'))
   })
 
   it('fails minting when the parent directory does not exist', async () => {

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { OperationGrantManager } from '../operationGrant'
+import { expectSamePath } from './pathAssertions'
 
 describe('OperationGrantManager', () => {
   let base: string
@@ -33,7 +34,7 @@ describe('OperationGrantManager', () => {
     // A raw path is never a capability, even when it names the selected file.
     expect(await grants.consumeBoardDatasetFile(report, owner)).toBeNull()
     expect(await grants.consumeBoardDatasetFile(grant?.id, otherOwner)).toBeNull()
-    expect(await grants.consumeBoardDatasetFile(grant?.id, owner)).toBe(fs.realpathSync(report))
+    expectSamePath(await grants.consumeBoardDatasetFile(grant?.id, owner), fs.realpathSync(report))
     expect(await grants.consumeBoardDatasetFile(grant?.id, owner)).toBeNull()
   })
 
@@ -63,12 +64,14 @@ describe('OperationGrantManager', () => {
     expect(await grants.claimPluginScaffoldDirectory(parent, owner)).toBeNull()
     expect(await grants.claimPluginScaffoldDirectory(grant?.id, otherOwner)).toBeNull()
     const first = await grants.claimPluginScaffoldDirectory(grant?.id, owner)
-    expect(first).toEqual({ id: grant?.id, parentDir: fs.realpathSync(parent) })
+    expect(first).toMatchObject({ id: grant?.id })
+    expectSamePath(first?.parentDir, fs.realpathSync(parent))
     expect(await grants.claimPluginScaffoldDirectory(grant?.id, owner)).toBeNull()
 
     grants.finishPluginScaffoldDirectory(first!.id, false)
     const retry = await grants.claimPluginScaffoldDirectory(grant?.id, owner)
-    expect(retry).toEqual({ id: grant?.id, parentDir: fs.realpathSync(parent) })
+    expect(retry).toMatchObject({ id: grant?.id })
+    expectSamePath(retry?.parentDir, fs.realpathSync(parent))
     grants.finishPluginScaffoldDirectory(retry!.id, true)
     expect(await grants.claimPluginScaffoldDirectory(grant?.id, owner)).toBeNull()
   })
@@ -99,7 +102,7 @@ describe('OperationGrantManager', () => {
     const firstFile = await grants.mintBoardDatasetFile(report, owner)
     const secondFile = await grants.mintBoardDatasetFile(report, owner)
     expect(await grants.consumeBoardDatasetFile(firstFile?.id, owner)).toBeNull()
-    expect(await grants.consumeBoardDatasetFile(secondFile?.id, owner)).toBe(fs.realpathSync(report))
+    expectSamePath(await grants.consumeBoardDatasetFile(secondFile?.id, owner), fs.realpathSync(report))
 
     const firstDirectory = await grants.mintPluginScaffoldDirectory(firstParent, owner)
     const secondDirectory = await grants.mintPluginScaffoldDirectory(secondParent, owner)
@@ -135,11 +138,11 @@ describe('OperationGrantManager', () => {
     expect(output).not.toHaveProperty('realPath')
     expect(output).not.toHaveProperty('path')
     expect(await grants.revealPluginScaffoldOutput(output?.id, otherOwner)).toBeNull()
-    expect(await grants.revealPluginScaffoldOutput(output?.id, owner)).toBe(fs.realpathSync(first))
+    expectSamePath(await grants.revealPluginScaffoldOutput(output?.id, owner), fs.realpathSync(first))
 
     const newer = await grants.mintPluginScaffoldOutput(replacement, owner)
     expect(await grants.revealPluginScaffoldOutput(output?.id, owner)).toBeNull()
-    expect(await grants.revealPluginScaffoldOutput(newer?.id, owner)).toBe(fs.realpathSync(replacement))
+    expectSamePath(await grants.revealPluginScaffoldOutput(newer?.id, owner), fs.realpathSync(replacement))
 
     fs.renameSync(replacement, path.join(base, 'replacement-old'))
     fs.mkdirSync(replacement)
@@ -161,7 +164,8 @@ describe('OperationGrantManager', () => {
 
     grants.finishPluginScaffoldOutputInstall(acquired[0].id, false)
     const retry = await grants.claimPluginScaffoldOutputInstall(output?.id, owner)
-    expect(retry).toEqual({ id: output?.id, dir: fs.realpathSync(plugin) })
+    expect(retry).toMatchObject({ id: output?.id })
+    expectSamePath(retry?.dir, fs.realpathSync(plugin))
     grants.finishPluginScaffoldOutputInstall(retry!.id, true)
     expect(await grants.claimPluginScaffoldOutputInstall(output?.id, owner)).toBeNull()
 

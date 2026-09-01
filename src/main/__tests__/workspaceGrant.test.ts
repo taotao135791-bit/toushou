@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { RecentWorkspaceRegistry, WorkspaceGrantManager } from '../workspaceGrant'
 import { FsGuard } from '../fsGuard'
+import { expectSamePath } from './pathAssertions'
 
 describe('WorkspaceGrantManager', () => {
   let base: string
@@ -23,7 +24,7 @@ describe('WorkspaceGrantManager', () => {
     fs.mkdirSync(dir)
     const grant = await manager.createGrant(dir, 'dialog')
     expect(grant).not.toBeNull()
-    expect(grant?.realPath).toBe(fs.realpathSync(dir))
+    expectSamePath(grant?.realPath, fs.realpathSync(dir))
     expect(grant?.displayPath).toBe(dir)
     expect(grant?.source).toBe('dialog')
   })
@@ -46,7 +47,7 @@ describe('WorkspaceGrantManager', () => {
     const grant = await manager.createGrant(outside, 'dialog')
     expect(grant).not.toBeNull()
     // The real path is canonical.
-    expect(grant?.realPath).toBe(fs.realpathSync(outside))
+    expectSamePath(grant?.realPath, fs.realpathSync(outside))
   })
 
   it('reuses a grant for the same real path', async () => {
@@ -64,7 +65,7 @@ describe('WorkspaceGrantManager', () => {
     fs.mkdirSync(real)
     fs.symlinkSync(real, dir)
     const grant = await manager.createGrant(dir, 'dialog')
-    expect(grant?.realPath).toBe(fs.realpathSync(real))
+    expectSamePath(grant?.realPath, fs.realpathSync(real))
     // Files inside the real path are allowed.
     fs.writeFileSync(path.join(real, 'file.txt'), 'hello')
     expect(manager['fsGuard'].isAllowed(path.join(dir, 'file.txt'))).toBe(true)
@@ -94,7 +95,7 @@ describe('WorkspaceGrantManager', () => {
     const grant = await registry.activate(descriptor.id)
     expect(grant).not.toBeNull()
     expect(grant?.source).toBe('recent-project')
-    expect(grant?.realPath).toBe(fs.realpathSync(dir))
+    expectSamePath(grant?.realPath, fs.realpathSync(dir))
     await expect(registry.activate(dir)).resolves.toBeNull()
   })
 
@@ -131,7 +132,7 @@ describe('WorkspaceGrantManager', () => {
     })
 
     const [before] = await registry.list()
-    expect(before.displayPath).toBe(fs.realpathSync(original))
+    expectSamePath(before.displayPath, fs.realpathSync(original))
     fs.rmSync(original, { recursive: true, force: true })
     fs.symlinkSync(replacement, original)
 
@@ -139,6 +140,6 @@ describe('WorkspaceGrantManager', () => {
     expect(after.id).not.toBe(before.id)
     expect(await registry.activate(before.id)).toBeNull()
     const grant = await registry.activate(after.id)
-    expect(grant?.realPath).toBe(fs.realpathSync(replacement))
+    expectSamePath(grant?.realPath, fs.realpathSync(replacement))
   })
 })
