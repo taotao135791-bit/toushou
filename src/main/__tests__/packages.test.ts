@@ -271,8 +271,10 @@ describe('parsePackages', () => {
 
 describe('canonicalSourceForCommand', () => {
   it('resolves relative local sources against the settings dir', () => {
+    // path.resolve keeps the expectation correct on win32, where the
+    // drive-relative '/tmp/...' fixture resolves to '<drive>:\tmp\...'.
     expect(canonicalSourceForCommand('../../../../tmp/pi-demo-ext', '/Users/x/.pi/agent')).toBe(
-      '/tmp/pi-demo-ext'
+      path.resolve('/tmp/pi-demo-ext')
     )
     expect(canonicalSourceForCommand('./my-ext', dir)).toBe(path.join(dir, 'my-ext'))
   })
