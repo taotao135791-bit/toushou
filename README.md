@@ -6,14 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.2.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.2) 下载：
+当前版本 v0.2.3，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.3) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.2/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.2/TouShou-x64.exe) | 见 Release | 见 Release |
-| Windows（arm64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.2/TouShou-arm64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.3/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.3/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.3/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.2.3：修复 Windows CI 对 npm 全局安装的 OMP 启动器使用绝对路径，确保 Windows 兼容性检查和发布稳定完成。
 
 v0.2.2：修复 Windows CI 使用 npm 安装的 `omp.cmd` 启动器，恢复 Windows OMP 兼容性发布门禁。
 

@@ -280,24 +280,33 @@ jobs:
       - name: Install pinned OMP
         run: npm install -g "@oh-my-pi/pi-coding-agent@${{ steps.pinned.outputs.version }}"
 
+      - name: Locate Windows OMP launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          omp_path="$(npm prefix -g)/omp.cmd"
+          test -f "${omp_path}" || {
+            echo "Missing Windows OMP launcher: ${omp_path}"
+            npm prefix -g
+            exit 1
+          }
+          echo "OMP_BIN=${omp_path}" >> "${GITHUB_ENV}"
+          echo "Using Windows OMP launcher: ${omp_path}"
+
       - name: Verify pinned OMP version
         shell: bash
         run: |
           set -euo pipefail
-          command -v omp
-          installed="$(omp --version)"
+          test -x "${OMP_BIN}" || test -f "${OMP_BIN}"
+          installed="$("${OMP_BIN}" --version)"
           expected="omp/${{ steps.pinned.outputs.version }}"
           echo "OMP version tested: ${installed}"
           test "${installed}" = "${expected}"
 
       - name: OMP compatibility suite
-        env:
-          # npm exposes the Windows launcher as omp.cmd. Node's execFileSync
-          # does not apply PATHEXT the same way PowerShell does, so make the
-          # exact launcher explicit for the isolated integration runtime.
-          OMP_REQUIRED: omp.cmd
-          OMP_BIN: omp.cmd
-        run: pnpm test:omp
+        # Use the resolved absolute launcher path. Node's execFileSync is more
+        # reliable with an explicit .cmd path than with Windows PATH/PATHEXT.
+        run: OMP_REQUIRED="${OMP_BIN}" OMP_BIN="${OMP_BIN}" pnpm test:omp
 
       - name: Build app
         run: pnpm build
