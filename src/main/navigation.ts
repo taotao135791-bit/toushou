@@ -66,6 +66,19 @@ export function safeLoginExternalUrl(value: unknown): string | null {
 }
 
 /**
+ * The in-app browser panel loads ordinary web pages only: http/https with a
+ * hostname, no credentials, no control characters, bounded to 2048 chars so
+ * an extension cannot push an unbounded URL into a native view. Parser and
+ * panel share this one validator so they cannot disagree.
+ */
+export const MAX_BROWSER_PANEL_URL_LENGTH = 2_048
+
+export function safeBrowserPanelUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length > MAX_BROWSER_PANEL_URL_LENGTH) return null
+  return safeExternalUrl(value)
+}
+
+/**
  * The main BrowserWindow is an application surface, not a browser tab. Permit
  * only Vite's own origin in development or the packaged renderer index file.
  */

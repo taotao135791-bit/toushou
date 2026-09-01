@@ -66,6 +66,51 @@ or one of { "confirmed": true|false } and { "cancelled": true }.
 | cancel | Dismisses the matching pending interactive request. | No additional response is invented. |
 | notify | Adds a bounded system message to the transcript. | None. |
 | open_url | Adds an explicit, user-mediated external link to the transcript. | None. |
+| open_panel | Opens a built-in host panel (see below). | Immediate success ack when the request carries a valid id. |
+
+### open_panel: fire-and-forget host panels
+
+An extension can ask the host to surface a built-in panel without any user
+gesture choreography:
+
+~~~json
+{ "type": "extension_ui_request", "id": "request-id", "method": "open_panel",
+  "panel": "browser", "url": "https://example.com/report" }
+~~~
+
+Params are validated in Main before anything is shown:
+
+| Param | Rule |
+|---|---|
+| `panel` | Required; one of `"browser"` or `"office"`. Unknown panels are rejected. |
+| `url` | Required for `panel: "browser"`; must be an http(s) URL the in-app browser panel may load (no credentials, no control characters, at most 2048 chars — the same validator the panel applies at load time). |
+| `path` | Required for `panel: "office"`; a string of at most 1024 characters without NUL. Before anything is shown, Main revalidates it with `validateOfficePath` (src/main/officeFile.ts): the path must `realpath` to an existing regular file with a `.xlsx` / `.xls` / `.csv` extension, at most 20 MB. |
+
+Semantics:
+
+- **Fire-and-forget.** The host answers well-formed requests immediately with
+  `{ "type": "extension_ui_response", "id": "…", "success": true }` (only when
+  the request carried a valid id) and never blocks the turn on user action.
+- **Bounded.** A session accepts at most 30 open_panel requests; excess
+  requests are refused with a visible recoverable error and receive no ack.
+- **No privilege.** open_panel cannot navigate the main window, inject
+  renderer code, or pick targets outside the two named panels. The browser
+  panel itself is a sandboxed, preload-free native view with an in-memory
+  session; popups from it are denied and safe URLs are rerouted to the system
+  browser.
+- **Office grant minting.** For `panel: "office"` the raw `path` never
+  reaches a renderer. After `validateOfficePath` passes, Main mints one
+  short-lived (10-minute), single-use read FileGrant per target window
+  (`mintOfficeFile` in src/main/operationGrant.ts, purpose `office-open`) and
+  broadcasts `{ panel: "office", office: { grant, name } }`. The office page
+  exchanges the grant for a parsed workbook snapshot over the `office:read`
+  IPC; consumption verifies the owning renderer, expiry, and the file's
+  on-disk identity (realpath + dev + ino) at read time. Saving back is a
+  separate, user-authorized "save as" flow with its own one-shot write grant
+  (`office-save`) minted by the native save dialog — extensions cannot write
+  through open_panel.
+
+Malformed panels/URLs/paths produce a recoverable host error and no ack.
 
 The dialog remains visible if Main cannot write its answer to the runtime; the
 renderer must not pretend the request completed. Dialogs use modal semantics,

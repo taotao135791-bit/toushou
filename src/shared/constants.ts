@@ -130,5 +130,19 @@ export const IPC_CHANNELS = {
   AUTH_CANCEL_LOGIN: 'auth:cancel-login',
   AUTH_LOGOUT: 'auth:logout',
   AUTH_OPEN_LOGIN_URL: 'auth:open-login-url',
-  AUTH_LOGIN_STATE: 'auth:login-state'
+  AUTH_LOGIN_STATE: 'auth:login-state',
+  /** In-app browser panel (Main-owned WebContentsView over the renderer). */
+  BROWSER_SHOW: 'browser:show',
+  BROWSER_HIDE: 'browser:hide',
+  BROWSER_NAVIGATE: 'browser:navigate',
+  BROWSER_SET_BOUNDS: 'browser:set-bounds',
+  /** Main → renderer push of the browser panel's navigation state. */
+  BROWSER_STATE: 'browser:state',
+  /** Main → renderer push when a runtime extension asks to open a panel. */
+  PANEL_OPEN: 'panel:open',
+  /** In-app office panel: native pickers mint grants; read/write go through them. */
+  OFFICE_OPEN_DIALOG: 'office:open-dialog',
+  OFFICE_READ: 'office:read',
+  OFFICE_SAVE_DIALOG: 'office:save-dialog',
+  OFFICE_SAVE: 'office:save'
 } as const

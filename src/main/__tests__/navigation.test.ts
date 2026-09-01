@@ -3,6 +3,8 @@ import {
   GuardedWebContents,
   installNavigationGuards,
   isAllowedAppNavigation,
+  MAX_BROWSER_PANEL_URL_LENGTH,
+  safeBrowserPanelUrl,
   safeExternalUrl,
   safeLoginExternalUrl
 } from '../navigation'
@@ -101,5 +103,39 @@ describe('installNavigationGuards', () => {
     await Promise.resolve()
     expect(openExternal).toHaveBeenCalledWith('https://example.com/docs')
     expect(openExternal).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('safeBrowserPanelUrl', () => {
+  it('accepts ordinary http(s) URLs, including plain http hosts', () => {
+    expect(safeBrowserPanelUrl('https://example.com/report?id=42')).toBe(
+      'https://example.com/report?id=42'
+    )
+    // Unlike extension open_url links, the in-app panel is a browser surface
+    // and may load plain http beyond loopback.
+    expect(safeBrowserPanelUrl('http://intranet.local:8080/dashboard')).toBe(
+      'http://intranet.local:8080/dashboard'
+    )
+  })
+
+  it('rejects non-web schemes, credentials, and overlong URLs', () => {
+    for (const value of [
+      'file:///etc/passwd',
+      'javascript:alert(1)',
+      'data:text/html,hello',
+      'ftp://example.com/file',
+      'https://user:secret@example.com',
+      ' https://example.com/padded',
+      `https://example.com/${'a'.repeat(MAX_BROWSER_PANEL_URL_LENGTH)}`,
+      42,
+      null
+    ]) {
+      expect(safeBrowserPanelUrl(value)).toBeNull()
+    }
+  })
+
+  it('accepts a URL exactly at the length bound', () => {
+    const url = `https://example.com/${'a'.repeat(MAX_BROWSER_PANEL_URL_LENGTH - 'https://example.com/'.length)}`
+    expect(safeBrowserPanelUrl(url)).toBe(url)
   })
 })

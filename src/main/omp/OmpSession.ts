@@ -1,5 +1,6 @@
 import {
   ExtensionUiAnswer,
+  PanelOpenRequest,
   PromptImage,
   Session,
   SessionEvent,
@@ -19,10 +20,12 @@ import {
   StderrRing
 } from './OmpTransport'
 import { GUI_SUPPORTED_PROTOCOLS, HandshakeOutcome, OmpHandshake } from './OmpHandshake'
-import { extensionUiResponse, normalizeRpcFrame } from './OmpProtocol'
+import { extensionUiResponse, extensionUiSuccess, normalizeRpcFrame } from './OmpProtocol'
 
 /** An extension may only hold a bounded number of unresolved host dialogs. */
 const MAX_PENDING_EXTENSION_UI_REQUESTS = 20
+/** Fire-and-forget panel opens are capped per session; beyond this the host refuses. */
+const MAX_OPEN_PANEL_REQUESTS = 30
 
 /**
  * One live `pi/omp --mode rpc` session: the child process, its transport
@@ -78,6 +81,8 @@ export class OmpSession {
   private readonly pendingExtensionUi = new Set<string>()
   /** Avoid repeating the same host-capability diagnostic throughout a turn. */
   private readonly unsupportedExtensionUiMethods = new Set<string>()
+  /** Fire-and-forget open_panel requests served so far (per-session cap). */
+  private openPanelRequests = 0
   private readonly reader = new LineReader()
   private readonly decoder = new RpcFrameDecoder()
   private readonly handshake = new OmpHandshake()
@@ -438,6 +443,23 @@ export class OmpSession {
       case 'open_url':
         this.options.onOpenUrl?.(result.url, result.launchUrl, result.instructions)
         return
+      case 'open_panel': {
+        // Fire-and-forget: ack success immediately, never block the turn.
+        // A chatty extension is capped per session like pending dialogs are.
+        if (this.openPanelRequests >= MAX_OPEN_PANEL_REQUESTS) {
+          this.emit({
+            type: 'error',
+            sessionId: this.id,
+            message: 'Extension opened too many panels; the newest request was ignored.',
+            recoverable: true
+          })
+          return
+        }
+        this.openPanelRequests += 1
+        if (result.id) this.writeLine(extensionUiSuccess(result.id))
+        this.options.onPanelOpen?.(result.request)
+        return
+      }
       case 'prompt_result':
         this.handlePromptResult({ agentInvoked: result.agentInvoked })
         return
@@ -749,6 +771,8 @@ export interface OmpSessionOptions {
   onHandshake?: (outcome: HandshakeOutcome) => void
   /** The runtime asked to open a URL (OAuth login flows); main wires shell. */
   onOpenUrl?: (url: string, launchUrl?: string, instructions?: string) => void
+  /** The runtime asked to open an in-app panel (fire-and-forget, pre-validated). */
+  onPanelOpen?: (request: PanelOpenRequest) => void
   /** Debug-only log channel — never receives user content. */
   onDebug?: (message: string) => void
 }

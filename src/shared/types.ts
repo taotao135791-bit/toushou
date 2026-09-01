@@ -181,7 +181,7 @@ export interface WorkspaceGrant {
 export interface FileGrant {
   /** Opaque id; valid only for the declared purpose. */
   id: string
-  purpose: 'board-dataset-import'
+  purpose: 'board-dataset-import' | 'office-open' | 'office-save'
   /** Display-only basename supplied by Main after the user picks/drops it. */
   name: string
   createdAt: number
@@ -1241,3 +1241,42 @@ export type UpdaterStatus =
   | { status: 'error'; message: string }
   /** Dev builds have no updater; returned by updaterCheck only. */
   | { status: 'dev' }
+
+/**
+ * In-app browser panel (a Main-owned WebContentsView layered over the
+ * renderer). Bounds are CSS-pixel rectangles in window coordinates, mirrored
+ * from a renderer placeholder element; Main revalidates every value.
+ */
+export interface BrowserPanelBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Toolbar/navigation verbs the renderer may send to the browser panel. */
+export type BrowserNavigateAction = 'back' | 'forward' | 'reload' | 'go'
+
+/** Live state of the browser panel, pushed to the renderer on every change. */
+export interface BrowserPanelState {
+  url: string
+  title: string
+  loading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
+/**
+ * A runtime extension's request to open an in-app panel (`open_panel`).
+ * `browser` requires a validated http(s) `url`; `office` carries a bounded
+ * `path` at the protocol boundary. Main resolves an office path to a
+ * Main-minted FileGrant before broadcasting, so the renderer-facing payload
+ * carries `office` (never the raw path).
+ */
+export interface PanelOpenRequest {
+  panel: 'browser' | 'office'
+  url?: string
+  path?: string
+  /** Renderer-facing office payload: one read grant + display basename. */
+  office?: { grant: FileGrant; name: string }
+}

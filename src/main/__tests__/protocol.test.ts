@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseRpcLine, extensionUiCancel, extensionUiResponse } from '../omp/OmpProtocol'
+import { extensionUiCancel, extensionUiResponse, extensionUiSuccess, parseRpcLine } from '../omp/OmpProtocol'
 
 describe('parseRpcLine', () => {
   it('reports failed responses as command_failed (never an error event)', () => {
@@ -502,5 +502,94 @@ describe('extensionUiResponse', () => {
     expect(extensionUiResponse('c', { cancelled: true })).toBe(
       '{"type":"extension_ui_response","id":"c","cancelled":true}\n'
     )
+  })
+})
+
+describe('extensionUiSuccess', () => {
+  it('builds the immediate fire-and-forget success ack', () => {
+    expect(extensionUiSuccess('p1')).toBe(
+      '{"type":"extension_ui_response","id":"p1","success":true}\n'
+    )
+  })
+})
+
+describe('open_panel frames', () => {
+  it('normalizes a valid browser panel request with its id', () => {
+    const line = JSON.stringify({
+      type: 'extension_ui_request',
+      id: 'p1',
+      method: 'open_panel',
+      panel: 'browser',
+      url: 'https://example.com/report?id=42'
+    })
+    expect(parseRpcLine(line, 's1')).toEqual({
+      kind: 'open_panel',
+      id: 'p1',
+      request: { panel: 'browser', url: 'https://example.com/report?id=42' }
+    })
+  })
+
+  it('normalizes a valid office panel request and tolerates a missing id', () => {
+    const line = JSON.stringify({
+      type: 'extension_ui_request',
+      method: 'open_panel',
+      panel: 'office',
+      path: 'reports/weekly.xlsx'
+    })
+    expect(parseRpcLine(line, 's1')).toEqual({
+      kind: 'open_panel',
+      id: undefined,
+      request: { panel: 'office', path: 'reports/weekly.xlsx' }
+    })
+  })
+
+  it('rejects unknown panels before any panel is touched', () => {
+    const line = JSON.stringify({
+      type: 'extension_ui_request',
+      id: 'p2',
+      method: 'open_panel',
+      panel: 'terminal'
+    })
+    expect(parseRpcLine(line, 's1')).toEqual({
+      kind: 'extension_ui_invalid',
+      reason: 'The extension requested an unknown host panel.'
+    })
+  })
+
+  it('rejects a browser panel without a valid http(s) URL', () => {
+    for (const url of [undefined, 'file:///etc/passwd', 'javascript:alert(1)', 'https://user:pw@example.com', 42]) {
+      const line = JSON.stringify({
+        type: 'extension_ui_request',
+        id: 'p3',
+        method: 'open_panel',
+        panel: 'browser',
+        url
+      })
+      expect(parseRpcLine(line, 's1')).toEqual({
+        kind: 'extension_ui_invalid',
+        reason: 'The extension requested a browser panel without a valid http(s) URL.'
+      })
+    }
+  })
+
+  it('rejects an office panel without a bounded NUL-free path', () => {
+    for (const path of [undefined, '', 'a'.repeat(1_025), 'bad\0path', 42]) {
+      const line = JSON.stringify({
+        type: 'extension_ui_request',
+        id: 'p4',
+        method: 'open_panel',
+        panel: 'office',
+        path
+      })
+      expect(parseRpcLine(line, 's1')).toEqual({
+        kind: 'extension_ui_invalid',
+        reason: 'The extension requested an office panel without a valid file path.'
+      })
+    }
+  })
+
+  it('still rejects unknown extension UI methods (regression)', () => {
+    const line = JSON.stringify({ type: 'extension_ui_request', id: 'x9', method: 'open_dashboard' })
+    expect(parseRpcLine(line, 's1')).toEqual({ kind: 'extension_ui_unsupported', method: 'open_dashboard' })
   })
 })

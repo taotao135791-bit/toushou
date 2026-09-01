@@ -11,6 +11,8 @@ import PackagesPage from './pages/PackagesPage'
 import PluginAuthorPage from './pages/PluginAuthorPage'
 import SettingsPage from './pages/SettingsPage'
 import BoardsPage from './pages/BoardsPage'
+import BrowserPage from './pages/BrowserPage'
+import OfficePage from './pages/OfficePage'
 import SetupWizard from './pages/SetupWizard'
 
 interface RendererErrorBoundaryProps {
@@ -197,11 +199,25 @@ function App() {
       }
     })
 
+    // Runtime extensions can ask to open an in-app panel (validated in Main).
+    const unsubscribePanelOpen = window.electronAPI.onPanelOpen((request) => {
+      if (request.panel === 'browser' && request.url) {
+        navigate(`/browser?url=${encodeURIComponent(request.url)}`)
+      } else if (request.panel === 'office' && request.office) {
+        // The raw path never leaves Main; the office page consumes this
+        // one-shot read grant from route state (works for repeat opens too).
+        navigate('/office', {
+          state: { grant: request.office.grant, name: request.office.name }
+        })
+      }
+    })
+
     return () => {
       flushDeltas()
       unsubscribe()
       unsubscribeNotify()
       unsubscribeLogin()
+      unsubscribePanelOpen()
     }
   }, [setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent, registerSessions, navigate])
 
@@ -242,6 +258,8 @@ function App() {
           <Route path="/plugins" element={<PackagesPage />} />
           <Route path="/plugins/new" element={<PluginAuthorPage />} />
           <Route path="/boards" element={<BoardsPage />} />
+          <Route path="/browser" element={<BrowserPage />} />
+          <Route path="/office" element={<OfficePage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </Layout>

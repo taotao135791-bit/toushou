@@ -1,4 +1,5 @@
-import { ExtensionUiAnswer, SessionEvent } from '../../shared/types'
+import { ExtensionUiAnswer, PanelOpenRequest, SessionEvent } from '../../shared/types'
+import { safeBrowserPanelUrl } from '../navigation'
 import { safeExtensionExternalUrl } from './extensionLinks'
 
 /**
@@ -27,6 +28,8 @@ import { safeExtensionExternalUrl } from './extensionLinks'
  *   - editor:  title, prefill?
  *   - cancel:  targetId — dismisses a pending interactive dialog
  *   - open_url: url, launchUrl?, instructions? — host presents a user-mediated browser link
+ *   - open_panel: panel ('browser'|'office'), url? | path? — host opens the
+ *     matching in-app panel (fire-and-forget; acked immediately, never modal)
  *   - notify / setStatus / setWidget / setTitle / set_editor_text: no response
  * - Unknown frames are ignored by design (forward compatibility), but the
  *   discriminators we do read (`type`, ids) are always validated.
@@ -49,6 +52,8 @@ export const EXTENSION_UI_LIMITS = {
   optionCount: 100,
   option: 2_000,
   prefill: 64_000,
+  /** Office-panel paths stay bounded; Main revalidates and converts them to grants before opening. */
+  panelPath: 1_024,
   timeoutMs: 24 * 60 * 60 * 1_000
 } as const
 
@@ -131,6 +136,12 @@ export type RpcParseResult =
   /** The runtime asks the host to open a URL in the system browser. */
   | { kind: 'open_url'; url: string; launchUrl?: string; instructions?: string }
   /**
+   * The runtime asks the host to open an in-app panel (fire-and-forget).
+   * Params are fully validated here; `id` is present when the request carried
+   * a valid request id that should receive an immediate success ack.
+   */
+  | { kind: 'open_panel'; id?: string; request: PanelOpenRequest }
+  /**
    * Deferred outcome of a prompt command: the agent was not invoked and the
    * prompt completed locally without agent_start/agent_end.
    */
@@ -148,6 +159,44 @@ function systemMessage(sessionId: string, content: string): RpcParseResult {
     kind: 'event',
     event: { type: 'message', sessionId, role: 'system', content }
   }
+}
+
+/**
+ * open_panel is validated fully at the protocol boundary so the session and
+ * renderer can trust the payload: `panel` must be a known host panel, the
+ * browser panel requires an http(s) URL the in-app view may actually load
+ * (same validator as the panel itself), and the office panel requires a
+ * bounded NUL-free path. Violations take the ordinary invalid-request path.
+ */
+function normalizeOpenPanel(payload: Record<string, unknown>): RpcParseResult {
+  const panel = payload.panel
+  if (panel !== 'browser' && panel !== 'office') {
+    return { kind: 'extension_ui_invalid', reason: 'The extension requested an unknown host panel.' }
+  }
+  const id = validExtensionRequestId(payload.id) ? payload.id : undefined
+  if (panel === 'browser') {
+    const url = safeBrowserPanelUrl(payload.url)
+    if (!url) {
+      return {
+        kind: 'extension_ui_invalid',
+        reason: 'The extension requested a browser panel without a valid http(s) URL.'
+      }
+    }
+    return { kind: 'open_panel', id, request: { panel, url } }
+  }
+  const path = payload.path
+  if (
+    typeof path !== 'string' ||
+    path.length === 0 ||
+    path.length > EXTENSION_UI_LIMITS.panelPath ||
+    path.includes('\0')
+  ) {
+    return {
+      kind: 'extension_ui_invalid',
+      reason: 'The extension requested an office panel without a valid file path.'
+    }
+  }
+  return { kind: 'open_panel', id, request: { panel, path } }
 }
 
 /**
@@ -274,6 +323,9 @@ export function normalizeRpcFrame(
               instructions: boundedText(payload.instructions, EXTENSION_UI_LIMITS.message)
             }
           : { kind: 'extension_ui_invalid', reason: 'The extension requested an invalid external URL.' }
+      }
+      if (method === 'open_panel') {
+        return normalizeOpenPanel(payload)
       }
       if (method === 'notify') {
         return systemMessage(sessionId, boundedText(payload.message, EXTENSION_UI_LIMITS.message) ?? '')
@@ -570,4 +622,9 @@ export function extensionUiCancel(id: string): string {
 /** Build the response line for an answered extension UI request. */
 export function extensionUiResponse(id: string, answer: ExtensionUiAnswer): string {
   return JSON.stringify({ type: 'extension_ui_response', id, ...answer }) + '\n'
+}
+
+/** Build the immediate success ack for a fire-and-forget panel open request. */
+export function extensionUiSuccess(id: string): string {
+  return JSON.stringify({ type: 'extension_ui_response', id, success: true }) + '\n'
 }

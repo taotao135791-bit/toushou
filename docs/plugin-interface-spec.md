@@ -123,12 +123,37 @@ protocol. The host implements exactly:
 | `cancel` | Dismisses the matching pending request. |
 | `notify` | Bounded system message in the transcript. |
 | `open_url` | User-mediated external link; the extension cannot open a browser itself. |
+| `open_panel` | Opens a built-in host panel (fire-and-forget, immediately acked). |
+
+`open_panel` example — show an in-app browser panel at a validated http(s)
+URL (at most 30 opens per session):
+
+```json
+{ "type": "extension_ui_request", "id": "req-1", "method": "open_panel",
+  "panel": "browser", "url": "https://example.com/report" }
+```
+
+With `panel: "office"`, the host opens the built-in spreadsheet panel on a
+local `.xlsx` / `.xls` / `.csv` file:
+
+```json
+{ "type": "extension_ui_request", "id": "req-2", "method": "open_panel",
+  "panel": "office", "path": "/abs/path/to/report.xlsx" }
+```
+
+The path is validated in Main before anything opens: it must resolve through
+`realpath` to an existing regular file with a `.xlsx` / `.xls` / `.csv`
+extension and be at most 20 MB. Main then mints a short-lived, one-shot read
+grant and only the opaque grant reaches the office panel — the raw path never
+leaves Main. A path that fails validation is logged and simply not opened
+(the request was already acked; open_panel is fire-and-forget).
 
 `setStatus`, `setWidget`, `setTitle`, `set_editor_text`, and any unknown method
 are **not** implemented; the host emits one visible diagnostic per unsupported
 method per session and never fabricates a response.
 
-Limits: at most 20 unresolved interactive dialogs per session; ids are bounded
+Limits: at most 20 unresolved interactive dialogs and at most 30 `open_panel`
+requests per session; ids are bounded
 to 200 characters, titles to 2,000, option lists to 100, and timeouts to 24
 hours. The authoritative contract, response shapes, URL rules, and ownership
 rules are in `extension-host-contract.md`.

@@ -82,7 +82,7 @@ import {
   saveManagedPlugin,
   syncManagedPlugin
 } from './managedPlugins'
-import { OperationGrantManager } from './operationGrant'
+import { getOperationGrantManager } from './operationGrant'
 import { FsGuard } from './fsGuard'
 import {
   createCheckpoint,
@@ -128,12 +128,20 @@ import {
 } from './customProviders'
 import { sanitizeImages } from './imageValidation'
 import { RecentWorkspaceRegistry, WorkspaceGrantManager } from './workspaceGrant'
-import { safeExternalUrl, safeLoginExternalUrl } from './navigation'
+import { safeExternalUrl, safeBrowserPanelUrl, safeLoginExternalUrl } from './navigation'
 import { isUiAnswer } from './uiAnswer'
+import {
+  hideBrowserPanel,
+  navigateBrowserPanel,
+  sanitizeBrowserPanelBounds,
+  setBrowserPanelBounds,
+  showBrowserPanel
+} from './browserPanel'
+import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
 
 const fsGuard = new FsGuard()
 const grantManager = new WorkspaceGrantManager({ fsGuard })
-const operationGrantManager = new OperationGrantManager()
+const operationGrantManager = getOperationGrantManager()
 const operationGrantOwnerCleanupHooks = new Set<number>()
 const historySessionGrantManager = new HistorySessionGrantManager()
 const historySessionGrantOwnerCleanupHooks = new Set<number>()
@@ -1501,6 +1509,67 @@ export function registerIpc() {
     } catch {
       return { ok: false, error: 'open-failed' }
     }
+  })
+
+  // In-app browser panel. The renderer supplies only bounds + optional URL;
+  // the WebContentsView is Main-owned, sandboxed, preload-free, and limited
+  // to validated http(s) pages.
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SHOW, async (event, bounds: unknown, url?: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    const safeBounds = sanitizeBrowserPanelBounds(bounds)
+    if (!safeBounds) return { ok: false, error: 'invalid-bounds' }
+    if (url === undefined || url === null) return showBrowserPanel(win, safeBounds)
+    const safeUrl = safeBrowserPanelUrl(url)
+    if (!safeUrl) return { ok: false, error: 'invalid-url' }
+    return showBrowserPanel(win, safeBounds, safeUrl)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_HIDE, async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return { ok: false }
+    return hideBrowserPanel(win)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_NAVIGATE, async (event, action: unknown, url?: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return { ok: false, error: 'no-window' }
+    if (action !== 'back' && action !== 'forward' && action !== 'reload' && action !== 'go') {
+      return { ok: false, error: 'invalid-action' }
+    }
+    return navigateBrowserPanel(win, action, typeof url === 'string' ? url : undefined)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SET_BOUNDS, async (event, bounds: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return { ok: false }
+    const safeBounds = sanitizeBrowserPanelBounds(bounds)
+    if (!safeBounds) return { ok: false }
+    return setBrowserPanelBounds(win, safeBounds)
+  })
+
+  // Office panel — file paths never cross from the renderer. Native pickers
+  // mint one-shot grants; reads/writes resolve the grant id privately in Main.
+  ipcMain.handle(IPC_CHANNELS.OFFICE_OPEN_DIALOG, async (event) => {
+    bindOperationGrantOwnerCleanup(event)
+    return officeOpenDialog(event.sender.id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.OFFICE_READ, async (event, grantId: unknown) => {
+    const realPath = await operationGrantManager.consumeOfficeFile(grantId, event.sender.id)
+    if (!realPath) return { ok: false, error: 'invalid-grant' }
+    return readOfficeWorkbook(realPath)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.OFFICE_SAVE_DIALOG, async (event, defaultName: unknown) => {
+    bindOperationGrantOwnerCleanup(event)
+    return officeSaveDialog(defaultName, event.sender.id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.OFFICE_SAVE, async (event, grantId: unknown, snapshot: unknown) => {
+    const targetPath = await operationGrantManager.consumeOfficeSaveTarget(grantId, event.sender.id)
+    if (!targetPath) return { ok: false, error: 'invalid-grant' }
+    return saveOfficeWorkbook(targetPath, snapshot)
   })
 
   ipcMain.handle(IPC_CHANNELS.STORE_GET, async (_event, key: keyof AppSettings) => {

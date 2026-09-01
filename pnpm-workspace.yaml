@@ -1,6 +1,7 @@
 allowBuilds:
   electron: true
   esbuild: true
+  protobufjs: false
 onlyBuiltDependencies:
   - electron
   - esbuild

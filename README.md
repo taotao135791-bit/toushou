@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.1.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.1.1) 下载：
+当前版本 v0.1.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.1.2) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.1/TouShou-arm64.dmg) | 136 MB | `ede68df1731f865c7b2df790be4a63201c5a3b81b2e7df9119ea3df8012ac636` |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.1/TouShou-x64.dmg) | 143 MB | `79b1d05e2c776b50156dfbe99c1a8673904679f71a4ac171759ad78f23c1998b` |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.1/TouShou-x64.exe) | 110 MB | `a273809da52498af03b9c94c6c4d87587c7dc48e546a3656b5fa586e2e14a8a6` |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.2/TouShou-arm64.dmg) | 177 MB | `dbe0b92729766d0ed2fb6bdb69cd3407a5ca5d5a3b125613c450cb0c4d160be9` |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.2/TouShou-x64.dmg) | 183 MB | `44ae98aac2aec37efb5c83738a5fb163e123fb7fd24887d17c7a7f6f8f93b587` |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.2/TouShou-x64.exe) | 135 MB | `6c3c61a622ac8277e513c930bbe221218482ba5f7ef7d2f9fc35a05b423bbd66` |
+
+v0.1.2：新增内嵌浏览器面板与网页版 Office 表格（本地 xlsx/csv 打开与另存），扩展可通过 open_panel 通道被动打开面板；看板支持 design.md 样式定制与对话确认同步；插件接口规范统一并新增应用内指引。
 
 v0.1.1：流式输出渲染提速（消息增量微批合并、按会话订阅、历史消息不再重复解析），并收敛了前端重复写法。
 

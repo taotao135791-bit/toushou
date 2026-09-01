@@ -7,6 +7,8 @@ import {
   SquareKanban,
   FolderOpen,
   AlertCircle,
+  Globe,
+  FileSpreadsheet,
   Trash2,
   PanelRight,
   Sun,
@@ -518,6 +520,20 @@ export default function Sidebar() {
         >
           <SquareKanban size={14} className="shrink-0" />
           {t('sidebar.boards')}
+        </button>
+        <button
+          onClick={() => navigate('/browser')}
+          className={navRow(location.pathname === '/browser')}
+        >
+          <Globe size={14} className="shrink-0" />
+          {t('sidebar.browser')}
+        </button>
+        <button
+          onClick={() => navigate('/office')}
+          className={navRow(location.pathname === '/office')}
+        >
+          <FileSpreadsheet size={14} className="shrink-0" />
+          {t('sidebar.office')}
         </button>
         <button onClick={() => setRightPanelOpen(!rightPanelOpen)} className={navRow(rightPanelOpen)}>
           <PanelRight size={14} className="shrink-0" />

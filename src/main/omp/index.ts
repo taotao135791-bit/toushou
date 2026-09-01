@@ -1,9 +1,11 @@
 import path from 'node:path'
 import { existsSync } from 'node:fs'
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
+import { IPC_CHANNELS } from '../../shared/constants'
 import {
   ChatMessage,
   ExtensionUiAnswer,
+  PanelOpenRequest,
   PermissionMode,
   PromptImage,
   Session,
@@ -20,6 +22,8 @@ import {
   HistoricalAgentRecord
 } from '../../shared/types'
 import { getStore, rememberRecentProject } from '../store'
+import { getOperationGrantManager } from '../operationGrant'
+import { validateOfficePath } from '../officeFile'
 import { AgentMessage, mapAgentMessages } from '../messageMapping'
 import { reconstructSessionMetadata, reconstructHistoricalAgents } from '../sessionMetadata'
 import { isSessionFilePath } from '../sessionHistory'
@@ -50,6 +54,61 @@ export {
 export { drainLines } from './OmpTransport'
 
 const sessions = new Map<string, OmpSession>()
+
+/**
+ * A runtime extension asked to open an in-app panel. The request was fully
+ * validated at the protocol boundary; forward it to every window's renderer,
+ * which owns routing (browser → /browser?url=…, office → /office).
+ *
+ * Office requests carry a filesystem path that must never reach the renderer:
+ * Main revalidates it (realpath, extension, size — see officeFile.ts) and
+ * mints one read FileGrant per target window, then broadcasts only the grant
+ * and a display name. A failed validation is logged and simply not shown.
+ */
+/** Windows whose webContents already revoke passively minted grants on close. */
+const officeGrantCleanupBound = new Set<number>()
+
+function bindOfficeGrantCleanup(win: BrowserWindow): void {
+  const ownerId = win.webContents.id
+  if (officeGrantCleanupBound.has(ownerId)) return
+  officeGrantCleanupBound.add(ownerId)
+  win.webContents.once('destroyed', () => {
+    officeGrantCleanupBound.delete(ownerId)
+    getOperationGrantManager().revokeOwner(ownerId)
+  })
+}
+
+function broadcastPanelOpen(request: PanelOpenRequest): void {
+  if (request.panel === 'office') {
+    void broadcastOfficePanelOpen(request.path).catch(() => undefined)
+    return
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.PANEL_OPEN, request)
+    }
+  }
+}
+
+async function broadcastOfficePanelOpen(rawPath: string | undefined): Promise<void> {
+  const realPath = await validateOfficePath(rawPath)
+  if (!realPath) {
+    if (!app.isPackaged) console.debug('[omp] open_panel office request dropped: path failed validation')
+    return
+  }
+  const manager = getOperationGrantManager()
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    bindOfficeGrantCleanup(win)
+    const grant = await manager.mintOfficeFile(realPath, win.webContents.id)
+    if (grant) {
+      win.webContents.send(IPC_CHANNELS.PANEL_OPEN, {
+        panel: 'office',
+        office: { grant, name: grant.name }
+      } satisfies PanelOpenRequest)
+    }
+  }
+}
 
 export function listSessions(): Session[] {
   return Array.from(sessions.values()).map((s) => s.session)
@@ -156,6 +215,7 @@ export function createSession(
           })
         }
       },
+      onPanelOpen: broadcastPanelOpen,
       onDebug: (message) => {
         if (!app.isPackaged) console.debug(`[omp:${id.slice(-6)}]`, message)
       }

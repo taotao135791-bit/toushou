@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { OmpSession, OmpProcessLike } from '../omp/OmpSession'
-import { Session, SessionEvent, SessionRuntimeState } from '../../shared/types'
+import { PanelOpenRequest, Session, SessionEvent, SessionRuntimeState } from '../../shared/types'
 
 /**
  * State-machine tests with a fake child process (EventEmitters for
@@ -705,5 +705,133 @@ describe('OmpSession prompt lifecycle (current runtime)', () => {
       )
     )
     expect(opened).toEqual(['http://127.0.0.1:5111/launch'])
+  })
+
+  it('open_panel acks success immediately and forwards the validated request', () => {
+    const fake = makeFakeProc()
+    const panels: PanelOpenRequest[] = []
+    const s = new OmpSession(
+      { id: 's9', cwd: '/tmp/x', title: 'x', createdAt: 0, status: 'idle' },
+      fake.proc,
+      {
+        label: 'omp',
+        onEvent: () => {},
+        onPanelOpen: (request) => panels.push(request)
+      }
+    )
+    void s
+    fake.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          type: 'extension_ui_request',
+          id: 'p1',
+          method: 'open_panel',
+          panel: 'browser',
+          url: 'https://example.com/report'
+        }) + '\n'
+      )
+    )
+    expect(panels).toEqual([{ panel: 'browser', url: 'https://example.com/report' }])
+    expect(fake.stdin.write).toHaveBeenCalledWith(
+      '{"type":"extension_ui_response","id":"p1","success":true}\n'
+    )
+    // Fire-and-forget: no dialog state, no waiting_for_user transition.
+    expect(s.runtimeState).toBe('idle')
+  })
+
+  it('open_panel without an id still opens the panel (no ack invented)', () => {
+    const fake = makeFakeProc()
+    const panels: PanelOpenRequest[] = []
+    void new OmpSession(
+      { id: 's10', cwd: '/tmp/x', title: 'x', createdAt: 0, status: 'idle' },
+      fake.proc,
+      {
+        label: 'omp',
+        onEvent: () => {},
+        onPanelOpen: (request) => panels.push(request)
+      }
+    )
+    fake.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({ type: 'extension_ui_request', method: 'open_panel', panel: 'office', path: 'a.xlsx' }) + '\n'
+      )
+    )
+    expect(panels).toEqual([{ panel: 'office', path: 'a.xlsx' }])
+    expect(fake.stdin.write).not.toHaveBeenCalled()
+  })
+
+  it('open_panel invalid requests produce a recoverable error and no ack', () => {
+    const fake = makeFakeProc()
+    const events: SessionEvent[] = []
+    const panels: PanelOpenRequest[] = []
+    void new OmpSession(
+      { id: 's11', cwd: '/tmp/x', title: 'x', createdAt: 0, status: 'idle' },
+      fake.proc,
+      {
+        label: 'omp',
+        onEvent: (e) => events.push(e),
+        onPanelOpen: (request) => panels.push(request)
+      }
+    )
+    fake.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          type: 'extension_ui_request',
+          id: 'p2',
+          method: 'open_panel',
+          panel: 'browser',
+          url: 'file:///etc/passwd'
+        }) + '\n'
+      )
+    )
+    expect(panels).toEqual([])
+    expect(fake.stdin.write).not.toHaveBeenCalled()
+    expect(events).toContainEqual({
+      type: 'error',
+      sessionId: 's11',
+      message: 'The extension requested a browser panel without a valid http(s) URL.',
+      recoverable: true
+    })
+  })
+
+  it('open_panel is capped at 30 requests per session', () => {
+    const fake = makeFakeProc()
+    const events: SessionEvent[] = []
+    const panels: PanelOpenRequest[] = []
+    void new OmpSession(
+      { id: 's12', cwd: '/tmp/x', title: 'x', createdAt: 0, status: 'idle' },
+      fake.proc,
+      {
+        label: 'omp',
+        onEvent: (e) => events.push(e),
+        onPanelOpen: (request) => panels.push(request)
+      }
+    )
+    for (let i = 0; i < 31; i++) {
+      fake.stdout.emit(
+        'data',
+        Buffer.from(
+          JSON.stringify({
+            type: 'extension_ui_request',
+            id: `p${i}`,
+            method: 'open_panel',
+            panel: 'browser',
+            url: `https://example.com/${i}`
+          }) + '\n'
+        )
+      )
+    }
+    expect(panels).toHaveLength(30)
+    // 30 acks written; the 31st request got neither ack nor panel.
+    expect(fake.stdin.write).toHaveBeenCalledTimes(30)
+    expect(events).toContainEqual({
+      type: 'error',
+      sessionId: 's12',
+      message: 'Extension opened too many panels; the newest request was ignored.',
+      recoverable: true
+    })
   })
 })

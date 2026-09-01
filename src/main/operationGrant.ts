@@ -18,6 +18,18 @@ interface StoredFileGrant extends PathIdentity {
   expiresAt: number
 }
 
+/**
+ * A minted write target for the office save-as flow. The file itself may not
+ * exist yet, so no dev/ino identity is stored — the resolved path is
+ * re-derived (parent realpath + basename) at consume time instead.
+ */
+interface StoredOfficeSaveGrant {
+  realPath: string
+  grant: FileGrant
+  ownerWebContentsId: number
+  expiresAt: number
+}
+
 interface StoredDirectoryGrant extends PathIdentity {
   grant: DirectoryGrant
   ownerWebContentsId: number
@@ -75,6 +87,26 @@ async function inspectDirectory(candidate: string): Promise<PathIdentity | null>
   }
 }
 
+/**
+ * Canonicalize a not-yet-existing write target: the parent directory must
+ * resolve to a real directory; the target is realParent + basename. Used for
+ * office save-as grants, whose file typically does not exist at mint time.
+ */
+async function resolveSaveTargetPath(candidate: string): Promise<string | null> {
+  if (!validTrustedPath(candidate)) return null
+  const absolute = path.resolve(candidate)
+  const base = path.basename(absolute)
+  if (!base || base === '.' || base === '..') return null
+  try {
+    const realParent = await fs.promises.realpath(path.dirname(absolute))
+    const stat = await fs.promises.stat(realParent)
+    if (!stat.isDirectory()) return null
+    return path.join(realParent, base)
+  } catch {
+    return null
+  }
+}
+
 function sameIdentity(expected: PathIdentity, actual: PathIdentity | null): actual is PathIdentity {
   return (
     actual !== null &&
@@ -94,10 +126,12 @@ function sameIdentity(expected: PathIdentity, actual: PathIdentity | null): actu
  */
 export class OperationGrantManager {
   private readonly fileGrants = new Map<string, StoredFileGrant>()
+  private readonly officeSaveGrants = new Map<string, StoredOfficeSaveGrant>()
   private readonly directoryGrants = new Map<string, StoredDirectoryGrant>()
   private readonly scaffoldOutputs = new Map<string, StoredScaffoldOutput>()
   /** One pending grant per owner/purpose bounds renderer-triggered minting. */
-  private readonly fileGrantByOwner = new Map<number, string>()
+  private readonly fileGrantByOwner = new Map<string, string>()
+  private readonly officeSaveGrantByOwner = new Map<number, string>()
   private readonly directoryGrantByOwner = new Map<number, string>()
   private readonly scaffoldOutputByOwner = new Map<number, string>()
   private readonly directoryLeases = new Set<string>()
@@ -115,26 +149,7 @@ export class OperationGrantManager {
     trustedFilePath: string,
     ownerWebContentsId: number
   ): Promise<FileGrant | null> {
-    this.pruneExpired()
-    const identity = await inspectFile(trustedFilePath)
-    if (!identity) return null
-    const createdAt = this.now()
-    const grant: FileGrant = {
-      id: `file-grant-${crypto.randomUUID()}`,
-      purpose: 'board-dataset-import',
-      name: path.basename(identity.realPath),
-      createdAt
-    }
-    const previous = this.fileGrantByOwner.get(ownerWebContentsId)
-    if (previous) this.removeFileGrant(previous)
-    this.fileGrants.set(grant.id, {
-      ...identity,
-      grant,
-      ownerWebContentsId,
-      expiresAt: createdAt + this.ttlMs
-    })
-    this.fileGrantByOwner.set(ownerWebContentsId, grant.id)
-    return { ...grant }
+    return this.mintFileGrant('board-dataset-import', trustedFilePath, ownerWebContentsId)
   }
 
   /**
@@ -142,19 +157,107 @@ export class OperationGrantManager {
    * so even concurrent renderer calls cannot reuse one selection.
    */
   async consumeBoardDatasetFile(id: unknown, ownerWebContentsId: number): Promise<string | null> {
+    return this.consumeFileGrant('board-dataset-import', id, ownerWebContentsId)
+  }
+
+  /**
+   * Minted after a native office open-dialog pick, or in Main when a runtime
+   * extension's open_panel request passes validateOfficePath.
+   */
+  async mintOfficeFile(trustedFilePath: string, ownerWebContentsId: number): Promise<FileGrant | null> {
+    return this.mintFileGrant('office-open', trustedFilePath, ownerWebContentsId)
+  }
+
+  /** Resolve and consume an office read grant (one-shot, like dataset grants). */
+  async consumeOfficeFile(id: unknown, ownerWebContentsId: number): Promise<string | null> {
+    return this.consumeFileGrant('office-open', id, ownerWebContentsId)
+  }
+
+  private async mintFileGrant(
+    purpose: 'board-dataset-import' | 'office-open',
+    trustedFilePath: string,
+    ownerWebContentsId: number
+  ): Promise<FileGrant | null> {
+    this.pruneExpired()
+    const identity = await inspectFile(trustedFilePath)
+    if (!identity) return null
+    const createdAt = this.now()
+    const grant: FileGrant = {
+      id: `file-grant-${crypto.randomUUID()}`,
+      purpose,
+      name: path.basename(identity.realPath),
+      createdAt
+    }
+    const ownerKey = `${ownerWebContentsId}:${purpose}`
+    const previous = this.fileGrantByOwner.get(ownerKey)
+    if (previous) this.removeFileGrant(previous)
+    this.fileGrants.set(grant.id, {
+      ...identity,
+      grant,
+      ownerWebContentsId,
+      expiresAt: createdAt + this.ttlMs
+    })
+    this.fileGrantByOwner.set(ownerKey, grant.id)
+    return { ...grant }
+  }
+
+  private async consumeFileGrant(
+    purpose: 'board-dataset-import' | 'office-open',
+    id: unknown,
+    ownerWebContentsId: number
+  ): Promise<string | null> {
     this.pruneExpired()
     if (!validGrantId(id, FILE_GRANT_ID_RE)) return null
     const stored = this.fileGrants.get(id)
-    if (
-      !stored ||
-      stored.grant.purpose !== 'board-dataset-import' ||
-      stored.ownerWebContentsId !== ownerWebContentsId
-    ) {
+    if (!stored || stored.grant.purpose !== purpose || stored.ownerWebContentsId !== ownerWebContentsId) {
       return null
     }
     this.removeFileGrant(id)
     const current = await inspectFile(stored.realPath)
     return stored.expiresAt > this.now() && sameIdentity(stored, current) ? stored.realPath : null
+  }
+
+  /**
+   * Minted after a native office save-as dialog pick. The target may not exist
+   * yet: the canonical path is parent realpath + basename, and it is re-derived
+   * at consume time (a swapped parent directory invalidates the grant).
+   */
+  async mintOfficeSaveTarget(
+    trustedFilePath: string,
+    ownerWebContentsId: number
+  ): Promise<FileGrant | null> {
+    this.pruneExpired()
+    const resolved = await resolveSaveTargetPath(trustedFilePath)
+    if (!resolved) return null
+    const createdAt = this.now()
+    const grant: FileGrant = {
+      id: `file-grant-${crypto.randomUUID()}`,
+      purpose: 'office-save',
+      name: path.basename(resolved),
+      createdAt
+    }
+    const previous = this.officeSaveGrantByOwner.get(ownerWebContentsId)
+    if (previous) this.removeOfficeSaveGrant(previous)
+    this.officeSaveGrants.set(grant.id, {
+      realPath: resolved,
+      grant,
+      ownerWebContentsId,
+      expiresAt: createdAt + this.ttlMs
+    })
+    this.officeSaveGrantByOwner.set(ownerWebContentsId, grant.id)
+    return { ...grant }
+  }
+
+  /** Resolve and consume an office write grant (one-shot). */
+  async consumeOfficeSaveTarget(id: unknown, ownerWebContentsId: number): Promise<string | null> {
+    this.pruneExpired()
+    if (!validGrantId(id, FILE_GRANT_ID_RE)) return null
+    const stored = this.officeSaveGrants.get(id)
+    if (!stored || stored.ownerWebContentsId !== ownerWebContentsId) return null
+    this.removeOfficeSaveGrant(id)
+    if (stored.expiresAt <= this.now()) return null
+    const current = await resolveSaveTargetPath(stored.realPath)
+    return current === stored.realPath ? stored.realPath : null
   }
 
   /** Minted only after the user picks the scaffold parent directory natively. */
@@ -311,8 +414,11 @@ export class OperationGrantManager {
 
   /** Drop all short-lived capabilities owned by a destroyed renderer. */
   revokeOwner(ownerWebContentsId: number): void {
-    const fileId = this.fileGrantByOwner.get(ownerWebContentsId)
-    if (fileId) this.removeFileGrant(fileId)
+    for (const [key, id] of this.fileGrantByOwner) {
+      if (key.startsWith(`${ownerWebContentsId}:`)) this.removeFileGrant(id)
+    }
+    const saveId = this.officeSaveGrantByOwner.get(ownerWebContentsId)
+    if (saveId) this.removeOfficeSaveGrant(saveId)
     const directoryId = this.directoryGrantByOwner.get(ownerWebContentsId)
     if (directoryId) this.removeDirectoryGrant(directoryId)
     const outputId = this.scaffoldOutputByOwner.get(ownerWebContentsId)
@@ -323,6 +429,9 @@ export class OperationGrantManager {
     const now = this.now()
     for (const [id, stored] of this.fileGrants) {
       if (stored.expiresAt <= now) this.removeFileGrant(id)
+    }
+    for (const [id, stored] of this.officeSaveGrants) {
+      if (stored.expiresAt <= now) this.removeOfficeSaveGrant(id)
     }
     for (const [id, stored] of this.directoryGrants) {
       if (stored.expiresAt <= now) this.removeDirectoryGrant(id)
@@ -335,8 +444,17 @@ export class OperationGrantManager {
   private removeFileGrant(id: string): void {
     const stored = this.fileGrants.get(id)
     this.fileGrants.delete(id)
-    if (stored && this.fileGrantByOwner.get(stored.ownerWebContentsId) === id) {
-      this.fileGrantByOwner.delete(stored.ownerWebContentsId)
+    const ownerKey = stored ? `${stored.ownerWebContentsId}:${stored.grant.purpose}` : null
+    if (stored && ownerKey && this.fileGrantByOwner.get(ownerKey) === id) {
+      this.fileGrantByOwner.delete(ownerKey)
+    }
+  }
+
+  private removeOfficeSaveGrant(id: string): void {
+    const stored = this.officeSaveGrants.get(id)
+    this.officeSaveGrants.delete(id)
+    if (stored && this.officeSaveGrantByOwner.get(stored.ownerWebContentsId) === id) {
+      this.officeSaveGrantByOwner.delete(stored.ownerWebContentsId)
     }
   }
 
@@ -357,4 +475,16 @@ export class OperationGrantManager {
       this.scaffoldOutputByOwner.delete(stored.ownerWebContentsId)
     }
   }
+}
+
+/**
+ * Process-wide shared instance. ipc.ts and the omp panel-open broadcast both
+ * mint/consume grants; a singleton keeps them on the same registry without a
+ * circular import.
+ */
+let sharedManager: OperationGrantManager | null = null
+
+export function getOperationGrantManager(): OperationGrantManager {
+  sharedManager ??= new OperationGrantManager()
+  return sharedManager
 }

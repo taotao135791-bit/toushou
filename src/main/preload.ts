@@ -60,10 +60,21 @@ import {
   ManagedPluginDescriptor,
   ManagedPluginDetail,
   ManagedPluginSaveResult,
-  ManagedPluginActionResult
+  ManagedPluginActionResult,
+  BrowserNavigateAction,
+  BrowserPanelBounds,
+  BrowserPanelState,
+  PanelOpenRequest
 } from '../shared/types'
 import { KanbanSaveResult } from '../shared/boards'
 import { DatasetImportResult, DatasetMutationResult } from '../shared/datasets'
+import {
+  OfficeOpenDialogResult,
+  OfficeReadResult,
+  OfficeSaveDialogResult,
+  OfficeSaveResult,
+  OfficeWorkbookSnapshot
+} from '../shared/officeWorkbook'
 
 export interface ElectronAPI {
   detectCli: (force?: boolean) => Promise<CliInfo>
@@ -146,6 +157,26 @@ export interface ElectronAPI {
   installScaffoldedPlugin: (outputId: string) => Promise<PackageActionResult>
   /** Safely open an ordinary HTTP(S) URL in the system browser. */
   openExternalUrl: (url: string) => Promise<{ ok: boolean; error?: string }>
+  /** Show the in-app browser panel over the given bounds, optionally loading a URL. */
+  browserShow: (bounds: BrowserPanelBounds, url?: string) => Promise<{ ok: boolean; error?: string }>
+  /** Detach the browser panel (its navigation state is preserved). */
+  browserHide: () => Promise<{ ok: boolean }>
+  /** Panel navigation; 'go' requires a valid http(s) URL. */
+  browserNavigate: (action: BrowserNavigateAction, url?: string) => Promise<{ ok: boolean; error?: string }>
+  /** Mirror the placeholder element's bounds onto the native panel. */
+  browserSetBounds: (bounds: BrowserPanelBounds) => Promise<{ ok: boolean }>
+  /** Browser panel navigation state stream (url/title/loading/history). */
+  onBrowserState: (callback: (state: BrowserPanelState) => void) => () => void
+  /** A runtime extension asked to open an in-app panel (validated in Main). */
+  onPanelOpen: (callback: (request: PanelOpenRequest) => void) => () => void
+  /** Office panel: native open dialog minting one opaque read grant. */
+  officeOpenDialog: () => Promise<OfficeOpenDialogResult | null>
+  /** Read+parse the granted workbook file into a bounded snapshot. */
+  officeRead: (grantId: string) => Promise<OfficeReadResult>
+  /** Office panel: native save-as dialog minting one opaque write grant. */
+  officeSaveDialog: (defaultName: string) => Promise<OfficeSaveDialogResult | null>
+  /** Atomically write the snapshot through its opaque write grant. */
+  officeSave: (grantId: string, snapshot: OfficeWorkbookSnapshot) => Promise<OfficeSaveResult>
   getStore: <K extends keyof AppSettings>(key: K) => Promise<AppSettings[K]>
   setStore: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => Promise<boolean>
   /** Kanban boards (local-only, validated in main on every read/write). */
@@ -380,6 +411,33 @@ const api: ElectronAPI = {
   installScaffoldedPlugin: (outputId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.PLUGINS_SCAFFOLD_INSTALL, outputId),
   openExternalUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_OPEN_EXTERNAL_URL, url),
+  browserShow: (bounds: BrowserPanelBounds, url?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SHOW, bounds, url),
+  browserHide: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HIDE),
+  browserNavigate: (action: BrowserNavigateAction, url?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_NAVIGATE, action, url),
+  browserSetBounds: (bounds: BrowserPanelBounds) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SET_BOUNDS, bounds),
+  onBrowserState: (callback: (state: BrowserPanelState) => void) => {
+    const handler = (_event: IpcRendererEvent, state: BrowserPanelState) => callback(state)
+    ipcRenderer.on(IPC_CHANNELS.BROWSER_STATE, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.BROWSER_STATE, handler)
+    }
+  },
+  onPanelOpen: (callback: (request: PanelOpenRequest) => void) => {
+    const handler = (_event: IpcRendererEvent, request: PanelOpenRequest) => callback(request)
+    ipcRenderer.on(IPC_CHANNELS.PANEL_OPEN, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.PANEL_OPEN, handler)
+    }
+  },
+  officeOpenDialog: () => ipcRenderer.invoke(IPC_CHANNELS.OFFICE_OPEN_DIALOG),
+  officeRead: (grantId: string) => ipcRenderer.invoke(IPC_CHANNELS.OFFICE_READ, grantId),
+  officeSaveDialog: (defaultName: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OFFICE_SAVE_DIALOG, defaultName),
+  officeSave: (grantId: string, snapshot: OfficeWorkbookSnapshot) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OFFICE_SAVE, grantId, snapshot),
   getStore: (key: keyof AppSettings) => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET, key),
   setStore: (key: keyof AppSettings, value: unknown) =>
     ipcRenderer.invoke(IPC_CHANNELS.STORE_SET, key, value),
