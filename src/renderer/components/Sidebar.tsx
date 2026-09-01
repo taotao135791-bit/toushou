@@ -49,6 +49,7 @@ export default function Sidebar() {
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const cliAvailable = useAppStore((s) => s.cliAvailable)
   const sessionRecords = useAppStore((s) => s.sessionRecords)
+  const workspacePanel = useAppStore((s) => s.workspacePanel)
   const rightPanelOpen = useAppStore((s) => s.rightPanelOpen)
   const language = useAppStore((s) => s.language)
   const theme = useAppStore((s) => s.theme)
@@ -64,6 +65,7 @@ export default function Sidebar() {
   const activateRecentWorkspace = useAppStore((s) => s.activateRecentWorkspace)
   const setCurrentSessionId = useAppStore((s) => s.setCurrentSessionId)
   const setSessions = useAppStore((s) => s.setSessions)
+  const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
   const setLanguage = useAppStore((s) => s.setLanguage)
   const setTheme = useAppStore((s) => s.setTheme)
@@ -77,6 +79,27 @@ export default function Sidebar() {
   const setRecentWorkspaces = useAppStore((s) => s.setRecentWorkspaces)
   const removeRecentProject = useAppStore((s) => s.removeRecentProject)
   const setSetupComplete = useAppStore((s) => s.setSetupComplete)
+
+  const openWorkspacePanel = (kind: 'browser' | 'office') => {
+    if (location.pathname === '/') {
+      const isOpen = workspacePanel?.kind === kind
+      setRightPanelOpen(false)
+      setWorkspacePanel(isOpen ? null : { kind })
+      return
+    }
+    navigate(kind === 'browser' ? '/browser' : '/office')
+  }
+
+  const toggleRightPanel = () => {
+    if (location.pathname !== '/') {
+      setWorkspacePanel(null)
+      setRightPanelOpen(true)
+      navigate('/')
+      return
+    }
+    setWorkspacePanel(null)
+    setRightPanelOpen(!rightPanelOpen)
+  }
 
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -523,15 +546,15 @@ export default function Sidebar() {
           {t('sidebar.boards')}
         </button>
         <button
-          onClick={() => navigate('/browser')}
-          className={navRow(location.pathname === '/browser')}
+          onClick={() => openWorkspacePanel('browser')}
+          className={navRow(location.pathname === '/browser' || workspacePanel?.kind === 'browser')}
         >
           <Globe size={14} className="shrink-0" />
           {t('sidebar.browser')}
         </button>
         <button
-          onClick={() => navigate('/office')}
-          className={navRow(location.pathname === '/office')}
+          onClick={() => openWorkspacePanel('office')}
+          className={navRow(location.pathname === '/office' || workspacePanel?.kind === 'office')}
         >
           <FileSpreadsheet size={14} className="shrink-0" />
           {t('sidebar.office')}
@@ -543,7 +566,7 @@ export default function Sidebar() {
           <Library size={14} className="shrink-0" />
           {t('sidebar.skills')}
         </button>
-        <button onClick={() => setRightPanelOpen(!rightPanelOpen)} className={navRow(rightPanelOpen)}>
+        <button onClick={toggleRightPanel} className={navRow(rightPanelOpen && !workspacePanel)}>
           <PanelRight size={14} className="shrink-0" />
           {t('sidebar.rightPanel')}
         </button>

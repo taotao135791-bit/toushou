@@ -76,14 +76,21 @@ function buildUniverSnapshot(snapshot: OfficeWorkbookSnapshot | undefined, langu
  * idempotent per container and passive-open grant consumption is guarded by
  * consumedGrantIds.
  */
-export default function OfficePage() {
+interface OfficePageProps {
+  embedded?: boolean
+  initialGrant?: FileGrant
+  initialName?: string
+  onClose?: () => void
+}
+
+export default function OfficePage({ embedded = false, initialGrant, initialName, onClose }: OfficePageProps) {
   const t = useT()
   const navigate = useNavigate()
   const location = useLocation()
   const containerRef = useRef<HTMLDivElement>(null)
   const univerRef = useRef<{ univer: Univer; univerAPI: FUniver } | null>(null)
   const consumedGrantIds = useRef(new Set<string>())
-  const [fileName, setFileName] = useState('')
+  const [fileName, setFileName] = useState(initialName ?? '')
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState<'open' | 'save' | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -171,13 +178,13 @@ export default function OfficePage() {
   // reload doesn't re-open it.
   useEffect(() => {
     const state = location.state as { grant?: FileGrant; name?: string } | null
-    const grant = state?.grant
+    const grant = state?.grant ?? initialGrant
     if (!grant || typeof grant.id !== 'string') return
     if (consumedGrantIds.current.has(grant.id)) return
     consumedGrantIds.current.add(grant.id)
     navigate(location.pathname, { replace: true, state: null })
     void openWithGrant(grant)
-  }, [location.state, location.pathname, navigate, openWithGrant])
+  }, [location.state, location.pathname, navigate, openWithGrant, initialGrant])
 
   const openFile = useCallback(async () => {
     setBusy('open')
@@ -231,6 +238,10 @@ export default function OfficePage() {
   }, [fileName])
 
   const closePanel = () => {
+    if (onClose) {
+      onClose()
+      return
+    }
     if (window.history.length > 1) navigate(-1)
     else navigate('/')
   }
@@ -250,7 +261,7 @@ export default function OfficePage() {
     | null
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-ink-950">
+    <div className={`flex h-full min-h-0 w-full flex-col overflow-hidden bg-ink-950 ${embedded ? 'min-w-0' : ''}`}>
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3">
         <button className={iconButton} disabled={busy !== null} onClick={() => void openFile()} title={t('office.open')}>
           {busy === 'open' ? <Loader2 size={15} className="animate-spin" /> : <FolderOpen size={15} />}

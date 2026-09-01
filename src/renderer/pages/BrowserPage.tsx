@@ -11,7 +11,13 @@ import { useT } from '../i18n'
  * survives route changes (hide, not destroy), so an extension-triggered open
  * with ?url=… resumes the same browsing session.
  */
-export default function BrowserPage() {
+interface BrowserPageProps {
+  embedded?: boolean
+  initialUrl?: string
+  onClose?: () => void
+}
+
+export default function BrowserPage({ embedded = false, initialUrl: requestedInitialUrl, onClose }: BrowserPageProps) {
   const t = useT()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -29,7 +35,7 @@ export default function BrowserPage() {
   // Mount-only: show the panel over the placeholder, keep bounds synced, and
   // hide (not destroy) it when the page unmounts. The initial URL is captured
   // once from ?url= so re-renders never retrigger a load.
-  const initialUrl = searchParams.get('url')
+  const initialUrl = requestedInitialUrl ?? searchParams.get('url')
   useLayoutEffect(() => {
     const el = placeholderRef.current
     if (!el) return
@@ -62,12 +68,12 @@ export default function BrowserPage() {
   // keep showing the previously loaded page.
   const lastOpenedUrl = useRef(initialUrl)
   useEffect(() => {
-    const target = searchParams.get('url')
+    const target = requestedInitialUrl ?? searchParams.get('url')
     if (target && target !== lastOpenedUrl.current) {
       lastOpenedUrl.current = target
       void window.electronAPI.browserNavigate('go', target)
     }
-  }, [searchParams])
+  }, [requestedInitialUrl, searchParams])
 
   // Main pushes navigation state; keep the toolbar in sync. While the address
   // input is focused, don't yank the user's in-progress edit away.
@@ -89,6 +95,10 @@ export default function BrowserPage() {
   }, [])
 
   const closePanel = () => {
+    if (onClose) {
+      onClose()
+      return
+    }
     if (window.history.length > 1) navigate(-1)
     else navigate('/')
   }
@@ -97,7 +107,7 @@ export default function BrowserPage() {
     'shrink-0 rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-cream-dim'
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-ink-950">
+    <div className={`flex h-full min-h-0 flex-col bg-ink-950 ${embedded ? 'w-full' : ''}`}>
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3">
         <button
           className={iconButton}

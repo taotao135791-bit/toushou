@@ -14,6 +14,7 @@ const en = {
   'update.ready': 'Version {version} is ready to install',
   'update.install': 'Restart & update',
   'update.failed': 'Update failed',
+  'update.retry': 'Retry',
   'update.fallback': 'Download manually',
   'update.dismiss': 'Dismiss',
 
@@ -918,6 +919,7 @@ const zh: Record<I18nKey, string> = {
   'update.ready': '新版本 {version} 已就绪',
   'update.install': '重启并安装',
   'update.failed': '更新失败',
+  'update.retry': '重试',
   'update.fallback': '手动下载',
   'update.dismiss': '关闭',
 

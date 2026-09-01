@@ -159,6 +159,7 @@ describe('OmpSession extension UI', () => {
         type: 'message',
         sessionId: 's1',
         role: 'system',
+        variant: 'info',
         content: 'An installed extension requested unsupported host UI: setWidget.'
       }
     ])

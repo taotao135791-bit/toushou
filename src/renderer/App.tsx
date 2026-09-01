@@ -63,7 +63,9 @@ function App() {
     setCliAvailable,
     setSetupComplete,
     applySessionEvent,
-    registerSessions
+    registerSessions,
+    setWorkspacePanel,
+    setRightPanelOpen
   } = useAppStore(
     useShallow((s) => ({
       setupComplete: s.setupComplete,
@@ -72,7 +74,9 @@ function App() {
       setCliAvailable: s.setCliAvailable,
       setSetupComplete: s.setSetupComplete,
       applySessionEvent: s.applySessionEvent,
-      registerSessions: s.registerSessions
+      registerSessions: s.registerSessions,
+      setWorkspacePanel: s.setWorkspacePanel,
+      setRightPanelOpen: s.setRightPanelOpen
     }))
   )
   const t = useT()
@@ -203,13 +207,17 @@ function App() {
     // Runtime extensions can ask to open an in-app panel (validated in Main).
     const unsubscribePanelOpen = window.electronAPI.onPanelOpen((request) => {
       if (request.panel === 'browser' && request.url) {
-        navigate(`/browser?url=${encodeURIComponent(request.url)}`)
+        setRightPanelOpen(false)
+        setWorkspacePanel({ kind: 'browser', url: request.url })
+        if (window.location.hash !== '#/' && !window.location.hash.startsWith('#/?')) navigate('/')
       } else if (request.panel === 'office' && request.office) {
-        // The raw path never leaves Main; the office page consumes this
-        // one-shot read grant from route state (works for repeat opens too).
-        navigate('/office', {
-          state: { grant: request.office.grant, name: request.office.name }
+        setRightPanelOpen(false)
+        setWorkspacePanel({
+          kind: 'office',
+          grant: request.office.grant,
+          name: request.office.name
         })
+        if (window.location.hash !== '#/' && !window.location.hash.startsWith('#/?')) navigate('/')
       }
     })
 
@@ -220,7 +228,7 @@ function App() {
       unsubscribeLogin()
       unsubscribePanelOpen()
     }
-  }, [setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent, registerSessions, navigate])
+  }, [setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent, registerSessions, setWorkspacePanel, setRightPanelOpen, navigate])
 
   // ⌘N starts a new chat from anywhere
   useEffect(() => {

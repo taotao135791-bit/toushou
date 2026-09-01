@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { FileGrant, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
@@ -73,6 +73,11 @@ export interface QueuedMessage {
   images?: PromptImage[]
 }
 
+/** A contextual work surface shown beside the active conversation. */
+export type WorkspacePanel =
+  | { kind: 'browser'; url?: string }
+  | { kind: 'office'; grant?: FileGrant; name?: string }
+
 /** A pending interactive extension dialog, keyed by session. */
 export type UiRequest = Extract<SessionEvent, { type: 'ui_request' }>
 
@@ -95,6 +100,7 @@ interface AppState {
   /** sessionId -> pending extension UI dialogs (FIFO) */
   uiRequests: Record<string, UiRequest[]>
   packages: PackageDescriptor[]
+  workspacePanel: WorkspacePanel | null
   rightPanelOpen: boolean
   activeRightTab: 'files' | 'preview' | 'changes' | 'tools'
   selectedFile: string | null
@@ -188,6 +194,7 @@ interface AppState {
   finalizeThinking: (sessionId: string) => void
   resolveUiRequest: (sessionId: string, requestId: string) => void
   setPackages: (packages: PackageDescriptor[]) => void
+  setWorkspacePanel: (panel: WorkspacePanel | null) => void
   setRightPanelOpen: (open: boolean) => void
   setActiveRightTab: (tab: 'files' | 'preview' | 'changes' | 'tools') => void
   setSelectedFile: (path: string | null) => void
@@ -322,6 +329,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   executions: {},
   uiRequests: {},
   packages: [],
+  workspacePanel: null,
   rightPanelOpen: false,
   activeRightTab: 'files',
   selectedFile: null,
@@ -634,6 +642,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
   }),
   setPackages: (packages) => set({ packages }),
+  setWorkspacePanel: (workspacePanel) => set({ workspacePanel }),
   setRightPanelOpen: (rightPanelOpen) => set({ rightPanelOpen }),
   setActiveRightTab: (activeRightTab) => set({ activeRightTab }),
   setSelectedFile: (selectedFile) => set({ selectedFile }),
@@ -974,6 +983,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         get().addMessage(event.sessionId, {
           id: crypto.randomUUID(),
           role: 'user',
+          content: event.content
+        })
+      } else if (event.role === 'system') {
+        get().addMessage(event.sessionId, {
+          id: crypto.randomUUID(),
+          role: 'system',
+          variant: event.variant,
           content: event.content
         })
       } else {

@@ -258,7 +258,14 @@ export interface Session {
 
 export type SessionEvent =
   | { type: 'connected'; sessionId: string }
-  | { type: 'message'; sessionId: string; role: 'user' | 'assistant' | 'system'; content: string }
+  | {
+      type: 'message'
+      sessionId: string
+      role: 'user' | 'assistant' | 'system'
+      content: string
+      /** System notices can opt into the quiet informational treatment. */
+      variant?: 'info'
+    }
   /** Streaming thinking delta of the in-flight assistant message. */
   | { type: 'thinking'; sessionId: string; delta: string }
   /** `id` is pi's stable toolCallId — parallel tool runs must be matched by it. */

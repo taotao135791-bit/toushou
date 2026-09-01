@@ -86,6 +86,16 @@ export default function UpdateBanner() {
         <span className="text-[12px] text-cream-dim">{t('update.failed')}</span>
         <button
           type="button"
+          className={actionCls}
+          onClick={() => {
+            void window.electronAPI.updaterCheck()
+          }}
+        >
+          <RotateCw size={12} />
+          {t('update.retry')}
+        </button>
+        <button
+          type="button"
           className={pillCls}
           onClick={() => {
             void window.electronAPI.updaterOpenReleasePage()

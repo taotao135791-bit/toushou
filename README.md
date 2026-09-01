@@ -6,14 +6,16 @@
 
 ## 下载安装
 
-当前版本 v0.1.3，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.1.3) 下载：
+当前版本 v0.2.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.3/TouShou-arm64.dmg) | 177 MB | `7141d72527307f9470d3dac028566c89af3581e8da562cb6f32df8b9b23e8b4f` |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.3/TouShou-x64.dmg) | 183 MB | `58f6b4358377df351c2a149ad7e882b3f86ff305f01c8081ee97cf55fc2354a1` |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.3/TouShou-x64.exe) | 135 MB | `db4bcc28fe14d484cdd44e867a3e48455ff21235271b660dc6d7d64e9c584a04` |
-| Windows（arm64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.3/TouShou-arm64.exe) | 140 MB | `1c9fa97f49547d7f709c5bfb915e9b0fe910e928a4ec60664695ac3efc8da71` |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| Windows（arm64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.0/TouShou-arm64.exe) | 见 Release | 见 Release |
+
+v0.2.0：浏览器与 Office 改为对话时按需从右侧工作区打开；右侧工具面板仅在聊天页显示；插件不支持的 UI 请求改为安静提示；更新器支持应用内重试、下载、安装和定期检查；增加单实例保护。
 
 v0.1.3：新增应用内更新提示与 Windows 更新通道；内置 Google App Campaign 广告文案工具包；新增右侧工具面板和插件一键启动。
 

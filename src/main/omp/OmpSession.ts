@@ -436,6 +436,7 @@ export class OmpSession {
             type: 'message',
             sessionId: this.id,
             role: 'system',
+            variant: 'info',
             content: `An installed extension requested unsupported host UI: ${result.method}.`
           })
         }

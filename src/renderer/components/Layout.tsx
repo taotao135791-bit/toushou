@@ -2,6 +2,8 @@ import { useAppStore } from '../store'
 import Sidebar from './Sidebar'
 import RightPanel from './RightPanel'
 import UpdateBanner from './UpdateBanner'
+import WorkspacePanel from './WorkspacePanel'
+import { useLocation } from 'react-router-dom'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -9,6 +11,9 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const rightPanelOpen = useAppStore((state) => state.rightPanelOpen)
+  const workspacePanel = useAppStore((state) => state.workspacePanel)
+  const location = useLocation()
+  const isChat = location.pathname === '/'
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-ink-950 text-cream">
@@ -17,7 +22,11 @@ export default function Layout({ children }: LayoutProps) {
         <UpdateBanner />
         {children}
       </main>
-      {rightPanelOpen && <RightPanel />}
+      {isChat && workspacePanel ? (
+        <WorkspacePanel panel={workspacePanel} />
+      ) : isChat && rightPanelOpen ? (
+        <RightPanel />
+      ) : null}
     </div>
   )
 }

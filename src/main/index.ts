@@ -11,6 +11,22 @@ import { installNavigationGuards } from './navigation'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
+// Multiple app copies otherwise compete for the same userData, native browser
+// view, and session state. Keep one owner and focus it when the launcher is
+// opened again.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  })
+}
+
 /**
  * Approval configs are per-session files; sessions never outlive the app,
  * so anything left in userData at startup is an orphan from a crashed or
