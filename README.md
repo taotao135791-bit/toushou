@@ -6,14 +6,16 @@
 
 ## 下载安装
 
-当前版本 v0.2.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.0) 下载：
+当前版本 v0.2.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.0/TouShou-x64.exe) | 见 Release | 见 Release |
-| Windows（arm64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.0/TouShou-arm64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.1/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.1/TouShou-x64.exe) | 见 Release | 见 Release |
+| Windows（arm64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.1/TouShou-arm64.exe) | 见 Release | 见 Release |
+
+v0.2.1：修复 Windows 兼容性测试对 8.3 短路径的误判，恢复全平台发布流水线。
 
 v0.2.0：浏览器与 Office 改为对话时按需从右侧工作区打开；右侧工具面板仅在聊天页显示；插件不支持的 UI 请求改为安静提示；更新器支持应用内重试、下载、安装和定期检查；增加单实例保护。
 

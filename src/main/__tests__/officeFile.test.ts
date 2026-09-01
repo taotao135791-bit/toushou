@@ -76,8 +76,8 @@ describe('validateOfficePath', () => {
     const link = path.join(dir, 'link.xlsx')
     symlinkSync(real, link)
     const canonical = realpathSync(real)
-    expect(await validateOfficePath(link)).toBe(canonical)
-    expect(await validateOfficePath(real)).toBe(canonical)
+    expectSamePath(await validateOfficePath(link), canonical)
+    expectSamePath(await validateOfficePath(real), canonical)
   })
 })
 
