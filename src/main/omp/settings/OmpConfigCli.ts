@@ -1,6 +1,6 @@
-import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { EnvMode, resolveSubprocessEnv } from '../env'
+import { spawnCommand } from '../../command'
 
 /**
  * Thin wrapper over `omp config list|get|set|reset --json` — the official
@@ -37,7 +37,7 @@ export interface CliRunnerOptions {
 }
 
 /**
- * Default runner: execFile with argv (never a shell string). Production
+ * Default runner: cross-spawn with argv (never a shell string). Production
  * (`envMode: 'inherit'`) merges `env` over `process.env`; integration
  * (`envMode: 'replace'`) uses only the injected `env` so an isolated test
  * root can be passed without the child re-absorbing the host environment.
@@ -50,23 +50,37 @@ export function makeExecRunner(
     typeof options === 'number' ? { timeoutMs: options } : options
   return (args) =>
     new Promise((resolve) => {
-      execFile(
-        executable,
-        args,
-        {
-          timeout: timeoutMs,
-          maxBuffer: 4 * 1024 * 1024,
-          env: resolveSubprocessEnv(envMode, env ?? {}),
-          shell: process.platform === 'win32' && executable.toLowerCase().endsWith('.cmd')
-        },
-        (err, stdout, stderr) => {
-          resolve({
-            ok: !err,
-            stdout: typeof stdout === 'string' ? stdout : '',
-            stderr: typeof stderr === 'string' ? stderr : ''
-          })
-        }
-      )
+      const child = spawnCommand(executable, args, {
+        env: resolveSubprocessEnv(envMode, env ?? {}),
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      let stdout = ''
+      let stderr = ''
+      let settled = false
+      let timedOut = false
+      let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        timedOut = true
+        child.kill()
+      }, timeoutMs)
+      const settle = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        timer = null
+        resolve({ ok, stdout, stderr })
+      }
+      child.stdout?.setEncoding('utf8')
+      child.stderr?.setEncoding('utf8')
+      child.stdout?.on('data', (chunk: string) => {
+        stdout += chunk
+        if (stdout.length > 4 * 1024 * 1024) child.kill()
+      })
+      child.stderr?.on('data', (chunk: string) => {
+        stderr += chunk
+        if (stderr.length > 4 * 1024 * 1024) child.kill()
+      })
+      child.once('error', () => settle(false))
+      child.once('close', (code) => settle(!timedOut && code === 0))
     })
 }
 

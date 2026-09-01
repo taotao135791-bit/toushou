@@ -1,7 +1,8 @@
-import { execFileSync, spawn, ChildProcess } from 'node:child_process'
+import { ChildProcess } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { spawnCommand, spawnCommandSync } from '../../src/main/command'
 
 /**
  * Isolated Oh My Pi runtime environment for integration tests. Every test
@@ -80,11 +81,10 @@ export function createIsolatedOmpEnvironment(opts: { credentials?: boolean } = {
   }
 
   const spawnRpc = (bin: string, extraArgs: string[] = []): ChildProcess =>
-    spawn(bin, ['--mode', 'rpc', ...extraArgs], {
+    spawnCommand(bin, ['--mode', 'rpc', ...extraArgs], {
       cwd: agentDir,
       env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: process.platform === 'win32' && bin.toLowerCase().endsWith('.cmd')
+      stdio: ['pipe', 'pipe', 'pipe']
     })
 
   return { root, agentDir, homeDir, env, ompBin, piBin, cleanup, spawnRpc }
@@ -97,22 +97,23 @@ export function createIsolatedOmpEnvironment(opts: { credentials?: boolean } = {
  */
 export function runOmp(env: NodeJS.ProcessEnv, bin: string, args: string[]): string {
   try {
-    return execFileSync(bin, args, { env, encoding: 'utf8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'] })
+    const result = spawnCommandSync(bin, args, {
+      env,
+      encoding: 'utf8',
+      timeout: 30_000,
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+    return `${result.stdout ?? ''}\n${result.stderr ?? ''}`
   } catch (err) {
-    const e = err as { stderr?: string; stdout?: string }
-    return `${e.stdout ?? ''}\n${e.stderr ?? ''}`
+    return `${err instanceof Error ? err.message : ''}`
   }
 }
 
 /** True when `<bin> --version` reports a usable binary. */
 export function binaryAvailable(bin: string): boolean {
   try {
-    // Windows npm installs expose CLI entrypoints as `.cmd` shims. Node's
-    // execFileSync needs an explicit shell for those shims even when the same
-    // command works from PowerShell or Git Bash.
-    const shell = process.platform === 'win32' && bin.toLowerCase().endsWith('.cmd')
-    execFileSync(bin, ['--version'], { timeout: 10_000, stdio: 'pipe', shell })
-    return true
+    const result = spawnCommandSync(bin, ['--version'], { timeout: 10_000, stdio: 'pipe' })
+    return result.status === 0 && !result.error
   } catch {
     return false
   }

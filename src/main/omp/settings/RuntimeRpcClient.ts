@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { CliInfo, ExtensionUiAnswer, SessionEvent } from '../../../shared/types'
 import { executableSearchDirs } from '../OmpCapabilities'
 import { EnvMode, resolveSubprocessEnv } from '../env'
 import { OmpSession, OmpProcessLike } from '../OmpSession'
+import { spawnCommand } from '../../command'
 
 /**
  * Short-lived RPC client for runtime queries and interactive flows
@@ -53,15 +53,14 @@ export class RuntimeRpcClient {
     events: RpcClientEvents = {}
   ): Promise<RuntimeRpcClient | null> {
     if (!cli.available) return null
-    const proc = spawn(cli.path ?? cli.command, ['--mode', 'rpc', ...(opts.args ?? [])], {
+    const proc = spawnCommand(cli.path ?? cli.command, ['--mode', 'rpc', ...(opts.args ?? [])], {
       cwd: opts.cwd ?? homedir(),
       env: resolveSubprocessEnv(opts.envMode ?? 'inherit', {
         PATH: executableSearchDirs().join(path.delimiter),
         HOME: homedir(),
         FORCE_COLOR: '0',
         ...(opts.env ?? {})
-      }),
-      shell: process.platform === 'win32' && (cli.path ?? cli.command).toLowerCase().endsWith('.cmd')
+      })
     })
     const stderr = { text: '' }
     proc.stderr?.on('data', (c: Buffer) => {

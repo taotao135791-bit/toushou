@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { PiModel } from '../shared/types'
 import { detectCli, executableSearchDirs, drainLines } from './omp'
+import { spawnCommand } from './command'
 
 /**
  * Ask pi itself which models are usable: spawn a short-lived RPC session,
@@ -118,14 +118,13 @@ function queryModels(): Promise<PiModel[]> {
   if (!cli.available) return Promise.resolve([])
 
   return new Promise((resolve) => {
-    const proc = spawn(cli.path ?? cli.command, ['--mode', 'rpc', '--no-extensions'], {
+    const proc = spawnCommand(cli.path ?? cli.command, ['--mode', 'rpc', '--no-extensions'], {
       env: {
         ...process.env,
         PATH: executableSearchDirs().join(delimiter),
         HOME: homedir(),
         FORCE_COLOR: '0'
-      },
-      shell: process.platform === 'win32' && (cli.path ?? cli.command).toLowerCase().endsWith('.cmd')
+      }
     })
 
     let buffer = ''

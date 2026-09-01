@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process'
 import {
   existsSync,
   readdirSync,
@@ -18,6 +17,7 @@ import {
 } from '../shared/types'
 import { detectCli, executableSearchDirs } from './omp'
 import { defaultPiAgentDir, readPiSettings, writePiSettings, PiSettings } from './piSettings'
+import { spawnCommand } from './command'
 
 export { defaultPiAgentDir } from './piSettings'
 
@@ -471,14 +471,13 @@ function runCli(
     return Promise.resolve({ ok: false, log: 'omp/pi CLI not found', stdout: '', stderr: '' })
   }
   return new Promise((resolve) => {
-    const proc = spawn(cli.path ?? cli.command, args, {
+    const proc = spawnCommand(cli.path ?? cli.command, args, {
       env: {
         ...process.env,
         PATH: executableSearchDirs().join(path.delimiter),
         HOME: homedir(),
         FORCE_COLOR: '0'
-      },
-      shell: process.platform === 'win32' && (cli.path ?? cli.command).toLowerCase().endsWith('.cmd')
+      }
     })
     let stdout = ''
     let stderr = ''

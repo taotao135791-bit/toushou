@@ -1,6 +1,6 @@
 {
   "name": "toushou",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "桌面原生广告优化师 Agent",
   "author": "投手团队",
   "private": true,
@@ -17,6 +17,7 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "devDependencies": {
+    "@types/cross-spawn": "6.0.2",
     "@types/node": "^22.0.0",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^18.3.0",
@@ -36,6 +37,7 @@
   "dependencies": {
     "@univerjs/preset-sheets-core": "^0.25.1",
     "@univerjs/presets": "^0.25.1",
+    "cross-spawn": "7.0.6",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.9",
     "lucide-react": "^0.454.0",

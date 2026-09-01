@@ -14,6 +14,9 @@ importers:
       '@univerjs/presets':
         specifier: ^0.25.1
         version: 0.25.1(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(rxjs@7.8.1)
+      cross-spawn:
+        specifier: 7.0.6
+        version: 7.0.6
       electron-store:
         specifier: ^8.2.0
         version: 8.2.0
@@ -63,6 +66,9 @@ importers:
         specifier: ^5.0.0
         version: 5.0.14(@types/react@18.3.31)(react@18.3.1)
     devDependencies:
+      '@types/cross-spawn':
+        specifier: 6.0.2
+        version: 6.0.2
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
@@ -1018,6 +1024,9 @@ packages:
 
   '@types/cacheable-request@6.0.3':
     resolution: {integrity: sha512-IQ3EbTzGxIigb1I3qPZc1rWJnH0BmSKv5QYTalEwweFvyBDLSAe24zP0le/hyi7ecGfZVlIVAg4BZqb8WBwKqw==}
+
+  '@types/cross-spawn@6.0.2':
+    resolution: {integrity: sha512-KuwNhp3eza+Rhu8IFI5HUXRP0LIhqH5cAjubUvGXXthh4YYBuP2ntwEX+Cz8GJoZUHlKo247wPWOfA9LYEq4cw==}
 
   '@types/d3-array@3.2.2':
     resolution: {integrity: sha512-hOLWVbm7uRza0BYXpIIW5pxfrKe0W+D5lrFiAEYR+pb6w3N2SwSMaJbXdUfSEv+dT4MfHBLtn5js0LAWaO6otw==}
@@ -5256,6 +5265,10 @@ snapshots:
       '@types/keyv': 3.1.4
       '@types/node': 22.20.1
       '@types/responselike': 1.0.3
+
+  '@types/cross-spawn@6.0.2':
+    dependencies:
+      '@types/node': 22.20.1
 
   '@types/d3-array@3.2.2': {}
 

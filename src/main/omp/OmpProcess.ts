@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'node:child_process'
+import { ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -8,6 +8,7 @@ import { getStore } from '../store'
 import { buildAgentArgs } from '../languageArgs'
 import { executableSearchDirs } from './OmpCapabilities'
 import { EnvMode, resolveSubprocessEnv } from './env'
+import { spawnCommand } from '../command'
 
 /**
  * Process assembly for `pi --mode rpc` sessions: CLI argument construction
@@ -197,9 +198,5 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
 
 /** Spawn the session process described by a SpawnPlan. */
 export function spawnProcess(plan: SpawnPlan, cwd: string): ChildProcess {
-  return spawn(plan.command, plan.args, {
-    cwd,
-    env: plan.env,
-    shell: process.platform === 'win32' && plan.command.toLowerCase().endsWith('.cmd')
-  })
+  return spawnCommand(plan.command, plan.args, { cwd, env: plan.env })
 }
