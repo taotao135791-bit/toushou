@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PackageLocalSourceGrantManager } from '../packageLocalSourceGrant'
+import { expectSamePath } from './pathAssertions'
 
 let root: string
 let now: number
@@ -83,6 +84,6 @@ describe('PackageLocalSourceGrantManager', () => {
     const lease = await grants.claim(grant!.id, 41)
 
     expect(grant).toMatchObject({ name: 'plugin-dir', kind: 'directory' })
-    expect(await grants.resolveClaimedPath(lease!.id, 41)).toBe(fs.realpathSync(directory))
+    expectSamePath(await grants.resolveClaimedPath(lease!.id, 41), fs.realpathSync(directory))
   })
 })

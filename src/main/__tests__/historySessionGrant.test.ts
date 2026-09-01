@@ -15,6 +15,7 @@ import {
   HistorySessionGrantManager
 } from '../historySessionGrant'
 import { HistorySessionFile, sessionDirFor } from '../sessionHistory'
+import { expectSamePath } from './pathAssertions'
 
 let agentDir: string
 let workspaceA: string
@@ -75,7 +76,7 @@ describe('HistorySessionGrantManager', () => {
     })
     expect(descriptor).not.toHaveProperty('filePath')
     expect(descriptor).not.toHaveProperty('cwd')
-    await expect(manager.resolve(descriptor.id, context())).resolves.toBe(fs.realpathSync(filePath))
+    expectSamePath(await manager.resolve(descriptor.id, context()), fs.realpathSync(filePath))
     await expect(manager.resolve(descriptor.id, context('workspace-b'))).resolves.toBeNull()
     await expect(manager.resolve(descriptor.id, context('workspace-a', 42))).resolves.toBeNull()
     await expect(manager.resolve(descriptor.id, context('workspace-a', 41, fs.realpathSync(workspaceB)))).resolves.toBeNull()
@@ -93,7 +94,7 @@ describe('HistorySessionGrantManager', () => {
 
     expect(refreshed.id).not.toBe(first.id)
     await expect(manager.resolve(first.id, context())).resolves.toBeNull()
-    await expect(manager.resolve(refreshed.id, context())).resolves.toBe(fs.realpathSync(filePath))
+    expectSamePath(await manager.resolve(refreshed.id, context()), fs.realpathSync(filePath))
   })
 
   it('rejects a session-directory symlink that escapes the canonical agent sessions root', async () => {
@@ -146,7 +147,7 @@ describe('HistorySessionGrantManager', () => {
     const [descriptor] = await manager.mintForWorkspace([history(filePath)], context())
     let release: (() => void) | undefined
     const first = manager.withResolved(descriptor.id, context(), async (resolvedFilePath) => {
-      expect(resolvedFilePath).toBe(fs.realpathSync(filePath))
+      expectSamePath(resolvedFilePath, fs.realpathSync(filePath))
       await new Promise<void>((resolve) => {
         release = resolve
       })

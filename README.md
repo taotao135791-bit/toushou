@@ -6,14 +6,16 @@
 
 ## 下载安装
 
-当前版本 v0.1.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.1.2) 下载：
+当前版本 v0.1.3，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.1.3) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.2/TouShou-arm64.dmg) | 177 MB | `d379f7bbfbd6435e3b5b796ab791e37592a3489b48bfb9cf76a1f9dfacf363c1` |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.2/TouShou-x64.dmg) | 183 MB | `875bd1f8239bbf86494e052326924b1c0a6f98e867db8b44b627abf7f9337b60` |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.2/TouShou-x64.exe) | 135 MB | `3bf8ea332058a93abb5146806d67e9f1db782e6d977ef5a35807d791be1a1a65` |
-| Windows（arm64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.2/TouShou-arm64.exe) | 140 MB | `7dfcc8596cb263fa65da49480ab5874669215849f90a5ef73eeeac332e8193cb` |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.3/TouShou-arm64.dmg) | 177 MB | `7141d72527307f9470d3dac028566c89af3581e8da562cb6f32df8b9b23e8b4f` |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.3/TouShou-x64.dmg) | 183 MB | `58f6b4358377df351c2a149ad7e882b3f86ff305f01c8081ee97cf55fc2354a1` |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.3/TouShou-x64.exe) | 135 MB | `db4bcc28fe14d484cdd44e867a3e48455ff21235271b660dc6d7d64e9c584a04` |
+| Windows（arm64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.1.3/TouShou-arm64.exe) | 140 MB | `1c9fa97f49547d7f709c5bfb915e9b0fe910e928a4ec60664695ac3efc8da71` |
+
+v0.1.3：新增应用内更新提示与 Windows 更新通道；内置 Google App Campaign 广告文案工具包；新增右侧工具面板和插件一键启动。
 
 v0.1.2：新增内嵌浏览器面板与网页版 Office 表格（本地 xlsx/csv 打开与另存），扩展可通过 open_panel 通道被动打开面板；看板支持 design.md 样式定制与对话确认同步；插件接口规范统一并新增应用内指引。
 
