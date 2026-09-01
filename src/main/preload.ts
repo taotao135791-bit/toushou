@@ -7,6 +7,7 @@ import {
   SessionEvent,
   SessionStats,
   SlashCommand,
+  LaunchableTool,
   PackageDescriptor,
   PackageActionResult,
   PackageManagerCapabilities,
@@ -122,6 +123,8 @@ export interface ElectronAPI {
   revokeWorkspaceGrant: (grantId: string) => Promise<boolean>
   /** List active workspace grants. */
   listWorkspaceGrants: () => Promise<WorkspaceGrant[]>
+  /** One-click tools from bundled and installed packages (new session + auto-sent command). */
+  listLaunchableTools: () => Promise<LaunchableTool[]>
   /** Path-free, opaque package rows; ids authorize row mutations. */
   listPackages: () => Promise<PackageDescriptor[]>
   getPackageCapabilities: () => Promise<PackageManagerCapabilities>
@@ -373,6 +376,7 @@ const api: ElectronAPI = {
   revokeWorkspaceGrant: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_REVOKE, grantId),
   listWorkspaceGrants: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_LIST),
+  listLaunchableTools: () => ipcRenderer.invoke(IPC_CHANNELS.TOOLS_LIST),
   listPackages: () => ipcRenderer.invoke(IPC_CHANNELS.PACKAGES_LIST),
   getPackageCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.PACKAGES_CAPABILITIES),
   searchPackages: (query: string, curatedOnly?: boolean) =>

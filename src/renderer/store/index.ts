@@ -96,7 +96,7 @@ interface AppState {
   uiRequests: Record<string, UiRequest[]>
   packages: PackageDescriptor[]
   rightPanelOpen: boolean
-  activeRightTab: 'files' | 'preview' | 'changes'
+  activeRightTab: 'files' | 'preview' | 'changes' | 'tools'
   selectedFile: string | null
   previewContent: string | null
   /** sessionId -> checkpoint creation failed once (non-git project); skip further attempts. */
@@ -133,6 +133,8 @@ interface AppState {
   unreadSessionIds: Record<string, boolean>
   /** One-shot composer prefill (e.g. "build your own plugin" from the packages page). */
   composerPrefill: string | null
+  /** Send the prefill automatically once its session is ready (one-click tool launch). */
+  composerAutosend: boolean
   /** Unsent composer text/images keyed by their owning runtime session. */
   composerDrafts: ComposerDrafts
   /** Sidebar: recent project folders, MRU first (persisted in electron-store). */
@@ -187,7 +189,7 @@ interface AppState {
   resolveUiRequest: (sessionId: string, requestId: string) => void
   setPackages: (packages: PackageDescriptor[]) => void
   setRightPanelOpen: (open: boolean) => void
-  setActiveRightTab: (tab: 'files' | 'preview' | 'changes') => void
+  setActiveRightTab: (tab: 'files' | 'preview' | 'changes' | 'tools') => void
   setSelectedFile: (path: string | null) => void
   setPreviewContent: (content: string | null) => void
   setCheckpointUnavailable: (sessionId: string, unavailable: boolean) => void
@@ -230,6 +232,7 @@ interface AppState {
   setSessionArchived: (sessionId: string, archived: boolean) => void
   markSessionUnread: (sessionId: string) => void
   setComposerPrefill: (text: string | null) => void
+  setComposerAutosend: (composerAutosend: boolean) => void
   setComposerDraft: (sessionId: string, draft: SessionComposerDraft) => void
   clearComposerDraft: (sessionId: string) => void
   /** Replace the recent-projects list (startup load; does not persist). */
@@ -341,6 +344,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   archivedSessionIds: [],
   unreadSessionIds: {},
   composerPrefill: null,
+  composerAutosend: false,
   composerDrafts: {},
   recentProjects: [],
   recentWorkspaces: [],
@@ -779,6 +783,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   markSessionUnread: (sessionId) =>
     set((state) => ({ unreadSessionIds: { ...state.unreadSessionIds, [sessionId]: true } })),
   setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
+  setComposerAutosend: (composerAutosend) => set({ composerAutosend }),
   setComposerDraft: (sessionId, draft) =>
     set((state) => ({
       composerDrafts: setComposerDraft(state.composerDrafts, sessionId, draft)

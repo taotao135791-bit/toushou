@@ -72,6 +72,7 @@ import { getModelConfig, setModelConfig, setApiKey, clearApiKey, syncMachineSkil
 import { listAvailableModels, listCatalogModels, invalidateModelCache } from './piModels'
 import { getStore, rememberRecentProject, setStore } from './store'
 import { installOmp } from './installer'
+import { listLaunchableTools } from './toolLaunch'
 import { searchCommunityPackages } from './community'
 import { scaffoldPlugin } from './pluginScaffold'
 import { getKimiComputerUseStatus, setKimiComputerUseEnabled } from './kimiComputerUse'
@@ -1153,6 +1154,8 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.PACKAGES_CAPABILITIES, async () => {
     return getPackageManagerCapabilities()
   })
+
+  ipcMain.handle(IPC_CHANNELS.TOOLS_LIST, () => listLaunchableTools())
 
   /** Package sources become CLI argv — reject flags, controls and empty input. */
   function validSource(source: unknown): source is string {

@@ -364,6 +364,22 @@ export interface SlashCommand {
   source: 'extension' | 'prompt' | 'skill'
 }
 
+/**
+ * A package-provided capability that can be launched with one click: a new
+ * session is created and the command is sent as its first prompt.
+ */
+export interface LaunchableTool {
+  /** Stable id: `<packageName>:<command>`. */
+  id: string
+  packageName: string
+  /** Manifest displayName, falling back to the package name. */
+  label: string
+  /** Slash command sent to the new session, e.g. `/ads`. */
+  command: string
+  description?: string
+  origin: 'bundled' | 'installed'
+}
+
 /** Answer to an extension UI dialog, sent back over the session's stdin. */
 export type ExtensionUiAnswer = { cancelled: true } | { value: string } | { confirmed: boolean }
 
