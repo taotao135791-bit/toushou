@@ -56,7 +56,8 @@ export function makeExecRunner(
         {
           timeout: timeoutMs,
           maxBuffer: 4 * 1024 * 1024,
-          env: resolveSubprocessEnv(envMode, env ?? {})
+          env: resolveSubprocessEnv(envMode, env ?? {}),
+          shell: process.platform === 'win32' && executable.toLowerCase().endsWith('.cmd')
         },
         (err, stdout, stderr) => {
           resolve({

@@ -124,7 +124,8 @@ function queryModels(): Promise<PiModel[]> {
         PATH: executableSearchDirs().join(delimiter),
         HOME: homedir(),
         FORCE_COLOR: '0'
-      }
+      },
+      shell: process.platform === 'win32' && (cli.path ?? cli.command).toLowerCase().endsWith('.cmd')
     })
 
     let buffer = ''

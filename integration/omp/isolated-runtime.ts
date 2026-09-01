@@ -83,7 +83,8 @@ export function createIsolatedOmpEnvironment(opts: { credentials?: boolean } = {
     spawn(bin, ['--mode', 'rpc', ...extraArgs], {
       cwd: agentDir,
       env,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: process.platform === 'win32' && bin.toLowerCase().endsWith('.cmd')
     })
 
   return { root, agentDir, homeDir, env, ompBin, piBin, cleanup, spawnRpc }

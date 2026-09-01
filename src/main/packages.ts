@@ -477,7 +477,8 @@ function runCli(
         PATH: executableSearchDirs().join(path.delimiter),
         HOME: homedir(),
         FORCE_COLOR: '0'
-      }
+      },
+      shell: process.platform === 'win32' && (cli.path ?? cli.command).toLowerCase().endsWith('.cmd')
     })
     let stdout = ''
     let stderr = ''

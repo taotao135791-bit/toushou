@@ -197,5 +197,9 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
 
 /** Spawn the session process described by a SpawnPlan. */
 export function spawnProcess(plan: SpawnPlan, cwd: string): ChildProcess {
-  return spawn(plan.command, plan.args, { cwd, env: plan.env })
+  return spawn(plan.command, plan.args, {
+    cwd,
+    env: plan.env,
+    shell: process.platform === 'win32' && plan.command.toLowerCase().endsWith('.cmd')
+  })
 }

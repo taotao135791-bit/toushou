@@ -60,7 +60,8 @@ export class RuntimeRpcClient {
         HOME: homedir(),
         FORCE_COLOR: '0',
         ...(opts.env ?? {})
-      })
+      }),
+      shell: process.platform === 'win32' && (cli.path ?? cli.command).toLowerCase().endsWith('.cmd')
     })
     const stderr = { text: '' }
     proc.stderr?.on('data', (c: Buffer) => {
