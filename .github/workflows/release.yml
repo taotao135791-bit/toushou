@@ -144,10 +144,10 @@ jobs:
         run: |
           set -euo pipefail
           required=(
-            "OMP-GUI-arm64.dmg"
-            "OMP-GUI-arm64.zip"
-            "OMP-GUI-x64.dmg"
-            "OMP-GUI-x64.zip"
+            "TouShou-arm64.dmg"
+            "TouShou-arm64.zip"
+            "TouShou-x64.dmg"
+            "TouShou-x64.zip"
             "latest-mac.yml"
           )
 
@@ -161,10 +161,12 @@ jobs:
           # `electron-builder` can reuse a host-architecture Electron bundle
           # when electronDist is pinned locally. Check the staged apps, not
           # just their artifact filenames, before publishing either archive.
-          arm64_bin='release/mac-arm64/OMP GUI.app/Contents/MacOS/OMP GUI.bin'
-          x64_bin='release/mac/OMP GUI.app/Contents/MacOS/OMP GUI.bin'
-          test -s "${arm64_bin}"
-          test -s "${x64_bin}"
+          # Locate the bundle executable by structure — the staged app name
+          # follows productName (投手), not a stable ASCII identifier.
+          arm64_bin="$(find release/mac-arm64 -path '*/Contents/MacOS/*' -type f | head -n 1)"
+          x64_bin="$(find release/mac -path '*/Contents/MacOS/*' -type f | head -n 1)"
+          test -n "${arm64_bin}" && test -s "${arm64_bin}"
+          test -n "${x64_bin}" && test -s "${x64_bin}"
           file "${arm64_bin}" | grep -Eq 'arm64|arm64e'
           file "${x64_bin}" | grep -Eq 'x86_64|x86-64'
 
@@ -196,7 +198,7 @@ jobs:
       - name: Archive release assets
         uses: actions/upload-artifact@v4
         with:
-          name: OMP-GUI-${{ github.ref_name }}-macos
+          name: TouShou-${{ github.ref_name }}-macos
           if-no-files-found: error
           retention-days: 14
           path: |
@@ -228,6 +230,155 @@ jobs:
             gh release upload "${tag}" "${assets[@]}" --clobber
           else
             gh release create "${tag}" "${assets[@]}" \
-              --title "OMP GUI ${tag}" \
+              --title "投手 ${tag}" \
+              --generate-notes
+          fi
+
+  # Windows packaging: same gates as the macOS job, then an NSIS installer
+  # plus latest.yml/blockmap so the in-app updater (electron-updater) has a
+  # Windows channel. Runs after `build` so the release already exists — this
+  # job only uploads assets and can never race the release creation.
+  build-windows:
+    name: Verify, package, and publish (Windows)
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Bun for OMP
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Read pinned OMP version
+        id: pinned
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .omp-compat-version)"
+          test -n "${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned OMP
+        run: npm install -g "@oh-my-pi/pi-coding-agent@${{ steps.pinned.outputs.version }}"
+
+      - name: Verify pinned OMP version
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v omp
+          installed="$(omp --version)"
+          expected="omp/${{ steps.pinned.outputs.version }}"
+          echo "OMP version tested: ${installed}"
+          test "${installed}" = "${expected}"
+
+      - name: OMP compatibility suite
+        env:
+          OMP_REQUIRED: omp
+        run: pnpm test:omp
+
+      - name: Build app
+        run: pnpm build
+
+      # No Windows signing secrets yet: electron-builder emits an unsigned
+      # NSIS installer (SmartScreen-warned) plus the auto-update manifests.
+      - name: Package Windows installer
+        shell: bash
+        run: pnpm exec electron-builder --win nsis --publish never
+
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            "TouShou-x64.exe"
+            "latest.yml"
+          )
+
+          for asset in "${required[@]}"; do
+            test -s "release/${asset}" || {
+              echo "Missing or empty release asset: release/${asset}"
+              exit 1
+            }
+          done
+
+          blockmaps="$(find release -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d '[:space:]')"
+          if [[ "${blockmaps}" -lt 1 ]]; then
+            echo "Expected a Windows update blockmap; found ${blockmaps}."
+            exit 1
+          fi
+
+          find release -maxdepth 1 -type f -print | LC_ALL=C sort
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd release
+            find . -maxdepth 1 -type f ! -name 'SHA256SUMS-windows.txt' -print \
+              | sed 's#^./##' \
+              | LC_ALL=C sort \
+              | while IFS= read -r asset; do
+                  test -n "${asset}"
+                  sha256sum "${asset}"
+                done
+          ) > release/SHA256SUMS-windows.txt
+          test -s release/SHA256SUMS-windows.txt
+          cat release/SHA256SUMS-windows.txt
+
+      - name: Archive release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: TouShou-${{ github.ref_name }}-windows
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+            release/SHA256SUMS-windows.txt
+
+      - name: Upload to GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          assets=()
+          while IFS= read -r asset; do
+            assets+=("${asset}")
+          done < <(find release -maxdepth 1 -type f -print | LC_ALL=C sort)
+
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No release assets found."
+            exit 1
+          fi
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" "${assets[@]}" --clobber
+          else
+            gh release create "${tag}" "${assets[@]}" \
+              --title "投手 ${tag}" \
               --generate-notes
           fi

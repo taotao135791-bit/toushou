@@ -121,7 +121,11 @@ export default function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const t = useT()
   const composerPrefill = useAppStore((s) => s.composerPrefill)
+  const composerAutosend = useAppStore((s) => s.composerAutosend)
   const setComposerPrefill = useAppStore((s) => s.setComposerPrefill)
+  const setComposerAutosend = useAppStore((s) => s.setComposerAutosend)
+  /** Text armed by a one-click tool launch, sent once committed (see below). */
+  const autosendRef = useRef<string | null>(null)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
   const setComposerDraft = useAppStore((s) => s.setComposerDraft)
@@ -179,7 +183,9 @@ export default function Composer({
     if (composerPrefill == null) return
     commitDraft(composerPrefill)
     setCaret(composerPrefill.length)
+    if (composerAutosend) autosendRef.current = composerPrefill
     setComposerPrefill(null)
+    setComposerAutosend(false)
     requestAnimationFrame(() => {
       const el = textareaRef.current
       if (!el) return
@@ -187,7 +193,20 @@ export default function Composer({
       el.setSelectionRange(el.value.length, el.value.length)
       autosize(el)
     })
-  }, [composerPrefill, setComposerPrefill])
+  }, [composerPrefill, composerAutosend, setComposerPrefill, setComposerAutosend])
+
+  // One-click tool launch: fire the send as soon as the prefilled text is
+  // committed to the textarea state of this render. A mid-turn session is
+  // fine — handleSend parks the message in the drain-on-idle queue, and a
+  // freshly spawned session buffers the prompt on its stdin until the RPC
+  // handshake completes.
+  useEffect(() => {
+    const pending = autosendRef.current
+    if (pending == null || disabled) return
+    if (text !== pending) return
+    autosendRef.current = null
+    handleSend()
+  }, [text, disabled])
 
   // New Chat and A↔B switching both land on a ready composer. Focus after the
   // session id is committed, so the click that created/switched the session

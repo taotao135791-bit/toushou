@@ -95,7 +95,10 @@ describe('api keys', () => {
     expect(result.ok).toBe(true)
     const auth = readJson('auth.json')
     expect(auth.anthropic).toEqual({ type: 'api_key', key: 'sk-test-123' })
-    expect(statSync(path.join(dir, 'auth.json')).mode & 0o777).toBe(0o600)
+    // POSIX chmod 0600 is not representable on win32 (mode reads 0666);
+    // the writer must still produce a user-only file wherever it applies.
+    const expectedMode = process.platform === 'win32' ? 0o666 : 0o600
+    expect(statSync(path.join(dir, 'auth.json')).mode & 0o777).toBe(expectedMode)
     expect(listAuthProviders(dir)).toEqual(['anthropic'])
   })
 

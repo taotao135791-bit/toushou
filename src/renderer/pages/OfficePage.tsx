@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AlertTriangle, FileSpreadsheet, FolderOpen, Loader2, Save, X } from 'lucide-react'
-import { CommandType, LocaleType, createUniver } from '@univerjs/presets'
+import { LocaleType, createUniver } from '@univerjs/presets'
 import type { FUniver, IWorkbookData, Univer } from '@univerjs/presets'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
 import type { FWorkbook } from '@univerjs/preset-sheets-core'
@@ -16,6 +16,54 @@ import {
 } from '@shared/officeWorkbook'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
+
+const UNIVER_APP_VERSION = '0.25.1'
+
+function buildUniverSnapshot(snapshot: OfficeWorkbookSnapshot | undefined, language: string): IWorkbookData {
+  const currentLocale = language === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US
+  if (!snapshot) {
+    return {
+      id: 'workbook',
+      name: '',
+      appVersion: UNIVER_APP_VERSION,
+      locale: currentLocale,
+      styles: {},
+      sheetOrder: [],
+      sheets: {},
+      resources: []
+    }
+  }
+  return {
+    id: snapshot.id || 'workbook',
+    name: snapshot.name,
+    appVersion: UNIVER_APP_VERSION,
+    locale: currentLocale,
+    styles: {},
+    sheetOrder: snapshot.sheetOrder,
+    sheets: Object.fromEntries(
+      Object.entries(snapshot.sheets).map(([sheetId, sheet]) => [
+        sheetId,
+        {
+          ...sheet,
+          rowData: {},
+          columnData: {},
+          tabColor: '',
+          zoomRatio: 1,
+          scrollTop: 0,
+          scrollLeft: 0,
+          defaultColumnWidth: 88,
+          defaultRowHeight: 24,
+          freeze: { xSplit: 0, ySplit: 0, startRow: -1, startColumn: -1 },
+          rowHeader: { width: 46, hidden: 0 },
+          columnHeader: { height: 20, hidden: 0 },
+          showGridlines: 1,
+          rightToLeft: 0
+        }
+      ])
+    ),
+    resources: []
+  }
+}
 
 /**
  * In-app office panel: a Univer sheets editor plus a plain toolbar. Files are
@@ -41,36 +89,48 @@ export default function OfficePage() {
   const [error, setError] = useState<string | null>(null)
   const [warnings, setWarnings] = useState<OfficeWorkbookWarning[]>([])
 
-  // Mount-only: build the Univer instance (locale follows the app language)
-  // with one empty workbook, and track edits as a dirty flag.
+  const locale = useAppStore((state) => state.language)
+
+  // Univer's renderer measures its root during startup. Keep the root in the
+  // normal flex flow and defer creation by one frame so its dimensions are
+  // settled even when the route replaces another full-height page.
   useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-    const language = useAppStore.getState().language
-    const { univer, univerAPI } = createUniver({
-      locale: language === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
-      locales: {
-        [LocaleType.ZH_CN]: sheetsZhCN,
-        [LocaleType.EN_US]: sheetsEnUS
-      },
-      presets: [
-        UniverSheetsCorePreset({
-          container,
-          header: false,
-          footer: false,
-          disableAutoFocus: true
-        })
-      ]
-    })
-    univerRef.current = { univer, univerAPI }
-    univerAPI.createWorkbook({})
-    const disposable = univerAPI.addEvent(univerAPI.Event.CommandExecuted, (event) => {
-      if (event.type === CommandType.MUTATION) setDirty(true)
+    const initialLanguage = useAppStore.getState().language
+    let disposed = false
+    let instance: { univer: Univer; univerAPI: FUniver } | null = null
+    let disposable: { dispose: () => void } | null = null
+    const frame = window.requestAnimationFrame(() => {
+      const container = containerRef.current
+      if (!container || disposed) return
+      instance = createUniver({
+        locale: initialLanguage === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
+        locales: {
+          [LocaleType.ZH_CN]: sheetsZhCN,
+          [LocaleType.EN_US]: sheetsEnUS
+        },
+        presets: [
+          UniverSheetsCorePreset({
+            container,
+            header: false,
+            footer: false,
+            disableAutoFocus: true
+          })
+        ]
+      })
+      univerRef.current = instance
+      instance.univerAPI.createWorkbook(buildUniverSnapshot(undefined, initialLanguage))
+      // Generic mutation events include Univer's startup bookkeeping. This
+      // event is scoped to actual cell-value changes, including paste/edit.
+      disposable = instance.univerAPI.addEvent(instance.univerAPI.Event.SheetValueChanged, () => {
+        setDirty(true)
+      })
     })
     return () => {
-      disposable.dispose()
+      disposed = true
+      window.cancelAnimationFrame(frame)
+      disposable?.dispose()
       univerRef.current = null
-      univer.dispose()
+      instance?.univerAPI.dispose()
     }
   }, [])
 
@@ -80,10 +140,10 @@ export default function OfficePage() {
     if (!api) return
     const current = api.univerAPI.getActiveWorkbook()
     if (current) api.univerAPI.disposeUnit(current.getId())
-    api.univerAPI.createWorkbook(snapshot as unknown as Partial<IWorkbookData>)
+    api.univerAPI.createWorkbook(buildUniverSnapshot(snapshot, locale))
     setFileName(name)
     setDirty(false)
-  }, [])
+  }, [locale])
 
   const openWithGrant = useCallback(
     async (grant: FileGrant) => {
@@ -190,7 +250,7 @@ export default function OfficePage() {
     | null
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-ink-950">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-ink-950">
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3">
         <button className={iconButton} disabled={busy !== null} onClick={() => void openFile()} title={t('office.open')}>
           {busy === 'open' ? <Loader2 size={15} className="animate-spin" /> : <FolderOpen size={15} />}
@@ -222,8 +282,8 @@ export default function OfficePage() {
         </button>
       </div>
       {/* Univer mounts into this container; it owns everything inside it. */}
-      <div className="relative min-h-0 flex-1">
-        <div ref={containerRef} className="absolute inset-0" />
+      <div className="relative h-full min-h-0 w-full flex-1 overflow-hidden">
+        <div ref={containerRef} className="h-full w-full" />
       </div>
     </div>
   )

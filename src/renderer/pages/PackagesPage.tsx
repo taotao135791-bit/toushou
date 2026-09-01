@@ -24,7 +24,8 @@ import {
   Download,
   Pencil,
   Code2,
-  BookOpen
+  BookOpen,
+  Wand2
 } from 'lucide-react'
 import {
   CommunityPackageInfo,
@@ -38,6 +39,7 @@ import {
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import { useConfirmId } from '../lib/confirmClick'
+import { launchTool } from '../lib/launchTool'
 import Logo from '../components/Logo'
 import { PluginStudioDialog } from '../components/PluginStudioDialog'
 import { PluginGuideDialog } from '../components/PluginGuideDialog'
@@ -83,6 +85,8 @@ export default function PackagesPage() {
   const packages = useAppStore((s) => s.packages)
   const setPackages = useAppStore((s) => s.setPackages)
   const t = useT()
+  const navigate = useNavigate()
+  const [toolCommandByPackage, setToolCommandByPackage] = useState<Record<string, string>>({})
   const [source, setSource] = useState('')
   const [sourceMode, setSourceMode] = useState<SourceMode>('github')
   const [pending, setPending] = useState<PendingAction>(null)
@@ -116,17 +120,31 @@ export default function PackagesPage() {
   const mounted = packages.filter((p) => p.enabled)
   const parts = packages.filter((p) => !p.enabled)
 
+  const handleLaunchTool = async (command: string) => {
+    const id = await launchTool(command)
+    if (id) navigate('/')
+  }
+
+  const launchPropsFor = (name: string) => {
+    const command = toolCommandByPackage[name]
+    return command ? { onLaunch: () => void handleLaunchTool(command) } : {}
+  }
+
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current
     setCapabilitiesLoaded(false)
     try {
-      const [nextPackages, capabilities] = await Promise.all([
+      const [nextPackages, capabilities, tools] = await Promise.all([
         window.electronAPI.listPackages(),
-        window.electronAPI.getPackageCapabilities()
+        window.electronAPI.getPackageCapabilities(),
+        window.electronAPI.listLaunchableTools().catch(() => [])
       ])
       if (generation !== refreshGeneration.current) return
       setPackages(nextPackages)
       setPackageCapabilities(capabilities)
+      const commands: Record<string, string> = {}
+      for (const tool of tools) commands[tool.packageName] ??= tool.command
+      setToolCommandByPackage(commands)
     } catch {
       if (generation !== refreshGeneration.current) return
       setPackageCapabilities({ profile: 'unavailable', canToggle: false, canUpdate: false })
@@ -695,6 +713,7 @@ export default function PackagesPage() {
                             onUpdate={() => handleUpdate(pkg)}
                             onToggle={(next) => void handleToggle(pkg, next)}
                             onRemove={() => void handleRemove(pkg)}
+                            {...launchPropsFor(pkg.name)}
                           />
                         ))}
                       </div>
@@ -774,6 +793,7 @@ export default function PackagesPage() {
                             onUpdate={() => handleUpdate(pkg)}
                             onToggle={(next) => void handleToggle(pkg, next)}
                             onRemove={() => void handleRemove(pkg)}
+                            {...launchPropsFor(pkg.name)}
                           />
                         ))}
                       </div>
@@ -950,7 +970,8 @@ function PartCard({
   onDragStateChange,
   onUpdate,
   onToggle,
-  onRemove
+  onRemove,
+  onLaunch
 }: {
   pkg: PackageDescriptor
   pending: PendingAction
@@ -961,6 +982,8 @@ function PartCard({
   onUpdate: () => void
   onToggle: (next: boolean) => void
   onRemove: () => void
+  /** Present when the package exposes a launchable tool command. */
+  onLaunch?: () => void
 }) {
   const t = useT()
   const busy = pending !== null && 'id' in pending && pending.id === pkg.id
@@ -1046,6 +1069,18 @@ function PartCard({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {onLaunch && (
+            <button
+              onClick={onLaunch}
+              disabled={pending !== null}
+              title={t('plugins.use')}
+              aria-label={t('plugins.use')}
+              className="flex items-center gap-1 rounded-full border border-line bg-ink-800 px-2.5 py-1 text-[11px] text-cream transition hover:border-accent/60 hover:text-accent disabled:opacity-50"
+            >
+              <Wand2 size={11} />
+              {t('plugins.use')}
+            </button>
+          )}
           {updatable && (
             <button
               onClick={onUpdate}

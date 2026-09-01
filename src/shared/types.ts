@@ -364,6 +364,22 @@ export interface SlashCommand {
   source: 'extension' | 'prompt' | 'skill'
 }
 
+/**
+ * A package-provided capability that can be launched with one click: a new
+ * session is created and the command is sent as its first prompt.
+ */
+export interface LaunchableTool {
+  /** Stable id: `<packageName>:<command>`. */
+  id: string
+  packageName: string
+  /** Manifest displayName, falling back to the package name. */
+  label: string
+  /** Slash command sent to the new session, e.g. `/ads`. */
+  command: string
+  description?: string
+  origin: 'bundled' | 'installed'
+}
+
 /** Answer to an extension UI dialog, sent back over the session's stdin. */
 export type ExtensionUiAnswer = { cancelled: true } | { value: string } | { confirmed: boolean }
 
@@ -1241,6 +1257,8 @@ export interface AppSettings {
   pinnedSessionIds: string[]
   /** Sidebar: sessions folded away into the archived group. */
   archivedSessionIds: string[]
+  /** Version stamps + user-removal marks for app-bundled packages. */
+  bundledPackages: Record<string, { version: string; userRemoved: boolean }>
 }
 
 export type InstallStatus =
@@ -1267,7 +1285,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifications: true,
   notificationPreviews: false,
   pinnedSessionIds: [],
-  archivedSessionIds: []
+  archivedSessionIds: [],
+  bundledPackages: {}
 }
 
 /** Snapshot of a live session, from the RPC get_state command. */

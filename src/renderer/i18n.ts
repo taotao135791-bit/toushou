@@ -6,6 +6,17 @@ const en = {
   // App
   'app.loading': 'Loading…',
 
+  // Update banner (packaged builds only)
+  'update.available': 'Version {version} is available',
+  'update.action': 'Update now',
+  'update.downloading': 'Downloading update…',
+  'update.downloadingPercent': 'Downloading update… {percent}%',
+  'update.ready': 'Version {version} is ready to install',
+  'update.install': 'Restart & update',
+  'update.failed': 'Update failed',
+  'update.fallback': 'Download manually',
+  'update.dismiss': 'Dismiss',
+
   // Sidebar
   'sidebar.newChat': 'New Chat',
   'sidebar.cliMissing': 'Agent runtime not found. Install it to use chat.',
@@ -415,6 +426,14 @@ const en = {
   'panel.files': 'Files',
   'panel.preview': 'Preview',
   'panel.changes': 'Changes',
+  'panel.tools': 'Tools',
+
+  // One-click tool launcher (right panel + packages page)
+  'tools.loading': 'Loading tools…',
+  'tools.loadFailed': 'Could not load tools.',
+  'tools.retry': 'Retry',
+  'tools.empty':
+    'No one-click tools yet. Install a package that ships a chat command and it appears here.',
   'panel.selectProject': 'Select a project to browse files.',
   'panel.selectFile': 'Select a file from the file tree to preview.',
   'panel.loading': 'Loading…',
@@ -455,6 +474,7 @@ const en = {
   'plugins.enabling': 'Enabling…',
   'plugins.disabling': 'Disabling…',
   'plugins.update': 'Update',
+  'plugins.use': 'Use',
   'plugins.updating': 'Updating…',
   'plugins.kind.local': 'Local',
   'plugins.kind.marketplace': 'Marketplace',
@@ -890,6 +910,16 @@ export type I18nKey = keyof typeof en
 const zh: Record<I18nKey, string> = {
   'app.loading': '加载中…',
 
+  'update.available': '新版本 {version} 可用',
+  'update.action': '立即更新',
+  'update.downloading': '正在下载更新…',
+  'update.downloadingPercent': '正在下载更新… {percent}%',
+  'update.ready': '新版本 {version} 已就绪',
+  'update.install': '重启并安装',
+  'update.failed': '更新失败',
+  'update.fallback': '手动下载',
+  'update.dismiss': '关闭',
+
   'sidebar.newChat': '新建对话',
   'sidebar.cliMissing': '未找到 Agent 运行时，安装后才能使用对话功能。',
   'sidebar.cliInstall': '安装 / 重新运行安装向导',
@@ -1280,6 +1310,12 @@ const zh: Record<I18nKey, string> = {
   'panel.files': '文件',
   'panel.preview': '预览',
   'panel.changes': '变更',
+  'panel.tools': '工具',
+
+  'tools.loading': '正在加载工具…',
+  'tools.loadFailed': '工具加载失败。',
+  'tools.retry': '重试',
+  'tools.empty': '暂无一键工具。安装自带对话命令的插件后，这里会出现一键入口。',
   'panel.selectProject': '选择项目后可浏览文件。',
   'panel.selectFile': '从文件树中选择文件进行预览。',
   'panel.loading': '加载中…',
@@ -1318,6 +1354,7 @@ const zh: Record<I18nKey, string> = {
   'plugins.enabling': '启用中…',
   'plugins.disabling': '停用中…',
   'plugins.update': '更新',
+  'plugins.use': '使用',
   'plugins.updating': '更新中…',
   'plugins.kind.local': '本地',
   'plugins.kind.marketplace': '市场',

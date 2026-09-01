@@ -113,6 +113,7 @@ export const IPC_CHANNELS = {
   UPDATER_DOWNLOAD: 'updater:download',
   UPDATER_QUIT_INSTALL: 'updater:quit-install',
   UPDATER_OPEN_PAGE: 'updater:open-release-page',
+  TOOLS_LIST: 'tools:list',
   NOTIFY_SELECT_SESSION: 'notify:select-session',
   RUNTIME_OVERVIEW: 'runtime:overview',
   RUNTIME_LIST_MODELS: 'runtime:list-models',
