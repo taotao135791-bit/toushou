@@ -292,7 +292,11 @@ jobs:
 
       - name: OMP compatibility suite
         env:
-          OMP_REQUIRED: omp
+          # npm exposes the Windows launcher as omp.cmd. Node's execFileSync
+          # does not apply PATHEXT the same way PowerShell does, so make the
+          # exact launcher explicit for the isolated integration runtime.
+          OMP_REQUIRED: omp.cmd
+          OMP_BIN: omp.cmd
         run: pnpm test:omp
 
       - name: Build app
