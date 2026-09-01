@@ -23,7 +23,8 @@ describe('listProjectFiles', () => {
       writeFileSync(path.join(dir, 'node_modules', 'dep', 'c.js'), 'c')
       writeFileSync(path.join(dir, '.hidden'), 'h')
       const files = await listProjectFiles(dir)
-      expect(files).toEqual(['a.txt', 'src/b.ts'])
+      // listProjectFiles returns platform-native separators; compare POSIX-shaped.
+      expect(files.map((f: string) => f.split(path.sep).join('/'))).toEqual(['a.txt', 'src/b.ts'])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

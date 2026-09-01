@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   GuardedWebContents,
   installNavigationGuards,
@@ -9,7 +11,14 @@ import {
   safeLoginExternalUrl
 } from '../navigation'
 
-const policy = { rendererEntryPath: '/app/renderer/index.html' }
+// Build the packaged-renderer fixture from the platform's own path shape so
+// the file:// round-trip (fileURLToPath in the product) resolves on POSIX and
+// win32 alike.
+const rendererEntryPath = path.resolve(path.join('app', 'renderer', 'index.html'))
+const rendererEntryUrl = pathToFileURL(rendererEntryPath).href
+const rendererOtherUrl = pathToFileURL(path.resolve(path.join('app', 'renderer', 'other.html'))).href
+
+const policy = { rendererEntryPath }
 
 class FakeWebContents implements GuardedWebContents {
   readonly listeners = new Map<string, (event: { preventDefault(): void }, url: string) => void>()
@@ -75,8 +84,8 @@ describe('safeLoginExternalUrl', () => {
 
 describe('isAllowedAppNavigation', () => {
   it('allows only the packaged renderer document', () => {
-    expect(isAllowedAppNavigation('file:///app/renderer/index.html#/settings', policy)).toBe(true)
-    expect(isAllowedAppNavigation('file:///app/renderer/other.html', policy)).toBe(false)
+    expect(isAllowedAppNavigation(`${rendererEntryUrl}#/settings`, policy)).toBe(true)
+    expect(isAllowedAppNavigation(rendererOtherUrl, policy)).toBe(false)
     expect(isAllowedAppNavigation('https://example.com', policy)).toBe(false)
   })
 
@@ -96,7 +105,7 @@ describe('installNavigationGuards', () => {
 
     expect(webContents.navigate('will-navigate', 'https://example.com')).toHaveBeenCalledOnce()
     expect(webContents.navigate('will-redirect', 'https://example.com')).toHaveBeenCalledOnce()
-    expect(webContents.navigate('will-navigate', 'file:///app/renderer/index.html#/boards')).not.toHaveBeenCalled()
+    expect(webContents.navigate('will-navigate', `${rendererEntryUrl}#/boards`)).not.toHaveBeenCalled()
 
     expect(webContents.openHandler?.({ url: 'https://example.com/docs' })).toEqual({ action: 'deny' })
     expect(webContents.openHandler?.({ url: 'file:///etc/passwd' })).toEqual({ action: 'deny' })

@@ -6,6 +6,17 @@ const en = {
   // App
   'app.loading': 'Loading…',
 
+  // Update banner (packaged builds only)
+  'update.available': 'Version {version} is available',
+  'update.action': 'Update now',
+  'update.downloading': 'Downloading update…',
+  'update.downloadingPercent': 'Downloading update… {percent}%',
+  'update.ready': 'Version {version} is ready to install',
+  'update.install': 'Restart & update',
+  'update.failed': 'Update failed',
+  'update.fallback': 'Download manually',
+  'update.dismiss': 'Dismiss',
+
   // Sidebar
   'sidebar.newChat': 'New Chat',
   'sidebar.cliMissing': 'Agent runtime not found. Install it to use chat.',
@@ -851,6 +862,16 @@ export type I18nKey = keyof typeof en
 
 const zh: Record<I18nKey, string> = {
   'app.loading': '加载中…',
+
+  'update.available': '新版本 {version} 可用',
+  'update.action': '立即更新',
+  'update.downloading': '正在下载更新…',
+  'update.downloadingPercent': '正在下载更新… {percent}%',
+  'update.ready': '新版本 {version} 已就绪',
+  'update.install': '重启并安装',
+  'update.failed': '更新失败',
+  'update.fallback': '手动下载',
+  'update.dismiss': '关闭',
 
   'sidebar.newChat': '新建对话',
   'sidebar.cliMissing': '未找到 Agent 运行时，安装后才能使用对话功能。',

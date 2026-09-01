@@ -88,5 +88,5 @@ export function updaterQuitAndInstall(): void {
  * to install).
  */
 export async function updaterOpenReleasePage(): Promise<void> {
-  await shell.openExternal('https://github.com/taotao135791-bit/omp-gui/releases/latest')
+  await shell.openExternal('https://github.com/taotao135791-bit/toushou/releases/latest')
 }
