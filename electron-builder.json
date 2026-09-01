@@ -21,6 +21,10 @@
     {
       "from": "resources/omp-approval",
       "to": "omp-approval"
+    },
+    {
+      "from": "resources/ads-toolkit",
+      "to": "ads-toolkit"
     }
   ],
   "mac": {

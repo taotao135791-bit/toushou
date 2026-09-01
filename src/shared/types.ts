@@ -1155,6 +1155,8 @@ export interface AppSettings {
   pinnedSessionIds: string[]
   /** Sidebar: sessions folded away into the archived group. */
   archivedSessionIds: string[]
+  /** Version stamps + user-removal marks for app-bundled packages. */
+  bundledPackages: Record<string, { version: string; userRemoved: boolean }>
 }
 
 export type InstallStatus =
@@ -1181,7 +1183,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifications: true,
   notificationPreviews: false,
   pinnedSessionIds: [],
-  archivedSessionIds: []
+  archivedSessionIds: [],
+  bundledPackages: {}
 }
 
 /** Snapshot of a live session, from the RPC get_state command. */
