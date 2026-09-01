@@ -53,8 +53,11 @@ export function invalidateCliCache(): void {
  * GUI apps on macOS/Linux are launched with a minimal PATH that usually
  * excludes package-manager bin dirs, so check well-known locations too.
  */
-export function executableSearchDirs(): string[] {
-  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
+export function executableSearchDirs(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): string[] {
+  const dirs = (env.PATH || '').split(path.delimiter).filter(Boolean)
   const home = homedir()
   dirs.push(
     '/opt/homebrew/bin',
@@ -67,21 +70,51 @@ export function executableSearchDirs(): string[] {
     path.join(home, '.npm-global', 'bin'),
     path.join(home, 'bin')
   )
+  if (platform === 'win32') {
+    // Default install location of the official omp Windows installer
+    // (install.ps1 writes omp.exe here).
+    dirs.push(path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'omp'))
+  }
   return Array.from(new Set(dirs))
 }
 
-function findExecutable(cmd: string): string | null {
-  for (const dir of executableSearchDirs()) {
-    const full = path.join(dir, cmd)
-    try {
-      if (!existsSync(full) || !statSync(full).isFile()) continue
-      accessSync(full, constants.X_OK)
-      return full
-    } catch {
-      continue
+/**
+ * File names tried for a command. On Windows an installed executable is
+ * `omp.exe`, not `omp`, so the bare name alone never matches. Only extensions
+ * spawn can launch directly (no shell) are tried — `.bat`/`.cmd` shims would
+ * need `shell: true` and are deliberately not matched.
+ */
+export function executableCandidateNames(
+  cmd: string,
+  platform: NodeJS.Platform = process.platform
+): string[] {
+  if (platform !== 'win32') return [cmd]
+  return [cmd, `${cmd}.exe`, `${cmd}.com`]
+}
+
+/** Find `cmd` in `dirs`, trying the platform's candidate file names. */
+export function findExecutableInDirs(
+  cmd: string,
+  dirs: string[],
+  platform: NodeJS.Platform = process.platform
+): string | null {
+  for (const dir of dirs) {
+    for (const name of executableCandidateNames(cmd, platform)) {
+      const full = path.join(dir, name)
+      try {
+        if (!existsSync(full) || !statSync(full).isFile()) continue
+        accessSync(full, constants.X_OK)
+        return full
+      } catch {
+        continue
+      }
     }
   }
   return null
+}
+
+function findExecutable(cmd: string): string | null {
+  return findExecutableInDirs(cmd, executableSearchDirs())
 }
 
 const VERSION_PROBE_TIMEOUT_MS = 5_000

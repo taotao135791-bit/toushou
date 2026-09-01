@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { PiModel } from '../shared/types'
 import { detectCli, executableSearchDirs, drainLines } from './omp'
@@ -121,7 +121,7 @@ function queryModels(): Promise<PiModel[]> {
     const proc = spawn(cli.path ?? cli.command, ['--mode', 'rpc', '--no-extensions'], {
       env: {
         ...process.env,
-        PATH: executableSearchDirs().join(':'),
+        PATH: executableSearchDirs().join(delimiter),
         HOME: homedir(),
         FORCE_COLOR: '0'
       }
