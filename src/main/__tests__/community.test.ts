@@ -7,7 +7,7 @@ afterEach(() => {
 
 describe('CURATED_GIT_PACKAGES', () => {
   it('lists unique GitHub repos with complete metadata', () => {
-    expect(CURATED_GIT_PACKAGES).toHaveLength(11)
+    expect(CURATED_GIT_PACKAGES).toHaveLength(12)
     const repos = CURATED_GIT_PACKAGES.map((p) => p.repo)
     expect(new Set(repos).size).toBe(repos.length)
     for (const p of CURATED_GIT_PACKAGES) {
