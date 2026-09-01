@@ -160,6 +160,16 @@ export class OperationGrantManager {
     return this.consumeFileGrant('board-dataset-import', id, ownerWebContentsId)
   }
 
+  /** Minted only after the user picks a SKILL 目录 file through the native picker. */
+  async mintSkillFile(trustedFilePath: string, ownerWebContentsId: number): Promise<FileGrant | null> {
+    return this.mintFileGrant('skill-import', trustedFilePath, ownerWebContentsId)
+  }
+
+  /** Resolve and consume a skill import grant (one-shot, like dataset grants). */
+  async consumeSkillFile(id: unknown, ownerWebContentsId: number): Promise<string | null> {
+    return this.consumeFileGrant('skill-import', id, ownerWebContentsId)
+  }
+
   /**
    * Minted after a native office open-dialog pick, or in Main when a runtime
    * extension's open_panel request passes validateOfficePath.
@@ -174,7 +184,7 @@ export class OperationGrantManager {
   }
 
   private async mintFileGrant(
-    purpose: 'board-dataset-import' | 'office-open',
+    purpose: 'board-dataset-import' | 'office-open' | 'skill-import',
     trustedFilePath: string,
     ownerWebContentsId: number
   ): Promise<FileGrant | null> {
@@ -202,7 +212,7 @@ export class OperationGrantManager {
   }
 
   private async consumeFileGrant(
-    purpose: 'board-dataset-import' | 'office-open',
+    purpose: 'board-dataset-import' | 'office-open' | 'skill-import',
     id: unknown,
     ownerWebContentsId: number
   ): Promise<string | null> {

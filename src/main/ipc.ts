@@ -99,6 +99,8 @@ import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, deleteBoard, listBoards, saveBoard } from './boards'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
+import { importSkillFile, listSkills, openSkillHtml, readSkill, revealSkillsDir } from './skills'
+import { importGithubSkills, previewGithubSkills } from './skillsGithub'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
 import { maybeNotifyTurnFinished, maybeNotifyUiRequest } from './notify'
@@ -1673,6 +1675,51 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.BOARDS_REVEAL_DESIGN, async () => {
     ensureBoardDesignWatch()
     return revealBoardDesign()
+  })
+
+  // SKILL 目录 — the team library of self-made Markdown docs and HTML tools.
+  // Same grant discipline as datasets: the renderer never passes a path;
+  // the native picker mints a one-use FileGrant that import consumes.
+  ipcMain.handle(IPC_CHANNELS.SKILLS_LIST, async () => {
+    return listSkills()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SKILLS_READ, async (_event, id: unknown) => {
+    return readSkill(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SKILLS_SELECT_FILE, async (event) => {
+    bindOperationGrantOwnerCleanup(event)
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Markdown / HTML', extensions: ['md', 'html'] }]
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    return operationGrantManager.mintSkillFile(result.filePaths[0], event.sender.id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SKILLS_IMPORT, async (event, fileGrantId: unknown) => {
+    const filePath = await operationGrantManager.consumeSkillFile(fileGrantId, event.sender.id)
+    if (!filePath) return { ok: false, error: 'invalid-path' as const }
+    return importSkillFile(filePath)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SKILLS_REVEAL, async () => {
+    return revealSkillsDir()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SKILLS_OPEN_HTML, async (_event, id: unknown) => {
+    return openSkillHtml(id)
+  })
+
+  // GitHub import — the renderer supplies only a URL; Main parses it and
+  // talks to api.github.com / raw.githubusercontent.com itself.
+  ipcMain.handle(IPC_CHANNELS.SKILLS_GITHUB_PREVIEW, async (_event, url: unknown) => {
+    return previewGithubSkills(url)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SKILLS_GITHUB_IMPORT, async (_event, request: unknown) => {
+    return importGithubSkills(request)
   })
 
   ipcMain.handle(IPC_CHANNELS.DIALOG_SELECT_FOLDER, async () => {

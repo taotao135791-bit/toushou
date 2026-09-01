@@ -13,6 +13,7 @@ import SettingsPage from './pages/SettingsPage'
 import BoardsPage from './pages/BoardsPage'
 import BrowserPage from './pages/BrowserPage'
 import OfficePage from './pages/OfficePage'
+import SkillsPage from './pages/SkillsPage'
 import SetupWizard from './pages/SetupWizard'
 
 interface RendererErrorBoundaryProps {
@@ -260,6 +261,7 @@ function App() {
           <Route path="/boards" element={<BoardsPage />} />
           <Route path="/browser" element={<BrowserPage />} />
           <Route path="/office" element={<OfficePage />} />
+          <Route path="/skills" element={<SkillsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </Layout>

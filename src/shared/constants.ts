@@ -144,5 +144,17 @@ export const IPC_CHANNELS = {
   OFFICE_OPEN_DIALOG: 'office:open-dialog',
   OFFICE_READ: 'office:read',
   OFFICE_SAVE_DIALOG: 'office:save-dialog',
-  OFFICE_SAVE: 'office:save'
+  OFFICE_SAVE: 'office:save',
+  /** SKILL 目录 — the team-shared library of self-made docs and HTML tools. */
+  SKILLS_LIST: 'skills:list',
+  SKILLS_READ: 'skills:read',
+  /** Native file picker → opaque, one-import FileGrant. */
+  SKILLS_SELECT_FILE: 'skills:select-file',
+  SKILLS_IMPORT: 'skills:import',
+  SKILLS_REVEAL: 'skills:reveal',
+  /** Serve one library HTML over loopback for the hardened browser panel. */
+  SKILLS_OPEN_HTML: 'skills:open-html',
+  /** SKILL 目录 — paste a GitHub repo/file link; Main fetches and imports. */
+  SKILLS_GITHUB_PREVIEW: 'skills:github-preview',
+  SKILLS_GITHUB_IMPORT: 'skills:github-import'
 } as const

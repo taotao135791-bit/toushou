@@ -9,6 +9,7 @@ import {
   AlertCircle,
   Globe,
   FileSpreadsheet,
+  Library,
   Trash2,
   PanelRight,
   Sun,
@@ -534,6 +535,13 @@ export default function Sidebar() {
         >
           <FileSpreadsheet size={14} className="shrink-0" />
           {t('sidebar.office')}
+        </button>
+        <button
+          onClick={() => navigate('/skills')}
+          className={navRow(location.pathname === '/skills')}
+        >
+          <Library size={14} className="shrink-0" />
+          {t('sidebar.skills')}
         </button>
         <button onClick={() => setRightPanelOpen(!rightPanelOpen)} className={navRow(rightPanelOpen)}>
           <PanelRight size={14} className="shrink-0" />

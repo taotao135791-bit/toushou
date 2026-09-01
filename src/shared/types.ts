@@ -181,7 +181,7 @@ export interface WorkspaceGrant {
 export interface FileGrant {
   /** Opaque id; valid only for the declared purpose. */
   id: string
-  purpose: 'board-dataset-import' | 'office-open' | 'office-save'
+  purpose: 'board-dataset-import' | 'office-open' | 'office-save' | 'skill-import'
   /** Display-only basename supplied by Main after the user picks/drops it. */
   name: string
   createdAt: number
@@ -1111,6 +1111,92 @@ export interface BoardDesignChange {
   spec: BoardDesignSpec
   issues: BoardDesignIssue[]
 }
+
+// ---------------------------------------------------------------------------
+// SKILL 目录 — a flat userData/skills folder the team fills with self-made,
+// self-contained assets: Markdown playbooks / prompt docs and single-file
+// HTML tools. Files are data only. Markdown renders through the app's
+// sandboxed renderer; HTML is served read-only over loopback for the
+// hardened browser panel. The file basename doubles as the id, validated by
+// isValidSkillId, so no path component ever crosses the IPC boundary.
+// ---------------------------------------------------------------------------
+
+export type SkillKind = 'markdown' | 'html'
+
+export interface SkillEntry {
+  /** The sanitized basename inside the skills folder (also the id). */
+  id: string
+  kind: SkillKind
+  /** Display name: front-matter `name`, else the file stem. */
+  name: string
+  /** Optional front-matter `author`. */
+  author: string
+  /** Front-matter `description` or the first meaningful line. */
+  description: string
+  sizeBytes: number
+  updatedAtMillis: number
+}
+
+export type SkillListResult =
+  | { ok: true; entries: SkillEntry[] }
+  | { ok: false; error: 'skills-unreadable' }
+
+export type SkillReadResult =
+  | { ok: true; entry: SkillEntry; content: string }
+  | { ok: false; error: 'invalid-request' | 'not-found' | 'too-large' | 'read-failed' }
+
+export type SkillImportResult =
+  | { ok: true; entry: SkillEntry }
+  | { ok: false; error: 'invalid-path' | 'invalid-file' | 'too-large' | 'library-full' | 'write-failed' }
+
+export type SkillOpenHtmlResult =
+  | { ok: true; url: string }
+  | { ok: false; error: 'invalid-request' | 'not-found' | 'server-failed' }
+
+// ---------------------------------------------------------------------------
+// SKILL 目录 — GitHub import. The renderer supplies only a URL (parsed and
+// re-validated in shared/skillsGithub.ts); all network fetching happens in
+// Main against fixed github.com/raw.githubusercontent.com hosts.
+// ---------------------------------------------------------------------------
+
+export interface GithubSkillSource {
+  kind: 'repo' | 'file'
+  owner: string
+  repo: string
+  /** Branch/tag. Resolved from the API for repo links; from the URL for files. */
+  ref: string
+}
+
+export interface GithubSkillFile {
+  path: string
+  kind: SkillKind
+  sizeBytes: number
+}
+
+export type SkillGithubPreviewResult =
+  | { ok: true; source: GithubSkillSource; files: GithubSkillFile[] }
+  | {
+      ok: false
+      error:
+        | 'invalid-url'
+        | 'repo-not-found'
+        | 'rate-limited'
+        | 'network-failed'
+        | 'no-files'
+    }
+
+export interface GithubSkillImportRequest {
+  source: GithubSkillSource
+  paths: string[]
+}
+
+export type SkillGithubImportResult =
+  | {
+      ok: true
+      imported: SkillEntry[]
+      skipped: { path: string; reason: 'too-large' | 'fetch-failed' | 'invalid-file' }[]
+    }
+  | { ok: false; error: 'invalid-request' | 'rate-limited' | 'network-failed' }
 
 // ---------------------------------------------------------------------------
 // Board datasets — imported ad-backend CSV/XLSX exports that counter/chart

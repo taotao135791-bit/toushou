@@ -49,6 +49,13 @@ import {
   BoardDesignChange,
   BoardDesignDocument,
   BoardDesignSaveResult,
+  SkillImportResult,
+  SkillListResult,
+  SkillOpenHtmlResult,
+  SkillReadResult,
+  SkillGithubImportResult,
+  SkillGithubPreviewResult,
+  GithubSkillImportRequest,
   CustomProviderSpec,
   CustomProvidersListResult,
   CustomProviderSaveResult,
@@ -204,6 +211,20 @@ export interface ElectronAPI {
   revealBoardDesign: () => Promise<boolean>
   /** Fired when board-design.md changes on disk (any source). */
   onBoardDesignChanged: (callback: (change: BoardDesignChange) => void) => () => void
+  /** SKILL 目录 — the team library of self-made docs and HTML tools. */
+  listSkills: () => Promise<SkillListResult>
+  readSkill: (id: string) => Promise<SkillReadResult>
+  /** Native picker → opaque one-import grant (no path crosses to the renderer). */
+  selectSkillFile: () => Promise<FileGrant | null>
+  importSkill: (fileGrantId: string) => Promise<SkillImportResult>
+  /** Reveal the skills folder in the OS file manager (creates it if missing). */
+  revealSkills: () => Promise<boolean>
+  /** Serve one library HTML over loopback for the hardened browser panel. */
+  openSkillHtml: (id: string) => Promise<SkillOpenHtmlResult>
+  /** Parse a GitHub repo/file link and list the importable skills it finds. */
+  previewGithubSkills: (url: string) => Promise<SkillGithubPreviewResult>
+  /** Download the selected files and store them in the library. */
+  importGithubSkills: (request: GithubSkillImportRequest) => Promise<SkillGithubImportResult>
   selectFolder: () => Promise<string | null>
   selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
   /** Pick an image file; resolves its base64 bytes (null when cancelled). */
@@ -474,6 +495,15 @@ const api: ElectronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.BOARDS_DESIGN_CHANGED, handler)
     }
   },
+  listSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST),
+  readSkill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ, id),
+  selectSkillFile: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_SELECT_FILE),
+  importSkill: (fileGrantId: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_IMPORT, fileGrantId),
+  revealSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_REVEAL),
+  openSkillHtml: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_OPEN_HTML, id),
+  previewGithubSkills: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_GITHUB_PREVIEW, url),
+  importGithubSkills: (request: GithubSkillImportRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SKILLS_GITHUB_IMPORT, request),
   selectFolder: () => ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_FOLDER),
   selectFile: (filters?: { name: string; extensions: string[] }[]) =>
     ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_FILE, filters),
