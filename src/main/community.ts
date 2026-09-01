@@ -20,6 +20,12 @@ const TIMEOUT_MS = 10_000
  */
 export const CURATED_GIT_PACKAGES: CuratedPackageInfo[] = [
   {
+    name: 'toushou-ads-toolkit',
+    repo: 'unthinker69/ads-tool-factory-share-kit',
+    description: 'Google App Campaign 广告文案工具：接入 → 生成 → 评分（更新源仓库，装这里拿最新版）',
+    category: 'productivity'
+  },
+  {
     name: 'pi-web-access',
     repo: 'nicobailon/pi-web-access',
     description: 'Web search, URL fetching, GitHub cloning, PDF/YouTube extraction',

@@ -21,3 +21,11 @@ omp plugin install /path/to/ads-toolkit
 
 投手会在启动时自动链接本包（见 src/main/bundledPackages.ts）；用户在插件页
 卸载后不会被重新安装。
+
+## 更新源（混合更新链路）
+
+本目录是**离线保底副本**。最新内容以作者仓库为准：
+<https://github.com/unthinker69/ads-tool-factory-share-kit>（根目录带同款
+pi/omp 包声明，插件页搜索或粘贴仓库地址即可安装/更新到最新版；同名安装会
+平滑替换本地链接）。给本目录同步上游改动后，请同时递增 package.json 的
+version，让默认挂载逻辑刷新版本戳记。
