@@ -88,9 +88,13 @@ function bundledResourceRoot(): string {
   return app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources')
 }
 
-/** Every launchable tool from bundled and installed packages, deduped by id. */
+/**
+ * Every launchable tool from bundled and installed packages. Deduped by
+ * command with installed entries winning over the bundled copy — a package
+ * installed from its update-source repo must not surface a twin.
+ */
 export async function listLaunchableTools(): Promise<LaunchableTool[]> {
-  const byId = new Map<string, LaunchableTool>()
+  const byCommand = new Map<string, LaunchableTool>()
 
   try {
     for (const entry of readdirSync(bundledResourceRoot())) {
@@ -100,7 +104,7 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
       } catch {
         continue
       }
-      for (const tool of toolsFromPackageRoot(root, 'bundled')) byId.set(tool.id, tool)
+      for (const tool of toolsFromPackageRoot(root, 'bundled')) byCommand.set(tool.command, tool)
     }
   } catch {
     // Resources root unreadable — fall through to installed packages.
@@ -108,10 +112,12 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
 
   for (const pkg of await listPackages().catch(() => [])) {
     if (!pkg.path) continue
-    for (const tool of toolsFromPackageRoot(pkg.path, 'installed')) byId.set(tool.id, tool)
+    for (const tool of toolsFromPackageRoot(pkg.path, 'installed')) {
+      byCommand.set(tool.command, tool)
+    }
   }
 
-  return [...byId.values()].sort(
+  return [...byCommand.values()].sort(
     (a, b) => a.label.localeCompare(b.label) || a.command.localeCompare(b.command)
   )
 }
