@@ -425,6 +425,14 @@ const en = {
   'panel.files': 'Files',
   'panel.preview': 'Preview',
   'panel.changes': 'Changes',
+  'panel.tools': 'Tools',
+
+  // One-click tool launcher (right panel + packages page)
+  'tools.loading': 'Loading tools…',
+  'tools.loadFailed': 'Could not load tools.',
+  'tools.retry': 'Retry',
+  'tools.empty':
+    'No one-click tools yet. Install a package that ships a chat command and it appears here.',
   'panel.selectProject': 'Select a project to browse files.',
   'panel.selectFile': 'Select a file from the file tree to preview.',
   'panel.loading': 'Loading…',
@@ -465,6 +473,7 @@ const en = {
   'plugins.enabling': 'Enabling…',
   'plugins.disabling': 'Disabling…',
   'plugins.update': 'Update',
+  'plugins.use': 'Use',
   'plugins.updating': 'Updating…',
   'plugins.kind.local': 'Local',
   'plugins.kind.marketplace': 'Marketplace',
@@ -1262,6 +1271,12 @@ const zh: Record<I18nKey, string> = {
   'panel.files': '文件',
   'panel.preview': '预览',
   'panel.changes': '变更',
+  'panel.tools': '工具',
+
+  'tools.loading': '正在加载工具…',
+  'tools.loadFailed': '工具加载失败。',
+  'tools.retry': '重试',
+  'tools.empty': '暂无一键工具。安装自带对话命令的插件后，这里会出现一键入口。',
   'panel.selectProject': '选择项目后可浏览文件。',
   'panel.selectFile': '从文件树中选择文件进行预览。',
   'panel.loading': '加载中…',
@@ -1300,6 +1315,7 @@ const zh: Record<I18nKey, string> = {
   'plugins.enabling': '启用中…',
   'plugins.disabling': '停用中…',
   'plugins.update': '更新',
+  'plugins.use': '使用',
   'plugins.updating': '更新中…',
   'plugins.kind.local': '本地',
   'plugins.kind.marketplace': '市场',

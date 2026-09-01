@@ -1,11 +1,12 @@
 import { useEffect } from 'react'
-import { FileText, X, Eye, FileDiff } from 'lucide-react'
+import { FileText, X, Eye, FileDiff, Wand2 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT, translate } from '../i18n'
 import FileTree from './FileTree'
 import CodePreview from './CodePreview'
 import ChangesPanel from './ChangesPanel'
+import ToolsPanel from './ToolsPanel'
 
 export default function RightPanel() {
   const {
@@ -86,6 +87,17 @@ export default function RightPanel() {
             <FileDiff size={11} />
             {t('panel.changes')}
           </button>
+          <button
+            onClick={() => setActiveRightTab('tools')}
+            className={`flex h-[24px] items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors ${
+              activeRightTab === 'tools'
+                ? 'border-line bg-ink-850 text-cream shadow-card'
+                : 'border-transparent text-cream-dim hover:text-cream'
+            }`}
+          >
+            <Wand2 size={11} />
+            {t('panel.tools')}
+          </button>
         </div>
         <button
           onClick={() => setRightPanelOpen(false)}
@@ -104,6 +116,8 @@ export default function RightPanel() {
           <FileTree />
         ) : activeRightTab === 'changes' ? (
           <ChangesPanel />
+        ) : activeRightTab === 'tools' ? (
+          <ToolsPanel />
         ) : (
           <CodePreview filePath={selectedFile} content={previewContent} />
         )}
