@@ -24,9 +24,7 @@ export default function ChatPanel() {
   const sessions = useAppStore((s) => s.sessions)
   const packages = useAppStore((s) => s.packages)
   const cliAvailable = useAppStore((s) => s.cliAvailable)
-  const rightPanelOpen = useAppStore((s) => s.rightPanelOpen)
   const workspacePanel = useAppStore((s) => s.workspacePanel)
-  const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const selectWorkspace = useAppStore((s) => s.selectWorkspace)
   // Per-session slices only: streaming deltas of OTHER sessions must not
@@ -75,7 +73,7 @@ export default function ChatPanel() {
       setWorkspacePanel(null)
       return
     }
-    setRightPanelOpen(!rightPanelOpen)
+    setWorkspacePanel({ kind: 'browser' })
   }
 
   // A terminal runtime event confirms Stop. Until then the local state gives
@@ -314,10 +312,10 @@ export default function ChatPanel() {
           <button
             onClick={toggleWorkspace}
             aria-label={t('sidebar.workbench')}
-            aria-pressed={Boolean(workspacePanel || rightPanelOpen)}
+            aria-pressed={Boolean(workspacePanel)}
             title={t('sidebar.workbench')}
             className={`app-no-drag rounded-md p-1.5 transition hover:bg-overlay hover:text-cream ${
-              workspacePanel || rightPanelOpen ? 'text-accent' : 'text-cream-faint'
+              workspacePanel ? 'text-accent' : 'text-cream-faint'
             }`}
           >
             <PanelRight size={14} />

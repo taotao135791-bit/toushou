@@ -84,13 +84,16 @@ function buildProjectTree(files: string[], rootName: string): TreeNode {
   return root
 }
 
-export default function FileTree() {
-  const { currentWorkspace, selectedFile, setSelectedFile, setActiveRightTab } = useAppStore(
+interface FileTreeProps {
+  onFileSelect?: (path: string) => void
+}
+
+export default function FileTree({ onFileSelect }: FileTreeProps) {
+  const { currentWorkspace, selectedFile, setSelectedFile } = useAppStore(
     useShallow((s) => ({
       currentWorkspace: s.currentWorkspace,
       selectedFile: s.selectedFile,
-      setSelectedFile: s.setSelectedFile,
-      setActiveRightTab: s.setActiveRightTab
+      setSelectedFile: s.setSelectedFile
     }))
   )
   const [tree, setTree] = useState<TreeNode[]>([])
@@ -127,7 +130,7 @@ export default function FileTree() {
     if (!node.isDirectory) {
       if (!currentWorkspace) return
       setSelectedFile(node.path)
-      setActiveRightTab('preview')
+      onFileSelect?.(node.path)
       return
     }
     setParentList(parentList.map((n) =>

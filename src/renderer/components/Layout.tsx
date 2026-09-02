@@ -1,6 +1,5 @@
 import { useAppStore } from '../store'
 import Sidebar from './Sidebar'
-import RightPanel from './RightPanel'
 import UpdateBanner from './UpdateBanner'
 import WorkspacePanel from './WorkspacePanel'
 import { useLocation } from 'react-router-dom'
@@ -10,7 +9,6 @@ interface LayoutProps {
 }
 
 export default function Layout({ children }: LayoutProps) {
-  const rightPanelOpen = useAppStore((state) => state.rightPanelOpen)
   const workspacePanel = useAppStore((state) => state.workspacePanel)
   const location = useLocation()
   const isChat = location.pathname === '/'
@@ -22,11 +20,7 @@ export default function Layout({ children }: LayoutProps) {
         <UpdateBanner />
         {children}
       </main>
-      {isChat && workspacePanel ? (
-        <WorkspacePanel panel={workspacePanel} />
-      ) : isChat && rightPanelOpen ? (
-        <RightPanel />
-      ) : null}
+      {isChat && workspacePanel ? <WorkspacePanel panel={workspacePanel} /> : null}
     </div>
   )
 }
