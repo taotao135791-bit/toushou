@@ -95,6 +95,7 @@ function bundledResourceRoot(): string {
  */
 export async function listLaunchableTools(): Promise<LaunchableTool[]> {
   const byCommand = new Map<string, LaunchableTool>()
+  const bundledPackageNames = new Set<string>()
 
   try {
     for (const entry of readdirSync(bundledResourceRoot())) {
@@ -104,7 +105,10 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
       } catch {
         continue
       }
-      for (const tool of toolsFromPackageRoot(root, 'bundled')) byCommand.set(tool.command, tool)
+      for (const tool of toolsFromPackageRoot(root, 'bundled')) {
+        bundledPackageNames.add(tool.packageName)
+        byCommand.set(tool.command, tool)
+      }
     }
   } catch {
     // Resources root unreadable — fall through to installed packages.
@@ -113,7 +117,13 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
   for (const pkg of await listPackages().catch(() => [])) {
     if (!pkg.path) continue
     for (const tool of toolsFromPackageRoot(pkg.path, 'installed')) {
-      byCommand.set(tool.command, tool)
+      // The bundled package is linked into the runtime on first launch. Keep
+      // that package visibly classified as built-in even though the runtime
+      // path wins for execution and updates.
+      byCommand.set(
+        tool.command,
+        bundledPackageNames.has(tool.packageName) ? { ...tool, origin: 'bundled' } : tool
+      )
     }
   }
 

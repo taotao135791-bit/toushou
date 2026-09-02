@@ -14,7 +14,7 @@ export default function ToolsPanel() {
   const [tools, setTools] = useState<LaunchableTool[] | null>(null)
   const [error, setError] = useState(false)
   const [launching, setLaunching] = useState<string | null>(null)
-  const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
+  const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const t = useT()
   const navigate = useNavigate()
 
@@ -37,7 +37,7 @@ export default function ToolsPanel() {
       const id = await launchTool(tool.command)
       if (id) {
         navigate('/')
-        setRightPanelOpen(false)
+        setWorkspacePanel(null)
       }
     } finally {
       setLaunching(null)
@@ -77,15 +77,22 @@ export default function ToolsPanel() {
     )
   }
 
-  return (
-    <div className="space-y-2 p-3">
-      {tools.map((tool) => (
+  const builtIn = tools.filter((tool) => tool.origin === 'bundled')
+  const added = tools.filter((tool) => tool.origin === 'installed')
+
+  const renderGroup = (title: string, entries: LaunchableTool[]) => (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2 px-1 text-[11px] font-semibold tracking-wide text-cream-faint">
+        <span>{title}</span>
+        <span className="rounded-full bg-overlay px-1.5 py-0.5 font-mono text-[10px]">{entries.length}</span>
+      </div>
+      {entries.map((tool) => (
         <button
           key={tool.id}
           type="button"
           onClick={() => void onLaunch(tool)}
           disabled={launching !== null}
-          className="group flex w-full flex-col gap-1 rounded-lg border border-line bg-ink-800/50 px-3 py-2.5 text-left transition-colors hover:border-ink-600 disabled:opacity-40"
+          className="group flex w-full flex-col gap-1 rounded-xl border border-line bg-ink-800/50 px-3 py-2.5 text-left transition-colors hover:border-ink-600 hover:bg-ink-800 disabled:opacity-40"
         >
           <span className="flex items-center gap-2">
             {launching === tool.id ? (
@@ -93,8 +100,8 @@ export default function ToolsPanel() {
             ) : (
               <Wand2 size={13} className="text-cream-faint" />
             )}
-            <span className="text-xs font-medium text-cream">{tool.label}</span>
-            <span className="ml-auto rounded bg-ink-850 px-1.5 py-0.5 font-mono text-[10px] text-cream-faint">
+            <span className="min-w-0 truncate text-xs font-medium text-cream">{tool.label}</span>
+            <span className="ml-auto shrink-0 rounded bg-ink-850 px-1.5 py-0.5 font-mono text-[10px] text-cream-faint">
               {tool.command}
             </span>
           </span>
@@ -105,6 +112,18 @@ export default function ToolsPanel() {
           )}
         </button>
       ))}
+    </section>
+  )
+
+  return (
+    <div className="flex-1 overflow-y-auto p-3">
+      <div className="mb-3 rounded-xl border border-line bg-ink-900/60 px-3 py-2.5 text-[11px] leading-5 text-cream-faint">
+        {t('tools.hint')}
+      </div>
+      <div className="space-y-4">
+        {builtIn.length > 0 && renderGroup(t('tools.builtIn'), builtIn)}
+        {added.length > 0 && renderGroup(t('tools.added'), added)}
+      </div>
     </div>
   )
 }

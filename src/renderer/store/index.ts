@@ -77,6 +77,7 @@ export interface QueuedMessage {
 export type WorkspacePanel =
   | { kind: 'browser'; url?: string }
   | { kind: 'office'; grant?: FileGrant; name?: string }
+  | { kind: 'plugins' }
 
 /** A pending interactive extension dialog, keyed by session. */
 export type UiRequest = Extract<SessionEvent, { type: 'ui_request' }>

@@ -192,10 +192,6 @@ export default function PackagesPage() {
     void refreshKimiStatus()
   }, [refreshKimiStatus, refreshManagedPlugins])
 
-  useEffect(() => {
-    if (isCurrentOmp && tab === 'marketplace') setTab('installed')
-  }, [isCurrentOmp, tab])
-
   const refreshAll = async () => {
     await Promise.all([refresh(), refreshManagedPlugins(), refreshKimiStatus()])
   }
@@ -449,9 +445,9 @@ export default function PackagesPage() {
             </section>
           ) : (
             <>
-          {/* Legacy Pi has a GUI marketplace; current OMP owns its native one. */}
+          {/* The GUI marketplace complements the runtime's native package controls. */}
           <div className="flex w-fit gap-1 rounded-full border border-line bg-ink-900 p-1">
-            {(isCurrentOmp ? (['installed'] as const) : (['installed', 'marketplace'] as const)).map((value) => (
+            {(['installed', 'marketplace'] as const).map((value) => (
               <button
                 key={value}
                 onClick={() => setTab(value)}
@@ -466,7 +462,7 @@ export default function PackagesPage() {
             ))}
           </div>
 
-          {tab === 'marketplace' && !isCurrentOmp ? (
+          {tab === 'marketplace' ? (
             <MarketplaceSection
               packages={packages}
               pending={pending}

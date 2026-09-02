@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Globe2, Table2, X } from 'lucide-react'
+import { Blocks, Globe2, Table2, X } from 'lucide-react'
 import BrowserPage from '../pages/BrowserPage'
 import OfficePage from '../pages/OfficePage'
+import ToolsPanel from './ToolsPanel'
 import { useT } from '../i18n'
 import { WorkspacePanel as WorkspacePanelState, useAppStore } from '../store'
 
@@ -24,10 +25,13 @@ export default function WorkspacePanel({ panel }: WorkspacePanelProps) {
   const close = () => setWorkspacePanel(null)
   const openBrowser = () => setWorkspacePanel({ kind: 'browser' })
   const openOffice = () => setWorkspacePanel({ kind: 'office' })
+  const openPlugins = () => setWorkspacePanel({ kind: 'plugins' })
+  const workspaceLabel =
+    kind === 'browser' ? 'Browser workspace' : kind === 'office' ? 'Office workspace' : 'Plugin workspace'
 
   return (
     <aside
-      aria-label={kind === 'browser' ? 'Browser workspace' : 'Office workspace'}
+      aria-label={workspaceLabel}
       className="flex w-[min(38vw,560px)] min-w-[320px] shrink-0 flex-col border-l border-line bg-ink-950 shadow-[-12px_0_32px_rgba(0,0,0,0.08)]"
     >
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line px-2">
@@ -49,6 +53,14 @@ export default function WorkspacePanel({ panel }: WorkspacePanelProps) {
         </button>
         <button
           type="button"
+          onClick={openPlugins}
+          className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] ${kind === 'plugins' ? 'bg-overlay text-cream' : 'text-cream-faint hover:text-cream'}`}
+        >
+          <Blocks size={12} />
+          {t('workspace.plugins')}
+        </button>
+        <button
+          type="button"
           onClick={close}
           aria-label={t('workspace.close')}
           className="ml-auto rounded-md p-1 text-cream-faint transition hover:bg-overlay hover:text-cream"
@@ -58,7 +70,7 @@ export default function WorkspacePanel({ panel }: WorkspacePanelProps) {
       </div>
       {kind === 'browser' ? (
         <BrowserPage key="browser" embedded initialUrl={panel.kind === 'browser' ? panel.url : undefined} onClose={close} />
-      ) : (
+      ) : kind === 'office' ? (
         <OfficePage
           key="office"
           embedded
@@ -66,6 +78,8 @@ export default function WorkspacePanel({ panel }: WorkspacePanelProps) {
           initialName={panel.kind === 'office' ? panel.name : undefined}
           onClose={close}
         />
+      ) : (
+        <ToolsPanel />
       )}
     </aside>
   )
