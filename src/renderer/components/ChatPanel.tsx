@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react'
-import { FolderOpen, Download, Loader2, ChevronRight, ChevronDown } from 'lucide-react'
+import { FolderOpen, Download, Loader2, ChevronRight, ChevronDown, PanelRight } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
@@ -24,6 +24,10 @@ export default function ChatPanel() {
   const sessions = useAppStore((s) => s.sessions)
   const packages = useAppStore((s) => s.packages)
   const cliAvailable = useAppStore((s) => s.cliAvailable)
+  const rightPanelOpen = useAppStore((s) => s.rightPanelOpen)
+  const workspacePanel = useAppStore((s) => s.workspacePanel)
+  const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
+  const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const selectWorkspace = useAppStore((s) => s.selectWorkspace)
   // Per-session slices only: streaming deltas of OTHER sessions must not
   // re-render this chat, and unrelated store writes must not either.
@@ -65,6 +69,14 @@ export default function ChatPanel() {
   const [sendError, setSendError] = useState<I18nKey | null>(null)
 
   const isStopping = currentSessionId !== null && stoppingSessionId === currentSessionId
+
+  const toggleWorkspace = () => {
+    if (workspacePanel) {
+      setWorkspacePanel(null)
+      return
+    }
+    setRightPanelOpen(!rightPanelOpen)
+  }
 
   // A terminal runtime event confirms Stop. Until then the local state gives
   // immediate feedback and prevents a second abort click.
@@ -299,6 +311,17 @@ export default function ChatPanel() {
           {currentSession ? currentSession.title : t('chat.noActiveSession')}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-cream-dim">
+          <button
+            onClick={toggleWorkspace}
+            aria-label={t('sidebar.workbench')}
+            aria-pressed={Boolean(workspacePanel || rightPanelOpen)}
+            title={t('sidebar.workbench')}
+            className={`app-no-drag rounded-md p-1.5 transition hover:bg-overlay hover:text-cream ${
+              workspacePanel || rightPanelOpen ? 'text-accent' : 'text-cream-faint'
+            }`}
+          >
+            <PanelRight size={14} />
+          </button>
           {currentSessionId && (
             <button
               onClick={() => void handleExport()}

@@ -9,7 +9,6 @@ import {
   AlertCircle,
   Library,
   Trash2,
-  PanelRight,
   Sun,
   Moon,
   Search,
@@ -47,8 +46,6 @@ export default function Sidebar() {
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const cliAvailable = useAppStore((s) => s.cliAvailable)
   const sessionRecords = useAppStore((s) => s.sessionRecords)
-  const workspacePanel = useAppStore((s) => s.workspacePanel)
-  const rightPanelOpen = useAppStore((s) => s.rightPanelOpen)
   const language = useAppStore((s) => s.language)
   const theme = useAppStore((s) => s.theme)
   const busy = useAppStore((s) => s.busy)
@@ -63,8 +60,6 @@ export default function Sidebar() {
   const activateRecentWorkspace = useAppStore((s) => s.activateRecentWorkspace)
   const setCurrentSessionId = useAppStore((s) => s.setCurrentSessionId)
   const setSessions = useAppStore((s) => s.setSessions)
-  const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
-  const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
   const setLanguage = useAppStore((s) => s.setLanguage)
   const setTheme = useAppStore((s) => s.setTheme)
   const togglePinSession = useAppStore((s) => s.togglePinSession)
@@ -77,17 +72,6 @@ export default function Sidebar() {
   const setRecentWorkspaces = useAppStore((s) => s.setRecentWorkspaces)
   const removeRecentProject = useAppStore((s) => s.removeRecentProject)
   const setSetupComplete = useAppStore((s) => s.setSetupComplete)
-
-  const toggleRightPanel = () => {
-    if (location.pathname !== '/') {
-      setWorkspacePanel(null)
-      setRightPanelOpen(true)
-      navigate('/')
-      return
-    }
-    setWorkspacePanel(null)
-    setRightPanelOpen(!rightPanelOpen)
-  }
 
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -539,10 +523,6 @@ export default function Sidebar() {
         >
           <Library size={14} className="shrink-0" />
           {t('sidebar.skills')}
-        </button>
-        <button onClick={toggleRightPanel} className={navRow(rightPanelOpen && !workspacePanel)}>
-          <PanelRight size={14} className="shrink-0" />
-          {t('sidebar.workbench')}
         </button>
       </nav>
 
