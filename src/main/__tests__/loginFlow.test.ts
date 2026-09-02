@@ -208,3 +208,43 @@ describe('OmpLoginFlow', () => {
     await started
   })
 })
+
+describe('login flow probe leak regression', () => {
+  it('kills the probe adopted after a cancel that landed while spawning', async () => {
+    const states: LoginState[] = []
+    const kill = vi.fn()
+    let resolveSpawn!: (value: { client: unknown; bootstrap: boolean } | null) => void
+    const spawnProbe = () =>
+      new Promise<{ client: unknown; bootstrap: boolean } | null>((resolve) => {
+        resolveSpawn = resolve
+      })
+    const flow = new OmpLoginFlow({
+      cli: CLI,
+      onState: (s) => states.push(s),
+      onOpenUrl: () => {},
+      spawnProbe: spawnProbe as unknown as typeof RuntimeRpcClient.spawnWithBootstrap
+    })
+    const started = flow.start('deepseek')
+    await tick()
+    // Cancel before spawn resolves: cancel() saw a null client and killed nothing.
+    flow.cancel()
+    resolveSpawn({
+      client: { query: vi.fn(), respond: vi.fn(), kill } as unknown as RuntimeRpcClient,
+      bootstrap: false
+    })
+    await started
+    expect(kill).toHaveBeenCalled()
+    expect(states.at(-1)?.status).toBe('cancelled')
+  })
+
+  it('still kills the probe when the login query settles after a cancel', async () => {
+    const { flow, states, client } = makeFlow()
+    const started = flow.start('deepseek')
+    await vi.waitFor(() => expect(states.some((s) => s.status === 'starting')).toBe(true))
+    flow.cancel()
+    client.resolveLogin(null) // e.g. the query timeout firing after the cancel
+    await started
+    expect(client.kill).toHaveBeenCalled()
+    expect(states.at(-1)?.status).toBe('cancelled')
+  })
+})

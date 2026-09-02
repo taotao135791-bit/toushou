@@ -99,15 +99,24 @@ export class OmpLoginFlow {
       return
     }
     this.client = spawned.client
+    if (this.finished) {
+      // Cancelled while the probe was spawning: adopt-and-kill, otherwise the
+      // probe outlives the flow (cancel() saw a null client and killed nothing).
+      this.client.kill()
+      this.client = null
+      return
+    }
 
     const res = await this.client.query(
       { type: 'login', providerId },
       LOGIN_RESPONSE_TIMEOUT_MS
     )
-    if (this.finished) return // cancelled meanwhile
+    const cancelledMeanwhile = this.finished
     // The login session is done either way — release it before verifying.
-    this.client.kill()
+    // cancel() may have nulled the client already; kill() is idempotent.
+    this.client?.kill()
     this.client = null
+    if (cancelledMeanwhile) return
     if (res && res.success === true) {
       await this.verify(providerId)
     } else {
