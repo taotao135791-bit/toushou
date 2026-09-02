@@ -9,6 +9,7 @@ import { buildAgentArgs } from '../languageArgs'
 import { executableSearchDirs } from './OmpCapabilities'
 import { EnvMode, resolveSubprocessEnv } from './env'
 import { spawnCommand } from '../command'
+import { browserUseEnv } from '../browserUse'
 
 /**
  * Process assembly for `pi --mode rpc` sessions: CLI argument construction
@@ -193,7 +194,10 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       PATH: executableSearchDirs().join(path.delimiter),
       HOME: homedir(),
       FORCE_COLOR: '0',
-      OMP_APPROVAL_CONFIG: approvalConfigFile
+      OMP_APPROVAL_CONFIG: approvalConfigFile,
+      // Loopback bridge for the bundled browser-use tools (absent when the
+      // bridge could not start; the tools then report a clear error).
+      ...browserUseEnv()
     }),
     approvalConfigFile
   }

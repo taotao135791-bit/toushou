@@ -1,0 +1,18 @@
+{
+  "name": "toushou-browser-use",
+  "version": "0.1.0",
+  "description": "投手内置浏览器操纵工具：导航、源码快照（优先）、模拟点击输入、截屏兜底",
+  "displayName": "浏览器操纵 (Browser Use)",
+  "author": "投手团队",
+  "license": "MIT",
+  "keywords": ["pi-package", "browser-use"],
+  "pi": {
+    "extensions": ["extensions/index.ts"],
+    "skills": ["skills"]
+  },
+  "omp": {
+    "extensions": ["extensions/index.ts"],
+    "skills": ["skills"]
+  },
+  "files": ["extensions", "skills"]
+}

@@ -21,6 +21,19 @@ const panels = new Map<number, WebContentsView>()
 /** Owner windows already wired for 'closed' cleanup. */
 const cleanupWired = new Set<number>()
 
+/**
+ * The app is single-window in practice; the browser-use bridge targets the
+ * first live panel (same policy as the open_panel broadcast).
+ */
+export function getActiveBrowserPanel(): WebContentsView | null {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    const panel = panels.get(win.id)
+    if (panel && !panel.webContents.isDestroyed()) return panel
+  }
+  return null
+}
+
 export const BROWSER_PANEL_BOUNDS_LIMIT = 100_000
 
 /**

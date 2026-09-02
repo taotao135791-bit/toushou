@@ -3,6 +3,7 @@ import path from 'node:path'
 import { readdirSync, unlinkSync } from 'node:fs'
 import { getStore, setStore, applyFirstRunDefaults } from './store'
 import { ensureBundledPackages } from './bundledPackages'
+import { initBrowserUseBridge } from './browserUse'
 import { registerIpc } from './ipc'
 import { syncMachineSkills } from './piSettings'
 import { detectCli } from './omp'
@@ -108,6 +109,9 @@ app.whenReady().then(() => {
   // Fire-and-forget: links bundled packages (e.g. the ads toolkit) into the
   // runtime when detected; no-ops once linked or after user removal.
   void ensureBundledPackages()
+  // Loopback bridge for the bundled browser-use tools; started before the
+  // first session spawn so its env is available from session one.
+  initBrowserUseBridge()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
