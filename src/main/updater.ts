@@ -212,7 +212,11 @@ function scheduleUnsignedMacInstall(): void {
     setStatus({ status: 'error', message: '更新包尚未下载完成，请重试。' })
     return
   }
-  const currentApp = path.resolve(process.resourcesPath, '..')
+  // process.resourcesPath points to `<App>.app/Contents/Resources`; move up
+  // two levels to the bundle root. Moving up only once resolves to
+  // `<App>.app/Contents`, which made every valid macOS install look invalid
+  // when the user tried to install an unsigned in-app update.
+  const currentApp = path.resolve(process.resourcesPath, '../..')
   if (path.basename(currentApp) !== '投手.app' || !existsSync(path.join(currentApp, 'Contents', 'Info.plist'))) {
     setStatus({ status: 'error', message: '当前应用安装位置无效，请使用最新安装包重新安装。' })
     return
