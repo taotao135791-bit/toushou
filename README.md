@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.3.6，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.3.6) 下载：
+当前版本 v0.3.7，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.3.7) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.6/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.6/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.6/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.7/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.7/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.7/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.3.7：合并 Skill 专业化启动与登录取消泄漏修复；Skill 继续独立于插件入口，支持安全注入会话、对话选择和删除。
 
 v0.3.6：插件市场在 OMP 模式下也可见；右侧工作区新增“使用插件”，分组显示内置与已添加插件的一键入口，Skill-only 包不会混入；内置 Google App Campaign 文案工具可直接使用。
 
