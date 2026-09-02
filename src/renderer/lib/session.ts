@@ -10,7 +10,9 @@ import { useAppStore } from '../store'
  * Main has actually created the session, so a failed create keeps the user's
  * picker choices for a retry.
  */
-export async function createSessionForCurrentProject(): Promise<string | null> {
+export async function createSessionForCurrentProject(
+  extra?: { skillId?: string }
+): Promise<string | null> {
   const {
     currentWorkspace,
     selectWorkspace,
@@ -25,7 +27,7 @@ export async function createSessionForCurrentProject(): Promise<string | null> {
     if (!grant) return null
   }
   const overrides = getSessionOverrides()
-  const session = await window.electronAPI.createSession(grant.id, overrides)
+  const session = await window.electronAPI.createSession(grant.id, { ...overrides, ...extra })
   // Clear only the values this successful request used. If the user changed a
   // picker while Main was creating the session, that newer choice is reserved
   // for the next session instead of being erased by this completion.

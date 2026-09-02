@@ -5,6 +5,8 @@ import { LaunchableTool } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { launchTool } from '../lib/launchTool'
+import { launchSkillSession } from '../lib/launchTool'
+import { formatSkillChatReference } from '@shared/skills'
 
 /**
  * One-click tool list for the right panel. Each entry launches a new chat
@@ -15,6 +17,7 @@ export default function ToolsPanel() {
   const [error, setError] = useState(false)
   const [launching, setLaunching] = useState<string | null>(null)
   const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
+  const language = useAppStore((s) => s.language)
   const t = useT()
   const navigate = useNavigate()
 
@@ -34,7 +37,12 @@ export default function ToolsPanel() {
     if (launching) return
     setLaunching(tool.id)
     try {
-      const id = await launchTool(tool.command)
+      const id =
+        tool.origin === 'skill' && tool.skillId
+          ? await launchSkillSession(tool.skillId, formatSkillChatReference(tool.label, language))
+          : tool.command
+            ? await launchTool(tool.command)
+            : null
       if (id) {
         navigate('/')
         setRightPanelOpen(false)
@@ -77,9 +85,10 @@ export default function ToolsPanel() {
     )
   }
 
-  return (
-    <div className="space-y-2 p-3">
-      {tools.map((tool) => (
+  const pluginTools = tools.filter((tool) => tool.origin !== 'skill')
+  const skillTools = tools.filter((tool) => tool.origin === 'skill')
+
+  const renderTool = (tool: LaunchableTool) => (
         <button
           key={tool.id}
           type="button"
@@ -95,7 +104,7 @@ export default function ToolsPanel() {
             )}
             <span className="text-xs font-medium text-cream">{tool.label}</span>
             <span className="ml-auto rounded bg-ink-850 px-1.5 py-0.5 font-mono text-[10px] text-cream-faint">
-              {tool.command}
+              {tool.origin === 'skill' ? 'SOP' : tool.command}
             </span>
           </span>
           {tool.description && (
@@ -104,7 +113,22 @@ export default function ToolsPanel() {
             </span>
           )}
         </button>
-      ))}
+  )
+
+  const renderSection = (title: string, rows: LaunchableTool[]) =>
+    rows.length > 0 && (
+      <div className="space-y-2">
+        <p className="px-1 pt-1 text-[10px] font-medium uppercase tracking-wider text-cream-faint">
+          {title}
+        </p>
+        {rows.map(renderTool)}
+      </div>
+    )
+
+  return (
+    <div className="space-y-3 p-3">
+      {renderSection(t('tools.section.plugins'), pluginTools)}
+      {renderSection(t('tools.section.skills'), skillTools)}
     </div>
   )
 }

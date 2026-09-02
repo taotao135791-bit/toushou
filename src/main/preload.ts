@@ -52,6 +52,7 @@ import {
   BoardDesignSaveResult,
   SkillImportResult,
   SkillListResult,
+  SkillDeleteResult,
   SkillOpenHtmlResult,
   SkillReadResult,
   SkillGithubImportResult,
@@ -92,7 +93,7 @@ export interface ElectronAPI {
   /** Create a session under a Main-owned workspace grant. */
   createSession: (
     grantId: string,
-    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel }
+    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string }
   ) => Promise<Session>
   sendMessage: (
     sessionId: string,
@@ -217,6 +218,7 @@ export interface ElectronAPI {
   /** SKILL 目录 — the team library of self-made docs and HTML tools. */
   listSkills: () => Promise<SkillListResult>
   readSkill: (id: string) => Promise<SkillReadResult>
+  deleteSkill: (id: string) => Promise<SkillDeleteResult>
   /** Native picker → opaque one-import grant (no path crosses to the renderer). */
   selectSkillFile: () => Promise<FileGrant | null>
   importSkill: (fileGrantId: string) => Promise<SkillImportResult>
@@ -352,7 +354,10 @@ const api: ElectronAPI = {
   detectCli: (force?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.OMP_DETECT, force),
   getCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.OMP_CAPABILITIES),
   listSessions: () => ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_SESSIONS),
-  createSession: (grantId: string, overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel }) =>
+  createSession: (
+    grantId: string,
+    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string }
+  ) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_CREATE_SESSION, grantId, overrides),
   sendMessage: (
     sessionId: string,
@@ -501,6 +506,7 @@ const api: ElectronAPI = {
   },
   listSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST),
   readSkill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ, id),
+  deleteSkill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_DELETE, id),
   selectSkillFile: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_SELECT_FILE),
   importSkill: (fileGrantId: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_IMPORT, fileGrantId),
   revealSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_REVEAL),

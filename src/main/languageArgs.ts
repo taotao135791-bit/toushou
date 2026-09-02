@@ -17,8 +17,14 @@ const EN_PERSONA_PROMPT =
   'creative iteration, funnel and attribution diagnosis, and performance reporting. ' +
   "Ground every recommendation in the user's actual data and platform policies, and prefer concrete, actionable next steps over generic advice."
 
-/** Extra CLI args injecting the ad-optimizer persona and reply language. */
-export function buildAgentArgs(language: Language): string[] {
+/**
+ * Extra CLI args injecting the ad-optimizer persona and reply language,
+ * optionally followed by a one-shot team-skill SOP block. The skill rides
+ * in the SAME appended system prompt so the CLI never has to reconcile
+ * two --append-system-prompt occurrences.
+ */
+export function buildAgentArgs(language: Language, skillSystemPrompt?: string): string[] {
   const persona = language === 'zh' ? ZH_PERSONA_PROMPT : EN_PERSONA_PROMPT
-  return ['--append-system-prompt', persona]
+  const skill = skillSystemPrompt?.trim()
+  return ['--append-system-prompt', skill ? `${persona}\n\n${skill}` : persona]
 }

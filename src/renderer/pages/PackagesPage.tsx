@@ -143,7 +143,9 @@ export default function PackagesPage() {
       setPackages(nextPackages)
       setPackageCapabilities(capabilities)
       const commands: Record<string, string> = {}
-      for (const tool of tools) commands[tool.packageName] ??= tool.command
+      for (const tool of tools) {
+        if (tool.origin !== 'skill' && tool.command) commands[tool.packageName] ??= tool.command
+      }
       setToolCommandByPackage(commands)
     } catch {
       if (generation !== refreshGeneration.current) return

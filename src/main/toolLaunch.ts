@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
-import { LaunchableTool } from '../shared/types'
+import { LaunchableTool, SkillEntry } from '../shared/types'
 import { listPackages } from './packages'
+import { listSkills } from './skills'
 
 /**
  * One-click tool discovery. A "tool" is any native package that ships at
@@ -84,6 +85,21 @@ export function toolsFromPackageRoot(
   }))
 }
 
+/** Map SKILL-library Markdown entries to launchable rows (SOP launches). */
+export function toolsFromSkills(entries: SkillEntry[]): LaunchableTool[] {
+  return entries
+    .filter((entry) => entry.kind === 'markdown')
+    .map((entry) => ({
+      id: `skill:${entry.id}`,
+      packageName: 'SKILL',
+      label: entry.name,
+      command: null,
+      description: entry.description || undefined,
+      origin: 'skill' as const,
+      skillId: entry.id
+    }))
+}
+
 function bundledResourceRoot(): string {
   return app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources')
 }
@@ -104,7 +120,9 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
       } catch {
         continue
       }
-      for (const tool of toolsFromPackageRoot(root, 'bundled')) byCommand.set(tool.command, tool)
+      for (const tool of toolsFromPackageRoot(root, 'bundled')) {
+        if (tool.command) byCommand.set(tool.command, tool)
+      }
     }
   } catch {
     // Resources root unreadable — fall through to installed packages.
@@ -113,11 +131,13 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
   for (const pkg of await listPackages().catch(() => [])) {
     if (!pkg.path) continue
     for (const tool of toolsFromPackageRoot(pkg.path, 'installed')) {
-      byCommand.set(tool.command, tool)
+      if (tool.command) byCommand.set(tool.command, tool)
     }
   }
 
-  return [...byCommand.values()].sort(
-    (a, b) => a.label.localeCompare(b.label) || a.command.localeCompare(b.command)
+  const skills = listSkills()
+  const skillTools = skills.ok ? toolsFromSkills(skills.entries) : []
+  return [...byCommand.values(), ...skillTools].sort(
+    (a, b) => a.label.localeCompare(b.label) || (a.command ?? '').localeCompare(b.command ?? '')
   )
 }
