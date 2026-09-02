@@ -18,8 +18,12 @@ export default function CodePreview({ filePath, content }: CodePreviewProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-line px-3 py-2 font-mono text-xs font-medium text-cream-dim">
-        {filePath.split('/').pop()}
+      <div
+        className="border-b border-line px-3 py-2 font-mono text-xs font-medium text-cream-dim"
+        title={filePath}
+      >
+        <div className="truncate text-cream">{filePath.split('/').pop()}</div>
+        <div className="mt-0.5 truncate text-[10px] font-normal text-cream-faint">{filePath}</div>
       </div>
       <pre className="flex-1 overflow-auto p-3 font-mono text-xs leading-relaxed text-cream/85">
         <code>{content ?? t('panel.loading')}</code>

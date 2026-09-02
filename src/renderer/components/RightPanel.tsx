@@ -8,6 +8,24 @@ import CodePreview from './CodePreview'
 import ChangesPanel from './ChangesPanel'
 import ToolsPanel from './ToolsPanel'
 
+const FILE_READ_TIMEOUT_MS = 8_000
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('file-read-timeout')), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
+
 export default function RightPanel() {
   const {
     activeRightTab,
@@ -37,21 +55,35 @@ export default function RightPanel() {
     // from — otherwise rapid clicks render file A's content under B's name.
     let cancelled = false
     setPreviewContent(null)
-    window.electronAPI.readFile(currentWorkspace.id, selectedFile).then((result) => {
-      if (cancelled) return
-      setPreviewContent(
-        result.ok
-          ? result.content
-          : translate(useAppStore.getState().language, 'panel.cannotPreview', { error: result.error })
-      )
-    })
+    void withTimeout(window.electronAPI.readFile(currentWorkspace.id, selectedFile), FILE_READ_TIMEOUT_MS)
+      .then((result) => {
+        if (cancelled) return
+        setPreviewContent(
+          result.ok
+            ? result.content
+            : translate(useAppStore.getState().language, 'panel.cannotPreview', { error: result.error })
+        )
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setPreviewContent(
+          translate(useAppStore.getState().language, 'panel.readFailed', {
+            error: error instanceof Error && error.message === 'file-read-timeout'
+              ? translate(useAppStore.getState().language, 'panel.timeout')
+              : String(error)
+          })
+        )
+      })
     return () => {
       cancelled = true
     }
-  }, [selectedFile, currentWorkspace, activeRightTab, setPreviewContent])
+  }, [selectedFile, currentWorkspace?.id, activeRightTab, setPreviewContent])
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-l border-line bg-ink-900">
+    <aside
+      aria-label={t('sidebar.workbench')}
+      className="flex w-72 shrink-0 flex-col border-l border-line bg-ink-900"
+    >
       <div className="flex h-11 items-center justify-between border-b border-line px-3">
         <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
           <button
@@ -101,6 +133,8 @@ export default function RightPanel() {
         </div>
         <button
           onClick={() => setRightPanelOpen(false)}
+          aria-label={t('sidebar.workbench')}
+          title={t('sidebar.workbench')}
           className="rounded-md p-1 text-cream-faint transition hover:bg-overlay hover:text-cream"
         >
           <X size={14} />

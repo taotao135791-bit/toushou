@@ -568,7 +568,7 @@ export default function Sidebar() {
         </button>
         <button onClick={toggleRightPanel} className={navRow(rightPanelOpen && !workspacePanel)}>
           <PanelRight size={14} className="shrink-0" />
-          {t('sidebar.rightPanel')}
+          {t('sidebar.workbench')}
         </button>
       </nav>
 

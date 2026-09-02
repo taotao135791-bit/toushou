@@ -14,6 +14,24 @@ interface TreeNode {
   loading?: boolean
 }
 
+const FILE_TREE_TIMEOUT_MS = 8_000
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('file-tree-timeout')), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
+
 export default function FileTree() {
   const { currentWorkspace, selectedFile, setSelectedFile, setActiveRightTab } = useAppStore(
     useShallow((s) => ({
@@ -24,7 +42,8 @@ export default function FileTree() {
     }))
   )
   const [tree, setTree] = useState<TreeNode[]>([])
-  const [loading, setLoading] = useState(false)
+  const [loadState, setLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [reloadToken, setReloadToken] = useState(0)
   const requestFence = useRef(new WorkspaceRequestFence()).current
   const treeGeneration = useRef(0)
   const t = useT()
@@ -33,38 +52,6 @@ export default function FileTree() {
   // older IPC completion can otherwise win in the short gap after a workspace
   // switch has rendered but before its effects run.
   requestFence.setWorkspace(currentWorkspace?.id ?? null)
-
-  useEffect(() => {
-    const generation = ++treeGeneration.current
-    if (!currentWorkspace) {
-      setTree([])
-      setLoading(false)
-      return
-    }
-    const workspace = currentWorkspace
-    const request = requestFence.begin(workspace.id, 'root')
-    setTree([])
-    setLoading(true)
-    void loadDir(workspace.id, '')
-      .then((children) => {
-        if (!requestFence.isCurrent(request) || treeGeneration.current !== generation) return
-        setTree([
-          {
-            name: workspace.displayPath.split('/').pop() || workspace.displayPath,
-            path: '',
-            isDirectory: true,
-            children,
-            expanded: true
-          }
-        ])
-        setLoading(false)
-      })
-      .catch(() => {
-        if (!requestFence.isCurrent(request) || treeGeneration.current !== generation) return
-        setTree([])
-        setLoading(false)
-      })
-  }, [currentWorkspace])
 
   const loadDir = async (grantId: string, relativePath: string): Promise<TreeNode[]> => {
     const entries = await window.electronAPI.listDir(grantId, relativePath || undefined)
@@ -78,6 +65,38 @@ export default function FileTree() {
         expanded: false
       }))
   }
+
+  useEffect(() => {
+    const generation = ++treeGeneration.current
+    if (!currentWorkspace) {
+      setTree([])
+      setLoadState('idle')
+      return
+    }
+    const workspace = currentWorkspace
+    const request = requestFence.begin(workspace.id, 'root')
+    setTree([])
+    setLoadState('loading')
+    void withTimeout(loadDir(workspace.id, ''), FILE_TREE_TIMEOUT_MS)
+      .then((children) => {
+        if (!requestFence.isCurrent(request) || treeGeneration.current !== generation) return
+        setTree([
+          {
+            name: workspace.displayPath.split('/').pop() || workspace.displayPath,
+            path: '',
+            isDirectory: true,
+            children,
+            expanded: true
+          }
+        ])
+        setLoadState('ready')
+      })
+      .catch(() => {
+        if (!requestFence.isCurrent(request) || treeGeneration.current !== generation) return
+        setTree([])
+        setLoadState('error')
+      })
+  }, [currentWorkspace?.id, reloadToken])
 
   const toggleNode = async (node: TreeNode, parentList: TreeNode[], setParentList: (list: TreeNode[]) => void) => {
     if (!node.isDirectory) {
@@ -108,7 +127,7 @@ export default function FileTree() {
     const request = requestFence.begin(workspace.id, `tree:${node.path}`)
     setParentList(parentList.map((n) => (n.path === node.path ? { ...n, loading: true } : n)))
     try {
-      const children = await loadDir(workspace.id, node.path)
+      const children = await withTimeout(loadDir(workspace.id, node.path), FILE_TREE_TIMEOUT_MS)
       if (!requestFence.isCurrent(request) || treeGeneration.current !== generation) return
       const updated = parentList.map((n) =>
         n.path === node.path ? { ...n, expanded: true, children, loading: false } : n
@@ -184,10 +203,21 @@ export default function FileTree() {
 
   return (
     <div className="px-1.5 py-2">
-      {loading ? (
+      {loadState === 'loading' ? (
         <div className="flex items-center gap-1.5 px-2 py-1 text-xs text-cream-faint">
           <Loader2 size={11} className="animate-spin" />
           {t('panel.loading')}
+        </div>
+      ) : loadState === 'error' ? (
+        <div className="flex flex-col items-start gap-2 px-2 py-2 text-xs text-cream-faint">
+          <span>{t('panel.loadFailed')}</span>
+          <button
+            type="button"
+            onClick={() => setReloadToken((value) => value + 1)}
+            className="rounded-md border border-line px-2.5 py-1 text-[11px] text-cream-dim transition-colors hover:border-line-strong hover:text-cream"
+          >
+            {t('panel.retry')}
+          </button>
         </div>
       ) : (
         tree.map((node) => renderNode(node, tree, setTree))
