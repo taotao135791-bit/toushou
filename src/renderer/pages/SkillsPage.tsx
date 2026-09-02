@@ -302,7 +302,7 @@ export default function SkillsPage() {
                 <button
                   type="button"
                   onClick={() => void openSkill(entry)}
-                  className="flex w-full flex-col items-start gap-2 text-left"
+                  className="flex w-full flex-1 flex-col items-start gap-2 text-left"
                 >
                 <div className="flex w-full items-center gap-2">
                   {entry.kind === 'html' ? (
