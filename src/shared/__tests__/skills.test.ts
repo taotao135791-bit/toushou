@@ -5,7 +5,9 @@ import {
   sanitizeSkillFileName,
   skillExtensionOf,
   skillKindForExtension,
-  formatSkillChatPrompt,
+  formatSkillChatReference,
+  formatSkillChatMessage,
+  formatSkillSystemPrompt,
   stripSkillFrontMatter
 } from '../skills'
 
@@ -85,23 +87,29 @@ describe('parseSkillMetadata', () => {
   })
 })
 
-describe('formatSkillChatPrompt', () => {
-  it('strips front matter and wraps a Chinese SOP prompt', () => {
+describe('formatSkillSystemPrompt', () => {
+  it('strips front matter and wraps a Chinese SOP in team-skill tags', () => {
     const raw = ['---', 'name: 起量打法', 'author: Leo', '---', '', '# 第一步', '先看 CPI'].join('\n')
     expect(stripSkillFrontMatter(raw)).toContain('# 第一步')
     expect(stripSkillFrontMatter(raw)).not.toContain('author: Leo')
-    const prompt = formatSkillChatPrompt('起量打法', raw, 'zh')
-    expect(prompt).toContain('请严格按下面这份团队打法')
-    expect(prompt).toContain('# 起量打法')
+    const prompt = formatSkillSystemPrompt('起量打法', raw, 'zh')
+    expect(prompt).toContain('<team-skill name="起量打法">')
+    expect(prompt).toContain('请严格按它执行')
     expect(prompt).toContain('先看 CPI')
+    expect(prompt.trim().endsWith('</team-skill>')).toBe(true)
     expect(prompt).not.toContain('author: Leo')
   })
 
   it('uses the English wrapper when language is en', () => {
-    const prompt = formatSkillChatPrompt('ROI tool', 'Check ROAS first.', 'en')
-    expect(prompt).toContain('Follow this team skill/playbook exactly')
-    expect(prompt).toContain('# ROI tool')
+    const prompt = formatSkillSystemPrompt('ROI tool', 'Check ROAS first.', 'en')
+    expect(prompt).toContain('<team-skill name="ROI tool">')
+    expect(prompt).toContain('Follow it exactly')
     expect(prompt).toContain('Check ROAS first.')
+  })
+
+  it('escapes quotes in the name attribute', () => {
+    const prompt = formatSkillSystemPrompt('打"法"', '步骤', 'zh')
+    expect(prompt).toContain('<team-skill name="打&quot;法&quot;">')
   })
 
   it('wraps the live test SOP file the same way the UI will', async () => {
@@ -113,11 +121,39 @@ describe('formatSkillChatPrompt', () => {
     } catch {
       return
     }
-    const prompt = formatSkillChatPrompt('对话联动测试', raw, 'zh')
-    expect(prompt.startsWith('请严格按下面这份团队打法')).toBe(true)
-    expect(prompt).toContain('# 对话联动测试')
+    const prompt = formatSkillSystemPrompt('对话联动测试', raw, 'zh')
+    expect(prompt).toContain('<team-skill name="对话联动测试">')
     expect(prompt).toContain('SKILL_CHAT_OK')
     expect(prompt).not.toContain('author: Codex')
+  })
+})
+
+describe('formatSkillChatReference', () => {
+  it('references the loaded skill without pasting the body', () => {
+    const zh = formatSkillChatReference('起量打法', 'zh')
+    expect(zh).toContain('《起量打法》')
+    expect(zh).toContain('SOP')
+    expect(zh).not.toContain('<team-skill')
+    const en = formatSkillChatReference('ROI tool', 'en')
+    expect(en).toContain('"ROI tool"')
+    expect(en).toContain('SOP')
+  })
+})
+
+describe('formatSkillChatMessage', () => {
+  it('sends the full SOP with a follow-it instruction for existing chats', () => {
+    const raw = ['---', 'name: 起量打法', '---', '# 第一步', '先看 CPI'].join('\n')
+    const message = formatSkillChatMessage('起量打法', raw, 'zh')
+    expect(message).toContain('接下来请严格按这份团队打法')
+    expect(message).toContain('# 起量打法')
+    expect(message).toContain('先看 CPI')
+    expect(message).not.toContain('name: 起量打法')
+  })
+
+  it('uses the English wrapper when language is en', () => {
+    const message = formatSkillChatMessage('ROI tool', 'Check ROAS first.', 'en')
+    expect(message).toContain('Follow this team skill/playbook exactly')
+    expect(message).toContain('Check ROAS first.')
   })
 })
 

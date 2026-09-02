@@ -9,7 +9,7 @@ vi.mock('../packages', () => ({
   listPackages: vi.fn(async () => [])
 }))
 
-import { readToolManifest, scanPromptCommands, toolsFromPackageRoot } from '../toolLaunch'
+import { readToolManifest, scanPromptCommands, toolsFromPackageRoot, toolsFromSkills } from '../toolLaunch'
 
 const tempRoots: string[] = []
 
@@ -57,6 +57,49 @@ describe('readToolManifest', () => {
     expect(readToolManifest(dir)).toBeNull()
     const empty = makePackage({})
     expect(readToolManifest(empty)).toBeNull()
+  })
+})
+
+describe('toolsFromSkills', () => {
+  it('maps markdown entries to SOP launch rows', () => {
+    const rows = toolsFromSkills([
+      {
+        id: '打法.md',
+        kind: 'markdown',
+        name: '起量打法',
+        author: 'Leo',
+        description: '预算梯度打法',
+        sizeBytes: 1024,
+        updatedAtMillis: 1
+      },
+      {
+        id: '工具.html',
+        kind: 'html',
+        name: '工具',
+        author: '',
+        description: '',
+        sizeBytes: 2048,
+        updatedAtMillis: 2
+      }
+    ])
+    expect(rows).toEqual([
+      {
+        id: 'skill:打法.md',
+        packageName: 'SKILL',
+        label: '起量打法',
+        command: null,
+        description: '预算梯度打法',
+        origin: 'skill',
+        skillId: '打法.md'
+      }
+    ])
+  })
+
+  it('drops an empty description instead of sending a blank string', () => {
+    const rows = toolsFromSkills([
+      { id: 'x.md', kind: 'markdown', name: 'X', author: '', description: '', sizeBytes: 1, updatedAtMillis: 1 }
+    ])
+    expect(rows[0].description).toBeUndefined()
   })
 })
 

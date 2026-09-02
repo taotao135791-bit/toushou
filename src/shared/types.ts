@@ -376,15 +376,17 @@ export interface SlashCommand {
  * session is created and the command is sent as its first prompt.
  */
 export interface LaunchableTool {
-  /** Stable id: `<packageName>:<command>`. */
+  /** Stable id: `<packageName>:<command>`, or `skill:<id>` for SKILL entries. */
   id: string
   packageName: string
   /** Manifest displayName, falling back to the package name. */
   label: string
-  /** Slash command sent to the new session, e.g. `/ads`. */
-  command: string
+  /** Slash command sent to the new session (e.g. `/ads`); null for SKILL entries. */
+  command: string | null
   description?: string
-  origin: 'bundled' | 'installed'
+  origin: 'bundled' | 'installed' | 'skill'
+  /** Present only for origin 'skill': the SKILL-library entry id to launch. */
+  skillId?: string
 }
 
 /** Answer to an extension UI dialog, sent back over the session's stdin. */
@@ -1167,6 +1169,10 @@ export type SkillListResult =
 export type SkillReadResult =
   | { ok: true; entry: SkillEntry; content: string }
   | { ok: false; error: 'invalid-request' | 'not-found' | 'too-large' | 'read-failed' }
+
+export type SkillDeleteResult =
+  | { ok: true }
+  | { ok: false; error: 'invalid-request' | 'not-found' | 'delete-failed' }
 
 export type SkillImportResult =
   | { ok: true; entry: SkillEntry }

@@ -149,6 +149,7 @@ export const IPC_CHANNELS = {
   /** SKILL 目录 — the team-shared library of self-made docs and HTML tools. */
   SKILLS_LIST: 'skills:list',
   SKILLS_READ: 'skills:read',
+  SKILLS_DELETE: 'skills:delete',
   /** Native file picker → opaque, one-import FileGrant. */
   SKILLS_SELECT_FILE: 'skills:select-file',
   SKILLS_IMPORT: 'skills:import',

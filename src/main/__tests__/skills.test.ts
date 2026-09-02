@@ -16,8 +16,10 @@ vi.mock('electron', () => ({
 import {
   importSkillFile,
   listSkills,
+  deleteSkill,
   openSkillHtml,
   readSkill,
+  readSkillSystemPrompt,
   revealSkillsDir,
   stopSkillsServerForTests
 } from '../skills'
@@ -54,6 +56,54 @@ describe('listSkills', () => {
     expect(result.entries[0].updatedAtMillis).toBeGreaterThanOrEqual(
       result.entries[1].updatedAtMillis
     )
+  })
+})
+
+describe('readSkillSystemPrompt', () => {
+  it('formats a markdown skill as a tagged system-prompt block', () => {
+    writeFileSync(path.join(dir, '打法.md'), '# 第一步\n先看 CPI', 'utf-8')
+    const result = readSkillSystemPrompt('打法.md', 'zh', dir)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.prompt).toContain('<team-skill name="打法">')
+      expect(result.prompt).toContain('先看 CPI')
+      expect(result.prompt.trim().endsWith('</team-skill>')).toBe(true)
+    }
+  })
+
+  it('rejects html entries and unknown ids', () => {
+    writeFileSync(path.join(dir, 'tool.html'), '<p>x</p>', 'utf-8')
+    expect(readSkillSystemPrompt('tool.html', 'zh', dir)).toEqual({ ok: false, error: 'not-markdown' })
+    expect(readSkillSystemPrompt('missing.md', 'zh', dir)).toEqual({ ok: false, error: 'not-found' })
+    expect(readSkillSystemPrompt('../escape', 'zh', dir)).toEqual({ ok: false, error: 'invalid-request' })
+  })
+
+  it('truncates an oversized skill below the spawn-arg byte cap', () => {
+    writeFileSync(path.join(dir, 'big.md'), '巨'.repeat(200 * 1024), 'utf-8')
+    const result = readSkillSystemPrompt('big.md', 'zh', dir)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(Buffer.byteLength(result.prompt, 'utf-8')).toBeLessThanOrEqual(240 * 1024)
+      expect(result.prompt).toContain('[truncated: skill exceeds the 240 KB launch limit]')
+      expect(result.prompt.trim().endsWith('</team-skill>')).toBe(true)
+    }
+  })
+})
+
+describe('deleteSkill', () => {
+  it('deletes a markdown entry and leaves the rest untouched', () => {
+    writeFileSync(path.join(dir, '打法.md'), '# x', 'utf-8')
+    writeFileSync(path.join(dir, 'keep.html'), '<p>y</p>', 'utf-8')
+    expect(deleteSkill('打法.md', dir)).toEqual({ ok: true })
+    expect(listSkills(dir)).toEqual({
+      ok: true,
+      entries: [expect.objectContaining({ id: 'keep.html' })]
+    })
+  })
+
+  it('rejects unknown ids and traversal', () => {
+    expect(deleteSkill('missing.md', dir)).toEqual({ ok: false, error: 'not-found' })
+    expect(deleteSkill('../escape.md', dir)).toEqual({ ok: false, error: 'invalid-request' })
   })
 })
 

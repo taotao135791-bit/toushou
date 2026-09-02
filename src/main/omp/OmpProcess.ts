@@ -125,6 +125,8 @@ export interface SpawnOptions {
   modelSelector?: string
   /** One-shot session-scoped thinking override (--thinking spawn arg). */
   thinkingLevel?: SessionThinkingLevel
+  /** One-shot session-scoped team-skill SOP appended to the system prompt. */
+  skillSystemPrompt?: string
   /** `inherit` (production default) or `replace` (test isolation). */
   envMode?: EnvMode
 }
@@ -180,7 +182,8 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
     args.push('--thinking', opts.thinkingLevel)
   }
   // Inject the 投手 ad-optimizer persona and steer the reply language.
-  args.push(...buildAgentArgs(opts.language))
+  // A SKILL launch appends its SOP inside the same system prompt.
+  args.push(...buildAgentArgs(opts.language, opts.skillSystemPrompt))
 
   const approvalConfigFile = writeApprovalConfig(sessionId, approval)
   return {

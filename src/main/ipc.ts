@@ -101,7 +101,15 @@ import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, deleteBoard, listBoards, saveBoard } from './boards'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
-import { importSkillFile, listSkills, openSkillHtml, readSkill, revealSkillsDir } from './skills'
+import {
+  deleteSkill,
+  importSkillFile,
+  listSkills,
+  openSkillHtml,
+  readSkill,
+  readSkillSystemPrompt,
+  revealSkillsDir
+} from './skills'
 import { importGithubSkills, previewGithubSkills } from './skillsGithub'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
@@ -452,7 +460,7 @@ export function registerIpc() {
     async (
       _event: IpcMainInvokeEvent,
       grantId: string,
-      overrides?: { modelSelector?: unknown; thinkingLevel?: unknown }
+      overrides?: { modelSelector?: unknown; thinkingLevel?: unknown; skillId?: unknown }
     ) => {
       const resolved = requireGrant(grantId)
       if (!resolved) {
@@ -469,9 +477,23 @@ export function registerIpc() {
       const thinkingLevel = SESSION_LEVELS.includes(overrides?.thinkingLevel as SessionThinkingLevel)
         ? (overrides?.thinkingLevel as SessionThinkingLevel)
         : undefined
+      // One-shot SKILL launch: Main resolves the id to SOP text itself; the
+      // renderer never supplies prompt content, only a validated entry id.
+      let skillSystemPrompt: string | undefined
+      if (overrides?.skillId !== undefined) {
+        if (typeof overrides.skillId !== 'string') {
+          throw new Error('createSession skillId must be a string')
+        }
+        const skill = readSkillSystemPrompt(overrides.skillId, getStore('language'))
+        if (!skill.ok) {
+          throw new Error('createSession skill unavailable: ' + skill.error)
+        }
+        skillSystemPrompt = skill.prompt
+      }
       return createSession(realPath, broadcastSessionEvent, {
         ...(modelSelector ? { modelSelector } : {}),
-        ...(thinkingLevel ? { thinkingLevel } : {})
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(skillSystemPrompt ? { skillSystemPrompt } : {})
       })
     }
   )
@@ -1693,6 +1715,10 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.SKILLS_READ, async (_event, id: unknown) => {
     return readSkill(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SKILLS_DELETE, async (_event, id: unknown) => {
+    return deleteSkill(id)
   })
 
   ipcMain.handle(IPC_CHANNELS.SKILLS_SELECT_FILE, async (event) => {

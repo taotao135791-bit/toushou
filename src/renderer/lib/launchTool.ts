@@ -21,3 +21,20 @@ export async function launchComposerPrompt(text: string): Promise<string | null>
 export async function launchTool(command: string): Promise<string | null> {
   return launchComposerPrompt(command)
 }
+
+/**
+ * SKILL launch: create a session whose system prompt carries the skill's
+ * SOP (Main resolves the id and injects the content), then auto-send a
+ * short reference line. The playbook rides in context, not the composer.
+ */
+export async function launchSkillSession(
+  skillId: string,
+  referenceText: string
+): Promise<string | null> {
+  const id = await createSessionForCurrentProject({ skillId })
+  if (!id) return null
+  const store = useAppStore.getState()
+  store.setComposerPrefill(referenceText)
+  store.setComposerAutosend(true)
+  return id
+}

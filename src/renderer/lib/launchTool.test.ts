@@ -14,7 +14,7 @@ vi.mock('./session', () => ({
   createSessionForCurrentProject: (...args: unknown[]) => createSessionForCurrentProject(...args)
 }))
 
-import { launchComposerPrompt, launchTool } from './launchTool'
+import { launchComposerPrompt, launchSkillSession, launchTool } from './launchTool'
 
 beforeEach(() => {
   createSessionForCurrentProject.mockReset()
@@ -43,5 +43,22 @@ describe('launchComposerPrompt', () => {
     await expect(launchTool('/ads')).resolves.toBe('session-2')
     expect(setComposerPrefill).toHaveBeenCalledWith('/ads')
     expect(setComposerAutosend).toHaveBeenCalledWith(true)
+  })
+})
+
+describe('launchSkillSession', () => {
+  it('creates the session with the skill id and arms a short reference line', async () => {
+    createSessionForCurrentProject.mockResolvedValue('session-3')
+    await expect(launchSkillSession('打法.md', '已加载团队 SKILL《打法》')).resolves.toBe('session-3')
+    expect(createSessionForCurrentProject).toHaveBeenCalledWith({ skillId: '打法.md' })
+    expect(setComposerPrefill).toHaveBeenCalledWith('已加载团队 SKILL《打法》')
+    expect(setComposerAutosend).toHaveBeenCalledWith(true)
+  })
+
+  it('does not arm the composer when session creation is cancelled', async () => {
+    createSessionForCurrentProject.mockResolvedValue(null)
+    await expect(launchSkillSession('打法.md', 'ref')).resolves.toBeNull()
+    expect(setComposerPrefill).not.toHaveBeenCalled()
+    expect(setComposerAutosend).not.toHaveBeenCalled()
   })
 })

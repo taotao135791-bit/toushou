@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
-import { LaunchableTool } from '../shared/types'
+import { LaunchableTool, SkillEntry } from '../shared/types'
 import { listPackages } from './packages'
 
 /**
@@ -84,6 +84,21 @@ export function toolsFromPackageRoot(
   }))
 }
 
+/** Map SKILL-library Markdown entries to launchable rows (SOP launches). */
+export function toolsFromSkills(entries: SkillEntry[]): LaunchableTool[] {
+  return entries
+    .filter((entry) => entry.kind === 'markdown')
+    .map((entry) => ({
+      id: `skill:${entry.id}`,
+      packageName: 'SKILL',
+      label: entry.name,
+      command: null,
+      description: entry.description || undefined,
+      origin: 'skill' as const,
+      skillId: entry.id
+    }))
+}
+
 function bundledResourceRoot(): string {
   return app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources')
 }
@@ -106,6 +121,7 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
         continue
       }
       for (const tool of toolsFromPackageRoot(root, 'bundled')) {
+        if (!tool.command) continue
         bundledPackageNames.add(tool.packageName)
         byCommand.set(tool.command, tool)
       }
@@ -117,6 +133,7 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
   for (const pkg of await listPackages().catch(() => [])) {
     if (!pkg.path) continue
     for (const tool of toolsFromPackageRoot(pkg.path, 'installed')) {
+      if (!tool.command) continue
       // The bundled package is linked into the runtime on first launch. Keep
       // that package visibly classified as built-in even though the runtime
       // path wins for execution and updates.
@@ -127,7 +144,8 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
     }
   }
 
+  // SKILL entries stay on the SKILL page and never enter the plugin launcher.
   return [...byCommand.values()].sort(
-    (a, b) => a.label.localeCompare(b.label) || a.command.localeCompare(b.command)
+    (a, b) => a.label.localeCompare(b.label) || (a.command ?? '').localeCompare(b.command ?? '')
   )
 }

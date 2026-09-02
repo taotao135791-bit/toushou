@@ -155,12 +155,19 @@ export function stripSkillFrontMatter(content: string): string {
   return content.replace(/^\uFEFF/, '')
 }
 
+/** Escape a title for use inside a double-quoted XML attribute. */
+function escapeSkillTitle(name: string): string {
+  return name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')
+}
+
 /**
- * Wrap a library Markdown document as a chat prompt. The agent is told to
- * follow this SOP rather than invent a different process; HTML tools are
- * not sent this way (they open in the browser panel).
+ * Wrap a library Markdown document as the system-prompt block injected at
+ * session launch. The <team-skill> delimiters keep playbook content from
+ * being confused with host instructions, and the header tells the agent to
+ * follow this SOP rather than invent a different process. HTML tools are
+ * never sent this way (they open in the browser panel).
  */
-export function formatSkillChatPrompt(
+export function formatSkillSystemPrompt(
   name: string,
   content: string,
   language: Language = 'zh'
@@ -169,7 +176,53 @@ export function formatSkillChatPrompt(
   const title = name.trim() || 'SKILL'
   if (language === 'en') {
     return [
-      'Follow this team skill/playbook exactly. Do not invent a different process. If anything is missing, ask me before acting.',
+      'A team skill/playbook is loaded below inside <team-skill> tags. Follow it exactly for this session and do not invent a different process. If anything is missing, ask before acting.',
+      `<team-skill name="${escapeSkillTitle(title)}">`,
+      '# ' + title,
+      '',
+      body,
+      '</team-skill>'
+    ].join('\n')
+  }
+  return [
+    '本会话在 <team-skill> 标签内加载了一份团队打法（SKILL）。请严格按它执行，不要另起一套流程；信息不够时先问用户再动手。',
+    `<team-skill name="${escapeSkillTitle(title)}">`,
+    '# ' + title,
+    '',
+    body,
+    '</team-skill>'
+  ].join('\n')
+}
+
+/**
+ * The short composer line sent when a skill launches a chat. The full SOP
+ * rides in the session system prompt (see formatSkillSystemPrompt), so the
+ * visible message stays a clean reference instead of a pasted document.
+ */
+export function formatSkillChatReference(name: string, language: Language = 'zh'): string {
+  const title = name.trim() || 'SKILL'
+  if (language === 'en') {
+    return `Loaded the team skill "${title}" as this session's SOP. Follow it exactly; ask me first if anything is missing.`
+  }
+  return `已加载团队 SKILL《${title}》作为本会话的执行 SOP。请严格按它执行；信息不够先问我再动手。`
+}
+
+/**
+ * Full-content message for sending a skill into an EXISTING session, where
+ * system-prompt injection is no longer possible (the process already runs).
+ * The instruction header keeps the same follow-the-SOP contract as the
+ * injected variant; the body rides as an ordinary chat message.
+ */
+export function formatSkillChatMessage(
+  name: string,
+  content: string,
+  language: Language = 'zh'
+): string {
+  const body = stripSkillFrontMatter(content).trim()
+  const title = name.trim() || 'SKILL'
+  if (language === 'en') {
+    return [
+      'Follow this team skill/playbook exactly for the rest of this conversation. Do not invent a different process. If anything is missing, ask me before acting.',
       '',
       '# ' + title,
       '',
@@ -177,11 +230,11 @@ export function formatSkillChatPrompt(
     ].join('\n')
   }
   return [
-    '请严格按下面这份团队打法（SKILL）执行，不要另起一套流程。如果信息不够，先问我再动手。',
+    '接下来请严格按这份团队打法（SKILL）执行，不要另起一套流程。如果信息不够，先问我再动手。',
     '',
     '# ' + title,
     '',
-    body
+    body,
   ].join('\n')
 }
 

@@ -6,10 +6,7 @@ import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { launchTool } from '../lib/launchTool'
 
-/**
- * One-click tool list for the right panel. Each entry launches a new chat
- * with the tool's slash command auto-sent — no typing required.
- */
+/** One-click plugin commands for the right-side “使用插件” workspace. */
 export default function ToolsPanel() {
   const [tools, setTools] = useState<LaunchableTool[] | null>(null)
   const [error, setError] = useState(false)
@@ -34,7 +31,7 @@ export default function ToolsPanel() {
     if (launching) return
     setLaunching(tool.id)
     try {
-      const id = await launchTool(tool.command)
+      const id = tool.command ? await launchTool(tool.command) : null
       if (id) {
         navigate('/')
         setWorkspacePanel(null)
@@ -81,7 +78,7 @@ export default function ToolsPanel() {
   const added = tools.filter((tool) => tool.origin === 'installed')
 
   const renderGroup = (title: string, entries: LaunchableTool[]) => (
-    <section className="space-y-2">
+    <section className="space-y-2" key={title}>
       <div className="flex items-center gap-2 px-1 text-[11px] font-semibold tracking-wide text-cream-faint">
         <span>{title}</span>
         <span className="rounded-full bg-overlay px-1.5 py-0.5 font-mono text-[10px]">{entries.length}</span>

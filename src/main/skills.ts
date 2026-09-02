@@ -1,9 +1,11 @@
 import { app, shell } from 'electron'
 import http from 'node:http'
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import {
+  Language,
   SkillEntry,
+  SkillDeleteResult,
   SkillImportResult,
   SkillListResult,
   SkillOpenHtmlResult,
@@ -12,6 +14,7 @@ import {
 import {
   SKILL_LIMITS,
   buildSkillEntry,
+  formatSkillSystemPrompt,
   isValidSkillId,
   sanitizeSkillFileName,
   skillExtensionOf,
@@ -88,6 +91,84 @@ export function readSkill(id: unknown, dir: string = skillsDir()): SkillReadResu
   } catch {
     return { ok: false, error: 'read-failed' }
   }
+}
+
+/**
+ * Delete a library entry. The id is validated like every other skill
+ * operation, so the unlink can never escape the skills folder. Markdown
+ * and HTML entries are both deletable — the library is user-curated.
+ */
+export function deleteSkill(id: unknown, dir: string = skillsDir()): SkillDeleteResult {
+  if (!isValidSkillId(id)) return { ok: false, error: 'invalid-request' }
+  const file = path.join(dir, id)
+  let existed: boolean
+  try {
+    existed = statSync(file).isFile()
+  } catch {
+    return { ok: false, error: 'not-found' }
+  }
+  if (!existed) return { ok: false, error: 'not-found' }
+  try {
+    unlinkSync(file)
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'delete-failed' }
+  }
+}
+
+/** Result of building a session-launch SOP prompt from a library entry. */
+export type SkillSystemPromptResult =
+  | { ok: true; prompt: string }
+  | { ok: false; error: 'invalid-request' | 'not-found' | 'too-large' | 'not-markdown' | 'read-failed' }
+
+/**
+ * Byte cap for the injected system prompt: spawn args are OS-limited
+ * (macOS allows 256 KiB per argument), so a pathological 2 MB playbook
+ * must be truncated instead of breaking the session spawn.
+ */
+const MAX_SKILL_PROMPT_BYTES = 240 * 1024
+
+/** Largest prefix of `text` whose UTF-8 size stays within `maxBytes`. */
+function capUtf8Bytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  // Never split a surrogate pair.
+  if (lo > 0 && lo < text.length && (text.codePointAt(lo - 1) ?? 0) > 0xffff) lo -= 1
+  return text.slice(0, lo)
+}
+
+/**
+ * Read a Markdown skill and format it as the session system-prompt block.
+ * HTML entries are rejected (they open in the browser panel, not chat).
+ */
+export function readSkillSystemPrompt(
+  id: unknown,
+  language: Language = 'zh',
+  dir: string = skillsDir()
+): SkillSystemPromptResult {
+  const result = readSkill(id, dir)
+  if (!result.ok) return result
+  if (result.entry.kind !== 'markdown') return { ok: false, error: 'not-markdown' }
+  const full = formatSkillSystemPrompt(result.entry.name, result.content, language)
+  if (Buffer.byteLength(full, 'utf8') <= MAX_SKILL_PROMPT_BYTES) {
+    return { ok: true, prompt: full }
+  }
+  // Trim the SOP body (not the framing) and mark the truncation so the
+  // agent knows the playbook was cut by size, not authored that way.
+  const openTag = full.lastIndexOf('<team-skill')
+  const closeTag = full.lastIndexOf('</team-skill>')
+  const marker = '[truncated: skill exceeds the 240 KB launch limit]'
+  const head = full.slice(0, openTag)
+  const block = full.slice(openTag, closeTag)
+  const tail = full.slice(closeTag)
+  const budget = MAX_SKILL_PROMPT_BYTES - Buffer.byteLength(head + tail, 'utf8') - Buffer.byteLength(marker, 'utf8') - 2
+  return { ok: true, prompt: head + capUtf8Bytes(block, Math.max(budget, 0)) + '\n' + marker + tail }
 }
 
 /** Pick a non-clashing sanitized target name inside the library. */
