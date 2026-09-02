@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.2.8，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.8) 下载：
+当前版本 v0.2.9，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.2.9) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.8/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.8/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.8/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.9/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.9/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.2.9/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.2.9：修复未配置 Developer ID 的 macOS 包无法通过代码签名校验的问题；临时签名包改用应用内下载、解压和重启替换，保留签名包的原生更新链路。
 
 v0.2.8：修复 Windows `.cmd` 进程树退出后的文件锁残留，确保兼容性测试和应用关闭都能彻底清理子进程。
 
