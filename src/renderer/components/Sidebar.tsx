@@ -7,8 +7,6 @@ import {
   SquareKanban,
   FolderOpen,
   AlertCircle,
-  Globe,
-  FileSpreadsheet,
   Library,
   Trash2,
   PanelRight,
@@ -79,16 +77,6 @@ export default function Sidebar() {
   const setRecentWorkspaces = useAppStore((s) => s.setRecentWorkspaces)
   const removeRecentProject = useAppStore((s) => s.removeRecentProject)
   const setSetupComplete = useAppStore((s) => s.setSetupComplete)
-
-  const openWorkspacePanel = (kind: 'browser' | 'office') => {
-    if (location.pathname === '/') {
-      const isOpen = workspacePanel?.kind === kind
-      setRightPanelOpen(false)
-      setWorkspacePanel(isOpen ? null : { kind })
-      return
-    }
-    navigate(kind === 'browser' ? '/browser' : '/office')
-  }
 
   const toggleRightPanel = () => {
     if (location.pathname !== '/') {
@@ -544,20 +532,6 @@ export default function Sidebar() {
         >
           <SquareKanban size={14} className="shrink-0" />
           {t('sidebar.boards')}
-        </button>
-        <button
-          onClick={() => openWorkspacePanel('browser')}
-          className={navRow(location.pathname === '/browser' || workspacePanel?.kind === 'browser')}
-        >
-          <Globe size={14} className="shrink-0" />
-          {t('sidebar.browser')}
-        </button>
-        <button
-          onClick={() => openWorkspacePanel('office')}
-          className={navRow(location.pathname === '/office' || workspacePanel?.kind === 'office')}
-        >
-          <FileSpreadsheet size={14} className="shrink-0" />
-          {t('sidebar.office')}
         </button>
         <button
           onClick={() => navigate('/skills')}
