@@ -25,6 +25,10 @@
     {
       "from": "resources/ads-toolkit",
       "to": "ads-toolkit"
+    },
+    {
+      "from": "resources/browser-use-toolkit",
+      "to": "browser-use-toolkit"
     }
   ],
   "mac": {
