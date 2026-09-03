@@ -4,6 +4,7 @@ import https from 'node:https'
 import path from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import YAML from 'yaml'
 import { IPC_CHANNELS } from '../shared/constants'
 import { UpdaterStatus } from '../shared/types'
 
@@ -59,7 +60,7 @@ function httpsRedirect(url: string, location: string | undefined, label: string)
   return next.toString()
 }
 
-function requestJson(url: string, redirects = 0): Promise<unknown> {
+function requestText(url: string, redirects = 0): Promise<string> {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('更新服务器重定向次数过多'))
     if (new URL(url).protocol !== 'https:') return reject(new Error('更新服务器链接不安全'))
@@ -77,7 +78,7 @@ function requestJson(url: string, redirects = 0): Promise<unknown> {
         }
         if (location) {
           response.resume()
-          return requestJson(new URL(location, url).toString(), redirects + 1).then(resolve, reject)
+          return requestText(new URL(location, url).toString(), redirects + 1).then(resolve, reject)
         }
         let body = ''
         response.setEncoding('utf8')
@@ -87,11 +88,7 @@ function requestJson(url: string, redirects = 0): Promise<unknown> {
             reject(new Error(`更新服务器返回 HTTP ${response.statusCode ?? 0}`))
             return
           }
-          try {
-            resolve(JSON.parse(body))
-          } catch {
-            reject(new Error('更新信息格式无效'))
-          }
+          resolve(body)
         })
       }
     )
@@ -116,22 +113,28 @@ function currentMacArtifactName(): string {
 async function unsignedMacCheck(): Promise<UpdaterStatus> {
   setStatus({ status: 'checking' })
   try {
-    const release = (await requestJson('https://api.github.com/repos/taotao135791-bit/toushou/releases/latest')) as {
-      tag_name?: unknown
-      assets?: Array<{ name?: unknown; browser_download_url?: unknown }>
-    }
-    const version = typeof release.tag_name === 'string' ? release.tag_name.replace(/^v/i, '') : ''
+    // Read the public electron-builder channel file instead of the GitHub
+    // Releases API. The API is rate-limited for unauthenticated desktop
+    // clients, which made valid old installs report HTTP 403 and blocked
+    // in-app updates.
+    const metadata = YAML.parse(
+      await requestText('https://github.com/taotao135791-bit/toushou/releases/latest/download/latest-mac.yml')
+    ) as { version?: unknown; files?: unknown }
+    const version = typeof metadata.version === 'string' ? metadata.version : ''
     const assetName = currentMacArtifactName()
-    const asset = release.assets?.find(
-      (item) => item.name === assetName && typeof item.browser_download_url === 'string'
+    const files = Array.isArray(metadata.files) ? metadata.files : []
+    const asset = files.find(
+      (item): item is { url?: unknown } =>
+        Boolean(item && typeof item === 'object' && (item as { url?: unknown }).url === assetName)
     )
+    const downloadUrl = `https://github.com/taotao135791-bit/toushou/releases/latest/download/${encodeURIComponent(assetName)}`
     if (!version || compareVersions(version, app.getVersion()) <= 0) {
       pendingUpdate = null
       setStatus({ status: 'none' })
-    } else if (!asset || typeof asset.browser_download_url !== 'string') {
+    } else if (!asset) {
       throw new Error(`当前架构没有可用的 ${assetName} 更新包`)
     } else {
-      pendingUpdate = { version, url: asset.browser_download_url, fileName: assetName }
+      pendingUpdate = { version, url: downloadUrl, fileName: assetName }
       setStatus({ status: 'available', version })
     }
   } catch (err) {
