@@ -4,7 +4,7 @@ import { mkdir, readdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
 import { BrowserWindow } from 'electron'
-import { getActiveBrowserPanel } from './browserPanel'
+import { getActiveBrowserPanel, isBrowserPanelVisible } from './browserPanel'
 import { safeBrowserPanelUrl } from './navigation'
 import { IPC_CHANNELS } from '../shared/constants'
 
@@ -26,7 +26,6 @@ import { IPC_CHANNELS } from '../shared/constants'
  *   PANEL_OPEN flow the renderer already handles).
  */
 
-const TOKEN = randomBytes(24).toString('hex')
 const MAX_BODY_BYTES = 64 * 1024
 const MAX_TEXT_CHARS = 20_000
 const MAX_ELEMENTS = 200
@@ -35,6 +34,25 @@ const LOAD_TIMEOUT_MS = 20_000
 const MAX_WAIT_MS = 5_000
 
 export const BROWSER_USE_ENV_KEY = 'TOUSHOU_BROWSER_USE'
+
+/**
+ * Session admission for one bridge request. `navigate` is always allowed (it
+ * visibly (re)opens the panel and TAKES ownership); every other action must
+ * come from the owning session while the panel is attached — the user sees
+ * everything the agent does, and parallel sessions cannot silently mutate a
+ * page another session is working on.
+ */
+export function gateBrowserUseRequest(
+  action: BrowserUseAction,
+  sessionId: string,
+  owner: string | null,
+  panelVisible: boolean
+): 'panel-hidden' | 'panel-owned-by-another-session' | null {
+  if (action === 'navigate') return null
+  if (!panelVisible) return 'panel-hidden'
+  if (owner !== null && owner !== sessionId) return 'panel-owned-by-another-session'
+  return null
+}
 
 /** One entry per whitelisted action; validated in `parseBrowserUseRequest`. */
 export type BrowserUseAction =
@@ -212,6 +230,12 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
       const safeUrl = safeBrowserPanelUrl(req.url as string)
       if (!safeUrl) return { ok: false, error: 'invalid-url' }
       await openPanelWithUrl(safeUrl)
+      // The renderer drives the visible attach; Main also loads directly so
+      // navigation is real even while the attach transition is in flight.
+      const existing = getActiveBrowserPanel()
+      if (existing) {
+        await existing.webContents.loadURL(safeUrl).catch(() => undefined)
+      }
       await waitForLoad()
       const page = currentPage()
       return { ok: true, url: page.url, title: page.title }
@@ -264,13 +288,27 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
       const panel = getActiveBrowserPanel()
       if (!panel) return { ok: false, error: 'panel-not-open' }
       const wc = panel.webContents
-      for (const ch of req.text as string) {
-        wc.sendInputEvent({ type: 'char', keyCode: ch })
-      }
+      const before = wc.getURL()
+      // insertText is the reliable programmatic typing primitive (char input
+      // events alone often do not commit text into the focused editor).
+      wc.insertText(req.text as string)
+      await new Promise((r) => setTimeout(r, 150))
       if (req.submit) {
         wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
         wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
         await waitForLoad(8_000)
+        if (wc.getURL() === before) {
+          // Chromium ignores synthetic Enter for implicit form submission on
+          // some pages; requestSubmit() is the standards equivalent (still
+          // our own whitelisted script, never extension-provided source).
+          await exec(`(() => {
+            const el = document.querySelector('[data-ts-ref="${req.ref}"]')
+            const form = el && (el.form || (el.tagName === 'FORM' ? el : null))
+            if (form && typeof form.requestSubmit === 'function') form.requestSubmit()
+            return true
+          })()`)
+          await waitForLoad(8_000)
+        }
       }
       const page = currentPage()
       return { ok: true, url: page.url, title: page.title }
@@ -317,29 +355,42 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
   }
 }
 
-let bridgeUrl: string | null = null
+let bridgePort: number | null = null
+/** Per-session credentials: token → the GUI session id it was minted for. */
+const sessionTokens = new Map<string, string>()
+/** Session id that currently owns the panel (last navigate). */
+let panelOwner: string | null = null
 
 /** Start the loopback server at app startup; safe to call more than once. */
 export function initBrowserUseBridge(): void {
-  if (bridgeUrl) return
+  if (bridgePort !== null) return
   const server = createServer((req, res) => void handle(req, res))
   server.once('error', () => {
-    bridgeUrl = null
+    bridgePort = null
   })
   server.listen(0, '127.0.0.1', () => {
     const address = server.address()
     if (address && typeof address === 'object') {
-      bridgeUrl = `http://127.0.0.1:${address.port}/${TOKEN}`
+      bridgePort = address.port
     }
   })
 }
 
 /**
- * Env additions for GUI-spawned runtime processes. The token rides in the
- * URL path, so the single env value is both address and credential.
+ * Env additions for ONE GUI-spawned session. The token rides in the URL
+ * path, so the single env value is address, credential, and session
+ * identity at once — parallel sessions cannot act as each other.
  */
-export function browserUseEnv(): Record<string, string> {
-  return bridgeUrl ? { [BROWSER_USE_ENV_KEY]: bridgeUrl } : {}
+export function browserUseEnv(sessionId: string): Record<string, string> {
+  if (bridgePort === null) return {}
+  const token = randomBytes(24).toString('hex')
+  sessionTokens.set(token, sessionId)
+  return { [BROWSER_USE_ENV_KEY]: `http://127.0.0.1:${bridgePort}/${token}` }
+}
+
+/** Test/internals hook: current ownership state. */
+export function browserUseOwner(): string | null {
+  return panelOwner
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -347,7 +398,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     res.writeHead(403, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ ok: false, error: 'forbidden' }))
   }
-  if (req.method !== 'POST' || req.url !== `/${TOKEN}`) return unauthorized()
+  if (req.method !== 'POST') return unauthorized()
+  const token = (req.url ?? '').replace(/^\//, '')
+  const sessionId = sessionTokens.get(token)
+  if (!sessionId) return unauthorized()
 
   const chunks: Buffer[] = []
   let size = 0
@@ -370,8 +424,31 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     res.end(JSON.stringify({ ok: false, error: 'bad-action' }))
     return
   }
+  const denied = gateBrowserUseRequest(
+    request.action,
+    sessionId,
+    panelOwner,
+    isBrowserPanelVisible()
+  )
+  if (denied) {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        ok: false,
+        error: denied,
+        hint:
+          denied === 'panel-hidden'
+            ? 'the browser panel is closed; navigate (which visibly reopens it) before acting'
+            : 'another session owns the browser panel; navigate to take it over (visible to the user)'
+      })
+    )
+    return
+  }
   try {
     const result = await runAction(request)
+    if (request.action === 'navigate' && result.ok) {
+      panelOwner = sessionId
+    }
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify(result))
   } catch (err) {

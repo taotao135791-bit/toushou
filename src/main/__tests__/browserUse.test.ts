@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { parseBrowserUseRequest } from '../browserUse'
+import { gateBrowserUseRequest, parseBrowserUseRequest } from '../browserUse'
+
+describe('gateBrowserUseRequest', () => {
+  it('always admits navigate (it visibly reopens and takes ownership)', () => {
+    expect(gateBrowserUseRequest('navigate', 'B', 'A', false)).toBeNull()
+    expect(gateBrowserUseRequest('navigate', 'A', null, true)).toBeNull()
+  })
+
+  it('refuses every other action while the panel is hidden', () => {
+    for (const action of ['snapshot', 'click', 'type', 'scroll', 'screenshot', 'back', 'wait'] as const) {
+      expect(gateBrowserUseRequest(action, 'A', 'A', false)).toBe('panel-hidden')
+    }
+  })
+
+  it('refuses non-navigate actions from a session that does not own the panel', () => {
+    expect(gateBrowserUseRequest('click', 'B', 'A', true)).toBe('panel-owned-by-another-session')
+    expect(gateBrowserUseRequest('snapshot', 'A', 'B', true)).toBe('panel-owned-by-another-session')
+  })
+
+  it('admits the owner and unowned panels', () => {
+    expect(gateBrowserUseRequest('click', 'A', 'A', true)).toBeNull()
+    expect(gateBrowserUseRequest('snapshot', 'A', null, true)).toBeNull()
+  })
+})
 
 describe('parseBrowserUseRequest', () => {
   it('accepts a valid navigate', () => {

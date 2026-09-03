@@ -196,8 +196,9 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       FORCE_COLOR: '0',
       OMP_APPROVAL_CONFIG: approvalConfigFile,
       // Loopback bridge for the bundled browser-use tools (absent when the
-      // bridge could not start; the tools then report a clear error).
-      ...browserUseEnv()
+      // bridge could not start; the tools then report a clear error). The
+      // per-session token binds bridge actions to this session.
+      ...browserUseEnv(sessionId)
     }),
     approvalConfigFile
   }

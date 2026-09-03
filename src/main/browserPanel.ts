@@ -18,6 +18,8 @@ import { safeBrowserPanelUrl, safeExternalUrl } from './navigation'
 
 /** Panels keyed by their owner window's id. */
 const panels = new Map<number, WebContentsView>()
+/** Window ids whose panel is currently attached (visible) to the window. */
+const attachedPanels = new Set<number>()
 /** Owner windows already wired for 'closed' cleanup. */
 const cleanupWired = new Set<number>()
 
@@ -32,6 +34,23 @@ export function getActiveBrowserPanel(): WebContentsView | null {
     if (panel && !panel.webContents.isDestroyed()) return panel
   }
   return null
+}
+
+/**
+ * True when the panel is attached (visible) in its window. Browser-use
+ * refuses to operate a detached panel: the user must see what the agent
+ * drives. A navigate takes the panel through the PANEL_OPEN flow, which
+ * attaches it again.
+ */
+export function isBrowserPanelVisible(): boolean {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    if (attachedPanels.has(win.id)) {
+      const panel = panels.get(win.id)
+      return Boolean(panel && !panel.webContents.isDestroyed())
+    }
+  }
+  return false
 }
 
 export const BROWSER_PANEL_BOUNDS_LIMIT = 100_000
@@ -106,6 +125,7 @@ function createPanel(win: BrowserWindow): WebContentsView {
     cleanupWired.add(win.id)
     win.once('closed', () => {
       cleanupWired.delete(win.id)
+      attachedPanels.delete(win.id)
       const panel = panels.get(win.id)
       panels.delete(win.id)
       if (panel && !panel.webContents.isDestroyed()) panel.webContents.close()
@@ -135,6 +155,7 @@ export function showBrowserPanel(
   // Re-adding an already attached view is harmless; setBounds keeps the
   // panel aligned with the renderer placeholder.
   win.contentView.addChildView(view)
+  attachedPanels.add(win.id)
   view.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) })
   sendState(win, view)
   return { ok: true }
@@ -145,6 +166,7 @@ export function hideBrowserPanel(win: BrowserWindow): { ok: boolean } {
   if (win.isDestroyed()) return { ok: false }
   const view = panels.get(win.id)
   if (view) win.contentView.removeChildView(view)
+  attachedPanels.delete(win.id)
   return { ok: true }
 }
 
