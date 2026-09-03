@@ -8,7 +8,7 @@ describe('gateBrowserUseRequest', () => {
   })
 
   it('refuses every other action while the panel is hidden', () => {
-    for (const action of ['snapshot', 'click', 'type', 'scroll', 'screenshot', 'back', 'wait'] as const) {
+    for (const action of ['snapshot', 'click', 'type', 'scroll', 'screenshot', 'back', 'forward', 'wait'] as const) {
       expect(gateBrowserUseRequest(action, 'A', 'A', false)).toBe('panel-hidden')
     }
   })

@@ -92,7 +92,7 @@ function createWindow() {
   return win
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerIpc()
   applyFirstRunDefaults()
   // Keep pi's skill overrides in line with the GUI toggle — LEGACY pi loads
@@ -104,14 +104,20 @@ app.whenReady().then(() => {
     syncMachineSkills(getStore('machineSkills'))
   }
   cleanStaleApprovalConfigs()
+  // Loopback bridge for the bundled browser-use tools; started before the
+  // first session spawn so its env is available from session one. Awaiting
+  // listen avoids a startup race where the first OMP process receives an
+  // empty TOUSHOU_BROWSER_USE value.
+  try {
+    await initBrowserUseBridge()
+  } catch (error) {
+    console.warn('[browser-use] bridge unavailable', error)
+  }
   createWindow()
   initUpdater()
   // Fire-and-forget: links bundled packages (e.g. the ads toolkit) into the
   // runtime when detected; no-ops once linked or after user removal.
   void ensureBundledPackages()
-  // Loopback bridge for the bundled browser-use tools; started before the
-  // first session spawn so its env is available from session one.
-  initBrowserUseBridge()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

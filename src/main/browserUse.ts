@@ -32,6 +32,7 @@ const MAX_ELEMENTS = 200
 const MAX_SCREENSHOTS_KEPT = 12
 const LOAD_TIMEOUT_MS = 20_000
 const MAX_WAIT_MS = 5_000
+const SUBMIT_NAVIGATION_TIMEOUT_MS = 1_000
 
 export const BROWSER_USE_ENV_KEY = 'TOUSHOU_BROWSER_USE'
 
@@ -179,18 +180,21 @@ export const SNAPSHOT_SCRIPT = `(() => {
 function exec<T>(script: string): Promise<T> {
   const panel = getActiveBrowserPanel()
   if (!panel) return Promise.reject(new Error('panel-not-open'))
+  if (!isBrowserPanelVisible()) return Promise.reject(new Error('panel-hidden'))
   return panel.webContents.executeJavaScript(script, true) as Promise<T>
 }
 
-function currentPage(): { url: string; title: string } {
+function currentPage(requireVisible = true): { url: string; title: string } {
   const panel = getActiveBrowserPanel()
   if (!panel) throw new Error('panel-not-open')
+  if (requireVisible && !isBrowserPanelVisible()) throw new Error('panel-hidden')
   return { url: panel.webContents.getURL(), title: panel.webContents.getTitle() }
 }
 
-function waitForLoad(timeoutMs = LOAD_TIMEOUT_MS): Promise<void> {
+function waitForLoad(timeoutMs = LOAD_TIMEOUT_MS, requireVisible = true): Promise<void> {
   const panel = getActiveBrowserPanel()
   if (!panel) return Promise.reject(new Error('panel-not-open'))
+  if (requireVisible && !isBrowserPanelVisible()) return Promise.reject(new Error('panel-hidden'))
   const wc = panel.webContents
   if (!wc.isLoading()) return Promise.resolve()
   return new Promise((resolve) => {
@@ -209,6 +213,42 @@ function waitForLoad(timeoutMs = LOAD_TIMEOUT_MS): Promise<void> {
     }
     wc.on('did-stop-loading', done)
     wc.on('did-fail-load', done)
+  })
+}
+
+/**
+ * Wait for a navigation even when Chromium has not flipped isLoading yet.
+ * Synthetic Enter/requestSubmit can schedule navigation on a later turn of
+ * the event loop; checking isLoading once is therefore racy.
+ */
+function waitForNavigation(previousUrl: string, timeoutMs: number): Promise<void> {
+  const panel = getActiveBrowserPanel()
+  if (!panel) return Promise.reject(new Error('panel-not-open'))
+  if (!isBrowserPanelVisible()) return Promise.reject(new Error('panel-hidden'))
+  const wc = panel.webContents
+  if (wc.getURL() !== previousUrl) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, timeoutMs)
+    const done = () => {
+      cleanup()
+      resolve()
+    }
+    const onNavigation = () => {
+      if (wc.getURL() !== previousUrl) done()
+    }
+    const cleanup = () => {
+      clearTimeout(timer)
+      wc.off('did-navigate', onNavigation)
+      wc.off('did-navigate-in-page', onNavigation)
+      wc.off('did-stop-loading', onNavigation)
+    }
+    wc.on('did-navigate', onNavigation)
+    wc.on('did-navigate-in-page', onNavigation)
+    wc.on('did-stop-loading', onNavigation)
+    queueMicrotask(onNavigation)
   })
 }
 
@@ -234,10 +274,16 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
       // navigation is real even while the attach transition is in flight.
       const existing = getActiveBrowserPanel()
       if (existing) {
-        await existing.webContents.loadURL(safeUrl).catch(() => undefined)
+        if (existing.webContents.getURL() !== safeUrl) {
+          await existing.webContents.loadURL(safeUrl).catch(() => undefined)
+        }
       }
-      await waitForLoad()
-      const page = currentPage()
+      // Navigation is the one action allowed to reopen a hidden panel. The
+      // renderer may attach it just after this request returns (for example
+      // while its panel transition is still running), so loading itself must
+      // not depend on visibility.
+      await waitForLoad(LOAD_TIMEOUT_MS, false)
+      const page = currentPage(false)
       return { ok: true, url: page.url, title: page.title }
     }
     case 'snapshot': {
@@ -264,6 +310,7 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
         return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
       })()`)
       if (!center) return { ok: false, error: 'ref-not-found' }
+      if (!isBrowserPanelVisible()) return { ok: false, error: 'panel-hidden' }
       const panel = getActiveBrowserPanel()
       if (!panel) return { ok: false, error: 'panel-not-open' }
       const wc = panel.webContents
@@ -288,26 +335,29 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
       const panel = getActiveBrowserPanel()
       if (!panel) return { ok: false, error: 'panel-not-open' }
       const wc = panel.webContents
+      if (!isBrowserPanelVisible()) return { ok: false, error: 'panel-hidden' }
       const before = wc.getURL()
       // insertText is the reliable programmatic typing primitive (char input
       // events alone often do not commit text into the focused editor).
       wc.insertText(req.text as string)
       await new Promise((r) => setTimeout(r, 150))
       if (req.submit) {
+        const firstSubmitWait = waitForNavigation(before, SUBMIT_NAVIGATION_TIMEOUT_MS)
         wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
         wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
-        await waitForLoad(8_000)
+        await firstSubmitWait
         if (wc.getURL() === before) {
           // Chromium ignores synthetic Enter for implicit form submission on
           // some pages; requestSubmit() is the standards equivalent (still
           // our own whitelisted script, never extension-provided source).
+          const fallbackSubmitWait = waitForNavigation(before, 8_000)
           await exec(`(() => {
             const el = document.querySelector('[data-ts-ref="${req.ref}"]')
             const form = el && (el.form || (el.tagName === 'FORM' ? el : null))
             if (form && typeof form.requestSubmit === 'function') form.requestSubmit()
             return true
           })()`)
-          await waitForLoad(8_000)
+          await fallbackSubmitWait
         }
       }
       const page = currentPage()
@@ -322,6 +372,7 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
     case 'screenshot': {
       const panel = getActiveBrowserPanel()
       if (!panel) return { ok: false, error: 'panel-not-open' }
+      if (!isBrowserPanelVisible()) return { ok: false, error: 'panel-hidden' }
       const image = await panel.webContents.capturePage()
       if (image.isEmpty()) return { ok: false, error: 'empty-capture' }
       const dir = path.join(app.getPath('userData'), 'browser-use')
@@ -356,24 +407,46 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
 }
 
 let bridgePort: number | null = null
+let bridgeReady: Promise<void> | null = null
 /** Per-session credentials: token → the GUI session id it was minted for. */
 const sessionTokens = new Map<string, string>()
 /** Session id that currently owns the panel (last navigate). */
 let panelOwner: string | null = null
+/** Browser actions must be serialized so ownership cannot change mid-action. */
+let browserActionQueue = Promise.resolve()
+
+function withBrowserActionLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = browserActionQueue.then(task, task)
+  browserActionQueue = run.then(
+    () => undefined,
+    () => undefined
+  )
+  return run
+}
 
 /** Start the loopback server at app startup; safe to call more than once. */
-export function initBrowserUseBridge(): void {
-  if (bridgePort !== null) return
-  const server = createServer((req, res) => void handle(req, res))
-  server.once('error', () => {
-    bridgePort = null
-  })
-  server.listen(0, '127.0.0.1', () => {
-    const address = server.address()
-    if (address && typeof address === 'object') {
-      bridgePort = address.port
+export function initBrowserUseBridge(): Promise<void> {
+  if (bridgePort !== null) return Promise.resolve()
+  if (bridgeReady) return bridgeReady
+  bridgeReady = new Promise<void>((resolve, reject) => {
+    const server = createServer((req, res) => void handle(req, res))
+    const fail = (error: Error) => {
+      bridgePort = null
+      bridgeReady = null
+      reject(error)
     }
+    server.once('error', fail)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (address && typeof address === 'object') {
+        bridgePort = address.port
+        resolve()
+      } else {
+        fail(new Error('browser-use bridge did not receive a listening address'))
+      }
+    })
   })
+  return bridgeReady
 }
 
 /**
@@ -424,37 +497,39 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     res.end(JSON.stringify({ ok: false, error: 'bad-action' }))
     return
   }
-  const denied = gateBrowserUseRequest(
-    request.action,
-    sessionId,
-    panelOwner,
-    isBrowserPanelVisible()
-  )
-  if (denied) {
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(
-      JSON.stringify({
-        ok: false,
-        error: denied,
-        hint:
-          denied === 'panel-hidden'
-            ? 'the browser panel is closed; navigate (which visibly reopens it) before acting'
-            : 'another session owns the browser panel; navigate to take it over (visible to the user)'
-      })
+  await withBrowserActionLock(async () => {
+    const denied = gateBrowserUseRequest(
+      request.action,
+      sessionId,
+      panelOwner,
+      isBrowserPanelVisible()
     )
-    return
-  }
-  try {
-    const result = await runAction(request)
-    if (request.action === 'navigate' && result.ok) {
-      panelOwner = sessionId
+    if (denied) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: denied,
+          hint:
+            denied === 'panel-hidden'
+              ? 'the browser panel is closed; navigate (which visibly reopens it) before acting'
+              : 'another session owns the browser panel; navigate to take it over (visible to the user)'
+        })
+      )
+      return
     }
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify(result))
-  } catch (err) {
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(
-      JSON.stringify({ ok: false, error: err instanceof Error ? err.message : 'action-failed' })
-    )
-  }
+    try {
+      const result = await runAction(request)
+      if (request.action === 'navigate' && result.ok) {
+        panelOwner = sessionId
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(result))
+    } catch (err) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(
+        JSON.stringify({ ok: false, error: err instanceof Error ? err.message : 'action-failed' })
+      )
+    }
+  })
 }

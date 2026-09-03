@@ -208,6 +208,17 @@ export default function browserUseTools(api: ToolHostApi): void {
 
   api.registerTool(
     tool({
+      name: 'browser_forward',
+      label: 'Browser Forward',
+      description: '浏览器前进一步。',
+      parameters: { type: 'object', properties: {} },
+      approval: 'read',
+      execute: () => call({ action: 'forward' })
+    })
+  )
+
+  api.registerTool(
+    tool({
       name: 'browser_wait',
       label: 'Browser Wait',
       description: '等待指定毫秒（最多 5000）让页面完成动态加载，然后返回当前 URL。',
