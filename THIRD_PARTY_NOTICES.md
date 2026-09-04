@@ -50,3 +50,15 @@ The DeepSeek Harness **runtime** (agent loop, Cordis, LLM, tools, subagent
 runtime, jobs runtime, session persistence, terminal, credentials, settings
 runtime) is **not** imported. Oh My Pi remains the single agent runtime — see
 `docs/deepseek-harness-adoption.md`.
+
+## Feishu Open Platform SDK
+
+This release uses [`@larksuiteoapi/node-sdk`](https://github.com/larksuite/oapi-sdk-nodejs)
+for the Feishu/Lark WebSocket channel and Open API transport. The SDK remains
+an integration transport only; OMP remains Toushou's sole Agent runtime. See
+`docs/feishu-integration.md` for the exact boundary and the capabilities
+exposed through the bundled `toushou-feishu-toolkit` package.
+
+The SDK is distributed under its upstream license and notices. Its transitive
+licenses are retained in the package manager lockfile and the packaged
+application's dependency tree.

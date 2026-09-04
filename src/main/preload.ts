@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
 import {
+  FeishuConnectionResult,
+  FeishuConnectionSnapshot,
+  FeishuManualCredentials,
+  FeishuOAuthBeginResult,
+  FeishuCapability
+} from '../shared/connections'
+import {
   CliCapabilities,
   CliInfo,
   Session,
@@ -352,6 +359,19 @@ export interface ElectronAPI {
   authLogout: (providerId: string) => Promise<{ ok: boolean; error?: string }>
   /** Login flow state stream. */
   onLoginState: (callback: (state: LoginState) => void) => () => void
+  // ------------------------------------------------------- connections
+  listConnections: () => Promise<FeishuConnectionSnapshot[]>
+  feishuStatus: () => Promise<FeishuConnectionSnapshot>
+  feishuBeginConnection: (brand?: 'feishu' | 'lark') => Promise<FeishuConnectionResult>
+  /** Advanced fallback only; the secret is sent directly to Main. */
+  feishuConnectManual: (credentials: FeishuManualCredentials) => Promise<FeishuConnectionResult>
+  feishuCancelConnection: () => Promise<FeishuConnectionSnapshot>
+  feishuDisconnect: () => Promise<FeishuConnectionSnapshot>
+  feishuOpenUrl: (url: string) => Promise<boolean>
+  feishuBeginOAuth: (capability: FeishuCapability) => Promise<FeishuOAuthBeginResult>
+  feishuPollOAuth: () => Promise<FeishuConnectionSnapshot>
+  feishuCancelOAuth: () => Promise<FeishuConnectionSnapshot>
+  onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => () => void
 }
 
 const api: ElectronAPI = {
@@ -632,6 +652,26 @@ const api: ElectronAPI = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.AUTH_LOGIN_STATE, handler)
     }
+  },
+  listConnections: () => ipcRenderer.invoke(IPC_CHANNELS.CONNECTIONS_LIST),
+  feishuStatus: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_STATUS),
+  feishuBeginConnection: (brand?: 'feishu' | 'lark') =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_BEGIN_CONNECTION, brand),
+  feishuConnectManual: (credentials: FeishuManualCredentials) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_CONNECT_MANUAL, credentials),
+  feishuCancelConnection: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_CANCEL_CONNECTION),
+  feishuDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_DISCONNECT),
+  feishuOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OPEN_URL, url),
+  feishuBeginOAuth: (capability: FeishuCapability): Promise<FeishuOAuthBeginResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_BEGIN, capability),
+  feishuPollOAuth: (): Promise<FeishuConnectionSnapshot> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_POLL),
+  feishuCancelOAuth: (): Promise<FeishuConnectionSnapshot> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_CANCEL),
+  onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => {
+    const handler = (_event: IpcRendererEvent, snapshot: FeishuConnectionSnapshot) => callback(snapshot)
+    ipcRenderer.on(IPC_CHANNELS.FEISHU_STATUS, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.FEISHU_STATUS, handler)
   }
 }
 

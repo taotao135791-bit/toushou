@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.3.7，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.3.7) 下载：
+当前版本 v0.4.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.4.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.7/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.7/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.3.7/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.4.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.4.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.4.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.4.0：新增飞书连接中心。支持 PersonalAgent 扫码注册、Lark 国际版、WebSocket 私聊与群聊 @投手、线程回复、图片/文件提示、消息去重与断线重连；飞书远程会话继续由 OMP 执行并强制只读。文档、表格和多维表能力采用按需 OAuth，凭据与令牌只保存在系统安全存储中。
 
 v0.3.7：合并 Skill 专业化启动与登录取消泄漏修复；Skill 继续独立于插件入口，支持安全注入会话、对话选择和删除。
 
@@ -85,6 +87,15 @@ v0.1.1：流式输出渲染提速（消息增量微批合并、按会话订阅�
 - 看板（Boards）：自由布局的小组件墙，支持导入 CSV / XLSX 数据集
 - `@` 模糊引用文件、图片粘贴与附件（最多 4 张、单张 10MB）
 - 中英双语界面、明暗主题、会话导出 HTML、后台完成时系统通知
+
+**飞书连接**
+
+- 从侧栏“连接”进入，优先使用扫码创建 PersonalAgent 应用；已有应用可在高级设置中输入 App ID / App Secret
+- 私聊只接受注册 owner，群聊必须 @投手；同一聊天或线程稳定复用同一个 OMP 会话，并在回复时保留话题关系
+- 机器人消息走 WebSocket；文档、表格、多维表读取或写入会在连接页按需申请对应用户权限
+- 飞书工具通过本机 `127.0.0.1` 的一次性会话桥接进入 OMP，渲染层和 OMP 都拿不到 App Secret、OAuth token 或本机路径
+
+详细的连接状态机、API 范围和故障排查见 [docs/feishu-integration.md](docs/feishu-integration.md)。
 
 ## 快速开始
 

@@ -10,6 +10,7 @@ import { executableSearchDirs } from './OmpCapabilities'
 import { EnvMode, resolveSubprocessEnv } from './env'
 import { spawnCommand } from '../command'
 import { browserUseEnv } from '../browserUse'
+import { feishuBridgeEnv } from '../integrations/feishu/feishuBridge'
 
 /**
  * Process assembly for `pi --mode rpc` sessions: CLI argument construction
@@ -198,7 +199,8 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       // Loopback bridge for the bundled browser-use tools (absent when the
       // bridge could not start; the tools then report a clear error). The
       // per-session token binds bridge actions to this session.
-      ...browserUseEnv(sessionId)
+      ...browserUseEnv(sessionId),
+      ...feishuBridgeEnv(sessionId)
     }),
     approvalConfigFile
   }

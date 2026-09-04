@@ -9,6 +9,8 @@ import { syncMachineSkills } from './piSettings'
 import { detectCli } from './omp'
 import { initUpdater } from './updater'
 import { installNavigationGuards } from './navigation'
+import { initFeishuBridge } from './integrations/feishu/feishuBridge'
+import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -113,11 +115,19 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('[browser-use] bridge unavailable', error)
   }
+  try {
+    await initFeishuBridge()
+  } catch (error) {
+    console.warn('[feishu] tool bridge unavailable', error)
+  }
   createWindow()
   initUpdater()
   // Fire-and-forget: links bundled packages (e.g. the ads toolkit) into the
   // runtime when detected; no-ops once linked or after user removal.
   void ensureBundledPackages()
+  // Background-only recovery: GUI creation is never held up by Feishu DNS or
+  // WebSocket handshake latency.
+  void feishuConnectionManager.initialize()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

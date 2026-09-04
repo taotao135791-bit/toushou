@@ -134,6 +134,17 @@ export const IPC_CHANNELS = {
   AUTH_LOGOUT: 'auth:logout',
   AUTH_OPEN_LOGIN_URL: 'auth:open-login-url',
   AUTH_LOGIN_STATE: 'auth:login-state',
+  // Connections / Feishu integration. Secrets never cross these channels.
+  CONNECTIONS_LIST: 'connections:list',
+  FEISHU_STATUS: 'feishu:status',
+  FEISHU_BEGIN_CONNECTION: 'feishu:begin-connection',
+  FEISHU_CONNECT_MANUAL: 'feishu:connect-manual',
+  FEISHU_CANCEL_CONNECTION: 'feishu:cancel-connection',
+  FEISHU_DISCONNECT: 'feishu:disconnect',
+  FEISHU_OPEN_URL: 'feishu:open-url',
+  FEISHU_OAUTH_BEGIN: 'feishu:oauth-begin',
+  FEISHU_OAUTH_POLL: 'feishu:oauth-poll',
+  FEISHU_OAUTH_CANCEL: 'feishu:oauth-cancel',
   /** In-app browser panel (Main-owned WebContentsView over the renderer). */
   BROWSER_SHOW: 'browser:show',
   BROWSER_HIDE: 'browser:hide',

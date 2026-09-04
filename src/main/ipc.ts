@@ -150,6 +150,8 @@ import {
   showBrowserPanel
 } from './browserPanel'
 import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
+import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
+import { FeishuCapability, FeishuManualCredentials } from '../shared/connections'
 
 const fsGuard = new FsGuard()
 const grantManager = new WorkspaceGrantManager({ fsGuard })
@@ -435,6 +437,39 @@ function redactScaffoldOutputLog(value: unknown, canonicalDir: string): string {
 }
 
 export function registerIpc() {
+  feishuConnectionManager.setSessionEventSink(broadcastSessionEvent)
+
+  // Connections are Main-owned. The renderer receives only a public status
+  // projection and a QR URL; credentials and SDK clients stay here.
+  ipcMain.handle(IPC_CHANNELS.CONNECTIONS_LIST, async () => [feishuConnectionManager.getSnapshot()])
+  ipcMain.handle(IPC_CHANNELS.FEISHU_STATUS, async () => feishuConnectionManager.getSnapshot())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_BEGIN_CONNECTION, async (_event, brand: unknown) => {
+    return feishuConnectionManager.beginConnection(brand === 'lark' ? 'lark' : 'feishu')
+  })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_CONNECT_MANUAL, async (_event, raw: unknown) => {
+    if (!raw || typeof raw !== 'object') return { ok: false, error: 'invalid credentials', snapshot: feishuConnectionManager.getSnapshot() }
+    const input = raw as Record<string, unknown>
+    const credentials: FeishuManualCredentials = {
+      appId: typeof input.appId === 'string' ? input.appId : '',
+      appSecret: typeof input.appSecret === 'string' ? input.appSecret : '',
+      brand: input.brand === 'lark' ? 'lark' : 'feishu'
+    }
+    return feishuConnectionManager.connectManual(credentials)
+  })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_CANCEL_CONNECTION, async () => feishuConnectionManager.cancelConnection())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_DISCONNECT, async () => feishuConnectionManager.disconnect())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_OPEN_URL, async (_event, url: unknown) => {
+    return typeof url === 'string' ? feishuConnectionManager.openUrl(url) : false
+  })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_BEGIN, async (_event, capability: unknown) => {
+    const capabilities: FeishuCapability[] = ['docs.read', 'docs.write', 'sheets.read', 'sheets.write', 'bitable.read', 'bitable.write']
+    return capabilities.includes(capability as FeishuCapability)
+      ? feishuConnectionManager.beginOAuth(capability as FeishuCapability)
+      : { ok: false, error: '不支持的授权能力', snapshot: feishuConnectionManager.getSnapshot() }
+  })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_POLL, async () => feishuConnectionManager.pollOAuth())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_CANCEL, async () => feishuConnectionManager.cancelOAuth())
+
   ipcMain.handle(IPC_CHANNELS.OMP_DETECT, async (_event: IpcMainInvokeEvent, force?: boolean) => {
     if (force) {
       invalidateCliCache()

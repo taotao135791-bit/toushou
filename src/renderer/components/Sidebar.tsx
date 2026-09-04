@@ -19,7 +19,8 @@ import {
   ArchiveRestore,
   ChevronDown,
   ChevronRight,
-  Loader2
+  Loader2,
+  Link2
 } from 'lucide-react'
 import { HistorySessionDescriptor } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
@@ -523,6 +524,13 @@ export default function Sidebar() {
         >
           <Library size={14} className="shrink-0" />
           {t('sidebar.skills')}
+        </button>
+        <button
+          onClick={() => navigate('/connections')}
+          className={navRow(location.pathname === '/connections')}
+        >
+          <Link2 size={14} className="shrink-0" />
+          {t('sidebar.connections')}
         </button>
       </nav>
 

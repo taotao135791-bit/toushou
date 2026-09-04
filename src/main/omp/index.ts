@@ -131,6 +131,8 @@ export function createSession(
     modelSelector?: string
     thinkingLevel?: SessionThinkingLevel
     skillSystemPrompt?: string
+    /** Main-owned remote channel sessions can explicitly downgrade access. */
+    permissionMode?: PermissionMode
   }
 ): Session {
   const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -153,7 +155,7 @@ export function createSession(
   }
 
   const plan = planSpawn(id, cli, {
-    permissionMode: getStore('permissionMode'),
+    permissionMode: opts?.permissionMode ?? getStore('permissionMode'),
     language: getStore('language'),
     resumeSessionPath: opts?.resumeSessionPath,
     modelSelector: opts?.modelSelector,

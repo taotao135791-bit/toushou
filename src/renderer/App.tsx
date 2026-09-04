@@ -19,6 +19,7 @@ const BoardsPage = lazy(() => import('./pages/BoardsPage'))
 const BrowserPage = lazy(() => import('./pages/BrowserPage'))
 const OfficePage = lazy(() => import('./pages/OfficePage'))
 const SkillsPage = lazy(() => import('./pages/SkillsPage'))
+const ConnectionsPage = lazy(() => import('./pages/ConnectionsPage'))
 
 interface RendererErrorBoundaryProps {
   children: ReactNode
@@ -280,6 +281,7 @@ function App() {
             <Route path="/office" element={<OfficePage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/connections" element={<ConnectionsPage />} />
           </Routes>
         </Suspense>
       </Layout>

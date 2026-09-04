@@ -1273,6 +1273,8 @@ export interface AppSettings {
   archivedSessionIds: string[]
   /** Version stamps + user-removal marks for app-bundled packages. */
   bundledPackages: Record<string, { version: string; userRemoved: boolean }>
+  /** Experimental one-click Feishu PersonalAgent registration. */
+  feishuExperimentalPersonalAgentRegistration: boolean
 }
 
 export type InstallStatus =
@@ -1300,7 +1302,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notificationPreviews: false,
   pinnedSessionIds: [],
   archivedSessionIds: [],
-  bundledPackages: {}
+  bundledPackages: {},
+  feishuExperimentalPersonalAgentRegistration: true
 }
 
 /** Snapshot of a live session, from the RPC get_state command. */
