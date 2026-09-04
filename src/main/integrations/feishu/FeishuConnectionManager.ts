@@ -99,18 +99,24 @@ export class FeishuConnectionManager {
   }
 
   getSnapshot(): FeishuConnectionSnapshot {
+    // The live websocket is the source of truth for "connected": the SDK can
+    // drop/re-establish the socket underneath the connect-state machine (and
+    // the state machine intentionally keeps working through a reconnect), so
+    // the badge must never say 未连接 while the channel is actually up.
+    const wsConnected = this.channel?.websocketState === 'connected'
+    const connected = this.state === 'connected' || wsConnected
     const status: ConnectionStatus =
-      this.state === 'connected' ? 'connected' :
+      connected && this.state !== 'degraded' ? 'connected' :
+      this.state === 'degraded' ? 'degraded' :
       this.state === 'waiting_for_scan' ? 'waiting_for_user' :
       this.state === 'starting_registration' || this.state === 'registration_confirmed' || this.state === 'storing_credentials' || this.state === 'configuring_app' || this.state === 'starting_channel' || this.state === 'probing' ? 'connecting' :
-      this.state === 'degraded' ? 'degraded' :
       this.state === 'needs_admin_approval' ? 'needs_attention' :
       this.state === 'failed' || this.state === 'unsupported_registration' ? 'failed' : 'disconnected'
     return {
       definition: FEISHU_DEFINITION,
       status,
       state: this.state,
-      connected: this.state === 'connected',
+      connected,
       appIdMasked: this.credentials?.appId ? maskSecret(this.credentials.appId) : undefined,
       tenantBrand: this.credentials?.tenantBrand ?? this.credentials?.brand,
       botName: this.channel?.botName,
@@ -308,7 +314,13 @@ export class FeishuConnectionManager {
       },
       onReconnecting: () => {
         this.lastReconnectAt = Date.now()
-        this.state = 'starting_channel'
+        // The SDK reconnects on its own; a transient socket drop must not
+        // demote a connected session back into the "configuring" states (the
+        // UI would show 正在配置飞书 forever during a reconnect storm).
+        // websocketState in the snapshot still shows 'reconnecting' live.
+        if (this.state !== 'connected') {
+          this.state = 'starting_channel'
+        }
         this.emitState()
       },
       onReconnected: () => {

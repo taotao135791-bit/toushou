@@ -533,3 +533,27 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   })
 }
+
+/**
+ * Serve a screenshot previously written by the browser_use screenshot action
+ * to the renderer as a data URL. The path must be one of Main's own capture
+ * files (inside userData/browser-use, .png) — a renderer-supplied arbitrary
+ * path is never read.
+ */
+export async function readBrowserScreenshotData(filePath: unknown): Promise<string | null> {
+  if (typeof filePath !== 'string' || filePath.length === 0 || filePath.length > 512) return null
+  const dir = path.join(app.getPath('userData'), 'browser-use')
+  const resolved = path.resolve(filePath)
+  const relative = path.relative(dir, resolved)
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null
+  if (!resolved.endsWith('.png')) return null
+  try {
+    const { readFile } = await import('node:fs/promises')
+    const bytes = await readFile(resolved)
+    // Screenshots are bounded by the capture page size; refuse absurd reads.
+    if (bytes.byteLength === 0 || bytes.byteLength > 20 * 1024 * 1024) return null
+    return `data:image/png;base64,${bytes.toString('base64')}`
+  } catch {
+    return null
+  }
+}

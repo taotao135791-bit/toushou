@@ -18,6 +18,7 @@ const VERB_KEYS: Record<TurnVerb, I18nKey> = {
   search: 'turn.verb.search',
   run: 'turn.verb.run',
   edit: 'turn.verb.edit',
+  plan: 'turn.verb.plan',
   call: 'turn.verb.call'
 }
 

@@ -459,11 +459,13 @@ const PI_COMMAND_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
  * Read-only probes (plugin --help, plugin list --json) answer in
- * milliseconds when the runtime is healthy. A hung runtime must not hold the
- * plugins page hostage for the full action timeout, so probes fail fast and
- * the GUI falls back to its capabilities-unavailable state.
+ * milliseconds when the runtime is warm. The budget covers a COLD first
+ * spawn too (Gatekeeper/bun warm-up after install can take ~10s); a hung
+ * runtime must not hold the plugins page hostage for the full action
+ * timeout, so probes still fail fast relative to actions and the GUI falls
+ * back to its capabilities-unavailable state.
  */
-const PACKAGE_PROBE_TIMEOUT_MS = 15_000
+const PACKAGE_PROBE_TIMEOUT_MS = 20_000
 
 interface CliCommandResult extends PackageActionResult {
   stdout: string

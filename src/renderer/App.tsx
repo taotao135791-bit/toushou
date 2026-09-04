@@ -38,20 +38,27 @@ class RendererErrorBoundary extends Component<
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('[renderer-error]', error, info.componentStack)
+    // Land in the main-process file log so user reports are debuggable.
+    window.electronAPI.logRendererError(
+      `${error.message}\n${info.componentStack ?? ''}`.slice(0, 8_000)
+    )
     this.setState({ error })
   }
 
   render() {
     if (this.state.error) {
+      const language = useAppStore.getState().language
       return (
         <div className="flex h-full flex-col items-center justify-center gap-3 bg-ink-950 px-6 text-center text-cream">
-          <p className="text-sm font-medium">投手遇到了渲染错误。</p>
+          <p className="text-sm font-medium">
+            {language === 'zh' ? '投手遇到了渲染错误。' : 'TouShou hit a rendering error.'}
+          </p>
           <p className="max-w-xl text-xs text-cream-faint">{this.state.error.message}</p>
           <button
             className="rounded-md bg-cream px-3 py-1.5 text-xs text-ink-950"
             onClick={() => window.location.reload()}
           >
-            重新加载窗口
+            {language === 'zh' ? '重新加载窗口' : 'Reload window'}
           </button>
         </div>
       )
@@ -69,8 +76,7 @@ function App() {
     setSetupComplete,
     applySessionEvent,
     registerSessions,
-    setWorkspacePanel,
-    setRightPanelOpen
+    setWorkspacePanel
   } = useAppStore(
     useShallow((s) => ({
       setupComplete: s.setupComplete,
@@ -80,8 +86,7 @@ function App() {
       setSetupComplete: s.setSetupComplete,
       applySessionEvent: s.applySessionEvent,
       registerSessions: s.registerSessions,
-      setWorkspacePanel: s.setWorkspacePanel,
-      setRightPanelOpen: s.setRightPanelOpen
+      setWorkspacePanel: s.setWorkspacePanel
     }))
   )
   const t = useT()
@@ -212,11 +217,9 @@ function App() {
     // Runtime extensions can ask to open an in-app panel (validated in Main).
     const unsubscribePanelOpen = window.electronAPI.onPanelOpen((request) => {
       if (request.panel === 'browser' && request.url) {
-        setRightPanelOpen(false)
         setWorkspacePanel({ kind: 'browser', url: request.url })
         if (window.location.hash !== '#/' && !window.location.hash.startsWith('#/?')) navigate('/')
       } else if (request.panel === 'office' && request.office) {
-        setRightPanelOpen(false)
         setWorkspacePanel({
           kind: 'office',
           grant: request.office.grant,
@@ -233,7 +236,7 @@ function App() {
       unsubscribeLogin()
       unsubscribePanelOpen()
     }
-  }, [setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent, registerSessions, setWorkspacePanel, setRightPanelOpen, navigate])
+  }, [setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent, registerSessions, setWorkspacePanel, navigate])
 
   // ⌘N goes home with a clean composer from anywhere. No session is created
   // up front — the first sent message creates it (same as the 对话 nav row).

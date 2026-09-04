@@ -62,3 +62,11 @@ exposed through the bundled `toushou-feishu-toolkit` package.
 The SDK is distributed under its upstream license and notices. Its transitive
 licenses are retained in the package manager lockfile and the packaged
 application's dependency tree.
+
+## SheetJS (xlsx)
+
+The `xlsx` dependency is installed from the official SheetJS CDN
+(`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`) rather than the npm
+registry, because upstream stopped publishing fixes to npm after 0.18.5. The
+Apache-2.0 license and notices ship inside the package; see the SheetJS
+project for details.

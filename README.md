@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.4.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.4.0) 下载：
+当前版本 v0.5.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.5.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.4.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.4.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.4.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.5.0：体验收敛与生产化加固。连接页徽标对齐真实 WebSocket 状态、新增"去对话里试试"直达入口；运行时版本探测冷启动自愈（插件页/设置 About 不再误报未检测到）；工具执行可视化升级——todo 计划卡、浏览器截图内联预览、浏览器/飞书工具摘要、任务计划实时动词；工作区面板跨页面常驻（离开对话不再丢失 agent 操作现场）；看板/Office"问智能体"固定落入新会话；设置页新增"导出诊断信息"；主进程文件日志与崩溃兜底落地（userData/logs/main.log）；首启向导补"连接模型"步骤；settings schemaVersion + 损坏自动备份；xlsx 升级至 SheetJS CDN 0.20.3 修复已知安全公告；流式 Markdown 解析节流提升长回复流畅度；Windows 通知补 AppUserModelID。
 
 v0.4.0：新增飞书连接中心。支持 PersonalAgent 扫码注册、Lark 国际版、WebSocket 私聊与群聊 @投手、线程回复、图片/文件提示、消息去重与断线重连；飞书远程会话继续由 OMP 执行并强制只读。文档、表格和多维表能力采用按需 OAuth，凭据与令牌只保存在系统安全存储中。
 

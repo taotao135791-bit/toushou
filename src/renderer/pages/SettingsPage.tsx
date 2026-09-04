@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Check,
+  Download,
   FolderCog,
   Languages,
   Moon,
@@ -103,6 +104,15 @@ export default function SettingsPage() {
     useAppStore.getState().loadRuntimeModels()
     window.electronAPI.getStore('notifications').then((v) => setNotificationsState(v ?? true))
     window.electronAPI.getStore('notificationPreviews').then((v) => setNotifyPreviewsState(v ?? false))
+    // Self-heal the About version row: a cold first probe can miss its
+    // timeout; the main side re-probes on later getCapabilities calls, so
+    // re-fetch once after a delay instead of showing 未检测到 forever.
+    const capsHealTimer = setTimeout(() => {
+      window.electronAPI.getCapabilities().then((next) => {
+        setCaps((prev) => (prev?.cliVersion ? prev : next))
+      })
+    }, 12_000)
+    return () => clearTimeout(capsHealTimer)
   }, [])
 
   useEffect(() => {
@@ -140,6 +150,19 @@ export default function SettingsPage() {
     useAppStore.getState().setRecentProjects([])
     setCleared(true)
     setTimeout(() => setCleared(false), 1500)
+  }
+
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false)
+  const [diagnosticsExportedPath, setDiagnosticsExportedPath] = useState('')
+  const exportDiagnostics = async () => {
+    setExportingDiagnostics(true)
+    setDiagnosticsExportedPath('')
+    try {
+      const result = await window.electronAPI.exportDiagnostics()
+      if (result.ok && result.path) setDiagnosticsExportedPath(result.path)
+    } finally {
+      setExportingDiagnostics(false)
+    }
   }
 
   const showCliSettings = async () => {
@@ -458,6 +481,19 @@ export default function SettingsPage() {
               ) : (
                 <span className="text-xs text-red-500">{t('settings.ompCompatUnsupported')}</span>
               )}
+            </Row>
+            <Row label={t('settings.diagnostics')}>
+              <div className="flex items-center gap-2">
+                <button onClick={exportDiagnostics} disabled={exportingDiagnostics} className={buttonCls}>
+                  {exportingDiagnostics ? <RefreshCw size={11} className="animate-spin" /> : <Download size={11} />}
+                  {exportingDiagnostics ? t('settings.diagnosticsExporting') : t('settings.diagnosticsExport')}
+                </button>
+                {diagnosticsExportedPath && (
+                  <span className="max-w-[240px] truncate font-mono text-[11px] text-emerald-600 dark:text-emerald-400">
+                    {diagnosticsExportedPath}
+                  </span>
+                )}
+              </div>
             </Row>
           </Section>
         </div>

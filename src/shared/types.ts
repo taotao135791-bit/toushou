@@ -1251,6 +1251,8 @@ export interface BoardDataset {
 export type Language = 'zh' | 'en'
 
 export interface AppSettings {
+  /** Settings-file schema version; bumped only when a migration is required. */
+  schemaVersion: number
   theme: 'dark' | 'light'
   language: Language
   windowWidth: number
@@ -1289,6 +1291,7 @@ export type ReadFileResult =
   | { ok: false; error: string }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  schemaVersion: 1,
   theme: 'light',
   language: 'en',
   windowWidth: 1280,

@@ -73,6 +73,8 @@ import { listAvailableModels, listCatalogModels, invalidateModelCache } from './
 import { getStore, rememberRecentProject, setStore } from './store'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
+import { readBrowserScreenshotData } from './browserUse'
+import { logRendererError, readLogTail } from './lib/logger'
 import { listLaunchableTools } from './toolLaunch'
 import { searchCommunityPackages } from './community'
 import { scaffoldPlugin } from './pluginScaffold'
@@ -245,6 +247,40 @@ function sanitizeSubagentSelector(value: unknown): SubagentTranscriptSelector {
 /** An id that is a non-empty, control-char-free, reasonably-bounded string. */
 function isSafeId(id: string): boolean {
   return id.length > 0 && id.length <= 512 && !hasControl(id)
+}
+
+const MAX_STORE_VALUE_BYTES = 256 * 1024
+
+/**
+ * True when `value` is plain JSON-serializable data within a sane size —
+ * the settings store holds plain values only. Prevents prototypes/porcelain
+ * (class instances, Maps, functions, cyclic graphs) from entering store:set.
+ */
+function isPlainStorableValue(value: unknown, depth = 0): boolean {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (depth > 12) return false
+  if (Array.isArray(value)) {
+    if (value.length > 10_000) return false
+    return value.every((item) => isPlainStorableValue(item, depth + 1))
+  }
+  if (value instanceof Date || value instanceof Map || value instanceof Set) return false
+  if (typeof value === 'object') {
+    const proto = Object.getPrototypeOf(value)
+    if (proto !== Object.prototype && proto !== null) return false
+    const entries = Object.entries(value as Record<string, unknown>)
+    if (entries.length > 1_000) return false
+    let bytes = 0
+    for (const [k, v] of entries) {
+      if (typeof k !== 'string' || k.length > 256) return false
+      bytes += k.length
+      if (!isPlainStorableValue(v, depth + 1)) return false
+      if (typeof v === 'string') bytes += v.length
+      if (bytes > MAX_STORE_VALUE_BYTES) return false
+    }
+    return true
+  }
+  return false
 }
 
 // eslint-disable-next-line no-control-regex
@@ -1684,7 +1720,11 @@ export function registerIpc() {
   })
 
   ipcMain.handle(IPC_CHANNELS.STORE_SET, async (_event, key: keyof AppSettings, value: unknown) => {
+    if (typeof key !== 'string') return false
     if (key === 'recentProjects') return false
+    // The store holds plain settings data only — a renderer must not persist
+    // functions, class instances, or oversized blobs through this channel.
+    if (!isPlainStorableValue(value)) return false
     setStore(key, value as never)
     // Transitional: the settings UI still writes the legacy toolAccess tier;
     // mirror it into permissionMode until the renderer exposes 'ask' itself.
@@ -1692,6 +1732,52 @@ export function registerIpc() {
       setStore('permissionMode', value)
     }
     return true
+  })
+
+  // --- Diagnostics -----------------------------------------------------------
+
+  ipcMain.handle(IPC_CHANNELS.RENDERER_ERROR, async (_event, message: unknown) => {
+    if (typeof message === 'string' && message.length > 0) {
+      logRendererError(message.slice(0, 8_000))
+    }
+    return true
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SCREENSHOT_DATA, async (_event, filePath: unknown) => {
+    return readBrowserScreenshotData(filePath)
+  })
+
+  // User-initiated bundle: versions, capability facts and the recent log
+  // tail. Written where the user chooses via a native dialog; nothing is
+  // uploaded (there is no telemetry in this app).
+  ipcMain.handle(IPC_CHANNELS.DIAGNOSTICS_EXPORT, async () => {
+    const result = await dialog.showSaveDialog({
+      title: '投手诊断信息',
+      defaultPath: `toushou-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (result.canceled || !result.filePath) return { ok: false, error: 'cancelled' }
+    try {
+      const cli = detectCli()
+      const caps = await getCapabilities()
+      const os = await import('node:os')
+      const bundle = {
+        exportedAt: new Date().toISOString(),
+        appVersion: app.getVersion(),
+        electron: process.versions.electron,
+        node: process.versions.node,
+        platform: process.platform,
+        osRelease: os.release(),
+        locale: app.getLocale(),
+        cli: { command: cli.command, available: cli.available },
+        capabilities: caps,
+        logTail: await readLogTail()
+      }
+      await fs.promises.writeFile(result.filePath, JSON.stringify(bundle, null, 2), 'utf-8')
+      return { ok: true, path: result.filePath }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'write-failed' }
+    }
   })
 
   // Kanban boards — dedicated module, never the generic store:set. The board

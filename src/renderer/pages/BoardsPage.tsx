@@ -595,11 +595,11 @@ export default function BoardsPage() {
     if (!current) return
     closeMenus()
     const store = useAppStore.getState()
-    const existing = store.currentSessionId ? store.composerDrafts[store.currentSessionId]?.text.trim() : ''
     const prompt = buildBoardChatPrompt(current, datasets, language)
-    // Preserve an unsent draft instead of replacing it. The board snapshot is
-    // clearly separated so the person can edit either part before sending.
-    store.setComposerPrefill(existing ? `${existing}\n\n${prompt}` : prompt)
+    // The question is about THIS board — it lands in a fresh conversation, not
+    // in whatever session happens to be selected right now.
+    store.setCurrentSessionId(null)
+    store.setComposerPrefill(prompt)
     navigate('/')
   }
 

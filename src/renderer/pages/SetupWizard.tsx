@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Download, CheckCircle, AlertCircle, Loader2, Terminal, ArrowRight } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Download, CheckCircle, AlertCircle, KeyRound, Loader2, Terminal, ArrowRight } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
@@ -22,36 +23,71 @@ export default function SetupWizard() {
     }))
   )
   const t = useT()
+  const navigate = useNavigate()
 
   // The real command is copied verbatim but never displayed, keeping the
   // first-run surface brand-neutral (runtime details live in Settings).
   const manualCommand = 'curl -fsSL https://omp.sh/install | sh'
   const [copied, setCopied] = useState(false)
   const [manualFailed, setManualFailed] = useState(false)
+  // 'checking' = probing model config after the CLI appeared; 'needed' = no
+  // provider authenticated and no catalogued model — offer the settings page
+  // instead of dropping the user into a composer that cannot answer.
+  const [modelStep, setModelStep] = useState<'checking' | 'needed' | null>(null)
 
+  // A brand-new CLI install means no provider is signed in yet. Probe the
+  // runtime's own view (never a GUI-side guess): any authenticated provider
+  // or any catalogued model completes setup as before; otherwise show one
+  // extra step pointing at provider login. A slow/failed probe (cold CLI)
+  // always completes setup — the wizard must not trap anyone.
   useEffect(() => {
-    window.electronAPI.detectCli().then((info) => {
-      setCliAvailable(info.available)
-      if (info.available) {
+    if (!cliAvailable || modelStep) return
+    let active = true
+    setModelStep('checking')
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 12_000))
+    const probe = (async () => {
+      try {
+        const [overview, models] = await Promise.all([
+          window.electronAPI.runtimeOverview(false),
+          window.electronAPI.runtimeListModels().catch(() => [])
+        ])
+        const authenticated = overview?.providers?.some((provider) => provider.authenticated)
+        return authenticated || models.length > 0
+      } catch {
+        return true // probe failed — behave like the old wizard (complete)
+      }
+    })()
+    void Promise.race([probe, timeout]).then((result) => {
+      if (!active) return
+      if (result === null || result) {
         setSetupComplete(true)
+      } else {
+        setModelStep('needed')
       }
     })
-  }, [setCliAvailable, setSetupComplete])
+    return () => {
+      active = false
+    }
+  }, [cliAvailable, modelStep, setSetupComplete])
+
+  useEffect(() => {
+    // Availability only — completing setup is the model probe's job below.
+    window.electronAPI.detectCli().then((info) => {
+      setCliAvailable(info.available)
+    })
+  }, [setCliAvailable])
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.onInstallStatus((status) => {
       setInstallStatus(status)
       if (status.type === 'success') {
-        window.electronAPI.detectCli().then((info) => {
+        void window.electronAPI.detectCli().then((info) => {
           setCliAvailable(info.available)
-          if (info.available) {
-            setSetupComplete(true)
-          }
         })
       }
     })
     return () => unsubscribe()
-  }, [setInstallStatus, setCliAvailable, setSetupComplete])
+  }, [setInstallStatus, setCliAvailable])
 
   const handleAutoInstall = async () => {
     setInstallStatus({ type: 'downloading', progress: 0, message: 'Starting download...' })
@@ -62,13 +98,11 @@ export default function SetupWizard() {
   const handleManualDone = async () => {
     const info = await window.electronAPI.detectCli()
     setCliAvailable(info.available)
-    if (info.available) {
-      setManualFailed(false)
-      setSetupComplete(true)
-    } else {
+    if (!info.available) {
       // The CLI still isn't on PATH — say so, or the button looks dead.
       setManualFailed(true)
     }
+    // Completing setup (and the model step) is driven by the probe effect.
   }
 
   const handleCopy = () => {
@@ -87,6 +121,53 @@ export default function SetupWizard() {
   }
 
   if (cliAvailable) {
+    if (modelStep === 'checking') {
+      return (
+        <div className="flex h-full flex-col items-center justify-center bg-ink-950">
+          <Loader2 className="mb-4 animate-spin text-accent" size={30} />
+          <div className="text-sm text-cream-dim">{t('setup.model.checking')}</div>
+        </div>
+      )
+    }
+    if (modelStep === 'needed') {
+      return (
+        <div className="flex h-full flex-col items-center justify-center bg-ink-950 p-8">
+          <div className="w-full max-w-xl rounded-2xl border border-line bg-ink-900 p-8">
+            <div className="mb-6 flex items-center gap-3">
+              <Logo size={40} className="shrink-0" />
+              <div>
+                <h1 className="text-xl font-semibold tracking-tight text-cream">{t('setup.model.title')}</h1>
+                <p className="text-sm text-cream-dim">{t('setup.model.subtitle')}</p>
+              </div>
+            </div>
+            <div className="mb-6 rounded-xl border border-line bg-ink-800 p-4 text-sm leading-6 text-cream-dim">
+              <div className="flex items-start gap-3">
+                <KeyRound className="mt-0.5 shrink-0 text-accent" size={18} />
+                <span>{t('setup.model.hint')}</span>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <button
+                onClick={() => {
+                  setSetupComplete(true)
+                  navigate('/settings')
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-cream px-4 py-3 text-sm font-medium text-ink-950 transition hover:opacity-90"
+              >
+                {t('setup.model.goSettings')}
+                <ArrowRight size={16} />
+              </button>
+              <button
+                onClick={() => setSetupComplete(true)}
+                className="w-full rounded-xl px-4 py-2 text-center text-xs text-cream-faint transition hover:text-cream-dim"
+              >
+                {t('setup.model.skip')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )
+    }
     return (
       <div className="flex h-full flex-col items-center justify-center bg-ink-950">
         <CheckCircle className="mb-4 text-accent" size={44} />

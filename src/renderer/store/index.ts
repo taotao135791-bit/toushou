@@ -102,7 +102,6 @@ interface AppState {
   uiRequests: Record<string, UiRequest[]>
   packages: PackageDescriptor[]
   workspacePanel: WorkspacePanel | null
-  rightPanelOpen: boolean
   activeRightTab: 'files' | 'preview' | 'changes' | 'tools'
   selectedFile: string | null
   previewContent: string | null
@@ -198,7 +197,6 @@ interface AppState {
   resolveUiRequest: (sessionId: string, requestId: string) => void
   setPackages: (packages: PackageDescriptor[]) => void
   setWorkspacePanel: (panel: WorkspacePanel | null) => void
-  setRightPanelOpen: (open: boolean) => void
   setActiveRightTab: (tab: 'files' | 'preview' | 'changes' | 'tools') => void
   setSelectedFile: (path: string | null) => void
   setPreviewContent: (content: string | null) => void
@@ -333,7 +331,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   uiRequests: {},
   packages: [],
   workspacePanel: null,
-  rightPanelOpen: false,
   activeRightTab: 'files',
   selectedFile: null,
   previewContent: null,
@@ -660,7 +657,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   setPackages: (packages) => set({ packages }),
   setWorkspacePanel: (workspacePanel) => set({ workspacePanel }),
-  setRightPanelOpen: (rightPanelOpen) => set({ rightPanelOpen }),
   setActiveRightTab: (activeRightTab) => set({ activeRightTab }),
   setSelectedFile: (selectedFile) => set({ selectedFile }),
   setPreviewContent: (previewContent) => set({ previewContent }),

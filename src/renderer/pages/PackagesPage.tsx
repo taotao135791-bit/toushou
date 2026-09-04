@@ -66,7 +66,10 @@ type DropZone = 'chassis' | 'rack' | 'trash'
 
 const PKG_DRAG_TYPE = 'application/x-omp-package'
 
-const PLUGINS_LOAD_TIMEOUT_MS = 10_000
+// Generous on purpose: a cold runtime spawn (first launch after install) can
+// take well over the main-process probe budget; the main side still enforces
+// its own 20s probe timeout, so this only bounds the renderer's wait above it.
+const PLUGINS_LOAD_TIMEOUT_MS = 30_000
 const PLUGINS_LOAD_TIMEOUT_ERROR = 'plugins-load-timeout'
 
 /** A hung runtime probe must never pin the page on the loading spinner. */

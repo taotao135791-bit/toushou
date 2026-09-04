@@ -19,6 +19,19 @@ function summarizeInput(tool: string, input: unknown): string | null {
     if ((name === 'read' || name === 'edit' || name === 'write') && typeof obj.path === 'string') {
       return obj.path
     }
+    if (name.endsWith('screenshot')) return null
+    if (name.startsWith('browser_')) {
+      if (typeof obj.url === 'string' && obj.url) return obj.url
+      if (typeof obj.selector === 'string' && obj.selector) return obj.selector
+      if (typeof obj.query === 'string' && obj.query) return obj.query
+      return null
+    }
+    if (name.startsWith('feishu_') && typeof obj.action === 'string') {
+      return obj.action
+    }
+    if (name === 'todo' || name === 'todo_write' || name === 'todowrite' || name === 'plan') {
+      return null
+    }
   }
   try {
     return JSON.stringify(input)?.slice(0, 40) ?? null

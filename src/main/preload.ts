@@ -372,6 +372,12 @@ export interface ElectronAPI {
   feishuPollOAuth: () => Promise<FeishuConnectionSnapshot>
   feishuCancelOAuth: () => Promise<FeishuConnectionSnapshot>
   onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => () => void
+  /** Fetch a Main-captured browser screenshot as a PNG data URL (validated path). */
+  readBrowserScreenshot: (filePath: string) => Promise<string | null>
+  /** Forward a renderer exception into the main-process file log. */
+  logRendererError: (message: string) => Promise<boolean>
+  /** User-initiated diagnostics bundle (versions + log tail) via save dialog. */
+  exportDiagnostics: () => Promise<{ ok: boolean; path?: string; error?: string }>
 }
 
 const api: ElectronAPI = {
@@ -672,7 +678,17 @@ const api: ElectronAPI = {
     const handler = (_event: IpcRendererEvent, snapshot: FeishuConnectionSnapshot) => callback(snapshot)
     ipcRenderer.on(IPC_CHANNELS.FEISHU_STATUS, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.FEISHU_STATUS, handler)
-  }
+  },
+  readBrowserScreenshot: (filePath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SCREENSHOT_DATA, filePath) as Promise<string | null>,
+  logRendererError: (message: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.RENDERER_ERROR, message) as Promise<boolean>,
+  exportDiagnostics: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.DIAGNOSTICS_EXPORT) as Promise<{
+      ok: boolean
+      path?: string
+      error?: string
+    }>
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

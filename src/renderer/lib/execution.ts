@@ -537,7 +537,7 @@ export function turnElapsedMs(turn: TurnProjection): number {
 // progress and frozen summary through them.
 
 /** Legacy chat-row verb buckets. */
-export type TurnVerb = 'read' | 'search' | 'run' | 'edit' | 'call'
+export type TurnVerb = 'read' | 'search' | 'run' | 'edit' | 'plan' | 'call'
 
 export interface TurnCounts {
   filesRead: number
@@ -564,6 +564,10 @@ export function emptyTurnCounts(): TurnCounts {
 
 /** Map the single classifier onto the legacy chat-row verb. */
 export function classifyTool(tool: string): TurnVerb {
+  const name = tool.toLowerCase()
+  if (name === 'todo' || name === 'todo_write' || name === 'todowrite' || name === 'plan') {
+    return 'plan'
+  }
   switch (classifyToolCall(tool)) {
     case 'read':
       return 'read'

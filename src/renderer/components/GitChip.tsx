@@ -8,7 +8,6 @@ import GitTreePopover from './GitTreePopover'
 /** Header chip: current branch + worktree +/- totals; opens the changes tab. */
 export default function GitChip({ trailing }: { trailing?: ReactNode }) {
   const { info } = useGitInfo()
-  const setRightPanelOpen = useAppStore((s) => s.setRightPanelOpen)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const workspacePanel = useAppStore((s) => s.workspacePanel)
   const [open, setOpen] = useState(false)
@@ -27,7 +26,6 @@ export default function GitChip({ trailing }: { trailing?: ReactNode }) {
       <button
         onClick={() => {
           setOpen((value) => !value)
-          setRightPanelOpen(false)
           setWorkspacePanel(null)
         }}
         title={info.branch}

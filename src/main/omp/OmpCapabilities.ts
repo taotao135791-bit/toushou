@@ -117,7 +117,7 @@ function findExecutable(cmd: string): string | null {
   return findExecutableInDirs(cmd, executableSearchDirs())
 }
 
-const VERSION_PROBE_TIMEOUT_MS = 5_000
+const VERSION_PROBE_TIMEOUT_MS = 10_000
 
 /** Run `<cli> --version` and parse the first semver-ish token from its output. */
 export function probeCliVersion(cli: CliInfo): Promise<string | null> {
@@ -185,14 +185,42 @@ function handshakeFacts(outcome: HandshakeOutcome): Partial<CliCapabilities> {
 }
 
 /**
- * Capabilities of the detected CLI, cached for the process lifetime.
- * Feature flags are only advertised once the CLI proved responsive — via
- * the --version probe here, or via a runtime get_state (noteSessionState).
+ * Capabilities of the detected CLI. Feature flags are only advertised once the
+ * CLI proved responsive — via the --version probe here, or via a runtime
+ * get_state (noteSessionState).
+ *
+ * A failed --version probe is NOT cached as final: the first spawn of a cold
+ * CLI (fresh install, Gatekeeper/bun warm-up) can exceed the probe timeout,
+ * and a permanently cached "not detected" version makes Settings claim the
+ * runtime is missing while everything else works. When the cache holds no
+ * version, later calls trigger a fire-and-forget re-probe (at most once per
+ * FAILED_VERSION_REPROBE_MS) and still answer immediately from the cache.
  */
+const FAILED_VERSION_REPROBE_MS = 15_000
+let lastFailedVersionProbeAt = 0
+
 export async function getCapabilities(): Promise<CliCapabilities> {
-  if (capabilitiesCache) return capabilitiesCache
+  if (capabilitiesCache) {
+    const cli = detectCli()
+    if (cli.available && !capabilitiesCache.cliVersion && Date.now() - lastFailedVersionProbeAt > FAILED_VERSION_REPROBE_MS) {
+      lastFailedVersionProbeAt = Date.now()
+      void probeCliVersion(cli).then((cliVersion) => {
+        if (cliVersion) {
+          capabilitiesCache = {
+            ...capabilitiesCache,
+            cliVersion,
+            ...featureMatrix(true)
+          }
+        }
+      })
+    }
+    return capabilitiesCache
+  }
   const cli = detectCli()
   const cliVersion = await probeCliVersion(cli)
+  if (cli.available && !cliVersion) {
+    lastFailedVersionProbeAt = Date.now()
+  }
   capabilitiesCache = {
     cliVersion,
     protocol: pendingHandshake?.protocolVersion ?? 1,

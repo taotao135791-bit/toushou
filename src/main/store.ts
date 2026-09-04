@@ -1,6 +1,6 @@
 import { app, nativeTheme } from 'electron'
 import Store from 'electron-store'
-import { readFileSync } from 'node:fs'
+import { copyFileSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { AppSettings, DEFAULT_SETTINGS, ToolAccess } from '../shared/types'
 
@@ -8,16 +8,33 @@ import { AppSettings, DEFAULT_SETTINGS, ToolAccess } from '../shared/types'
 // first to tell a user's own choice apart from a fresh default.
 const settingsFile = path.join(app.getPath('userData'), 'omp-gui-settings.json')
 let persisted: Record<string, unknown> = {}
+let corruptBackupMade = false
 try {
-  persisted = JSON.parse(readFileSync(settingsFile, 'utf-8'))
-} catch {
+  persisted = JSON.parse(readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>
+} catch (error) {
   persisted = {}
+  // A corrupt settings file must not be silently eaten: preserve the bytes so
+  // a user (or a future migration) can recover their preferences, then start
+  // on defaults instead of failing to launch.
+  if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+    try {
+      copyFileSync(settingsFile, `${settingsFile}.corrupt`)
+      corruptBackupMade = true
+    } catch {
+      corruptBackupMade = false
+    }
+  }
 }
 
 const store = new Store<AppSettings>({
   name: 'omp-gui-settings',
   defaults: DEFAULT_SETTINGS
 })
+
+/** True when startup found an unreadable settings file and preserved a copy. */
+export function foundCorruptSettings(): boolean {
+  return corruptBackupMade
+}
 
 /**
  * First-run defaults that need app-ready APIs — called from index.ts inside
@@ -32,6 +49,14 @@ export function applyFirstRunDefaults(): void {
   }
   if (!('theme' in persisted)) {
     store.set('theme', nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+  }
+  // Stamp the schema version so future migrations can branch on it instead of
+  // key-sniffing. Existing installs are v1 by definition.
+  if (store.get('schemaVersion') !== 1) {
+    store.set('schemaVersion', 1)
+  }
+  if (corruptBackupMade) {
+    console.warn(`[store] settings file was corrupt; defaults restored, original kept at ${settingsFile}.corrupt`)
   }
 }
 

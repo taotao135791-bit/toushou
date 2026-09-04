@@ -315,11 +315,10 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     const prompt = buildOfficeChatPrompt(workbook.save(), { name: fileName, language: locale })
     if (!prompt) return
     const store = useAppStore.getState()
-    const existing = store.currentSessionId ? store.composerDrafts[store.currentSessionId]?.text.trim() : ''
-    // Preserve an unsent draft instead of replacing it (same pattern as the
-    // boards page): the summary is clearly separated so the person can edit
-    // either part before sending.
-    store.setComposerPrefill(existing ? `${existing}\n\n${prompt}` : prompt)
+    // The question is about THIS workbook — start a fresh conversation so the
+    // summary cannot leak into an unrelated session's draft.
+    store.setCurrentSessionId(null)
+    store.setComposerPrefill(prompt)
     flashToast(t('office.contextReady'))
     navigate('/')
   }

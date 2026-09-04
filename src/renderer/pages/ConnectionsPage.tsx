@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
-import { ArrowUpRight, Check, CheckCircle2, Link2, LockKeyhole, QrCode, RefreshCw, Unplug } from 'lucide-react'
+import { ArrowUpRight, Check, CheckCircle2, Link2, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
 import { FeishuCapability, FeishuConnectionSnapshot, FeishuOAuthAuthorizationView, FeishuRegistrationView } from '@shared/connections'
+import { useAppStore } from '../store'
 import { useT } from '../i18n'
 
 const emptySnapshot: FeishuConnectionSnapshot = {
@@ -20,6 +22,7 @@ const emptySnapshot: FeishuConnectionSnapshot = {
 
 export default function ConnectionsPage() {
   const t = useT()
+  const navigate = useNavigate()
   const [snapshot, setSnapshot] = useState<FeishuConnectionSnapshot>(emptySnapshot)
   const [registration, setRegistration] = useState<FeishuRegistrationView | null>(null)
   const [qrData, setQrData] = useState<string | null>(null)
@@ -41,9 +44,17 @@ export default function ConnectionsPage() {
     const unsubscribe = window.electronAPI.onFeishuStatus((value) => {
       if (active) setSnapshot(value)
     })
+    // Defensive poll while the page is open: a missed broadcast (fast startup
+    // transition before the subscription lands) self-heals within seconds.
+    const poll = setInterval(() => {
+      void window.electronAPI.feishuStatus().then((value) => {
+        if (active) setSnapshot(value)
+      })
+    }, 5_000)
     return () => {
       active = false
       unsubscribe()
+      clearInterval(poll)
     }
   }, [])
 
@@ -132,6 +143,16 @@ export default function ConnectionsPage() {
   const isConfiguring = ['registration_confirmed', 'storing_credentials', 'configuring_app', 'starting_channel', 'probing'].includes(snapshot.state)
   const isFailed = snapshot.status === 'failed'
   const isDegraded = snapshot.status === 'degraded'
+  // The live websocket wins over the connect-state machine: during an SDK
+  // self-reconnect the state field can lag while the channel is actually up.
+  const isLive = snapshot.connected || snapshot.websocketState === 'connected'
+
+  const tryInChat = () => {
+    const store = useAppStore.getState()
+    store.setCurrentSessionId(null)
+    store.setComposerPrefill(t('connections.tryPrompt'))
+    navigate('/')
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -152,8 +173,8 @@ export default function ConnectionsPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h2 className="text-[15px] font-semibold text-cream">{t('connections.feishu')}</h2>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${snapshot.connected ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
-                      {snapshot.connected ? t('connections.connected') : t('connections.notConnected')}
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${isLive ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
+                      {isLive ? t('connections.connected') : t('connections.notConnected')}
                     </span>
                   </div>
                   <p className="mt-1 max-w-[520px] text-[12px] leading-5 text-cream-faint">{t('connections.feishuDescription')}</p>
@@ -162,7 +183,7 @@ export default function ConnectionsPage() {
               <Link2 size={17} className="mt-1 shrink-0 text-cream-faint" />
             </div>
 
-            {!snapshot.connected && !isWaiting && !isConfiguring && !showAdvanced && (
+            {!isLive && !isWaiting && !isConfiguring && !showAdvanced && (
               <div className="px-5 py-5">
                 <div className="grid gap-2.5 text-[12px] text-cream-dim sm:grid-cols-3">
                   {[t('connections.benefitChat'), t('connections.benefitGroup'), t('connections.benefitDocs')].map((text) => (
@@ -203,7 +224,7 @@ export default function ConnectionsPage() {
               </div>
             )}
 
-            {snapshot.connected && (
+            {isLive && (
               <div className="px-5 py-5">
                 <div className="mb-4 flex items-center gap-2 text-[13px] font-medium text-emerald-600 dark:text-emerald-400"><CheckCircle2 size={16} />{t('connections.connectedHint')}</div>
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -213,6 +234,7 @@ export default function ConnectionsPage() {
                   <InfoRow label={t('connections.docs')} value={t('connections.onDemand')} />
                 </div>
                 <div className="mt-5 flex flex-wrap items-center gap-3">
+                  <button onClick={tryInChat} className="flex items-center gap-1.5 rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:bg-accent-bright"><MessageCircle size={12} />{t('connections.tryInChat')}</button>
                   <button onClick={() => void testConnection()} className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><RefreshCw size={12} />{checked ? t('connections.checked') : t('connections.check')}</button>
                   <button onClick={() => void disconnect()} disabled={busy} className="flex items-center gap-1.5 rounded-full border border-red-500/20 px-3 py-1.5 text-[12px] text-red-500 hover:bg-red-500/10"><Unplug size={12} />{t('connections.disconnect')}</button>
                 </div>
@@ -254,7 +276,7 @@ export default function ConnectionsPage() {
               <div className="px-5 py-5"><div className="text-[13px] font-medium text-red-500">{t('connections.error')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.errorHint')}</p><div className="mt-4 flex gap-3"><button onClick={() => void begin()} className="flex items-center gap-1.5 rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white"><RefreshCw size={12} />{t('connections.retry')}</button><button onClick={() => setShowAdvanced(true)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.advanced')}</button></div></div>
             )}
 
-            {showAdvanced && !snapshot.connected && (
+            {showAdvanced && !isLive && (
               <div className="border-t border-line px-5 py-5">
                 <div className="text-[13px] font-medium text-cream">{t('connections.advanced')}</div>
                 <p className="mt-1 text-[11px] leading-5 text-cream-faint">{t('connections.advancedHint')}</p>

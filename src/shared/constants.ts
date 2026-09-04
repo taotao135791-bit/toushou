@@ -150,6 +150,12 @@ export const IPC_CHANNELS = {
   BROWSER_HIDE: 'browser:hide',
   BROWSER_NAVIGATE: 'browser:navigate',
   BROWSER_SET_BOUNDS: 'browser:set-bounds',
+  /** Renderer asks for a Main-captured browser screenshot as a data URL. */
+  BROWSER_SCREENSHOT_DATA: 'browser:screenshot-data',
+  /** Renderer forwards an uncaught renderer error for the file log. */
+  RENDERER_ERROR: 'diagnostics:renderer-error',
+  /** User-initiated diagnostics bundle export (log tail + versions). */
+  DIAGNOSTICS_EXPORT: 'diagnostics:export',
   /** Main → renderer push of the browser panel's navigation state. */
   BROWSER_STATE: 'browser:state',
   /** Main → renderer push when a runtime extension asks to open a panel. */
