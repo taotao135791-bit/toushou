@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  SquarePen,
   MessageSquare,
   Puzzle,
   SquareKanban,
@@ -25,8 +24,7 @@ import {
 import { HistorySessionDescriptor } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
-import { createSessionForCurrentProject } from '../lib/session'
-import { showNotice, useNotice } from '../lib/notice'
+import { useNotice } from '../lib/notice'
 import { recordsForWorkspace } from '../lib/sessionRegistry'
 import { formatRelativeTime } from '../lib/time'
 import { getSessionStatus } from '../lib/sessionStatus'
@@ -108,15 +106,6 @@ export default function Sidebar() {
   useEffect(() => {
     void loadHistorySessions(currentWorkspace?.id ?? null)
   }, [currentWorkspace, loadHistorySessions])
-
-  const handleNewChat = async () => {
-    // Land on the chat page first (this button lives on every route), then
-    // create — with no project selected a native folder picker pops, and a
-    // cancelled picker must say why no conversation appeared.
-    navigate('/')
-    const id = await createSessionForCurrentProject()
-    if (!id) showNotice('chat.needProject')
-  }
 
   const handleSelectProject = async () => {
     await selectWorkspace()
@@ -286,9 +275,15 @@ export default function Sidebar() {
   }
 
   const PROJECT_FOLD_LIMIT = 5
+  // The active project already has its own row above — never repeat it in
+  // the recents list underneath.
+  const otherRecentProjects = useMemo(
+    () => recentProjects.filter((entry) => entry !== currentWorkspace?.realPath),
+    [recentProjects, currentWorkspace?.realPath]
+  )
   const visibleProjects = projectsExpanded
-    ? recentProjects
-    : recentProjects.slice(0, PROJECT_FOLD_LIMIT)
+    ? otherRecentProjects
+    : otherRecentProjects.slice(0, PROJECT_FOLD_LIMIT)
 
   // History entries whose file belongs to a live session (resumed from it or
   // freshly created into it) are hidden; the search box filters by title too.
@@ -496,18 +491,17 @@ export default function Sidebar() {
       </div>
 
       <nav className="space-y-0.5 px-2.5">
+        {/* 对话 = 回首页 + 清空选中。会话只在第一条消息发出时创建（⌘N 同效）。 */}
         <button
-          onClick={handleNewChat}
-          disabled={cliAvailable === false}
-          className={`${navRow(false)} disabled:cursor-not-allowed disabled:opacity-40`}
+          onClick={() => {
+            setCurrentSessionId(null)
+            navigate('/')
+          }}
+          className={navRow(location.pathname === '/' && !currentSessionId)}
         >
-          <SquarePen size={14} className="shrink-0" />
-          {t('sidebar.newChat')}
-          <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">⌘N</span>
-        </button>
-        <button onClick={() => navigate('/')} className={navRow(location.pathname === '/')}>
           <MessageSquare size={14} className="shrink-0" />
           {t('sidebar.chat')}
+          <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">⌘N</span>
         </button>
         <button
           onClick={() => navigate('/plugins')}
@@ -554,7 +548,11 @@ export default function Sidebar() {
         {currentWorkspace ? (
           <div className={`${navRow(true)} cursor-default font-mono text-xs`}>
             <FolderOpen size={13} className="shrink-0 text-cream-faint" />
-            <span className="min-w-0 flex-1 truncate">{currentWorkspace.displayPath}</span>
+            <span className="min-w-0 flex-1 truncate" title={currentWorkspace.displayPath}>
+              {currentWorkspace.source === 'default'
+                ? t('sidebar.defaultWorkspace')
+                : currentWorkspace.displayPath}
+            </span>
             <button
               onClick={handleSelectProject}
               title={t('sidebar.selectProject')}
@@ -569,7 +567,7 @@ export default function Sidebar() {
             <span className="truncate">{t('sidebar.selectProject')}</span>
           </button>
         )}
-        {recentProjects.length > 0 && (
+        {otherRecentProjects.length > 0 && (
           <div className="mt-1 space-y-0.5">
             {visibleProjects.map((path) => {
               const name = basename(path) || path
@@ -595,7 +593,7 @@ export default function Sidebar() {
                 </div>
               )
             })}
-            {recentProjects.length > PROJECT_FOLD_LIMIT && (
+            {otherRecentProjects.length > PROJECT_FOLD_LIMIT && (
               <button
                 onClick={() => setProjectsExpanded(!projectsExpanded)}
                 className="flex w-full items-center gap-1 px-2 pb-1 pt-1.5 text-[11px] text-cream-faint transition-colors hover:text-cream-dim"
@@ -607,7 +605,7 @@ export default function Sidebar() {
                 )}
                 {projectsExpanded
                   ? t('sidebar.showLess')
-                  : t('sidebar.showMore', { count: recentProjects.length - PROJECT_FOLD_LIMIT })}
+                  : t('sidebar.showMore', { count: otherRecentProjects.length - PROJECT_FOLD_LIMIT })}
               </button>
             )}
           </div>

@@ -3,6 +3,7 @@ import { FileText, X, Eye, FileDiff, Wand2 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT, translate } from '../i18n'
+import { useGitInfo } from '../lib/useGitInfo'
 import FileTree from './FileTree'
 import CodePreview from './CodePreview'
 import ChangesPanel from './ChangesPanel'
@@ -47,6 +48,11 @@ export default function RightPanel() {
     }))
   )
   const t = useT()
+  // A non-git workspace has no "changes" to inspect — hide the tab outright
+  // instead of showing an empty state. Falls back to files when hidden.
+  const { info: gitInfo } = useGitInfo()
+  const gitAvailable = Boolean(gitInfo)
+  const effectiveTab = activeRightTab === 'changes' && !gitAvailable ? 'files' : activeRightTab
 
   useEffect(() => {
     if (!selectedFile || !currentWorkspace || activeRightTab !== 'preview') return
@@ -108,17 +114,19 @@ export default function RightPanel() {
             <Eye size={11} />
             {t('panel.preview')}
           </button>
-          <button
-            onClick={() => setActiveRightTab('changes')}
-            className={`flex h-[24px] items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors ${
-              activeRightTab === 'changes'
-                ? 'border-line bg-ink-850 text-cream shadow-card'
-                : 'border-transparent text-cream-dim hover:text-cream'
-            }`}
-          >
-            <FileDiff size={11} />
-            {t('panel.changes')}
-          </button>
+          {gitAvailable && (
+            <button
+              onClick={() => setActiveRightTab('changes')}
+              className={`flex h-[24px] items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors ${
+                activeRightTab === 'changes'
+                  ? 'border-line bg-ink-850 text-cream shadow-card'
+                  : 'border-transparent text-cream-dim hover:text-cream'
+              }`}
+            >
+              <FileDiff size={11} />
+              {t('panel.changes')}
+            </button>
+          )}
           <button
             onClick={() => setActiveRightTab('tools')}
             className={`flex h-[24px] items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors ${
@@ -143,14 +151,14 @@ export default function RightPanel() {
 
       <div
         className={
-          activeRightTab === 'changes' ? 'flex min-h-0 flex-1 flex-col' : 'flex-1 overflow-y-auto'
+          effectiveTab === 'changes' ? 'flex min-h-0 flex-1 flex-col' : 'flex-1 overflow-y-auto'
         }
       >
         {activeRightTab === 'files' ? (
           <FileTree />
-        ) : activeRightTab === 'changes' ? (
+        ) : effectiveTab === 'changes' ? (
           <ChangesPanel />
-        ) : activeRightTab === 'tools' ? (
+        ) : effectiveTab === 'tools' ? (
           <ToolsPanel />
         ) : (
           <CodePreview filePath={selectedFile} content={previewContent} />

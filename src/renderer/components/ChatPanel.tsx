@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FolderOpen, Download, Loader2, ChevronRight, ChevronDown, PanelRight } from 'lucide-react'
+import { FolderOpen, FolderPlus, MessageSquare, Download, Loader2, ChevronRight, ChevronDown, PanelRight } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
@@ -29,6 +29,8 @@ export default function ChatPanel() {
   const workspacePanel = useAppStore((s) => s.workspacePanel)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const selectWorkspace = useAppStore((s) => s.selectWorkspace)
+  const createProjectWorkspace = useAppStore((s) => s.createProjectWorkspace)
+  const selectDefaultWorkspace = useAppStore((s) => s.selectDefaultWorkspace)
   // Per-session slices only: streaming deltas of OTHER sessions must not
   // re-render this chat, and unrelated store writes must not either.
   const sessionMessages = useAppStore((s) =>
@@ -67,8 +69,11 @@ export default function ChatPanel() {
   )
   // Session-less send failure (create threw — e.g. a stale workspace grant)
   const [sendError, setSendError] = useState<I18nKey | null>(null)
-  // Session-less send with no project is parked on the native folder picker
-  const [pickerPending, setPickerPending] = useState(false)
+  // Home hero: inline "new project folder" naming state
+  const [namingProject, setNamingProject] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('')
+  const [creatingProject, setCreatingProject] = useState(false)
+  const [projectCreateFailed, setProjectCreateFailed] = useState(false)
 
   const isStopping = currentSessionId !== null && stoppingSessionId === currentSessionId
 
@@ -152,11 +157,6 @@ export default function ChatPanel() {
     if (!trimmed || cliAvailable === false) return false
     let sessionId = currentSessionId
     if (!sessionId) {
-      // No project yet: creating a session waits on the native folder picker.
-      // Surface that wait, and when the picker is dismissed say why nothing
-      // happened instead of swallowing the send.
-      const needsPicker = !useAppStore.getState().currentWorkspace
-      if (needsPicker) setPickerPending(true)
       try {
         sessionId = await createSessionForCurrentProject()
       } catch (err) {
@@ -166,12 +166,10 @@ export default function ChatPanel() {
         setSendError('chat.createFailed')
         setTimeout(() => setSendError(null), 3000)
         return false
-      } finally {
-        if (needsPicker) setPickerPending(false)
       }
       if (!sessionId) {
-        // Folder picker dismissed without a choice.
-        setSendError('chat.needProject')
+        // No workspace could be resolved (default workspace creation failed).
+        setSendError('chat.createFailed')
         setTimeout(() => setSendError(null), 3000)
         return false
       }
@@ -296,22 +294,28 @@ export default function ChatPanel() {
     await selectWorkspace()
   }
 
+  const handleCreateProject = async () => {
+    const name = newProjectName.trim()
+    if (!name || creatingProject) return
+    setCreatingProject(true)
+    setProjectCreateFailed(false)
+    const ok = await createProjectWorkspace(name)
+    setCreatingProject(false)
+    if (!ok) {
+      setProjectCreateFailed(true)
+      setTimeout(() => setProjectCreateFailed(false), 3000)
+      return
+    }
+    setNamingProject(false)
+    setNewProjectName('')
+  }
+
   const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
   const exportedFilename = exportSuccessPath ? exportFilename(exportSuccessPath) : null
   const enabledCount = packages.filter((p) => p.enabled).length
   const showHero = sessionMessages.length === 0
   const showThinking =
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
-
-  const pickerPendingHint = pickerPending ? (
-    <div
-      className="flex items-center justify-center gap-1.5 pb-1 text-xs text-amber-500"
-      aria-live="polite"
-    >
-      <Loader2 size={11} className="animate-spin" />
-      {t('chat.workspacePickerPending')}
-    </div>
-  ) : null
 
   return (
     <div className="relative flex h-full flex-col">
@@ -445,17 +449,72 @@ export default function ChatPanel() {
               </h2>
               <div className="rise w-full" style={{ animationDelay: '140ms' }}>
                 {!currentWorkspace && (
-                  <div className="mb-2 flex justify-center">
-                    <button
-                      onClick={handleSelectProject}
-                      className="flex items-center gap-2 rounded-full border border-line bg-ink-850 px-3.5 py-1.5 text-xs text-cream-dim shadow-card transition-all duration-200 ease-standard hover:-translate-y-px hover:border-line-strong hover:text-cream"
-                    >
-                      <FolderOpen size={12} />
-                      {t('chat.selectProject')}
-                    </button>
+                  <div className="mb-3 flex flex-col items-center gap-2">
+                    {namingProject ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          autoFocus
+                          value={newProjectName}
+                          onChange={(e) => setNewProjectName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void handleCreateProject()
+                            if (e.key === 'Escape') {
+                              setNamingProject(false)
+                              setNewProjectName('')
+                            }
+                          }}
+                          placeholder={t('home.namePlaceholder')}
+                          className="h-8 w-52 rounded-full border border-line bg-ink-850 px-3.5 text-xs text-cream placeholder-cream-faint outline-none transition-colors focus:border-accent/50"
+                        />
+                        <button
+                          onClick={() => void handleCreateProject()}
+                          disabled={!newProjectName.trim() || creatingProject}
+                          className="flex h-8 items-center gap-1.5 rounded-full bg-cream px-3.5 text-xs font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+                        >
+                          {creatingProject ? (
+                            <Loader2 size={11} className="animate-spin" />
+                          ) : (
+                            <FolderPlus size={11} />
+                          )}
+                          {t('home.create')}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setNamingProject(false)
+                            setNewProjectName('')
+                          }}
+                          className="flex h-8 items-center rounded-full border border-line px-3 text-xs text-cream-dim transition hover:border-line-strong hover:text-cream"
+                        >
+                          {t('home.cancel')}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        {([
+                          { icon: FolderPlus, label: t('home.action.newFolder'), onClick: () => setNamingProject(true) },
+                          { icon: FolderOpen, label: t('home.action.pickFolder'), onClick: () => void handleSelectProject() },
+                          { icon: MessageSquare, label: t('home.action.noProject'), onClick: () => void selectDefaultWorkspace() }
+                        ] as const).map(({ icon: Icon, label, onClick }) => (
+                          <button
+                            key={label}
+                            onClick={onClick}
+                            className="flex items-center gap-1.5 rounded-full border border-line bg-ink-850 px-3.5 py-1.5 text-xs text-cream-dim shadow-card transition-all duration-200 ease-standard hover:-translate-y-px hover:border-line-strong hover:text-cream"
+                          >
+                            <Icon size={12} />
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-[11px] text-cream-faint" aria-live="polite">
+                      {projectCreateFailed ? (
+                        <span className="text-red-500">{t('home.createFailed')}</span>
+                      ) : (
+                        t('home.noProjectHint')
+                      )}
+                    </p>
                   </div>
                 )}
-                {pickerPendingHint}
                 <Composer
                   onSend={handleSend}
                   onStop={handleStop}
@@ -508,7 +567,6 @@ export default function ChatPanel() {
 
       {!showHero && (
         <>
-          {pickerPendingHint}
           <Composer
             onSend={handleSend}
             onStop={handleStop}

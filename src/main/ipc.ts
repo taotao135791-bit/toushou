@@ -1045,6 +1045,47 @@ export function registerIpc() {
     return grant
   })
 
+  // App-managed fallback workspace: chatting without a project anchors here so
+  // "just start typing" never dead-ends on a folder picker. Persisted as a
+  // recent workspace so its session history survives relaunches.
+  ipcMain.handle(IPC_CHANNELS.WORKSPACE_DEFAULT, async (): Promise<WorkspaceGrant | null> => {
+    const dir = path.join(app.getPath('documents'), '投手工作区')
+    try {
+      await fs.promises.mkdir(dir, { recursive: true })
+    } catch {
+      return null
+    }
+    const grant = await grantManager.createGrant(dir, 'default')
+    if (grant) rememberRecentProject(grant.realPath)
+    return grant
+  })
+
+  // "New project folder" from the home screen: Main creates a uniquely-named
+  // folder under Documents/投手项目 and grants it. The name is display input,
+  // never an authorization path — Main sanitizes and resolves it.
+  ipcMain.handle(
+    IPC_CHANNELS.WORKSPACE_CREATE_PROJECT,
+    async (_event, rawName: unknown): Promise<WorkspaceGrant | null> => {
+      if (typeof rawName !== 'string') return null
+      const name = rawName.replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 60)
+      if (!name) return null
+      const base = path.join(app.getPath('documents'), '投手项目')
+      let dir = path.join(base, name)
+      try {
+        await fs.promises.mkdir(base, { recursive: true })
+        for (let suffix = 2; fs.existsSync(dir); suffix += 1) {
+          dir = path.join(base, name + '-' + suffix)
+        }
+        await fs.promises.mkdir(dir, { recursive: true })
+      } catch {
+        return null
+      }
+      const grant = await grantManager.createGrant(dir, 'dialog')
+      if (grant) rememberRecentProject(grant.realPath)
+      return grant
+    }
+  )
+
   ipcMain.handle(
     IPC_CHANNELS.WORKSPACE_ACTIVATE_RECENT,
     async (_event, recentId: string): Promise<WorkspaceGrant | null> => {

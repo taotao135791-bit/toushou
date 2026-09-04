@@ -117,6 +117,10 @@ export interface ElectronAPI {
   listProjectFiles: (grantId: string) => Promise<string[]>
   /** Show the native folder dialog and mint a new WorkspaceGrant. */
   selectWorkspace: () => Promise<WorkspaceGrant | null>
+  /** Create a named project folder under Documents/投手项目 and grant it. */
+  createProjectWorkspace: (name: string) => Promise<WorkspaceGrant | null>
+  /** Activate the app-managed default workspace (Documents/投手工作区). */
+  getDefaultWorkspace: () => Promise<WorkspaceGrant | null>
   /** Re-authorize a Main-listed recent workspace by its opaque id. */
   activateRecentWorkspace: (recentId: string) => Promise<WorkspaceGrant | null>
   /** List currently valid recent workspaces from Main's registry. */
@@ -391,6 +395,9 @@ const api: ElectronAPI = {
   listProjectFiles: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FS_LIST_PROJECT_FILES, grantId),
   selectWorkspace: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_SELECT),
+  createProjectWorkspace: (name: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_CREATE_PROJECT, name),
+  getDefaultWorkspace: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_DEFAULT),
   activateRecentWorkspace: (recentId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_ACTIVATE_RECENT, recentId),
   listRecentWorkspaces: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_LIST_RECENT),

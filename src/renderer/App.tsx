@@ -1,20 +1,24 @@
-import { Component, type ErrorInfo, type ReactNode, useEffect } from 'react'
+import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect } from 'react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionEvent } from '@shared/types'
 import { useAppStore } from './store'
 import { useT } from './i18n'
-import { createSessionForCurrentProject } from './lib/session'
 import Layout from './components/Layout'
 import ChatPage from './pages/ChatPage'
-import PackagesPage from './pages/PackagesPage'
-import PluginAuthorPage from './pages/PluginAuthorPage'
-import SettingsPage from './pages/SettingsPage'
-import BoardsPage from './pages/BoardsPage'
-import BrowserPage from './pages/BrowserPage'
-import OfficePage from './pages/OfficePage'
-import SkillsPage from './pages/SkillsPage'
 import SetupWizard from './pages/SetupWizard'
+
+// Route-level code splitting: ChatPage stays in the initial chunk (first
+// screen); every secondary page loads on first navigation. WorkspacePanel
+// still imports OfficePage/BrowserPage synchronously, so those two chunks
+// mainly dedupe — the heavy Office deps load on demand inside OfficePage.
+const PackagesPage = lazy(() => import('./pages/PackagesPage'))
+const PluginAuthorPage = lazy(() => import('./pages/PluginAuthorPage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const BoardsPage = lazy(() => import('./pages/BoardsPage'))
+const BrowserPage = lazy(() => import('./pages/BrowserPage'))
+const OfficePage = lazy(() => import('./pages/OfficePage'))
+const SkillsPage = lazy(() => import('./pages/SkillsPage'))
 
 interface RendererErrorBoundaryProps {
   children: ReactNode
@@ -230,16 +234,14 @@ function App() {
     }
   }, [setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent, registerSessions, setWorkspacePanel, setRightPanelOpen, navigate])
 
-  // ⌘N starts a new chat from anywhere
+  // ⌘N goes home with a clean composer from anywhere. No session is created
+  // up front — the first sent message creates it (same as the 对话 nav row).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey && !e.shiftKey && !e.ctrlKey && e.key.toLowerCase() === 'n') {
         e.preventDefault()
-        // Same guard as the sidebar button: no CLI, no session (SetupWizard).
-        if (useAppStore.getState().cliAvailable === false) return
-        createSessionForCurrentProject().then((id) => {
-          if (id) navigate('/')
-        })
+        useAppStore.getState().setCurrentSessionId(null)
+        navigate('/')
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -262,16 +264,24 @@ function App() {
   return (
     <RendererErrorBoundary>
       <Layout>
-        <Routes>
-          <Route path="/" element={<ChatPage />} />
-          <Route path="/plugins" element={<PackagesPage />} />
-          <Route path="/plugins/new" element={<PluginAuthorPage />} />
-          <Route path="/boards" element={<BoardsPage />} />
-          <Route path="/browser" element={<BrowserPage />} />
-          <Route path="/office" element={<OfficePage />} />
-          <Route path="/skills" element={<SkillsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        <Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center bg-ink-950 text-sm text-cream-faint">
+              {t('app.loading')}
+            </div>
+          }
+        >
+          <Routes>
+            <Route path="/" element={<ChatPage />} />
+            <Route path="/plugins" element={<PackagesPage />} />
+            <Route path="/plugins/new" element={<PluginAuthorPage />} />
+            <Route path="/boards" element={<BoardsPage />} />
+            <Route path="/browser" element={<BrowserPage />} />
+            <Route path="/office" element={<OfficePage />} />
+            <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+        </Suspense>
       </Layout>
     </RendererErrorBoundary>
   )

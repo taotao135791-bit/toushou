@@ -86,7 +86,7 @@ describe('createSessionForCurrentProject', () => {
     })
   })
 
-  it('does not erase a newer picker choice made while creation is in flight', async () => {
+ it('does not erase a newer picker choice made while creation is in flight', async () => {
     const pendingCreate = deferred<Session>()
     vi.stubGlobal('window', {
       electronAPI: {
@@ -106,5 +106,33 @@ describe('createSessionForCurrentProject', () => {
       pendingModel: 'openai/gpt-5',
       pendingThinking: 'low'
     })
+  })
+
+  it('anchors to the default workspace when no project is selected', async () => {
+    useAppStore.setState({ currentWorkspace: null })
+    const defaultGrant: WorkspaceGrant = {
+      id: 'grant-default',
+      realPath: '/tmp/toushou-default',
+      displayPath: '/tmp/toushou-default',
+      source: 'default',
+      createdAt: 3
+    }
+    const createSession = vi.fn().mockResolvedValue(session)
+    const getDefaultWorkspace = vi.fn().mockResolvedValue(defaultGrant)
+    vi.stubGlobal('window', {
+      electronAPI: {
+        createSession,
+        getDefaultWorkspace,
+        listRecentWorkspaces: vi.fn().mockResolvedValue([]),
+        getSessionState: vi.fn().mockResolvedValue(null),
+        getSubagents: vi.fn().mockResolvedValue(null)
+      }
+    })
+
+    await expect(createSessionForCurrentProject()).resolves.toBe(session.id)
+
+    expect(getDefaultWorkspace).toHaveBeenCalledOnce()
+    expect(createSession).toHaveBeenCalledWith('grant-default', expect.any(Object))
+    expect(useAppStore.getState().currentWorkspace?.id).toBe('grant-default')
   })
 })

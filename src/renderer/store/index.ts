@@ -172,6 +172,8 @@ interface AppState {
   activateRecentWorkspace: (recentId: string) => Promise<void>
   /** Show the native folder dialog and select the resulting grant. */
   selectWorkspace: () => Promise<void>
+  createProjectWorkspace: (name: string) => Promise<boolean>
+  selectDefaultWorkspace: () => Promise<void>
   setSessions: (sessions: Session[]) => void
   /** Merge Main's live registry without clobbering a session created concurrently. */
   registerSessions: (sessions: Session[]) => void
@@ -422,6 +424,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   selectWorkspace: async () => {
     const grant = await window.electronAPI.selectWorkspace()
+    if (grant) {
+      get().setCurrentWorkspace(grant)
+      get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
+    }
+  },
+  createProjectWorkspace: async (name) => {
+    const grant = await window.electronAPI.createProjectWorkspace(name)
+    if (!grant) return false
+    get().setCurrentWorkspace(grant)
+    get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
+    return true
+  },
+  selectDefaultWorkspace: async () => {
+    const grant = await window.electronAPI.getDefaultWorkspace()
     if (grant) {
       get().setCurrentWorkspace(grant)
       get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())

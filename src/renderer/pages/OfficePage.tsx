@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AlertTriangle, FileSpreadsheet, FolderOpen, Loader2, MessageSquareText, Save, X } from 'lucide-react'
-import { LocaleType, createUniver } from '@univerjs/presets'
 import type { FUniver, IWorkbookData, Univer } from '@univerjs/presets'
-import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
 import type { FWorkbook } from '@univerjs/preset-sheets-core'
-import sheetsZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
-import sheetsEnUS from '@univerjs/preset-sheets-core/locales/en-US'
-import '@univerjs/preset-sheets-core/lib/index.css'
 import { FileGrant } from '@shared/types'
 import {
   OfficeWorkbookSnapshot,
@@ -20,8 +15,45 @@ import { useT } from '../i18n'
 
 const UNIVER_APP_VERSION = '0.25.1'
 
-function buildUniverSnapshot(snapshot: OfficeWorkbookSnapshot | undefined, language: string): IWorkbookData {
-  const currentLocale = language === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US
+// Univer is several MB of JS+CSS, so it loads on first Office open instead
+// of with the app. The dynamic imports are cached at module level: revisits
+// (and the WorkspacePanel embed) reuse the same promise.
+type UniverBundles = {
+  presets: typeof import('@univerjs/presets')
+  sheetsCore: typeof import('@univerjs/preset-sheets-core')
+  sheetsZhCN: (typeof import('@univerjs/preset-sheets-core/locales/zh-CN'))['default']
+  sheetsEnUS: (typeof import('@univerjs/preset-sheets-core/locales/en-US'))['default']
+}
+
+let univerBundlesPromise: Promise<UniverBundles> | null = null
+
+function loadUniverBundles(): Promise<UniverBundles> {
+  if (!univerBundlesPromise) {
+    univerBundlesPromise = Promise.all([
+      import('@univerjs/presets'),
+      import('@univerjs/preset-sheets-core'),
+      import('@univerjs/preset-sheets-core/locales/zh-CN'),
+      import('@univerjs/preset-sheets-core/locales/en-US'),
+      // Side-effect CSS rides along so the sheet never paints unstyled.
+      import('@univerjs/preset-sheets-core/lib/index.css')
+    ]).then(([presets, sheetsCore, zhCN, enUS]) => ({
+      presets,
+      sheetsCore,
+      sheetsZhCN: zhCN.default,
+      sheetsEnUS: enUS.default
+    }))
+  }
+  return univerBundlesPromise
+}
+
+type LocaleEnum = UniverBundles['presets']['LocaleType']
+
+function buildUniverSnapshot(
+  snapshot: OfficeWorkbookSnapshot | undefined,
+  language: string,
+  localeEnum: LocaleEnum
+): IWorkbookData {
+  const currentLocale = language === 'zh' ? localeEnum.ZH_CN : localeEnum.EN_US
   if (!snapshot) {
     return {
       id: 'workbook',
@@ -90,7 +122,9 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const location = useLocation()
   const containerRef = useRef<HTMLDivElement>(null)
   const univerRef = useRef<{ univer: Univer; univerAPI: FUniver } | null>(null)
+  const bundlesRef = useRef<UniverBundles | null>(null)
   const consumedGrantIds = useRef(new Set<string>())
+  const [engineReady, setEngineReady] = useState(false)
   const [fileName, setFileName] = useState(initialName ?? '')
   const [dirty, setDirty] = useState(false)
   const [hasData, setHasData] = useState(false)
@@ -124,31 +158,39 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     let instance: { univer: Univer; univerAPI: FUniver } | null = null
     let disposable: { dispose: () => void } | null = null
     const frame = window.requestAnimationFrame(() => {
-      const container = containerRef.current
-      if (!container || disposed) return
-      instance = createUniver({
-        locale: initialLanguage === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
-        locales: {
-          [LocaleType.ZH_CN]: sheetsZhCN,
-          [LocaleType.EN_US]: sheetsEnUS
-        },
-        presets: [
-          UniverSheetsCorePreset({
-            container,
-            header: false,
-            footer: false,
-            disableAutoFocus: true
-          })
-        ]
-      })
-      univerRef.current = instance
-      instance.univerAPI.createWorkbook(buildUniverSnapshot(undefined, initialLanguage))
-      // Generic mutation events include Univer's startup bookkeeping. This
-      // event is scoped to actual cell-value changes, including paste/edit.
-      disposable = instance.univerAPI.addEvent(instance.univerAPI.Event.SheetValueChanged, () => {
-        setDirty(true)
-        setHasData(true)
-      })
+      void (async () => {
+        const container = containerRef.current
+        if (!container || disposed) return
+        const bundles = await loadUniverBundles()
+        if (disposed || !containerRef.current) return
+        bundlesRef.current = bundles
+        const { createUniver, LocaleType } = bundles.presets
+        const created = createUniver({
+          locale: initialLanguage === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
+          locales: {
+            [LocaleType.ZH_CN]: bundles.sheetsZhCN,
+            [LocaleType.EN_US]: bundles.sheetsEnUS
+          },
+          presets: [
+            bundles.sheetsCore.UniverSheetsCorePreset({
+              container,
+              header: false,
+              footer: false,
+              disableAutoFocus: true
+            })
+          ]
+        })
+        instance = created
+        univerRef.current = created
+        created.univerAPI.createWorkbook(buildUniverSnapshot(undefined, initialLanguage, LocaleType))
+        setEngineReady(true)
+        // Generic mutation events include Univer's startup bookkeeping. This
+        // event is scoped to actual cell-value changes, including paste/edit.
+        disposable = created.univerAPI.addEvent(created.univerAPI.Event.SheetValueChanged, () => {
+          setDirty(true)
+          setHasData(true)
+        })
+      })()
     })
     return () => {
       disposed = true
@@ -162,10 +204,11 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   /** Replace the current workbook with a snapshot from Main. */
   const loadSnapshot = useCallback((name: string, snapshot: OfficeWorkbookSnapshot) => {
     const api = univerRef.current
-    if (!api) return
+    const bundles = bundlesRef.current
+    if (!api || !bundles) return
     const current = api.univerAPI.getActiveWorkbook()
     if (current) api.univerAPI.disposeUnit(current.getId())
-    api.univerAPI.createWorkbook(buildUniverSnapshot(snapshot, locale))
+    api.univerAPI.createWorkbook(buildUniverSnapshot(snapshot, locale, bundles.presets.LocaleType))
     setFileName(name)
     setDirty(false)
     setHasData(snapshotHasData(snapshot))
@@ -338,7 +381,13 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       {/* Univer mounts into this container; it owns everything inside it. */}
       <div className="relative h-full min-h-0 w-full flex-1 overflow-hidden">
         <div ref={containerRef} className="h-full w-full" />
-        {!hasData && (
+        {!engineReady && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 text-cream-faint">
+            <Loader2 size={16} className="animate-spin" />
+            <span className="text-[13px]">{t('app.loading')}</span>
+          </div>
+        )}
+        {engineReady && !hasData && (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3">
             <FileSpreadsheet size={28} className="text-cream-faint" />
             <p className="text-[13px] text-cream-dim">{t('office.emptyHint')}</p>

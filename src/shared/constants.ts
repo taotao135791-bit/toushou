@@ -15,6 +15,8 @@ export const IPC_CHANNELS = {
   FS_SET_ROOT: 'fs:set-root',
   FS_LIST_PROJECT_FILES: 'fs:list-project-files',
   WORKSPACE_SELECT: 'workspace:select',
+  WORKSPACE_CREATE_PROJECT: 'workspace:create-project',
+  WORKSPACE_DEFAULT: 'workspace:default',
   WORKSPACE_ACTIVATE_RECENT: 'workspace:activate-recent',
   WORKSPACE_LIST_RECENT: 'workspace:list-recent',
   WORKSPACE_CLEAR_RECENT: 'workspace:clear-recent',

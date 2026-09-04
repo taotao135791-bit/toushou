@@ -168,8 +168,9 @@ export interface WorkspaceGrant {
   realPath: string
   /** Path shown in the UI (may be the original selected path before realpath). */
   displayPath: string
-  /** How this grant was authorized. */
-  source: 'dialog' | 'recent-project' | 'session' | 'runtime'
+  /** How this grant was authorized. 'default' is the app-managed no-project
+   * workspace under Documents that the renderer may activate silently. */
+  source: 'dialog' | 'recent-project' | 'session' | 'runtime' | 'default'
   /** Epoch ms when the grant was created. */
   createdAt: number
 }
