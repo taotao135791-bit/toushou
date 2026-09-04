@@ -6,7 +6,9 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Copy,
+  FileText,
   History,
   Info,
   LayoutDashboard,
@@ -18,6 +20,7 @@ import { useT } from '../i18n'
 import { formatSeconds } from '../lib/time'
 import { useConfirm } from '../lib/confirmClick'
 import Markdown from './Markdown'
+import { parseSkillChatMessage } from '@shared/skills'
 import { SaveMessageToBoardDialog } from './SaveMessageToBoardDialog'
 
 interface MessageItemProps {
@@ -25,6 +28,47 @@ interface MessageItemProps {
   /** Index within the session's message array; -1 when unknown. */
   index?: number
   sessionId?: string | null
+}
+
+/** Collapsible card for a skill message: the full SOP still rides in the
+ * message text (the model needs it), but the bubble shows a compact card
+ * instead of a wall of markdown. */
+function SkillMessageCard({
+  name,
+  instruction,
+  body
+}: {
+  name: string
+  instruction: string
+  body: string
+}) {
+  const [open, setOpen] = useState(false)
+  const t = useT()
+  return (
+    <div className="min-w-[260px] max-w-full">
+      <div className="flex items-center gap-2">
+        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-px text-[10px] font-medium uppercase tracking-wider text-accent">
+          <FileText size={10} />
+          {t('skills.card.tag')}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-cream">{name}</span>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] text-cream-faint transition hover:text-cream"
+        >
+          {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          {open ? t('skills.card.collapse') : t('skills.card.expand')}
+        </button>
+      </div>
+      {instruction && <p className="mt-1.5 text-[12px] leading-5 text-cream-faint">{instruction}</p>}
+      {open && (
+        <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border border-line bg-ink-800/60 px-3 py-2 text-left">
+          <Markdown content={body} />
+        </div>
+      )}
+    </div>
+  )
 }
 
 function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps) {
@@ -125,6 +169,7 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
 
   if (isUser) {
     const isSteer = message.kind === 'steer'
+    const skillCard = parseSkillChatMessage(message.content)
     return (
       <div
         className="msg-in group flex justify-end"
@@ -140,7 +185,9 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
             </div>
           )}
           <div
-            className={`whitespace-pre-wrap rounded-[18px] rounded-br-[6px] px-4 py-2.5 text-[14px] leading-[1.75] text-cream ${
+            className={`rounded-[18px] rounded-br-[6px] px-4 py-2.5 text-[14px] leading-[1.75] text-cream ${
+              skillCard ? '' : 'whitespace-pre-wrap'
+            } ${
               isSteer
                 ? 'border border-accent/35 bg-accent/[0.12] shadow-[inset_3px_0_0_var(--accent)]'
                 : 'bg-ink-700'
@@ -158,7 +205,15 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
                 ))}
               </div>
             )}
-            {message.content}
+            {skillCard ? (
+              <SkillMessageCard
+                name={skillCard.name}
+                instruction={skillCard.instruction}
+                body={skillCard.body}
+              />
+            ) : (
+              message.content
+            )}
           </div>
           {message.failed && (
             <div className="mt-1 flex justify-end">

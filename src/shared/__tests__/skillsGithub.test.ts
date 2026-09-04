@@ -47,6 +47,32 @@ describe('selectGithubSkillFiles', () => {
     expect(files[1].kind).toBe('html')
   })
 
+  it('marks repo docs and nested pages as not recommended but importable', () => {
+    const files = selectGithubSkillFiles([
+      { path: 'README.zh.md', sizeBytes: 10 },
+      { path: 'LICENSE.md', sizeBytes: 10 },
+      { path: 'index.html', sizeBytes: 400 },
+      { path: 'workbench/index.html', sizeBytes: 300 },
+      { path: 'workbench/tools/copy.html', sizeBytes: 200 },
+      { path: 'docs/guide.md', sizeBytes: 100 }
+    ])
+    expect(files.map((f) => f.path)).toEqual([
+      'index.html',
+      'docs/guide.md',
+      'workbench/index.html',
+      'workbench/tools/copy.html'
+    ])
+    expect(files[0]).toMatchObject({ path: 'index.html', recommended: true })
+    expect(files[1]).toMatchObject({ path: 'docs/guide.md', recommended: false, reason: 'doc' })
+    expect(files[2]).toMatchObject({ recommended: false, reason: 'nested' })
+    expect(files[3]).toMatchObject({ recommended: false, reason: 'nested' })
+  })
+
+  it('keeps a lone nested html recommended when there is no root entry page', () => {
+    const files = selectGithubSkillFiles([{ path: 'app/tool.html', sizeBytes: 10 }])
+    expect(files[0]).toMatchObject({ recommended: true })
+  })
+
   it('caps the recognized list', () => {
     const many = Array.from({ length: GITHUB_IMPORT_MAX_FILES + 20 }, (_, i) => ({
       path: 's' + i + '.md',

@@ -1200,6 +1200,10 @@ export interface GithubSkillFile {
   path: string
   kind: SkillKind
   sizeBytes: number
+  /** True when auto-recognition thinks this is a real skill/tool (pre-checked). */
+  recommended: boolean
+  /** Why a file is not recommended: repo docs or a nested page of a multi-file site. */
+  reason?: 'doc' | 'nested'
 }
 
 export type SkillGithubPreviewResult =

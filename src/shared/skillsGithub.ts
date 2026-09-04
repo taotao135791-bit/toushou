@@ -91,15 +91,12 @@ export interface GithubSkillCandidate {
   sizeBytes: number
 }
 
-const SKIPPED_ROOT_FILES = new Set([
-  'readme.md',
-  'changelog.md',
-  'license.md',
-  'contributing.md',
-  'security.md',
-  'code_of_conduct.md'
-])
+// Canonical repo-doc basenames with optional locale suffixes (README.zh.md,
+// CHANGELOG-CN.md ...). These are never team skills.
+const DOC_NAME_RE = /^(readme|changelog|history|license|contributing|security|code_of_conduct|notice|authors)([._-][\w-]*)?\.md$/i
 const SKIPPED_PREFIXES = ['node_modules/', '.github/', 'dist/', 'build/']
+// Directories whose markdown is repo documentation, not playbooks.
+const DOC_DIR_PREFIXES = ['docs/', 'doc/', 'examples/']
 export const GITHUB_IMPORT_MAX_FILES = 50
 
 /** Auto-recognition: which repo blobs are importable skills. */
@@ -111,17 +108,33 @@ export function selectGithubSkillFiles(entries: GithubSkillCandidate[]): GithubS
     if (!validPathSegments(path)) continue
     if (SKIPPED_PREFIXES.some((p) => path.toLowerCase().startsWith(p))) continue
     const lower = path.toLowerCase()
-    if (lower.includes('/')) {
-      // skip nested readme/changelog noise too
-      const base = lower.slice(lower.lastIndexOf('/') + 1)
-      if (SKIPPED_ROOT_FILES.has(base) && lower.endsWith('.md')) continue
-    } else if (SKIPPED_ROOT_FILES.has(lower)) {
-      continue
-    }
+    const base = lower.slice(lower.lastIndexOf('/') + 1)
+    // Doc-named markdown (README.zh.md, LICENSE ...) is never a skill.
+    if (base.endsWith('.md') && DOC_NAME_RE.test(base)) continue
     if (entry.sizeBytes > SKILL_LIMITS.maxFileBytes) continue
     const kind = skillKindForExtension(path.slice(path.lastIndexOf('.') + 1))
     if (!kind) continue
-    files.push({ path, kind, sizeBytes: entry.sizeBytes })
+    let recommended = true
+    let reason: GithubSkillFile['reason']
+    if (kind === 'markdown' && DOC_DIR_PREFIXES.some((p) => lower.startsWith(p))) {
+      recommended = false
+      reason = 'doc'
+    }
+    files.push({ path, kind, sizeBytes: entry.sizeBytes, recommended, ...(reason ? { reason } : {}) })
   }
-  return files.sort((a, b) => a.path.localeCompare(b.path))
+  // Nested HTML pages lose to a root entry page: a real single-file tool
+  // sits at the repo root, while nested pages usually belong to a
+  // multi-file site (workbench/index.html and friends).
+  const hasRootHtml = files.some((f) => f.kind === 'html' && !f.path.includes('/'))
+  const htmlCount = files.filter((f) => f.kind === 'html').length
+  for (const file of files) {
+    if (file.kind !== 'html' || !file.path.includes('/')) continue
+    if (hasRootHtml || htmlCount > 1) {
+      file.recommended = false
+      file.reason = 'nested'
+    }
+  }
+  return files.sort(
+    (a, b) => Number(b.recommended) - Number(a.recommended) || a.path.localeCompare(b.path)
+  )
 }

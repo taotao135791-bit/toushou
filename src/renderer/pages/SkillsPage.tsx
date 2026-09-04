@@ -231,7 +231,9 @@ export default function SkillsPage() {
       const result = await preview(githubUrl)
       if (result.ok) {
         setGithubPreview({ source: result.source, files: result.files })
-        setGithubSelected(new Set(result.files.map((f) => f.path)))
+        // Pre-check only what auto-recognition recommends; doc files and
+        // nested pages stay visible but opt-in.
+        setGithubSelected(new Set(result.files.filter((f) => f.recommended).map((f) => f.path)))
       } else {
         setGithubError(result.error)
       }
@@ -525,6 +527,13 @@ export default function SkillsPage() {
                           className="accent-accent"
                         />
                         <span className="min-w-0 flex-1 truncate">{file.path}</span>
+                        {!file.recommended && (
+                          <span className="shrink-0 rounded-full border border-line px-1.5 py-0.5 text-[10px] text-cream-faint">
+                            {file.reason === 'doc'
+                              ? t('skills.github.docFile')
+                              : t('skills.github.nestedFile')}
+                          </span>
+                        )}
                         <span className="shrink-0 text-[10px] text-cream-faint">
                           {file.kind === 'html' ? t('skills.kind.html') : t('skills.kind.markdown')}
                         </span>

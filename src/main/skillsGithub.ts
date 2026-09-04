@@ -61,7 +61,8 @@ export async function previewGithubSkills(rawUrl: unknown): Promise<SkillGithubP
         {
           path: parsed.path,
           kind: parsed.path.toLowerCase().endsWith('.html') ? 'html' : 'markdown',
-          sizeBytes: 0
+          sizeBytes: 0,
+          recommended: true
         }
       ]
     }
