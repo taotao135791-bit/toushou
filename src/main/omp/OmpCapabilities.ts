@@ -200,21 +200,25 @@ const FAILED_VERSION_REPROBE_MS = 15_000
 let lastFailedVersionProbeAt = 0
 
 export async function getCapabilities(): Promise<CliCapabilities> {
-  if (capabilitiesCache) {
+  const cached = capabilitiesCache
+  if (cached) {
     const cli = detectCli()
-    if (cli.available && !capabilitiesCache.cliVersion && Date.now() - lastFailedVersionProbeAt > FAILED_VERSION_REPROBE_MS) {
+    if (cli.available && !cached.cliVersion && Date.now() - lastFailedVersionProbeAt > FAILED_VERSION_REPROBE_MS) {
       lastFailedVersionProbeAt = Date.now()
-      void probeCliVersion(cli).then((cliVersion) => {
-        if (cliVersion) {
+      // Fire-and-forget: the caller gets the cached answer immediately; a
+      // later call picks up the healed version. The guard keeps the spread
+      // non-null and drops a stale write if the cache was invalidated.
+      void probeCliVersion(cli).then((probed) => {
+        if (probed && capabilitiesCache && !capabilitiesCache.cliVersion) {
           capabilitiesCache = {
             ...capabilitiesCache,
-            cliVersion,
+            cliVersion: probed,
             ...featureMatrix(true)
           }
         }
       })
     }
-    return capabilitiesCache
+    return cached
   }
   const cli = detectCli()
   const cliVersion = await probeCliVersion(cli)
