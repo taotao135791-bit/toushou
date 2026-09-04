@@ -457,6 +457,14 @@ export function parseOmpPluginCapabilities(help: string): PackageManagerCapabili
 
 const PI_COMMAND_TIMEOUT_MS = 5 * 60 * 1000
 
+/**
+ * Read-only probes (plugin --help, plugin list --json) answer in
+ * milliseconds when the runtime is healthy. A hung runtime must not hold the
+ * plugins page hostage for the full action timeout, so probes fail fast and
+ * the GUI falls back to its capabilities-unavailable state.
+ */
+const PACKAGE_PROBE_TIMEOUT_MS = 15_000
+
 interface CliCommandResult extends PackageActionResult {
   stdout: string
   stderr: string
@@ -465,7 +473,7 @@ interface CliCommandResult extends PackageActionResult {
 function runCli(
   args: string[],
   cli = detectCli(),
-  options: { preserveStdout?: boolean } = {}
+  options: { preserveStdout?: boolean; timeoutMs?: number } = {}
 ): Promise<CliCommandResult> {
   if (!cli.available) {
     return Promise.resolve({ ok: false, log: 'omp/pi CLI not found', stdout: '', stderr: '' })
@@ -502,14 +510,17 @@ function runCli(
     timer = setTimeout(() => {
       proc.kill()
       finish(false, 'timed out')
-    }, PI_COMMAND_TIMEOUT_MS)
+    }, options.timeoutMs ?? PI_COMMAND_TIMEOUT_MS)
     proc.on('error', (err) => finish(false, err.message))
     proc.on('exit', (code) => finish(code === 0))
   })
 }
 
 async function listCurrentOmpPackages(cli = detectCli()): Promise<PackageInfo[]> {
-  const result = await runCli(['plugin', 'list', '--json'], cli, { preserveStdout: true })
+  const result = await runCli(['plugin', 'list', '--json'], cli, {
+    preserveStdout: true,
+    timeoutMs: PACKAGE_PROBE_TIMEOUT_MS
+  })
   if (!result.ok) return []
   try {
     return parseOmpPluginList(JSON.parse(result.stdout))
@@ -522,7 +533,7 @@ export async function getPackageManagerCapabilities(): Promise<PackageManagerCap
   const cli = detectCli()
   if (!cli.available) return { profile: 'unavailable', canToggle: false, canUpdate: false }
   if (cli.command !== 'omp') return { profile: 'legacy', canToggle: true, canUpdate: true }
-  const result = await runCli(['plugin', '--help'], cli)
+  const result = await runCli(['plugin', '--help'], cli, { timeoutMs: PACKAGE_PROBE_TIMEOUT_MS })
   return result.ok
     ? parseOmpPluginCapabilities(result.stdout)
     : { profile: 'current', canToggle: false, canUpdate: false }

@@ -243,12 +243,15 @@ export default function Composer({
   }, [slashQuery, commands, onCompact, t])
   const menuOpen = menuItems.length > 0
 
-  // @ file menu: active on a trailing "@token", only with a workspace selected
-  const at = useMemo(() => {
-    if (!currentWorkspace || atDismissed || slashQuery !== null) return null
+  // @ file menu: active on a trailing "@token". Without a workspace there is
+  // no file list to show — surface the reason instead of swallowing the "@".
+  const atTokenMatch = useMemo(() => {
+    if (atDismissed || slashQuery !== null) return null
     return atToken(text, caret)
-  }, [text, caret, currentWorkspace, atDismissed, slashQuery])
+  }, [text, caret, atDismissed, slashQuery])
+  const at = currentWorkspace ? atTokenMatch : null
   const atOpen = at !== null
+  const atNeedProject = !currentWorkspace && atTokenMatch !== null
 
   // Fetch the flat project file list when the @ menu opens (main caches 30s)
   useEffect(() => {
@@ -543,6 +546,11 @@ export default function Composer({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (atNeedProject && e.key === 'Escape') {
+      e.preventDefault()
+      setAtDismissed(true)
+      return
+    }
     if (atOpen) {
       if (e.key === 'ArrowDown' && fileItems.length > 0) {
         e.preventDefault()
@@ -605,12 +613,17 @@ export default function Composer({
   return (
     <div className="px-4 pb-4 pt-2">
       <div className="relative mx-auto w-full max-w-3xl">
-        {menuOpen && (
+        {slashQuery !== null && (
           <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop">
             <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
               {t('composer.slashTitle')}
             </div>
-            {menuItems.map((item, i) => (
+            {menuItems.length === 0 ? (
+              <div className="px-2.5 py-2 text-[12px] text-cream-faint">
+                {t('composer.slashEmpty')}
+              </div>
+            ) : (
+              menuItems.map((item, i) => (
               <button
                 key={`${item.source}-${item.name}`}
                 onMouseEnter={() => setMenuIndex(i)}
@@ -632,7 +645,18 @@ export default function Composer({
                   {item.builtin ? t('composer.slashBuiltin') : item.source}
                 </span>
               </button>
-            ))}
+              ))
+            )}
+          </div>
+        )}
+        {atNeedProject && (
+          <div className="absolute bottom-full left-0 right-0 z-20 mb-2 rounded-xl border border-line bg-ink-850 p-1 shadow-pop">
+            <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
+              {t('composer.atTitle')}
+            </div>
+            <div className="px-2.5 py-2 text-[12px] text-cream-faint">
+              {t('composer.atNeedProject')}
+            </div>
           </div>
         )}
         {atOpen && (

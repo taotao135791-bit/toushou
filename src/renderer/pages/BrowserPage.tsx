@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, ExternalLink, Loader2, RotateCw, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ExternalLink, Loader2, MessageSquareText, RotateCw, X } from 'lucide-react'
 import { BrowserPanelState } from '@shared/types'
+import { useAppStore } from '../store'
 import { useT } from '../i18n'
 
 /**
@@ -31,6 +32,21 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
     canGoBack: false,
     canGoForward: false
   })
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current)
+    },
+    []
+  )
+
+  const flashToast = useCallback((text: string) => {
+    setToast(text)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), 2500)
+  }, [])
 
   // Mount-only: show the panel over the placeholder, keep bounds synced, and
   // hide (not destroy) it when the page unmounts. The initial URL is captured
@@ -103,11 +119,23 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
     else navigate('/')
   }
 
+  /** Append the current page (title + URL) to the chat composer draft. */
+  const sendPageToAgent = () => {
+    if (!panelState.url) return
+    const title = panelState.title.trim()
+    const pageRef = title ? `${title}\n${panelState.url}` : panelState.url
+    const store = useAppStore.getState()
+    const existing = store.currentSessionId ? store.composerDrafts[store.currentSessionId]?.text.trim() : ''
+    store.setComposerPrefill(existing ? `${existing}\n\n${pageRef}` : pageRef)
+    flashToast(t('browser.contextReady'))
+    navigate('/')
+  }
+
   const iconButton =
     'shrink-0 rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-cream-dim'
 
   return (
-    <div className={`flex h-full min-h-0 flex-col bg-ink-950 ${embedded ? 'w-full' : ''}`}>
+    <div className={`relative flex h-full min-h-0 flex-col bg-ink-950 ${embedded ? 'w-full' : ''}`}>
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3">
         <button
           className={iconButton}
@@ -140,9 +168,17 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
           onKeyDown={(e) => {
             if (e.key === 'Enter') go(address)
           }}
-          placeholder={t('browser.addressPlaceholder')}
+          placeholder={panelState.url ? t('browser.addressPlaceholder') : t('browser.homeHint')}
           spellCheck={false}
         />
+        <button
+          className={iconButton}
+          disabled={!panelState.url}
+          onClick={sendPageToAgent}
+          title={t('browser.askAgent')}
+        >
+          <MessageSquareText size={15} />
+        </button>
         <button
           className={iconButton}
           disabled={!panelState.url}
@@ -157,6 +193,13 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
       </div>
       {/* The native WebContentsView renders exactly over this placeholder. */}
       <div ref={placeholderRef} className="min-h-0 flex-1 bg-ink-950" />
+      {/* Anchored to the toolbar strip: everything below it is covered by the
+          native WebContentsView, which would hide a lower toast. */}
+      {toast && (
+        <div className="fade-in pointer-events-none absolute left-1/2 top-1.5 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-ink-900 px-3 py-1 shadow-pop">
+          <span className="text-[12px] text-cream">{toast}</span>
+        </div>
+      )}
     </div>
   )
 }

@@ -40,13 +40,13 @@ class RendererErrorBoundary extends Component<
     if (this.state.error) {
       return (
         <div className="flex h-full flex-col items-center justify-center gap-3 bg-ink-950 px-6 text-center text-cream">
-          <p className="text-sm font-medium">投手 encountered a rendering error.</p>
+          <p className="text-sm font-medium">投手遇到了渲染错误。</p>
           <p className="max-w-xl text-xs text-cream-faint">{this.state.error.message}</p>
           <button
             className="rounded-md bg-cream px-3 py-1.5 text-xs text-ink-950"
             onClick={() => window.location.reload()}
           >
-            Reload window
+            重新加载窗口
           </button>
         </div>
       )

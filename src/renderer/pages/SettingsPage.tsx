@@ -48,7 +48,9 @@ const buttonCls =
 const PERMISSION_MODES: { value: PermissionMode; label: I18nKey; note: I18nKey }[] = [
   { value: 'ask', label: 'settings.permissions.ask', note: 'settings.permissionsNote.ask' },
   { value: 'full', label: 'settings.permissions.full', note: 'settings.permissionsNote.full' },
-  { value: 'no-bash', label: 'settings.permissions.noBash', note: 'settings.permissionsNote.noBash' },
+  // Plain-language label (no jargon): the pre-added desc key doubles as the
+  // display label, matching the composer PermissionPicker.
+  { value: 'no-bash', label: 'permission.noBash.short', note: 'settings.permissionsNote.noBash' },
   { value: 'readonly', label: 'settings.permissions.readonly', note: 'settings.permissionsNote.readonly' }
 ]
 

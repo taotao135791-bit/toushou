@@ -933,6 +933,38 @@ const en = {
   'skills.github.error.network': 'Network error — check the link and your connection.',
   'skills.github.error.unavailable': 'GitHub import is not loaded in this window yet. Quit the app and run pnpm dev again.',
   'skills.github.error.noFiles': 'No .md/.html skill files found there.'
+  ,
+  // Empty-state & send flow
+  'chat.needProject': 'Select a project folder first, then start chatting.',
+  'chat.workspacePickerPending': 'Waiting for folder selection…',
+  'composer.slashEmpty': 'No commands available yet',
+  'composer.atNeedProject': 'Select a project to reference files',
+  // Plugins page & badge
+  'plugins.loadTimeout': 'Loading timed out. Check the agent runtime and retry.',
+  'plugins.badgeLabel': '{count} plugins on',
+  'plugins.pageTitle': 'Skills · Connectors · Partners',
+  'ext.unsupportedUi': 'A plugin tried to show an unsupported panel ({method}); the request was ignored.',
+  // Permission picker descriptions
+  'permission.ask.desc': 'Ask before editing files or running commands',
+  'permission.full.desc': 'Run everything without asking',
+  'permission.noBash.desc': 'Edits allowed, shell commands blocked',
+  'permission.noBash.short': 'No commands',
+  'permission.readOnly.desc': 'Read and analyze only, no changes',
+  'thinking.followModel': 'Auto (follow model)',
+  // Boards: dataset import & templates
+  'boards.importDataset': 'Import dataset (CSV / XLSX)',
+  'boards.newTemplate': 'Choose a starting template',
+  'boards.template.blank': 'Blank board',
+  'boards.template.ads': 'Ad daily report',
+  'boards.template.daily': 'Daily journal',
+  'boards.template.finance': 'Market watch',
+  // Office / browser → chat handoff
+  'office.askAgent': 'Ask agent about this workbook',
+  'office.contextReady': 'A workbook summary is drafted in chat. Review it before sending.',
+  'office.emptyHint': 'Open a local .xlsx / .csv report to start',
+  'browser.askAgent': 'Send this page to chat',
+  'browser.contextReady': 'Page info is drafted in chat. Review it before sending.',
+  'browser.homeHint': 'Type a URL above — ad platform consoles work side by side with chat here.'
 } as const
 
 export type I18nKey = keyof typeof en
@@ -1838,6 +1870,33 @@ const zh: Record<I18nKey, string> = {
   'skills.github.error.network': '网络出错，请检查链接和网络。',
   'skills.github.error.unavailable': '当前窗口还没加载到 GitHub 导入能力，请完全退出 app 后重新 pnpm dev。',
   'skills.github.error.noFiles': '这个链接下没有识别到 .md/.html 文件。'
+  ,
+  'chat.needProject': '请先选择项目文件夹，再开始对话。',
+  'chat.workspacePickerPending': '正在等待选择文件夹…',
+  'composer.slashEmpty': '暂时没有可用命令',
+  'composer.atNeedProject': '选择项目后就能引用文件',
+  'plugins.loadTimeout': '加载超时，请检查 Agent 运行时后重试。',
+  'plugins.badgeLabel': '已启用 {count} 个插件',
+  'plugins.pageTitle': '技能·连接器·伙伴',
+  'ext.unsupportedUi': '某个插件想显示暂不支持的界面（{method}），已忽略。',
+  'permission.ask.desc': '改文件、跑命令前逐条问你',
+  'permission.full.desc': '不再逐条询问，全部自动执行',
+  'permission.noBash.desc': '可以改文件，不能运行命令',
+  'permission.noBash.short': '禁止运行命令',
+  'permission.readOnly.desc': '只读和分析，不做任何修改',
+  'thinking.followModel': '自动（跟随模型）',
+  'boards.importDataset': '导入数据集（CSV / XLSX）',
+  'boards.newTemplate': '选择起始模板',
+  'boards.template.blank': '空白看板',
+  'boards.template.ads': '投放日报',
+  'boards.template.daily': '日常记录',
+  'boards.template.finance': '行情盯盘',
+  'office.askAgent': '让 Agent 分析这个工作簿',
+  'office.contextReady': '工作簿摘要已放入对话输入框，发送前可以再编辑。',
+  'office.emptyHint': '打开本地 .xlsx / .csv 报表开始',
+  'browser.askAgent': '把当前页面发给 Agent',
+  'browser.contextReady': '页面信息已放入对话输入框，发送前可以再编辑。',
+  'browser.homeHint': '输入网址开始浏览，广告平台后台可以和对话并排使用。'
 }
 
 export const dictionaries: Record<Language, Record<I18nKey, string>> = { en, zh }

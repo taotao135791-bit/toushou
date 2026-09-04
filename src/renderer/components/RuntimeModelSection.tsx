@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, KeyRound, RefreshCw, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { Check, KeyRound, RefreshCw, RotateCcw, Save, Search, Trash2 } from 'lucide-react'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { defaultThinkingOptionsFor } from '../lib/thinking'
@@ -53,6 +53,7 @@ export default function RuntimeModelSection() {
   const model = resolveRuntimeSettingDraft(modelDraft, defaultModel)
   const thinking = resolveRuntimeSettingDraft(thinkingDraft, defaultThinking)
   const [keyInput, setKeyInput] = useState('')
+  const [providerQuery, setProviderQuery] = useState('')
   const [saving, setSaving] = useState(false)
   const [keyBusy, setKeyBusy] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -87,6 +88,14 @@ export default function RuntimeModelSection() {
   const sortedProviders = [...providers].sort(
     (a, b) => Number(b.authenticated) - Number(a.authenticated) || a.name.localeCompare(b.name)
   )
+  // Name filter over the (already connected-first) registry. The current
+  // selection stays visible even when it does not match the query.
+  const providerQueryNorm = providerQuery.trim().toLowerCase()
+  const visibleProviders = providerQueryNorm
+    ? sortedProviders.filter(
+        (p) => p.id === provider || p.name.toLowerCase().includes(providerQueryNorm)
+      )
+    : sortedProviders
   const authenticatedProviders = providers
     .filter((p) => p.authenticated)
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -273,27 +282,42 @@ export default function RuntimeModelSection() {
               </button>
             </span>
           ) : (
-            <select
-              value={provider}
-              onChange={(e) => {
-                const next = e.target.value
-                setProvider(next)
-                // Switching provider also makes an explicit automatic choice
-                // local; otherwise a late overview for the old provider can
-                // populate this picker again before the user chooses a model.
-                if (model.split('/')[0] !== next) setModelDraft('')
-                setKeyInput('')
-              }}
-              className={selectCls}
-            >
-              <option value="">{t('settings.providerAuto')}</option>
-              {sortedProviders.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {p.authenticated ? ` · ${t('settings.authConnected')}` : ''}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2">
+              <span className="relative">
+                <Search
+                  size={11}
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-cream-faint"
+                />
+                <input
+                  value={providerQuery}
+                  onChange={(e) => setProviderQuery(e.target.value)}
+                  placeholder={t('settings.provider')}
+                  aria-label={t('settings.provider')}
+                  className="h-8 w-36 rounded-lg border border-line bg-ink-850 pl-7 pr-2 text-[12.5px] text-cream outline-none placeholder:text-cream-faint focus:border-ink-600"
+                />
+              </span>
+              <select
+                value={provider}
+                onChange={(e) => {
+                  const next = e.target.value
+                  setProvider(next)
+                  // Switching provider also makes an explicit automatic choice
+                  // local; otherwise a late overview for the old provider can
+                  // populate this picker again before the user chooses a model.
+                  if (model.split('/')[0] !== next) setModelDraft('')
+                  setKeyInput('')
+                }}
+                className={selectCls}
+              >
+                <option value="">{t('settings.providerAuto')}</option>
+                {visibleProviders.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.authenticated ? ` · ${t('settings.authConnected')}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
         </div>
 

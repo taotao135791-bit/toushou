@@ -26,6 +26,7 @@ import { HistorySessionDescriptor } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { createSessionForCurrentProject } from '../lib/session'
+import { showNotice, useNotice } from '../lib/notice'
 import { recordsForWorkspace } from '../lib/sessionRegistry'
 import { formatRelativeTime } from '../lib/time'
 import { getSessionStatus } from '../lib/sessionStatus'
@@ -80,6 +81,7 @@ export default function Sidebar() {
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null)
   const [restoreFailedHistoryId, setRestoreFailedHistoryId] = useState<string | null>(null)
   const [deleteFailedHistoryId, setDeleteFailedHistoryId] = useState<string | null>(null)
+  const notice = useNotice()
   const searching = query.trim().length > 0
   const searchMessages = useAppStore((s) => (searching ? s.messages : EMPTY_MESSAGES))
   // One-time bootstrap of the most-recent workspace: only before the initial
@@ -108,8 +110,12 @@ export default function Sidebar() {
   }, [currentWorkspace, loadHistorySessions])
 
   const handleNewChat = async () => {
+    // Land on the chat page first (this button lives on every route), then
+    // create — with no project selected a native folder picker pops, and a
+    // cancelled picker must say why no conversation appeared.
+    navigate('/')
     const id = await createSessionForCurrentProject()
-    if (id) navigate('/')
+    if (!id) showNotice('chat.needProject')
   }
 
   const handleSelectProject = async () => {
@@ -734,6 +740,16 @@ export default function Sidebar() {
           {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
         </button>
       </div>
+
+      {notice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full border border-line bg-ink-850 px-3.5 py-1.5 text-xs text-cream shadow-pop"
+        >
+          {t(notice.key)}
+        </div>
+      )}
     </aside>
   )
 }

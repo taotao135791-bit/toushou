@@ -12,11 +12,13 @@ import MenuPortal from './MenuPortal'
  * tool call). no-bash/readonly are spawn-time --exclude-tools / --tools — they
  * can only apply to the next session, so they never touch a running one.
  */
-const MODES: { value: PermissionMode; labelKey: I18nKey; noteKey?: I18nKey }[] = [
-  { value: 'ask', labelKey: 'settings.permissions.ask' },
-  { value: 'full', labelKey: 'settings.permissions.full' },
-  { value: 'no-bash', labelKey: 'settings.permissions.noBash', noteKey: 'composer.permissionNewSession' },
-  { value: 'readonly', labelKey: 'settings.permissions.readonly', noteKey: 'composer.permissionNewSession' }
+const MODES: { value: PermissionMode; labelKey: I18nKey; descKey: I18nKey; noteKey?: I18nKey }[] = [
+  { value: 'ask', labelKey: 'settings.permissions.ask', descKey: 'permission.ask.desc' },
+  { value: 'full', labelKey: 'settings.permissions.full', descKey: 'permission.full.desc' },
+  // No short plain-language label key exists for no-bash, so its description
+  // doubles as the label — the menu never shows the jargon "Bash".
+  { value: 'no-bash', labelKey: 'permission.noBash.short', descKey: 'permission.noBash.desc', noteKey: 'composer.permissionNewSession' },
+  { value: 'readonly', labelKey: 'settings.permissions.readonly', descKey: 'permission.readOnly.desc', noteKey: 'composer.permissionNewSession' }
 ]
 
 export default function PermissionPicker() {
@@ -57,7 +59,7 @@ export default function PermissionPicker() {
         <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
       </button>
 
-      <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={176}>
+      <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={232}>
         {MODES.map((m) => (
           <button
             key={m.value}
@@ -66,6 +68,9 @@ export default function PermissionPicker() {
           >
             <span className="min-w-0">
               <span className="block truncate">{t(m.labelKey)}</span>
+              {m.descKey !== m.labelKey && (
+                <span className="block truncate text-[10px] text-cream-faint">{t(m.descKey)}</span>
+              )}
               {m.noteKey && (
                 <span className="block truncate text-[10px] text-cream-faint">{t(m.noteKey)}</span>
               )}

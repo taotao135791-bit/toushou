@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { FolderOpen, Download, Loader2, ChevronRight, ChevronDown, PanelRight } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
@@ -19,6 +20,7 @@ const EMPTY_UI_REQUESTS: UiRequest[] = []
 
 export default function ChatPanel() {
   const t = useT()
+  const navigate = useNavigate()
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
   const sessions = useAppStore((s) => s.sessions)
@@ -65,6 +67,8 @@ export default function ChatPanel() {
   )
   // Session-less send failure (create threw — e.g. a stale workspace grant)
   const [sendError, setSendError] = useState<I18nKey | null>(null)
+  // Session-less send with no project is parked on the native folder picker
+  const [pickerPending, setPickerPending] = useState(false)
 
   const isStopping = currentSessionId !== null && stoppingSessionId === currentSessionId
 
@@ -148,18 +152,30 @@ export default function ChatPanel() {
     if (!trimmed || cliAvailable === false) return false
     let sessionId = currentSessionId
     if (!sessionId) {
-      // Session creation throws on an invalid grant — fail loudly and let the
-      // composer restore the draft instead of losing it to a rejection.
+      // No project yet: creating a session waits on the native folder picker.
+      // Surface that wait, and when the picker is dismissed say why nothing
+      // happened instead of swallowing the send.
+      const needsPicker = !useAppStore.getState().currentWorkspace
+      if (needsPicker) setPickerPending(true)
       try {
         sessionId = await createSessionForCurrentProject()
       } catch (err) {
+        // Session creation throws on an invalid grant — fail loudly and let
+        // the composer restore the draft instead of losing it to a rejection.
         console.error('Session creation failed:', err)
         setSendError('chat.createFailed')
         setTimeout(() => setSendError(null), 3000)
         return false
+      } finally {
+        if (needsPicker) setPickerPending(false)
+      }
+      if (!sessionId) {
+        // Folder picker dismissed without a choice.
+        setSendError('chat.needProject')
+        setTimeout(() => setSendError(null), 3000)
+        return false
       }
     }
-    if (!sessionId) return false
     const store = useAppStore.getState()
     store.setSessionError(sessionId, null)
     // The user bubble lands immediately; the runtime snapshot below (a
@@ -287,6 +303,16 @@ export default function ChatPanel() {
   const showThinking =
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
 
+  const pickerPendingHint = pickerPending ? (
+    <div
+      className="flex items-center justify-center gap-1.5 pb-1 text-xs text-amber-500"
+      aria-live="polite"
+    >
+      <Loader2 size={11} className="animate-spin" />
+      {t('chat.workspacePickerPending')}
+    </div>
+  ) : null
+
   return (
     <div className="relative flex h-full flex-col">
       {/* status bar, doubles as window drag region */}
@@ -389,10 +415,14 @@ export default function ChatPanel() {
               <span className="font-medium text-red-500">{t(sendError)}</span>
             </>
           ) : (
-            <>
+            <button
+              onClick={() => navigate('/plugins')}
+              title={t('plugins.badgeLabel', { count: enabledCount })}
+              className="app-no-drag flex items-center gap-2.5 rounded-md px-1.5 py-1 transition hover:bg-overlay"
+            >
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/80" />
-              {t('chat.modulesActive', { count: enabledCount })}
-            </>
+              {t('plugins.badgeLabel', { count: enabledCount })}
+            </button>
           )}
         </span>
       </header>
@@ -425,6 +455,7 @@ export default function ChatPanel() {
                     </button>
                   </div>
                 )}
+                {pickerPendingHint}
                 <Composer
                   onSend={handleSend}
                   onStop={handleStop}
@@ -476,16 +507,19 @@ export default function ChatPanel() {
       )}
 
       {!showHero && (
-        <Composer
-          onSend={handleSend}
-          onStop={handleStop}
-          busy={isBusy}
-          stopping={isStopping}
-          focusKey={currentSessionId}
-          disabled={cliAvailable === false}
-          commands={slashCommands}
-          onCompact={currentSessionId ? handleCompact : undefined}
-        />
+        <>
+          {pickerPendingHint}
+          <Composer
+            onSend={handleSend}
+            onStop={handleStop}
+            busy={isBusy}
+            stopping={isStopping}
+            focusKey={currentSessionId}
+            disabled={cliAvailable === false}
+            commands={slashCommands}
+            onCompact={currentSessionId ? handleCompact : undefined}
+          />
+        </>
       )}
 
       {pendingUi && currentSessionId && (

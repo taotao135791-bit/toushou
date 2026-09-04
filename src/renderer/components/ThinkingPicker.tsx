@@ -20,10 +20,10 @@ const LEVEL_LABEL: Record<SessionThinkingLevel, I18nKey> = {
 /**
  * Display a runtime-reported level. Known values render via i18n; unknown
  * future levels (e.g. a new "ultra") still render readably instead of
- * breaking the picker. undefined means the runtime's "auto".
+ * breaking the picker. undefined / "auto" means follow the model.
  */
 function levelLabel(raw: string | undefined, t: ReturnType<typeof useT>): string {
-  if (!raw) return t('composer.thinkingAuto')
+  if (!raw || raw === 'auto') return t('thinking.followModel')
   if (raw in LEVEL_LABEL) return t(LEVEL_LABEL[raw as SessionThinkingLevel])
   return raw.charAt(0).toUpperCase() + raw.slice(1)
 }
@@ -152,6 +152,18 @@ export default function ThinkingPicker({ sessionId }: ThinkingPickerProps) {
     setLevel(next)
   }
 
+  const isAuto = !level || level === 'auto'
+
+  // Live sessions cannot be switched back to auto (the session enum behind
+  // set_thinking_level has no auto), so pre-session this clears the
+  // next-session override; in-session it only closes the menu.
+  const pickAuto = () => {
+    setOpen(false)
+    if (sessionId) return
+    setPendingThinking(null)
+    setLevel(undefined)
+  }
+
   return (
     <div className="relative">
       <button
@@ -169,7 +181,15 @@ export default function ThinkingPicker({ sessionId }: ThinkingPickerProps) {
         <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
       </button>
 
-      <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={128}>
+      <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={176}>
+        <button
+          onClick={pickAuto}
+          disabled={sessionId !== null && !isAuto}
+          className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay disabled:opacity-40 disabled:hover:bg-transparent"
+        >
+          <span>{t('thinking.followModel')}</span>
+          {isAuto && <Check size={12} className="text-accent" />}
+        </button>
         {options.map((id) => (
           <button
             key={id}

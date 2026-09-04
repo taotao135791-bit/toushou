@@ -79,6 +79,14 @@ const WIDGET_GALLERY: { type: WidgetType; Icon: LucideIcon }[] = [
 /** Types that get their config panel opened right after being added. */
 const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'link']
 
+/** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
+const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
+  { preset: 'blank', labelKey: 'boards.template.blank' },
+  { preset: 'ads', labelKey: 'boards.template.ads' },
+  { preset: 'daily', labelKey: 'boards.template.daily' },
+  { preset: 'finance', labelKey: 'boards.template.finance' }
+]
+
 function widgetNameKey(type: WidgetType): I18nKey {
   return `boards.widget.${type}` as I18nKey
 }
@@ -193,6 +201,7 @@ export default function BoardsPage() {
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [newBoardName, setNewBoardName] = useState('')
+  const [createMenuOpen, setCreateMenuOpen] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeText, setComposeText] = useState('')
   const [boardMenuOpen, setBoardMenuOpen] = useState(false)
@@ -333,6 +342,7 @@ export default function BoardsPage() {
   }
 
   const closeMenus = () => {
+    setCreateMenuOpen(false)
     setBoardMenuOpen(false)
     setToolsMenuOpen(false)
     setGalleryOpen(false)
@@ -343,11 +353,12 @@ export default function BoardsPage() {
   // The toolbar menus are transient controls, so keyboard users need the
   // same predictable dismissal path as pointer users clicking the backdrop.
   useEffect(() => {
-    if (!boardMenuOpen && !toolsMenuOpen && !galleryOpen) return
+    if (!createMenuOpen && !boardMenuOpen && !toolsMenuOpen && !galleryOpen) return
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
+      setCreateMenuOpen(false)
       setBoardMenuOpen(false)
       setToolsMenuOpen(false)
       setGalleryOpen(false)
@@ -357,7 +368,7 @@ export default function BoardsPage() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [boardMenuOpen, toolsMenuOpen, galleryOpen])
+  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen])
 
   const switchBoard = (id: string) => {
     closeMenus()
@@ -391,6 +402,19 @@ export default function BoardsPage() {
       return
     }
     const board = createBoard(name)
+    setBoards((prev) => [...(prev ?? []), board])
+    setCurrentId(board.id)
+    persist(board)
+  }
+
+  /** Template menu pick: blank keeps the inline name flow, presets pre-lay-out widgets. */
+  const createFromPreset = (preset: BoardPresetId) => {
+    if (boardsLoadFailed || boards === null || boards.length >= BOARD_LIMITS.maxBoards) {
+      flashToast(t('boards.boardLimit'), false)
+      return
+    }
+    const composed = composeBoard('', (key) => t(key as I18nKey), preset)
+    const board = { ...createBoard(composed.name), widgets: composed.widgets }
     setBoards((prev) => [...(prev ?? []), board])
     setCurrentId(board.id)
     persist(board)
@@ -827,34 +851,59 @@ export default function BoardsPage() {
               <span className="truncate">{b.name}</span>
             </button>
           ))}
-          {creating ? (
-            <input
-              autoFocus
-              value={newBoardName}
-              onChange={(e) => setNewBoardName(e.target.value)}
-              onBlur={commitCreate}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitCreate()
-                if (e.key === 'Escape') {
-                  setCreating(false)
-                  setNewBoardName('')
-                }
-              }}
-              maxLength={BOARD_LIMITS.maxNameLength}
-              placeholder={t('boards.newBoardPlaceholder')}
-              className="w-32 shrink-0 rounded-full border border-line bg-ink-850 px-3 py-1 text-[12px] text-cream outline-none transition placeholder:text-cream-faint focus:border-accent/50"
-            />
-          ) : (
+        </div>
+        {creating ? (
+          <input
+            autoFocus
+            value={newBoardName}
+            onChange={(e) => setNewBoardName(e.target.value)}
+            onBlur={commitCreate}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitCreate()
+              if (e.key === 'Escape') {
+                setCreating(false)
+                setNewBoardName('')
+              }
+            }}
+            maxLength={BOARD_LIMITS.maxNameLength}
+            placeholder={t('boards.newBoardPlaceholder')}
+            className="app-no-drag w-32 shrink-0 rounded-full border border-line bg-ink-850 px-3 py-1 text-[12px] text-cream outline-none transition placeholder:text-cream-faint focus:border-accent/50"
+          />
+        ) : (
+          <div className="app-no-drag relative shrink-0">
             <button
-              onClick={openCreate}
+              onClick={() => {
+                closeMenus()
+                setCreateMenuOpen(!createMenuOpen)
+              }}
               disabled={boardsLoadFailed}
               title={t('boards.newTab')}
-              className="shrink-0 rounded-full p-1.5 text-cream-faint transition hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-full p-1.5 text-cream-faint transition hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus size={13} />
             </button>
-          )}
-        </div>
+            {createMenuOpen && (
+              <div className="absolute right-0 top-8 z-30 w-44 rounded-xl border border-line bg-ink-900 p-1 shadow-pop">
+                <div className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-cream-faint">
+                  {t('boards.newTemplate')}
+                </div>
+                {TEMPLATE_OPTIONS.map(({ preset, labelKey }) => (
+                  <button
+                    key={preset}
+                    onClick={() => {
+                      setCreateMenuOpen(false)
+                      if (preset === 'blank') openCreate()
+                      else createFromPreset(preset)
+                    }}
+                    className={`${menuItemClass} text-cream-dim hover:bg-overlay hover:text-cream`}
+                  >
+                    {t(labelKey)}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {saveFailed && (
           <span className="shrink-0 text-[11px] text-red-500">{t('boards.saveFailed')}</span>
         )}
@@ -1014,6 +1063,17 @@ export default function BoardsPage() {
                 <div className="px-1.5 pb-1.5 pt-1 text-[10.5px] font-semibold uppercase tracking-wider text-cream-faint">
                   {t('boards.addWidget')}
                 </div>
+                <button
+                  onClick={() => {
+                    setGalleryOpen(false)
+                    void handleImportPick()
+                  }}
+                  className={`${menuItemClass} mb-1 text-cream-dim hover:bg-overlay hover:text-cream`}
+                >
+                  <FileSpreadsheet size={12} />
+                  {t('boards.importDataset')}
+                </button>
+                <div className="mx-1.5 mb-1 border-t border-line" />
                 <div className="grid grid-cols-2 gap-0.5">
                   {WIDGET_GALLERY.map(({ type, Icon }) => (
                     <button
@@ -1115,7 +1175,7 @@ export default function BoardsPage() {
         )}
       </div>
 
-      {(boardMenuOpen || toolsMenuOpen || galleryOpen) && (
+      {(createMenuOpen || boardMenuOpen || toolsMenuOpen || galleryOpen) && (
         <div className="fixed inset-0 z-20" onClick={closeMenus} />
       )}
 

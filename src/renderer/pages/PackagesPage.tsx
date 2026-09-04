@@ -66,6 +66,26 @@ type DropZone = 'chassis' | 'rack' | 'trash'
 
 const PKG_DRAG_TYPE = 'application/x-omp-package'
 
+const PLUGINS_LOAD_TIMEOUT_MS = 10_000
+const PLUGINS_LOAD_TIMEOUT_ERROR = 'plugins-load-timeout'
+
+/** A hung runtime probe must never pin the page on the loading spinner. */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(PLUGINS_LOAD_TIMEOUT_ERROR)), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+}
+
 const RESOURCE_ICONS: Record<PackageResource['type'], typeof Wrench> = {
   extension: Wrench,
   skill: Sparkles,
@@ -101,6 +121,7 @@ export default function PackagesPage() {
     canUpdate: false
   })
   const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false)
+  const [loadTimedOut, setLoadTimedOut] = useState(false)
   const [managedPlugins, setManagedPlugins] = useState<ManagedPluginDescriptor[]>([])
   const [studioTarget, setStudioTarget] = useState<StudioTarget>(null)
   const [managedBusyId, setManagedBusyId] = useState<string | null>(null)
@@ -133,12 +154,16 @@ export default function PackagesPage() {
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current
     setCapabilitiesLoaded(false)
+    setLoadTimedOut(false)
     try {
-      const [nextPackages, capabilities, tools] = await Promise.all([
-        window.electronAPI.listPackages(),
-        window.electronAPI.getPackageCapabilities(),
-        window.electronAPI.listLaunchableTools().catch(() => [])
-      ])
+      const [nextPackages, capabilities, tools] = await withTimeout(
+        Promise.all([
+          window.electronAPI.listPackages(),
+          window.electronAPI.getPackageCapabilities(),
+          window.electronAPI.listLaunchableTools().catch(() => [])
+        ]),
+        PLUGINS_LOAD_TIMEOUT_MS
+      )
       if (generation !== refreshGeneration.current) return
       setPackages(nextPackages)
       setPackageCapabilities(capabilities)
@@ -147,11 +172,13 @@ export default function PackagesPage() {
         if (tool.origin !== 'skill' && tool.command) commands[tool.packageName] ??= tool.command
       }
       setToolCommandByPackage(commands)
-    } catch {
+      setCapabilitiesLoaded(true)
+    } catch (error) {
       if (generation !== refreshGeneration.current) return
+      // A timeout drops the in-flight IPC results; the refresh button retries.
       setPackageCapabilities({ profile: 'unavailable', canToggle: false, canUpdate: false })
-    } finally {
-      if (generation === refreshGeneration.current) setCapabilitiesLoaded(true)
+      setLoadTimedOut(error instanceof Error && error.message === PLUGINS_LOAD_TIMEOUT_ERROR)
+      setCapabilitiesLoaded(true)
     }
   }, [setPackages])
 
@@ -413,7 +440,7 @@ export default function PackagesPage() {
       <header className="app-drag flex h-12 shrink-0 items-center justify-between border-b border-line px-4">
         <div className="flex items-center gap-2.5">
           <Puzzle size={15} className="text-accent" />
-          <span className="text-[13px] font-medium text-cream">{t('plugins.title')}</span>
+          <span className="text-[13px] font-medium text-cream">{t('plugins.pageTitle')}</span>
           <span className="text-xs text-cream-faint">
             {!capabilitiesLoaded
               ? t('plugins.loadingCapabilities')
@@ -421,7 +448,9 @@ export default function PackagesPage() {
                 ? t('plugins.omp.subtitle')
                 : isLegacyPi
                   ? t('plugins.subtitle')
-                  : t('plugins.capabilitiesUnavailable')}
+                  : loadTimedOut
+                    ? t('plugins.loadTimeout')
+                    : t('plugins.capabilitiesUnavailable')}
           </span>
         </div>
         <button
@@ -443,7 +472,9 @@ export default function PackagesPage() {
           ) : !isCurrentOmp && !isLegacyPi ? (
             <section className="flex items-start gap-2.5 rounded-[16px] border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs leading-5 text-cream-dim shadow-card">
               <Info size={14} className="mt-0.5 shrink-0 text-red-600 dark:text-red-300" />
-              <div>{t('plugins.capabilitiesUnavailable')}</div>
+              <div>
+                {loadTimedOut ? t('plugins.loadTimeout') : t('plugins.capabilitiesUnavailable')}
+              </div>
             </section>
           ) : (
             <>

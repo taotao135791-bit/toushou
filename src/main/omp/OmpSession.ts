@@ -437,7 +437,8 @@ export class OmpSession {
             sessionId: this.id,
             role: 'system',
             variant: 'info',
-            content: `An installed extension requested unsupported host UI: ${result.method}.`
+            // Mirrors the ext.unsupportedUi copy; main has no i18n layer.
+            content: `某个插件想显示暂不支持的界面（${result.method}），已忽略。`
           })
         }
         return

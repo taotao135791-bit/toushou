@@ -160,7 +160,7 @@ describe('OmpSession extension UI', () => {
         sessionId: 's1',
         role: 'system',
         variant: 'info',
-        content: 'An installed extension requested unsupported host UI: setWidget.'
+        content: '某个插件想显示暂不支持的界面（setWidget），已忽略。'
       }
     ])
   })

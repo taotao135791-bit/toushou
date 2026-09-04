@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { AlertTriangle, FileSpreadsheet, FolderOpen, Loader2, Save, X } from 'lucide-react'
+import { AlertTriangle, FileSpreadsheet, FolderOpen, Loader2, MessageSquareText, Save, X } from 'lucide-react'
 import { LocaleType, createUniver } from '@univerjs/presets'
 import type { FUniver, IWorkbookData, Univer } from '@univerjs/presets'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
@@ -14,6 +14,7 @@ import {
   OfficeWorkbookWarning,
   sanitizeOfficeSnapshot
 } from '@shared/officeWorkbook'
+import { buildOfficeChatPrompt, snapshotHasData } from '@shared/officeChat'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 
@@ -92,11 +93,27 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const consumedGrantIds = useRef(new Set<string>())
   const [fileName, setFileName] = useState(initialName ?? '')
   const [dirty, setDirty] = useState(false)
+  const [hasData, setHasData] = useState(false)
   const [busy, setBusy] = useState<'open' | 'save' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [warnings, setWarnings] = useState<OfficeWorkbookWarning[]>([])
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const locale = useAppStore((state) => state.language)
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current)
+    },
+    []
+  )
+
+  const flashToast = useCallback((text: string) => {
+    setToast(text)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), 2500)
+  }, [])
 
   // Univer's renderer measures its root during startup. Keep the root in the
   // normal flex flow and defer creation by one frame so its dimensions are
@@ -130,6 +147,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       // event is scoped to actual cell-value changes, including paste/edit.
       disposable = instance.univerAPI.addEvent(instance.univerAPI.Event.SheetValueChanged, () => {
         setDirty(true)
+        setHasData(true)
       })
     })
     return () => {
@@ -150,6 +168,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     api.univerAPI.createWorkbook(buildUniverSnapshot(snapshot, locale))
     setFileName(name)
     setDirty(false)
+    setHasData(snapshotHasData(snapshot))
   }, [locale])
 
   const openWithGrant = useCallback(
@@ -246,6 +265,22 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     else navigate('/')
   }
 
+  /** Send a bounded, reviewable workbook summary into the composer. */
+  const askAgentAboutWorkbook = () => {
+    const workbook = univerRef.current?.univerAPI.getActiveWorkbook()
+    if (!workbook) return
+    const prompt = buildOfficeChatPrompt(workbook.save(), { name: fileName, language: locale })
+    if (!prompt) return
+    const store = useAppStore.getState()
+    const existing = store.currentSessionId ? store.composerDrafts[store.currentSessionId]?.text.trim() : ''
+    // Preserve an unsent draft instead of replacing it (same pattern as the
+    // boards page): the summary is clearly separated so the person can edit
+    // either part before sending.
+    store.setComposerPrefill(existing ? `${existing}\n\n${prompt}` : prompt)
+    flashToast(t('office.contextReady'))
+    navigate('/')
+  }
+
   const iconButton =
     'shrink-0 rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-cream-dim'
 
@@ -268,6 +303,14 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         </button>
         <button className={iconButton} disabled={busy !== null} onClick={() => void saveAs()} title={t('office.saveAs')}>
           {busy === 'save' ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+        </button>
+        <button
+          className={iconButton}
+          disabled={busy !== null}
+          onClick={askAgentAboutWorkbook}
+          title={t('office.askAgent')}
+        >
+          <MessageSquareText size={15} />
         </button>
         <div className="flex min-w-0 flex-1 items-center gap-1.5 px-2 text-[13px] text-cream">
           <FileSpreadsheet size={14} className="shrink-0 text-cream-faint" />
@@ -295,6 +338,25 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       {/* Univer mounts into this container; it owns everything inside it. */}
       <div className="relative h-full min-h-0 w-full flex-1 overflow-hidden">
         <div ref={containerRef} className="h-full w-full" />
+        {!hasData && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3">
+            <FileSpreadsheet size={28} className="text-cream-faint" />
+            <p className="text-[13px] text-cream-dim">{t('office.emptyHint')}</p>
+            <button
+              className="pointer-events-auto mt-1 flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-50"
+              disabled={busy !== null}
+              onClick={() => void openFile()}
+            >
+              {busy === 'open' ? <Loader2 size={12} className="animate-spin" /> : <FolderOpen size={12} />}
+              {t('office.open')}
+            </button>
+          </div>
+        )}
+        {toast && (
+          <div className="fade-in pointer-events-none absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-ink-900 px-3 py-1.5 shadow-pop">
+            <span className="text-[12px] text-cream">{toast}</span>
+          </div>
+        )}
       </div>
     </div>
   )
