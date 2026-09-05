@@ -10,6 +10,7 @@ import {
 import {
   CliCapabilities,
   CliInfo,
+  HistorySessionRow,
   Session,
   SessionEvent,
   SessionStats,
@@ -97,6 +98,8 @@ export interface ElectronAPI {
   /** CLI version + RPC feature surface of the detected CLI. */
   getCapabilities: () => Promise<CliCapabilities>
   listSessions: () => Promise<Session[]>
+  /** Cross-project read-only history rows (metadata; no resume capability). */
+  listAllSessionHistory: () => Promise<HistorySessionRow[]>
   /** Create a session under a Main-owned workspace grant. */
   createSession: (
     grantId: string,
@@ -384,6 +387,8 @@ const api: ElectronAPI = {
   detectCli: (force?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.OMP_DETECT, force),
   getCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.OMP_CAPABILITIES),
   listSessions: () => ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_SESSIONS),
+  listAllSessionHistory: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY) as Promise<HistorySessionRow[]>,
   createSession: (
     grantId: string,
     overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string }

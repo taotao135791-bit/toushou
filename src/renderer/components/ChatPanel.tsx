@@ -1,5 +1,4 @@
 import { useRef, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { FolderOpen, FolderPlus, MessageSquare, Download, Loader2, ChevronRight, ChevronDown, PanelRight } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
@@ -18,13 +17,20 @@ import Logo from './Logo'
 const EMPTY_MESSAGES: MessageLike[] = []
 const EMPTY_UI_REQUESTS: UiRequest[] = []
 
+/** Empty-state example prompts (ad-ops specific). Click fills — never sends. */
+const HERO_SUGGESTION_KEYS = [
+  'home.suggest.diagnose',
+  'home.suggest.weeklyReport',
+  'home.suggest.creativeReview',
+  'home.suggest.audience'
+] as const satisfies readonly I18nKey[]
+
 export default function ChatPanel() {
   const t = useT()
-  const navigate = useNavigate()
+  const setComposerPrefill = useAppStore((s) => s.setComposerPrefill)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
   const sessions = useAppStore((s) => s.sessions)
-  const packages = useAppStore((s) => s.packages)
   const cliAvailable = useAppStore((s) => s.cliAvailable)
   const workspacePanel = useAppStore((s) => s.workspacePanel)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
@@ -312,8 +318,12 @@ export default function ChatPanel() {
 
   const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
   const exportedFilename = exportSuccessPath ? exportFilename(exportSuccessPath) : null
-  const enabledCount = packages.filter((p) => p.enabled).length
   const showHero = sessionMessages.length === 0
+  // 开发者元素（Git 分支 chip）默认隐藏，设置页可打开。
+  const [showDevChrome, setShowDevChrome] = useState(false)
+  useEffect(() => {
+    window.electronAPI.getStore('showDevChrome').then((value) => setShowDevChrome(Boolean(value)))
+  }, [])
   const showThinking =
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
 
@@ -334,7 +344,13 @@ export default function ChatPanel() {
             <ChevronRight size={10} className="shrink-0 text-cream-faint" />
           </>
         )}
-        <GitChip trailing={<ChevronRight size={10} className="shrink-0 text-cream-faint" />} />
+        {/* Git 分支是开发者信息：默认收起，设置里的"开发者元素"打开后才显示。 */}
+        {showDevChrome && (
+          <>
+            <GitChip trailing={<ChevronRight size={10} className="shrink-0 text-cream-faint" />} />
+            <ChevronRight size={10} className="shrink-0 text-cream-faint" />
+          </>
+        )}
         <span className="min-w-0 truncate text-[13px] font-semibold tracking-tight text-cream">
           {currentSession ? currentSession.title : t('chat.noActiveSession')}
         </span>
@@ -418,16 +434,7 @@ export default function ChatPanel() {
               <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
               <span className="font-medium text-red-500">{t(sendError)}</span>
             </>
-          ) : (
-            <button
-              onClick={() => navigate('/plugins')}
-              title={t('plugins.badgeLabel', { count: enabledCount })}
-              className="app-no-drag flex items-center gap-2.5 rounded-md px-1.5 py-1 transition hover:bg-overlay"
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/80" />
-              {t('plugins.badgeLabel', { count: enabledCount })}
-            </button>
-          )}
+          ) : null}
         </span>
       </header>
 
@@ -442,7 +449,7 @@ export default function ChatPanel() {
                 <Logo size={52} />
               </div>
               <h2
-                className="rise mb-10 mt-6 font-serif text-[27px] font-medium tracking-[0.01em] text-cream"
+                className="rise mb-10 mt-6 text-[26px] font-semibold tracking-tight text-cream"
                 style={{ animationDelay: '60ms' }}
               >
                 {t('chat.hero.title')}
@@ -525,6 +532,19 @@ export default function ChatPanel() {
                   commands={slashCommands}
                   onCompact={currentSessionId ? handleCompact : undefined}
                 />
+                {/* 场景示例：点一下填进输入框（不自动发送），让第一次打开的
+                    投放师立刻看到这个 Agent 能接什么活。 */}
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  {HERO_SUGGESTION_KEYS.map((key) => (
+                    <button
+                      key={key}
+                      onClick={() => setComposerPrefill(t(key))}
+                      className="rounded-full border border-line bg-ink-850/60 px-3 py-1.5 text-[11.5px] text-cream-dim shadow-card transition-all duration-200 ease-standard hover:-translate-y-px hover:border-line-strong hover:text-cream"
+                    >
+                      {t(key)}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>

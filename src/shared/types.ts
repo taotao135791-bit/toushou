@@ -728,6 +728,18 @@ export interface ChatMessage {
  * grant. Durable session-file paths and header cwd values intentionally never
  * cross this boundary.
  */
+/** Read-only cross-project history row (no capability — metadata only). */
+export interface HistorySessionRow {
+  /** Session uuid from the file header, for deduplication only. */
+  uuid: string
+  /** First user message, truncated to 80 chars; 'Untitled' when absent. */
+  title: string
+  /** Session start time, epoch ms. */
+  timestamp: number
+  /** The cwd recorded in the session header (canonical real path or ''). */
+  cwd: string
+}
+
 export interface HistorySessionDescriptor {
   /** Opaque Main-issued capability id for resume/delete operations. */
   id: string
@@ -1277,6 +1289,8 @@ export interface AppSettings {
   bundledPackages: Record<string, { version: string; userRemoved: boolean }>
   /** Experimental one-click Feishu PersonalAgent registration. */
   feishuExperimentalPersonalAgentRegistration: boolean
+  /** Show developer chrome in the chat header (Git branch chip). Default off. */
+  showDevChrome: boolean
 }
 
 export type InstallStatus =
@@ -1306,7 +1320,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pinnedSessionIds: [],
   archivedSessionIds: [],
   bundledPackages: {},
-  feishuExperimentalPersonalAgentRegistration: true
+  feishuExperimentalPersonalAgentRegistration: true,
+  showDevChrome: false
 }
 
 /** Snapshot of a live session, from the RPC get_state command. */

@@ -1,4 +1,5 @@
 import { open, readdir, stat, unlink } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -111,7 +112,85 @@ export function sessionDirCandidatesFor(
   projectDir: string,
   agentDir: string = defaultPiAgentDir()
 ): string[] {
-  return Array.from(new Set([currentSessionDirFor(projectDir, agentDir), sessionDirFor(projectDir, agentDir)]))
+  return Array.from(
+    new Set([
+      ...hashedSessionDirCandidatesFor(projectDir, agentDir),
+      currentSessionDirFor(projectDir, agentDir),
+      sessionDirFor(projectDir, agentDir)
+    ])
+  )
+}
+
+/**
+ * Current OMP layout (verified against 17.2.x on-disk state): directories are
+ * named `<zone>-<label>-<sha256(realpath)>` where zone is `home` (project
+ * inside $HOME, label = basename) or `abs` (label = relative path with
+ * separators dashed). Example:
+ *   /Users/me/…/toushou → home-toushou-4072a02833…
+ * Older builds used the slug forms above; keep every candidate so listing,
+ * resume and delete authority keep working across runtime upgrades.
+ */
+export function hashedSessionDirCandidatesFor(
+  projectDir: string,
+  agentDir: string = defaultPiAgentDir()
+): string[] {
+  let resolved: string
+  try {
+    resolved = realpathSync(projectDir)
+  } catch {
+    resolved = path.resolve(projectDir)
+  }
+  const hash = createHash('sha256').update(resolved).digest('hex')
+  const home = (() => {
+    try {
+      return realpathSync(homedir())
+    } catch {
+      return path.resolve(homedir())
+    }
+  })()
+  const relative = path.relative(home, resolved)
+  const inHome = !relative.startsWith('..') && !path.isAbsolute(relative)
+  const label = inHome
+    ? path.basename(resolved)
+    : (relative === '' ? path.basename(resolved) : relative).replace(/^[/\\]/, '')
+  const zone = inHome ? 'home' : 'abs'
+  return [path.join(sessionsRoot(agentDir), `${zone}-${label}-${hash}`)]
+}
+
+/**
+ * List EVERY session file across all projects and layout generations,
+ * newest first, capped to the newest `limit` entries. Layout-agnostic by
+ * construction (walks the sessions root) — this is what the sidebar's
+ * cross-project history needs; per-directory slug guessing cannot keep up
+ * with runtime renames.
+ */
+export async function listAllSessions(
+  agentDir: string = defaultPiAgentDir(),
+  limit = 300
+): Promise<HistorySessionFile[]> {
+  const root = sessionsRoot(agentDir)
+  let dirs: string[]
+  try {
+    dirs = await readdir(root)
+  } catch {
+    return []
+  }
+  const out: HistorySessionFile[] = []
+  for (const dir of dirs) {
+    let names: string[]
+    try {
+      names = await readdir(path.join(root, dir))
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      if (!name.endsWith('.jsonl')) continue
+      const info = await parseSessionFile(path.join(root, dir, name))
+      if (info) out.push(info)
+    }
+  }
+  out.sort((a, b) => b.timestamp - a.timestamp)
+  return out.slice(0, limit)
 }
 
 /**

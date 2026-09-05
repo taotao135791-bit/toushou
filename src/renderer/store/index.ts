@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { FileGrant, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { FileGrant, HistorySessionRow, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
@@ -149,6 +149,9 @@ interface AppState {
   recentWorkspaces: RecentWorkspaceDescriptor[]
   /** True while the history list is being (re)loaded; entries may be stale. */
   historyLoading: boolean
+  /** Cross-project durable history (metadata only) for the sidebar's flat
+   * "最近" list — survives restarts, unlike the live registry. */
+  globalHistory: HistorySessionRow[]
   /** Runtime-reported settings overview (profile/capabilities/providers/defaults). */
   runtimeOverview: RuntimeOverview | null
   /** Runtime model catalog (current profile; legacy rides `models`). */
@@ -251,6 +254,7 @@ interface AppState {
   removeRecentProject: (path: string) => void
   /** (Re)load the persisted session history of the current workspace; null clears the list. */
   loadHistorySessions: (grantId: string | null) => Promise<void>
+  loadAllHistorySessions: () => Promise<void>
   /** Drop one entry from the history list (after its opaque capability was deleted). */
   removeHistorySession: (historyId: string) => void
   /** Update one session's display title in place. */
@@ -357,6 +361,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentProjects: [],
   recentWorkspaces: [],
   historyLoading: false,
+  globalHistory: [],
   runtimeOverview: null,
   runtimeModels: [],
   runtimeModelCatalog: [],
@@ -824,6 +829,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       recentWorkspaces: state.recentWorkspaces.filter((entry) => entry.displayPath !== displayPath),
       recentProjects: state.recentProjects.filter((entry) => entry !== displayPath)
     }))
+  },
+  loadAllHistorySessions: async () => {
+    // Read-only metadata scan of the runtime's own session storage. This is
+    // what makes the sidebar survive restarts: the live registry is in-memory
+    // only, the durable files are not.
+    try {
+      const rows = await window.electronAPI.listAllSessionHistory()
+      set({ globalHistory: Array.isArray(rows) ? rows : [] })
+    } catch {
+      // Keep the previous list on failure — an empty sidebar reads as data loss.
+    }
   },
   loadHistorySessions: async (grantId) => {
     if (!grantId) {

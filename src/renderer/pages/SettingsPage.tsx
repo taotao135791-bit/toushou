@@ -165,6 +165,16 @@ export default function SettingsPage() {
     }
   }
 
+  // 开发者元素（Git 分支 chip 等）：默认关闭，产品界面保持投放师视角。
+  const [devChrome, setDevChromeState] = useState(false)
+  useEffect(() => {
+    window.electronAPI.getStore('showDevChrome').then((value) => setDevChromeState(Boolean(value)))
+  }, [])
+  const setDevChrome = (value: boolean) => {
+    setDevChromeState(value)
+    window.electronAPI.setStore('showDevChrome', value)
+  }
+
   const showCliSettings = async () => {
     setCliSettingsError(false)
     const opened = await window.electronAPI.showCliSettings()
@@ -268,6 +278,19 @@ export default function SettingsPage() {
                     {t('settings.themeDark')}
                   </span>
                 </button>
+              </div>
+            </Row>
+            <Row label={t('settings.devChrome')}>
+              <div className="flex items-center gap-2">
+                <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
+                  <button onClick={() => setDevChrome(false)} className={seg(!devChrome)}>
+                    {t('settings.devChromeOff')}
+                  </button>
+                  <button onClick={() => setDevChrome(true)} className={seg(devChrome)}>
+                    {t('settings.devChromeOn')}
+                  </button>
+                </div>
+                <span className="text-[11px] text-cream-faint">{t('settings.devChromeHint')}</span>
               </div>
             </Row>
             <Row label={t('settings.language')}>

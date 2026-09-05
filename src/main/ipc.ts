@@ -96,7 +96,7 @@ import {
   getCheckpoint
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
-import { listSessionHistory, deleteSessionFile } from './sessionHistory'
+import { listSessionHistory, deleteSessionFile, listAllSessions } from './sessionHistory'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
@@ -713,6 +713,19 @@ export function registerIpc() {
       return getSessionState(sessionId)
     }
   )
+
+  // Cross-project read-only history listing. Metadata only (uuid/title/
+  // timestamp/cwd from the runtime's own session files) — no capability is
+  // minted here; resume/delete still require the workspace-bound grant flow.
+  ipcMain.handle(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY, async () => {
+    const all = await listAllSessions()
+    return all.map((entry) => ({
+      uuid: entry.uuid,
+      title: entry.title,
+      timestamp: entry.timestamp,
+      cwd: entry.cwd
+    }))
+  })
 
   ipcMain.handle(
     IPC_CHANNELS.OMP_LIST_SESSION_HISTORY,

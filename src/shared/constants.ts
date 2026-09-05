@@ -99,6 +99,8 @@ export const IPC_CHANNELS = {
   OMP_EXPORT_HTML: 'omp:export-html',
   OMP_SESSION_STATE: 'omp:session-state',
   OMP_LIST_SESSION_HISTORY: 'omp:list-session-history',
+  /** Cross-project read-only history listing (metadata, no capability). */
+  OMP_LIST_ALL_SESSION_HISTORY: 'omp:list-all-session-history',
   OMP_RESUME_SESSION: 'omp:resume-session',
   OMP_DELETE_SESSION_FILE: 'omp:delete-session-file',
   OMP_SET_SESSION_NAME: 'omp:set-session-name',

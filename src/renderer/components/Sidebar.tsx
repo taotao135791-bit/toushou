@@ -25,7 +25,7 @@ import {
 import { HistorySessionDescriptor } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
-import { useNotice } from '../lib/notice'
+import { useNotice, showNotice } from '../lib/notice'
 import { recordsForWorkspace } from '../lib/sessionRegistry'
 import { formatRelativeTime } from '../lib/time'
 import { getSessionStatus } from '../lib/sessionStatus'
@@ -54,6 +54,8 @@ export default function Sidebar() {
   const unreadSessionIds = useAppStore((s) => s.unreadSessionIds)
   const uiRequests = useAppStore((s) => s.uiRequests)
   const historyLoading = useAppStore((s) => s.historyLoading)
+  const globalHistory = useAppStore((s) => s.globalHistory)
+  const loadAllHistorySessions = useAppStore((s) => s.loadAllHistorySessions)
   const recentProjects = useAppStore((s) => s.recentProjects)
   const recentWorkspaces = useAppStore((s) => s.recentWorkspaces)
   const selectWorkspace = useAppStore((s) => s.selectWorkspace)
@@ -108,6 +110,15 @@ export default function Sidebar() {
     void loadHistorySessions(currentWorkspace?.id ?? null)
   }, [currentWorkspace, loadHistorySessions])
 
+  // Cross-project durable history: refresh on mount, on workspace change, and
+  // whenever this window regains focus (another window may have added sessions).
+  useEffect(() => {
+    void loadAllHistorySessions()
+    const onFocus = () => void loadAllHistorySessions()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [currentWorkspace, loadAllHistorySessions])
+
   const handleSelectProject = async () => {
     await selectWorkspace()
   }
@@ -128,6 +139,7 @@ export default function Sidebar() {
     }
     // The killed session's file may now appear in the on-disk history
     void loadHistorySessions(currentWorkspace?.id ?? null)
+    void loadAllHistorySessions()
   }
 
   const handleResumeHistory = async (info: HistorySessionDescriptor) => {
@@ -179,6 +191,50 @@ export default function Sidebar() {
       setDeleteFailedHistoryId(info.id)
       setTimeout(() => setDeleteFailedHistoryId((id) => (id === info.id ? null : id)), 3000)
     }
+    // The durable scan feeds the cross-project list too.
+    void loadAllHistorySessions()
+  }
+
+  /**
+   * Open a cross-project durable history row. Rows of the CURRENT workspace
+   * mint capabilities in place; other rows switch to their project first when
+   * that project is in the recents list (the only trusted authority source),
+   * then resume. Everything else asks the user to add the folder first.
+   */
+  const handleOpenGlobal = async (row: (typeof globalHistory)[number]) => {
+    if (resumingHistoryId || historyLoading) return
+    const state = useAppStore.getState()
+    const resumeByUuid = async (): Promise<boolean> => {
+      await loadHistorySessions(state.currentWorkspace?.id ?? null)
+      const match = useAppStore
+        .getState()
+        .sessionRecords.find((r) => !r.isLive && r.history?.uuid === row.uuid)
+      if (!match?.history) return false
+      await handleResumeHistory(match.history)
+      return true
+    }
+
+    if (state.currentWorkspace && row.cwd === state.currentWorkspace.realPath) {
+      if (await resumeByUuid()) return
+      showNotice('history.restoreFailed')
+      return
+    }
+
+    const target = state.recentWorkspaces.find(
+      (workspace) => basename(workspace.displayPath) === basename(row.cwd)
+    )
+    if (!target) {
+      showNotice('sidebar.projectNotAdded')
+      return
+    }
+    await activateRecentWorkspace(target.id)
+    const activated = useAppStore.getState().currentWorkspace
+    if (!activated || activated.realPath !== row.cwd) {
+      showNotice('sidebar.projectNotAdded')
+      return
+    }
+    if (await resumeByUuid()) return
+    showNotice('sidebar.projectSwitched')
   }
 
   const deleteHistoryConfirm = useConfirmId((id: string) => {
@@ -234,46 +290,10 @@ export default function Sidebar() {
   )
 
   // ---- group live sessions by their project (session.cwd) --------------
-  // Known projects are the ones in recentProjects plus the current project;
-  // anything else lands in a bottom "untied to a project" group. All entries
-  // are canonical real paths because session.cwd is one too.
-  const projectOrder = useMemo(() => {
-    const order: string[] = []
-    if (currentWorkspace) order.push(currentWorkspace.realPath)
-    for (const p of recentProjects) if (!order.includes(p)) order.push(p)
-    return order
-  }, [currentWorkspace, recentProjects])
-
-  const sessionCwdSet = useMemo(() => {
-    const set = new Set<string>()
-    for (const s of scopedLiveSessions) if (s.cwd) set.add(s.cwd)
-    return set
-  }, [scopedLiveSessions])
-
-  const groupedProjectCwds = useMemo(
-    () => projectOrder.filter((p) => sessionCwdSet.has(p)),
-    [projectOrder, sessionCwdSet]
-  )
-
-  const untiedSessions = useMemo(
-    () => scopedLiveSessions.filter((s) => !projectOrder.includes(s.cwd) && !archivedSet.has(s.id)),
-    [scopedLiveSessions, projectOrder, archivedSet]
-  )
-
-  const renderProjectGroup = (cwd: string) => {
-    const group = scopedLiveSessions.filter((s) => s.cwd === cwd && !archivedSet.has(s.id))
-    const pinned = group.filter((s) => pinnedSet.has(s.id))
-    const normal = group.filter((s) => !pinnedSet.has(s.id))
-    const name = basename(cwd) || cwd
-    return (
-      <div key={cwd} className="mt-2">
-        <div className="truncate px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-cream-faint/80">
-          {name}
-        </div>
-        <div className="space-y-0.5">{[...pinned, ...normal].map(renderSessionRow)}</div>
-      </div>
-    )
-  }
+  // (Removed in the flat-recents model: the sidebar lists live + durable
+  // sessions across projects in one recency-ordered "最近" list; each row
+  // carries its project as a suffix. Project grouping remains in the
+  // dedicated 项目 section above.)
 
   const PROJECT_FOLD_LIMIT = 5
   // The active project already has its own row above — never repeat it in
@@ -296,6 +316,108 @@ export default function Sidebar() {
     if (q) list = list.filter((h) => h.title.toLowerCase().includes(q))
     return list
   }, [scopedRecords, query])
+
+  // ---- unified "最近" flat list ------------------------------------------
+  // Live sessions (every project), workspace-bound history rows, and the
+  // cross-project durable scan merge into one recency-ordered list. The
+  // durable scan is what makes the sidebar survive restarts.
+  type RecentEntry =
+    | { kind: 'live'; key: string; timestamp: number; projectName: string; session: (typeof sessions)[number] }
+    | { kind: 'history'; key: string; timestamp: number; projectName: string; info: HistorySessionDescriptor }
+    | { kind: 'global'; key: string; timestamp: number; projectName: string; row: (typeof globalHistory)[number] }
+
+  const liveUuids = useMemo(() => {
+    const set = new Set<string>()
+    const recordByRuntimeId = new Map(
+      sessionRecords.filter((r) => r.runtimeSessionId).map((r) => [r.runtimeSessionId as string, r])
+    )
+    for (const s of sessions) {
+      const record = recordByRuntimeId.get(s.id)
+      if (record?.history?.uuid) set.add(record.history.uuid)
+      const fileUuid = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(
+        record?.sessionFile ?? ''
+      )?.[1]
+      if (fileUuid) set.add(fileUuid)
+    }
+    return set
+  }, [sessionRecords, sessions])
+
+  const recentEntries = useMemo(() => {
+    const entries: RecentEntry[] = []
+    for (const s of sessions) {
+      if (archivedSet.has(s.id)) continue
+      entries.push({
+        kind: 'live',
+        key: `live:${s.id}`,
+        timestamp: s.createdAt,
+        projectName: basename(s.cwd) || s.cwd,
+        session: s
+      })
+    }
+    const historyUuids = new Set(visibleHistory.map((h) => h.uuid))
+    for (const info of visibleHistory) {
+      if (liveUuids.has(info.uuid)) continue
+      entries.push({
+        kind: 'history',
+        key: `history:${info.id}`,
+        timestamp: info.timestamp,
+        projectName: basename(currentWorkspace?.realPath ?? '') || '',
+        info
+      })
+    }
+    for (const row of globalHistory) {
+      if (liveUuids.has(row.uuid) || historyUuids.has(row.uuid)) continue
+      entries.push({
+        kind: 'global',
+        key: `global:${row.uuid}`,
+        timestamp: row.timestamp,
+        projectName: basename(row.cwd) || row.cwd,
+        row
+      })
+    }
+    // Pinned live rows float to the top of the flat list, then recency.
+    entries.sort((a, b) => {
+      const aPinned = a.kind === 'live' && pinnedSet.has(a.session.id) ? 0 : 1
+      const bPinned = b.kind === 'live' && pinnedSet.has(b.session.id) ? 0 : 1
+      if (aPinned !== bPinned) return aPinned - bPinned
+      return b.timestamp - a.timestamp
+    })
+    // Resuming a session forks a NEW file with a NEW uuid but the same first
+    // user message, so uuid-only dedupe leaves near-identical twins (same
+    // project, same title, timestamps seconds apart). Prefer the row that can
+    // be opened in place: live > capability-backed history > global.
+    const rank = (entry: RecentEntry) => (entry.kind === 'live' ? 0 : entry.kind === 'history' ? 1 : 2)
+    const titleOf = (entry: RecentEntry) =>
+      entry.kind === 'live' ? entry.session.title : entry.kind === 'history' ? entry.info.title : entry.row.title
+    const deduped: RecentEntry[] = []
+    for (const entry of entries) {
+      const twin = deduped.find(
+        (candidate) =>
+          candidate.projectName === entry.projectName &&
+          titleOf(candidate) === titleOf(entry) &&
+          Math.abs(candidate.timestamp - entry.timestamp) < 60_000
+      )
+      if (!twin) {
+        deduped.push(entry)
+        continue
+      }
+      if (rank(entry) < rank(twin)) deduped[deduped.indexOf(twin)] = entry
+    }
+    return deduped
+  }, [sessions, archivedSet, visibleHistory, globalHistory, liveUuids, pinnedSet, currentWorkspace])
+
+  const filteredRecentEntries = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return recentEntries
+    return recentEntries.filter((entry) => {
+      const title = entry.kind === 'live' ? entry.session.title : entry.kind === 'history' ? entry.info.title : entry.row.title
+      if (title.toLowerCase().includes(q)) return true
+      if (entry.kind !== 'live') return false
+      const list = searchMessages[entry.session.id]
+      const last = list?.[list.length - 1]
+      return last ? last.content.toLowerCase().includes(q) : false
+    })
+  }, [recentEntries, query, searchMessages])
 
   const navRow = (active: boolean) =>
     `group flex h-8 w-full items-center gap-2.5 rounded-lg border px-2.5 text-[13px] transition-all duration-150 ease-standard ${
@@ -477,6 +599,36 @@ export default function Sidebar() {
         )}
       </div>
     )
+  }
+
+  /** Cross-project durable row: opens via workspace switch + resume (no delete). */
+  const renderGlobalRow = (row: (typeof globalHistory)[number]) => {
+    const resuming = resumingHistoryId !== null
+    return (
+      <div
+        key={`global:${row.uuid}`}
+        onClick={() => void handleOpenGlobal(row)}
+        title={row.cwd}
+        className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-[6px] transition-colors duration-150 hover:bg-overlay ${
+          resuming ? 'pointer-events-none opacity-60' : ''
+        }`}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[13px] leading-5 text-cream-dim">
+            {row.title === 'Untitled' ? t('history.untitled') : row.title}
+          </div>
+          <div className="truncate text-[11px] leading-4 text-cream-faint/70">
+            {basename(row.cwd) || row.cwd} · {formatRelativeTime(row.timestamp, language)}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderRecentEntry = (entry: RecentEntry) => {
+    if (entry.kind === 'live') return renderSessionRow(entry.session)
+    if (entry.kind === 'history') return renderHistoryRow(entry.info)
+    return renderGlobalRow(entry.row)
   }
 
   return (
@@ -666,22 +818,10 @@ export default function Sidebar() {
           ) : (
             <div className="space-y-0.5">{[...pinnedSessions, ...normalSessions].map(renderSessionRow)}</div>
           )
-        ) : scopedLiveSessions.length === 0 ? (
+        ) : filteredRecentEntries.length === 0 ? (
           <div className="px-2 py-1.5 text-xs leading-5 text-cream-faint">{t('sidebar.noSessions')}</div>
         ) : (
-          <>
-            {groupedProjectCwds.map(renderProjectGroup)}
-            {untiedSessions.length > 0 && (
-              <div className="mt-2">
-                <div className="truncate px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-cream-faint/80">
-                  {t('chat.noProject')}
-                </div>
-                <div className="space-y-0.5">
-                  {[...untiedSessions.filter((s) => pinnedSet.has(s.id)), ...untiedSessions.filter((s) => !pinnedSet.has(s.id))].map(renderSessionRow)}
-                </div>
-              </div>
-            )}
-          </>
+          <div className="space-y-0.5">{filteredRecentEntries.map(renderRecentEntry)}</div>
         )}
 
         {archivedSessions.length > 0 && (
@@ -698,15 +838,6 @@ export default function Sidebar() {
               {t('sidebar.archived', { count: archivedSessions.length })}
             </button>
             {archiveOpen && <div className="space-y-0.5">{archivedSessions.map(renderSessionRow)}</div>}
-          </div>
-        )}
-
-        {visibleHistory.length > 0 && (
-          <div className="mt-4">
-            <div className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
-              {t('history.title')}
-            </div>
-            <div className="space-y-0.5">{visibleHistory.map(renderHistoryRow)}</div>
           </div>
         )}
       </div>
