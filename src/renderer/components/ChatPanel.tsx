@@ -17,17 +17,9 @@ import Logo from './Logo'
 const EMPTY_MESSAGES: MessageLike[] = []
 const EMPTY_UI_REQUESTS: UiRequest[] = []
 
-/** Empty-state example prompts (ad-ops specific). Click fills — never sends. */
-const HERO_SUGGESTION_KEYS = [
-  'home.suggest.diagnose',
-  'home.suggest.weeklyReport',
-  'home.suggest.creativeReview',
-  'home.suggest.audience'
-] as const satisfies readonly I18nKey[]
 
 export default function ChatPanel() {
   const t = useT()
-  const setComposerPrefill = useAppStore((s) => s.setComposerPrefill)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
   const sessions = useAppStore((s) => s.sessions)
@@ -532,19 +524,6 @@ export default function ChatPanel() {
                   commands={slashCommands}
                   onCompact={currentSessionId ? handleCompact : undefined}
                 />
-                {/* 场景示例：点一下填进输入框（不自动发送），让第一次打开的
-                    投放师立刻看到这个 Agent 能接什么活。 */}
-                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-                  {HERO_SUGGESTION_KEYS.map((key) => (
-                    <button
-                      key={key}
-                      onClick={() => setComposerPrefill(t(key))}
-                      className="rounded-full border border-line bg-ink-850/60 px-3 py-1.5 text-[11.5px] text-cream-dim shadow-card transition-all duration-200 ease-standard hover:-translate-y-px hover:border-line-strong hover:text-cream"
-                    >
-                      {t(key)}
-                    </button>
-                  ))}
-                </div>
               </div>
             </div>
           </div>

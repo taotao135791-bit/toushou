@@ -135,7 +135,41 @@ Two writer paths converge on the same Main entry point
    human confirmation — this is the §4-compliant way an assistant may change
    board styling: proposal only, never a silent mutation.
 
-## 6. Contributor checklist
+## 6. Board cards proposal (```board-cards) and live file cards
+
+The §4 requirement for "a versioned schema, a preview, per-operation
+confirmation, validation in Main, and fixture tests" is implemented by the
+board-cards protocol (`shared/boardCards.ts`, the data-card sibling of §5):
+
+- The boards-page board menu prefills a bounded brief (`buildBoardCardsPrompt`)
+  as a composer **draft**; the agent answers with exactly one
+  ```` ```board-cards ```` JSON fence: `{ "version": 1, "cards": [...] }`,
+  1–12 cards, each a bounded `metric` / `list` / `note` / `file` card.
+- Parsing is strict about the envelope and lenient per card: unknown fields
+  are dropped, an invalid card is skipped with a warning, and a proposal whose
+  cards are all invalid fails to parse. File cards may reference
+  workspace-RELATIVE `.png/.jpg/.html` paths only (no absolute paths, no
+  `..`, enforced lexically at parse).
+- The chat UI renders the fence as a preview card with a target-board picker;
+  **Apply** sends the RAW fence text plus the board id over
+  `boards:apply-cards`. Main re-parses with the same validator, resolves file
+  cards against the named workspace grant (fsGuard realpath containment;
+  unresolvable cards are skipped with a warning), rebuilds the cards into the
+  existing widget model through the shared factories, and appends them via
+  the normal atomic boards save. The agent can never write boards by itself.
+
+Live file cards are the `file` widget type: the board stores only a
+workspace-relative path (`.png/.jpg/.html`; unsafe paths are rejected by
+board validation, and strict saves refuse a board carrying one). Content is
+read through `boards:widget-file-read`, which resolves the path against the
+ACTIVE workspace grant's canonical real path and re-checks fsGuard on every
+read — images return as data URLs, HTML as text for a sandboxed iframe
+(`sandbox="allow-scripts"`, deliberately without `allow-same-origin`).
+Main watches each bound file (lazy per-directory watcher, 300 ms debounce,
+same pattern as §5) and broadcasts `boards:file-changed`; the matching card
+reloads, and fresh bytes per read are the cache-busting mechanism.
+
+## 7. Contributor checklist
 
 For any change touching these surfaces:
 

@@ -31,7 +31,8 @@ import {
   ManagedPluginDetail,
   ManagedPluginSaveResult,
   ManagedPluginActionResult,
-  BoardDesignChange
+  BoardDesignChange,
+  BoardFileChange
 } from '../shared/types'
 import {
   detectCli,
@@ -100,9 +101,10 @@ import { listSessionHistory, deleteSessionFile, listAllSessions } from './sessio
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
-import { appendBoardNote, deleteBoard, listBoards, saveBoard } from './boards'
+import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, saveBoard } from './boards'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
+import { readBoardWidgetFile, registerBoardFileBinding } from './boardFiles'
 import {
   deleteSkill,
   importSkillFile,
@@ -195,6 +197,49 @@ function ensureBoardDesignWatch(): void {
   if (boardDesignWatching) return
   boardDesignWatching = true
   watchBoardDesign(broadcastBoardDesign)
+}
+
+/** A bound file-widget file changed on disk; the matching card reloads. */
+function broadcastBoardFileChange(change: BoardFileChange): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.BOARDS_FILE_CHANGED, change)
+    }
+  }
+}
+
+/**
+ * Resolve a proposed file-card path against the workspace grant named in the
+ * request: the grant's canonical real path is the only base, fsGuard confirms
+ * containment on the real path (symlinks resolved), and the board stores a
+ * normalized workspace-relative form. Returns null for anything outside the
+ * grant — applyBoardCards then skips that card with a warning.
+ */
+function resolveWorkspaceFile(request: unknown, filePath: unknown): string | null {
+  if (typeof filePath !== 'string' || !filePath || !request || typeof request !== 'object') return null
+  const grantId = (request as Record<string, unknown>).workspaceGrantId
+  if (typeof grantId !== 'string' || !grantId) return null
+  const grant = grantManager.get(grantId)
+  if (!grant) return null
+  const absolute = path.resolve(grant.realPath, filePath)
+  if (!fsGuard.isAllowed(absolute)) return null
+  const relative = path.relative(grant.realPath, absolute)
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null
+  return relative.split(path.sep).join('/')
+}
+
+/** Sanitized board+widget+grant selector for the file-widget read channel. */
+function sanitizeWidgetFileRead(request: unknown): { boardId: string; widgetId: string; workspaceGrantId: string } | null {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return null
+  const value = request as Record<string, unknown>
+  const okId = (id: unknown): id is string =>
+    typeof id === 'string' && id.length > 0 && id.length <= 100 && !hasControl(id)
+  if (!okId(value.boardId) || !okId(value.widgetId) || !okId(value.workspaceGrantId)) return null
+  return {
+    boardId: value.boardId,
+    widgetId: value.widgetId,
+    workspaceGrantId: value.workspaceGrantId
+  }
 }
 
 const MAX_READ_FILE_BYTES = 2 * 1024 * 1024
@@ -1879,6 +1924,74 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.BOARDS_REVEAL_DESIGN, async () => {
     ensureBoardDesignWatch()
     return revealBoardDesign()
+  })
+
+  // Chat ```board-cards proposals — the data-card sibling of board-design.
+  // The agent only proposes; the person picks a board and applies; Main
+  // re-parses the RAW fence text (renderer structures are never trusted),
+  // resolves file cards against the named workspace grant, and appends the
+  // cards through the same validated save path as a hand edit.
+  ipcMain.handle(IPC_CHANNELS.BOARDS_APPLY_CARDS, async (_event, request: unknown) => {
+    return applyBoardCards(request, {
+      resolveWorkspaceFile: (filePath) => resolveWorkspaceFile(request, filePath)
+    })
+  })
+
+  // File widgets: the bound path lives in the persisted board and is resolved
+  // against the ACTIVE workspace grant's real path; fsGuard re-checks the real
+  // path on every read. Absolute paths never cross back to the renderer.
+  ipcMain.handle(IPC_CHANNELS.BOARDS_WIDGET_FILE_READ, async (_event, request: unknown) => {
+    const selector = sanitizeWidgetFileRead(request)
+    if (!selector) return { ok: false, error: 'invalid-request' }
+    const grant = grantManager.get(selector.workspaceGrantId)
+    if (!grant) return { ok: false, error: 'no-workspace' }
+    return readBoardWidgetFile({
+      boardId: selector.boardId,
+      widgetId: selector.widgetId,
+      workspaceRealPath: grant.realPath,
+      isAllowed: (absolutePath) => fsGuard.isAllowed(absolutePath),
+      onBound: (bound) =>
+        registerBoardFileBinding(
+          {
+            boardId: selector.boardId,
+            widgetId: selector.widgetId,
+            absolutePath: bound.absolutePath,
+            mtime: bound.mtime
+          },
+          broadcastBoardFileChange
+        )
+    })
+  })
+
+  // Native picker for binding a file-widget file: Main validates the pick is
+  // inside the requested workspace grant and answers with a workspace-relative
+  // path only (those are already enumerable through the workspace grant).
+  ipcMain.handle(IPC_CHANNELS.BOARDS_WIDGET_FILE_SELECT, async (_event, grantId: unknown) => {
+    if (typeof grantId !== 'string' || !grantId) return { ok: false, error: 'no-workspace' }
+    const grant = grantManager.get(grantId)
+    if (!grant) return { ok: false, error: 'no-workspace' }
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Image / HTML', extensions: ['png', 'jpg', 'jpeg', 'html'] }]
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    const picked = result.filePaths[0]
+    let real: string
+    try {
+      real = fs.realpathSync(picked)
+    } catch {
+      return { ok: false, error: 'outside-workspace' }
+    }
+    if (!fsGuard.isAllowed(real)) return { ok: false, error: 'outside-workspace' }
+    const relative = path.relative(grant.realPath, real)
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      return { ok: false, error: 'outside-workspace' }
+    }
+    const extension = path.extname(real).slice(1).toLowerCase()
+    if (!['png', 'jpg', 'jpeg', 'html'].includes(extension)) {
+      return { ok: false, error: 'unsupported-type' }
+    }
+    return { ok: true, name: path.basename(real), relativePath: relative.split(path.sep).join('/') }
   })
 
   // SKILL 目录 — the team library of self-made Markdown docs and HTML tools.

@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.6.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.6.0) 下载：
+当前版本 v0.7.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.7.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.6.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.6.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.6.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.7.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.7.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.7.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.7.0：看板与 Office 迈向"确认式写通道"。**board-cards 提议协议**：对话里 Agent 可以提议数据卡片（指标/清单/笔记），以可视化提议卡呈现，选择目标看板一键应用；**活文件卡**：看板新增 file 组件，绑定工作区内图片/HTML 文件，文件变化自动刷新（HTML 沙箱 iframe 渲染），向 Kimi 式"活看板"迈出第一步；**office-edit 确认式编辑**：Agent 分析工作簿后可直接提议单元格修改（拒绝公式注入），在 Office 面板二次确认后应用，全程不静默落盘；看板侧栏菜单新增"让 Agent 提议卡片"入口；"SKILL 目录"更名"Skill"。
 
 v0.6.0：产品气质收敛版。**重启不再"丢"会话**——修复新版运行时会话目录的识别（sha256 哈希布局），并新增跨项目磁盘历史扫描，侧栏改为置顶 + 平铺"最近"（跨项目、带项目名后缀），历史会话一键恢复，其他项目的会话自动切换项目后打开；**Agent 工作过程改为步骤流呈现**——每个工具调用一行语义化标签（打开网页 / 点击元素 / 运行命令 / 更新任务计划……）常驻展开，不再折叠成计数行；顶栏回归投放师视角（Git 分支 chip 默认隐藏，设置新增"开发者元素"开关；移除插件徽标）；空状态新增投放场景示例（点击填入不自动发送）并统一无衬线标题；"SKILL 目录"更名"打法库"、"技能·连接器·伙伴"更名"插件与技能"。
 

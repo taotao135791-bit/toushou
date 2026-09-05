@@ -54,10 +54,16 @@ import {
   KanbanBoard,
   BoardNoteAppendRequest,
   BoardNoteAppendResult,
+  BoardCardsApplyRequest,
+  BoardCardsApplyResult,
   BoardDataset,
   BoardDesignChange,
   BoardDesignDocument,
   BoardDesignSaveResult,
+  BoardFileChange,
+  BoardWidgetFilePickResult,
+  BoardWidgetFileReadRequest,
+  BoardWidgetFileReadResult,
   SkillImportResult,
   SkillListResult,
   SkillDeleteResult,
@@ -229,6 +235,14 @@ export interface ElectronAPI {
   revealBoardDesign: () => Promise<boolean>
   /** Fired when board-design.md changes on disk (any source). */
   onBoardDesignChanged: (callback: (change: BoardDesignChange) => void) => () => void
+  /** Apply a ```board-cards proposal; Main re-parses the raw fence text. */
+  applyBoardCards: (request: BoardCardsApplyRequest) => Promise<BoardCardsApplyResult>
+  /** Read a file widget's bound workspace file through the active grant. */
+  readBoardWidgetFile: (request: BoardWidgetFileReadRequest) => Promise<BoardWidgetFileReadResult>
+  /** Native picker → workspace-relative bind path for a file widget (null = canceled). */
+  selectBoardWidgetFile: (workspaceGrantId: string) => Promise<BoardWidgetFilePickResult | null>
+  /** Fired when a bound file-widget file changes on disk. */
+  onBoardFileChanged: (callback: (change: BoardFileChange) => void) => () => void
   /** SKILL 目录 — the team library of self-made docs and HTML tools. */
   listSkills: () => Promise<SkillListResult>
   readSkill: (id: string) => Promise<SkillReadResult>
@@ -540,6 +554,19 @@ const api: ElectronAPI = {
     ipcRenderer.on(IPC_CHANNELS.BOARDS_DESIGN_CHANGED, handler)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.BOARDS_DESIGN_CHANGED, handler)
+    }
+  },
+  applyBoardCards: (request: BoardCardsApplyRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BOARDS_APPLY_CARDS, request),
+  readBoardWidgetFile: (request: BoardWidgetFileReadRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BOARDS_WIDGET_FILE_READ, request),
+  selectBoardWidgetFile: (workspaceGrantId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BOARDS_WIDGET_FILE_SELECT, workspaceGrantId),
+  onBoardFileChanged: (callback: (change: BoardFileChange) => void) => {
+    const handler = (_event: IpcRendererEvent, change: BoardFileChange) => callback(change)
+    ipcRenderer.on(IPC_CHANNELS.BOARDS_FILE_CHANGED, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.BOARDS_FILE_CHANGED, handler)
     }
   },
   listSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST),

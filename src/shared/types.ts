@@ -1041,6 +1041,7 @@ export type WidgetType =
   | 'chart-bar'
   | 'todo'
   | 'link'
+  | 'file'
 
 export interface BoardWidgetLayout {
   /** Grid units on a 12-column grid: x 0-11, w 1-12 (x + w ≤ 12), h 1-20, y ≥ 0. */
@@ -1149,6 +1150,152 @@ export interface BoardDesignChange {
   spec: BoardDesignSpec
   issues: BoardDesignIssue[]
 }
+
+// ---------------------------------------------------------------------------
+// Board cards proposal (```board-cards fences in chat) — a versioned JSON
+// protocol by which the agent PROPOSES data cards; nothing reaches a board
+// until the person clicks Apply and Main re-parses + re-validates the raw
+// fence text (same trust direction as the board-design protocol). Parse and
+// validate live in shared/boardCards.ts; the value domain is deliberately
+// bounded and maps onto existing board widget types.
+// ---------------------------------------------------------------------------
+
+/** One parse/apply finding; `error` blocks applying, `warning` does not. */
+export interface BoardCardsIssue {
+  level: 'error' | 'warning'
+  /** 0-based index of the offending card in the proposed array (null = envelope). */
+  card: number | null
+  message: string
+}
+
+/** A live-file card: bound to a workspace-relative path (.png/.jpg/.html). */
+export type BoardCardsCard =
+  | {
+      type: 'metric'
+      title: string
+      value: number
+      unit?: string
+      delta?: number
+      deltaLabel?: string
+    }
+  | { type: 'list'; title: string; items: string[] }
+  | { type: 'note'; title: string; text: string }
+  | { type: 'file'; title: string; /** Workspace-relative path, re-validated in Main against the grant. */ filePath: string }
+
+export interface BoardCardsProposal {
+  version: 1
+  cards: BoardCardsCard[]
+}
+
+export type BoardCardsParseResult =
+  | { ok: true; proposal: BoardCardsProposal; issues: BoardCardsIssue[] }
+  | { ok: false; issues: BoardCardsIssue[] }
+
+/** Renderer → Main apply request. `raw` is the untouched fence text. */
+export interface BoardCardsApplyRequest {
+  boardId: string
+  /** The raw ```board-cards fence body; Main re-parses it — renderer
+   * structures are never trusted. */
+  raw: string
+  /** Required when the proposal contains file cards: Main resolves them
+   * against this workspace grant and never reads outside it. */
+  workspaceGrantId?: string
+}
+
+export type BoardCardsApplyResult =
+  | { ok: true; board: KanbanBoard; widgetIds: string[]; issues: BoardCardsIssue[] }
+  | {
+      ok: false
+      error:
+        | 'invalid-request'
+        | 'invalid-proposal'
+        | 'not-found'
+        | 'board-full'
+        | 'board-store-unreadable'
+        | 'no-workspace'
+        | 'write-failed'
+      issues: BoardCardsIssue[]
+    }
+
+/** Renderer → Main read request for a file widget's bound content. The path
+ * itself is resolved from the persisted board, not from this payload. */
+export interface BoardWidgetFileReadRequest {
+  boardId: string
+  widgetId: string
+  /** Active workspace grant whose root the bound path resolves against. */
+  workspaceGrantId: string
+}
+
+export type BoardWidgetFileReadResult =
+  | { ok: true; kind: 'image'; dataUrl: string; mtime: number }
+  | { ok: true; kind: 'html'; html: string; mtime: number }
+  | {
+      ok: false
+      error:
+        | 'invalid-request'
+        | 'no-workspace'
+        | 'not-found'
+        | 'no-file'
+        | 'outside-workspace'
+        | 'unsupported-type'
+        | 'too-large'
+        | 'read-failed'
+    }
+
+/** Native picker outcome for binding a workspace file to a file widget.
+ * The renderer only ever sees a workspace-relative path (it can already
+ * enumerate those through the workspace grant); Main re-validates every read. */
+export type BoardWidgetFilePickResult =
+  | { ok: true; name: string; relativePath: string }
+  | { ok: false; error: 'no-workspace' | 'outside-workspace' | 'unsupported-type' }
+
+/** Push payload after a bound file-widget file changes on disk. */
+export interface BoardFileChange {
+  boardId: string
+  widgetId: string
+  mtime: number
+}
+
+// ---------------------------------------------------------------------------
+// Office edit proposal (```office-edit fences in chat) — the workbook sibling
+// of the board-cards protocol: the agent PROPOSES bounded cell edits for the
+// workbook open in the Office panel; the chat UI renders them as a preview
+// card, and only an explicit user confirmation (chat handoff → panel Apply)
+// writes values into the renderer's in-memory Univer instance. Nothing here
+// touches the filesystem — persistence still flows exclusively through the
+// user's own open/save-as FileGrants. Parsing lives in shared/officeEdit.ts.
+// ---------------------------------------------------------------------------
+
+/** One proposed cell edit after validation. `value` is deliberately limited
+ * to Univer's plain `CellValue` scalar domain (string/number/boolean). */
+export interface OfficeEditCell {
+  /** Target sheet name (exact match against the open workbook). */
+  sheet: string
+  /** A1-style cell reference (e.g. "B2"), already format-validated. */
+  cell: string
+  /** Plain scalar value. Strings starting with "=" are rejected at parse
+   * time so a proposal can never smuggle a formula into the sheet. */
+  value: string | number | boolean
+}
+
+export interface OfficeEditProposal {
+  version: 1
+  edits: OfficeEditCell[]
+  /** Optional human-readable reason; shown in the preview and confirm bar. */
+  note?: string
+}
+
+/** One parse finding; `error` blocks applying, `warning` does not. */
+export interface OfficeEditIssue {
+  level: 'error' | 'warning'
+  /** 0-based index of the offending edit in the proposed array (null = envelope). */
+  edit: number | null
+  message: string
+}
+
+export type OfficeEditParseResult =
+  | { ok: true; proposal: OfficeEditProposal; issues: OfficeEditIssue[] }
+  | { ok: false; issues: OfficeEditIssue[] }
 
 // ---------------------------------------------------------------------------
 // SKILL 目录 — a flat userData/skills folder the team fills with self-made,

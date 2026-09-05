@@ -73,6 +73,14 @@ export const IPC_CHANNELS = {
   BOARDS_REVEAL_DESIGN: 'boards:reveal-design',
   /** Main → renderer push when the design file changes on disk. */
   BOARDS_DESIGN_CHANGED: 'boards:design-changed',
+  /** Chat ```board-cards proposal → Main re-validates + appends widgets. */
+  BOARDS_APPLY_CARDS: 'boards:apply-cards',
+  /** Read a file widget's bound workspace file through the active grant. */
+  BOARDS_WIDGET_FILE_READ: 'boards:widget-file-read',
+  /** Native picker → workspace-relative bind path for a file widget. */
+  BOARDS_WIDGET_FILE_SELECT: 'boards:widget-file-select',
+  /** Main → renderer push when a bound file-widget file changes on disk. */
+  BOARDS_FILE_CHANGED: 'boards:file-changed',
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
   DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_SELECT_IMAGE: 'dialog:select-image',

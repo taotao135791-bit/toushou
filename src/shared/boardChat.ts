@@ -157,3 +157,42 @@ export function buildBoardDesignPrompt(currentMarkdown: string): string {
     .join('\n')
     .slice(0, MAX_TEXT)
 }
+
+/**
+ * A bounded, reviewable draft asking the agent to propose DATA cards for a
+ * board via the ```board-cards protocol (see shared/boardCards.ts). Like the
+ * board-design brief, it spells out the exact JSON schema, declares the
+ * read-only direction, and demands exactly one fence — the chat UI renders it
+ * as a preview card that only an explicit Apply (validated again in Main) can
+ * turn into widgets. File cards may reference workspace-relative paths only;
+ * Main re-checks every such path against the authorized workspace before use.
+ */
+export function buildBoardCardsPrompt(): string {
+  return [
+    'Help me turn insights into board cards. My boards are local and read-only to you: never claim you changed a board. Instead, propose cards with EXACTLY ONE ```board-cards code block (JSON, no other code blocks). I will preview it and apply the cards myself.',
+    '',
+    'Schema:',
+    '{ "version": 1, "cards": [ … ] }  // 1-12 cards, each one of:',
+    '- { "type": "metric", "title": string (≤60 chars), "value": number, "unit"?: string (≤12 chars), "delta"?: number, "deltaLabel"?: string (≤20 chars) }',
+    '- { "type": "list", "title": string, "items": string[] (each ≤500 chars) }',
+    '- { "type": "note", "title": string, "text": string (≤5000 chars) }',
+    '- { "type": "file", "title": string, "filePath": string }  // workspace-RELATIVE path to an existing .png/.jpg/.html file; never absolute, never ".."',
+    '',
+    'Example shape:',
+    '```board-cards',
+    '{',
+    '  "version": 1,',
+    '  "cards": [',
+    '    { "type": "metric", "title": "本周花费", "value": 1234, "unit": "USD", "delta": -12.5, "deltaLabel": "环比" },',
+    '    { "type": "list", "title": "待办清单", "items": ["暂停低效广告组", "补充否定关键词"] },',
+    '    { "type": "note", "title": "结论", "text": "ROI 连续三周上升。" },',
+    '    { "type": "file", "title": "周报图表", "filePath": "reports/weekly.html" }',
+    '  ]',
+    '}',
+    '```',
+    '',
+    'Rules: one fence total; titles in the language I am writing in; no unknown fields; file paths must already exist inside my current workspace.'
+  ]
+    .join('\n')
+    .slice(0, MAX_TEXT)
+}

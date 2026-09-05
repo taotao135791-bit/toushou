@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { FileGrant, HistorySessionRow, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { FileGrant, HistorySessionRow, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
@@ -82,6 +82,19 @@ export type WorkspacePanel =
 /** A pending interactive extension dialog, keyed by session. */
 export type UiRequest = Extract<SessionEvent, { type: 'ui_request' }>
 
+/**
+ * An office-edit proposal the person applied in chat, on its way to the
+ * Office panel's confirm bar. Presence in the store IS the pending state:
+ * the panel applies or the user dismisses it, and either way it is cleared.
+ * Only the already-validated `proposal.edits` cross this boundary — the raw
+ * fence text never needs to leave the chat card.
+ */
+export interface OfficeEditHandoff {
+  id: string
+  edits: OfficeEditCell[]
+  note?: string
+}
+
 interface AppState {
   theme: 'dark' | 'light'
   language: Language
@@ -103,6 +116,17 @@ interface AppState {
   packages: PackageDescriptor[]
   workspacePanel: WorkspacePanel | null
   activeRightTab: 'files' | 'preview' | 'changes' | 'tools'
+  /**
+   * Office-edit proposal applied in chat, waiting for the Office panel's
+   * confirm bar (null = none pending). See OfficeEditHandoff.
+   */
+  officeEditHandoff: OfficeEditHandoff | null
+  /**
+   * True while an OfficePage holds a workbook loaded from a file. Chat-side
+   * gating only — the chat cannot reach into the panel's Univer instance,
+   * so the panel reports liveness through this flag.
+   */
+  officeWorkbookOpen: boolean
   selectedFile: string | null
   previewContent: string | null
   /** sessionId -> checkpoint creation failed once (non-git project); skip further attempts. */
@@ -201,6 +225,10 @@ interface AppState {
   setPackages: (packages: PackageDescriptor[]) => void
   setWorkspacePanel: (panel: WorkspacePanel | null) => void
   setActiveRightTab: (tab: 'files' | 'preview' | 'changes' | 'tools') => void
+  /** Stage (or clear) a chat-applied office-edit proposal for the Office panel. */
+  setOfficeEditHandoff: (handoff: OfficeEditHandoff | null) => void
+  /** OfficePanel → store liveness signal used to gate the chat apply button. */
+  setOfficeWorkbookOpen: (open: boolean) => void
   setSelectedFile: (path: string | null) => void
   setPreviewContent: (content: string | null) => void
   setCheckpointUnavailable: (sessionId: string, unavailable: boolean) => void
@@ -336,6 +364,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   packages: [],
   workspacePanel: null,
   activeRightTab: 'files',
+  officeEditHandoff: null,
+  officeWorkbookOpen: false,
   selectedFile: null,
   previewContent: null,
   checkpointUnavailable: {},
@@ -663,6 +693,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPackages: (packages) => set({ packages }),
   setWorkspacePanel: (workspacePanel) => set({ workspacePanel }),
   setActiveRightTab: (activeRightTab) => set({ activeRightTab }),
+  setOfficeEditHandoff: (officeEditHandoff) => set({ officeEditHandoff }),
+  setOfficeWorkbookOpen: (officeWorkbookOpen) => set({ officeWorkbookOpen }),
   setSelectedFile: (selectedFile) => set({ selectedFile }),
   setPreviewContent: (previewContent) => set({ previewContent }),
   setCheckpointUnavailable: (sessionId, unavailable) =>

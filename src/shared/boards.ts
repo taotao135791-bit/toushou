@@ -30,6 +30,8 @@ export const BOARD_LIMITS = {
   maxTodoTextLength: 500,
   maxUrlLength: 2000,
   maxIdLength: 100,
+  /** Longest workspace-relative path a file widget may bind (config.filePath). */
+  maxFilePathLength: 512,
   minWidgetRadius: 0,
   maxWidgetRadius: 32,
   minWidgetPadding: 6,
@@ -51,7 +53,8 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'chart-line',
   'chart-bar',
   'todo',
-  'link'
+  'link',
+  'file'
 ]
 
 /** One todo-list entry, stored under the todo widget's `config.items`. */
@@ -74,7 +77,8 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   'chart-line': { w: 6, h: 4 },
   'chart-bar': { w: 6, h: 4 },
   todo: { w: 4, h: 5 },
-  link: { w: 3, h: 2 }
+  link: { w: 3, h: 2 },
+  file: { w: 4, h: 4 }
 }
 
 export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
@@ -94,6 +98,8 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
       return { items: [] }
     case 'link':
       return { url: 'https://example.com' }
+    case 'file':
+      return { filePath: '' }
   }
 }
 
@@ -444,6 +450,33 @@ export function isValidLinkUrl(value: unknown): value is string {
   }
 }
 
+/** Extensions a file widget may bind; anything else cannot be rendered safely. */
+export const WIDGET_FILE_EXTENSIONS: readonly string[] = ['png', 'jpg', 'jpeg', 'html']
+
+/**
+ * File widgets bind a WORKSPACE-RELATIVE path only. Absolute paths, home
+ * shortcuts, `..` escapes and control characters are rejected lexically here;
+ * Main additionally re-checks every read against the active workspace grant's
+ * real path (fsGuard), so this predicate is the first gate, not the only one.
+ */
+export function isValidWidgetFilePath(value: unknown): value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > BOARD_LIMITS.maxFilePathLength ||
+    value !== value.trim() ||
+    CONTROL_RE.test(value)
+  ) {
+    return false
+  }
+  if (value.startsWith('/') || value.startsWith('\\') || value.startsWith('~')) return false
+  if (/^[a-zA-Z]:/.test(value)) return false
+  const segments = value.split(/[/\\]+/)
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return false
+  const extension = (segments[segments.length - 1].split('.').pop() ?? '').toLowerCase()
+  return extension.length > 0 && (WIDGET_FILE_EXTENSIONS as readonly string[]).includes(extension)
+}
+
 function validateLayout(raw: unknown): BoardWidgetLayout | null {
   if (!raw || typeof raw !== 'object') return null
   const l = raw as Record<string, unknown>
@@ -632,6 +665,17 @@ function validateWidgetConfig(
       // A link widget without a valid URL is useless — drop it entirely.
       if (!isValidLinkUrl(raw.url)) return null
       return { url: raw.url }
+    }
+    case 'file': {
+      // An unbound file widget is valid (the user configures it next); a
+      // bound one must carry a safe workspace-relative path or it is dropped.
+      const config: Record<string, unknown> = {}
+      if (raw.filePath !== undefined) {
+        const filePath = cleanString(raw.filePath, BOARD_LIMITS.maxFilePathLength)
+        if (filePath === null || (filePath !== '' && !isValidWidgetFilePath(filePath))) return null
+        if (filePath) config.filePath = filePath
+      }
+      return config
     }
   }
 }

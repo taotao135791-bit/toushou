@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, ExternalLink, X } from 'lucide-react'
+import { Check, ExternalLink, FileWarning, X } from 'lucide-react'
 import { BoardDataset, BoardWidget } from '@shared/types'
 import { BOARD_LIMITS, TodoItem, isValidLinkUrl } from '@shared/boards'
 import {
@@ -24,11 +24,20 @@ import { useT } from '../../i18n'
  * the page passes down, using the shared aggregation helpers, and rendered by
  * the same code path as manual values. A deleted dataset or renamed column
  * degrades to a small placeholder instead of breaking the board.
+ *
+ * File widgets load their bound workspace file THROUGH Main (boards:widget-
+ * file-read; the renderer never passes a path): images arrive as data URLs,
+ * HTML is sandbox-rendered in an iframe with allow-scripts and deliberately
+ * WITHOUT allow-same-origin, so embedded scripts run with an opaque origin
+ * and no access to app storage. boards:file-changed bumps a reload counter —
+ * fresh reads return fresh bytes, which is the cache-busting mechanism.
  */
 
 export interface WidgetBodyProps {
   widget: BoardWidget
   datasets: BoardDataset[]
+  /** Owning board id; file widgets need it to address Main's read channel. */
+  boardId: string
   onConfigChange: (config: Record<string, unknown>) => void
 }
 
@@ -463,7 +472,98 @@ function LinkBody({ widget }: { widget: BoardWidget }) {
   )
 }
 
-export function WidgetBody({ widget, datasets, onConfigChange }: WidgetBodyProps) {
+type FileBodyState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'image'; dataUrl: string }
+  | { kind: 'html'; html: string }
+  | { kind: 'error'; error: string }
+
+/**
+ * Live-file card: content is fetched from Main through the workspace grant,
+ * re-fetched when boards:file-changed reports a newer mtime for THIS card,
+ * and rendered as an <img> (data URL) or a sandboxed iframe (allow-scripts
+ * only — no same-origin, so the page cannot touch app storage or the DOM of
+ * the board).
+ */
+function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string }) {
+  const t = useT()
+  const filePath = configStr(widget.config.filePath)
+  const [state, setState] = useState<FileBodyState>({ kind: 'idle' })
+  const [reloadTick, setReloadTick] = useState(0)
+
+  useEffect(() => {
+    if (!filePath) return
+    let alive = true
+    setState({ kind: 'loading' })
+    window.electronAPI
+      .readBoardWidgetFile({ boardId, widgetId: widget.id, workspaceGrantId: useAppStore.getState().currentWorkspace?.id ?? '' })
+      .then((result) => {
+        if (!alive) return
+        if (result.ok) {
+          setState(result.kind === 'image' ? { kind: 'image', dataUrl: result.dataUrl } : { kind: 'html', html: result.html })
+        } else {
+          setState({ kind: 'error', error: result.error })
+        }
+      })
+      .catch(() => {
+        if (alive) setState({ kind: 'error', error: 'read-failed' })
+      })
+    return () => {
+      alive = false
+    }
+  }, [boardId, widget.id, filePath, reloadTick])
+
+  useEffect(() => {
+    if (!filePath) return
+    return window.electronAPI.onBoardFileChanged((change) => {
+      if (change.boardId === boardId && change.widgetId === widget.id) setReloadTick((tick) => tick + 1)
+    })
+  }, [boardId, widget.id, filePath])
+
+  if (!filePath) {
+    return (
+      <div className="flex h-full items-center justify-center px-2 text-center text-[11px] text-cream-faint">
+        {t('boards.config.noFile')}
+      </div>
+    )
+  }
+  if (state.kind === 'loading' || state.kind === 'idle') {
+    return (
+      <div className="flex h-full items-center justify-center px-2 text-center text-[11px] text-cream-faint">
+        {t('app.loading')}
+      </div>
+    )
+  }
+  if (state.kind === 'error') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-1 px-2 text-center text-[11px] text-cream-faint">
+        <FileWarning size={14} className="text-cream-faint" />
+        {t('boards.files.loadFailed')}
+      </div>
+    )
+  }
+  if (state.kind === 'image') {
+    // The data URL is unique per read, so no extra cache-busting is needed.
+    return (
+      <div className="flex h-full items-center justify-center overflow-hidden">
+        <img src={state.dataUrl} alt={widget.title} className="max-h-full max-w-full rounded object-contain" />
+      </div>
+    )
+  }
+  return (
+    <iframe
+      title={`${widget.title} preview`}
+      srcDoc={state.html}
+      // allow-scripts WITHOUT allow-same-origin: the page runs with an opaque
+      // origin — no app storage, no same-origin DOM access, no top navigation.
+      sandbox="allow-scripts"
+      className="h-full w-full rounded border-0 bg-white"
+    />
+  )
+}
+
+export function WidgetBody({ widget, datasets, boardId, onConfigChange }: WidgetBodyProps) {
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -481,5 +581,7 @@ export function WidgetBody({ widget, datasets, onConfigChange }: WidgetBodyProps
       return <TodoBody widget={widget} onConfigChange={onConfigChange} />
     case 'link':
       return <LinkBody widget={widget} />
+    case 'file':
+      return <FileBody widget={widget} boardId={boardId} />
   }
 }
