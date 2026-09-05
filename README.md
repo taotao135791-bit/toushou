@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.7.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.7.0) 下载：
+当前版本 v0.8.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.8.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.7.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.7.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.7.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.8.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.8.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.8.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.8.0：定时任务、项目知识与后台任务。**定时任务**：在侧边栏创建定时 agent 任务（每天/每周/自定义间隔），到点自动创建会话并执行预设 prompt，完成后系统通知——"每天早上拉昨日数据发周报"从此不需要人守着；**项目知识库**：项目根目录放一个 投手.md 文件，每次创建会话自动注入为 system prompt，agent 立刻知道你的账户结构、口径定义和历史决策，不用每次重复；**后台任务指示**：侧栏实时显示"N 个运行中"角标，agent 在后台工作时不再需要盯着屏幕等。
 
 v0.7.0：看板与 Office 迈向"确认式写通道"。**board-cards 提议协议**：对话里 Agent 可以提议数据卡片（指标/清单/笔记），以可视化提议卡呈现，选择目标看板一键应用；**活文件卡**：看板新增 file 组件，绑定工作区内图片/HTML 文件，文件变化自动刷新（HTML 沙箱 iframe 渲染），向 Kimi 式"活看板"迈出第一步；**office-edit 确认式编辑**：Agent 分析工作簿后可直接提议单元格修改（拒绝公式注入），在 Office 面板二次确认后应用，全程不静默落盘；看板侧栏菜单新增"让 Agent 提议卡片"入口；"SKILL 目录"更名"Skill"。
 

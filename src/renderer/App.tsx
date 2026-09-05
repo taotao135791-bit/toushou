@@ -128,6 +128,9 @@ function App() {
     // covers a renderer reload and closes the race where a connected event
     // arrives before the create-session response is committed locally.
     syncLiveSessions()
+    // Load scheduled tasks and subscribe to state changes from Main.
+    window.electronAPI.listTasks().then(useAppStore.getState().setScheduledTasks)
+    window.electronAPI.onTasksStateChanged(useAppStore.getState().setScheduledTasks)
 
     // Micro-batch streaming text: consecutive assistant message/thinking
     // deltas coalesce inside a 32ms window (one store write + render per

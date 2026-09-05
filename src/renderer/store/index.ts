@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { FileGrant, HistorySessionRow, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
@@ -176,6 +176,8 @@ interface AppState {
   /** Cross-project durable history (metadata only) for the sidebar's flat
    * "最近" list — survives restarts, unlike the live registry. */
   globalHistory: HistorySessionRow[]
+  /** User-defined scheduled tasks. */
+  scheduledTasks: ScheduledTask[]
   /** Runtime-reported settings overview (profile/capabilities/providers/defaults). */
   runtimeOverview: RuntimeOverview | null
   /** Runtime model catalog (current profile; legacy rides `models`). */
@@ -283,6 +285,7 @@ interface AppState {
   /** (Re)load the persisted session history of the current workspace; null clears the list. */
   loadHistorySessions: (grantId: string | null) => Promise<void>
   loadAllHistorySessions: () => Promise<void>
+  setScheduledTasks: (tasks: ScheduledTask[]) => void
   /** Drop one entry from the history list (after its opaque capability was deleted). */
   removeHistorySession: (historyId: string) => void
   /** Update one session's display title in place. */
@@ -392,6 +395,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentWorkspaces: [],
   historyLoading: false,
   globalHistory: [],
+  scheduledTasks: [],
   runtimeOverview: null,
   runtimeModels: [],
   runtimeModelCatalog: [],
@@ -862,6 +866,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       recentProjects: state.recentProjects.filter((entry) => entry !== displayPath)
     }))
   },
+  setScheduledTasks: (scheduledTasks) => set({ scheduledTasks }),
   loadAllHistorySessions: async () => {
     // Read-only metadata scan of the runtime's own session storage. This is
     // what makes the sidebar survive restarts: the live registry is in-memory

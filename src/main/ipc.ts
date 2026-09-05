@@ -76,6 +76,8 @@ import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
 import { readBrowserScreenshotData } from './browserUse'
 import { logRendererError, readLogTail } from './lib/logger'
+import { listTasks, saveTask, deleteTask, toggleTask, runTaskNow, startScheduler } from './scheduledTasks'
+import { readKnowledge, writeKnowledge } from './projectKnowledge'
 import { listLaunchableTools } from './toolLaunch'
 import { searchCommunityPackages } from './community'
 import { scaffoldPlugin } from './pluginScaffold'
@@ -518,6 +520,7 @@ function redactScaffoldOutputLog(value: unknown, canonicalDir: string): string {
 }
 
 export function registerIpc() {
+  startScheduler()
   feishuConnectionManager.setSessionEventSink(broadcastSessionEvent)
 
   // Connections are Main-owned. The renderer receives only a public status
@@ -1836,6 +1839,48 @@ export function registerIpc() {
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : 'write-failed' }
     }
+  })
+
+  // --- Scheduled tasks ---------------------------------------------------
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_LIST, async () => listTasks())
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_SAVE, async (_event, task: unknown) => {
+    if (!task || typeof task !== 'object') return { ok: false, error: 'invalid' }
+    const t = task as Record<string, unknown>
+    if (typeof t.id !== 'string' || !t.id) return { ok: false, error: 'missing-id' }
+    if (typeof t.name !== 'string' || !t.name.trim()) return { ok: false, error: 'missing-name' }
+    if (typeof t.prompt !== 'string' || !t.prompt.trim()) return { ok: false, error: 'missing-prompt' }
+    if (typeof t.cwd !== 'string' || !t.cwd) return { ok: false, error: 'missing-cwd' }
+    if (!t.schedule || typeof t.schedule !== 'object') return { ok: false, error: 'missing-schedule' }
+    return { ok: true, task: saveTask(task as never) }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_DELETE, async (_event, id: unknown) => {
+    if (typeof id !== 'string') return false
+    return deleteTask(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_TOGGLE, async (_event, id: unknown, enabled: unknown) => {
+    if (typeof id !== 'string' || typeof enabled !== 'boolean') return null
+    return toggleTask(id, enabled)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_RUN_NOW, async (_event, id: unknown) => {
+    if (typeof id !== 'string') return false
+    return runTaskNow(id)
+  })
+
+  // --- Project knowledge ----------------------------------------------------
+
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_READ, async (_event, cwd: unknown) => {
+    if (typeof cwd !== 'string' || !cwd) return null
+    return readKnowledge(cwd)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_WRITE, async (_event, cwd: unknown, content: unknown) => {
+    if (typeof cwd !== 'string' || typeof content !== 'string') return false
+    return writeKnowledge(cwd, content)
   })
 
   // Kanban boards — dedicated module, never the generic store:set. The board

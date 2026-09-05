@@ -109,6 +109,17 @@ export const IPC_CHANNELS = {
   OMP_LIST_SESSION_HISTORY: 'omp:list-session-history',
   /** Cross-project read-only history listing (metadata, no capability). */
   OMP_LIST_ALL_SESSION_HISTORY: 'omp:list-all-session-history',
+  // --- Scheduled tasks -------------------------------------------------------
+  TASKS_LIST: 'tasks:list',
+  TASKS_SAVE: 'tasks:save',
+  TASKS_DELETE: 'tasks:delete',
+  TASKS_TOGGLE: 'tasks:toggle',
+  TASKS_RUN_NOW: 'tasks:run-now',
+  /** Main → renderer push when a scheduled task fires/completes. */
+  TASKS_STATE_CHANGED: 'tasks:state-changed',
+  // --- Project knowledge ------------------------------------------------------
+  KNOWLEDGE_READ: 'knowledge:read',
+  KNOWLEDGE_WRITE: 'knowledge:write',
   OMP_RESUME_SESSION: 'omp:resume-session',
   OMP_DELETE_SESSION_FILE: 'omp:delete-session-file',
   OMP_SET_SESSION_NAME: 'omp:set-session-name',

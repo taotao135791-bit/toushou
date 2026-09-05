@@ -11,6 +11,7 @@ import {
   CliCapabilities,
   CliInfo,
   HistorySessionRow,
+  ScheduledTask,
   Session,
   SessionEvent,
   SessionStats,
@@ -395,6 +396,14 @@ export interface ElectronAPI {
   logRendererError: (message: string) => Promise<boolean>
   /** User-initiated diagnostics bundle (versions + log tail) via save dialog. */
   exportDiagnostics: () => Promise<{ ok: boolean; path?: string; error?: string }>
+  listTasks: () => Promise<ScheduledTask[]>
+  saveTask: (task: ScheduledTask) => Promise<{ ok: boolean; task?: ScheduledTask; error?: string }>
+  deleteTask: (id: string) => Promise<boolean>
+  toggleTask: (id: string, enabled: boolean) => Promise<ScheduledTask | null>
+  runTaskNow: (id: string) => Promise<boolean>
+  onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => () => void
+  readKnowledge: (cwd: string) => Promise<string | null>
+  writeKnowledge: (cwd: string, content: string) => Promise<boolean>
 }
 
 const api: ElectronAPI = {
@@ -720,7 +729,21 @@ const api: ElectronAPI = {
       ok: boolean
       path?: string
       error?: string
-    }>
+    }>,
+  listTasks: () => ipcRenderer.invoke(IPC_CHANNELS.TASKS_LIST) as Promise<ScheduledTask[]>,
+  saveTask: (task) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_SAVE, task) as never,
+  deleteTask: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_DELETE, id) as Promise<boolean>,
+  toggleTask: (id, enabled) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TASKS_TOGGLE, id, enabled) as Promise<ScheduledTask | null>,
+  runTaskNow: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_RUN_NOW, id) as Promise<boolean>,
+  onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => {
+    const handler = (_event: IpcRendererEvent, tasks: ScheduledTask[]) => callback(tasks)
+    ipcRenderer.on(IPC_CHANNELS.TASKS_STATE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.TASKS_STATE_CHANGED, handler)
+  },
+  readKnowledge: (cwd) => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_READ, cwd) as Promise<string | null>,
+  writeKnowledge: (cwd, content) =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_WRITE, cwd, content) as Promise<boolean>
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

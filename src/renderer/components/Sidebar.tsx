@@ -56,6 +56,8 @@ export default function Sidebar() {
   const historyLoading = useAppStore((s) => s.historyLoading)
   const globalHistory = useAppStore((s) => s.globalHistory)
   const loadAllHistorySessions = useAppStore((s) => s.loadAllHistorySessions)
+  const scheduledTasks = useAppStore((s) => s.scheduledTasks)
+  const setScheduledTasks = useAppStore((s) => s.setScheduledTasks)
   const recentProjects = useAppStore((s) => s.recentProjects)
   const recentWorkspaces = useAppStore((s) => s.recentWorkspaces)
   const selectWorkspace = useAppStore((s) => s.selectWorkspace)
@@ -118,6 +120,11 @@ export default function Sidebar() {
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [currentWorkspace, loadAllHistorySessions])
+
+  // Scheduled task state changes come from Main via push.
+  useEffect(() => {
+    return window.electronAPI.onTasksStateChanged(setScheduledTasks)
+  }, [setScheduledTasks])
 
   const handleSelectProject = async () => {
     await selectWorkspace()
@@ -625,6 +632,15 @@ export default function Sidebar() {
     )
   }
 
+  const runningCount = useMemo(
+    () => Object.values(busy).filter(Boolean).length,
+    [busy]
+  )
+  const enabledTasks = useMemo(
+    () => scheduledTasks.filter((t) => t.enabled),
+    [scheduledTasks]
+  )
+
   const renderRecentEntry = (entry: RecentEntry) => {
     if (entry.kind === 'live') return renderSessionRow(entry.session)
     if (entry.kind === 'history') return renderHistoryRow(entry.info)
@@ -771,6 +787,44 @@ export default function Sidebar() {
           </div>
         )}
       </div>
+
+      {/* Running task count */}
+      {runningCount > 0 && (
+        <div className="mx-2.5 mt-2 flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-600 dark:text-amber-300">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+          {t('sidebar.runningCount', { count: runningCount })}
+        </div>
+      )}
+
+      {/* Scheduled tasks */}
+      {enabledTasks.length > 0 && (
+        <div className="mt-3 px-2.5">
+          <div className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
+            {t('sidebar.tasks')}
+          </div>
+          <div className="space-y-0.5">
+            {enabledTasks.map((task) => (
+              <div
+                key={task.id}
+                className="group flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11.5px] text-cream-dim transition-colors hover:bg-overlay"
+                title={task.prompt.slice(0, 80)}
+              >
+                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                <span className="min-w-0 flex-1 truncate">{task.name}</span>
+                <span className="shrink-0 text-[10px] text-cream-faint">
+                  {task.schedule.type === 'daily'
+                    ? t('schedule.daily', { time: task.schedule.time })
+                    : task.schedule.type === 'interval'
+                      ? t('schedule.interval', { hours: task.schedule.hours })
+                      : task.schedule.type === 'weekly'
+                        ? t('schedule.weekly', { day: task.schedule.dayOfWeek, time: task.schedule.time })
+                        : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mt-5 flex-1 overflow-y-auto px-2.5 pb-4">
         <div className="flex items-center justify-between px-2 pb-1.5">

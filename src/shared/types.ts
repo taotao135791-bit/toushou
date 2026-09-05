@@ -1438,6 +1438,39 @@ export interface AppSettings {
   feishuExperimentalPersonalAgentRegistration: boolean
   /** Show developer chrome in the chat header (Git branch chip). Default off. */
   showDevChrome: boolean
+  /** User-defined scheduled task definitions. */
+  scheduledTasks: ScheduledTask[]
+}
+
+// --- Scheduled tasks --------------------------------------------------------
+
+export type TaskSchedule =
+  | { type: 'daily'; time: string }          // "09:30"
+  | { type: 'weekly'; dayOfWeek: number; time: string }  // 0=Sun .. 6=Sat
+  | { type: 'interval'; hours: number }      // every N hours
+
+export interface ScheduledTask {
+  id: string
+  name: string
+  prompt: string
+  /** Workspace real path this task runs in. */
+  cwd: string
+  schedule: TaskSchedule
+  enabled: boolean
+  createdAt: number
+  lastRunAt?: number
+  notifyOnComplete: boolean
+}
+
+// --- Project knowledge -------------------------------------------------------
+
+export interface ProjectKnowledgeInfo {
+  /** Workspace real path. */
+  cwd: string
+  /** True when 投手.md exists in the project root. */
+  exists: boolean
+  /** File content (only when exists), truncated for sidebar display. */
+  excerpt?: string
 }
 
 export type InstallStatus =
@@ -1468,7 +1501,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   archivedSessionIds: [],
   bundledPackages: {},
   feishuExperimentalPersonalAgentRegistration: true,
-  showDevChrome: false
+  showDevChrome: false,
+  scheduledTasks: []
 }
 
 /** Snapshot of a live session, from the RPC get_state command. */

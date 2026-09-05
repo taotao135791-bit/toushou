@@ -154,13 +154,24 @@ export function createSession(
     }
   }
 
+  // Project knowledge (投手.md): inject as a system prompt prefix so every
+  // session for this project starts with the user's account context.
+  let knowledgePrompt: string | undefined
+  try {
+    // Lazy require to avoid a cycle (projectKnowledge → store → … → omp).
+    const { readKnowledge } = require('../projectKnowledge') as { readKnowledge(dir: string): string | null }
+    knowledgePrompt = readKnowledge(cwd) ?? undefined
+  } catch {
+    // Knowledge file is optional — never block session creation.
+  }
+
   const plan = planSpawn(id, cli, {
     permissionMode: opts?.permissionMode ?? getStore('permissionMode'),
     language: getStore('language'),
     resumeSessionPath: opts?.resumeSessionPath,
     modelSelector: opts?.modelSelector,
     thinkingLevel: opts?.thinkingLevel,
-    skillSystemPrompt: opts?.skillSystemPrompt
+    skillSystemPrompt: [opts?.skillSystemPrompt, knowledgePrompt].filter(Boolean).join('\n\n') || undefined
   })
   // A stale recent-project entry (e.g. a cleaned /tmp dir) would otherwise
   // surface as a misleading "spawn omp ENOENT" — say what actually happened.
