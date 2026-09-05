@@ -20,8 +20,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
-  Link2
-} from 'lucide-react'
+  Link2, Plus, Play} from 'lucide-react'
 import { HistorySessionDescriptor } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
@@ -84,6 +83,8 @@ export default function Sidebar() {
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null)
   const [restoreFailedHistoryId, setRestoreFailedHistoryId] = useState<string | null>(null)
   const [deleteFailedHistoryId, setDeleteFailedHistoryId] = useState<string | null>(null)
+  const [taskModalOpen, setTaskModalOpen] = useState(false)
+  const [taskForm, setTaskForm] = useState({ name: '', prompt: '', cwd: '', scheduleType: 'daily' as 'daily' | 'weekly' | 'interval', time: '09:00', dayOfWeek: 1, hours: 24 })
   const notice = useNotice()
   const searching = query.trim().length > 0
   const searchMessages = useAppStore((s) => (searching ? s.messages : EMPTY_MESSAGES))
@@ -636,10 +637,6 @@ export default function Sidebar() {
     () => Object.values(busy).filter(Boolean).length,
     [busy]
   )
-  const enabledTasks = useMemo(
-    () => scheduledTasks.filter((t) => t.enabled),
-    [scheduledTasks]
-  )
 
   const renderRecentEntry = (entry: RecentEntry) => {
     if (entry.kind === 'live') return renderSessionRow(entry.session)
@@ -796,21 +793,35 @@ export default function Sidebar() {
         </div>
       )}
 
-      {/* Scheduled tasks */}
-      {enabledTasks.length > 0 && (
-        <div className="mt-3 px-2.5">
-          <div className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
+      {/* Scheduled tasks — always visible so users can discover the feature */}
+      <div className="mt-3 px-2.5">
+        <div className="flex items-center justify-between px-2 pb-1">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
             {t('sidebar.tasks')}
-          </div>
+          </span>
+          <button
+            onClick={() => { setTaskForm(f => ({ ...f, cwd: currentWorkspace?.realPath ?? '' })); setTaskModalOpen(true) }}
+            title={t('sidebar.taskCreate')}
+            className="rounded-md p-0.5 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
+          >
+            <Plus size={12} />
+          </button>
+        </div>
+        {scheduledTasks.length === 0 ? (
+          <div className="px-2 py-1 text-[11px] leading-4 text-cream-faint/60">{t('sidebar.taskEmpty')}</div>
+        ) : (
           <div className="space-y-0.5">
-            {enabledTasks.map((task) => (
+            {scheduledTasks.map((task) => (
               <div
                 key={task.id}
                 className="group flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11.5px] text-cream-dim transition-colors hover:bg-overlay"
-                title={task.prompt.slice(0, 80)}
               >
-                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
-                <span className="min-w-0 flex-1 truncate">{task.name}</span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); void window.electronAPI.toggleTask(task.id, !task.enabled) }}
+                  title={task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
+                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${task.enabled ? 'bg-emerald-500' : 'bg-line-strong'}`}
+                />
+                <span className={`min-w-0 flex-1 truncate ${task.enabled ? '' : 'text-cream-faint line-through'}`}>{task.name}</span>
                 <span className="shrink-0 text-[10px] text-cream-faint">
                   {task.schedule.type === 'daily'
                     ? t('schedule.daily', { time: task.schedule.time })
@@ -820,8 +831,101 @@ export default function Sidebar() {
                         ? t('schedule.weekly', { day: task.schedule.dayOfWeek, time: task.schedule.time })
                         : ''}
                 </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); void window.electronAPI.runTaskNow(task.id) }}
+                  title={t('sidebar.taskRunNow')}
+                  className={`shrink-0 rounded p-0.5 text-cream-faint opacity-0 transition-all hover:text-accent group-hover:opacity-100 ${task.enabled ? '' : 'hidden'}`}
+                >
+                  <Play size={10} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); void window.electronAPI.deleteTask(task.id) }}
+                  title={t('sidebar.deleteSession')}
+                  className={`shrink-0 rounded p-0.5 text-cream-faint opacity-0 transition-all hover:text-red-500 group-hover:opacity-100`}
+                >
+                  <Trash2 size={10} />
+                </button>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Task creation modal */}
+      {taskModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/30 p-6 backdrop-blur-[2px]">
+          <div className="w-full max-w-md rounded-2xl border border-line bg-ink-850 p-5 shadow-pop">
+            <div className="mb-4 flex items-center justify-between">
+              <span className="text-[14px] font-semibold text-cream">{t('sidebar.taskCreate')}</span>
+              <button onClick={() => setTaskModalOpen(false)} className="text-cream-faint hover:text-cream"><X size={14} /></button>
+            </div>
+            <div className="space-y-3">
+              <label className="block text-[11px] text-cream-faint">
+                {t('sidebar.taskName')}
+                <input value={taskForm.name} onChange={(e) => setTaskForm(f => ({ ...f, name: e.target.value }))} placeholder={t('sidebar.taskNamePh')} className="mt-1 h-8 w-full rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50" />
+              </label>
+              <label className="block text-[11px] text-cream-faint">
+                {t('sidebar.taskPrompt')}
+                <textarea value={taskForm.prompt} onChange={(e) => setTaskForm(f => ({ ...f, prompt: e.target.value }))} placeholder={t('sidebar.taskPromptPh')} rows={3} className="mt-1 w-full resize-none rounded-lg border border-line bg-ink-800 px-3 py-2 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50" />
+              </label>
+              <label className="block text-[11px] text-cream-faint">
+                Project
+                <select value={taskForm.cwd} onChange={(e) => setTaskForm(f => ({ ...f, cwd: e.target.value }))} className="mt-1 h-8 w-full rounded-lg border border-line bg-ink-800 px-2 text-[12px] text-cream">
+                  <option value="">{t('sidebar.selectProject')}</option>
+                  {recentWorkspaces.map((w) => <option key={w.id} value={w.displayPath}>{w.displayPath}</option>)}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block text-[11px] text-cream-faint">
+                  {t('sidebar.taskSchedule')}
+                  <select value={taskForm.scheduleType} onChange={(e) => setTaskForm(f => ({ ...f, scheduleType: e.target.value as 'daily' | 'weekly' | 'interval' }))} className="mt-1 h-8 w-full rounded-lg border border-line bg-ink-800 px-2 text-[12px] text-cream">
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="interval">Interval</option>
+                  </select>
+                </label>
+                {taskForm.scheduleType !== 'interval' && (
+                  <label className="block text-[11px] text-cream-faint">
+                    Time
+                    <input type="time" value={taskForm.time} onChange={(e) => setTaskForm(f => ({ ...f, time: e.target.value }))} className="mt-1 h-8 w-full rounded-lg border border-line bg-ink-800 px-2 text-[12px] text-cream" />
+                  </label>
+                )}
+                {taskForm.scheduleType === 'interval' && (
+                  <label className="block text-[11px] text-cream-faint">
+                    Hours
+                    <input type="number" min={1} max={168} value={taskForm.hours} onChange={(e) => setTaskForm(f => ({ ...f, hours: Number(e.target.value) || 24 }))} className="mt-1 h-8 w-full rounded-lg border border-line bg-ink-800 px-2 text-[12px] text-cream" />
+                  </label>
+                )}
+                {taskForm.scheduleType === 'weekly' && (
+                  <label className="block text-[11px] text-cream-faint">
+                    Day
+                    <select value={taskForm.dayOfWeek} onChange={(e) => setTaskForm(f => ({ ...f, dayOfWeek: Number(e.target.value) }))} className="mt-1 h-8 w-full rounded-lg border border-line bg-ink-800 px-2 text-[12px] text-cream">
+                      <option value={1}>Mon</option><option value={2}>Tue</option><option value={3}>Wed</option>
+                      <option value={4}>Thu</option><option value={5}>Fri</option><option value={6}>Sat</option><option value={0}>Sun</option>
+                    </select>
+                  </label>
+                )}
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setTaskModalOpen(false)} className="rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream">{t('home.cancel')}</button>
+              <button
+                onClick={() => {
+                  if (!taskForm.name.trim() || !taskForm.prompt.trim() || !taskForm.cwd) return
+                  const schedule = taskForm.scheduleType === 'daily'
+                    ? { type: 'daily' as const, time: taskForm.time }
+                    : taskForm.scheduleType === 'weekly'
+                      ? { type: 'weekly' as const, dayOfWeek: taskForm.dayOfWeek, time: taskForm.time }
+                      : { type: 'interval' as const, hours: taskForm.hours }
+                  const task = { id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: taskForm.name.trim(), prompt: taskForm.prompt.trim(), cwd: taskForm.cwd, schedule, enabled: true, createdAt: Date.now(), notifyOnComplete: true }
+                  void window.electronAPI.saveTask(task).then(() => setTaskModalOpen(false))
+                }}
+                disabled={!taskForm.name.trim() || !taskForm.prompt.trim() || !taskForm.cwd}
+                className="rounded-lg bg-accent px-4 py-1.5 text-[12px] font-medium text-white disabled:opacity-40"
+              >
+                {t('sidebar.taskCreate')}
+              </button>
+            </div>
           </div>
         </div>
       )}
