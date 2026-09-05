@@ -25,6 +25,23 @@ function timestamp(): string {
   return new Date().toISOString()
 }
 
+/**
+ * Scrub credential material before anything touches disk. Upstream SDKs dump
+ * full axios configs (including Authorization headers and user tokens) into
+ * their error logs, and the diagnostics export ships the log tail, so every
+ * line is redacted at write AND read time.
+ */
+export function redactSecrets(line: string): string {
+  return line
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***')
+    .replace(
+      /("(?:user_access_token|accessToken|access_token|app_secret|appSecret|token)"\s*:\s*")[^"]{4,}(")/gi,
+      '$1***$2'
+    )
+    // Feishu token shapes: t-g10… (user), u-… (user), tenant tokens etc.
+    .replace(/\b[tu]-[A-Za-z0-9]{10,}/g, '***')
+}
+
 function format(level: string, args: unknown[]): string {
   const parts = args.map((value) => {
     if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`
@@ -35,7 +52,7 @@ function format(level: string, args: unknown[]): string {
       return String(value)
     }
   })
-  return `[${timestamp()}] [${level}] ${parts.join(' ')}\n`
+  return redactSecrets(`[${timestamp()}] [${level}] ${parts.join(' ')}\n`)
 }
 
 function resolveLogFile(): string {
@@ -108,7 +125,9 @@ export async function readLogTail(bytes = 64 * 1024): Promise<string> {
   try {
     const file = resolveLogFile()
     const content = await readFile(file, 'utf-8')
-    return content.length > bytes ? content.slice(-bytes) : content
+    const tail = content.length > bytes ? content.slice(-bytes) : content
+    // Older log lines were written unredacted — scrub again at read time.
+    return redactSecrets(tail)
   } catch {
     return ''
   }
