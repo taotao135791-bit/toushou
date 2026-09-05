@@ -100,6 +100,8 @@ export interface FeishuToolRequest {
     | 'message_reply'
     | 'message_read'
     | 'message_search'
+    | 'doc_list'
+    | 'doc_search'
     | 'doc_read'
     | 'doc_create'
     | 'doc_append'

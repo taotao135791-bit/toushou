@@ -1,12 +1,26 @@
 {
   "name": "toushou-feishu-toolkit",
-  "version": "0.1.0",
-  "description": "投手飞书连接工具：消息、文档、表格和多维表格",
+  "version": "0.2.0",
+  "description": "投手飞书连接工具：消息、文档、云文档列表/搜索、表格和多维表格",
   "displayName": "飞书工具",
   "author": "投手团队",
   "license": "MIT",
-  "keywords": ["pi-package", "feishu", "lark"],
-  "pi": { "extensions": ["extensions/index.ts"] },
-  "omp": { "extensions": ["extensions/index.ts"] },
-  "files": ["extensions"]
+  "keywords": [
+    "pi-package",
+    "feishu",
+    "lark"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  },
+  "files": [
+    "extensions"
+  ]
 }

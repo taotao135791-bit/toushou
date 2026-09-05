@@ -245,6 +245,7 @@ export default function ConnectionsPage() {
                     <select value={oauthCapability} onChange={(event) => setOauthCapability(event.target.value as FeishuCapability)} className="h-8 rounded-lg border border-line bg-ink-800 px-2 text-[11px] text-cream">
                       <option value="docs.read">{t('connections.scopeDocsRead')}</option>
                       <option value="docs.write">{t('connections.scopeDocsWrite')}</option>
+                      <option value="drive">{t('connections.scopeDrive')}</option>
                       <option value="sheets.read">{t('connections.scopeSheetsRead')}</option>
                       <option value="sheets.write">{t('connections.scopeSheetsWrite')}</option>
                       <option value="bitable.read">{t('connections.scopeBitableRead')}</option>

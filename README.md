@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.5.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.5.0) 下载：
+当前版本 v0.5.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.5.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.1/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.5.1/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.5.1：浏览器/飞书联动修复。扩展工具调用不再显示为 `write xd://…` 乱码——工具卡、回合摘要与审批弹窗都展示真实工具名（如 `browser_click`、`browser_screenshot`），浏览器截图在工具卡内直接预览；飞书工具新增 `feishu_doc_list`（按最近编辑列出云文档）与 `feishu_doc_search`（关键词搜索），连接页新增"浏览云文档"按需授权项，工具包升级至 0.2.0。
 
 v0.5.0：体验收敛与生产化加固。连接页徽标对齐真实 WebSocket 状态、新增"去对话里试试"直达入口；运行时版本探测冷启动自愈（插件页/设置 About 不再误报未检测到）；工具执行可视化升级——todo 计划卡、浏览器截图内联预览、浏览器/飞书工具摘要、任务计划实时动词；工作区面板跨页面常驻（离开对话不再丢失 agent 操作现场）；看板/Office"问智能体"固定落入新会话；设置页新增"导出诊断信息"；主进程文件日志与崩溃兜底落地（userData/logs/main.log）；首启向导补"连接模型"步骤；settings schemaVersion + 损坏自动备份；xlsx 升级至 SheetJS CDN 0.20.3 修复已知安全公告；流式 Markdown 解析节流提升长回复流畅度；Windows 通知补 AppUserModelID。
 

@@ -45,6 +45,16 @@ export class FeishuToolRegistry {
           return await this.request(channel.rawClient, 'GET', `/open-apis/im/v1/messages/${encodeURIComponent(string(request.messageId))}`, {}, userAccessToken)
         case 'message_search':
           return await this.request(channel.rawClient, 'POST', '/open-apis/search/v2/message', { data: { query: string(request.query).slice(0, 200), page_size: 20 } }, userAccessToken)
+        case 'doc_list':
+          // Root folder listing ordered by last edit — the closest thing to
+          // "my recent documents" the drive API offers without a folder token.
+          return await this.request(channel.rawClient, 'GET', '/open-apis/drive/v1/files', {
+            params: { page_size: 50, order_by: 'EditedTime', direction: 'DESC' }
+          }, userAccessToken)
+        case 'doc_search':
+          return await this.request(channel.rawClient, 'POST', '/open-apis/suite/docs-api/search/object', {
+            data: { search_key: string(request.query).slice(0, 100), count: 20, offset: 0 }
+          }, userAccessToken)
         case 'doc_read':
           return await this.request(channel.rawClient, 'GET', `/open-apis/docx/v1/documents/${encodeURIComponent(string(request.documentId))}/raw_content`, {}, userAccessToken)
         case 'doc_create':
@@ -85,6 +95,7 @@ export class FeishuToolRegistry {
 export function capabilityFor(action: FeishuToolRequest['action']): FeishuCapability {
   if (action === 'message_send' || action === 'message_reply') return 'messaging'
   if (action === 'message_read' || action === 'message_search') return 'messaging'
+  if (action === 'doc_list' || action === 'doc_search') return 'drive'
   if (action === 'doc_read') return 'docs.read'
   if (action === 'doc_create' || action === 'doc_append') return 'docs.write'
   if (action === 'sheets_read') return 'sheets.read'

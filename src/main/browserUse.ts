@@ -518,6 +518,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       )
       return
     }
+    // Write-tier extension actions (click/type) are gated by the runtime's
+    // own --approval-mode prompt (observed live: "Allow tool: write
+    // Path: xd://browser_click"); the bridge stays approval-free to avoid
+    // double-prompting.
     try {
       const result = await runAction(request)
       if (request.action === 'navigate' && result.ok) {

@@ -45,6 +45,8 @@ export default function feishuTools(api: ToolHostApi): void {
   register(api, 'feishu_message_reply', '回复飞书消息', '回复指定的飞书消息，可保持在原话题内。', { chatId: { type: 'string' }, messageId: { type: 'string' }, content: { type: 'string' }, replyInThread: { type: 'boolean' } }, ['chatId', 'messageId', 'content'], 'write', 'message_reply')
   register(api, 'feishu_message_read', '读取飞书消息', '读取一条飞书消息。', { messageId: { type: 'string' } }, ['messageId'], 'read', 'message_read')
   register(api, 'feishu_message_search', '搜索飞书消息', '在已授权的飞书消息范围内搜索。', { query: { type: 'string' } }, ['query'], 'read', 'message_search')
+  register(api, 'feishu_doc_list', '列出飞书云文档', '按最近编辑时间列出用户云空间根目录的文档。返回结果里的 token 可作为 feishu_doc_read 的 documentId。', { }, [], 'read', 'doc_list')
+  register(api, 'feishu_doc_search', '搜索飞书文档', '按关键词搜索用户可见的飞书文档。部分应用版本不支持搜索，失败时请改用 feishu_doc_list。返回结果里的 token 可作为 feishu_doc_read 的 documentId。', { query: { type: 'string' } }, ['query'], 'read', 'doc_search')
   register(api, 'feishu_doc_read', '读取飞书文档', '读取飞书文档内容。需要用户身份权限时会提示按需授权。', { documentId: { type: 'string' } }, ['documentId'], 'read', 'doc_read')
   register(api, 'feishu_doc_create', '创建飞书文档', '创建一篇飞书文档。', { title: { type: 'string' } }, ['title'], 'write', 'doc_create')
   register(api, 'feishu_doc_append', '追加飞书文档', '向飞书文档追加内容。', { documentId: { type: 'string' }, content: { type: 'string' } }, ['documentId', 'content'], 'write', 'doc_append')
