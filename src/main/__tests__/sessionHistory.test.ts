@@ -327,8 +327,9 @@ describe('uuid resolution and copy-proof delete', () => {
       '99999999-9999-9999-9999-999999999999'
     )
     // A second copy is not enough to fail — the sweep removes it — so make the
-    // hashed copy's directory unwritable (skipped for root, which ignores that).
-    if (process.getuid?.() === 0) {
+    // hashed copy's directory unwritable. POSIX only: Windows ignores directory
+    // write bits when unlinking, and root ignores them everywhere.
+    if (process.platform === 'win32' || process.getuid?.() === 0) {
       expect(await deleteSessionFileEverywhere(legacy, agentDir)).toBe(true)
       return
     }
