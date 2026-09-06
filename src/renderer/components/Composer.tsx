@@ -7,12 +7,19 @@ import {
   Zap,
   X,
   File,
+  Folder,
+  FileArchive,
   ListPlus,
   Loader2
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { QueuedMessage, useAppStore } from '../store'
-import { SessionComposerDraft } from '../lib/composerDraft'
+import {
+  ComposerDraftFile,
+  ComposerFileKind,
+  DroppedAttachment,
+  SessionComposerDraft
+} from '../lib/composerDraft'
 import { dispatchSteer, steerFailureKey } from '../lib/steerDispatch'
 import { useT } from '../i18n'
 import ModelPicker from './ModelPicker'
@@ -51,6 +58,50 @@ const MAX_IMAGES = 4
 const MAX_FILE_ITEMS = 20
 /** Mirrors the main-process listProjectFiles cache window. */
 const FILE_LIST_TTL_MS = 30_000
+
+/**
+ * Image staging accepts these even when the drop carries no mime type — real
+ * world macOS Finder drags often present `file.type` as empty.
+ */
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'heic', 'svg'])
+/** Non-image drops with these extensions render as archive chips. */
+const ARCHIVE_EXTENSIONS = new Set(['zip', 'tar', 'gz', 'rar', '7z'])
+
+/** Lowercased last path segment, or '' when the name has no extension. */
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return ''
+  return name.slice(dot + 1).toLowerCase()
+}
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith('image/') || IMAGE_EXTENSIONS.has(extensionOf(file.name))
+}
+
+function attachmentKind(isDirectory: boolean, name: string): ComposerFileKind {
+  if (isDirectory) return 'folder'
+  if (ARCHIVE_EXTENSIONS.has(extensionOf(name))) return 'archive'
+  return 'file'
+}
+
+/** The outgoing `@path` reference block: one token per line under the text. */
+function appendAttachmentRefs(text: string, files: DroppedAttachment[]): string {
+  if (files.length === 0) return text
+  return `${text}\n${files.map((f) => `@${f.path}`).join('\n')}`
+}
+
+function toDraftFile(file: DroppedAttachment): ComposerDraftFile {
+  const { path, name, isDirectory, kind } = file
+  return { path, name, isDirectory, kind }
+}
+
+function toDraftFiles(files: DroppedAttachment[]): ComposerDraftFile[] | undefined {
+  return files.length ? files.map(toDraftFile) : undefined
+}
+
+function fromDraftFile(file: ComposerDraftFile): DroppedAttachment {
+  return { ...file, id: crypto.randomUUID() }
+}
 
 const EMPTY_QUEUE: QueuedMessage[] = []
 
@@ -125,6 +176,8 @@ export default memo(function Composer({
   const [atMenuIndex, setAtMenuIndex] = useState(0)
   const [atDismissed, setAtDismissed] = useState(false)
   const [images, setImages] = useState<PendingImage[]>([])
+  /** Non-image drops staged as attachment chips; sent as @path lines. */
+  const [pendingFiles, setPendingFiles] = useState<DroppedAttachment[]>([])
   const [steeringQueuedId, setSteeringQueuedId] = useState<string | null>(null)
   const steeringQueuedIdRef = useRef<string | null>(null)
   const [loadedSessionId, setLoadedSessionId] = useState<string | null | undefined>(undefined)
@@ -153,22 +206,33 @@ export default memo(function Composer({
   const removeQueuedMessage = useAppStore((s) => s.removeQueuedMessage)
   const reserveQueuedMessage = useAppStore((s) => s.reserveQueuedMessage)
 
-  const writeDraft = (sessionId: string | null, nextText: string, nextImages: PendingImage[]) => {
+  const writeDraft = (
+    sessionId: string | null,
+    nextText: string,
+    nextImages: PendingImage[],
+    nextFiles: DroppedAttachment[] = pendingFiles
+  ) => {
     if (!sessionId) return
-    const draft: SessionComposerDraft = { text: nextText, images: toPromptImages(nextImages) }
+    const draft: SessionComposerDraft = {
+      text: nextText,
+      images: toPromptImages(nextImages),
+      files: toDraftFiles(nextFiles)
+    }
     setComposerDraft(sessionId, draft)
   }
 
-  const commitDraft = (nextText: string, nextImages = images) => {
+  const commitDraft = (nextText: string, nextImages = images, nextFiles = pendingFiles) => {
     setText(nextText)
     setImages(nextImages)
-    writeDraft(currentSessionId, nextText, nextImages)
+    setPendingFiles(nextFiles)
+    writeDraft(currentSessionId, nextText, nextImages, nextFiles)
   }
 
   const clearLocalDraft = () => {
     setText('')
     setCaret(0)
     setImages([])
+    setPendingFiles([])
     setImageError(null)
     setMenuDismissed(false)
     setAtDismissed(false)
@@ -182,6 +246,7 @@ export default memo(function Composer({
     const draft = currentSessionId ? useAppStore.getState().composerDrafts[currentSessionId] : undefined
     setText(draft?.text ?? '')
     setImages(draft ? fromPromptImages(draft.images) : [])
+    setPendingFiles(draft?.files ? draft.files.map(fromDraftFile) : [])
     setCaret(draft?.text.length ?? 0)
     setMenuIndex(0)
     setMenuDismissed(false)
@@ -396,30 +461,55 @@ export default memo(function Composer({
     stageImageFiles(files)
   }
 
-  /** Resolve dropped files/folders to absolute paths and @-reference them at the caret. */
-  const insertDroppedPaths = (dropped: DroppedEntry[]) => {
-    const refs = dropped
-      .map((entry) => {
-        if (entry.file) {
-          try {
-            const resolved = window.electronAPI.getPathForFile(entry.file)
-            if (resolved) return resolved
-          } catch {
-            // Virtual files (dragged out of another app) carry no filesystem path.
-          }
+  /**
+   * Stage non-image drops (files, folders, archives) as attachment chips.
+   * Paths resolve through the main process; virtual files that carry no
+   * filesystem path keep their display name. Dedupe is by resolved path.
+   */
+  const stageDroppedFiles = (dropped: DroppedEntry[]) => {
+    const sessionIdAtAction = currentSessionId
+    const textAtAction = text
+    const imagesAtAction = images
+    const resolved: DroppedAttachment[] = []
+    for (const entry of dropped) {
+      let path = entry.name
+      if (entry.file) {
+        try {
+          const resolvedPath = window.electronAPI.getPathForFile(entry.file)
+          if (resolvedPath) path = resolvedPath
+        } catch {
+          // Virtual files (dragged out of another app) carry no filesystem path.
         }
-        return entry.name
+      }
+      if (!path) continue
+      const name = entry.name || path.split('/').pop() || path
+      resolved.push({
+        id: crypto.randomUUID(),
+        path,
+        name,
+        isDirectory: entry.isDirectory,
+        kind: attachmentKind(entry.isDirectory, name)
       })
-      .filter(Boolean)
-    if (refs.length === 0) return
-    const insertion = refs.map((path) => `@${path} `).join('\n')
-    replaceRange(caret, caret, insertion)
+    }
+    if (resolved.length === 0) return
+    setPendingFiles((prev) => {
+      const next = [...prev]
+      let added = false
+      for (const att of resolved) {
+        if (next.some((p) => p.path === att.path)) continue
+        next.push(att)
+        added = true
+      }
+      if (added) writeDraft(sessionIdAtAction, textAtAction, imagesAtAction, next)
+      return next
+    })
   }
 
   /**
    * Route a drop: images join the staging pipeline, everything else (files,
-   * folders, archives) becomes an @path reference at the caret. Items are
-   * snapshotted synchronously — File objects go stale once this handler yields.
+   * folders, archives) becomes an attachment chip sent as an @path reference.
+   * Items are snapshotted synchronously — File objects go stale once this
+   * handler yields.
    */
   const routeDroppedItems = (dt: DataTransfer) => {
     const entries: DroppedEntry[] = []
@@ -442,16 +532,17 @@ export default memo(function Composer({
       }
     }
     const imageFiles: File[] = []
-    const pathEntries: DroppedEntry[] = []
+    const fileEntries: DroppedEntry[] = []
     for (const entry of entries) {
-      if (entry.file && entry.file.type.startsWith('image/') && !entry.isDirectory) {
+      // Folders never stage as images even when named like one (shot.png/).
+      if (!entry.isDirectory && entry.file && isImageFile(entry.file)) {
         imageFiles.push(entry.file)
       } else {
-        pathEntries.push(entry)
+        fileEntries.push(entry)
       }
     }
     if (imageFiles.length > 0) stageImageFiles(imageFiles)
-    if (pathEntries.length > 0) insertDroppedPaths(pathEntries)
+    if (fileEntries.length > 0) stageDroppedFiles(fileEntries)
   }
 
   const hasFileDrag = (e: DragEvent<HTMLDivElement>) => e.dataTransfer.types.includes('Files')
@@ -539,23 +630,31 @@ export default memo(function Composer({
     if (!trimmed || disabled) return
     const sessionIdAtSend = currentSessionId
     const imgs = stagedImages()
+    // Attachment chips ride along as one @path token per line; they are
+    // cleared on send and restored only if delivery fails (see below).
+    const staged = pendingFiles
+    const outgoing = appendAttachmentRefs(trimmed, staged)
     if (busy) {
       // Mid-turn: park the message; the store drains the queue on idle.
       if (!currentSessionId) return
       enqueueQueuedMessage(currentSessionId, {
         id: crypto.randomUUID(),
-        text: trimmed,
+        text: outgoing,
         images: imgs
       })
     } else {
       // The send is async: clear optimistically, but roll the draft back when
       // delivery failed (dead session, invalid grant) so it is never lost.
-      const staged = images
+      const stagedImagesSnapshot = images
       const restore = (ok: void | boolean) => {
         if (ok !== false) return
         const restoreSessionId = sessionIdAtSend ?? useAppStore.getState().currentSessionId
         if (restoreSessionId) {
-          setComposerDraft(restoreSessionId, { text: trimmed, images: toPromptImages(staged) })
+          setComposerDraft(restoreSessionId, {
+            text: trimmed,
+            images: toPromptImages(stagedImagesSnapshot),
+            files: toDraftFiles(staged)
+          })
         }
         if (
           (sessionIdAtSend && useAppStore.getState().currentSessionId !== sessionIdAtSend) ||
@@ -564,14 +663,15 @@ export default memo(function Composer({
           return
         }
         setText((cur) => (cur.trim() ? cur : trimmed))
-        setImages((cur) => (cur.length ? cur : staged))
+        setImages((cur) => (cur.length ? cur : stagedImagesSnapshot))
+        setPendingFiles((cur) => (cur.length ? cur : staged))
         setCaret(trimmed.length)
       }
       if (sessionIdAtSend) clearComposerDraft(sessionIdAtSend)
       if (!sessionIdAtSend || useAppStore.getState().currentSessionId === sessionIdAtSend) {
         clearLocalDraft()
       }
-      const result = onSend(trimmed, imgs)
+      const result = onSend(outgoing, imgs)
       if (result instanceof Promise) void result.then(restore)
       else restore(result)
       return
@@ -631,30 +731,37 @@ export default memo(function Composer({
     const trimmed = text.trim()
     if (!sessionId || !trimmed || disabled || !busy) return
     const staged = images
+    const stagedFiles = pendingFiles
     const imgs = stagedImages()
+    const outgoing = appendAttachmentRefs(trimmed, stagedFiles)
     const store = useAppStore.getState()
     store.clearComposerDraft(sessionId)
     clearLocalDraft()
 
     void dispatchSteer({
       sessionId,
-      text: trimmed,
+      text: outgoing,
       images: imgs,
       source: 'composer',
       steer: (sid, text, images) => window.electronAPI.steer(sid, text, images)
     }).then((result) => {
       const latest = useAppStore.getState()
       if (result.ok) {
-        commitAcceptedSteer(sessionId, trimmed, imgs)
+        commitAcceptedSteer(sessionId, outgoing, imgs)
         return
       }
 
       if (!latest.sessions.some((session) => session.id === sessionId)) return
-      latest.setComposerDraft(sessionId, { text: trimmed, images: toPromptImages(staged) })
+      latest.setComposerDraft(sessionId, {
+        text: trimmed,
+        images: toPromptImages(staged),
+        files: toDraftFiles(stagedFiles)
+      })
       latest.setSessionError(sessionId, steerFailureKey(result.source))
       if (latest.currentSessionId !== sessionId) return
       setText(trimmed)
       setImages(staged)
+      setPendingFiles(stagedFiles)
       setCaret(trimmed.length)
     })
   }
@@ -875,8 +982,8 @@ export default memo(function Composer({
               ))}
             </div>
           )}
-          {images.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-1.5 pb-2 pt-0.5">
+          {(images.length > 0 || pendingFiles.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5 px-1.5 pb-2 pt-0.5">
               {images.map((img) => (
                 <div
                   key={img.id}
@@ -895,6 +1002,38 @@ export default memo(function Composer({
                     className="absolute right-0.5 top-0.5 rounded-full bg-ink-950/85 p-0.5 text-cream-faint transition-colors hover:text-cream"
                   >
                     <X size={10} />
+                  </button>
+                </div>
+              ))}
+              {pendingFiles.map((file) => (
+                <div
+                  key={file.id}
+                  title={file.path}
+                  className="flex h-14 min-w-0 items-center gap-2 rounded-[10px] border border-line bg-ink-900 py-1 pl-2.5 pr-1"
+                >
+                  {file.kind === 'folder' ? (
+                    <Folder size={16} className="shrink-0 text-accent" />
+                  ) : file.kind === 'archive' ? (
+                    <FileArchive size={16} className="shrink-0 text-cream-faint" />
+                  ) : (
+                    <File size={16} className="shrink-0 text-cream-faint" />
+                  )}
+                  <span className="min-w-0 max-w-[150px] truncate text-[12px] text-cream-dim">
+                    {file.name}
+                  </span>
+                  <button
+                    onClick={() =>
+                      setPendingFiles((prev) => {
+                        const next = prev.filter((p) => p.id !== file.id)
+                        writeDraft(currentSessionId, text, images, next)
+                        return next
+                      })
+                    }
+                    title={t('composer.removeAttachment')}
+                    aria-label={t('composer.removeAttachment')}
+                    className="focus-ring shrink-0 rounded-full p-1 text-cream-faint transition-colors hover:bg-overlay-strong hover:text-cream"
+                  >
+                    <X size={12} />
                   </button>
                 </div>
               ))}
