@@ -101,10 +101,12 @@ function latestTrajectory(
 }
 
 /**
- * A compact, in-transcript Agent Hub. It is intentionally conditional: a
- * normal single-agent conversation remains as quiet as before, while a session
- * that uses subagents exposes the roster, trajectory facts and a read-only
- * child transcript action.
+ * A compact, in-transcript Agent Hub. It is intentionally conditional: it
+ * renders ONLY for a session that actually has (or had) subagents in its
+ * projection. A plain single-agent conversation stays fully quiet — the main
+ * thread's own steps (thinking/messages/tools) already stream into the
+ * transcript as step rows, so trajectory facts alone must never summon a
+ * "subagent activity" panel.
  */
 /**
  * Memoized: ChatPanel re-renders on every streaming delta, but this component
@@ -136,7 +138,9 @@ const ExecutionActivity = memo(function ExecutionActivity({ sessionId }: { sessi
     [projection]
   )
 
-  if (!projection || (agents.length === 0 && trajectory.length === 0)) return null
+  // At least one REAL subagent is required; trajectory-only projections (the
+  // main thread's own turn facts) render nothing.
+  if (!projection || agents.length === 0) return null
 
   const selectedAgent = selectedAgentId ? projection.agents[selectedAgentId] : undefined
   const selectedTranscript = selectedAgentId ? transcripts[selectedAgentId] : undefined

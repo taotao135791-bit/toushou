@@ -430,16 +430,15 @@ export class OmpSession {
         this.emit({ type: 'error', sessionId: this.id, message: result.reason, recoverable: true })
         return
       case 'extension_ui_unsupported':
+        // An extension capability diagnostic, not chat content: a transcript
+        // pill would be pure noise (mature agent apps never surface it). Log
+        // once per method per session via console.info — installFileLogging
+        // tees that level into userData/logs/main.log.
         if (!this.unsupportedExtensionUiMethods.has(result.method)) {
           this.unsupportedExtensionUiMethods.add(result.method)
-          this.emit({
-            type: 'message',
-            sessionId: this.id,
-            role: 'system',
-            variant: 'info',
-            // Mirrors the ext.unsupportedUi copy; main has no i18n layer.
-            content: `某个插件想显示暂不支持的界面（${result.method}），已忽略。`
-          })
+          console.info(
+            `[omp:${this.id.slice(-6)}] extension requested unsupported UI method "${result.method}"; ignored`
+          )
         }
         return
       case 'open_url':
