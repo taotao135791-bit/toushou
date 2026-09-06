@@ -6,13 +6,19 @@
 
 ## 下载安装
 
-当前版本 v0.8.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.8.0) 下载：
+当前版本 v0.9.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.9.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.8.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.8.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.8.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.9.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.9.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.9.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.9.0：桌面级交互补全与流式性能。**拖拽上传**——把桌面上的图片、文件、文件夹、压缩包直接拖进输入框：图片走原贴图流程（同数量/大小限制与错误提示），其余文件以绝对路径插入消息；拖拽悬停有虚线高亮提示，并修复了拖到窗口空白处会把整个应用导航到文件的问题；**侧栏可调宽度**——右缘拖拽调整（208–420px），双击复位，宽度记忆，最小宽度下会话行不溢出；**流式更顺滑**——历史工具分组不再随流式逐帧重渲染，流式输出期间打字不再卡顿，重复状态事件不再触发侧栏重渲染，长会话滚动时屏幕外消息行跳过布局与绘制，轨迹投影从全量扫描改为有界扫描。
+
+v0.8.2：定时任务独立成页。侧栏新增"定时任务"导航入口（带启用数角标），点开是完整的任务管理页：任务卡展示计划与状态，支持新建/编辑/启停/立即运行/删除。
+
+v0.8.1：定时任务入口修复。没有任务时侧栏也常驻显示"定时任务"区块和新建按钮，不再因列表为空而找不到入口。
 
 v0.8.0：定时任务、项目知识与后台任务。**定时任务**：在侧边栏创建定时 agent 任务（每天/每周/自定义间隔），到点自动创建会话并执行预设 prompt，完成后系统通知——"每天早上拉昨日数据发周报"从此不需要人守着；**项目知识库**：项目根目录放一个 投手.md 文件，每次创建会话自动注入为 system prompt，agent 立刻知道你的账户结构、口径定义和历史决策，不用每次重复；**后台任务指示**：侧栏实时显示"N 个运行中"角标，agent 在后台工作时不再需要盯着屏幕等。
 
