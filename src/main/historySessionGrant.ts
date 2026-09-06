@@ -4,6 +4,8 @@ import path from 'node:path'
 import { HistorySessionDescriptor } from '../shared/types'
 import {
   HistorySessionFile,
+  deleteSessionCopiesByUuid,
+  isSessionUuid,
   sessionDirCandidatesFor,
   sessionsRoot
 } from './sessionHistory'
@@ -210,6 +212,23 @@ export class HistorySessionGrantManager {
     return this.remove(historyId)
   }
 
+  /**
+   * Delete EVERY durable copy of a session uuid across all projects and layout
+   * generations, and revoke every capability minted for it. This is the
+   * workspace-independent delete path: a cross-project history row carries only
+   * its uuid (never a capability minted for the active workspace), and a deleted
+   * session must not survive in a legacy-layout or sanitized-label copy for the
+   * scanner to resurrect. Resolution and guarding happen Main-side inside the
+   * runtime's own sessions root; the renderer never supplies a path.
+   */
+  async deleteByUuid(uuid: unknown): Promise<boolean> {
+    this.pruneExpired()
+    if (!isSessionUuid(uuid)) return false
+    const deleted = await deleteSessionCopiesByUuid(uuid, this.getAgentDir())
+    if (deleted) this.revokeUuid(uuid)
+    return deleted
+  }
+
   /** Revoke all history capabilities tied to a workspace grant. */
   revokeWorkspace(workspaceGrantId: string): void {
     for (const [id, stored] of this.grants) {
@@ -281,6 +300,13 @@ export class HistorySessionGrantManager {
     const ids = this.grantIdsByOwnerWorkspace.get(key)
     if (!ids) return
     for (const id of [...ids]) this.remove(id)
+  }
+
+  /** Revoke every capability minted for a durable session uuid (any owner). */
+  private revokeUuid(uuid: string): void {
+    for (const [id, stored] of this.grants) {
+      if (stored.descriptor.uuid === uuid) this.remove(id)
+    }
   }
 
   private remove(historyId: string): boolean {

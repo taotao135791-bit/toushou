@@ -41,6 +41,12 @@ export interface HistorySessionFile {
 /** Bytes of a session file scanned for the first user message (title source). */
 const TITLE_SCAN_BYTES = 256 * 1024
 
+/** Bytes scanned for the session header line (uuid source for delete). */
+const HEADER_SCAN_BYTES = 64 * 1024
+
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/
+
 /** Title fallback for sessions without a user message. */
 const UNTITLED = 'Untitled'
 
@@ -122,11 +128,26 @@ export function sessionDirCandidatesFor(
 }
 
 /**
+ * The runtime keeps only ASCII word characters (plus dot/dash) in a hashed
+ * directory's label. A label that sanitizes away entirely — pure-CJK basenames
+ * such as 投手工作区 — is written as `project` (verified on disk: three
+ * distinct CJK projects all map to `home-project-<sha256(realpath)>`, and the
+ * root path `/` maps to `abs-project-<sha256('/')>`). Mirror that here so the
+ * GUI's candidates match runtime-written directories for non-ASCII projects.
+ */
+function hashLabelCandidates(rawLabel: string): string[] {
+  const sanitized = rawLabel.replace(/[^\w.-]/g, '')
+  return sanitized ? [rawLabel, sanitized] : [rawLabel, 'project']
+}
+
+/**
  * Current OMP layout (verified against 17.2.x on-disk state): directories are
  * named `<zone>-<label>-<sha256(realpath)>` where zone is `home` (project
  * inside $HOME, label = basename) or `abs` (label = relative path with
  * separators dashed). Example:
  *   /Users/me/…/toushou → home-toushou-4072a02833…
+ * The label is ASCII-sanitized by the runtime (see hashLabelCandidates), so
+ * both the raw and the sanitized form are returned as candidates.
  * Older builds used the slug forms above; keep every candidate so listing,
  * resume and delete authority keep working across runtime upgrades.
  */
@@ -150,11 +171,13 @@ export function hashedSessionDirCandidatesFor(
   })()
   const relative = path.relative(home, resolved)
   const inHome = !relative.startsWith('..') && !path.isAbsolute(relative)
-  const label = inHome
+  const rawLabel = inHome
     ? path.basename(resolved)
     : (relative === '' ? path.basename(resolved) : relative).replace(/^[/\\]/, '')
   const zone = inHome ? 'home' : 'abs'
-  return [path.join(sessionsRoot(agentDir), `${zone}-${label}-${hash}`)]
+  return hashLabelCandidates(rawLabel).map((label) =>
+    path.join(sessionsRoot(agentDir), `${zone}-${label}-${hash}`)
+  )
 }
 
 /**
@@ -245,6 +268,15 @@ function textContentOf(content: unknown): string {
     }
   }
   return parts.join('\n')
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -344,6 +376,123 @@ export async function listSessionHistory(
   }
   out.sort((a, b) => b.timestamp - a.timestamp)
   return out
+}
+
+/** Session uuid shape accepted for uuid-keyed resolution (runtime uuids and test ids). */
+const SESSION_UUID_RE = /^[0-9a-zA-Z-]{1,128}$/
+
+export function isSessionUuid(uuid: unknown): uuid is string {
+  return typeof uuid === 'string' && !CONTROL_CHARS_RE.test(uuid) && SESSION_UUID_RE.test(uuid)
+}
+
+/**
+ * Parse the session uuid from a file's header without reading the whole
+ * transcript. Returns null for files without a parseable session header.
+ */
+export async function readSessionUuid(filePath: string): Promise<string | null> {
+  let head: string
+  try {
+    head = await readHead(filePath, HEADER_SCAN_BYTES)
+  } catch {
+    return null
+  }
+  for (const line of head.split('\n').slice(0, 5)) {
+    if (!line.trim()) continue
+    try {
+      const candidate: unknown = JSON.parse(line)
+      if (
+        candidate &&
+        typeof candidate === 'object' &&
+        (candidate as { type?: unknown }).type === 'session' &&
+        typeof (candidate as { id?: unknown }).id === 'string'
+      ) {
+        return (candidate as { id: string }).id
+      }
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+/**
+ * Resolve a durable session uuid to EVERY transcript file under the sessions
+ * root, across all project directories and layout generations. Directory-name
+ * candidates can never be exhaustive (the runtime renamed layouts across
+ * versions and sanitizes labels), so copy-proof delete walks the root instead.
+ */
+export async function findSessionFilesByUuid(
+  uuid: string,
+  agentDir: string = defaultPiAgentDir()
+): Promise<string[]> {
+  if (!isSessionUuid(uuid)) return []
+  const root = sessionsRoot(agentDir)
+  let dirs: string[]
+  try {
+    dirs = await readdir(root)
+  } catch {
+    return []
+  }
+  const matches: string[] = []
+  for (const dir of dirs) {
+    let names: string[]
+    try {
+      names = await readdir(path.join(root, dir))
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      if (!name.endsWith('.jsonl')) continue
+      const filePath = path.join(root, dir, name)
+      if ((await readSessionUuid(filePath)) === uuid) matches.push(filePath)
+    }
+  }
+  return matches
+}
+
+/**
+ * Delete EVERY durable copy of a session uuid (any project dir, any layout
+ * generation) inside the guarded sessions root. Resolves the files by header
+ * uuid — not by directory-name guessing — so a delete can never leave a
+ * legacy-layout or sanitized-label copy behind for the scanner to resurrect.
+ * Returns true only when the uuid no longer resolves anywhere; a uuid that
+ * is already fully deleted also reports true (nothing left to remove).
+ */
+export async function deleteSessionCopiesByUuid(
+  uuid: string,
+  agentDir: string = defaultPiAgentDir()
+): Promise<boolean> {
+  if (!isSessionUuid(uuid)) return false
+  for (const copy of await findSessionFilesByUuid(uuid, agentDir)) {
+    // findSessionFilesByUuid only lists .jsonl files inside the sessions root;
+    // unlink removes a symlinked entry itself, never an outside target.
+    if (isSessionFilePath(copy, agentDir)) {
+      try {
+        await unlink(copy)
+      } catch {
+        // Re-verified by the final resolution below.
+      }
+    }
+  }
+  return (await findSessionFilesByUuid(uuid, agentDir)).length === 0
+}
+
+/**
+ * Copy-proof form of deleteSessionFile: removes the granted file and then
+ * sweeps every same-uuid copy (legacy layout, sanitized label, migrated dir).
+ * Success requires the uuid to no longer resolve anywhere.
+ */
+export async function deleteSessionFileEverywhere(
+  filePath: string,
+  agentDir: string = defaultPiAgentDir()
+): Promise<boolean> {
+  if (!isSessionFilePath(filePath, agentDir)) return false
+  const uuid = await readSessionUuid(filePath)
+  // Delete the granted copy first so it cannot be missed by a walk race, then
+  // sweep the remaining copies and verify nothing resolves anymore.
+  await deleteSessionFile(filePath, agentDir)
+  if (!uuid) return !(await exists(filePath))
+  return deleteSessionCopiesByUuid(uuid, agentDir)
 }
 
 /** Delete a session file; guarded to .jsonl files inside the sessions root. */

@@ -293,6 +293,11 @@ export interface ElectronAPI {
   ) => Promise<{ session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] } | null>
   /** Delete an opaque history entry under the workspace grant that listed it. */
   deleteSessionFile: (grantId: string, historyId: string) => Promise<boolean>
+  /**
+   * Delete every durable copy of a session uuid, in any project and layout.
+   * Works regardless of the active workspace; true when nothing resolves anymore.
+   */
+  deleteSessionByUuid: (grantId: string, uuid: string) => Promise<boolean>
   /** Set a session's display name (single line, max 60 chars). */
   setSessionName: (sessionId: string, name: string) => Promise<boolean>
   /** Live subagent roster (get_subagents); null when unsupported/unavailable. */
@@ -621,6 +626,8 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_RESUME_SESSION, grantId, historyId),
   deleteSessionFile: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_FILE, grantId, historyId),
+  deleteSessionByUuid: (grantId: string, uuid: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_BY_UUID, grantId, uuid),
   setSessionName: (sessionId: string, name: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_SESSION_NAME, sessionId, name),
   getSubagents: (sessionId: string) =>

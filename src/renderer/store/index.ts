@@ -3,7 +3,7 @@ import { FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, S
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
-import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
+import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHistoryUuid, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
 import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
@@ -288,6 +288,12 @@ interface AppState {
   setScheduledTasks: (tasks: ScheduledTask[]) => void
   /** Drop one entry from the history list (after its opaque capability was deleted). */
   removeHistorySession: (historyId: string) => void
+  /**
+   * Purge a deleted session's durable uuid from every in-memory cache —
+   * registry records of every workspace plus the cross-project history rows —
+   * so a rescan cannot resurface it.
+   */
+  purgeDeletedSession: (uuid: string) => void
   /** Update one session's display title in place. */
   setSessionTitle: (sessionId: string, title: string) => void
   setSessionFile: (sessionId: string, sessionFile: string) => void
@@ -917,6 +923,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeHistorySession: (historyId) =>
     set((state) => ({
       sessionRecords: removeHistoryRecord(state.sessionRecords, historyId)
+    })),
+  purgeDeletedSession: (uuid) =>
+    set((state) => ({
+      sessionRecords: purgeHistoryUuid(state.sessionRecords, uuid),
+      globalHistory: state.globalHistory.filter((row) => row.uuid !== uuid)
     })),
   setSessionTitle: (sessionId, title) =>
     set((state) => {

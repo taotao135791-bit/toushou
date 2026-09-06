@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HistorySessionDescriptor, Session } from '@shared/types'
 import {
+  purgeHistoryUuid,
   recordsForWorkspace,
   replaceHistoricalSessionRecords,
   updateSessionRecordTitle,
@@ -78,5 +79,27 @@ describe('session registry projection', () => {
     records = replaceHistoricalSessionRecords(records, A, [refreshedA])
     expect(records.filter((record) => record.history).map((record) => record.history?.id)).toEqual(['history-a-refreshed'])
     expect(records.some((record) => record.runtimeSessionId === 'runtime-a' && record.isLive)).toBe(true)
+  })
+
+  it('purges a deleted durable uuid across all workspaces but keeps live rows', () => {
+    const a = history('history-a', 'uuid-a')
+    // The same durable session discovered under a DIFFERENT workspace (its
+    // capability id differs per workspace mint, the uuid does not).
+    const twin = history('history-a-other-workspace', 'uuid-a')
+    let records = replaceHistoricalSessionRecords([], A, [a])
+    records = replaceHistoricalSessionRecords(records, B, [twin])
+    records = upsertLiveSessionRecord(records, live('runtime-a', A, { resumedHistoryId: a.id }))
+
+    records = purgeHistoryUuid(records, 'uuid-a')
+    // Both capability rows for the deleted uuid are gone…
+    expect(records.filter((record) => !record.isLive)).toHaveLength(0)
+    // …while the live session resumed from it stays.
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ runtimeSessionId: 'runtime-a', isLive: true })
+
+    // Unrelated uuids and empty inputs are no-ops.
+    records = purgeHistoryUuid(records, 'uuid-b')
+    expect(records).toHaveLength(1)
+    expect(purgeHistoryUuid(records, '')).toBe(records)
   })
 })

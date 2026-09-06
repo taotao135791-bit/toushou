@@ -21,7 +21,7 @@ import {
   ChevronRight,
   Loader2,
   Link2, Clock} from 'lucide-react'
-import { HistorySessionDescriptor } from '@shared/types'
+import { HistorySessionDescriptor, HistorySessionRow } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
@@ -86,6 +86,7 @@ export default function Sidebar() {
   const setMessages = useAppStore((s) => s.setMessages)
   const loadHistorySessions = useAppStore((s) => s.loadHistorySessions)
   const removeHistorySession = useAppStore((s) => s.removeHistorySession)
+  const purgeDeletedSession = useAppStore((s) => s.purgeDeletedSession)
   const setRecentProjects = useAppStore((s) => s.setRecentProjects)
   const setRecentWorkspaces = useAppStore((s) => s.setRecentWorkspaces)
   const removeRecentProject = useAppStore((s) => s.removeRecentProject)
@@ -98,6 +99,7 @@ export default function Sidebar() {
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null)
   const [restoreFailedHistoryId, setRestoreFailedHistoryId] = useState<string | null>(null)
   const [deleteFailedHistoryId, setDeleteFailedHistoryId] = useState<string | null>(null)
+  const [deleteFailedGlobalUuid, setDeleteFailedGlobalUuid] = useState<string | null>(null)
 
   // Sidebar width. Persisted through Main's typed settings store, like every
   // other UI pref (theme, language, pinned ids). A drag writes the width
@@ -214,15 +216,41 @@ export default function Sidebar() {
     void activateRecentWorkspace(workspace.id)
   }
 
+  /** Durable uuid from a session file name (<timestamp>_<uuid>.jsonl). */
+  const uuidFromSessionFile = (sessionFile?: string): string | null =>
+    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(
+      sessionFile ?? ''
+    )?.[1] ?? null
+
+  /**
+   * Delete every durable copy of one uuid and, on success, purge it from every
+   * in-memory cache so a rescan cannot resurface the deleted row. Refreshes
+   * the durable scans only after the delete settles (an earlier rescan could
+   * still see the file and re-add the row behind the purge).
+   */
+  const deleteByUuidAndRefresh = async (uuid: string | null): Promise<boolean> => {
+    if (!uuid || !currentWorkspace) return false
+    const ok = await window.electronAPI.deleteSessionByUuid(currentWorkspace.id, uuid)
+    if (ok) purgeDeletedSession(uuid)
+    void loadHistorySessions(currentWorkspace.id)
+    void loadAllHistorySessions()
+    return ok
+  }
+
   const handleDeleteSession = (id: string) => {
+    // The durable identity must be captured before the kill: the record is the
+    // renderer's only link between the runtime id and the transcript file.
+    const record = sessionRecords.find((r) => r.runtimeSessionId === id)
+    const uuid = record?.history?.uuid ?? uuidFromSessionFile(record?.sessionFile)
     window.electronAPI.killSession(id)
     setSessions(sessions.filter((s) => s.id !== id))
     if (currentSessionId === id) {
       setCurrentSessionId(null)
     }
-    // The killed session's file may now appear in the on-disk history
-    void loadHistorySessions(currentWorkspace?.id ?? null)
-    void loadAllHistorySessions()
+    // A killed session's transcript stays on disk and would resurface in the
+    // durable scan (immediately as a history row, after restart via the
+    // cross-project list) — delete every copy of it too.
+    void deleteByUuidAndRefresh(uuid)
   }
 
   const handleResumeHistory = async (info: HistorySessionDescriptor) => {
@@ -264,18 +292,39 @@ export default function Sidebar() {
 
   const handleDeleteHistory = async (info: HistorySessionDescriptor) => {
     if (historyLoading || !currentWorkspace) return
-    const ok = await window.electronAPI.deleteSessionFile(currentWorkspace.id, info.id)
+    // Capability delete first (tightest binding). It can legitimately fail for
+    // a stale or expired capability — e.g. a row that failed to restore — so
+    // fall back to the uuid sweep, which is copy-proof and works regardless of
+    // which workspace is active. Only a Main-verified "file still present"
+    // keeps the row and surfaces the failure state.
+    let ok = await window.electronAPI.deleteSessionFile(currentWorkspace.id, info.id)
+    if (!ok) ok = await window.electronAPI.deleteSessionByUuid(currentWorkspace.id, info.uuid)
     // Only the history entry goes away on success — a failed delete keeps the
     // item and surfaces a user-visible error (never silent success).
     if (ok) {
       setDeleteFailedHistoryId(null)
-      removeHistorySession(info.id)
+      // Purge the durable uuid from every cache (records of every workspace +
+      // the cross-project list), then rescan — an earlier rescan could still
+      // have seen the file.
+      purgeDeletedSession(info.uuid)
+      void loadHistorySessions(currentWorkspace.id)
+      void loadAllHistorySessions()
     } else {
       setDeleteFailedHistoryId(info.id)
       setTimeout(() => setDeleteFailedHistoryId((id) => (id === info.id ? null : id)), 3000)
     }
-    // The durable scan feeds the cross-project list too.
-    void loadAllHistorySessions()
+  }
+
+  /** Cross-project durable row delete: resolved Main-side by uuid. */
+  const handleDeleteGlobal = async (row: HistorySessionRow) => {
+    if (!currentWorkspace) return
+    const ok = await deleteByUuidAndRefresh(row.uuid)
+    if (ok) {
+      setDeleteFailedGlobalUuid(null)
+    } else {
+      setDeleteFailedGlobalUuid(row.uuid)
+      setTimeout(() => setDeleteFailedGlobalUuid((uuid) => (uuid === row.uuid ? null : uuid)), 3000)
+    }
   }
 
   /**
@@ -324,6 +373,11 @@ export default function Sidebar() {
     setDeleteFailedHistoryId(null)
     const info = visibleHistory.find((entry) => entry.id === id)
     if (info) void handleDeleteHistory(info)
+  })
+  const deleteGlobalConfirm = useConfirmId((uuid: string) => {
+    setDeleteFailedGlobalUuid(null)
+    const row = globalHistory.find((entry) => entry.uuid === uuid)
+    if (row) void handleDeleteGlobal(row)
   })
   const deleteSessionConfirm = useConfirmId((id: string) => handleDeleteSession(id))
 
@@ -686,9 +740,14 @@ export default function Sidebar() {
     )
   }
 
-  /** Cross-project durable row: opens via workspace switch + resume (no delete). */
+  /**
+   * Cross-project durable row: opens via workspace switch + resume. Its delete
+   * is resolved Main-side by uuid, so it works no matter which workspace is
+   * active — including rows whose restore failed and never minted a capability.
+   */
   const renderGlobalRow = (row: (typeof globalHistory)[number]) => {
     const resuming = resumingHistoryId !== null
+    const confirming = deleteGlobalConfirm.confirmingId === row.uuid
     return (
       <div
         key={`global:${row.uuid}`}
@@ -702,10 +761,30 @@ export default function Sidebar() {
           <div className="truncate text-[13px] leading-5 text-cream-dim">
             {row.title === 'Untitled' ? t('history.untitled') : row.title}
           </div>
-          <div className="truncate text-[11px] leading-4 text-cream-faint/70">
-            {basename(row.cwd) || row.cwd} · {formatRelativeTime(row.timestamp, language)}
+          <div
+            className={`truncate text-[11px] leading-4 ${
+              deleteFailedGlobalUuid === row.uuid ? 'text-red-500' : 'text-cream-faint/70'
+            }`}
+          >
+            {deleteFailedGlobalUuid === row.uuid
+              ? t('history.deleteFailed')
+              : `${basename(row.cwd) || row.cwd} · ${formatRelativeTime(row.timestamp, language)}`}
           </div>
         </div>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            deleteGlobalConfirm.click(row.uuid)
+          }}
+          title={confirming ? t('history.deleteConfirm') : t('history.delete')}
+          className={
+            confirming
+              ? 'shrink-0 rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
+              : `${iconBtn} hover:bg-red-500/15 hover:text-red-500`
+          }
+        >
+          <Trash2 size={12} />
+        </button>
       </div>
     )
   }

@@ -160,3 +160,65 @@ describe('HistorySessionGrantManager', () => {
     await expect(first).resolves.toBe(true)
   })
 })
+
+/**
+ * Workspace-independent delete: cross-project history rows carry only a uuid —
+ * never a capability minted for the active workspace — so restoring-failed and
+ * foreign-project rows must be deletable by uuid alone. The manager resolves
+ * and deletes EVERY layout copy Main-side and revokes matching capabilities.
+ */
+describe('HistorySessionGrantManager.deleteByUuid', () => {
+  const UUID = '01234567-89ab-cdef-0123-456789abcdef'
+
+  function writeSessionWithHeader(workspace: string, uuid: string, name: string): string {
+    const directory = sessionDirFor(workspace, agentDir)
+    fs.mkdirSync(directory, { recursive: true })
+    const filePath = path.join(directory, name)
+    fs.writeFileSync(filePath, `{"type":"session","id":"${uuid}"}\n`)
+    return filePath
+  }
+
+  it('deletes every layout copy across workspaces and revokes minted capabilities', async () => {
+    const fileA = writeSessionWithHeader(workspaceA, UUID, `a_${UUID}.jsonl`)
+    // A legacy-layout copy of the same durable session under ANOTHER
+    // workspace's directory (e.g. after the project moved).
+    const fileB = writeSessionWithHeader(workspaceB, UUID, `b_${UUID}.jsonl`)
+    const [descriptor] = await manager.mintForWorkspace([history(fileA, UUID)], context())
+
+    await expect(manager.deleteByUuid(UUID)).resolves.toBe(true)
+    expect(fs.existsSync(fileA)).toBe(false)
+    expect(fs.existsSync(fileB)).toBe(false)
+    // The capability minted for the deleted session must not survive.
+    await expect(manager.resolve(descriptor.id, context())).resolves.toBeNull()
+  })
+
+  it('reports success for a uuid that no longer resolves anywhere', async () => {
+    await expect(manager.deleteByUuid(UUID)).resolves.toBe(true)
+  })
+
+  it('rejects malformed uuids without touching disk', async () => {
+    const fileA = writeSessionWithHeader(workspaceA, UUID, `a_${UUID}.jsonl`)
+    for (const bad of ['', '../escape', 'a/b', 'a'.repeat(200), 42, null]) {
+      await expect(manager.deleteByUuid(bad)).resolves.toBe(false)
+    }
+    expect(fs.existsSync(fileA)).toBe(true)
+  })
+
+  it('keeps capabilities minted for other sessions when deleting by uuid', async () => {
+    const fileA = writeSessionWithHeader(workspaceA, UUID, `a_${UUID}.jsonl`)
+    const otherUuid = '99999999-9999-9999-9999-999999999999'
+    const otherFile = writeSessionWithHeader(workspaceA, otherUuid, `other_${otherUuid}.jsonl`)
+    // One mint for both files: a second mintForWorkspace call would revoke the
+    // first batch regardless of any delete.
+    const [descriptor, otherDescriptor] = await manager.mintForWorkspace(
+      [history(fileA), history(otherFile, otherUuid)],
+      context()
+    )
+
+    await expect(manager.deleteByUuid(UUID)).resolves.toBe(true)
+    await expect(manager.resolve(descriptor.id, context())).resolves.toBeNull()
+    // The unrelated session and its capability survive.
+    expect(fs.existsSync(otherFile)).toBe(true)
+    expectSamePath(await manager.resolve(otherDescriptor.id, context()), fs.realpathSync(otherFile))
+  })
+})

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 
 // sessionHistory.ts imports ./piSettings, which imports ./omp for CLI
@@ -16,6 +17,10 @@ import {
   currentSessionDirFor,
   listSessionHistory,
   deleteSessionFile,
+  deleteSessionFileEverywhere,
+  deleteSessionCopiesByUuid,
+  findSessionFilesByUuid,
+  readSessionUuid,
   isSessionFilePath
 } from '../sessionHistory'
 
@@ -238,5 +243,118 @@ describe('isSessionFilePath / deleteSessionFile', () => {
     expect(isSessionFilePath(link, agentDir)).toBe(false)
     // The outside target is untouched.
     expect(existsSync(outside)).toBe(true)
+  })
+})
+
+/**
+ * Deletion must be layout-proof and copy-proof: the runtime renamed its session
+ * directory layout across versions and sanitizes non-ASCII labels, so one
+ * durable session can exist as several files. Deleting one copy while another
+ * survives is exactly the "deleted session reappears" bug.
+ */
+describe('uuid resolution and copy-proof delete', () => {
+  const UUID = '01234567-89ab-cdef-0123-456789abcdef'
+
+  /** Write a session file into an arbitrary sessions-root directory name. */
+  function writeCopy(dirName: string, name: string, uuid: string): string {
+    const dir = path.join(agentDir, 'sessions', dirName)
+    mkdirSync(dir, { recursive: true })
+    const filePath = path.join(dir, name)
+    writeFileSync(filePath, [
+      JSON.stringify({ type: 'title', title: '', updatedAt: '2025-01-01T00:00:00.000Z' }),
+      sessionHeader(uuid, '2025-01-01T00:00:00.000Z'),
+      userMessage('copy across layouts')
+    ].join('\n') + '\n')
+    return filePath
+  }
+
+  /** The sanitized hashed dir the runtime writes for a CJK-basename project. */
+  function runtimeHashedDirName(project: string): string {
+    const hash = createHash('sha256').update(realpathSync(project)).digest('hex')
+    return `home-project-${hash}`
+  }
+
+  it('readSessionUuid parses current-omp title-first headers', async () => {
+    const filePath = writeCopy(expectedDirName(projectDir), '20250101T000000Z_header-uuid.jsonl', UUID)
+    expect(await readSessionUuid(filePath)).toBe(UUID)
+  })
+
+  it('readSessionUuid returns null for files without a session header', async () => {
+    const dir = path.join(agentDir, 'sessions', expectedDirName(projectDir))
+    mkdirSync(dir, { recursive: true })
+    const filePath = path.join(dir, 'no-header.jsonl')
+    writeFileSync(filePath, '{"type":"message"}\n')
+    expect(await readSessionUuid(filePath)).toBeNull()
+  })
+
+  it('finds every layout copy of a session uuid', async () => {
+    const legacy = writeCopy(expectedDirName(projectDir), `a_${UUID}.jsonl`, UUID)
+    const slug = writeCopy(
+      path.basename(currentSessionDirFor(projectDir, agentDir)),
+      `b_${UUID}.jsonl`,
+      UUID
+    )
+    const hashed = writeCopy(runtimeHashedDirName(projectDir), `c_${UUID}.jsonl`, UUID)
+
+    const found = await findSessionFilesByUuid(UUID, agentDir)
+    expect(found.sort()).toEqual([legacy, slug, hashed].sort())
+  })
+
+  it('rejects malformed uuids instead of walking', async () => {
+    expect(await findSessionFilesByUuid('../escape', agentDir)).toEqual([])
+    expect(await findSessionFilesByUuid('', agentDir)).toEqual([])
+    expect(await findSessionFilesByUuid(undefined as unknown as string, agentDir)).toEqual([])
+  })
+
+  it('deleteSessionFileEverywhere removes every copy and reports success', async () => {
+    const legacy = writeCopy(expectedDirName(projectDir), `a_${UUID}.jsonl`, UUID)
+    const hashed = writeCopy(runtimeHashedDirName(projectDir), `c_${UUID}.jsonl`, UUID)
+
+    expect(await deleteSessionFileEverywhere(legacy, agentDir)).toBe(true)
+    expect(existsSync(legacy)).toBe(false)
+    // The sanitized-label copy must not survive to be resurrected by a rescan.
+    expect(existsSync(hashed)).toBe(false)
+    expect(await findSessionFilesByUuid(UUID, agentDir)).toEqual([])
+  })
+
+  it('deleteSessionFileEverywhere reports failure while a copy cannot be removed', async () => {
+    const legacy = writeCopy(expectedDirName(projectDir), `a_${UUID}.jsonl`, UUID)
+    const hashedDir = path.join(agentDir, 'sessions', runtimeHashedDirName(projectDir))
+    const hashed = writeCopy(runtimeHashedDirName(projectDir), `c_${UUID}.jsonl`, UUID)
+    const unrelated = writeCopy(
+      expectedDirName(projectDir),
+      `keep_99999999-9999-9999-9999-999999999999.jsonl`,
+      '99999999-9999-9999-9999-999999999999'
+    )
+    // A second copy is not enough to fail — the sweep removes it — so make the
+    // hashed copy's directory unwritable (skipped for root, which ignores that).
+    if (process.getuid?.() === 0) {
+      expect(await deleteSessionFileEverywhere(legacy, agentDir)).toBe(true)
+      return
+    }
+    chmodSync(hashedDir, 0o500)
+    try {
+      expect(await deleteSessionFileEverywhere(legacy, agentDir)).toBe(false)
+      expect(existsSync(hashed)).toBe(true)
+      // The unrelated session is untouched.
+      expect(existsSync(unrelated)).toBe(true)
+    } finally {
+      chmodSync(hashedDir, 0o700)
+    }
+    // Once the blocked copy is removable again, the sweep completes.
+    expect(await deleteSessionCopiesByUuid(UUID, agentDir)).toBe(true)
+    expect(await findSessionFilesByUuid(UUID, agentDir)).toEqual([])
+  })
+
+  it('deleteSessionCopiesByUuid reports success for an already-deleted uuid', async () => {
+    expect(await deleteSessionCopiesByUuid(UUID, agentDir)).toBe(true)
+  })
+
+  it('deleteSessionCopiesByUuid refuses malformed uuids', async () => {
+    writeCopy(expectedDirName(projectDir), `a_${UUID}.jsonl`, UUID)
+    expect(await deleteSessionCopiesByUuid('../escape', agentDir)).toBe(false)
+    expect(await deleteSessionCopiesByUuid('', agentDir)).toBe(false)
+    // Untouched.
+    expect(await findSessionFilesByUuid(UUID, agentDir)).toHaveLength(1)
   })
 })

@@ -99,7 +99,7 @@ import {
   getCheckpoint
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
-import { listSessionHistory, deleteSessionFile, listAllSessions } from './sessionHistory'
+import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions } from './sessionHistory'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
@@ -830,11 +830,28 @@ export function registerIpc() {
         workspaceRealPath: resolved.realPath,
         ownerWebContentsId: event.sender.id
       }, async (filePath) => {
-        const result = await deleteSessionFile(filePath)
+        // Copy-proof: sweep same-uuid copies in every layout, or the scanner
+        // resurrects the session from its legacy/sanitized duplicate.
+        const result = await deleteSessionFileEverywhere(filePath)
         if (result) historySessionGrantManager.revoke(historyId)
         return result
       })
       return deleted === true
+    }
+  )
+
+  // Workspace-independent delete: a cross-project history row carries only its
+  // durable uuid — never a capability minted for the active workspace — so
+  // deleting it (e.g. after a failed restore) must not depend on which project
+  // is open. Main resolves the uuid to every transcript copy inside its own
+  // sessions root; the renderer never supplies a path.
+  ipcMain.handle(
+    IPC_CHANNELS.OMP_DELETE_SESSION_BY_UUID,
+    async (event: IpcMainInvokeEvent, grantId: string, uuid: unknown) => {
+      const resolved = requireGrant(grantId)
+      if (!resolved) return false
+      bindHistorySessionGrantOwnerCleanup(event)
+      return historySessionGrantManager.deleteByUuid(uuid)
     }
   )
 

@@ -122,6 +122,12 @@ export const IPC_CHANNELS = {
   KNOWLEDGE_WRITE: 'knowledge:write',
   OMP_RESUME_SESSION: 'omp:resume-session',
   OMP_DELETE_SESSION_FILE: 'omp:delete-session-file',
+  /**
+   * Delete every durable copy of one session uuid, in any project/layout.
+   * Authorization: any active workspace grant; resolution happens Main-side
+   * inside the runtime's sessions root (the renderer never sends a path).
+   */
+  OMP_DELETE_SESSION_BY_UUID: 'omp:delete-session-by-uuid',
   OMP_SET_SESSION_NAME: 'omp:set-session-name',
   OMP_GET_SUBAGENTS: 'omp:get-subagents',
   OMP_GET_SUBAGENT_MESSAGES: 'omp:get-subagent-messages',

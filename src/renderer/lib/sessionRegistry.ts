@@ -146,6 +146,17 @@ export function removeHistoryRecord(records: SessionRecord[], historyId: string)
   return records.filter((record) => record.history?.id !== historyId || record.isLive)
 }
 
+/**
+ * Purge a deleted session's durable uuid from the registry across ALL
+ * workspaces — capability ids are per-workspace and per-refresh, but the uuid
+ * is the durable identity a rescan can resurface. Live records are kept: they
+ * own a running process, not just a discovered file.
+ */
+export function purgeHistoryUuid(records: SessionRecord[], uuid: string): SessionRecord[] {
+  if (!uuid) return records
+  return records.filter((record) => record.isLive || record.history?.uuid !== uuid)
+}
+
 export function recordsForWorkspace(records: SessionRecord[], workspaceRealPath: string | null): SessionRecord[] {
   if (!workspaceRealPath) return []
   return records.filter((record) => record.workspaceRealPath === workspaceRealPath)
