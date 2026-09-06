@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect, ClipboardEvent, KeyboardEvent } from 'react'
+import { useState, useRef, useMemo, useEffect, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
 import {
   ArrowUp,
   Square,
@@ -61,6 +61,19 @@ const IMAGE_ERROR_KEYS = {
   readFailed: 'composer.imageReadFailed'
 } as const
 
+/**
+ * One item captured synchronously from a drop. `File` objects and entries go
+ * stale once the drop handler yields, so everything we need is copied out up
+ * front and path resolution happens afterwards.
+ */
+interface DroppedEntry {
+  file: File | null
+  /** Entry-API directory flag: Finder folders arrive with no mime type. */
+  isDirectory: boolean
+  /** Display name, the fallback when no filesystem path can be resolved. */
+  name: string
+}
+
 function toPromptImages(images: PendingImage[]): PromptImage[] {
   return images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }))
 }
@@ -95,7 +108,7 @@ function autosize(el: HTMLTextAreaElement | null) {
   el.style.height = `${Math.min(el.scrollHeight, 160)}px`
 }
 
-export default function Composer({
+export default memo(function Composer({
   onSend,
   onStop,
   busy,
@@ -116,6 +129,9 @@ export default function Composer({
   const steeringQueuedIdRef = useRef<string | null>(null)
   const [loadedSessionId, setLoadedSessionId] = useState<string | null | undefined>(undefined)
   const [imageError, setImageError] = useState<keyof typeof IMAGE_ERROR_KEYS | null>(null)
+  /** A file drag hovers over the composer; drives the drop-zone highlight. */
+  const [dropping, setDropping] = useState(false)
+  const dragDepth = useRef(0)
   const [projectFiles, setProjectFiles] = useState<string[]>([])
   const filesLoadedAt = useRef(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -344,22 +360,20 @@ export default function Composer({
     })
   }
 
-  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(e.clipboardData?.items ?? [])
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter((f): f is File => f !== null)
-    if (files.length === 0) return
-    e.preventDefault()
+  /** Shared image staging pipeline for pasted and dropped files. */
+  const stageImageFiles = (files: File[]) => {
+    const remaining = Math.max(0, MAX_IMAGES - images.length)
+    let claimed = 0
     for (const file of files) {
       if (file.size > MAX_IMAGE_BYTES) {
         setImageError('tooLarge')
         continue
       }
-      if (images.length >= MAX_IMAGES) {
+      if (claimed >= remaining) {
         setImageError('max')
         continue
       }
+      claimed += 1
       const mimeType = file.type || 'image/png'
       const reader = new FileReader()
       reader.onload = () => {
@@ -370,6 +384,106 @@ export default function Composer({
       }
       reader.readAsDataURL(file)
     }
+  }
+
+  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f !== null)
+    if (files.length === 0) return
+    e.preventDefault()
+    stageImageFiles(files)
+  }
+
+  /** Resolve dropped files/folders to absolute paths and @-reference them at the caret. */
+  const insertDroppedPaths = (dropped: DroppedEntry[]) => {
+    const refs = dropped
+      .map((entry) => {
+        if (entry.file) {
+          try {
+            const resolved = window.electronAPI.getPathForFile(entry.file)
+            if (resolved) return resolved
+          } catch {
+            // Virtual files (dragged out of another app) carry no filesystem path.
+          }
+        }
+        return entry.name
+      })
+      .filter(Boolean)
+    if (refs.length === 0) return
+    const insertion = refs.map((path) => `@${path} `).join('\n')
+    replaceRange(caret, caret, insertion)
+  }
+
+  /**
+   * Route a drop: images join the staging pipeline, everything else (files,
+   * folders, archives) becomes an @path reference at the caret. Items are
+   * snapshotted synchronously — File objects go stale once this handler yields.
+   */
+  const routeDroppedItems = (dt: DataTransfer) => {
+    const entries: DroppedEntry[] = []
+    for (const item of Array.from(dt.items ?? [])) {
+      let isDirectory = false
+      let entryName = ''
+      try {
+        const entry = item.webkitGetAsEntry()
+        isDirectory = entry?.isDirectory ?? false
+        entryName = entry?.name ?? ''
+      } catch {
+        // Synthetic/internal drags can carry stale entries; files still work.
+      }
+      const file = item.getAsFile()
+      if (file || entryName) entries.push({ file, isDirectory, name: file?.name || entryName })
+    }
+    if (entries.length === 0) {
+      for (const file of Array.from(dt.files)) {
+        entries.push({ file, isDirectory: false, name: file.name })
+      }
+    }
+    const imageFiles: File[] = []
+    const pathEntries: DroppedEntry[] = []
+    for (const entry of entries) {
+      if (entry.file && entry.file.type.startsWith('image/') && !entry.isDirectory) {
+        imageFiles.push(entry.file)
+      } else {
+        pathEntries.push(entry)
+      }
+    }
+    if (imageFiles.length > 0) stageImageFiles(imageFiles)
+    if (pathEntries.length > 0) insertDroppedPaths(pathEntries)
+  }
+
+  const hasFileDrag = (e: DragEvent<HTMLDivElement>) => e.dataTransfer.types.includes('Files')
+
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFileDrag(e)) return
+    e.preventDefault()
+    dragDepth.current += 1
+    setDropping(true)
+  }
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFileDrag(e)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasFileDrag(e)) return
+    // enter/leave fire for every child crossed; the depth counter only
+    // reaches zero when the drag truly exits the composer, so the
+    // highlight never flickers while moving over children.
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDropping(false)
+  }
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFileDrag(e)) return
+    e.preventDefault()
+    dragDepth.current = 0
+    setDropping(false)
+    routeDroppedItems(e.dataTransfer)
   }
 
   const handlePickImage = async () => {
@@ -696,12 +810,26 @@ export default function Composer({
           </div>
         )}
         <div
-          className={`rounded-[16px] border border-line bg-ink-850 p-2 shadow-composer transition-all duration-200 ease-standard ${
-            disabled
-              ? ''
-              : 'focus-within:border-accent/40 focus-within:shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`relative rounded-[16px] border bg-ink-850 p-2 shadow-composer transition-all duration-200 ease-standard ${
+            dropping
+              ? 'border-dashed border-accent/70 shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
+              : disabled
+                ? 'border-line'
+                : 'border-line focus-within:border-accent/40 focus-within:shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
           }`}
         >
+          {dropping && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[16px] bg-ink-950/45">
+              <div className="flex items-center gap-1.5 rounded-full border border-accent/50 bg-ink-900 px-3 py-1 text-[11px] font-medium text-cream-dim shadow-pop">
+                <ImageIcon size={12} className="text-accent" />
+                <span>{t('composer.dropHint')}</span>
+              </div>
+            </div>
+          )}
           {queue.length > 0 && (
             <div className="flex flex-col gap-1.5 px-1.5 pb-2 pt-0.5">
               <div className="px-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
@@ -888,4 +1016,12 @@ export default function Composer({
       </div>
     </div>
   )
-}
+})
+
+/**
+ * Memoized: ChatPanel re-renders on every streaming delta; the composer's
+ * props (primitives + ChatPanel-stabilized callbacks) do not change then, so
+ * the whole input surface — pickers included — skips those renders. Typing
+ * latency depends on this: the textarea must not re-render on unrelated
+ * store churn.
+ */

@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { SessionEvent } from '@shared/types'
 import { useAppStore } from './store'
 import { useT } from './i18n'
+import { useWindowDropGuard } from './lib/useWindowDropGuard'
 import Layout from './components/Layout'
 import ChatPage from './pages/ChatPage'
 import SetupWizard from './pages/SetupWizard'
@@ -69,6 +70,8 @@ class RendererErrorBoundary extends Component<
 }
 
 function App() {
+  // File drags that miss every drop zone must not navigate the window.
+  useWindowDropGuard()
   const {
     setupComplete,
     setTheme,
