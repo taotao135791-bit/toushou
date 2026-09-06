@@ -34,6 +34,21 @@ import Logo from './Logo'
 
 const EMPTY_MESSAGES: Record<string, MessageLike[]> = {}
 
+// Sidebar drag-resize bounds (px). The min keeps the widest row (a live
+// session with its three action buttons) from overflowing; the max leaves the
+// chat pane readable. Matches mature desktop agent apps.
+const SIDEBAR_MIN_WIDTH = 208
+const SIDEBAR_MAX_WIDTH = 420
+const SIDEBAR_DEFAULT_WIDTH = 240
+
+const clampSidebarWidth = (width: number): number => {
+  if (!Number.isFinite(width)) return SIDEBAR_DEFAULT_WIDTH
+  // Never starve the main pane below the sidebar's own minimum; the floor
+  // keeps tiny windows clamped to the min instead of an impossible range.
+  const windowBound = Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - SIDEBAR_MIN_WIDTH)
+  return Math.round(Math.min(SIDEBAR_MAX_WIDTH, windowBound, Math.max(SIDEBAR_MIN_WIDTH, width)))
+}
+
 export default function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -83,6 +98,68 @@ export default function Sidebar() {
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null)
   const [restoreFailedHistoryId, setRestoreFailedHistoryId] = useState<string | null>(null)
   const [deleteFailedHistoryId, setDeleteFailedHistoryId] = useState<string | null>(null)
+
+  // Sidebar width. Persisted through Main's typed settings store, like every
+  // other UI pref (theme, language, pinned ids). A drag writes the width
+  // straight onto the <aside> via ref — no React render per pointermove — and
+  // the state below only commits on release so renders stay consistent.
+  const asideRef = useRef<HTMLElement>(null)
+  const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH)
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
+  const [sidebarResizing, setSidebarResizing] = useState(false)
+
+  // Restore the persisted width on mount, clamped against the live window.
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI.getStore('sidebarWidth').then((width) => {
+      if (cancelled || sidebarDragRef.current) return
+      const next = clampSidebarWidth(width)
+      sidebarWidthRef.current = next
+      setSidebarWidth(next)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const commitSidebarWidth = (width: number) => {
+    const next = clampSidebarWidth(width)
+    sidebarWidthRef.current = next
+    setSidebarWidth(next)
+    void window.electronAPI.setStore('sidebarWidth', next)
+  }
+
+  const handleResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || sidebarDragRef.current) return
+    e.preventDefault()
+    sidebarDragRef.current = { startX: e.clientX, startWidth: sidebarWidthRef.current }
+    // Capture so the drag keeps tracking when the pointer leaves the handle.
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setSidebarResizing(true)
+    document.body.classList.add('sidebar-resizing')
+  }
+
+  const handleResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = sidebarDragRef.current
+    if (!drag || !asideRef.current) return
+    const next = clampSidebarWidth(drag.startWidth + (e.clientX - drag.startX))
+    if (next === sidebarWidthRef.current) return
+    sidebarWidthRef.current = next
+    asideRef.current.style.width = `${next}px`
+  }
+
+  const handleResizeEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!sidebarDragRef.current) return
+    sidebarDragRef.current = null
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    setSidebarResizing(false)
+    document.body.classList.remove('sidebar-resizing')
+    commitSidebarWidth(sidebarWidthRef.current)
+  }
+
   const notice = useNotice()
   const searching = query.trim().length > 0
   const searchMessages = useAppStore((s) => (searching ? s.messages : EMPTY_MESSAGES))
@@ -487,8 +564,10 @@ export default function Sidebar() {
             {formatRelativeTime(session.createdAt, language)}
           </div>
         </div>
+        {/* min-w-0 + shrink: at the sidebar's min width the fixed action
+            buttons win and the status label truncates instead of overflowing */}
         <span
-          className={`w-16 shrink-0 truncate text-right text-[10px] font-medium ${
+          className={`w-16 min-w-0 shrink truncate text-right text-[10px] font-medium ${
             status === 'error'
               ? 'text-red-500'
               : status === 'attention'
@@ -643,9 +722,29 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-line bg-ink-900">
+    <aside
+      ref={asideRef}
+      style={{ width: sidebarWidth }}
+      className="relative flex shrink-0 flex-col border-r border-line bg-ink-900"
+    >
       {/* drag spacer — clears the macOS traffic lights */}
       <div className="app-drag h-11 shrink-0" />
+
+      {/* Resize handle: spans everything below the drag spacer so it never
+          fights window dragging, overlays the border, highlights on hover,
+          and resets to the default on double-click. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        onPointerDown={handleResizeStart}
+        onPointerMove={handleResizeMove}
+        onPointerUp={handleResizeEnd}
+        onPointerCancel={handleResizeEnd}
+        onDoubleClick={() => commitSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
+        className={`app-no-drag absolute bottom-0 right-0 top-11 z-20 w-[5px] touch-none cursor-col-resize transition-colors duration-150 ${
+          sidebarResizing ? 'bg-accent/50' : 'hover:bg-accent/25'
+        }`}
+      />
 
       <div className="app-drag flex items-center justify-between px-3.5 pb-3">
         <div className="flex items-center gap-2.5">

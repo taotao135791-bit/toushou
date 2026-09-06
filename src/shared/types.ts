@@ -1432,6 +1432,8 @@ export interface AppSettings {
   pinnedSessionIds: string[]
   /** Sidebar: sessions folded away into the archived group. */
   archivedSessionIds: string[]
+  /** Sidebar: last drag-chosen width in px; the renderer clamps it on read. */
+  sidebarWidth: number
   /** Version stamps + user-removal marks for app-bundled packages. */
   bundledPackages: Record<string, { version: string; userRemoved: boolean }>
   /** Experimental one-click Feishu PersonalAgent registration. */
@@ -1499,6 +1501,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notificationPreviews: false,
   pinnedSessionIds: [],
   archivedSessionIds: [],
+  sidebarWidth: 240,
   bundledPackages: {},
   feishuExperimentalPersonalAgentRegistration: true,
   showDevChrome: false,

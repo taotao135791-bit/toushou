@@ -147,6 +147,14 @@
     -webkit-app-region: no-drag;
   }
 
+  /* Sidebar drag-resize: while the pointer is captured, keep the col-resize
+     cursor stable even off the handle and suppress in-flight text selection. */
+  body.sidebar-resizing {
+    cursor: col-resize;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
   /* Keyboard hint — mono, bordered chip */
   .kbd {
     @apply rounded border border-line bg-overlay px-1 py-px font-mono text-[10px] leading-4 text-cream-faint;
@@ -160,7 +168,7 @@
     box-shadow: 0 0 0 2px rgb(var(--bg-app)), 0 0 0 4px rgb(var(--accent) / 0.55);
   }
 
-  .msg-in {
+.msg-in {
     animation: msg-in 0.18s ease-out;
   }
   @keyframes msg-in {
