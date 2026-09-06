@@ -168,7 +168,20 @@
     box-shadow: 0 0 0 2px rgb(var(--bg-app)), 0 0 0 4px rgb(var(--accent) / 0.55);
   }
 
-.msg-in {
+  /* Long transcripts: let the compositor skip layout/paint of transcript rows
+     that are scrolled out of view. The intrinsic-size estimate deliberately
+     biases LARGE: when a skipped row near the scroll bottom renders for real,
+     an over-estimate shrinks scrollHeight (the browser re-clamps scrollTop to
+     the true bottom, so ChatPanel's pin-to-bottom stays glued), while an
+     under-estimate would grow it and could trip the 48px "pinned" threshold.
+     The `auto` keyword keeps each row's last rendered size, so rows that have
+     been on screen once (the normal streaming path) measure exactly. */
+  .msg-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 600px;
+  }
+
+  .msg-in {
     animation: msg-in 0.18s ease-out;
   }
   @keyframes msg-in {

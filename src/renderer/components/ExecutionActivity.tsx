@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { Bot, ChevronDown, ChevronRight, Loader2, MessageSquareText, Route } from 'lucide-react'
 import type { SubagentMessagesResult } from '@shared/types'
 import { useAppStore } from '../store'
@@ -76,11 +76,28 @@ function compactTask(agent: AgentNode): string | undefined {
   return agent.assignment ?? agent.task ?? agent.description ?? agent.currentTool
 }
 
+const TRAJECTORY_LIMIT = 12
+
+/**
+ * The trailing window of the session's trajectory, in chronological order.
+ * Walks the turns BACKWARDS and stops at the limit: the streaming fold appends
+ * one trajectory entry per batch, so scanning every turn's full history on
+ * each fold is O(total entries) per delta — this is O(limit) instead. The
+ * produced slice is identical to `flatMap(...).slice(-limit)`.
+ */
 function latestTrajectory(
   turnOrder: string[],
   turns: Record<string, { trajectory: TrajectoryEntry[] }>
 ): TrajectoryEntry[] {
-  return turnOrder.flatMap((id) => turns[id]?.trajectory ?? []).slice(-12)
+  const out: TrajectoryEntry[] = []
+  for (let t = turnOrder.length - 1; t >= 0 && out.length < TRAJECTORY_LIMIT; t -= 1) {
+    const entries = turns[turnOrder[t]]?.trajectory
+    if (!entries || entries.length === 0) continue
+    for (let i = entries.length - 1; i >= 0 && out.length < TRAJECTORY_LIMIT; i -= 1) {
+      out.push(entries[i])
+    }
+  }
+  return out.reverse()
 }
 
 /**
@@ -89,7 +106,12 @@ function latestTrajectory(
  * that uses subagents exposes the roster, trajectory facts and a read-only
  * child transcript action.
  */
-export default function ExecutionActivity({ sessionId }: { sessionId: string | null }) {
+/**
+ * Memoized: ChatPanel re-renders on every streaming delta, but this component
+ * only depends on `sessionId` (its projection subscription drives the live
+ * trajectory itself), so unrelated parent renders skip it.
+ */
+const ExecutionActivity = memo(function ExecutionActivity({ sessionId }: { sessionId: string | null }) {
   const projection = useAppStore((s) => (sessionId ? s.executions[sessionId] : undefined))
   const t = useT()
   const [open, setOpen] = useState(false)
@@ -230,4 +252,6 @@ export default function ExecutionActivity({ sessionId }: { sessionId: string | n
       )}
     </section>
   )
-}
+})
+
+export default ExecutionActivity

@@ -61,7 +61,7 @@ function MessageList({ messages, sessionId = null }: MessageListProps) {
       const inCurrentTurn = runStart > lastUserIdx
       const isTurnsLastGroup = lastToolIdx >= runStart && lastToolIdx < j
       nodes.push(
-        <div key={message.id} className={gapBefore(prev, false)}>
+        <div key={message.id} className={`msg-row ${gapBefore(prev, false)}`}>
           <ToolGroup
             run={run}
             // Only the live turn's groups follow the stream; historical
@@ -77,7 +77,7 @@ function MessageList({ messages, sessionId = null }: MessageListProps) {
       continue
     }
     nodes.push(
-      <div key={message.id} className={gapBefore(prev, message.role === 'user')}>
+      <div key={message.id} className={`msg-row ${gapBefore(prev, message.role === 'user')}`}>
         <MessageItem message={message} index={i} sessionId={sessionId} />
       </div>
     )

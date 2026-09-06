@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { Loader2 } from 'lucide-react'
 import { MessageLike } from '../store'
 import { TurnActivity, TurnSummary, TurnVerb } from '../lib/execution'
@@ -60,7 +61,7 @@ interface ToolGroupProps {
  * While the turn streams a live progress row sits on top; when it finishes a
  * muted elapsed caption closes the group.
  */
-export function ToolGroup({ run, streaming, activity, summary }: ToolGroupProps) {
+export const ToolGroup = memo(function ToolGroup({ run, streaming, activity, summary }: ToolGroupProps) {
   const t = useT()
   const live = streaming && activity
   return (
@@ -80,4 +81,23 @@ export function ToolGroup({ run, streaming, activity, summary }: ToolGroupProps)
       )}
     </div>
   )
+}, areToolGroupsEqual)
+
+/**
+ * MessageList rebuilds every `run` array on each streaming delta, so shallow
+ * prop equality would always fail. A group is unchanged when every member
+ * message kept its identity (message objects are immutable and stable until
+ * patched by a tool result), and streaming/activity/summary are unchanged.
+ * This keeps historical tool groups from re-rendering on each delta while
+ * the live turn's last group still follows the stream.
+ */
+function areToolGroupsEqual(prev: ToolGroupProps, next: ToolGroupProps): boolean {
+  if (prev.streaming !== next.streaming) return false
+  if (prev.activity !== next.activity || prev.summary !== next.summary) return false
+  if (prev.run === next.run) return true
+  if (prev.run.length !== next.run.length) return false
+  for (let i = 0; i < prev.run.length; i += 1) {
+    if (prev.run[i] !== next.run[i]) return false
+  }
+  return true
 }

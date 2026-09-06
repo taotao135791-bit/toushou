@@ -714,10 +714,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().setCheckpointUnavailable(sessionId, info === null)
   },
   setCliAvailable: (cliAvailable) => set({ cliAvailable }),
+  // Same-value writes are no-ops: repeated `working`/`idle` status events for
+  // a session must not replace the busy map (a new identity would re-render
+  // every Sidebar row subscriber) while a turn streams.
   setBusy: (sessionId, busy) =>
-    set((state) => ({ busy: { ...state.busy, [sessionId]: busy } })),
+    set((state) =>
+      state.busy[sessionId] === busy ? state : { busy: { ...state.busy, [sessionId]: busy } }
+    ),
   setSessionError: (sessionId, key) =>
-    set((state) => ({ sessionErrors: { ...state.sessionErrors, [sessionId]: key ?? undefined } })),
+    set((state) => {
+      const next = key ?? undefined
+      if (state.sessionErrors[sessionId] === next) return state
+      return { sessionErrors: { ...state.sessionErrors, [sessionId]: next } }
+    }),
   clearSessionErrorIf: (sessionId, key) =>
     set((state) => {
       if (state.sessionErrors[sessionId] !== key) return state
@@ -793,7 +802,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         runtimeModel: snap.modelSelector,
         runtimeThinking: snap.thinkingLevel
       })
-      set((state) => ({ busy: { ...state.busy, [sessionId]: true } }))
+      get().setBusy(sessionId, true)
       void window.electronAPI
         .sendMessage(sessionId, next.text, next.images)
         .then((sent) => {
@@ -807,7 +816,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           } else {
             // The session died underneath the queue: stop draining into
             // the void — drop the rest, release busy, flag the failure.
-            set((state) => ({ busy: { ...state.busy, [sessionId]: false } }))
+            get().setBusy(sessionId, false)
             get().clearQueuedMessages(sessionId)
             get().setSessionError(sessionId, 'chat.sendFailed')
             get().updateMessage(sessionId, bubbleId, { failed: true })
@@ -822,7 +831,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       steeringQueuedIds: { ...state.steeringQueuedIds, [sessionId]: [] }
     })),
   setCompacting: (sessionId, compacting) =>
-    set((state) => ({ compacting: { ...state.compacting, [sessionId]: compacting } })),
+    set((state) =>
+      state.compacting[sessionId] === compacting
+        ? state
+        : { compacting: { ...state.compacting, [sessionId]: compacting } }
+    ),
   setStats: (sessionId, stats) =>
     set((state) => ({ stats: { ...state.stats, [sessionId]: stats } })),
   setPinnedSessionIds: (pinnedSessionIds) => set({ pinnedSessionIds }),
@@ -844,7 +857,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { archivedSessionIds }
     }),
   markSessionUnread: (sessionId) =>
-    set((state) => ({ unreadSessionIds: { ...state.unreadSessionIds, [sessionId]: true } })),
+    set((state) =>
+      state.unreadSessionIds[sessionId] === true
+        ? state
+        : { unreadSessionIds: { ...state.unreadSessionIds, [sessionId]: true } }
+    ),
   setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
   setComposerAutosend: (composerAutosend) => set({ composerAutosend }),
   setComposerDraft: (sessionId, draft) =>
@@ -1091,15 +1108,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const wasBusy = Boolean(get().busy[event.sessionId])
       const nextBusy = STATUS_BUSY[event.status]
       if (event.status === 'working') {
-        set((state) => ({ busy: { ...state.busy, [event.sessionId]: true } }))
+        get().setBusy(event.sessionId, true)
       } else if (nextBusy === true) {
         // waiting_for_user / aborting: the turn is still open — stay busy.
-        set((state) => ({ busy: { ...state.busy, [event.sessionId]: true } }))
+        get().setBusy(event.sessionId, true)
       } else if (nextBusy === false) {
         // Turn ended: close any open thinking run and clear busy. The turn's
         // summary is derived from the execution projection — never a second copy.
         get().finalizeThinking(event.sessionId)
-        set((state) => ({ busy: { ...state.busy, [event.sessionId]: false } }))
+        get().setBusy(event.sessionId, false)
       }
       // Statuses outside STATUS_BUSY leave busy/turn state untouched.
       // working→idle with a non-empty queue: send the next queued message.

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react'
+import { useCallback, useRef, useEffect, useState } from 'react'
 import { FolderOpen, FolderPlus, MessageSquare, Download, Loader2, ChevronRight, ChevronDown, PanelRight } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
@@ -150,70 +150,75 @@ export default function ChatPanel() {
     }, 500)
   }
 
-  const handleSend = async (text: string, images?: PromptImage[]): Promise<boolean> => {
-    const trimmed = text.trim()
-    if (!trimmed || cliAvailable === false) return false
-    let sessionId = currentSessionId
-    if (!sessionId) {
-      try {
-        sessionId = await createSessionForCurrentProject()
-      } catch (err) {
-        // Session creation throws on an invalid grant — fail loudly and let
-        // the composer restore the draft instead of losing it to a rejection.
-        console.error('Session creation failed:', err)
-        setSendError('chat.createFailed')
-        setTimeout(() => setSendError(null), 3000)
-        return false
-      }
+  // useCallback-stabilized: Composer is memoized, so identity-stable handlers
+  // are what let the input surface skip streaming re-renders entirely.
+  const handleSend = useCallback(
+    async (text: string, images?: PromptImage[]): Promise<boolean> => {
+      const trimmed = text.trim()
+      if (!trimmed || cliAvailable === false) return false
+      let sessionId = currentSessionId
       if (!sessionId) {
-        // No workspace could be resolved (default workspace creation failed).
-        setSendError('chat.createFailed')
-        setTimeout(() => setSendError(null), 3000)
+        try {
+          sessionId = await createSessionForCurrentProject()
+        } catch (err) {
+          // Session creation throws on an invalid grant — fail loudly and let
+          // the composer restore the draft instead of losing it to a rejection.
+          console.error('Session creation failed:', err)
+          setSendError('chat.createFailed')
+          setTimeout(() => setSendError(null), 3000)
+          return false
+        }
+        if (!sessionId) {
+          // No workspace could be resolved (default workspace creation failed).
+          setSendError('chat.createFailed')
+          setTimeout(() => setSendError(null), 3000)
+          return false
+        }
+      }
+      const store = useAppStore.getState()
+      store.setSessionError(sessionId, null)
+      // The user bubble lands immediately; the runtime snapshot below (a
+      // get_state RPC with an 8s timeout on a hung session) resolves
+      // concurrently and tags the message whenever it comes back.
+      const snapshot = captureSessionSnapshot(sessionId)
+      const messageId = crypto.randomUUID()
+      store.addMessage(sessionId, {
+        id: messageId,
+        role: 'user',
+        kind: 'prompt',
+        content: trimmed,
+        images: images?.map(({ data, mimeType }) => ({ data, mimeType }))
+      })
+      // Snapshot the worktree BEFORE the prompt can make its first edit, so the
+      // checkpoint really is the "before" state of this turn.
+      const list = useAppStore.getState().messages[sessionId] || []
+      await store.createCheckpointForMessage(sessionId, list.length - 1, trimmed)
+      // Optimistic: show the working state until agent_end / error lands
+      store.setBusy(sessionId, true)
+      const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images)
+      if (!sent) {
+        // The session's process is gone: never leave "Running" on and never
+        // drain the parked queue into the void — flag the failure instead.
+        store.setBusy(sessionId, false)
+        store.clearQueuedMessages(sessionId)
+        store.setSessionError(sessionId, 'chat.sendFailed')
+        store.updateMessage(sessionId, messageId, { failed: true })
         return false
       }
-    }
-    const store = useAppStore.getState()
-    store.setSessionError(sessionId, null)
-    // The user bubble lands immediately; the runtime snapshot below (a
-    // get_state RPC with an 8s timeout on a hung session) resolves
-    // concurrently and tags the message whenever it comes back.
-    const snapshot = captureSessionSnapshot(sessionId)
-    const messageId = crypto.randomUUID()
-    store.addMessage(sessionId, {
-      id: messageId,
-      role: 'user',
-      kind: 'prompt',
-      content: trimmed,
-      images: images?.map(({ data, mimeType }) => ({ data, mimeType }))
-    })
-    // Snapshot the worktree BEFORE the prompt can make its first edit, so the
-    // checkpoint really is the "before" state of this turn.
-    const list = useAppStore.getState().messages[sessionId] || []
-    await store.createCheckpointForMessage(sessionId, list.length - 1, trimmed)
-    // Optimistic: show the working state until agent_end / error lands
-    store.setBusy(sessionId, true)
-    const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images)
-    if (!sent) {
-      // The session's process is gone: never leave "Running" on and never
-      // drain the parked queue into the void — flag the failure instead.
-      store.setBusy(sessionId, false)
-      store.clearQueuedMessages(sessionId)
-      store.setSessionError(sessionId, 'chat.sendFailed')
-      store.updateMessage(sessionId, messageId, { failed: true })
-      return false
-    }
-    // Tag the turn with the ACTUAL dispatch-time model/thinking — the
-    // historical turn keeps what it ran under, never later session state.
-    void snapshot.then((snap) => {
-      useAppStore.getState().updateMessage(sessionId, messageId, {
-        runtimeModel: snap.modelSelector,
-        runtimeThinking: snap.thinkingLevel
+      // Tag the turn with the ACTUAL dispatch-time model/thinking — the
+      // historical turn keeps what it ran under, never later session state.
+      void snapshot.then((snap) => {
+        useAppStore.getState().updateMessage(sessionId, messageId, {
+          runtimeModel: snap.modelSelector,
+          runtimeThinking: snap.thinkingLevel
+        })
       })
-    })
-    // First user message of an untitled session becomes its name
-    void store.maybeNameSession(sessionId, trimmed)
-    return true
-  }
+      // First user message of an untitled session becomes its name
+      void store.maybeNameSession(sessionId, trimmed)
+      return true
+    },
+    [currentSessionId, cliAvailable]
+  )
 
   const handleExport = async () => {
     if (!currentSessionId || exporting) return
@@ -234,7 +239,7 @@ export default function ChatPanel() {
     }
   }
 
-  const handleStop = async () => {
+  const handleStop = useCallback(async () => {
     const sid = currentSessionId
     if (!sid || stoppingSessionId === sid) return
     const store = useAppStore.getState()
@@ -275,9 +280,9 @@ export default function ChatPanel() {
       setStoppingSessionId(null)
       store.setSessionError(sid, 'chat.stopFailed')
     }
-  }
+  }, [t, currentSessionId, stoppingSessionId])
 
-  const handleCompact = async () => {
+  const handleCompact = useCallback(async () => {
     const sid = currentSessionId
     if (!sid) return
     const store = useAppStore.getState()
@@ -286,7 +291,7 @@ export default function ChatPanel() {
     useAppStore.getState().setCompacting(sid, false)
     const stats = await window.electronAPI.getSessionStats(sid)
     if (stats) useAppStore.getState().setStats(sid, stats)
-  }
+  }, [currentSessionId])
 
   const handleSelectProject = async () => {
     await selectWorkspace()
