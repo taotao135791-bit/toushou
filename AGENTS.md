@@ -36,7 +36,7 @@ work reviewable and preserves the Electron security boundary.
 雷达按文件探测，本台按意图协调：vibe coding 无法预知 AI 会改哪些文件，
 因此每个 coding agent 在**任务开始前**先申报"要做什么"，先到先得拿锁：
 
-    node tools/intent-hub/cli.js --user <花名> --title "<一句话说明功能或 bug>" \
+    node tools/intent-hub/cli.js --title "<一句话说明功能或 bug>" \
       --scope <目录1> [目录2 …] --branch <分支>
 
 默认走 Tailscale MagicDNS 设备名（http://leoliumacbook-air:8788，团队

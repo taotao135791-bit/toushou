@@ -1,22 +1,35 @@
 #!/usr/bin/env node
 /* 意图中台 · 客户端（AI 开工前调用）
- * 上报: node cli.js --user 花名 --title "要做的事" --scope 目录1 目录2 --server http://IP:8788
- * 查看: node cli.js --list --server http://IP:8788
- * 关闭: node cli.js --close 3 --server http://IP:8788
+ * 上报: node cli.js --title "要做的事" --scope 目录1 目录2 --branch 分支
+ *       （--user 可省略：默认取 git 提交身份，与 PR/blame 天然对应；
+ *         想用自选花名展示才需要显式传 --user）
+ * 查看: node cli.js --list
+ * 关闭: node cli.js --close 3
  *
+ * 服务器默认走 Tailscale MagicDNS 设备名（leoliumacbook-air:8788），--server 可覆盖。
  * 退出码: 0=拿到绿灯已登记 / 2=被先到先得锁拦下（打印持锁人，停止本次修改并报告用户）
  *         1=服务不可达（报告一次后继续，不阻塞）
  */
+const { execFileSync } = require('child_process');
 const args = process.argv.slice(2);
 const get = (k, d) => {
   const i = args.indexOf('--' + k);
   return i >= 0 && args[i + 1] ? args[i + 1] : d;
 };
 const SERVER = get('server', 'http://leoliumacbook-air:8788');
-const USER = get('user', '');
 const TITLE = get('title', '');
 const CLOSE_ID = get('close', '');
 const LIST = args.includes('--list');
+
+/** git 提交身份作为默认花名：PR 作者、blame、意图三者天然对齐。 */
+function defaultUser() {
+  try {
+    return execFileSync('git', ['config', 'user.name'], { encoding: 'utf8' }).trim();
+  } catch {
+    return '';
+  }
+}
+const USER = get('user', '') || defaultUser();
 
 async function main() {
   if (LIST) {
@@ -46,7 +59,7 @@ async function main() {
     return 0;
   }
   if (!USER || !TITLE) {
-    console.error('需要 --user 与 --title（可加 --scope 目录1 目录2 与 --branch 分支名）');
+    console.error('需要 --title（可加 --scope 目录1 目录2 与 --branch 分支名）；--user 缺省时取 git user.name，当前未能取得，请显式传入');
     return 1;
   }
   const scopeStart = args.indexOf('--scope');

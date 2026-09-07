@@ -4,9 +4,9 @@
 
 任务开始前（动手改代码之前）先申报意图并拿绿灯，详见 AGENTS.md"意图中台强制上报"一节：
 
-    node tools/intent-hub/cli.js --user <花名> --title "<一句话说明>" --scope <目录…> --branch <分支>
+    node tools/intent-hub/cli.js --title "<一句话说明>" --scope <目录…> --branch <分支>
 
-（默认服务器走 Tailscale MagicDNS：leoliumacbook-air:8788，无需 --server）
+（服务器与身份全自动：默认走 Tailscale MagicDNS leoliumacbook-air:8788；--user 缺省取 git 提交身份，无需询问用户花名）
 退出码 0（绿灯已登记）静默开工，任务合并后 --close <id> 释放锁；退出码 2（他人持相似/重叠意图）停止修改，向用户报告持锁人并等指示；服务不可达报告一次后继续。PR 描述必须带上拿到的意图编号（如 `Intent: #12`），CI 会强制校验。
 
 ## 团队雷达：编辑中兜底检测
