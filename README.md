@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.11.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.11.0) 下载：
+当前版本 v0.11.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.11.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.1/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.1/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.11.1：主页输入框改为三段式布局（对齐 ZCode）。顶部为上下文行：当前项目 + git 分支芯片（非 git 项目自动隐藏）；中间输入区支持长草稿展开（约 288px 后滚动）；底部动作行左侧为"+"内容菜单（图片/附件）与权限选择，右侧为模型、思考级别与加粗的方形发送按钮。
 
 v0.11.0：Agent 底座升级（对标 ZCode / 豆包 / ChatGPT 桌面版）。**会话归档与排序**——每行可归档，侧栏底部聚合"已归档"区（可展开、可取消归档、可删除），新增排序切换（最近活动/名称）；**逐轮文件改动+撤销**——每轮结束后在对话里显示"已更改 N 个文件（+增/-删）"，可展开文件清单（新增/修改/删除徽标），一键撤销恢复到本轮之前（基于 git 检查点，非 git 项目自动隐藏）；**定时任务按项目分组**；**输入框新增当前项目芯片**；设置页运行时探测改为先骨架后报错，不再闪"无法加载运行时设置"。
 
