@@ -24,7 +24,7 @@ describe('redactSecrets', () => {
       '"data":"{\\"app_id\\":\\"cli_aa102c3a72b85cd1\\",\\"app_secret\\":\\"ngHyx8UixYxB2nfLWJpaHeGVLiXlXqQy\\"}"'
     const redacted = redactSecrets(line)
     expect(redacted).not.toContain('ngHyx8UixYxB2nfLWJpaHeGVLiXlXqQy')
-    expect(redacted).toContain('\\\\"app_secret\\\\":\\\\"***\\\\"')
+    expect(redacted).toContain('\\"app_secret\\":\\"***\\"')
     expect(redacted).toContain('cli_aa102c3a72b85cd1')
   })
 
