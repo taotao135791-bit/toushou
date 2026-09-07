@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.12.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.12.0) 下载：
+当前版本 v0.12.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.12.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.1/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.1/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.12.1：对话顶栏升级（对齐 ZCode）。标题前置，项目与 git 分支改为胶囊芯片常驻顶栏（分支不再藏在"开发者元素"开关里，非 git 工作区自动隐藏）；顶栏右侧新增**"打开方式"菜单**——在 Finder 中显示 / 在终端中打开 / 在 VS Code 中打开，经新的工作区授权通道解析路径（渲染层永不传路径），应用未安装时本地化提示；输入框的上下文芯片行只在主页显示，聊天页由顶栏承载，两处不再重复。
 
 v0.12.0：飞书会话与应用无缝联动。在飞书发消息，投手侧栏立刻出现带飞书徽标的会话行（私聊/群聊自动命名），未读角标、归档、删除一应俱全；点开即见完整对话（含开启前的历史，经新的会话转录通道回填）；在应用里继续回复，回复仍会同步送回原飞书会话（输入框有明确提示）；应用侧发送与飞书只读权限模型不变，路由索引仍归主进程所有。
 
