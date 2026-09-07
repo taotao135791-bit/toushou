@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>意图中台 · 开工前申报看板</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #0e1116; color: #e6e1d7; padding: 24px; }
+  h1 { font-size: 18px; font-weight: 600; }
+  .sub { color: #8b8577; font-size: 12px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .card { border: 1px solid #2a2f3a; border-radius: 12px; padding: 14px; background: #161b24; }
+  .card .who { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .card .user { font-weight: 700; font-size: 14px; }
+  .card .id { color: #8b8577; font-size: 11px; font-family: monospace; }
+  .card .title { font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+  .card .meta { color: #8b8577; font-size: 11px; line-height: 1.7; }
+  .card .meta code { background: #1f2531; border-radius: 4px; padding: 0 4px; font-size: 10px; }
+  .empty { color: #8b8577; font-size: 13px; padding: 40px 0; text-align: center; }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #34d399;
+           margin-right: 6px; animation: p 2s infinite; }
+  @keyframes p { 0%,100% {opacity:1} 50% {opacity:.35} }
+</style>
+</head>
+<body>
+  <h1><span class="pulse"></span>意图中台</h1>
+  <div class="sub">先到先得锁 · 活跃意图 24 小时自动过期 · 每 5 秒刷新</div>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" hidden>当前没有进行中的意图，全场空闲</div>
+<script>
+  const fmtAge = (ms) => {
+    const m = Math.round(ms / 60000);
+    return m < 60 ? m + ' 分钟' : Math.round(m / 60) + ' 小时';
+  };
+  const esc = (s) => String(s || '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  async function tick() {
+    try {
+      const data = await (await fetch('/state')).json();
+      const grid = document.getElementById('grid');
+      const empty = document.getElementById('empty');
+      const rows = data.intents || [];
+      empty.hidden = rows.length > 0;
+      grid.innerHTML = rows.map((r) => `
+        <div class="card">
+          <div class="who"><span class="user">${esc(r.user)}</span><span class="id">#${r.id}</span></div>
+          <div class="title">${esc(r.title)}</div>
+          <div class="meta">
+            ${r.branch ? '分支 <code>' + esc(r.branch) + '</code><br>' : ''}
+            范围 <code>${esc((r.scope || []).join(' ') || '未声明')}</code><br>
+            ${fmtAge(data.now - r.registeredAt)}前申报
+          </div>
+        </div>`).join('');
+    } catch {}
+  }
+  tick();
+  setInterval(tick, 5000);
+</script>
+</body>
+</html>
