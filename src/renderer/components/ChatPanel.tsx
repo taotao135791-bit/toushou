@@ -14,9 +14,13 @@ import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
 import OpenWithMenu from './OpenWithMenu'
 import Logo from './Logo'
+import useElementWidth from '../lib/useElementWidth'
 
 const EMPTY_MESSAGES: MessageLike[] = []
 const EMPTY_UI_REQUESTS: UiRequest[] = []
+
+/** Below this chat-column width the header/toolbar collapse to icon-only. */
+const COMPACT_BREAKPOINT = 760
 
 
 export default function ChatPanel() {
@@ -75,6 +79,10 @@ export default function ChatPanel() {
   const [projectCreateFailed, setProjectCreateFailed] = useState(false)
 
   const isStopping = currentSessionId !== null && stoppingSessionId === currentSessionId
+
+  // The browser panel (or a small window) squeezes this column; compact
+  // flips once when the column crosses the breakpoint, never per pixel.
+  const { ref: columnRef, compact } = useElementWidth<HTMLDivElement>(COMPACT_BREAKPOINT)
 
   const toggleWorkspace = () => {
     if (workspacePanel) {
@@ -321,21 +329,22 @@ export default function ChatPanel() {
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div ref={columnRef} className="relative flex h-full flex-col">
       {/* status bar, doubles as window drag region */}
       <header className="app-drag flex h-12 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
         {/* ZCode-style order: bold session title first, then context pills */}
         <span className="min-w-0 shrink truncate text-[13px] font-semibold tracking-tight text-cream">
           {currentSession ? currentSession.title : t('chat.noActiveSession')}
         </span>
-        {/* project pill: full path on hover */}
+        {/* project pill: full path on hover; collapses to icon-only when the
+            column is squeezed (browser panel open) */}
         {projectName && currentWorkspace && (
           <span
             title={currentWorkspace.displayPath}
             className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
           >
             <FolderOpen size={12} className="shrink-0 text-accent" />
-            <span className="max-w-[160px] truncate">{projectName}</span>
+            {!compact && <span className="max-w-[160px] truncate">{projectName}</span>}
           </span>
         )}
         {/* branch pill: always on for git workspaces; GitChip hides itself
@@ -350,7 +359,7 @@ export default function ChatPanel() {
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-cream-dim">
-          {currentWorkspace && <OpenWithMenu workspaceId={currentWorkspace.id} />}
+          {currentWorkspace && <OpenWithMenu workspaceId={currentWorkspace.id} compact={compact} />}
           <button
             onClick={toggleWorkspace}
             aria-label={t('sidebar.workbench')}
@@ -527,6 +536,7 @@ export default function ChatPanel() {
                   disabled={cliAvailable === false}
                   commands={slashCommands}
                   onCompact={currentSessionId ? handleCompact : undefined}
+                  compact={compact}
                 />
               </div>
             </div>
@@ -579,6 +589,7 @@ export default function ChatPanel() {
             disabled={cliAvailable === false}
             commands={slashCommands}
             onCompact={currentSessionId ? handleCompact : undefined}
+            compact={compact}
           />
         </>
       )}

@@ -10,7 +10,14 @@ import MenuPortal from './MenuPortal'
  * external app (Finder / Terminal / VS Code). Only the workspace grant id
  * travels over IPC — Main resolves the real path itself.
  */
-export default function OpenWithMenu({ workspaceId }: { workspaceId: string }) {
+export default function OpenWithMenu({
+  workspaceId,
+  compact = false
+}: {
+  workspaceId: string
+  /** Squeezed chat column: drop the label, keep the icon (same signal as the composer). */
+  compact?: boolean
+}) {
   const t = useT()
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -43,7 +50,7 @@ export default function OpenWithMenu({ workspaceId }: { workspaceId: string }) {
         className="app-no-drag flex h-7 items-center gap-1.5 rounded-full border border-line px-2.5 text-cream-dim transition hover:border-line-strong hover:bg-overlay hover:text-cream"
       >
         <ExternalLink size={13} />
-        <span className="hidden text-[12px] font-medium lg:inline">{t('chat.openIn')}</span>
+        <span className={compact ? 'hidden' : 'text-[12px] font-medium'}>{t('chat.openIn')}</span>
       </button>
       <MenuPortal
         open={open}

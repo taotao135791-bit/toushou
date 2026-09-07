@@ -21,7 +21,7 @@ const MODES: { value: PermissionMode; labelKey: I18nKey; descKey: I18nKey; noteK
   { value: 'readonly', labelKey: 'settings.permissions.readonly', descKey: 'permission.readOnly.desc', noteKey: 'composer.permissionNewSession' }
 ]
 
-export default function PermissionPicker() {
+export default function PermissionPicker({ compact = false }: { compact?: boolean }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const t = useT()
@@ -51,11 +51,12 @@ export default function PermissionPicker() {
       <button
         ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
-        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
+        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
         title={t('composer.permissions')}
+        aria-label={t('composer.permissions')}
       >
         <Shield size={12} />
-        <span>{t(current?.labelKey ?? 'settings.permissions.ask')}</span>
+        {!compact && <span>{t(current?.labelKey ?? 'settings.permissions.ask')}</span>}
         <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
       </button>
 

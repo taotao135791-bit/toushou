@@ -47,6 +47,12 @@ interface ComposerProps {
   commands?: SlashCommand[]
   /** Built-in /compact action, shown first in the slash menu. */
   onCompact?: () => void
+  /**
+   * The chat column is narrower than 760px (browser panel open, small
+   * window): pickers and status chips collapse to icon-only so the toolbar
+   * never wraps. Primitive on purpose — Composer is memoized.
+   */
+  compact?: boolean
 }
 
 type MenuItem = SlashCommand & { builtin?: boolean }
@@ -173,7 +179,8 @@ export default memo(function Composer({
   focusKey,
   stopping = false,
   commands = [],
-  onCompact
+  onCompact,
+  compact = false
 }: ComposerProps) {
   const [text, setText] = useState('')
   const [caret, setCaret] = useState(0)
@@ -952,13 +959,15 @@ export default memo(function Composer({
             </div>
           )}
           {/* Context chips only on the home (no active session) view: in a
-              chat, the top bar already carries the project/branch context. */}
+              chat, the top bar already carries the project/branch context.
+              Ghost style (no border, no divider) — the card reads as one
+              quiet surface, ZCode-style. */}
           {currentWorkspace && !currentSessionId && (
-            <div className="flex items-center gap-1.5 border-b border-line/60 px-1.5 pb-2 pt-1">
+            <div className="flex items-center gap-1 px-1.5 pb-0.5 pt-1">
               <div
                 title={currentWorkspace.displayPath}
                 aria-label={t('composer.currentProject')}
-                className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
+                className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay"
               >
                 <Folder size={12} className="shrink-0 text-accent" />
                 <span className="max-w-[140px] truncate">
@@ -970,7 +979,7 @@ export default memo(function Composer({
               {currentWorkspace.source !== 'default' && gitInfo && (
                 <div
                   title={gitInfo.branch}
-                  className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
+                  className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay"
                 >
                   <GitBranch size={12} className="shrink-0 text-accent" />
                   <span className="max-w-[160px] truncate font-mono">{gitInfo.branch}</span>
@@ -1122,7 +1131,7 @@ export default memo(function Composer({
                   aria-label={t('composer.addContent')}
                   aria-haspopup="menu"
                   aria-expanded={addMenuOpen}
-                  className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
+                  className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
                 >
                   <Plus size={14} />
                 </button>
@@ -1154,20 +1163,20 @@ export default memo(function Composer({
                   </button>
                 </MenuPortal>
               </div>
-              <PermissionPicker />
+              <PermissionPicker compact={compact} />
               {feishuSync && (
                 <div
                   title={t('composer.feishuSync')}
-                  className="flex h-7 shrink-0 items-center gap-1 rounded-full border border-line px-2 text-[11px] font-medium whitespace-nowrap text-cream-faint"
+                  className="flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[11px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay"
                 >
                   <MessageCircle size={11} className="shrink-0 text-accent" />
-                  <span className="hidden min-[560px]:inline">{t('composer.feishuSync')}</span>
+                  {!compact && <span>{t('composer.feishuSync')}</span>}
                 </div>
               )}
             </div>
             <div className="flex items-center gap-1.5">
-              <ModelPicker sessionId={currentSessionId} />
-              <ThinkingPicker sessionId={currentSessionId} />
+              <ModelPicker sessionId={currentSessionId} compact={compact} />
+              <ThinkingPicker sessionId={currentSessionId} compact={compact} />
               {busy ? (
                 <div className="flex items-center gap-1.5">
                   {canSend && (
@@ -1176,19 +1185,23 @@ export default memo(function Composer({
                         onClick={handleSend}
                         title={t('composer.queue')}
                         aria-label={t('composer.queue')}
-                        className="flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong px-2.5 text-[11px] font-medium text-cream-dim shadow-card transition-all duration-150 hover:bg-overlay hover:text-cream active:scale-95"
+                        className={`flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong text-[11px] font-medium text-cream-dim shadow-card transition-all duration-150 hover:bg-overlay hover:text-cream active:scale-95 ${
+                          compact ? 'w-8 justify-center' : 'px-2.5'
+                        }`}
                       >
                         <ListPlus size={13} strokeWidth={2.5} />
-                        <span>{t('composer.queue')}</span>
+                        {!compact && <span>{t('composer.queue')}</span>}
                       </button>
                       <button
                         onClick={handleSteerCurrent}
                         title={t('composer.steerNow')}
                         aria-label={t('composer.steerNow')}
-                        className="flex h-8 items-center gap-1.5 rounded-full bg-accent px-2.5 text-[11px] font-medium text-white shadow-card transition-all duration-150 hover:bg-accent-bright active:scale-95"
+                        className={`flex h-8 items-center gap-1.5 rounded-full bg-accent text-[11px] font-medium text-white shadow-card transition-all duration-150 hover:bg-accent-bright active:scale-95 ${
+                          compact ? 'w-8 justify-center' : 'px-2.5'
+                        }`}
                       >
                         <Zap size={13} strokeWidth={2.5} />
-                        <span>{t('composer.steerNow')}</span>
+                        {!compact && <span>{t('composer.steerNow')}</span>}
                       </button>
                     </>
                   )}
@@ -1223,7 +1236,14 @@ export default memo(function Composer({
           <div className="min-w-0 truncate">
             {currentSessionId && <UsageMonitor sessionId={currentSessionId} />}
           </div>
-          <span className="hidden shrink-0 whitespace-nowrap min-[1100px]:inline">
+          {/* Shortcuts hint needs ~1100px of window AND a non-squeezed chat
+              column (browser panel open): compact covers the panel case the
+              window media query cannot see. */}
+          <span
+            className={`hidden shrink-0 whitespace-nowrap min-[1100px]:inline ${
+              compact ? '!hidden' : ''
+            }`}
+          >
             {t('composer.shortcuts')}
           </span>
         </div>
