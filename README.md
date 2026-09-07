@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.13.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.0) 下载：
+当前版本 v0.13.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.1/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.1/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.13.1：主页布局修正。工作区（项目/分支）从输入框卡片内移到上方一条**更窄的独立条栏**（对齐 ChatGPT/Kimi 的"选择项目"条），输入框回归单一安静表面；修复主页提示行渲染两次的问题。
 
 v0.13.0：主页高级感重构 + 三项底座能力。**主页重构**——去掉顶栏文字与一切碎片：英雄标题、输入框、一行浅色提示、场景 chips，仅此四样；**权限颜色锚点**——询问灰、禁止命令天蓝、只读绿、完全访问橙（触发器与菜单一致，危险一目了然）；**⌘K 全局命令面板**——搜页面、会话（含历史恢复）、定时任务与快捷操作，完整键盘导航；**撤销可逆**——每轮撤销前自动快照当前状态，撤销后可"重做本轮"，误点不再不可挽回。
 
