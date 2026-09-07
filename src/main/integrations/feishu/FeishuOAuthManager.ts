@@ -83,10 +83,14 @@ export class FeishuOAuthManager {
     return scope && scopes.has(scope) ? credentials.accessToken : null
   }
 
-  async begin(capability: FeishuCapability): Promise<FeishuOAuthAuthorization> {
+  /** 'all' 一次性申请全部可选权限；其余按单个能力申请。 */
+  async begin(capability: FeishuCapability | 'all'): Promise<FeishuOAuthAuthorization> {
     const credentials = await this.store.load()
     if (!credentials) throw new Error('飞书尚未连接')
-    const scope = `${SCOPE_BY_CAPABILITY[capability] ?? ''} offline_access`.trim()
+    const scope =
+      capability === 'all'
+        ? `${Object.values(SCOPE_BY_CAPABILITY).join(' ')} offline_access`
+        : `${SCOPE_BY_CAPABILITY[capability] ?? ''} offline_access`.trim()
     const response = await this.fetchImpl(`${accountsBase(credentials.brand)}/oauth/v1/device_authorization`, {
       method: 'POST',
       headers: {

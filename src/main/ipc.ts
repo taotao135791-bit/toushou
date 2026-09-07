@@ -582,10 +582,12 @@ export function registerIpc() {
   })
   ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_BEGIN, async (_event, capability: unknown) => {
     const capabilities: FeishuCapability[] = ['docs.read', 'docs.write', 'sheets.read', 'sheets.write', 'bitable.read', 'bitable.write']
-    return capabilities.includes(capability as FeishuCapability)
-      ? feishuConnectionManager.beginOAuth(capability as FeishuCapability)
+    const allowed = capability === 'all' || capabilities.includes(capability as FeishuCapability)
+    return allowed
+      ? feishuConnectionManager.beginOAuth(capability as FeishuCapability | 'all')
       : { ok: false, error: '不支持的授权能力', snapshot: feishuConnectionManager.getSnapshot() }
   })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_VERIFY_SCOPES, async () => feishuConnectionManager.verifyScopes())
   ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_POLL, async () => feishuConnectionManager.pollOAuth())
   ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_CANCEL, async () => feishuConnectionManager.cancelOAuth())
 

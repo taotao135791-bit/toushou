@@ -1219,6 +1219,10 @@ const en = {
   'connections.authorize': 'Authorize',
   'connections.authorized': 'Authorized',
   'connections.authorizationWaiting': 'Complete authorization, then check here.',
+  'connections.authorizationAutoWaiting': 'Authorization page opened in your browser — confirm there and this updates automatically.',
+  'connections.authorizationFailed': 'Authorization did not complete. Try again or use Authorize all.',
+  'connections.authorizeAll': 'Authorize all permissions',
+  'connections.verifyScopes': 'Verify permissions',
   'connections.checkAuthorization': 'Check authorization',
   'connections.degradedHint': 'The bot connection is unstable. Retry to reconnect.'
 } as const
@@ -2405,6 +2409,10 @@ const zh: Record<I18nKey, string> = {
   'connections.authorize': '开始授权',
   'connections.authorized': '已授权',
   'connections.authorizationWaiting': '完成授权后，回到这里检查结果。',
+  'connections.authorizationAutoWaiting': '授权页已在浏览器打开——在网页上确认后这里会自动更新。',
+  'connections.authorizationFailed': '本次授权没有完成，可重试或使用一键授权全部。',
+  'connections.authorizeAll': '一键授权全部权限',
+  'connections.verifyScopes': '验证权限',
   'connections.checkAuthorization': '检查授权',
   'connections.degradedHint': '机器人连接不稳定，可以重试连接。'
 }

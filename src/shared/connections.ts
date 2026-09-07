@@ -81,7 +81,8 @@ export interface FeishuOAuthAuthorizationView {
   verificationUri: string
   verificationUriComplete: string
   expiresAt: number
-  capability: FeishuCapability
+  /** 'all' 表示一次性申请全部可选权限。 */
+  capability: FeishuCapability | 'all'
 }
 
 export type FeishuOAuthBeginResult =

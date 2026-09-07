@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
-import { ArrowUpRight, Check, CheckCircle2, Link2, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
+import { ArrowUpRight, Check, CheckCircle2, Link2, LoaderCircle, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
 import { FeishuCapability, FeishuConnectionSnapshot, FeishuOAuthAuthorizationView, FeishuRegistrationView } from '@shared/connections'
 import { useAppStore } from '../store'
-import { useT } from '../i18n'
+import { useT, I18nKey } from '../i18n'
 import McpConnectionsSection from '../components/McpConnectionsSection'
 
 const emptySnapshot: FeishuConnectionSnapshot = {
@@ -35,6 +35,7 @@ export default function ConnectionsPage() {
   const [checked, setChecked] = useState(false)
   const [oauthCapability, setOauthCapability] = useState<FeishuCapability>('docs.read')
   const [oauthAuthorization, setOauthAuthorization] = useState<FeishuOAuthAuthorizationView | null>(null)
+  const [oauthError, setOauthError] = useState<string | null>(null)
   const [oauthBusy, setOauthBusy] = useState(false)
 
   useEffect(() => {
@@ -124,19 +125,33 @@ export default function ConnectionsPage() {
     setChecked(true)
   }
 
-  const beginOAuth = async () => {
+  const beginOAuth = async (capability: FeishuCapability | 'all' = oauthCapability) => {
     setOauthBusy(true)
-    const result = await window.electronAPI.feishuBeginOAuth(oauthCapability)
+    setOauthError(null)
+    const result = await window.electronAPI.feishuBeginOAuth(capability)
     setSnapshot(result.snapshot)
-    if (result.ok) setOauthAuthorization(result.authorization)
+    if (!result.ok) {
+      setOauthError(result.error)
+      setOauthBusy(false)
+      return
+    }
+    setOauthAuthorization(result.authorization)
+    // 真跳转：授权页立刻在浏览器打开，用户只需在网页上确认。
+    void window.electronAPI.feishuOpenUrl(result.authorization.verificationUriComplete)
+    // 自动等待授权结果（主进程轮询设备码直到成功/超时），期间界面保持可读状态。
+    const next = await window.electronAPI.feishuPollOAuth()
+    setSnapshot(next)
+    setOauthAuthorization(null)
+    if (capability !== 'all' && !next.authorizedCapabilities.includes(capability)) {
+      setOauthError(t('connections.authorizationFailed'))
+    }
     setOauthBusy(false)
   }
 
-  const pollOAuth = async () => {
+  const verifyScopes = async () => {
     setOauthBusy(true)
-    const next = await window.electronAPI.feishuPollOAuth()
+    const next = await window.electronAPI.feishuVerifyScopes()
     setSnapshot(next)
-    if (next.authorizedCapabilities.includes(oauthCapability)) setOauthAuthorization(null)
     setOauthBusy(false)
   }
 
@@ -240,8 +255,43 @@ export default function ConnectionsPage() {
                   <button onClick={() => void disconnect()} disabled={busy} className="flex items-center gap-1.5 rounded-full border border-red-500/20 px-3 py-1.5 text-[12px] text-red-500 hover:bg-red-500/10"><Unplug size={12} />{t('connections.disconnect')}</button>
                 </div>
                 <div className="mt-5 border-t border-line pt-4">
-                  <div className="text-[12px] font-medium text-cream">{t('connections.extraAccess')}</div>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-[12px] font-medium text-cream">{t('connections.extraAccess')}</div>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => void beginOAuth('all')} disabled={oauthBusy} className="rounded-full bg-accent px-3 py-1.5 text-[11px] font-medium text-white hover:bg-accent-bright disabled:opacity-50">{t('connections.authorizeAll')}</button>
+                      <button onClick={() => void verifyScopes()} disabled={oauthBusy} className="flex items-center gap-1 rounded-full border border-line px-3 py-1.5 text-[11px] text-cream-dim hover:text-cream disabled:opacity-50"><RefreshCw size={11} />{t('connections.verifyScopes')}</button>
+                    </div>
+                  </div>
                   <p className="mt-1 text-[11px] leading-5 text-cream-faint">{t('connections.extraAccessHint')}</p>
+
+                  {/* 权限核验清单：已授权 ✓ / 未授权 ○ */}
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {([
+                      ['docs.read', 'connections.scopeDocsRead'],
+                      ['docs.write', 'connections.scopeDocsWrite'],
+                      ['drive', 'connections.scopeDrive'],
+                      ['sheets.read', 'connections.scopeSheetsRead'],
+                      ['sheets.write', 'connections.scopeSheetsWrite'],
+                      ['bitable.read', 'connections.scopeBitableRead'],
+                      ['bitable.write', 'connections.scopeBitableWrite']
+                    ] as [FeishuCapability, I18nKey][]).map(([capability, key]) => {
+                      const granted = snapshot.authorizedCapabilities.includes(capability)
+                      return (
+                        <span
+                          key={capability}
+                          className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] ${
+                            granted
+                              ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400'
+                              : 'bg-overlay text-cream-faint'
+                          }`}
+                        >
+                          {granted ? <Check size={10} /> : <span className="inline-block h-[6px] w-[6px] rounded-full border border-current opacity-60" />}
+                          {t(key)}
+                        </span>
+                      )
+                    })}
+                  </div>
+
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     <select value={oauthCapability} onChange={(event) => setOauthCapability(event.target.value as FeishuCapability)} className="h-8 rounded-lg border border-line bg-ink-800 px-2 text-[11px] text-cream">
                       <option value="docs.read">{t('connections.scopeDocsRead')}</option>
@@ -258,14 +308,16 @@ export default function ConnectionsPage() {
                       <button onClick={() => void beginOAuth()} disabled={oauthBusy} className="rounded-full border border-line px-3 py-1.5 text-[11px] text-cream-dim hover:text-cream disabled:opacity-50">{t('connections.authorize')}</button>
                     )}
                   </div>
-                  {oauthAuthorization && (
-                    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-overlay px-3 py-2.5 text-[11px] text-cream-dim">
-                      <span>{t('connections.authorizationWaiting')}</span>
+
+                  {oauthBusy && oauthAuthorization && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-accent/30 bg-accent/[0.07] px-3 py-2.5 text-[11px] text-cream-dim">
+                      <LoaderCircle size={12} className="animate-spin text-accent" />
+                      <span>{t('connections.authorizationAutoWaiting')}</span>
                       <button onClick={() => void window.electronAPI.feishuOpenUrl(oauthAuthorization.verificationUriComplete)} className="underline underline-offset-2 hover:text-cream">{t('connections.openLink')}</button>
-                      <button onClick={() => void pollOAuth()} disabled={oauthBusy} className="rounded-full bg-accent px-2.5 py-1 text-white disabled:opacity-50">{t('connections.checkAuthorization')}</button>
                       <button onClick={() => { setOauthAuthorization(null); void window.electronAPI.feishuCancelOAuth() }} className="text-cream-faint hover:text-cream">{t('connections.cancel')}</button>
                     </div>
                   )}
+                  {oauthError && <p className="mt-2 text-[11px] text-red-500">{oauthError}</p>}
                 </div>
               </div>
             )}

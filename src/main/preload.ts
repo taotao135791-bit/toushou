@@ -420,9 +420,11 @@ export interface ElectronAPI {
   feishuCancelConnection: () => Promise<FeishuConnectionSnapshot>
   feishuDisconnect: () => Promise<FeishuConnectionSnapshot>
   feishuOpenUrl: (url: string) => Promise<boolean>
-  feishuBeginOAuth: (capability: FeishuCapability) => Promise<FeishuOAuthBeginResult>
+  feishuBeginOAuth: (capability: FeishuCapability | 'all') => Promise<FeishuOAuthBeginResult>
   feishuPollOAuth: () => Promise<FeishuConnectionSnapshot>
   feishuCancelOAuth: () => Promise<FeishuConnectionSnapshot>
+  /** 刷新令牌并重建已授权能力清单（权限核验）。 */
+  feishuVerifyScopes: () => Promise<FeishuConnectionSnapshot>
   onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => () => void
   /** MCP service connections — masked listings; tokens never cross to the renderer. */
   mcpList: () => Promise<McpConnectionInfo[]>
@@ -766,10 +768,12 @@ const api: ElectronAPI = {
   mcpAdd: (input: McpAddInput) => ipcRenderer.invoke(IPC_CHANNELS.MCP_ADD, input),
   mcpRemove: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.MCP_REMOVE, name),
   mcpTest: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.MCP_TEST, name),
-  feishuBeginOAuth: (capability: FeishuCapability): Promise<FeishuOAuthBeginResult> =>
+  feishuBeginOAuth: (capability: FeishuCapability | 'all'): Promise<FeishuOAuthBeginResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_BEGIN, capability),
   feishuPollOAuth: (): Promise<FeishuConnectionSnapshot> =>
     ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_POLL),
+  feishuVerifyScopes: (): Promise<FeishuConnectionSnapshot> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_VERIFY_SCOPES),
   feishuCancelOAuth: (): Promise<FeishuConnectionSnapshot> =>
     ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_CANCEL),
   onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => {
