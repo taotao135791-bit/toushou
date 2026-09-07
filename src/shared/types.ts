@@ -1567,6 +1567,15 @@ export interface SessionState {
   autoCompactionEnabled?: boolean
 }
 
+/**
+ * What a stored checkpoint represents. `turn` snapshots are minted before an
+ * agent turn dispatches and power the per-turn change chips; `pre-undo`
+ * snapshots are minted by Main immediately before a restore overwrites the
+ * worktree, which is what makes every undo reversible (redo). Optional on
+ * disk: entries written before this field existed are `turn` checkpoints.
+ */
+export type CheckpointKind = 'turn' | 'pre-undo'
+
 /** A git snapshot of the project worktree, taken before an agent turn. */
 export interface CheckpointInfo {
   id: string
@@ -1579,6 +1588,21 @@ export interface CheckpointInfo {
   /** Index of the user message this checkpoint precedes. */
   msgIndex: number
   createdAt: number
+  /** Absent (legacy store entries) means 'turn'. */
+  kind?: CheckpointKind
+}
+
+/** Result of restoring a checkpoint (the worktree was rewound to it). */
+export interface CheckpointRestoreResult {
+  ok: boolean
+  log: string
+  /**
+   * Checkpoint id of the snapshot Main took of the worktree immediately
+   * before this restore — the redo target that makes an undo reversible.
+   * Absent when no snapshot was possible (e.g. the project is no longer a
+   * git repo) or the restore failed.
+   */
+  preUndoCheckpointId?: string
 }
 
 /** One path that differs between a checkpoint snapshot and the worktree now. */

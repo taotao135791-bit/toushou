@@ -1,11 +1,14 @@
-import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect } from 'react'
+import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect, useState } from 'react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
-import { SessionEvent } from '@shared/types'
+import { HistorySessionDescriptor, SessionEvent } from '@shared/types'
 import { useAppStore } from './store'
 import { useT } from './i18n'
 import { useWindowDropGuard } from './lib/useWindowDropGuard'
+import { basename } from './lib/path'
+import { showNotice } from './lib/notice'
 import Layout from './components/Layout'
+import CommandPalette, { type CommandPaletteHandlers } from './components/CommandPalette'
 import ChatPage from './pages/ChatPage'
 import SetupWizard from './pages/SetupWizard'
 
@@ -254,10 +257,13 @@ function App() {
 
   // ⌘N goes home with a clean composer from anywhere. No session is created
   // up front — the first sent message creates it (same as the 对话 nav row).
+  const [paletteOpen, setPaletteOpen] = useState(false)
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey && !e.shiftKey && !e.ctrlKey && e.key.toLowerCase() === 'n') {
         e.preventDefault()
+        setPaletteOpen(false)
         useAppStore.getState().setCurrentSessionId(null)
         navigate('/')
       }
@@ -265,6 +271,120 @@ function App() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [navigate])
+
+  // ⌘K / Ctrl+K toggles the global command palette from anywhere.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!e.metaKey && !e.ctrlKey) return
+      if (e.shiftKey || e.altKey || e.repeat) return
+      if (e.key.toLowerCase() !== 'k') return
+      e.preventDefault()
+      setPaletteOpen((open) => !open)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  // --- command palette execution handlers ----------------------------------
+  /**
+   * Resume a durable history capability — the palette's mirror of the
+   * sidebar's resume flow: prefer the richer history title over the
+   * project-dir title Main assigns, fold historical agents into the
+   * projection, and retire the opaque history row once a live row exists.
+   */
+  const resumeHistoryDescriptor = async (info: HistorySessionDescriptor): Promise<boolean> => {
+    const state = useAppStore.getState()
+    const grant = state.currentWorkspace
+    if (!grant || state.historyLoading) return false
+    const result = await window.electronAPI.resumeSession(grant.id, info.id)
+    if (!result) {
+      showNotice('history.restoreFailed')
+      return false
+    }
+    const { session, messages: restored, historicalAgents } = result
+    const projectName = basename(grant.displayPath)
+    const title =
+      (!session.title || session.title === projectName) && info.title !== 'Untitled'
+        ? info.title
+        : session.title
+    state.addSession({ ...session, title })
+    state.setMessages(session.id, restored)
+    state.removeHistorySession(info.id)
+    state.applyHistoricalAgents(session.id, historicalAgents ?? [])
+    state.setCurrentSessionId(session.id)
+    navigate('/')
+    return true
+  }
+
+  /**
+   * Open a durable history row by uuid — same flow as the sidebar's
+   * cross-project rows: resume in place for the current project, otherwise
+   * activate that project first (recent workspaces are the only trusted
+   * grant source) and resume there.
+   */
+  const openHistoryRecord = async (target: { uuid: string; cwd: string }) => {
+    const state = useAppStore.getState()
+    if (state.historyLoading) return
+    const resumeByUuid = async (): Promise<boolean> => {
+      await state.loadHistorySessions(state.currentWorkspace?.id ?? null)
+      const match = useAppStore
+        .getState()
+        .sessionRecords.find((r) => !r.isLive && r.history?.uuid === target.uuid)
+      if (!match?.history) return false
+      return resumeHistoryDescriptor(match.history)
+    }
+
+    if (state.currentWorkspace && target.cwd === state.currentWorkspace.realPath) {
+      if (await resumeByUuid()) return
+      return
+    }
+
+    const workspace = state.recentWorkspaces.find(
+      (entry) => basename(entry.displayPath) === basename(target.cwd)
+    )
+    if (!workspace) {
+      showNotice('sidebar.projectNotAdded')
+      return
+    }
+    await state.activateRecentWorkspace(workspace.id)
+    const activated = useAppStore.getState().currentWorkspace
+    if (!activated || activated.realPath !== target.cwd) {
+      showNotice('sidebar.projectNotAdded')
+      return
+    }
+    if (await resumeByUuid()) return
+    showNotice('sidebar.projectSwitched')
+  }
+
+  const paletteHandlers: CommandPaletteHandlers = {
+    navigate: (path) => navigate(path),
+    // Same flow as the sidebar 对话 row and ⌘N: clear the selection; the
+    // session is created by the first message.
+    newChat: () => {
+      setPaletteOpen(false)
+      useAppStore.getState().setCurrentSessionId(null)
+      navigate('/')
+    },
+    toggleTheme: () => {
+      const state = useAppStore.getState()
+      state.setTheme(state.theme === 'dark' ? 'light' : 'dark')
+    },
+    exportHtml: (sessionId) => {
+      void window.electronAPI.exportHtml(sessionId).then((saved) => {
+        // Quiet success (ChatPanel owns the inline path chip); a failed
+        // export must not look like a silent no-op.
+        if (saved) showNotice('palette.exportSaved')
+        else showNotice('palette.exportFailed')
+      })
+    },
+    openSession: (sessionId) => {
+      useAppStore.getState().setCurrentSessionId(sessionId)
+      navigate('/')
+    },
+    openHistory: (target) => {
+      void openHistoryRecord(target)
+    }
+  }
 
   if (setupComplete === null) {
     // Settings not loaded yet — avoid flashing the setup wizard
@@ -303,6 +423,11 @@ function App() {
           </Routes>
         </Suspense>
       </Layout>
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        handlers={paletteHandlers}
+      />
     </RendererErrorBoundary>
   )
 }

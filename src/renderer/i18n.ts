@@ -74,6 +74,20 @@ const en = {
   'sidebar.time.hoursAgo': '{count}h ago',
   'sidebar.time.daysAgo': '{count}d ago',
 
+  // Command palette (⌘K)
+  'palette.placeholder': 'Search or type a command…',
+  'palette.noResults': 'No matching results',
+  'palette.groupPages': 'Pages',
+  'palette.groupActions': 'Actions',
+  'palette.groupSessions': 'Sessions',
+  'palette.groupTasks': 'Tasks',
+  'palette.action.newChat': 'New chat',
+  'palette.action.toggleTheme': 'Toggle theme',
+  'palette.action.exportHtml': 'Export session as HTML',
+  'palette.exportSaved': 'Session exported',
+  'palette.exportFailed': 'Export failed',
+  'palette.hints': '↑↓ navigate · ↵ open · esc close',
+
   // Session history (persisted pi sessions)
   'history.title': 'History',
   'history.untitled': 'Untitled',
@@ -132,7 +146,8 @@ const en = {
   'chat.openInFailed': "Couldn't open — make sure the app is installed",
 
   // Composer
-  'composer.placeholder': 'Optimize anything — @ files, / commands, Enter to send',
+  'composer.placeholder': 'Optimize anything…',
+  'composer.hint': '@ files · / commands · Enter to send',
   'composer.placeholderDisabled': 'Install the agent runtime to start chatting…',
   'composer.send': 'Send',
   'composer.queue': 'Queue',
@@ -293,6 +308,7 @@ const en = {
   'turn.filesChanged': 'Changed {count} files',
   'turn.undo': 'Undo',
   'turn.restored': 'Restored to before this turn',
+  'turn.redo': 'Redo this turn',
   'turn.showFiles': 'Show changed files',
   'turn.hideFiles': 'Hide changed files',
 
@@ -1252,6 +1268,20 @@ const zh: Record<I18nKey, string> = {
   'sidebar.time.hoursAgo': '{count}小时',
   'sidebar.time.daysAgo': '{count}天',
 
+  // Command palette (⌘K)
+  'palette.placeholder': '搜索或输入命令…',
+  'palette.noResults': '没有匹配结果',
+  'palette.groupPages': '页面',
+  'palette.groupActions': '操作',
+  'palette.groupSessions': '会话',
+  'palette.groupTasks': '任务',
+  'palette.action.newChat': '新建对话',
+  'palette.action.toggleTheme': '切换主题',
+  'palette.action.exportHtml': '导出会话为 HTML',
+  'palette.exportSaved': '会话已导出',
+  'palette.exportFailed': '导出失败',
+  'palette.hints': '↑↓ 选择 · ↵ 打开 · Esc 关闭',
+
   'history.title': '历史会话',
   'history.untitled': '未命名会话',
   'history.delete': '删除会话记录',
@@ -1307,7 +1337,8 @@ const zh: Record<I18nKey, string> = {
   'chat.openInEditor': '在 VS Code 中打开',
   'chat.openInFailed': '未能打开，请确认应用已安装',
 
-  'composer.placeholder': '想优化什么？@ 引用文件 · / 命令 · Enter 发送',
+  'composer.placeholder': '想优化什么？',
+  'composer.hint': '@ 引用文件 · / 命令 · Enter 发送',
   'composer.placeholderDisabled': '安装 Agent 运行时后开始对话…',
   'composer.send': '发送',
   'composer.queue': '排队',
@@ -1467,6 +1498,7 @@ const zh: Record<I18nKey, string> = {
   'turn.filesChanged': '已更改 {count} 个文件',
   'turn.undo': '撤销',
   'turn.restored': '已恢复到本轮之前',
+  'turn.redo': '重做本轮',
   'turn.showFiles': '展开文件列表',
   'turn.hideFiles': '收起文件列表',
 

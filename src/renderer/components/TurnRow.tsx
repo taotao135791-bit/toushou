@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2 } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, FileDiff, Loader2, Redo2, Undo2 } from 'lucide-react'
 import { CheckpointDiff, CheckpointDiffFile } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { TurnActivity, TurnSummary, TurnVerb } from '../lib/execution'
@@ -123,13 +123,33 @@ interface TurnChangesRowProps {
   checkpointId: string
 }
 
+/** What the change row renders for a finished turn. */
+export type TurnChangesPhase = 'hidden' | 'normal' | 'undone'
+
+/**
+ * Pure render decision for the per-turn change row (unit-tested). A linked
+ * pre-undo checkpoint means the turn is currently UNDONE — the row shows the
+ * restored pill plus 重做, and that wins over a stale in-flight diff so the
+ * flip is immediate after an undo. Otherwise the row is the plain change chip
+ * when the diff has files, and hidden when there is nothing to show (nothing
+ * changed since the checkpoint / non-git project / snapshot unavailable).
+ */
+export function turnChangesPhase(diff: CheckpointDiff | null, hasPreUndo: boolean): TurnChangesPhase {
+  if (hasPreUndo) return 'undone'
+  if (diff && diff.files.length > 0) return 'normal'
+  return 'hidden'
+}
+
 /**
  * ZCode-style per-turn change row: a slim "已更改 N 个文件" chip that pins to
  * the END of a finished turn (mounted by MessageList only once the turn is
  * closed, so the lazy diff fetch fires exactly once per turn — never per
  * streaming delta). Expanding lists the files; 撤销 restores the project to
- * the checkpoint taken before the turn. Hidden entirely when nothing differs
- * or the diff is unavailable (non-git projects never get checkpoints).
+ * the checkpoint taken before the turn — reversibly: Main snapshots the
+ * worktree first, the row flips to an "已恢复到本轮之前 + 重做" state, and
+ * 重做 restores that snapshot via the same IPC, so a misclick never destroys
+ * the agent's work. Hidden entirely when nothing differs or the diff is
+ * unavailable (non-git projects never get checkpoints).
  */
 export const TurnChangesRow = memo(function TurnChangesRow({
   sessionId,
@@ -138,8 +158,14 @@ export const TurnChangesRow = memo(function TurnChangesRow({
   const t = useT()
   const [diff, setDiff] = useState<CheckpointDiff | null>(null)
   const [open, setOpen] = useState(false)
-  const [restoring, setRestoring] = useState(false)
-  const [restored, setRestored] = useState(false)
+  /** In-flight restore, if any; gates both buttons against double clicks. */
+  const [busy, setBusy] = useState<'undo' | 'redo' | null>(null)
+  /** Brief confirmation for the legacy no-redo fallback path only. */
+  const [flashRestored, setFlashRestored] = useState(false)
+  // Redo target for this turn's last undo — Main mints one per restore and
+  // the store keeps it in memory for the app session only (intentionally not
+  // persisted; availability is lost on restart).
+  const preUndoId = useAppStore((s) => s.preUndoByTurnCheckpoint[checkpointId])
   const restoredTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const aliveRef = useRef(true)
   useEffect(
@@ -164,32 +190,83 @@ export const TurnChangesRow = memo(function TurnChangesRow({
     void fetchDiff()
   }, [fetchDiff])
 
+  const reportFailure = (log: string) => {
+    if (!sessionId) return
+    useAppStore.getState().addMessage(sessionId, {
+      id: crypto.randomUUID(),
+      role: 'system',
+      content: t('rollback.failed', { log })
+    })
+  }
+
   const runUndo = async () => {
-    if (restoring) return
-    setRestoring(true)
+    if (busy) return
+    setBusy('undo')
     try {
       const result = await window.electronAPI.checkpointRestore(checkpointId)
-      if (!aliveRef.current) return
       if (result.ok) {
         // The worktree just changed underneath the changes tab / git chip.
         useAppStore.getState().bumpGitInfoVersion()
-        setRestored(true)
-        // Let the restored confirmation breathe, then re-measure: the diff
-        // usually collapses to zero and the row quietly disappears.
-        restoredTimer.current = setTimeout(() => {
-          if (!aliveRef.current) return
-          setRestored(false)
+        if (result.preUndoCheckpointId) {
+          // Reversible undo: record the redo target; the store flip moves the
+          // row into its undone state (restored pill + 重做) right away.
+          useAppStore.getState().setPreUndoForTurn(checkpointId, result.preUndoCheckpointId)
+        }
+        if (!aliveRef.current) return
+        if (result.preUndoCheckpointId) {
+          // Refresh so a later redo re-measures against the undone worktree,
+          // not the stale pre-undo diff.
           void fetchDiff()
-        }, 2200)
-      } else if (sessionId) {
-        useAppStore.getState().addMessage(sessionId, {
-          id: crypto.randomUUID(),
-          role: 'system',
-          content: t('rollback.failed', { log: result.log })
-        })
+        } else {
+          // No pre-undo snapshot was possible: old behavior — let the
+          // restored confirmation breathe, then re-measure; the diff usually
+          // collapses to zero and the row quietly disappears.
+          setFlashRestored(true)
+          restoredTimer.current = setTimeout(() => {
+            if (!aliveRef.current) return
+            setFlashRestored(false)
+            void fetchDiff()
+          }, 2200)
+        }
+      } else {
+        if (!aliveRef.current) return
+        reportFailure(result.log)
       }
     } finally {
-      if (aliveRef.current) setRestoring(false)
+      if (aliveRef.current) setBusy(null)
+    }
+  }
+
+  const runRedo = async () => {
+    // Single click (no two-stage confirm): redo restores what the user just
+    // deliberately undid, and it is itself reversible — the restore snapshots
+    // the current worktree first.
+    if (busy || !preUndoId) return
+    setBusy('redo')
+    try {
+      const result = await window.electronAPI.checkpointRestore(preUndoId)
+      if (result.ok) {
+        useAppStore.getState().bumpGitInfoVersion()
+        // Re-measure BEFORE leaving the undone state so the row flips in one
+        // render: back to the change chip when files differ again, quietly
+        // gone when they don't. The restore minted a fresh pre-undo snapshot
+        // of the undone state; dropping our mapping is safe — any further
+        // undo snapshots afresh.
+        let next: CheckpointDiff | null = null
+        try {
+          next = await window.electronAPI.checkpointDiff(checkpointId)
+        } catch {
+          next = null
+        }
+        useAppStore.getState().setPreUndoForTurn(checkpointId, null)
+        if (!aliveRef.current) return
+        setDiff(next)
+      } else {
+        if (!aliveRef.current) return
+        reportFailure(result.log)
+      }
+    } finally {
+      if (aliveRef.current) setBusy(null)
     }
   }
 
@@ -198,7 +275,7 @@ export const TurnChangesRow = memo(function TurnChangesRow({
     void runUndo()
   })
 
-  if (restored) {
+  if (flashRestored) {
     return (
       <div className="msg-in flex">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
@@ -209,9 +286,36 @@ export const TurnChangesRow = memo(function TurnChangesRow({
     )
   }
 
+  const phase = turnChangesPhase(diff, preUndoId !== undefined)
+
+  if (phase === 'undone') {
+    return (
+      <div className="msg-in flex items-center gap-1.5">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+          <Check size={11} />
+          {t('turn.restored')}
+        </span>
+        <button
+          onClick={() => void runRedo()}
+          disabled={busy !== null}
+          title={busy === 'redo' ? t('rollback.restoring') : t('turn.redo')}
+          className="inline-flex items-center gap-1 rounded-full border border-line bg-ink-850/60 px-2.5 py-1 text-[11px] text-cream-dim transition hover:border-line-strong hover:text-cream disabled:opacity-60"
+        >
+          {busy === 'redo' ? (
+            <Loader2 size={11} className="animate-spin" />
+          ) : (
+            <Redo2 size={11} className="shrink-0" />
+          )}
+          {busy === 'redo' ? t('rollback.restoring') : t('turn.redo')}
+        </button>
+      </div>
+    )
+  }
+
   // Not fetched yet, nothing changed since the checkpoint, or the diff is
   // unavailable (non-git project / garbage-collected snapshot): no noise.
-  if (!diff || diff.files.length === 0) return null
+  // (Mirrors the helper's hidden rule so `diff` narrows for the JSX below.)
+  if (phase === 'hidden' || !diff || diff.files.length === 0) return null
 
   return (
     <div className="msg-in">
@@ -237,20 +341,26 @@ export const TurnChangesRow = memo(function TurnChangesRow({
         </button>
         <button
           onClick={handleUndoClick}
-          disabled={restoring}
-          title={restoring ? t('rollback.restoring') : confirmUndo ? t('rollback.confirm') : t('turn.undo')}
+          disabled={busy !== null}
+          title={
+            busy === 'undo'
+              ? t('rollback.restoring')
+              : confirmUndo
+                ? t('rollback.confirm')
+                : t('turn.undo')
+          }
           className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition disabled:opacity-60 ${
             confirmUndo
               ? 'border-red-500/40 bg-red-500/10 text-red-500'
               : 'border-line bg-ink-850/60 text-cream-dim hover:border-line-strong hover:text-cream'
           }`}
         >
-          {restoring ? (
+          {busy === 'undo' ? (
             <Loader2 size={11} className="animate-spin" />
           ) : (
             <Undo2 size={11} className="shrink-0" />
           )}
-          {restoring ? t('rollback.restoring') : confirmUndo ? t('rollback.confirm') : t('turn.undo')}
+          {busy === 'undo' ? t('rollback.restoring') : confirmUndo ? t('rollback.confirm') : t('turn.undo')}
         </button>
       </div>
       {open && (

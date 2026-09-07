@@ -95,7 +95,7 @@ import { getOperationGrantManager } from './operationGrant'
 import { FsGuard } from './fsGuard'
 import {
   createCheckpoint,
-  restoreCheckpoint,
+  restoreCheckpointReversible,
   saveCheckpoint,
   listCheckpoints,
   getCheckpoint,
@@ -923,7 +923,8 @@ export function registerIpc() {
         untracked: snapshot.untracked,
         promptPreview: typeof promptPreview === 'string' ? promptPreview.slice(0, 80) : '',
         msgIndex: typeof msgIndex === 'number' ? msgIndex : 0,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        kind: 'turn'
       }
       saveCheckpoint(info)
       return info
@@ -946,7 +947,17 @@ export function registerIpc() {
       if (!checkpoint) return { ok: false, log: 'Checkpoint not found.' }
       const session = getSession(checkpoint.sessionId)
       if (!session) return { ok: false, log: 'Session is no longer running.' }
-      return restoreCheckpoint(session.cwd, checkpoint.sha, checkpoint.untracked)
+      // Reversible restore: Main snapshots the CURRENT worktree first and
+      // saves it as a linked 'pre-undo' checkpoint, so an undo can itself be
+      // undone and the agent's post-turn work survives a misclick. Used by
+      // both the per-turn chip and the message rollback menu.
+      return restoreCheckpointReversible({
+        sessionId: checkpoint.sessionId,
+        projectDir: session.cwd,
+        targetSha: checkpoint.sha,
+        targetUntracked: checkpoint.untracked,
+        msgIndex: checkpoint.msgIndex
+      })
     }
   )
 

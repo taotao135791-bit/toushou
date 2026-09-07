@@ -330,8 +330,12 @@ export default function ChatPanel() {
 
   return (
     <div ref={columnRef} className="relative flex h-full flex-col">
-      {/* status bar, doubles as window drag region */}
-      <header className="app-drag flex h-12 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
+      {/* Status bar, doubles as window drag region. On the home screen (no
+          active session) it collapses to a bare drag spacer: breadcrumb,
+          title, and every button need a session, and the premium home keeps a
+          clean top edge. Chat keeps the full bar. */}
+      {currentSessionId ? (
+        <header className="app-drag flex h-12 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
         {/* ZCode-style order: bold session title first, then context pills */}
         <span className="min-w-0 shrink truncate text-[13px] font-semibold tracking-tight text-cream">
           {currentSession ? currentSession.title : t('chat.noActiveSession')}
@@ -441,27 +445,52 @@ export default function ChatPanel() {
             </>
           ) : null}
         </span>
-      </header>
+        </header>
+      ) : (
+        <div className="app-drag h-12 shrink-0" />
+      )}
 
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} onScroll={handleTranscriptScroll} className="relative h-full overflow-y-auto">
         {showHero ? (
-          // Hero and composer form ONE centered block: mark, serif title,
-          // composer — nothing else.
+          // Hero and composer form ONE centered block: mark, serif hero
+          // title, composer, then one faint hint line and the scenario chips
+          // below — nothing else. The top bar is a bare drag spacer on home.
           <div className="flex h-full flex-col items-center px-8">
             <div className="my-auto flex w-full max-w-[680px] flex-col items-center pb-[10vh] pt-6">
               <div className="rise" style={{ animationDelay: '0ms' }}>
                 <Logo size={52} />
               </div>
               <h2
-                className="rise mb-10 mt-6 text-[26px] font-semibold tracking-tight text-cream"
+                className="rise mb-10 mt-8 text-[32px] font-semibold tracking-tight text-cream"
                 style={{ animationDelay: '60ms' }}
               >
                 {t('chat.hero.title')}
               </h2>
               <div className="rise w-full" style={{ animationDelay: '140ms' }}>
+                <Composer
+                  onSend={handleSend}
+                  onStop={handleStop}
+                  busy={isBusy}
+                  stopping={isStopping}
+                  focusKey={currentSessionId}
+                  disabled={cliAvailable === false}
+                  commands={slashCommands}
+                  onCompact={currentSessionId ? handleCompact : undefined}
+                  compact={compact}
+                />
+                {/* Home hint line: the @ / command / Enter affordances moved
+                    here out of the placeholder — one faint centered line. */}
+                {!currentSessionId && (
+                  <p className="mt-1.5 text-center text-[11px] text-cream-faint/70">
+                    {t('composer.hint')}
+                  </p>
+                )}
+                {/* Scenario chips sit BELOW the composer (Kimi/ZCode home
+                    pattern): a single centered row of ghost pills. The inline
+                    "new project folder" naming row swaps into this slot. */}
                 {!currentWorkspace && (
-                  <div className="mb-3 flex flex-col items-center gap-2">
+                  <div className="mt-4 flex flex-col items-center gap-2">
                     {namingProject ? (
                       <div className="flex items-center gap-1.5">
                         <input
@@ -510,34 +539,26 @@ export default function ChatPanel() {
                           <button
                             key={label}
                             onClick={onClick}
-                            className="flex items-center gap-1.5 rounded-full border border-line bg-ink-850 px-3.5 py-1.5 text-xs text-cream-dim shadow-card transition-all duration-200 ease-standard hover:-translate-y-px hover:border-line-strong hover:text-cream"
+                            title={
+                              label === t('home.action.noProject')
+                                ? t('home.noProjectHint')
+                                : undefined
+                            }
+                            className="flex max-w-[240px] items-center gap-1.5 rounded-full border border-line px-3.5 py-1.5 text-xs text-cream-faint transition-colors duration-200 ease-standard hover:bg-overlay hover:text-cream"
                           >
-                            <Icon size={12} />
-                            {label}
+                            <Icon size={12} className="shrink-0" />
+                            <span className="truncate">{label}</span>
                           </button>
                         ))}
                       </div>
                     )}
-                    <p className="text-[11px] text-cream-faint" aria-live="polite">
-                      {projectCreateFailed ? (
-                        <span className="text-red-500">{t('home.createFailed')}</span>
-                      ) : (
-                        t('home.noProjectHint')
-                      )}
-                    </p>
+                    {projectCreateFailed && (
+                      <p className="text-[11px] text-red-500" aria-live="polite">
+                        {t('home.createFailed')}
+                      </p>
+                    )}
                   </div>
                 )}
-                <Composer
-                  onSend={handleSend}
-                  onStop={handleStop}
-                  busy={isBusy}
-                  stopping={isStopping}
-                  focusKey={currentSessionId}
-                  disabled={cliAvailable === false}
-                  commands={slashCommands}
-                  onCompact={currentSessionId ? handleCompact : undefined}
-                  compact={compact}
-                />
               </div>
             </div>
           </div>

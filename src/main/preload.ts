@@ -30,6 +30,7 @@ import {
   CommunityPackageInfo,
   CheckpointInfo,
   CheckpointDiff,
+  CheckpointRestoreResult,
   GitInfo,
   PromptImage,
   SessionState,
@@ -325,8 +326,14 @@ export interface ElectronAPI {
     promptPreview: string
   ) => Promise<CheckpointInfo | null>
   checkpointList: (sessionId: string) => Promise<CheckpointInfo[]>
-  /** Restore the project to a checkpoint; deletes files created after it. */
-  checkpointRestore: (id: string) => Promise<PackageActionResult>
+  /**
+   * Restore the project to a checkpoint; deletes files created after it.
+   * Main first snapshots the current worktree as a 'pre-undo' checkpoint and
+   * returns its id (preUndoCheckpointId) so an undo can be redone; absent
+   * when no snapshot was possible or the restore failed. pre-undo entries
+   * never appear in checkpointList.
+   */
+  checkpointRestore: (id: string) => Promise<CheckpointRestoreResult>
   /**
    * Files that differ between a checkpoint snapshot and the worktree now
    * (the turn's change summary); null for non-git dirs / unknown ids.

@@ -145,6 +145,14 @@ interface AppState {
    * turns dispatch. Fuels the transcript's per-turn change chips.
    */
   checkpointsBySession: Record<string, CheckpointInfo[]>
+  /**
+   * Turn checkpoint id -> the 'pre-undo' checkpoint Main minted when that
+   * turn was last undone — the redo target that keeps an undo reversible. An
+   * entry exists exactly while the row is in its undone state and is cleared
+   * when a redo succeeds. Session-scoped and in-memory by design: redo
+   * availability intentionally does not survive an app restart.
+   */
+  preUndoByTurnCheckpoint: Record<string, string>
   /** Bumped after a rollback so git views (changes tab, header chip) refetch. */
   gitInfoVersion: number
   cliAvailable: boolean | null
@@ -263,6 +271,8 @@ interface AppState {
   /** (Re)load a session's persisted checkpoint list from Main, merging in any
    * checkpoint created locally while the fetch was in flight. */
   loadCheckpoints: (sessionId: string) => Promise<void>
+  /** Record (or, with null, clear) the redo target of an undone turn. */
+  setPreUndoForTurn: (turnCheckpointId: string, preUndoCheckpointId: string | null) => void
   bumpGitInfoVersion: () => void
   /**
    * Snapshot the project after a user message was accepted by the session.
@@ -408,6 +418,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   previewContent: null,
   checkpointUnavailable: {},
   checkpointsBySession: {},
+  preUndoByTurnCheckpoint: {},
   gitInfoVersion: 0,
   cliAvailable: null,
   setupComplete: null,
@@ -864,6 +875,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       }))
     }
   },
+  setPreUndoForTurn: (turnCheckpointId, preUndoCheckpointId) =>
+    set((state) => {
+      const current = state.preUndoByTurnCheckpoint[turnCheckpointId]
+      if (preUndoCheckpointId === null) {
+        if (current === undefined) return state
+        const next = { ...state.preUndoByTurnCheckpoint }
+        delete next[turnCheckpointId]
+        return { preUndoByTurnCheckpoint: next }
+      }
+      // A second undo replaces the target: every undo snapshots afresh, so the
+      // newest pre-undo checkpoint is always the right redo target.
+      if (current === preUndoCheckpointId) return state
+      return {
+        preUndoByTurnCheckpoint: {
+          ...state.preUndoByTurnCheckpoint,
+          [turnCheckpointId]: preUndoCheckpointId
+        }
+      }
+    }),
   setCliAvailable: (cliAvailable) => set({ cliAvailable }),
   // Same-value writes are no-ops: repeated `working`/`idle` status events for
   // a session must not replace the busy map (a new identity would re-render

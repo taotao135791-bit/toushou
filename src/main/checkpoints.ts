@@ -12,7 +12,13 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { app } from 'electron'
-import { CheckpointDiff, CheckpointDiffFile, CheckpointInfo, PackageActionResult } from '../shared/types'
+import {
+  CheckpointDiff,
+  CheckpointDiffFile,
+  CheckpointInfo,
+  CheckpointRestoreResult,
+  PackageActionResult
+} from '../shared/types'
 
 /**
  * Git-snapshot checkpoints.
@@ -139,6 +145,53 @@ export async function restoreCheckpoint(
   } catch (err) {
     return { ok: false, log: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/**
+ * Restore projectDir to a checkpoint, reversibly. BEFORE the worktree is
+ * overwritten, its current state is snapshotted and persisted as a linked
+ * `pre-undo` checkpoint (never listed as a turn checkpoint), so undoing an
+ * undo — redo — always has a target and the agent's work is never destroyed
+ * by a misclick. The safety snapshot is best-effort: outside a git repo the
+ * restore still runs, it just cannot be redone.
+ */
+export interface ReversibleRestoreInput {
+  sessionId: string
+  projectDir: string
+  /** The checkpoint being restored to. */
+  targetSha: string
+  targetUntracked: string[]
+  /** Inherited by the pre-undo entry so the store stays uniform. */
+  msgIndex: number
+  /** Injectable persistence path for tests; production uses the default. */
+  storeFile?: string
+}
+
+export async function restoreCheckpointReversible(
+  input: ReversibleRestoreInput
+): Promise<CheckpointRestoreResult> {
+  // 1. Snapshot the CURRENT worktree first — after the restore the agent's
+  // post-turn state would already be gone.
+  const snapshot = await createCheckpoint(input.projectDir)
+  let preUndoCheckpointId: string | undefined
+  if (snapshot) {
+    const entry: CheckpointInfo = {
+      id: crypto.randomUUID(),
+      sessionId: input.sessionId,
+      sha: snapshot.sha,
+      untracked: snapshot.untracked,
+      promptPreview: '',
+      msgIndex: input.msgIndex,
+      createdAt: Date.now(),
+      kind: 'pre-undo'
+    }
+    saveCheckpoint(entry, input.storeFile)
+    preUndoCheckpointId = entry.id
+  }
+  // 2. Only then mutate the worktree.
+  const result = await restoreCheckpoint(input.projectDir, input.targetSha, input.targetUntracked)
+  if (!result.ok) return result
+  return { ...result, preUndoCheckpointId }
 }
 
 /** Remove dirs made empty by deleted agent files, stopping at projectDir. */
@@ -295,8 +348,24 @@ export function saveCheckpoint(entry: CheckpointInfo, file?: string): void {
   writeStore(target, [...readStore(target), entry])
 }
 
+/**
+ * Legacy store entries predate the `kind` field and are always turn
+ * checkpoints; only explicit `pre-undo` entries are safety snapshots.
+ */
+function isTurnCheckpoint(entry: CheckpointInfo): boolean {
+  return (entry.kind ?? 'turn') === 'turn'
+}
+
+/**
+ * A session's turn checkpoints (oldest first). `pre-undo` entries are
+ * deliberately filtered out — they are internal redo targets, not turn
+ * snapshots, and must never appear as restore candidates in the transcript
+ * UI or the message rollback menu.
+ */
 export function listCheckpoints(sessionId: string, file?: string): CheckpointInfo[] {
-  return readStore(file ?? defaultStoreFile()).filter((c) => c.sessionId === sessionId)
+  return readStore(file ?? defaultStoreFile()).filter(
+    (c) => c.sessionId === sessionId && isTurnCheckpoint(c)
+  )
 }
 
 export function getCheckpoint(id: string, file?: string): CheckpointInfo | null {

@@ -853,7 +853,9 @@ export default memo(function Composer({
   const canSend = !disabled && Boolean(text.trim())
 
   return (
-    <div className="px-4 pb-4 pt-2">
+    // Home (no active session) trims the outer bottom padding: the hint line
+    // below the card takes over the rhythm.
+    <div className={`px-4 pt-2 ${currentSessionId ? 'pb-4' : 'pb-1'}`}>
       <div className="relative mx-auto w-full max-w-3xl">
         {slashQuery !== null && (
           <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop">
@@ -1232,24 +1234,36 @@ export default memo(function Composer({
             </div>
           </div>
         </div>
-        <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-cream-faint">
-          <div className="min-w-0 truncate">
-            {currentSessionId && <UsageMonitor sessionId={currentSessionId} />}
-          </div>
-          {/* Shortcuts hint needs ~1100px of window AND a non-squeezed chat
-              column (browser panel open): compact covers the panel case the
-              window media query cannot see. */}
-          <span
-            className={`hidden shrink-0 whitespace-nowrap min-[1100px]:inline ${
-              compact ? '!hidden' : ''
-            }`}
-          >
-            {t('composer.shortcuts')}
-          </span>
-        </div>
-        <div className="mt-1 truncate whitespace-nowrap text-center text-[10.5px] text-cream-faint">
-          {t('composer.disclaimer')}
-        </div>
+        {currentSessionId ? (
+          <>
+            <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-cream-faint">
+              <div className="min-w-0 truncate">
+                <UsageMonitor sessionId={currentSessionId} />
+              </div>
+              {/* Shortcuts hint needs ~1100px of window AND a non-squeezed chat
+                  column (browser panel open): compact covers the panel case the
+                  window media query cannot see. Home never sees this row — its
+                  single hint line below the card replaces it. */}
+              <span
+                className={`hidden shrink-0 whitespace-nowrap min-[1100px]:inline ${
+                  compact ? '!hidden' : ''
+                }`}
+              >
+                {t('composer.shortcuts')}
+              </span>
+            </div>
+            <div className="mt-1 truncate whitespace-nowrap text-center text-[10.5px] text-cream-faint">
+              {t('composer.disclaimer')}
+            </div>
+          </>
+        ) : (
+          // Home keeps ONE faint line under the card: the @ / command / Enter
+          // affordances moved here out of the placeholder. No disclaimer, no
+          // shortcut fragments — the composer stays the single clean surface.
+          <p className="mt-1.5 text-center text-[11px] text-cream-faint/70">
+            {t('composer.hint')}
+          </p>
+        )}
       </div>
     </div>
   )

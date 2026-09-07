@@ -13,6 +13,7 @@ vi.mock('electron', () => ({
 import {
   createCheckpoint,
   restoreCheckpoint,
+  restoreCheckpointReversible,
   saveCheckpoint,
   listCheckpoints,
   getCheckpoint,
@@ -150,6 +151,124 @@ describe('persistence', () => {
     expect(listCheckpoints('s1', storeFile)).toEqual([])
     writeFileSync(storeFile, '{broken')
     expect(listCheckpoints('s1', storeFile)).toEqual([])
+  })
+
+  it('hides pre-undo checkpoints from listCheckpoints but keeps them resolvable by id', () => {
+    saveCheckpoint(entry('c1', 's1'), storeFile)
+    saveCheckpoint({ ...entry('c2', 's1'), kind: 'pre-undo' }, storeFile)
+    saveCheckpoint({ ...entry('c3', 's1'), kind: 'turn' }, storeFile)
+
+    expect(listCheckpoints('s1', storeFile).map((c) => c.id)).toEqual(['c1', 'c3'])
+    // Redo still resolves the safety snapshot through getCheckpoint.
+    expect(getCheckpoint('c2', storeFile)?.kind).toBe('pre-undo')
+  })
+
+  it('reads legacy store entries without a kind field as turn checkpoints', () => {
+    const legacy = [
+      {
+        id: 'old1',
+        sessionId: 's1',
+        sha: 'abc123',
+        untracked: [],
+        promptPreview: 'do something',
+        msgIndex: 0,
+        createdAt: 1
+      }
+    ]
+    mkdirSync(path.dirname(storeFile), { recursive: true })
+    writeFileSync(storeFile, JSON.stringify(legacy))
+
+    const listed = listCheckpoints('s1', storeFile)
+    expect(listed.map((c) => c.id)).toEqual(['old1'])
+    expect(listed[0].kind).toBeUndefined()
+  })
+})
+
+describe('restoreCheckpointReversible', () => {
+  it('snapshots the CURRENT worktree before restoring and returns its checkpoint id', async () => {
+    write('a.txt', 'original')
+    commitAll('init')
+
+    const turn = await createCheckpoint(repo)
+    expect(turn).not.toBeNull()
+
+    // The agent's turn: modified tracked content, created a new file.
+    write('a.txt', 'changed by agent')
+    write('src/agent-file.ts', 'export const x = 1')
+
+    const result = await restoreCheckpointReversible({
+      sessionId: 's1',
+      projectDir: repo,
+      targetSha: turn!.sha,
+      targetUntracked: turn!.untracked,
+      msgIndex: 3,
+      storeFile
+    })
+    expect(result.ok).toBe(true)
+    expect(result.preUndoCheckpointId).toBeTruthy()
+
+    // The worktree is back to the pre-turn state...
+    expect(readFileSync(path.join(repo, 'a.txt'), 'utf-8')).toBe('original')
+    expect(existsSync(path.join(repo, 'src/agent-file.ts'))).toBe(false)
+
+    // ...while the agent's post-turn work survived inside the pre-undo
+    // snapshot — which is only possible if it was taken BEFORE the restore.
+    const preUndo = getCheckpoint(result.preUndoCheckpointId!, storeFile)
+    expect(preUndo).not.toBeNull()
+    expect(preUndo!.kind).toBe('pre-undo')
+    expect(preUndo!.sessionId).toBe('s1')
+    expect(preUndo!.msgIndex).toBe(3)
+    const catFile = (spec: string): string =>
+      execFileSync('git', ['cat-file', '-p', spec], { cwd: repo, encoding: 'utf-8' })
+    expect(catFile(`${preUndo!.sha}:a.txt`)).toBe('changed by agent')
+    expect(catFile(`${preUndo!.sha}:src/agent-file.ts`)).toBe('export const x = 1')
+  })
+
+  it('can be redone: restoring the pre-undo checkpoint brings the agent work back', async () => {
+    write('a.txt', 'original')
+    commitAll('init')
+    const turn = await createCheckpoint(repo)
+    write('a.txt', 'changed by agent')
+
+    const undo = await restoreCheckpointReversible({
+      sessionId: 's1',
+      projectDir: repo,
+      targetSha: turn!.sha,
+      targetUntracked: turn!.untracked,
+      msgIndex: 0,
+      storeFile
+    })
+    expect(undo.ok).toBe(true)
+    const preUndo = getCheckpoint(undo.preUndoCheckpointId!, storeFile)!
+
+    const redo = await restoreCheckpointReversible({
+      sessionId: 's1',
+      projectDir: repo,
+      targetSha: preUndo.sha,
+      targetUntracked: preUndo.untracked,
+      msgIndex: preUndo.msgIndex,
+      storeFile
+    })
+    expect(redo.ok).toBe(true)
+    expect(readFileSync(path.join(repo, 'a.txt'), 'utf-8')).toBe('changed by agent')
+  })
+
+  it('returns the bare failure (no redo target) when the restore fails', async () => {
+    const plain = mkdtempSync(path.join(tmpdir(), 'omp-not-a-repo-'))
+    try {
+      const result = await restoreCheckpointReversible({
+        sessionId: 's1',
+        projectDir: plain,
+        targetSha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+        targetUntracked: [],
+        msgIndex: 0,
+        storeFile
+      })
+      expect(result.ok).toBe(false)
+      expect(result.preUndoCheckpointId).toBeUndefined()
+    } finally {
+      rmSync(plain, { recursive: true, force: true })
+    }
   })
 })
 
