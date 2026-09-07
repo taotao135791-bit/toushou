@@ -12,7 +12,7 @@ const get = (k, d) => {
   const i = args.indexOf('--' + k);
   return i >= 0 && args[i + 1] ? args[i + 1] : d;
 };
-const SERVER = get('server', 'http://localhost:8788');
+const SERVER = get('server', 'http://leoliumacbook-air:8788');
 const USER = get('user', '');
 const TITLE = get('title', '');
 const CLOSE_ID = get('close', '');
