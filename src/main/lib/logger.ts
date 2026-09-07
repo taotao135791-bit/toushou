@@ -34,9 +34,17 @@ function timestamp(): string {
 export function redactSecrets(line: string): string {
   return line
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***')
+    // Credential keys in JSON — including ESCAPED JSON embedded in a string
+    // field (axios error dumps carry request bodies as \"key\":\"value\"
+    // inside `data`), which is why the quotes tolerate an optional backslash.
     .replace(
-      /("(?:user_access_token|accessToken|access_token|app_secret|appSecret|token)"\s*:\s*")[^"]{4,}(")/gi,
+      /(\\?"(?:user_access_token|refresh_token|accessToken|access_token|app_secret|appSecret|client_secret|secret|token|password)\\?"\s*:\s*\\?")[^"\\]{4,}(\\?")/gi,
       '$1***$2'
+    )
+    // Query-string form: app_secret=…&… (some SDKs put credentials in URLs).
+    .replace(
+      /((?:app_secret|client_secret|access_token|user_access_token|refresh_token|token)=)[A-Za-z0-9._~+/=-]{8,}/gi,
+      '$1***'
     )
     // Feishu token shapes: t-g10… (user), u-… (user), tenant tokens etc.
     .replace(/\b[tu]-[A-Za-z0-9]{10,}/g, '***')

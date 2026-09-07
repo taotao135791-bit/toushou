@@ -19,6 +19,21 @@ describe('redactSecrets', () => {
     expect(redactSecrets('{"app_secret":"supersecretvalue"}')).toBe('{"app_secret":"***"}')
   })
 
+  it('redacts credentials inside escaped-JSON string fields (axios data dumps)', () => {
+    const line =
+      '"data":"{\\"app_id\\":\\"cli_aa102c3a72b85cd1\\",\\"app_secret\\":\\"ngHyx8UixYxB2nfLWJpaHeGVLiXlXqQy\\"}"'
+    const redacted = redactSecrets(line)
+    expect(redacted).not.toContain('ngHyx8UixYxB2nfLWJpaHeGVLiXlXqQy')
+    expect(redacted).toContain('\\\\"app_secret\\\\":\\\\"***\\\\"')
+    expect(redacted).toContain('cli_aa102c3a72b85cd1')
+  })
+
+  it('redacts credentials in query-string form', () => {
+    expect(redactSecrets('https://open.feishu.cn/endpoint?app_secret=supersecretvalue&x=1')).toBe(
+      'https://open.feishu.cn/endpoint?app_secret=***&x=1'
+    )
+  })
+
   it('leaves ordinary content untouched', () => {
     const line = '[2026-09-05T05:05:15.850Z] [INFO] [app] starting TouShou 0.5.1 (darwin)'
     expect(redactSecrets(line)).toBe(line)
