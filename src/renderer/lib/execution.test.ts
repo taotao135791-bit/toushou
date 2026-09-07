@@ -22,6 +22,9 @@ function subagent(
     agent: 'explore',
     agentSource: 'bundled',
     status: 'running',
+    // Real runtime lifecycle payloads always carry the child transcript (a
+    // root/main-thread artifact carries neither this nor parentToolCallId).
+    sessionFile: '/tmp/omp/sessions/child-a1.jsonl',
     ...patch
   }
 }
@@ -108,6 +111,7 @@ describe('agent graph (flat roster)', () => {
       agentSource: 'bundled',
       status: 'running',
       task: 'Review auth',
+      sessionFile: '/tmp/omp/sessions/child-x.jsonl',
       lastUpdate: 100
     }
     p = applyAgentRoster(p, [snapshot], 1)
@@ -127,6 +131,66 @@ describe('agent graph (flat roster)', () => {
     // Later the runtime reports it completed — only then does it flip.
     p = foldExecutionEvent(p, subagent(S, { id: 'X', status: 'completed' }), 3)
     expect(p.agents.X.status).toBe('completed')
+  })
+})
+
+describe('main-thread (root) entries never become subagents', () => {
+  // Root-shaped artifact: no parentToolCallId, no child sessionFile. Oh My Pi's
+  // subagent bus is built EXCLUSIVELY from spawned-children lifecycle events
+  // (every `started` payload carries both signals; terminal children are
+  // dropped from the live roster), so the root agent never appears — but if a
+  // runtime ever reports one, it must not render as a "subagent".
+  const rootArtifact: SubagentSnapshot = {
+    id: 'main',
+    index: 0,
+    agent: 'main',
+    agentSource: 'bundled',
+    status: 'running',
+    lastUpdate: 1
+  }
+
+  it('drops a roster snapshot that carries neither parentToolCallId nor sessionFile', () => {
+    let p = emptyProjection(S)
+    p = applyAgentRoster(p, [rootArtifact], 1)
+    expect(p.agents).toEqual({})
+  })
+
+  it('keeps a real spawned child next to the filtered artifact', () => {
+    let p = emptyProjection(S)
+    p = applyAgentRoster(p, [
+      rootArtifact,
+      {
+        id: 'child-1',
+        index: 1,
+        agent: 'explore',
+        agentSource: 'bundled',
+        status: 'running',
+        parentToolCallId: 'tool-call-7',
+        sessionFile: '/tmp/omp/sessions/child-1.jsonl',
+        lastUpdate: 2
+      }
+    ], 3)
+    expect(Object.keys(p.agents)).toEqual(['child-1'])
+  })
+
+  it('drops a live subagent event without a child transcript or parent tool call', () => {
+    let p = emptyProjection(S)
+    p = foldExecutionEvent(p, subagent(S, { id: 'main', sessionFile: undefined }), 1)
+    expect(p.agents).toEqual({})
+  })
+
+  it('a plain chat records trajectory facts but zero agents (panel renders nothing)', () => {
+    // Fixture of the REAL session on disk (测试v0.9.0界面响应速度，请仅回复 OK):
+    // its durable JSONL holds only the user prompt and the assistant reply —
+    // no task/subagent activity — yet the old trajectory-only render guard
+    // still showed the "subagent activity" panel.
+    let p = emptyProjection(S)
+    p = foldExecutionEvent(p, { type: 'status', sessionId: S, status: 'working' }, 0)
+    p = foldExecutionEvent(p, { type: 'thinking', sessionId: S, delta: '...' }, 1)
+    p = foldExecutionEvent(p, { type: 'message', sessionId: S, role: 'assistant', content: 'OK' }, 2)
+    p = foldExecutionEvent(p, { type: 'status', sessionId: S, status: 'idle', isTerminal: true }, 3)
+    expect(p.agents).toEqual({})
+    expect(p.turns['turn-1'].trajectory.map((e) => e.kind)).toEqual(['reasoning', 'message'])
   })
 })
 
@@ -164,6 +228,7 @@ describe('agent telemetry + sparse merge', () => {
       agent: 'explore',
       agentSource: 'bundled',
       status: 'running',
+      sessionFile: '/tmp/omp/sessions/child-x.jsonl',
       lastUpdate: 2
     }
     p = applyAgentRoster(p, [snapshot], 2)
@@ -213,7 +278,17 @@ describe('durable historical agents', () => {
     // A live snapshot says the agent is now running again (revived) without tokens.
     p = applyAgentRoster(
       p,
-      [{ id: 'a', index: 0, agent: 'x', agentSource: 'bundled', status: 'running', lastUpdate: 2 }],
+      [
+        {
+          id: 'a',
+          index: 0,
+          agent: 'x',
+          agentSource: 'bundled',
+          status: 'running',
+          sessionFile: '/tmp/omp/sessions/child-a.jsonl',
+          lastUpdate: 2
+        }
+      ],
       2
     )
     expect(p.agents.a.status).toBe('running') // live wins for status

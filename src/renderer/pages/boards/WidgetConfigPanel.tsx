@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Check, X } from 'lucide-react'
+import { Check, FilePlus2, X } from 'lucide-react'
 import { BoardDataset, BoardWidget, BoardWidgetStyle } from '@shared/types'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
+import { useAppStore } from '../../store'
 import { useT, I18nKey } from '../../i18n'
 
 /**
@@ -62,6 +63,37 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
   const [urlInvalid, setUrlInvalid] = useState(false)
   const [labelsInvalid, setLabelsInvalid] = useState(false)
   const [style, setStyle] = useState<BoardWidgetStyle>(widget.style ?? {})
+
+  // File widget binding: the native picker returns a workspace-RELATIVE path
+  // from Main (validated against the active workspace grant). Drafted here
+  // like every other field; committed on Save through the normal board write.
+  const currentWorkspace = useAppStore((state) => state.currentWorkspace)
+  const [boundPath, setBoundPath] = useState(configString(widget, 'filePath'))
+  const [pickBusy, setPickBusy] = useState(false)
+  const [pickError, setPickError] = useState<I18nKey | null>(null)
+
+  const pickFile = async () => {
+    if (!currentWorkspace || pickBusy) return
+    setPickBusy(true)
+    setPickError(null)
+    try {
+      const result = await window.electronAPI.selectBoardWidgetFile(currentWorkspace.id)
+      if (!result) return // picker canceled
+      if (result.ok) setBoundPath(result.relativePath)
+      else
+        setPickError(
+          result.error === 'no-workspace'
+            ? 'boards.files.noWorkspace'
+            : result.error === 'unsupported-type'
+              ? 'boards.files.unsupportedType'
+              : 'boards.files.outsideWorkspace'
+        )
+    } catch {
+      setPickError('boards.files.noWorkspace')
+    } finally {
+      setPickBusy(false)
+    }
+  }
 
   // Dataset binding (counter / chart-line / chart-bar only).
   const supportsDataset =
@@ -157,6 +189,10 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
         config = { url: trimmed }
         break
       }
+      case 'file':
+        // Keep the previously bound path when no new file was picked.
+        config = { filePath: boundPath }
+        break
     }
     onSave({
       title: title.trim() || widget.title,
@@ -387,6 +423,27 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
               className={`${inputClass} font-mono`}
             />
           </Field>
+        )}
+        {widget.type === 'file' && (
+          <>
+            <Field label={t('boards.config.file')}>
+              <div className="truncate rounded-lg border border-line bg-ink-850 px-2 py-1 font-mono text-[11px] text-cream-dim" title={boundPath || undefined}>
+                {boundPath || t('boards.config.noFile')}
+              </div>
+            </Field>
+            <button
+              onClick={() => void pickFile()}
+              disabled={!currentWorkspace || pickBusy}
+              title={!currentWorkspace ? t('boards.files.noWorkspace') : undefined}
+              className="flex items-center justify-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition hover:border-ink-600 hover:text-cream disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <FilePlus2 size={12} />
+              {pickBusy ? t('app.loading') : t('boards.config.pickFile')}
+            </button>
+            {!currentWorkspace && <p className="text-[10.5px] leading-4 text-cream-faint">{t('boards.files.noWorkspace')}</p>}
+            {pickError && <p className="text-[10.5px] leading-4 text-red-500">{t(pickError)}</p>}
+            <p className="text-[10.5px] leading-4 text-cream-faint">{t('boards.config.fileHint')}</p>
+          </>
         )}
         {urlInvalid && <p className="text-[10.5px] leading-4 text-red-500">{t('boards.config.invalidUrl')}</p>}
         <div className="border-t border-line pt-2.5">

@@ -11,7 +11,14 @@ interface LayoutProps {
 export default function Layout({ children }: LayoutProps) {
   const workspacePanel = useAppStore((state) => state.workspacePanel)
   const location = useLocation()
-  const isChat = location.pathname === '/'
+  // /browser and /office are the full-page forms of the same Main-owned
+  // surfaces (one panel per window) — showing both would double-mount them.
+  // On every other route the panel persists so an agent-driven task keeps
+  // its live surface while the user visits 看板 or 设置.
+  const panelKind = workspacePanel?.kind
+  const routeOwnsSurface =
+    (location.pathname === '/browser' && panelKind === 'browser') ||
+    (location.pathname === '/office' && panelKind === 'office')
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-ink-950 text-cream">
@@ -20,7 +27,7 @@ export default function Layout({ children }: LayoutProps) {
         <UpdateBanner />
         {children}
       </main>
-      {isChat && workspacePanel ? <WorkspacePanel panel={workspacePanel} /> : null}
+      {workspacePanel && !routeOwnsSurface ? <WorkspacePanel panel={workspacePanel} /> : null}
     </div>
   )
 }

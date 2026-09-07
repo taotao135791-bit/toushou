@@ -13,9 +13,13 @@ vi.mock('electron', () => ({
 import {
   createCheckpoint,
   restoreCheckpoint,
+  restoreCheckpointReversible,
   saveCheckpoint,
   listCheckpoints,
-  getCheckpoint
+  getCheckpoint,
+  diffCheckpoint,
+  parseNameStatusZ,
+  parseNumstatLine
 } from '../checkpoints'
 import { CheckpointInfo } from '../../shared/types'
 
@@ -147,5 +151,217 @@ describe('persistence', () => {
     expect(listCheckpoints('s1', storeFile)).toEqual([])
     writeFileSync(storeFile, '{broken')
     expect(listCheckpoints('s1', storeFile)).toEqual([])
+  })
+
+  it('hides pre-undo checkpoints from listCheckpoints but keeps them resolvable by id', () => {
+    saveCheckpoint(entry('c1', 's1'), storeFile)
+    saveCheckpoint({ ...entry('c2', 's1'), kind: 'pre-undo' }, storeFile)
+    saveCheckpoint({ ...entry('c3', 's1'), kind: 'turn' }, storeFile)
+
+    expect(listCheckpoints('s1', storeFile).map((c) => c.id)).toEqual(['c1', 'c3'])
+    // Redo still resolves the safety snapshot through getCheckpoint.
+    expect(getCheckpoint('c2', storeFile)?.kind).toBe('pre-undo')
+  })
+
+  it('reads legacy store entries without a kind field as turn checkpoints', () => {
+    const legacy = [
+      {
+        id: 'old1',
+        sessionId: 's1',
+        sha: 'abc123',
+        untracked: [],
+        promptPreview: 'do something',
+        msgIndex: 0,
+        createdAt: 1
+      }
+    ]
+    mkdirSync(path.dirname(storeFile), { recursive: true })
+    writeFileSync(storeFile, JSON.stringify(legacy))
+
+    const listed = listCheckpoints('s1', storeFile)
+    expect(listed.map((c) => c.id)).toEqual(['old1'])
+    expect(listed[0].kind).toBeUndefined()
+  })
+})
+
+describe('restoreCheckpointReversible', () => {
+  it('snapshots the CURRENT worktree before restoring and returns its checkpoint id', async () => {
+    write('a.txt', 'original')
+    commitAll('init')
+
+    const turn = await createCheckpoint(repo)
+    expect(turn).not.toBeNull()
+
+    // The agent's turn: modified tracked content, created a new file.
+    write('a.txt', 'changed by agent')
+    write('src/agent-file.ts', 'export const x = 1')
+
+    const result = await restoreCheckpointReversible({
+      sessionId: 's1',
+      projectDir: repo,
+      targetSha: turn!.sha,
+      targetUntracked: turn!.untracked,
+      msgIndex: 3,
+      storeFile
+    })
+    expect(result.ok).toBe(true)
+    expect(result.preUndoCheckpointId).toBeTruthy()
+
+    // The worktree is back to the pre-turn state...
+    expect(readFileSync(path.join(repo, 'a.txt'), 'utf-8')).toBe('original')
+    expect(existsSync(path.join(repo, 'src/agent-file.ts'))).toBe(false)
+
+    // ...while the agent's post-turn work survived inside the pre-undo
+    // snapshot — which is only possible if it was taken BEFORE the restore.
+    const preUndo = getCheckpoint(result.preUndoCheckpointId!, storeFile)
+    expect(preUndo).not.toBeNull()
+    expect(preUndo!.kind).toBe('pre-undo')
+    expect(preUndo!.sessionId).toBe('s1')
+    expect(preUndo!.msgIndex).toBe(3)
+    const catFile = (spec: string): string =>
+      execFileSync('git', ['cat-file', '-p', spec], { cwd: repo, encoding: 'utf-8' })
+    expect(catFile(`${preUndo!.sha}:a.txt`)).toBe('changed by agent')
+    expect(catFile(`${preUndo!.sha}:src/agent-file.ts`)).toBe('export const x = 1')
+  })
+
+  it('can be redone: restoring the pre-undo checkpoint brings the agent work back', async () => {
+    write('a.txt', 'original')
+    commitAll('init')
+    const turn = await createCheckpoint(repo)
+    write('a.txt', 'changed by agent')
+
+    const undo = await restoreCheckpointReversible({
+      sessionId: 's1',
+      projectDir: repo,
+      targetSha: turn!.sha,
+      targetUntracked: turn!.untracked,
+      msgIndex: 0,
+      storeFile
+    })
+    expect(undo.ok).toBe(true)
+    const preUndo = getCheckpoint(undo.preUndoCheckpointId!, storeFile)!
+
+    const redo = await restoreCheckpointReversible({
+      sessionId: 's1',
+      projectDir: repo,
+      targetSha: preUndo.sha,
+      targetUntracked: preUndo.untracked,
+      msgIndex: preUndo.msgIndex,
+      storeFile
+    })
+    expect(redo.ok).toBe(true)
+    expect(readFileSync(path.join(repo, 'a.txt'), 'utf-8')).toBe('changed by agent')
+  })
+
+  it('returns the bare failure (no redo target) when the restore fails', async () => {
+    const plain = mkdtempSync(path.join(tmpdir(), 'omp-not-a-repo-'))
+    try {
+      const result = await restoreCheckpointReversible({
+        sessionId: 's1',
+        projectDir: plain,
+        targetSha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+        targetUntracked: [],
+        msgIndex: 0,
+        storeFile
+      })
+      expect(result.ok).toBe(false)
+      expect(result.preUndoCheckpointId).toBeUndefined()
+    } finally {
+      rmSync(plain, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('parseNameStatusZ', () => {
+  it('parses added / modified / deleted records', () => {
+    expect(parseNameStatusZ('A\0new.txt\0M\0src/a.ts\0D\0old.txt\0')).toEqual([
+      { path: 'new.txt', status: 'added' },
+      { path: 'src/a.ts', status: 'modified' },
+      { path: 'old.txt', status: 'deleted' }
+    ])
+  })
+
+  it('collapses renames and copies to modified on the destination path', () => {
+    expect(parseNameStatusZ('R100\0old-name.ts\0new-name.ts\0')).toEqual([
+      { path: 'new-name.ts', status: 'modified' }
+    ])
+    expect(parseNameStatusZ('C75\0src/a.ts\0dst/b.ts\0')).toEqual([
+      { path: 'dst/b.ts', status: 'modified' }
+    ])
+  })
+
+  it('degrades type changes and unknown codes to modified, tolerates trailing NUL', () => {
+    expect(parseNameStatusZ('T\0link.txt\0X9\0weird.txt\0')).toEqual([
+      { path: 'link.txt', status: 'modified' },
+      { path: 'weird.txt', status: 'modified' }
+    ])
+    expect(parseNameStatusZ('')).toEqual([])
+    expect(parseNameStatusZ('M\0a.txt\0')).toEqual([{ path: 'a.txt', status: 'modified' }])
+  })
+})
+
+describe('parseNumstatLine', () => {
+  it('parses counts and paths, maps binary markers to null', () => {
+    expect(parseNumstatLine('12\t3\tsrc/a.ts')).toEqual({
+      additions: 12,
+      deletions: 3,
+      path: 'src/a.ts'
+    })
+    expect(parseNumstatLine('-\t-\tpicture.png')).toEqual({
+      additions: null,
+      deletions: null,
+      path: 'picture.png'
+    })
+    expect(parseNumstatLine('0\t0\0weird')).toBeNull()
+    expect(parseNumstatLine('not a numstat line')).toBeNull()
+    expect(parseNumstatLine('')).toBeNull()
+  })
+})
+
+describe('diffCheckpoint', () => {
+  it('summarizes everything since the snapshot, including agent-created files', async () => {
+    write('a.txt', 'original')
+    write('gone.txt', 'will be deleted')
+    commitAll('init')
+
+    const cp = await createCheckpoint(repo)
+    expect(cp).not.toBeNull()
+
+    write('a.txt', 'changed by agent')
+    write('src/created-by-agent.ts', 'export const x = 1')
+    rmSync(path.join(repo, 'gone.txt'))
+
+    const diff = await diffCheckpoint(repo, cp!.sha)
+    expect(diff).not.toBeNull()
+    const byPath = new Map(diff!.files.map((f) => [f.path, f]))
+    expect(byPath.get('a.txt')).toMatchObject({ status: 'modified' })
+    expect(byPath.get('src/created-by-agent.ts')).toMatchObject({ status: 'added' })
+    expect(byPath.get('gone.txt')).toMatchObject({ status: 'deleted' })
+    // untracked creations are invisible to a plain `git diff <sha>`; the
+    // tree-to-tree comparison must catch them
+    expect(diff!.files).toHaveLength(3)
+    expect(diff!.additions).toBeGreaterThan(0)
+  })
+
+  it('returns empty files when the worktree matches the snapshot', async () => {
+    write('a.txt', 'same')
+    commitAll('init')
+    const cp = await createCheckpoint(repo)
+    const diff = await diffCheckpoint(repo, cp!.sha)
+    expect(diff).toEqual({ files: [], additions: 0, deletions: 0 })
+  })
+
+  it('returns null for non-git directories and unknown shas', async () => {
+    write('a.txt', 'content')
+    commitAll('init')
+    expect(await diffCheckpoint(repo, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef')).toBeNull()
+
+    const plain = mkdtempSync(path.join(tmpdir(), 'omp-not-a-repo-'))
+    try {
+      writeFileSync(path.join(plain, 'a.txt'), 'content')
+      expect(await diffCheckpoint(plain, 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391')).toBeNull()
+    } finally {
+      rmSync(plain, { recursive: true, force: true })
+    }
   })
 })

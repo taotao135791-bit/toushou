@@ -4,6 +4,7 @@ import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
 import {
   SessionEvent,
+  ExternalSessionDescriptor,
   AppSettings,
   InstallStatus,
   ReadFileResult,
@@ -22,6 +23,7 @@ import {
   SubagentTranscriptSelector,
   WorkspaceGrant,
   RecentWorkspaceDescriptor,
+  OpenWorkspaceResult,
   PluginScaffoldRequest,
   CustomProvidersListResult,
   CustomProviderSaveResult,
@@ -31,7 +33,8 @@ import {
   ManagedPluginDetail,
   ManagedPluginSaveResult,
   ManagedPluginActionResult,
-  BoardDesignChange
+  BoardDesignChange,
+  BoardFileChange
 } from '../shared/types'
 import {
   detectCli,
@@ -73,6 +76,10 @@ import { listAvailableModels, listCatalogModels, invalidateModelCache } from './
 import { getStore, rememberRecentProject, setStore } from './store'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
+import { readBrowserScreenshotData } from './browserUse'
+import { logRendererError, readLogTail } from './lib/logger'
+import { listTasks, saveTask, deleteTask, toggleTask, runTaskNow, startScheduler } from './scheduledTasks'
+import { readKnowledge, writeKnowledge } from './projectKnowledge'
 import { listLaunchableTools } from './toolLaunch'
 import { searchCommunityPackages } from './community'
 import { scaffoldPlugin } from './pluginScaffold'
@@ -88,19 +95,22 @@ import { getOperationGrantManager } from './operationGrant'
 import { FsGuard } from './fsGuard'
 import {
   createCheckpoint,
-  restoreCheckpoint,
+  restoreCheckpointReversible,
   saveCheckpoint,
   listCheckpoints,
-  getCheckpoint
+  getCheckpoint,
+  diffCheckpoint
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
-import { listSessionHistory, deleteSessionFile } from './sessionHistory'
+import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions } from './sessionHistory'
+import { readSessionTranscript } from './sessionTranscript'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
-import { appendBoardNote, deleteBoard, listBoards, saveBoard } from './boards'
+import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, saveBoard } from './boards'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
+import { readBoardWidgetFile, registerBoardFileBinding } from './boardFiles'
 import {
   deleteSkill,
   importSkillFile,
@@ -113,6 +123,7 @@ import {
 import { importGithubSkills, previewGithubSkills } from './skillsGithub'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
+import { openWorkspaceInRequest } from './openWorkspaceIn'
 import { maybeNotifyTurnFinished, maybeNotifyUiRequest } from './notify'
 import {
   getUpdaterStatus,
@@ -150,6 +161,8 @@ import {
   showBrowserPanel
 } from './browserPanel'
 import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
+import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
+import { FeishuCapability, FeishuManualCredentials } from '../shared/connections'
 
 const fsGuard = new FsGuard()
 const grantManager = new WorkspaceGrantManager({ fsGuard })
@@ -193,6 +206,49 @@ function ensureBoardDesignWatch(): void {
   watchBoardDesign(broadcastBoardDesign)
 }
 
+/** A bound file-widget file changed on disk; the matching card reloads. */
+function broadcastBoardFileChange(change: BoardFileChange): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.BOARDS_FILE_CHANGED, change)
+    }
+  }
+}
+
+/**
+ * Resolve a proposed file-card path against the workspace grant named in the
+ * request: the grant's canonical real path is the only base, fsGuard confirms
+ * containment on the real path (symlinks resolved), and the board stores a
+ * normalized workspace-relative form. Returns null for anything outside the
+ * grant — applyBoardCards then skips that card with a warning.
+ */
+function resolveWorkspaceFile(request: unknown, filePath: unknown): string | null {
+  if (typeof filePath !== 'string' || !filePath || !request || typeof request !== 'object') return null
+  const grantId = (request as Record<string, unknown>).workspaceGrantId
+  if (typeof grantId !== 'string' || !grantId) return null
+  const grant = grantManager.get(grantId)
+  if (!grant) return null
+  const absolute = path.resolve(grant.realPath, filePath)
+  if (!fsGuard.isAllowed(absolute)) return null
+  const relative = path.relative(grant.realPath, absolute)
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null
+  return relative.split(path.sep).join('/')
+}
+
+/** Sanitized board+widget+grant selector for the file-widget read channel. */
+function sanitizeWidgetFileRead(request: unknown): { boardId: string; widgetId: string; workspaceGrantId: string } | null {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return null
+  const value = request as Record<string, unknown>
+  const okId = (id: unknown): id is string =>
+    typeof id === 'string' && id.length > 0 && id.length <= 100 && !hasControl(id)
+  if (!okId(value.boardId) || !okId(value.widgetId) || !okId(value.workspaceGrantId)) return null
+  return {
+    boardId: value.boardId,
+    widgetId: value.widgetId,
+    workspaceGrantId: value.workspaceGrantId
+  }
+}
+
 const MAX_READ_FILE_BYTES = 2 * 1024 * 1024
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -213,6 +269,19 @@ function broadcastSessionEvent(event: SessionEvent): void {
   }
   maybeNotifyTurnFinished(event)
   maybeNotifyUiRequest(event)
+}
+
+/**
+ * A session was created outside the GUI (Feishu channel route). Broadcast the
+ * minimal descriptor so the renderer can register a clickable live row; chat
+ * content and route details ride the normal session-event stream only.
+ */
+function broadcastExternalSession(descriptor: ExternalSessionDescriptor): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.SESSION_EXTERNAL, descriptor)
+    }
+  }
 }
 
 function sanitizeStreamingBehavior(value: unknown): StreamingBehavior | undefined {
@@ -243,6 +312,40 @@ function sanitizeSubagentSelector(value: unknown): SubagentTranscriptSelector {
 /** An id that is a non-empty, control-char-free, reasonably-bounded string. */
 function isSafeId(id: string): boolean {
   return id.length > 0 && id.length <= 512 && !hasControl(id)
+}
+
+const MAX_STORE_VALUE_BYTES = 256 * 1024
+
+/**
+ * True when `value` is plain JSON-serializable data within a sane size —
+ * the settings store holds plain values only. Prevents prototypes/porcelain
+ * (class instances, Maps, functions, cyclic graphs) from entering store:set.
+ */
+function isPlainStorableValue(value: unknown, depth = 0): boolean {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (depth > 12) return false
+  if (Array.isArray(value)) {
+    if (value.length > 10_000) return false
+    return value.every((item) => isPlainStorableValue(item, depth + 1))
+  }
+  if (value instanceof Date || value instanceof Map || value instanceof Set) return false
+  if (typeof value === 'object') {
+    const proto = Object.getPrototypeOf(value)
+    if (proto !== Object.prototype && proto !== null) return false
+    const entries = Object.entries(value as Record<string, unknown>)
+    if (entries.length > 1_000) return false
+    let bytes = 0
+    for (const [k, v] of entries) {
+      if (typeof k !== 'string' || k.length > 256) return false
+      bytes += k.length
+      if (!isPlainStorableValue(v, depth + 1)) return false
+      if (typeof v === 'string') bytes += v.length
+      if (bytes > MAX_STORE_VALUE_BYTES) return false
+    }
+    return true
+  }
+  return false
 }
 
 // eslint-disable-next-line no-control-regex
@@ -435,6 +538,41 @@ function redactScaffoldOutputLog(value: unknown, canonicalDir: string): string {
 }
 
 export function registerIpc() {
+  startScheduler()
+  feishuConnectionManager.setSessionEventSink(broadcastSessionEvent)
+  feishuConnectionManager.setExternalSessionSink(broadcastExternalSession)
+
+  // Connections are Main-owned. The renderer receives only a public status
+  // projection and a QR URL; credentials and SDK clients stay here.
+  ipcMain.handle(IPC_CHANNELS.CONNECTIONS_LIST, async () => [feishuConnectionManager.getSnapshot()])
+  ipcMain.handle(IPC_CHANNELS.FEISHU_STATUS, async () => feishuConnectionManager.getSnapshot())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_BEGIN_CONNECTION, async (_event, brand: unknown) => {
+    return feishuConnectionManager.beginConnection(brand === 'lark' ? 'lark' : 'feishu')
+  })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_CONNECT_MANUAL, async (_event, raw: unknown) => {
+    if (!raw || typeof raw !== 'object') return { ok: false, error: 'invalid credentials', snapshot: feishuConnectionManager.getSnapshot() }
+    const input = raw as Record<string, unknown>
+    const credentials: FeishuManualCredentials = {
+      appId: typeof input.appId === 'string' ? input.appId : '',
+      appSecret: typeof input.appSecret === 'string' ? input.appSecret : '',
+      brand: input.brand === 'lark' ? 'lark' : 'feishu'
+    }
+    return feishuConnectionManager.connectManual(credentials)
+  })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_CANCEL_CONNECTION, async () => feishuConnectionManager.cancelConnection())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_DISCONNECT, async () => feishuConnectionManager.disconnect())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_OPEN_URL, async (_event, url: unknown) => {
+    return typeof url === 'string' ? feishuConnectionManager.openUrl(url) : false
+  })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_BEGIN, async (_event, capability: unknown) => {
+    const capabilities: FeishuCapability[] = ['docs.read', 'docs.write', 'sheets.read', 'sheets.write', 'bitable.read', 'bitable.write']
+    return capabilities.includes(capability as FeishuCapability)
+      ? feishuConnectionManager.beginOAuth(capability as FeishuCapability)
+      : { ok: false, error: '不支持的授权能力', snapshot: feishuConnectionManager.getSnapshot() }
+  })
+  ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_POLL, async () => feishuConnectionManager.pollOAuth())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_CANCEL, async () => feishuConnectionManager.cancelOAuth())
+
   ipcMain.handle(IPC_CHANNELS.OMP_DETECT, async (_event: IpcMainInvokeEvent, force?: boolean) => {
     if (force) {
       invalidateCliCache()
@@ -643,6 +781,27 @@ export function registerIpc() {
     }
   )
 
+  // Durable transcript of a LIVE session, validated + parsed Main-side (the
+  // same get_messages mapping the resume path uses). Used to backfill
+  // externally-created sessions (e.g. Feishu) when the GUI opens them.
+  ipcMain.handle(
+    IPC_CHANNELS.OMP_SESSION_TRANSCRIPT,
+    async (_event: IpcMainInvokeEvent, sessionId: unknown) => readSessionTranscript(sessionId)
+  )
+
+  // Cross-project read-only history listing. Metadata only (uuid/title/
+  // timestamp/cwd from the runtime's own session files) — no capability is
+  // minted here; resume/delete still require the workspace-bound grant flow.
+  ipcMain.handle(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY, async () => {
+    const all = await listAllSessions()
+    return all.map((entry) => ({
+      uuid: entry.uuid,
+      title: entry.title,
+      timestamp: entry.timestamp,
+      cwd: entry.cwd
+    }))
+  })
+
   ipcMain.handle(
     IPC_CHANNELS.OMP_LIST_SESSION_HISTORY,
     async (event: IpcMainInvokeEvent, grantId: string) => {
@@ -698,11 +857,28 @@ export function registerIpc() {
         workspaceRealPath: resolved.realPath,
         ownerWebContentsId: event.sender.id
       }, async (filePath) => {
-        const result = await deleteSessionFile(filePath)
+        // Copy-proof: sweep same-uuid copies in every layout, or the scanner
+        // resurrects the session from its legacy/sanitized duplicate.
+        const result = await deleteSessionFileEverywhere(filePath)
         if (result) historySessionGrantManager.revoke(historyId)
         return result
       })
       return deleted === true
+    }
+  )
+
+  // Workspace-independent delete: a cross-project history row carries only its
+  // durable uuid — never a capability minted for the active workspace — so
+  // deleting it (e.g. after a failed restore) must not depend on which project
+  // is open. Main resolves the uuid to every transcript copy inside its own
+  // sessions root; the renderer never supplies a path.
+  ipcMain.handle(
+    IPC_CHANNELS.OMP_DELETE_SESSION_BY_UUID,
+    async (event: IpcMainInvokeEvent, grantId: string, uuid: unknown) => {
+      const resolved = requireGrant(grantId)
+      if (!resolved) return false
+      bindHistorySessionGrantOwnerCleanup(event)
+      return historySessionGrantManager.deleteByUuid(uuid)
     }
   )
 
@@ -747,7 +923,8 @@ export function registerIpc() {
         untracked: snapshot.untracked,
         promptPreview: typeof promptPreview === 'string' ? promptPreview.slice(0, 80) : '',
         msgIndex: typeof msgIndex === 'number' ? msgIndex : 0,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        kind: 'turn'
       }
       saveCheckpoint(info)
       return info
@@ -770,9 +947,31 @@ export function registerIpc() {
       if (!checkpoint) return { ok: false, log: 'Checkpoint not found.' }
       const session = getSession(checkpoint.sessionId)
       if (!session) return { ok: false, log: 'Session is no longer running.' }
-      return restoreCheckpoint(session.cwd, checkpoint.sha, checkpoint.untracked)
+      // Reversible restore: Main snapshots the CURRENT worktree first and
+      // saves it as a linked 'pre-undo' checkpoint, so an undo can itself be
+      // undone and the agent's post-turn work survives a misclick. Used by
+      // both the per-turn chip and the message rollback menu.
+      return restoreCheckpointReversible({
+        sessionId: checkpoint.sessionId,
+        projectDir: session.cwd,
+        targetSha: checkpoint.sha,
+        targetUntracked: checkpoint.untracked,
+        msgIndex: checkpoint.msgIndex
+      })
     }
   )
+
+  // Per-turn change summary for the transcript chip. The renderer only ever
+  // sends a checkpoint id minted by Main; project dir and snapshot sha are
+  // resolved here. null = non-git project / unknown id / unavailable diff.
+  ipcMain.handle(IPC_CHANNELS.CHECKPOINT_DIFF, async (_event: IpcMainInvokeEvent, id: string) => {
+    if (typeof id !== 'string' || !id) return null
+    const checkpoint = getCheckpoint(id)
+    if (!checkpoint) return null
+    const session = getSession(checkpoint.sessionId)
+    if (!session) return null
+    return diffCheckpoint(session.cwd, checkpoint.sha)
+  })
 
   ipcMain.handle(
     IPC_CHANNELS.GIT_INFO,
@@ -791,6 +990,16 @@ export function registerIpc() {
       if (typeof filePath !== 'string' || !filePath.trim()) return null
       return getFileDiff(resolved.realPath, filePath)
     }
+  )
+
+  // Chat top bar "打开方式": reveal/open the granted workspace in Finder,
+  // a terminal, or VS Code. The renderer only ever sends the grant id and a
+  // target name; the real path is resolved here through the same grant
+  // authority as every other workspace-scoped channel.
+  ipcMain.handle(
+    IPC_CHANNELS.OPEN_WORKSPACE_IN,
+    async (_event: IpcMainInvokeEvent, grantId: unknown, target: unknown): Promise<OpenWorkspaceResult> =>
+      openWorkspaceInRequest(requireGrant, grantId, target)
   )
 
   ipcMain.handle(IPC_CHANNELS.UPDATER_GET_STATUS, async () => {
@@ -1044,6 +1253,47 @@ export function registerIpc() {
     if (grant) rememberRecentProject(grant.realPath)
     return grant
   })
+
+  // App-managed fallback workspace: chatting without a project anchors here so
+  // "just start typing" never dead-ends on a folder picker. Persisted as a
+  // recent workspace so its session history survives relaunches.
+  ipcMain.handle(IPC_CHANNELS.WORKSPACE_DEFAULT, async (): Promise<WorkspaceGrant | null> => {
+    const dir = path.join(app.getPath('documents'), '投手工作区')
+    try {
+      await fs.promises.mkdir(dir, { recursive: true })
+    } catch {
+      return null
+    }
+    const grant = await grantManager.createGrant(dir, 'default')
+    if (grant) rememberRecentProject(grant.realPath)
+    return grant
+  })
+
+  // "New project folder" from the home screen: Main creates a uniquely-named
+  // folder under Documents/投手项目 and grants it. The name is display input,
+  // never an authorization path — Main sanitizes and resolves it.
+  ipcMain.handle(
+    IPC_CHANNELS.WORKSPACE_CREATE_PROJECT,
+    async (_event, rawName: unknown): Promise<WorkspaceGrant | null> => {
+      if (typeof rawName !== 'string') return null
+      const name = rawName.replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 60)
+      if (!name) return null
+      const base = path.join(app.getPath('documents'), '投手项目')
+      let dir = path.join(base, name)
+      try {
+        await fs.promises.mkdir(base, { recursive: true })
+        for (let suffix = 2; fs.existsSync(dir); suffix += 1) {
+          dir = path.join(base, name + '-' + suffix)
+        }
+        await fs.promises.mkdir(dir, { recursive: true })
+      } catch {
+        return null
+      }
+      const grant = await grantManager.createGrant(dir, 'dialog')
+      if (grant) rememberRecentProject(grant.realPath)
+      return grant
+    }
+  )
 
   ipcMain.handle(
     IPC_CHANNELS.WORKSPACE_ACTIVATE_RECENT,
@@ -1608,7 +1858,11 @@ export function registerIpc() {
   })
 
   ipcMain.handle(IPC_CHANNELS.STORE_SET, async (_event, key: keyof AppSettings, value: unknown) => {
+    if (typeof key !== 'string') return false
     if (key === 'recentProjects') return false
+    // The store holds plain settings data only — a renderer must not persist
+    // functions, class instances, or oversized blobs through this channel.
+    if (!isPlainStorableValue(value)) return false
     setStore(key, value as never)
     // Transitional: the settings UI still writes the legacy toolAccess tier;
     // mirror it into permissionMode until the renderer exposes 'ask' itself.
@@ -1616,6 +1870,94 @@ export function registerIpc() {
       setStore('permissionMode', value)
     }
     return true
+  })
+
+  // --- Diagnostics -----------------------------------------------------------
+
+  ipcMain.handle(IPC_CHANNELS.RENDERER_ERROR, async (_event, message: unknown) => {
+    if (typeof message === 'string' && message.length > 0) {
+      logRendererError(message.slice(0, 8_000))
+    }
+    return true
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_SCREENSHOT_DATA, async (_event, filePath: unknown) => {
+    return readBrowserScreenshotData(filePath)
+  })
+
+  // User-initiated bundle: versions, capability facts and the recent log
+  // tail. Written where the user chooses via a native dialog; nothing is
+  // uploaded (there is no telemetry in this app).
+  ipcMain.handle(IPC_CHANNELS.DIAGNOSTICS_EXPORT, async () => {
+    const result = await dialog.showSaveDialog({
+      title: '投手诊断信息',
+      defaultPath: `toushou-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (result.canceled || !result.filePath) return { ok: false, error: 'cancelled' }
+    try {
+      const cli = detectCli()
+      const caps = await getCapabilities()
+      const os = await import('node:os')
+      const bundle = {
+        exportedAt: new Date().toISOString(),
+        appVersion: app.getVersion(),
+        electron: process.versions.electron,
+        node: process.versions.node,
+        platform: process.platform,
+        osRelease: os.release(),
+        locale: app.getLocale(),
+        cli: { command: cli.command, available: cli.available },
+        capabilities: caps,
+        logTail: await readLogTail()
+      }
+      await fs.promises.writeFile(result.filePath, JSON.stringify(bundle, null, 2), 'utf-8')
+      return { ok: true, path: result.filePath }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'write-failed' }
+    }
+  })
+
+  // --- Scheduled tasks ---------------------------------------------------
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_LIST, async () => listTasks())
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_SAVE, async (_event, task: unknown) => {
+    if (!task || typeof task !== 'object') return { ok: false, error: 'invalid' }
+    const t = task as Record<string, unknown>
+    if (typeof t.id !== 'string' || !t.id) return { ok: false, error: 'missing-id' }
+    if (typeof t.name !== 'string' || !t.name.trim()) return { ok: false, error: 'missing-name' }
+    if (typeof t.prompt !== 'string' || !t.prompt.trim()) return { ok: false, error: 'missing-prompt' }
+    if (typeof t.cwd !== 'string' || !t.cwd) return { ok: false, error: 'missing-cwd' }
+    if (!t.schedule || typeof t.schedule !== 'object') return { ok: false, error: 'missing-schedule' }
+    return { ok: true, task: saveTask(task as never) }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_DELETE, async (_event, id: unknown) => {
+    if (typeof id !== 'string') return false
+    return deleteTask(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_TOGGLE, async (_event, id: unknown, enabled: unknown) => {
+    if (typeof id !== 'string' || typeof enabled !== 'boolean') return null
+    return toggleTask(id, enabled)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TASKS_RUN_NOW, async (_event, id: unknown) => {
+    if (typeof id !== 'string') return false
+    return runTaskNow(id)
+  })
+
+  // --- Project knowledge ----------------------------------------------------
+
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_READ, async (_event, cwd: unknown) => {
+    if (typeof cwd !== 'string' || !cwd) return null
+    return readKnowledge(cwd)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_WRITE, async (_event, cwd: unknown, content: unknown) => {
+    if (typeof cwd !== 'string' || typeof content !== 'string') return false
+    return writeKnowledge(cwd, content)
   })
 
   // Kanban boards — dedicated module, never the generic store:set. The board
@@ -1704,6 +2046,74 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.BOARDS_REVEAL_DESIGN, async () => {
     ensureBoardDesignWatch()
     return revealBoardDesign()
+  })
+
+  // Chat ```board-cards proposals — the data-card sibling of board-design.
+  // The agent only proposes; the person picks a board and applies; Main
+  // re-parses the RAW fence text (renderer structures are never trusted),
+  // resolves file cards against the named workspace grant, and appends the
+  // cards through the same validated save path as a hand edit.
+  ipcMain.handle(IPC_CHANNELS.BOARDS_APPLY_CARDS, async (_event, request: unknown) => {
+    return applyBoardCards(request, {
+      resolveWorkspaceFile: (filePath) => resolveWorkspaceFile(request, filePath)
+    })
+  })
+
+  // File widgets: the bound path lives in the persisted board and is resolved
+  // against the ACTIVE workspace grant's real path; fsGuard re-checks the real
+  // path on every read. Absolute paths never cross back to the renderer.
+  ipcMain.handle(IPC_CHANNELS.BOARDS_WIDGET_FILE_READ, async (_event, request: unknown) => {
+    const selector = sanitizeWidgetFileRead(request)
+    if (!selector) return { ok: false, error: 'invalid-request' }
+    const grant = grantManager.get(selector.workspaceGrantId)
+    if (!grant) return { ok: false, error: 'no-workspace' }
+    return readBoardWidgetFile({
+      boardId: selector.boardId,
+      widgetId: selector.widgetId,
+      workspaceRealPath: grant.realPath,
+      isAllowed: (absolutePath) => fsGuard.isAllowed(absolutePath),
+      onBound: (bound) =>
+        registerBoardFileBinding(
+          {
+            boardId: selector.boardId,
+            widgetId: selector.widgetId,
+            absolutePath: bound.absolutePath,
+            mtime: bound.mtime
+          },
+          broadcastBoardFileChange
+        )
+    })
+  })
+
+  // Native picker for binding a file-widget file: Main validates the pick is
+  // inside the requested workspace grant and answers with a workspace-relative
+  // path only (those are already enumerable through the workspace grant).
+  ipcMain.handle(IPC_CHANNELS.BOARDS_WIDGET_FILE_SELECT, async (_event, grantId: unknown) => {
+    if (typeof grantId !== 'string' || !grantId) return { ok: false, error: 'no-workspace' }
+    const grant = grantManager.get(grantId)
+    if (!grant) return { ok: false, error: 'no-workspace' }
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Image / HTML', extensions: ['png', 'jpg', 'jpeg', 'html'] }]
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    const picked = result.filePaths[0]
+    let real: string
+    try {
+      real = fs.realpathSync(picked)
+    } catch {
+      return { ok: false, error: 'outside-workspace' }
+    }
+    if (!fsGuard.isAllowed(real)) return { ok: false, error: 'outside-workspace' }
+    const relative = path.relative(grant.realPath, real)
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      return { ok: false, error: 'outside-workspace' }
+    }
+    const extension = path.extname(real).slice(1).toLowerCase()
+    if (!['png', 'jpg', 'jpeg', 'html'].includes(extension)) {
+      return { ok: false, error: 'unsupported-type' }
+    }
+    return { ok: true, name: path.basename(real), relativePath: relative.split(path.sep).join('/') }
   })
 
   // SKILL 目录 — the team library of self-made Markdown docs and HTML tools.

@@ -9,8 +9,21 @@ import { syncMachineSkills } from './piSettings'
 import { detectCli } from './omp'
 import { initUpdater } from './updater'
 import { installNavigationGuards } from './navigation'
+import { initFeishuBridge } from './integrations/feishu/feishuBridge'
+import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
+import { installFileLogging } from './lib/logger'
+
+// File logging must be the first thing main does: it captures the console
+// output of the startup sequence below into userData/logs/main.log.
+installFileLogging()
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+// Windows notifications (completion/approval toasts) are attributed through
+// the App User Model ID; without it packaged toasts can fail to appear.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.toushou.app')
+}
 
 // Multiple app copies otherwise compete for the same userData, native browser
 // view, and session state. Keep one owner and focus it when the launcher is
@@ -93,6 +106,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  console.info(`[app] starting TouShou ${app.getVersion()} (${process.platform}, electron ${process.versions.electron})`)
   registerIpc()
   applyFirstRunDefaults()
   // Keep pi's skill overrides in line with the GUI toggle — LEGACY pi loads
@@ -113,11 +127,19 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('[browser-use] bridge unavailable', error)
   }
+  try {
+    await initFeishuBridge()
+  } catch (error) {
+    console.warn('[feishu] tool bridge unavailable', error)
+  }
   createWindow()
   initUpdater()
   // Fire-and-forget: links bundled packages (e.g. the ads toolkit) into the
   // runtime when detected; no-ops once linked or after user removal.
   void ensureBundledPackages()
+  // Background-only recovery: GUI creation is never held up by Feishu DNS or
+  // WebSocket handshake latency.
+  void feishuConnectionManager.initialize()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

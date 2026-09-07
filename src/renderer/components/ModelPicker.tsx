@@ -19,6 +19,8 @@ function sessionModelOf(state: SessionState | null): { provider: string; id: str
 interface ModelPickerProps {
   /** Live session whose model display/hot-switch applies; null = next-session override. */
   sessionId: string | null
+  /** Squeezed chat column: trigger collapses to icon-only (title keeps the name). */
+  compact?: boolean
 }
 
 /**
@@ -31,7 +33,7 @@ interface ModelPickerProps {
  * The list is whatever the runtime can actually run right now
  * (credential-filtered by the runtime itself).
  */
-export default function ModelPicker({ sessionId }: ModelPickerProps) {
+export default function ModelPicker({ sessionId, compact = false }: ModelPickerProps) {
   const {
     models,
     modelConfig,
@@ -156,13 +158,18 @@ export default function ModelPicker({ sessionId }: ModelPickerProps) {
             else void loadModelState()
           }
         }}
-        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
+        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
         title={sessionId ? t('composer.model') : t('composer.modelNextSession')}
+        aria-label={`${sessionId ? t('composer.model') : t('composer.modelNextSession')}: ${
+          failed ? t('composer.modelFailed') : label
+        }`}
       >
-        <Cpu size={12} />
-        <span className={`max-w-36 truncate ${failed ? 'text-red-500' : ''}`}>
-          {failed ? t('composer.modelFailed') : label}
-        </span>
+        <Cpu size={12} className={compact && failed ? 'text-red-500' : ''} />
+        {!compact && (
+          <span className={`max-w-36 truncate ${failed ? 'text-red-500' : ''}`}>
+            {failed ? t('composer.modelFailed') : label}
+          </span>
+        )}
         <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
       </button>
 

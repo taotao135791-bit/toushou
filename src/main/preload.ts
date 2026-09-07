@@ -1,10 +1,20 @@
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
 import {
+  FeishuConnectionResult,
+  FeishuConnectionSnapshot,
+  FeishuManualCredentials,
+  FeishuOAuthBeginResult,
+  FeishuCapability
+} from '../shared/connections'
+import {
   CliCapabilities,
   CliInfo,
+  HistorySessionRow,
+  ScheduledTask,
   Session,
   SessionEvent,
+  ExternalSessionDescriptor,
   SessionStats,
   SlashCommand,
   LaunchableTool,
@@ -19,6 +29,8 @@ import {
   PiModel,
   CommunityPackageInfo,
   CheckpointInfo,
+  CheckpointDiff,
+  CheckpointRestoreResult,
   GitInfo,
   PromptImage,
   SessionState,
@@ -39,6 +51,8 @@ import {
   HistoricalAgentRecord,
   WorkspaceGrant,
   RecentWorkspaceDescriptor,
+  OpenWorkspaceTarget,
+  OpenWorkspaceResult,
   FileGrant,
   DirectoryGrant,
   PluginScaffoldRequest,
@@ -46,10 +60,16 @@ import {
   KanbanBoard,
   BoardNoteAppendRequest,
   BoardNoteAppendResult,
+  BoardCardsApplyRequest,
+  BoardCardsApplyResult,
   BoardDataset,
   BoardDesignChange,
   BoardDesignDocument,
   BoardDesignSaveResult,
+  BoardFileChange,
+  BoardWidgetFilePickResult,
+  BoardWidgetFileReadRequest,
+  BoardWidgetFileReadResult,
   SkillImportResult,
   SkillListResult,
   SkillDeleteResult,
@@ -90,6 +110,8 @@ export interface ElectronAPI {
   /** CLI version + RPC feature surface of the detected CLI. */
   getCapabilities: () => Promise<CliCapabilities>
   listSessions: () => Promise<Session[]>
+  /** Cross-project read-only history rows (metadata; no resume capability). */
+  listAllSessionHistory: () => Promise<HistorySessionRow[]>
   /** Create a session under a Main-owned workspace grant. */
   createSession: (
     grantId: string,
@@ -104,6 +126,8 @@ export interface ElectronAPI {
   killSession: (sessionId: string) => Promise<boolean>
   abortSession: (sessionId: string) => Promise<boolean>
   onSessionEvent: (callback: (event: SessionEvent) => void) => () => void
+  /** Main → renderer push: a session was created outside the GUI (e.g. Feishu). */
+  onExternalSession: (callback: (descriptor: ExternalSessionDescriptor) => void) => () => void
   installOmp: () => Promise<boolean>
   onInstallStatus: (callback: (status: InstallStatus) => void) => () => void
   /** @deprecated Workspace authority is grant-based; this stub returns false. */
@@ -117,6 +141,10 @@ export interface ElectronAPI {
   listProjectFiles: (grantId: string) => Promise<string[]>
   /** Show the native folder dialog and mint a new WorkspaceGrant. */
   selectWorkspace: () => Promise<WorkspaceGrant | null>
+  /** Create a named project folder under Documents/投手项目 and grant it. */
+  createProjectWorkspace: (name: string) => Promise<WorkspaceGrant | null>
+  /** Activate the app-managed default workspace (Documents/投手工作区). */
+  getDefaultWorkspace: () => Promise<WorkspaceGrant | null>
   /** Re-authorize a Main-listed recent workspace by its opaque id. */
   activateRecentWorkspace: (recentId: string) => Promise<WorkspaceGrant | null>
   /** List currently valid recent workspaces from Main's registry. */
@@ -215,6 +243,14 @@ export interface ElectronAPI {
   revealBoardDesign: () => Promise<boolean>
   /** Fired when board-design.md changes on disk (any source). */
   onBoardDesignChanged: (callback: (change: BoardDesignChange) => void) => () => void
+  /** Apply a ```board-cards proposal; Main re-parses the raw fence text. */
+  applyBoardCards: (request: BoardCardsApplyRequest) => Promise<BoardCardsApplyResult>
+  /** Read a file widget's bound workspace file through the active grant. */
+  readBoardWidgetFile: (request: BoardWidgetFileReadRequest) => Promise<BoardWidgetFileReadResult>
+  /** Native picker → workspace-relative bind path for a file widget (null = canceled). */
+  selectBoardWidgetFile: (workspaceGrantId: string) => Promise<BoardWidgetFilePickResult | null>
+  /** Fired when a bound file-widget file changes on disk. */
+  onBoardFileChanged: (callback: (change: BoardFileChange) => void) => () => void
   /** SKILL 目录 — the team library of self-made docs and HTML tools. */
   listSkills: () => Promise<SkillListResult>
   readSkill: (id: string) => Promise<SkillReadResult>
@@ -255,6 +291,11 @@ export interface ElectronAPI {
   exportHtml: (sessionId: string) => Promise<string | null>
   /** Live RPC get_state snapshot of a session; null when unavailable. */
   getSessionState: (sessionId: string) => Promise<SessionState | null>
+  /**
+   * Full durable transcript of a live session (Main-parsed), for backfilling
+   * externally-created sessions; null for invalid ids or dead sessions.
+   */
+  sessionTranscript: (sessionId: string) => Promise<ChatMessage[] | null>
   /** Persisted sessions of a workspace, represented by opaque Main-held ids. */
   listSessionHistory: (grantId: string) => Promise<HistorySessionDescriptor[]>
   /** Resume an opaque history entry under the workspace grant that listed it. */
@@ -264,6 +305,11 @@ export interface ElectronAPI {
   ) => Promise<{ session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] } | null>
   /** Delete an opaque history entry under the workspace grant that listed it. */
   deleteSessionFile: (grantId: string, historyId: string) => Promise<boolean>
+  /**
+   * Delete every durable copy of a session uuid, in any project and layout.
+   * Works regardless of the active workspace; true when nothing resolves anymore.
+   */
+  deleteSessionByUuid: (grantId: string, uuid: string) => Promise<boolean>
   /** Set a session's display name (single line, max 60 chars). */
   setSessionName: (sessionId: string, name: string) => Promise<boolean>
   /** Live subagent roster (get_subagents); null when unsupported/unavailable. */
@@ -280,12 +326,25 @@ export interface ElectronAPI {
     promptPreview: string
   ) => Promise<CheckpointInfo | null>
   checkpointList: (sessionId: string) => Promise<CheckpointInfo[]>
-  /** Restore the project to a checkpoint; deletes files created after it. */
-  checkpointRestore: (id: string) => Promise<PackageActionResult>
+  /**
+   * Restore the project to a checkpoint; deletes files created after it.
+   * Main first snapshots the current worktree as a 'pre-undo' checkpoint and
+   * returns its id (preUndoCheckpointId) so an undo can be redone; absent
+   * when no snapshot was possible or the restore failed. pre-undo entries
+   * never appear in checkpointList.
+   */
+  checkpointRestore: (id: string) => Promise<CheckpointRestoreResult>
+  /**
+   * Files that differ between a checkpoint snapshot and the worktree now
+   * (the turn's change summary); null for non-git dirs / unknown ids.
+   */
+  checkpointDiff: (id: string) => Promise<CheckpointDiff | null>
   /** Working-tree change summary for the changes panel; null for non-git dirs. */
   gitInfo: (grantId: string) => Promise<GitInfo | null>
   /** Unified diff of one file (synthetic new-file diff for untracked files). */
   gitFileDiff: (grantId: string, filePath: string) => Promise<string | null>
+  /** Open a granted workspace in Finder/Terminal/VS Code (chat top bar menu). */
+  openWorkspaceIn: (workspaceId: string, target: OpenWorkspaceTarget) => Promise<OpenWorkspaceResult>
   /** Toggle loading of machine-local ~/.agents/skills; returns what changed. */
   setMachineSkills: (enabled: boolean) => Promise<{ enabled: boolean; excluded: string[]; available: string[] }>
   /** Read-only: names of machine-local skills present under ~/.agents/skills. */
@@ -348,12 +407,41 @@ export interface ElectronAPI {
   authLogout: (providerId: string) => Promise<{ ok: boolean; error?: string }>
   /** Login flow state stream. */
   onLoginState: (callback: (state: LoginState) => void) => () => void
+  // ------------------------------------------------------- connections
+  listConnections: () => Promise<FeishuConnectionSnapshot[]>
+  feishuStatus: () => Promise<FeishuConnectionSnapshot>
+  feishuBeginConnection: (brand?: 'feishu' | 'lark') => Promise<FeishuConnectionResult>
+  /** Advanced fallback only; the secret is sent directly to Main. */
+  feishuConnectManual: (credentials: FeishuManualCredentials) => Promise<FeishuConnectionResult>
+  feishuCancelConnection: () => Promise<FeishuConnectionSnapshot>
+  feishuDisconnect: () => Promise<FeishuConnectionSnapshot>
+  feishuOpenUrl: (url: string) => Promise<boolean>
+  feishuBeginOAuth: (capability: FeishuCapability) => Promise<FeishuOAuthBeginResult>
+  feishuPollOAuth: () => Promise<FeishuConnectionSnapshot>
+  feishuCancelOAuth: () => Promise<FeishuConnectionSnapshot>
+  onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => () => void
+  /** Fetch a Main-captured browser screenshot as a PNG data URL (validated path). */
+  readBrowserScreenshot: (filePath: string) => Promise<string | null>
+  /** Forward a renderer exception into the main-process file log. */
+  logRendererError: (message: string) => Promise<boolean>
+  /** User-initiated diagnostics bundle (versions + log tail) via save dialog. */
+  exportDiagnostics: () => Promise<{ ok: boolean; path?: string; error?: string }>
+  listTasks: () => Promise<ScheduledTask[]>
+  saveTask: (task: ScheduledTask) => Promise<{ ok: boolean; task?: ScheduledTask; error?: string }>
+  deleteTask: (id: string) => Promise<boolean>
+  toggleTask: (id: string, enabled: boolean) => Promise<ScheduledTask | null>
+  runTaskNow: (id: string) => Promise<boolean>
+  onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => () => void
+  readKnowledge: (cwd: string) => Promise<string | null>
+  writeKnowledge: (cwd: string, content: string) => Promise<boolean>
 }
 
 const api: ElectronAPI = {
   detectCli: (force?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.OMP_DETECT, force),
   getCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.OMP_CAPABILITIES),
   listSessions: () => ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_SESSIONS),
+  listAllSessionHistory: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY) as Promise<HistorySessionRow[]>,
   createSession: (
     grantId: string,
     overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string }
@@ -375,6 +463,13 @@ const api: ElectronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.OMP_SESSION_EVENT, handler)
     }
   },
+  onExternalSession: (callback: (descriptor: ExternalSessionDescriptor) => void) => {
+    const handler = (_event: IpcRendererEvent, descriptor: ExternalSessionDescriptor) => callback(descriptor)
+    ipcRenderer.on(IPC_CHANNELS.SESSION_EXTERNAL, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.SESSION_EXTERNAL, handler)
+    }
+  },
   installOmp: () => ipcRenderer.invoke(IPC_CHANNELS.OMP_INSTALL),
   onInstallStatus: (callback: (status: InstallStatus) => void) => {
     const handler = (_event: IpcRendererEvent, status: InstallStatus) => callback(status)
@@ -391,6 +486,9 @@ const api: ElectronAPI = {
   listProjectFiles: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FS_LIST_PROJECT_FILES, grantId),
   selectWorkspace: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_SELECT),
+  createProjectWorkspace: (name: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_CREATE_PROJECT, name),
+  getDefaultWorkspace: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_DEFAULT),
   activateRecentWorkspace: (recentId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_ACTIVATE_RECENT, recentId),
   listRecentWorkspaces: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_LIST_RECENT),
@@ -504,6 +602,19 @@ const api: ElectronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.BOARDS_DESIGN_CHANGED, handler)
     }
   },
+  applyBoardCards: (request: BoardCardsApplyRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BOARDS_APPLY_CARDS, request),
+  readBoardWidgetFile: (request: BoardWidgetFileReadRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BOARDS_WIDGET_FILE_READ, request),
+  selectBoardWidgetFile: (workspaceGrantId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BOARDS_WIDGET_FILE_SELECT, workspaceGrantId),
+  onBoardFileChanged: (callback: (change: BoardFileChange) => void) => {
+    const handler = (_event: IpcRendererEvent, change: BoardFileChange) => callback(change)
+    ipcRenderer.on(IPC_CHANNELS.BOARDS_FILE_CHANGED, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.BOARDS_FILE_CHANGED, handler)
+    }
+  },
   listSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST),
   readSkill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ, id),
   deleteSkill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_DELETE, id),
@@ -541,12 +652,16 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_EXPORT_HTML, sessionId),
   getSessionState: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_SESSION_STATE, sessionId),
+  sessionTranscript: (sessionId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_SESSION_TRANSCRIPT, sessionId) as Promise<ChatMessage[] | null>,
   listSessionHistory: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_SESSION_HISTORY, grantId),
   resumeSession: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_RESUME_SESSION, grantId, historyId),
   deleteSessionFile: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_FILE, grantId, historyId),
+  deleteSessionByUuid: (grantId: string, uuid: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_BY_UUID, grantId, uuid),
   setSessionName: (sessionId: string, name: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_SESSION_NAME, sessionId, name),
   getSubagents: (sessionId: string) =>
@@ -558,9 +673,12 @@ const api: ElectronAPI = {
   checkpointList: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.CHECKPOINT_LIST, sessionId),
   checkpointRestore: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CHECKPOINT_RESTORE, id),
+  checkpointDiff: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CHECKPOINT_DIFF, id),
   gitInfo: (grantId: string) => ipcRenderer.invoke(IPC_CHANNELS.GIT_INFO, grantId),
   gitFileDiff: (grantId: string, filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GIT_FILE_DIFF, grantId, filePath),
+  openWorkspaceIn: (workspaceId: string, target: OpenWorkspaceTarget) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OPEN_WORKSPACE_IN, workspaceId, target),
   setMachineSkills: (enabled: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.PI_SET_MACHINE_SKILLS, enabled),
   listMachineSkills: () => ipcRenderer.invoke(IPC_CHANNELS.PI_LIST_MACHINE_SKILLS),
@@ -625,7 +743,51 @@ const api: ElectronAPI = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.AUTH_LOGIN_STATE, handler)
     }
-  }
+  },
+  listConnections: () => ipcRenderer.invoke(IPC_CHANNELS.CONNECTIONS_LIST),
+  feishuStatus: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_STATUS),
+  feishuBeginConnection: (brand?: 'feishu' | 'lark') =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_BEGIN_CONNECTION, brand),
+  feishuConnectManual: (credentials: FeishuManualCredentials) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_CONNECT_MANUAL, credentials),
+  feishuCancelConnection: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_CANCEL_CONNECTION),
+  feishuDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_DISCONNECT),
+  feishuOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OPEN_URL, url),
+  feishuBeginOAuth: (capability: FeishuCapability): Promise<FeishuOAuthBeginResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_BEGIN, capability),
+  feishuPollOAuth: (): Promise<FeishuConnectionSnapshot> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_POLL),
+  feishuCancelOAuth: (): Promise<FeishuConnectionSnapshot> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_CANCEL),
+  onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => {
+    const handler = (_event: IpcRendererEvent, snapshot: FeishuConnectionSnapshot) => callback(snapshot)
+    ipcRenderer.on(IPC_CHANNELS.FEISHU_STATUS, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.FEISHU_STATUS, handler)
+  },
+  readBrowserScreenshot: (filePath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SCREENSHOT_DATA, filePath) as Promise<string | null>,
+  logRendererError: (message: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.RENDERER_ERROR, message) as Promise<boolean>,
+  exportDiagnostics: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.DIAGNOSTICS_EXPORT) as Promise<{
+      ok: boolean
+      path?: string
+      error?: string
+    }>,
+  listTasks: () => ipcRenderer.invoke(IPC_CHANNELS.TASKS_LIST) as Promise<ScheduledTask[]>,
+  saveTask: (task) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_SAVE, task) as never,
+  deleteTask: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_DELETE, id) as Promise<boolean>,
+  toggleTask: (id, enabled) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TASKS_TOGGLE, id, enabled) as Promise<ScheduledTask | null>,
+  runTaskNow: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_RUN_NOW, id) as Promise<boolean>,
+  onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => {
+    const handler = (_event: IpcRendererEvent, tasks: ScheduledTask[]) => callback(tasks)
+    ipcRenderer.on(IPC_CHANNELS.TASKS_STATE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.TASKS_STATE_CHANGED, handler)
+  },
+  readKnowledge: (cwd) => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_READ, cwd) as Promise<string | null>,
+  writeKnowledge: (cwd, content) =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_WRITE, cwd, content) as Promise<boolean>
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

@@ -7,10 +7,12 @@ import {
   Check,
   Clock,
   Database,
+  File,
   FileSpreadsheet,
   FileUp,
   Gauge,
   Hash,
+  LayoutDashboard,
   LayoutGrid,
   Link2,
   ListTodo,
@@ -44,7 +46,7 @@ import {
   reflowWidgets,
   type BoardPresetId
 } from '@shared/boards'
-import { buildBoardChatPrompt } from '@shared/boardChat'
+import { buildBoardCardsPrompt, buildBoardChatPrompt } from '@shared/boardChat'
 import { DatasetImportError } from '@shared/datasets'
 import { useT, I18nKey } from '../i18n'
 import { useAppStore } from '../store'
@@ -73,11 +75,12 @@ const WIDGET_GALLERY: { type: WidgetType; Icon: LucideIcon }[] = [
   { type: 'chart-line', Icon: ChartLine },
   { type: 'chart-bar', Icon: ChartBar },
   { type: 'todo', Icon: ListTodo },
-  { type: 'link', Icon: Link2 }
+  { type: 'link', Icon: Link2 },
+  { type: 'file', Icon: File }
 ]
 
 /** Types that get their config panel opened right after being added. */
-const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'link']
+const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'link', 'file']
 
 /** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
@@ -595,11 +598,24 @@ export default function BoardsPage() {
     if (!current) return
     closeMenus()
     const store = useAppStore.getState()
-    const existing = store.currentSessionId ? store.composerDrafts[store.currentSessionId]?.text.trim() : ''
     const prompt = buildBoardChatPrompt(current, datasets, language)
-    // Preserve an unsent draft instead of replacing it. The board snapshot is
-    // clearly separated so the person can edit either part before sending.
-    store.setComposerPrefill(existing ? `${existing}\n\n${prompt}` : prompt)
+    // The question is about THIS board — it lands in a fresh conversation, not
+    // in whatever session happens to be selected right now.
+    store.setCurrentSessionId(null)
+    store.setComposerPrefill(prompt)
+    navigate('/')
+  }
+
+  /**
+   * Hand the agent the bounded ```board-cards brief (a composer DRAFT, never
+   * auto-sent). Its reply renders as a proposal card in chat; only an explicit
+   * Apply — validated again in Main — can add widgets to a board.
+   */
+  const askAgentToProposeCards = () => {
+    closeMenus()
+    const store = useAppStore.getState()
+    store.setCurrentSessionId(null)
+    store.setComposerPrefill(buildBoardCardsPrompt())
     navigate('/')
   }
 
@@ -759,6 +775,7 @@ export default function BoardsPage() {
     const effectiveStyle = mergeWidgetStyle(design?.widget, widget.style)
     const padding = effectiveStyle?.padding ?? 12
     const confirmingDelete = deleteWidgetConfirm.confirmingId === widget.id
+    const boardId = current?.id ?? ''
     return (
     <div
       key={widget.id}
@@ -813,6 +830,7 @@ export default function BoardsPage() {
           key={widget.id}
           widget={widget}
           datasets={datasets}
+          boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
         />
       </div>
@@ -949,6 +967,13 @@ export default function BoardsPage() {
                 >
                   <MessageSquareText size={12} />
                   {t('boards.chat.ask')}
+                </button>
+                <button
+                  onClick={askAgentToProposeCards}
+                  className={`${menuItemClass} text-cream-dim hover:bg-overlay hover:text-cream`}
+                >
+                  <LayoutDashboard size={12} />
+                  {t('boards.cards.propose')}
                 </button>
                 <button
                   onClick={deleteBoardConfirm.click}

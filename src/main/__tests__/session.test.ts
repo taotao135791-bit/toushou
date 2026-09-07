@@ -150,19 +150,20 @@ describe('OmpSession extension UI', () => {
     expect(s.respondExtensionUi('missing', { confirmed: true })).toBe(false)
   })
 
-  it('turns unsupported extension UI calls into one visible diagnostic per method', () => {
+  it('logs unsupported extension UI calls once per method and never emits a chat message', () => {
     const { events, fake } = makeSession()
-    emitLines(fake, { type: 'extension_ui_request', method: 'setWidget' })
-    emitLines(fake, { type: 'extension_ui_request', method: 'setWidget' })
-    expect(events.filter((event) => event.type === 'message')).toEqual([
-      {
-        type: 'message',
-        sessionId: 's1',
-        role: 'system',
-        variant: 'info',
-        content: '某个插件想显示暂不支持的界面（setWidget），已忽略。'
-      }
-    ])
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    try {
+      emitLines(fake, { type: 'extension_ui_request', method: 'setWidget' })
+      emitLines(fake, { type: 'extension_ui_request', method: 'setWidget' })
+      // Pure noise in the transcript — the diagnostic goes to the file logger
+      // (console.info is teed into userData/logs/main.log), deduped per method.
+      expect(events.filter((event) => event.type === 'message')).toEqual([])
+      expect(info).toHaveBeenCalledTimes(1)
+      expect(String(info.mock.calls[0]?.[0])).toContain('setWidget')
+    } finally {
+      info.mockRestore()
+    }
   })
 })
 

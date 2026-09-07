@@ -12,16 +12,31 @@ import MenuPortal from './MenuPortal'
  * tool call). no-bash/readonly are spawn-time --exclude-tools / --tools — they
  * can only apply to the next session, so they never touch a running one.
  */
-const MODES: { value: PermissionMode; labelKey: I18nKey; descKey: I18nKey; noteKey?: I18nKey }[] = [
-  { value: 'ask', labelKey: 'settings.permissions.ask', descKey: 'permission.ask.desc' },
-  { value: 'full', labelKey: 'settings.permissions.full', descKey: 'permission.full.desc' },
+/**
+ * Anchor color per mode — fixed semantics, not theme tokens, so raw Tailwind
+ * palette classes work on both light and dark. Neutral for ask, cool colors
+ * for restricted modes, orange for full access so elevated permission reads
+ * at a glance (the safety anchor).
+ */
+const MODES: {
+  value: PermissionMode
+  labelKey: I18nKey
+  descKey: I18nKey
+  noteKey?: I18nKey
+  /** Shield tint in the trigger chip and the menu row. */
+  iconClass: string
+  /** Extra label tint in the trigger chip (elevated modes only). */
+  labelClass?: string
+}[] = [
+  { value: 'ask', labelKey: 'settings.permissions.ask', descKey: 'permission.ask.desc', iconClass: 'text-cream-dim' },
+  { value: 'full', labelKey: 'settings.permissions.full', descKey: 'permission.full.desc', iconClass: 'text-orange-500', labelClass: 'text-orange-500' },
   // No short plain-language label key exists for no-bash, so its description
   // doubles as the label — the menu never shows the jargon "Bash".
-  { value: 'no-bash', labelKey: 'permission.noBash.short', descKey: 'permission.noBash.desc', noteKey: 'composer.permissionNewSession' },
-  { value: 'readonly', labelKey: 'settings.permissions.readonly', descKey: 'permission.readOnly.desc', noteKey: 'composer.permissionNewSession' }
+  { value: 'no-bash', labelKey: 'permission.noBash.short', descKey: 'permission.noBash.desc', noteKey: 'composer.permissionNewSession', iconClass: 'text-sky-500' },
+  { value: 'readonly', labelKey: 'settings.permissions.readonly', descKey: 'permission.readOnly.desc', noteKey: 'composer.permissionNewSession', iconClass: 'text-emerald-500' }
 ]
 
-export default function PermissionPicker() {
+export default function PermissionPicker({ compact = false }: { compact?: boolean }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const t = useT()
@@ -51,11 +66,14 @@ export default function PermissionPicker() {
       <button
         ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
-        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
+        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
         title={t('composer.permissions')}
+        aria-label={t('composer.permissions')}
       >
-        <Shield size={12} />
-        <span>{t(current?.labelKey ?? 'settings.permissions.ask')}</span>
+        <Shield size={12} className={`shrink-0 ${current?.iconClass ?? 'text-cream-dim'}`} />
+        {!compact && (
+          <span className={current?.labelClass}>{t(current?.labelKey ?? 'settings.permissions.ask')}</span>
+        )}
         <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
       </button>
 
@@ -64,9 +82,10 @@ export default function PermissionPicker() {
           <button
             key={m.value}
             onClick={() => pick(m.value)}
-            className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
           >
-            <span className="min-w-0">
+            <Shield size={12} className={`shrink-0 ${m.iconClass}`} />
+            <span className="min-w-0 flex-1">
               <span className="block truncate">{t(m.labelKey)}</span>
               {m.descKey !== m.labelKey && (
                 <span className="block truncate text-[10px] text-cream-faint">{t(m.descKey)}</span>

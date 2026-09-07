@@ -3,6 +3,8 @@ import { ToolCallRecord } from '../../lib/toolCalls'
 import BashToolContent from './bash'
 import ReadToolContent from './read'
 import EditToolContent from './edit'
+import TodoToolContent from './todo'
+import ScreenshotToolContent from './screenshot'
 import GenericToolContent from './generic'
 
 export interface ToolContentProps {
@@ -31,15 +33,13 @@ export function toolOutputText(output: unknown): string | null {
  * untouched.
  */
 export function getToolRenderer(toolName: string): ComponentType<ToolContentProps> {
-  switch (toolName.toLowerCase()) {
-    case 'bash':
-      return BashToolContent
-    case 'read':
-      return ReadToolContent
-    case 'edit':
-    case 'write':
-      return EditToolContent
-    default:
-      return GenericToolContent
+  const name = toolName.toLowerCase()
+  if (name === 'bash') return BashToolContent
+  if (name === 'read') return ReadToolContent
+  if (name === 'edit' || name === 'write') return EditToolContent
+  if (name === 'todo' || name === 'todo_write' || name === 'todowrite' || name === 'plan') {
+    return TodoToolContent
   }
+  if (name.endsWith('screenshot')) return ScreenshotToolContent
+  return GenericToolContent
 }

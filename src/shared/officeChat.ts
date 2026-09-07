@@ -7,6 +7,14 @@ import { Language } from './types'
  * per sheet — never full data rows. The result is a composer draft, never an
  * auto-sent prompt, so the user can edit it before it leaves the app.
  *
+ * The draft also teaches the ```office-edit proposal protocol (see
+ * shared/officeEdit.ts): after analyzing, the agent may PROPOSE bounded cell
+ * edits in exactly one fence, which the chat renders as a preview card and
+ * only the person can apply — first in chat (handoff to the Office panel),
+ * then again in the panel's confirm bar. Application writes into the
+ * renderer's in-memory Univer instance only; files change exclusively
+ * through the user's own open/save-as grants.
+ *
  * The input is a raw Univer workbook snapshot (FWorkbook.save()); only the
  * small subset also used by officeWorkbook.ts is read, so a sanitized
  * OfficeWorkbookSnapshot works as well.
@@ -148,7 +156,18 @@ export function buildOfficeChatPrompt(
         ...sheetLines,
         omitted > 0 ? `- 其余 ${omitted} 个工作表未列出` : '',
         '',
-        '请先说明你观察到的重点、风险或缺口，再给出下一步建议。'
+        '请先说明你观察到的重点、风险或缺口，再给出下一步建议。',
+        '',
+        '如果你在分析后认为某些单元格需要修改，不要只给文字描述——可以用恰好一个 ```office-edit 代码块（JSON）提议这些修改。我会先预览、再亲自确认应用到打开的工作簿；你无法直接修改工作簿。格式：',
+        '{ "version": 1, "edits": [ { "sheet": "Sheet1", "cell": "B2", "value": "新文案" } ], "note": "修改理由（可选）" }',
+        '- 一次 1-200 处；"cell" 必须是 A1 风格（如 "B2"）；"value" 只能是字符串（≤1000 字符）、数字或布尔值。',
+        '- 不要提议公式：value 不得以 "=" 开头。',
+        '- 只提议确实需要修改的格子，不要重写整块区域。',
+        '',
+        '示例：',
+        '```office-edit',
+        '{ "version": 1, "edits": [ { "sheet": "Sheet1", "cell": "B2", "value": "618 大促主标题" }, { "sheet": "Sheet1", "cell": "C2", "value": 123 } ], "note": "统一口径后的标题与数值" }',
+        '```'
       ]
     : [
         'Help me analyze this local workbook. Treat it as read-only context: only structure and header samples are included, no data rows. Do not claim that you edited the workbook; if you suggest changes, list concrete steps I can apply myself.',
@@ -158,7 +177,13 @@ export function buildOfficeChatPrompt(
         ...sheetLines,
         omitted > 0 ? `- ${omitted} more sheets omitted` : '',
         '',
-        'First identify the key observations, risks, or gaps, then suggest the next steps.'
+        'First identify the key observations, risks, or gaps, then suggest the next steps.',
+        '',
+        'If concrete cell changes are needed after your analysis, do not stop at prose — propose them with EXACTLY ONE ```office-edit code block (JSON). I will preview it and apply the edits to the open workbook myself after confirming; you cannot modify the workbook directly. Format:',
+        '{ "version": 1, "edits": [ { "sheet": "Sheet1", "cell": "B2", "value": "new copy" } ], "note": "why (optional)" }',
+        '- 1-200 edits per proposal; "cell" must be A1 notation (e.g. "B2"); "value" is a plain string (≤1000 chars), number, or boolean.',
+        '- Never propose formulas: "value" must not start with "=".',
+        '- Propose only the cells that truly need to change; do not rewrite whole regions.'
       ]
   return content.filter(Boolean).join('\n').slice(0, MAX_TEXT)
 }

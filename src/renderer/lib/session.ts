@@ -1,9 +1,11 @@
 import { useAppStore } from '../store'
 
 /**
- * Create a chat session for the current workspace, prompting for a folder
- * when none is selected. Returns the new session id, or null when the
- * user cancelled the folder picker.
+ * Create a chat session for the current workspace. With no project
+ * selected the session silently anchors to the app-managed default
+ * workspace (Documents/投手工作区): the home screen offers explicit project
+ * choices, but pressing Enter must never dead-end on a folder picker.
+ * Returns the new session id, or null when no workspace could be resolved.
  *
  * Next-session overrides (composer pickers used without an active session)
  * are snapshotted here and passed as spawn args. They are cleared only after
@@ -15,14 +17,14 @@ export async function createSessionForCurrentProject(
 ): Promise<string | null> {
   const {
     currentWorkspace,
-    selectWorkspace,
+    selectDefaultWorkspace,
     addSession,
     getSessionOverrides,
     clearSessionOverrides
   } = useAppStore.getState()
   let grant = currentWorkspace
   if (!grant) {
-    await selectWorkspace()
+    await selectDefaultWorkspace()
     grant = useAppStore.getState().currentWorkspace
     if (!grant) return null
   }

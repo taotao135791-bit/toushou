@@ -1,27 +1,60 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { AlertTriangle, FileSpreadsheet, FolderOpen, Loader2, MessageSquareText, Save, X } from 'lucide-react'
-import { LocaleType, createUniver } from '@univerjs/presets'
+import { AlertTriangle, CheckCircle2, FileSpreadsheet, FolderOpen, Loader2, MessageSquareText, Save, X } from 'lucide-react'
 import type { FUniver, IWorkbookData, Univer } from '@univerjs/presets'
-import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
 import type { FWorkbook } from '@univerjs/preset-sheets-core'
-import sheetsZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
-import sheetsEnUS from '@univerjs/preset-sheets-core/locales/en-US'
-import '@univerjs/preset-sheets-core/lib/index.css'
-import { FileGrant } from '@shared/types'
+import { FileGrant, OfficeEditCell } from '@shared/types'
 import {
   OfficeWorkbookSnapshot,
   OfficeWorkbookWarning,
   sanitizeOfficeSnapshot
 } from '@shared/officeWorkbook'
 import { buildOfficeChatPrompt, snapshotHasData } from '@shared/officeChat'
+import { a1ToIndices } from '@shared/officeEdit'
 import { useAppStore } from '../store'
-import { useT } from '../i18n'
+import { I18nKey, useT } from '../i18n'
 
 const UNIVER_APP_VERSION = '0.25.1'
 
-function buildUniverSnapshot(snapshot: OfficeWorkbookSnapshot | undefined, language: string): IWorkbookData {
-  const currentLocale = language === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US
+// Univer is several MB of JS+CSS, so it loads on first Office open instead
+// of with the app. The dynamic imports are cached at module level: revisits
+// (and the WorkspacePanel embed) reuse the same promise.
+type UniverBundles = {
+  presets: typeof import('@univerjs/presets')
+  sheetsCore: typeof import('@univerjs/preset-sheets-core')
+  sheetsZhCN: (typeof import('@univerjs/preset-sheets-core/locales/zh-CN'))['default']
+  sheetsEnUS: (typeof import('@univerjs/preset-sheets-core/locales/en-US'))['default']
+}
+
+let univerBundlesPromise: Promise<UniverBundles> | null = null
+
+function loadUniverBundles(): Promise<UniverBundles> {
+  if (!univerBundlesPromise) {
+    univerBundlesPromise = Promise.all([
+      import('@univerjs/presets'),
+      import('@univerjs/preset-sheets-core'),
+      import('@univerjs/preset-sheets-core/locales/zh-CN'),
+      import('@univerjs/preset-sheets-core/locales/en-US'),
+      // Side-effect CSS rides along so the sheet never paints unstyled.
+      import('@univerjs/preset-sheets-core/lib/index.css')
+    ]).then(([presets, sheetsCore, zhCN, enUS]) => ({
+      presets,
+      sheetsCore,
+      sheetsZhCN: zhCN.default,
+      sheetsEnUS: enUS.default
+    }))
+  }
+  return univerBundlesPromise
+}
+
+type LocaleEnum = UniverBundles['presets']['LocaleType']
+
+function buildUniverSnapshot(
+  snapshot: OfficeWorkbookSnapshot | undefined,
+  language: string,
+  localeEnum: LocaleEnum
+): IWorkbookData {
+  const currentLocale = language === 'zh' ? localeEnum.ZH_CN : localeEnum.EN_US
   if (!snapshot) {
     return {
       id: 'workbook',
@@ -84,13 +117,33 @@ interface OfficePageProps {
   onClose?: () => void
 }
 
+/** One chat-proposed edit that could not be applied to the open workbook. */
+interface EditFailure {
+  edit: OfficeEditCell
+  reason: 'sheet-missing' | 'out-of-bounds' | 'write-failed'
+}
+
+/** Result of the last confirm-bar apply, kept visible until dismissed. */
+interface EditApplyResult {
+  applied: number
+  failures: EditFailure[]
+}
+
+const EDIT_FAILURE_REASON_KEY: Record<EditFailure['reason'], I18nKey> = {
+  'sheet-missing': 'office.edit.reasonSheetMissing',
+  'out-of-bounds': 'office.edit.reasonOutOfBounds',
+  'write-failed': 'office.edit.reasonWriteFailed'
+}
+
 export default function OfficePage({ embedded = false, initialGrant, initialName, onClose }: OfficePageProps) {
   const t = useT()
   const navigate = useNavigate()
   const location = useLocation()
   const containerRef = useRef<HTMLDivElement>(null)
   const univerRef = useRef<{ univer: Univer; univerAPI: FUniver } | null>(null)
+  const bundlesRef = useRef<UniverBundles | null>(null)
   const consumedGrantIds = useRef(new Set<string>())
+  const [engineReady, setEngineReady] = useState(false)
   const [fileName, setFileName] = useState(initialName ?? '')
   const [dirty, setDirty] = useState(false)
   const [hasData, setHasData] = useState(false)
@@ -99,12 +152,20 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const [warnings, setWarnings] = useState<OfficeWorkbookWarning[]>([])
   const [toast, setToast] = useState<string | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [editResult, setEditResult] = useState<EditApplyResult | null>(null)
 
   const locale = useAppStore((state) => state.language)
+  // Chat → panel handoff: a proposal the person applied in chat, waiting for
+  // THIS panel's confirm bar. Presence in the store is the pending state.
+  const officeEditHandoff = useAppStore((state) => state.officeEditHandoff)
+  const setOfficeEditHandoff = useAppStore((state) => state.setOfficeEditHandoff)
 
   useEffect(
     () => () => {
       if (toastTimer.current) clearTimeout(toastTimer.current)
+      // The chat gates its Apply button on this flag; never leak a stale
+      // "workbook open" signal after the panel goes away.
+      useAppStore.getState().setOfficeWorkbookOpen(false)
     },
     []
   )
@@ -124,31 +185,39 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     let instance: { univer: Univer; univerAPI: FUniver } | null = null
     let disposable: { dispose: () => void } | null = null
     const frame = window.requestAnimationFrame(() => {
-      const container = containerRef.current
-      if (!container || disposed) return
-      instance = createUniver({
-        locale: initialLanguage === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
-        locales: {
-          [LocaleType.ZH_CN]: sheetsZhCN,
-          [LocaleType.EN_US]: sheetsEnUS
-        },
-        presets: [
-          UniverSheetsCorePreset({
-            container,
-            header: false,
-            footer: false,
-            disableAutoFocus: true
-          })
-        ]
-      })
-      univerRef.current = instance
-      instance.univerAPI.createWorkbook(buildUniverSnapshot(undefined, initialLanguage))
-      // Generic mutation events include Univer's startup bookkeeping. This
-      // event is scoped to actual cell-value changes, including paste/edit.
-      disposable = instance.univerAPI.addEvent(instance.univerAPI.Event.SheetValueChanged, () => {
-        setDirty(true)
-        setHasData(true)
-      })
+      void (async () => {
+        const container = containerRef.current
+        if (!container || disposed) return
+        const bundles = await loadUniverBundles()
+        if (disposed || !containerRef.current) return
+        bundlesRef.current = bundles
+        const { createUniver, LocaleType } = bundles.presets
+        const created = createUniver({
+          locale: initialLanguage === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
+          locales: {
+            [LocaleType.ZH_CN]: bundles.sheetsZhCN,
+            [LocaleType.EN_US]: bundles.sheetsEnUS
+          },
+          presets: [
+            bundles.sheetsCore.UniverSheetsCorePreset({
+              container,
+              header: false,
+              footer: false,
+              disableAutoFocus: true
+            })
+          ]
+        })
+        instance = created
+        univerRef.current = created
+        created.univerAPI.createWorkbook(buildUniverSnapshot(undefined, initialLanguage, LocaleType))
+        setEngineReady(true)
+        // Generic mutation events include Univer's startup bookkeeping. This
+        // event is scoped to actual cell-value changes, including paste/edit.
+        disposable = created.univerAPI.addEvent(created.univerAPI.Event.SheetValueChanged, () => {
+          setDirty(true)
+          setHasData(true)
+        })
+      })()
     })
     return () => {
       disposed = true
@@ -162,13 +231,15 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   /** Replace the current workbook with a snapshot from Main. */
   const loadSnapshot = useCallback((name: string, snapshot: OfficeWorkbookSnapshot) => {
     const api = univerRef.current
-    if (!api) return
+    const bundles = bundlesRef.current
+    if (!api || !bundles) return
     const current = api.univerAPI.getActiveWorkbook()
     if (current) api.univerAPI.disposeUnit(current.getId())
-    api.univerAPI.createWorkbook(buildUniverSnapshot(snapshot, locale))
+    api.univerAPI.createWorkbook(buildUniverSnapshot(snapshot, locale, bundles.presets.LocaleType))
     setFileName(name)
     setDirty(false)
     setHasData(snapshotHasData(snapshot))
+    useAppStore.getState().setOfficeWorkbookOpen(true)
   }, [locale])
 
   const openWithGrant = useCallback(
@@ -272,14 +343,64 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     const prompt = buildOfficeChatPrompt(workbook.save(), { name: fileName, language: locale })
     if (!prompt) return
     const store = useAppStore.getState()
-    const existing = store.currentSessionId ? store.composerDrafts[store.currentSessionId]?.text.trim() : ''
-    // Preserve an unsent draft instead of replacing it (same pattern as the
-    // boards page): the summary is clearly separated so the person can edit
-    // either part before sending.
-    store.setComposerPrefill(existing ? `${existing}\n\n${prompt}` : prompt)
+    // The question is about THIS workbook — start a fresh conversation so the
+    // summary cannot leak into an unrelated session's draft.
+    store.setCurrentSessionId(null)
+    store.setComposerPrefill(prompt)
     flashToast(t('office.contextReady'))
     navigate('/')
   }
+
+  /**
+   * Confirm-bar Apply: write each chat-proposed edit into the in-memory
+   * Univer workbook. This is the ONLY place agent-suggested values enter the
+   * sheet, and it is renderer-local: nothing is persisted here — the change
+   * becomes a file only through the user's own save-as flow. Sheets are
+   * looked up by exact name, cells are bounds-checked against the sheet
+   * grid, and values are parser-guaranteed plain scalars (never formulas).
+   */
+  const applyOfficeEditHandoff = useCallback(() => {
+    const handoff = useAppStore.getState().officeEditHandoff
+    if (!handoff) return
+    const workbook = univerRef.current?.univerAPI.getActiveWorkbook()
+    if (!workbook) {
+      // Nothing to land on — keep the proposal staged so the person can open
+      // a workbook and confirm again.
+      flashToast(t('office.edit.noWorkbook'))
+      return
+    }
+    const failures: EditFailure[] = []
+    let applied = 0
+    for (const edit of handoff.edits) {
+      const sheet = workbook.getSheetByName(edit.sheet)
+      if (!sheet) {
+        failures.push({ edit, reason: 'sheet-missing' })
+        continue
+      }
+      const position = a1ToIndices(edit.cell)
+      if (!position || position.row >= sheet.getMaxRows() || position.column >= sheet.getMaxColumns()) {
+        failures.push({ edit, reason: 'out-of-bounds' })
+        continue
+      }
+      try {
+        sheet.getRange(position.row, position.column).setValue(edit.value)
+        applied += 1
+      } catch {
+        failures.push({ edit, reason: 'write-failed' })
+      }
+    }
+    setEditResult({ applied, failures })
+    setOfficeEditHandoff(null)
+    flashToast(
+      failures.length === 0
+        ? t('office.edit.appliedToast', { count: applied })
+        : t('office.edit.partialToast', { applied, failed: failures.length })
+    )
+  }, [flashToast, setOfficeEditHandoff, t])
+
+  const dismissOfficeEditHandoff = useCallback(() => {
+    setOfficeEditHandoff(null)
+  }, [setOfficeEditHandoff])
 
   const iconButton =
     'shrink-0 rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-cream-dim'
@@ -335,10 +456,80 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
           <X size={15} />
         </button>
       </div>
+      {/* Chat handoff: confirm bar while a proposal is pending, apply result after. */}
+      {(officeEditHandoff || editResult) && (
+        <div className="shrink-0 space-y-1.5 border-b border-line bg-overlay px-3 py-2">
+          {officeEditHandoff && (
+            <div className="flex flex-wrap items-center gap-2">
+              <FileSpreadsheet size={13} className="shrink-0 text-accent" />
+              <span className="min-w-0 flex-1 text-[12px] text-cream">
+                {t('office.edit.confirmBar', { count: officeEditHandoff.edits.length })}
+                {officeEditHandoff.note && (
+                  <span className="ml-1.5 text-[11px] text-cream-faint">{officeEditHandoff.note}</span>
+                )}
+              </span>
+              <button
+                className="shrink-0 rounded-md px-2 py-1 text-[11px] text-cream-faint transition hover:bg-overlay-strong hover:text-cream"
+                onClick={dismissOfficeEditHandoff}
+              >
+                {t('office.edit.panelIgnore')}
+              </button>
+              <button
+                className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-ink-950 transition hover:opacity-90"
+                onClick={applyOfficeEditHandoff}
+              >
+                {t('office.edit.panelApply')}
+              </button>
+            </div>
+          )}
+          {editResult && (
+            <div className="flex flex-wrap items-start gap-2">
+              <div className="min-w-0 flex-1">
+                {editResult.failures.length === 0 ? (
+                  <p className="flex items-center gap-1.5 text-[12px] text-green-500 dark:text-green-400">
+                    <CheckCircle2 size={12} className="shrink-0" />
+                    {t('office.edit.appliedToast', { count: editResult.applied })}
+                  </p>
+                ) : (
+                  <>
+                    <p className="flex items-center gap-1.5 text-[12px] text-amber-500 dark:text-amber-400">
+                      <AlertTriangle size={12} className="shrink-0" />
+                      {t('office.edit.partialSummary', { applied: editResult.applied, failed: editResult.failures.length })}
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {editResult.failures.map(({ edit, reason }, index) => (
+                        <li key={index} className="text-[11px] text-cream-faint">
+                          <span className="font-mono">
+                            {edit.sheet}!{edit.cell}
+                          </span>
+                          {' · '}
+                          {t(EDIT_FAILURE_REASON_KEY[reason])}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+              <button
+                className="shrink-0 rounded-md px-2 py-1 text-[11px] text-cream-faint transition hover:bg-overlay-strong hover:text-cream"
+                onClick={() => setEditResult(null)}
+              >
+                {t('office.edit.panelDismiss')}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {/* Univer mounts into this container; it owns everything inside it. */}
       <div className="relative h-full min-h-0 w-full flex-1 overflow-hidden">
         <div ref={containerRef} className="h-full w-full" />
-        {!hasData && (
+        {!engineReady && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 text-cream-faint">
+            <Loader2 size={16} className="animate-spin" />
+            <span className="text-[13px]">{t('app.loading')}</span>
+          </div>
+        )}
+        {engineReady && !hasData && (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3">
             <FileSpreadsheet size={28} className="text-cream-faint" />
             <p className="text-[13px] text-cream-dim">{t('office.emptyHint')}</p>

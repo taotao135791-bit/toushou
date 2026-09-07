@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Check,
+  Download,
   FolderCog,
   Languages,
   Moon,
@@ -81,6 +82,12 @@ export default function SettingsPage() {
   // two surfaces are physically separate components — no shared mutations.
   const runtimeOverview = useAppStore((s) => s.runtimeOverview)
   const [overviewError, setOverviewError] = useState(false)
+  // True while a forced overview probe is in flight. The probe self-heals a
+  // stale/partial overview a second or two later; knowing it is still running
+  // lets the UI keep a quiet loading row instead of flashing the error state.
+  // Starts true: the mount effect fires a probe immediately, and the first
+  // paint must already treat the probe as pending.
+  const [overviewProbing, setOverviewProbing] = useState(true)
   const profile = runtimeOverview?.profile
   const isCurrent = profile === 'current'
   const isLegacy = profile === 'legacy'
@@ -91,18 +98,36 @@ export default function SettingsPage() {
   // "RPC protocol v1 · Supported" right above a "Not detected" row.
   const ompProtocol: number | null = cli?.available && caps ? caps.protocol : null
 
+  // One forced overview probe with its in-flight window tracked. The probe
+  // usually completes within a second or two and repopulates (or replaces) a
+  // stale overview; only a probe that settles into failure is an error.
+  const probeOverview = () => {
+    setOverviewProbing(true)
+    useAppStore
+      .getState()
+      .loadRuntimeOverview(true)
+      .catch(() => setOverviewError(true))
+      .finally(() => setOverviewProbing(false))
+  }
+
   useEffect(() => {
     window.electronAPI.detectCli().then(setCli)
     window.electronAPI.getCapabilities().then(setCaps)
     window.electronAPI.getAppVersion().then(setVersion)
     // Explicit error tracking: a failed overview must NOT fall back to Legacy.
-    useAppStore
-      .getState()
-      .loadRuntimeOverview(true)
-      .catch(() => setOverviewError(true))
+    probeOverview()
     useAppStore.getState().loadRuntimeModels()
     window.electronAPI.getStore('notifications').then((v) => setNotificationsState(v ?? true))
     window.electronAPI.getStore('notificationPreviews').then((v) => setNotifyPreviewsState(v ?? false))
+    // Self-heal the About version row: a cold first probe can miss its
+    // timeout; the main side re-probes on later getCapabilities calls, so
+    // re-fetch once after a delay instead of showing 未检测到 forever.
+    const capsHealTimer = setTimeout(() => {
+      window.electronAPI.getCapabilities().then((next) => {
+        setCaps((prev) => (prev?.cliVersion ? prev : next))
+      })
+    }, 12_000)
+    return () => clearTimeout(capsHealTimer)
   }, [])
 
   useEffect(() => {
@@ -127,10 +152,7 @@ export default function SettingsPage() {
     useAppStore.getState().setCliAvailable(info.available)
     // The runtime profile may have changed with the CLI — refresh the top
     // section too, not just this card.
-    useAppStore
-      .getState()
-      .loadRuntimeOverview(true)
-      .catch(() => setOverviewError(true))
+    probeOverview()
     useAppStore.getState().loadRuntimeModels()
     setDetecting(false)
   }
@@ -142,6 +164,29 @@ export default function SettingsPage() {
     setTimeout(() => setCleared(false), 1500)
   }
 
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false)
+  const [diagnosticsExportedPath, setDiagnosticsExportedPath] = useState('')
+  const exportDiagnostics = async () => {
+    setExportingDiagnostics(true)
+    setDiagnosticsExportedPath('')
+    try {
+      const result = await window.electronAPI.exportDiagnostics()
+      if (result.ok && result.path) setDiagnosticsExportedPath(result.path)
+    } finally {
+      setExportingDiagnostics(false)
+    }
+  }
+
+  // 开发者元素（Git 分支 chip 等）：默认关闭，产品界面保持投放师视角。
+  const [devChrome, setDevChromeState] = useState(false)
+  useEffect(() => {
+    window.electronAPI.getStore('showDevChrome').then((value) => setDevChromeState(Boolean(value)))
+  }, [])
+  const setDevChrome = (value: boolean) => {
+    setDevChromeState(value)
+    window.electronAPI.setStore('showDevChrome', value)
+  }
+
   const showCliSettings = async () => {
     setCliSettingsError(false)
     const opened = await window.electronAPI.showCliSettings()
@@ -151,6 +196,18 @@ export default function SettingsPage() {
   const changePermissionMode = (value: PermissionMode) => {
     setPermissionMode(value)
   }
+
+  // A stale 'current' overview with an empty provider list makes the model
+  // section render its "couldn't load runtime settings" error even though a
+  // fresh probe is mid-flight and usually repopulates the list. While that
+  // probe is pending, swap the section for a quiet loading row; once the
+  // probe settles (providers present, or still empty on a finished probe),
+  // the normal surfaces — form or definitive error — take over again.
+  const probingStaleOverview =
+    overviewProbing &&
+    runtimeOverview !== null &&
+    runtimeOverview.profile === 'current' &&
+    runtimeOverview.providers.length === 0
 
   const changeNotifications = async (value: boolean) => {
     setNotificationsState(value)
@@ -185,7 +242,7 @@ export default function SettingsPage() {
 
       <div className="flex-1 overflow-y-auto p-5">
         <div className="mx-auto max-w-[680px] space-y-4">
-          {isCurrent ? (
+          {isCurrent && !probingStaleOverview ? (
             <CurrentOmpSettings />
           ) : isLegacy ? (
             <LegacyPiSettings />
@@ -198,7 +255,7 @@ export default function SettingsPage() {
                 <button
                   onClick={() => {
                     setOverviewError(false)
-                    useAppStore.getState().loadRuntimeOverview(true).catch(() => setOverviewError(true))
+                    probeOverview()
                   }}
                   className={buttonCls}
                 >
@@ -209,7 +266,10 @@ export default function SettingsPage() {
             </Section>
           ) : (
             <Section title="Oh My Pi">
-              <Note>{t('settings.runtimeLoading')}</Note>
+              <div className="flex items-center gap-2 py-2.5 text-[11px] text-cream-faint">
+                <RefreshCw size={11} className="animate-spin" />
+                {t('settings.runtimeLoading')}
+              </div>
             </Section>
           )}
 
@@ -245,6 +305,19 @@ export default function SettingsPage() {
                     {t('settings.themeDark')}
                   </span>
                 </button>
+              </div>
+            </Row>
+            <Row label={t('settings.devChrome')}>
+              <div className="flex items-center gap-2">
+                <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
+                  <button onClick={() => setDevChrome(false)} className={seg(!devChrome)}>
+                    {t('settings.devChromeOff')}
+                  </button>
+                  <button onClick={() => setDevChrome(true)} className={seg(devChrome)}>
+                    {t('settings.devChromeOn')}
+                  </button>
+                </div>
+                <span className="text-[11px] text-cream-faint">{t('settings.devChromeHint')}</span>
               </div>
             </Row>
             <Row label={t('settings.language')}>
@@ -458,6 +531,19 @@ export default function SettingsPage() {
               ) : (
                 <span className="text-xs text-red-500">{t('settings.ompCompatUnsupported')}</span>
               )}
+            </Row>
+            <Row label={t('settings.diagnostics')}>
+              <div className="flex items-center gap-2">
+                <button onClick={exportDiagnostics} disabled={exportingDiagnostics} className={buttonCls}>
+                  {exportingDiagnostics ? <RefreshCw size={11} className="animate-spin" /> : <Download size={11} />}
+                  {exportingDiagnostics ? t('settings.diagnosticsExporting') : t('settings.diagnosticsExport')}
+                </button>
+                {diagnosticsExportedPath && (
+                  <span className="max-w-[240px] truncate font-mono text-[11px] text-emerald-600 dark:text-emerald-400">
+                    {diagnosticsExportedPath}
+                  </span>
+                )}
+              </div>
             </Row>
           </Section>
         </div>

@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => userDataDir }
 }))
 
-import { appendBoardNote, deleteBoard, listBoards, saveBoard } from '../boards'
+import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, saveBoard } from '../boards'
 import { BOARD_LIMITS } from '../../shared/boards'
 import { KanbanBoard } from '../../shared/types'
 
@@ -245,5 +245,159 @@ describe('appendBoardNote', () => {
       error: 'board-full'
     })
     expect(readFileSync(file, 'utf-8')).toBe(before)
+  })
+})
+
+describe('applyBoardCards', () => {
+  const PROPOSAL = JSON.stringify({
+    version: 1,
+    cards: [
+      { type: 'metric', title: '本周花费', value: 1234, unit: 'USD', delta: -12.5, deltaLabel: '环比' },
+      { type: 'list', title: '待办', items: ['暂停广告组'] },
+      { type: 'note', title: '结论', text: 'ROI 上升。' }
+    ]
+  })
+
+  it('rejects malformed requests before touching anything', () => {
+    for (const request of [null, 'x', 42, { raw: PROPOSAL }, { boardId: 'a' }, { boardId: 'a', raw: 5 }]) {
+      const result = applyBoardCards(request, { file })
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error).toBe('invalid-request')
+    }
+  })
+
+  it('re-parses the raw fence text and refuses an invalid proposal', () => {
+    saveBoard(makeBoard('a'), file)
+    const before = readFileSync(file, 'utf-8')
+    const result = applyBoardCards({ boardId: 'a', raw: '{not json' }, { file })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toBe('invalid-proposal')
+      expect(result.issues.length).toBeGreaterThan(0)
+    }
+    expect(readFileSync(file, 'utf-8')).toBe(before)
+  })
+
+  it('appends validated cards as widgets through the normal save path', () => {
+    saveBoard(makeBoard('a'), file)
+    const result = applyBoardCards({ boardId: 'a', raw: PROPOSAL }, { file })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.widgetIds).toHaveLength(3)
+    expect(result.board.widgets.map((widget) => widget.type)).toEqual(['todo', 'counter', 'todo', 'note'])
+    const counter = result.board.widgets[1]
+    expect(counter.title).toBe('本周花费')
+    expect(counter.config).toMatchObject({ value: 1234 })
+    // Layouts of the new widgets do not overlap the existing todo widget.
+    const [existing] = result.board.widgets
+    for (const widget of result.board.widgets.slice(1)) {
+      const overlaps =
+        widget.layout.x < existing.layout.x + existing.layout.w &&
+        existing.layout.x < widget.layout.x + widget.layout.w &&
+        widget.layout.y < existing.layout.y + existing.layout.h &&
+        existing.layout.y < widget.layout.y + widget.layout.h
+      expect(overlaps).toBe(false)
+    }
+    // Persisted to disk and re-reads as a valid board.
+    expect(listBoards(file)[0].widgets).toHaveLength(4)
+  })
+
+  it('skips unknown fields from the renderer payload — cards are rebuilt in Main', () => {
+    saveBoard(makeBoard('a'), file)
+    const hostile = JSON.stringify({
+      version: 1,
+      cards: [{ type: 'note', title: 't', text: 'x', id: 'attacker-id', layout: { x: 0, y: 0, w: 12, h: 20 }, style: 'popup' }]
+    })
+    const result = applyBoardCards({ boardId: 'a', raw: hostile }, { file })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const added = result.board.widgets[1]
+    expect(added.id).not.toBe('attacker-id')
+    expect(added.layout.w).not.toBe(12)
+    expect(added.style).toBeUndefined()
+  })
+
+  it('returns not-found for an absent board', () => {
+    const result = applyBoardCards({ boardId: 'ghost', raw: PROPOSAL }, { file })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('not-found')
+  })
+
+  it('refuses to read a corrupt store', () => {
+    writeFileSync(file, '{not json')
+    const result = applyBoardCards({ boardId: 'a', raw: PROPOSAL }, { file })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('board-store-unreadable')
+  })
+
+  it('rejects the apply when the board would overflow', () => {
+    const board = makeBoard('a')
+    board.widgets = Array.from({ length: BOARD_LIMITS.maxWidgets - 1 }, (_, index) => ({
+      ...board.widgets[0],
+      id: `widget-${index}`
+    }))
+    expect(saveBoard(board, file)).toEqual({ ok: true })
+    const before = readFileSync(file, 'utf-8')
+    const result = applyBoardCards({ boardId: 'a', raw: PROPOSAL }, { file })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('board-full')
+    expect(readFileSync(file, 'utf-8')).toBe(before)
+  })
+
+  it('requires a workspace resolver when the proposal contains file cards', () => {
+    saveBoard(makeBoard('a'), file)
+    const raw = JSON.stringify({
+      version: 1,
+      cards: [{ type: 'file', title: 'chart', filePath: 'reports/a.html' }]
+    })
+    const result = applyBoardCards({ boardId: 'a', raw }, { file })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('no-workspace')
+  })
+
+  it('stores the resolver-canonical relative form on the file widget', () => {
+    saveBoard(makeBoard('a'), file)
+    const raw = JSON.stringify({
+      version: 1,
+      cards: [{ type: 'file', title: 'chart', filePath: 'reports\\sub\\a.html' }]
+    })
+    const result = applyBoardCards(
+      { boardId: 'a', raw },
+      { file, resolveWorkspaceFile: () => 'reports/sub/a.html' }
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const [widget] = result.board.widgets.slice(1)
+    expect(widget.type).toBe('file')
+    expect(widget.config).toEqual({ filePath: 'reports/sub/a.html' })
+  })
+
+  it('skips file cards that cannot be resolved inside the workspace and keeps the rest', () => {
+    saveBoard(makeBoard('a'), file)
+    const raw = JSON.stringify({
+      version: 1,
+      cards: [
+        { type: 'file', title: 'outside', filePath: 'outside/secret.png' },
+        { type: 'note', title: 'inside', text: 'fine' }
+      ]
+    })
+    const result = applyBoardCards({ boardId: 'a', raw }, { file, resolveWorkspaceFile: () => null })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.board.widgets.map((widget) => widget.type)).toEqual(['todo', 'note'])
+    expect(
+      result.issues.some((issue) => issue.level === 'warning' && issue.message.includes('outside the authorized workspace'))
+    ).toBe(true)
+  })
+
+  it('fails when every card was an out-of-workspace file card', () => {
+    saveBoard(makeBoard('a'), file)
+    const raw = JSON.stringify({
+      version: 1,
+      cards: [{ type: 'file', title: 'outside', filePath: '/etc/passwd' }]
+    })
+    const result = applyBoardCards({ boardId: 'a', raw }, { file, resolveWorkspaceFile: () => null })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('invalid-proposal')
   })
 })

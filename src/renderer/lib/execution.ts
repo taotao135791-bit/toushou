@@ -254,6 +254,10 @@ export function foldExecutionEvent(
     }
 
     case 'subagent': {
+      // Main-thread artifacts never become "subagents" (see
+      // isSpawnedChildAgent): without a parent tool call or a child transcript
+      // there is nothing subagent-shaped to project.
+      if (!isSpawnedChildAgent(event)) return state
       return upsertAgent(state, toAgentNode(event, now), now)
     }
 
@@ -403,6 +407,22 @@ function toAgentNode(event: Extract<SessionEvent, { type: 'subagent' }>, now: nu
   }
 }
 
+/**
+ * Structural signal that a roster/event entry is a REAL spawned child, not the
+ * root/main agent. Oh My Pi builds its subagent bus exclusively from
+ * `subagent_lifecycle` frames, and every spawned child carries the spawning
+ * `parentToolCallId` plus its own child `sessionFile` (the transcript that
+ * `get_subagent_messages` reads); terminal children are removed from the live
+ * roster. The root agent is never a roster entry — but an entry that carries
+ * NEITHER signal cannot be tied to a child transcript, so it is treated as a
+ * main-thread artifact and kept out of the projection (never rendered as a
+ * "subagent"). Historical records are exempt: durable task results legitimately
+ * lack both fields and are hydrated separately.
+ */
+export function isSpawnedChildAgent(entry: { parentToolCallId?: string; sessionFile?: string }): boolean {
+  return Boolean(entry.parentToolCallId || entry.sessionFile)
+}
+
 function upsertAgent(
   state: ExecutionProjection,
   incoming: AgentNode,
@@ -429,7 +449,9 @@ function upsertAgent(
  * Upsert a `get_subagents` roster snapshot. Uses the SAME `upsertAgent` reducer
  * as live events, so snapshot hydration and incremental events converge on one
  * graph — never two state machines. Terminal agents that only existed before the
- * GUI attached are simply absent from the roster (upstream drops them).
+ * GUI attached are simply absent from the roster (upstream drops them). Entries
+ * without a single spawned-child signal (parent tool call or child transcript)
+ * are main-thread artifacts and never enter the graph.
  */
 export function applyAgentRoster(
   state: ExecutionProjection,
@@ -438,6 +460,7 @@ export function applyAgentRoster(
 ): ExecutionProjection {
   let next = state
   for (const s of snapshots) {
+    if (!isSpawnedChildAgent(s)) continue
     next = upsertAgent(next, snapshotToAgentNode(s, now), now)
   }
   return next
@@ -537,7 +560,7 @@ export function turnElapsedMs(turn: TurnProjection): number {
 // progress and frozen summary through them.
 
 /** Legacy chat-row verb buckets. */
-export type TurnVerb = 'read' | 'search' | 'run' | 'edit' | 'call'
+export type TurnVerb = 'read' | 'search' | 'run' | 'edit' | 'plan' | 'call'
 
 export interface TurnCounts {
   filesRead: number
@@ -564,6 +587,10 @@ export function emptyTurnCounts(): TurnCounts {
 
 /** Map the single classifier onto the legacy chat-row verb. */
 export function classifyTool(tool: string): TurnVerb {
+  const name = tool.toLowerCase()
+  if (name === 'todo' || name === 'todo_write' || name === 'todowrite' || name === 'plan') {
+    return 'plan'
+  }
   switch (classifyToolCall(tool)) {
     case 'read':
       return 'read'

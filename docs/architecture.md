@@ -67,6 +67,34 @@ Tool calls render through `ToolRendererRegistry`
 (`src/renderer/components/tools/`): bash (terminal panel), read, edit/write
 (diff-colored), generic JSON fallback for extension tools.
 
+## Chat → Office edit proposals (```office-edit)
+
+The workbook sibling of the board-cards protocol, following the same
+interaction iron law as `docs/plugin-board-foundation.md` §4: an agent never
+modifies a workbook silently — it proposes, a person confirms, then the app
+applies.
+
+1. "Ask agent about this workbook" drafts a bounded, reviewable composer
+   prompt (`buildOfficeChatPrompt`, never auto-sent) that also teaches the
+   protocol: after analysis, the agent may answer with exactly one
+   ```` ```office-edit ```` JSON fence — `{ "version": 1, "edits": [...],
+   "note"? }`, 1–200 edits, A1-style cells, string/number/boolean values.
+2. The fence parses in `src/shared/officeEdit.ts` (strict envelope, lenient
+   per edit, unknown fields dropped, all-invalid fails) and renders in chat
+   as a preview table (`OfficeEditProposalBlock`). A string value starting
+   with `=` is rejected at parse time — Univer would treat it as a formula,
+   so proposals can never smuggle formulas into a sheet.
+3. **Apply** in chat only STAGES the proposal: it is stored in the
+   renderer's `officeEditHandoff` (and the Office workspace panel is opened
+   if it was closed). The panel shows a second confirm bar; only the person
+   clicking Apply there writes the values — via the Univer API into the
+   **in-memory workbook instance** (exact sheet-name lookup, cell bounds
+   checked against the sheet grid, per-edit failure report).
+4. **Nothing in this path touches the filesystem.** Applied edits leave the
+   workbook dirty in the panel; persistence still flows exclusively through
+   the user's own open/save-as FileGrants (native dialogs minted by Main).
+   Ignoring the proposal — in chat or in the panel — discards it entirely.
+
 ## Error surfacing
 
 Provider/transport failures surface from `message_end.errorMessage` (the

@@ -29,6 +29,10 @@
     {
       "from": "resources/browser-use-toolkit",
       "to": "browser-use-toolkit"
+    },
+    {
+      "from": "resources/feishu-toolkit",
+      "to": "feishu-toolkit"
     }
   ],
   "mac": {

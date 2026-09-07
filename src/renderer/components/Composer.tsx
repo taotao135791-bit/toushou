@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect, ClipboardEvent, KeyboardEvent } from 'react'
+import { useState, useRef, useMemo, useEffect, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
 import {
   ArrowUp,
   Square,
@@ -7,18 +7,28 @@ import {
   Zap,
   X,
   File,
+  Folder,
+  FileArchive,
   ListPlus,
-  Loader2
+  Loader2,
+  MessageCircle,
+  Plus
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { QueuedMessage, useAppStore } from '../store'
-import { SessionComposerDraft } from '../lib/composerDraft'
+import {
+  ComposerDraftFile,
+  ComposerFileKind,
+  DroppedAttachment,
+  SessionComposerDraft
+} from '../lib/composerDraft'
 import { dispatchSteer, steerFailureKey } from '../lib/steerDispatch'
 import { useT } from '../i18n'
 import ModelPicker from './ModelPicker'
 import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
 import UsageMonitor from './UsageMonitor'
+import MenuPortal from './MenuPortal'
 
 interface ComposerProps {
   /** Delivers the composed text; resolves false when delivery failed and the draft is restored. */
@@ -34,6 +44,12 @@ interface ComposerProps {
   commands?: SlashCommand[]
   /** Built-in /compact action, shown first in the slash menu. */
   onCompact?: () => void
+  /**
+   * The chat column is narrower than 760px (browser panel open, small
+   * window): pickers and status chips collapse to icon-only so the toolbar
+   * never wraps. Primitive on purpose — Composer is memoized.
+   */
+  compact?: boolean
 }
 
 type MenuItem = SlashCommand & { builtin?: boolean }
@@ -52,6 +68,50 @@ const MAX_FILE_ITEMS = 20
 /** Mirrors the main-process listProjectFiles cache window. */
 const FILE_LIST_TTL_MS = 30_000
 
+/**
+ * Image staging accepts these even when the drop carries no mime type — real
+ * world macOS Finder drags often present `file.type` as empty.
+ */
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'heic', 'svg'])
+/** Non-image drops with these extensions render as archive chips. */
+const ARCHIVE_EXTENSIONS = new Set(['zip', 'tar', 'gz', 'rar', '7z'])
+
+/** Lowercased last path segment, or '' when the name has no extension. */
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return ''
+  return name.slice(dot + 1).toLowerCase()
+}
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith('image/') || IMAGE_EXTENSIONS.has(extensionOf(file.name))
+}
+
+function attachmentKind(isDirectory: boolean, name: string): ComposerFileKind {
+  if (isDirectory) return 'folder'
+  if (ARCHIVE_EXTENSIONS.has(extensionOf(name))) return 'archive'
+  return 'file'
+}
+
+/** The outgoing `@path` reference block: one token per line under the text. */
+function appendAttachmentRefs(text: string, files: DroppedAttachment[]): string {
+  if (files.length === 0) return text
+  return `${text}\n${files.map((f) => `@${f.path}`).join('\n')}`
+}
+
+function toDraftFile(file: DroppedAttachment): ComposerDraftFile {
+  const { path, name, isDirectory, kind } = file
+  return { path, name, isDirectory, kind }
+}
+
+function toDraftFiles(files: DroppedAttachment[]): ComposerDraftFile[] | undefined {
+  return files.length ? files.map(toDraftFile) : undefined
+}
+
+function fromDraftFile(file: ComposerDraftFile): DroppedAttachment {
+  return { ...file, id: crypto.randomUUID() }
+}
+
 const EMPTY_QUEUE: QueuedMessage[] = []
 
 const IMAGE_ERROR_KEYS = {
@@ -60,6 +120,19 @@ const IMAGE_ERROR_KEYS = {
   notImage: 'composer.imageNotImage',
   readFailed: 'composer.imageReadFailed'
 } as const
+
+/**
+ * One item captured synchronously from a drop. `File` objects and entries go
+ * stale once the drop handler yields, so everything we need is copied out up
+ * front and path resolution happens afterwards.
+ */
+interface DroppedEntry {
+  file: File | null
+  /** Entry-API directory flag: Finder folders arrive with no mime type. */
+  isDirectory: boolean
+  /** Display name, the fallback when no filesystem path can be resolved. */
+  name: string
+}
 
 function toPromptImages(images: PendingImage[]): PromptImage[] {
   return images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }))
@@ -88,14 +161,14 @@ function atToken(text: string, caret: number): { query: string; start: number } 
   return { query, start: at }
 }
 
-/** Fit the single-line textarea to its content (capped at the 160px max). */
+/** Fit the single-line textarea to its content (capped at the 288px max-h-72). */
 function autosize(el: HTMLTextAreaElement | null) {
   if (!el) return
   el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  el.style.height = `${Math.min(el.scrollHeight, 288)}px`
 }
 
-export default function Composer({
+export default memo(function Composer({
   onSend,
   onStop,
   busy,
@@ -103,7 +176,8 @@ export default function Composer({
   focusKey,
   stopping = false,
   commands = [],
-  onCompact
+  onCompact,
+  compact = false
 }: ComposerProps) {
   const [text, setText] = useState('')
   const [caret, setCaret] = useState(0)
@@ -112,10 +186,15 @@ export default function Composer({
   const [atMenuIndex, setAtMenuIndex] = useState(0)
   const [atDismissed, setAtDismissed] = useState(false)
   const [images, setImages] = useState<PendingImage[]>([])
+  /** Non-image drops staged as attachment chips; sent as @path lines. */
+  const [pendingFiles, setPendingFiles] = useState<DroppedAttachment[]>([])
   const [steeringQueuedId, setSteeringQueuedId] = useState<string | null>(null)
   const steeringQueuedIdRef = useRef<string | null>(null)
   const [loadedSessionId, setLoadedSessionId] = useState<string | null | undefined>(undefined)
   const [imageError, setImageError] = useState<keyof typeof IMAGE_ERROR_KEYS | null>(null)
+  /** A file drag hovers over the composer; drives the drop-zone highlight. */
+  const [dropping, setDropping] = useState(false)
+  const dragDepth = useRef(0)
   const [projectFiles, setProjectFiles] = useState<string[]>([])
   const filesLoadedAt = useRef(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -128,6 +207,13 @@ export default function Composer({
   const autosendRef = useRef<string | null>(null)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
+  // Primitive selector: re-renders only when the Feishu-origin flag flips.
+  const feishuSync = useAppStore(
+    (s) => s.sessions.find((session) => session.id === s.currentSessionId)?.origin === 'feishu'
+  )
+  /** Workspace-level branch for the header chip; null = not a git repo. */
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const addButtonRef = useRef<HTMLButtonElement>(null)
   const setComposerDraft = useAppStore((s) => s.setComposerDraft)
   const clearComposerDraft = useAppStore((s) => s.clearComposerDraft)
   const queue = useAppStore((s) =>
@@ -137,22 +223,33 @@ export default function Composer({
   const removeQueuedMessage = useAppStore((s) => s.removeQueuedMessage)
   const reserveQueuedMessage = useAppStore((s) => s.reserveQueuedMessage)
 
-  const writeDraft = (sessionId: string | null, nextText: string, nextImages: PendingImage[]) => {
+  const writeDraft = (
+    sessionId: string | null,
+    nextText: string,
+    nextImages: PendingImage[],
+    nextFiles: DroppedAttachment[] = pendingFiles
+  ) => {
     if (!sessionId) return
-    const draft: SessionComposerDraft = { text: nextText, images: toPromptImages(nextImages) }
+    const draft: SessionComposerDraft = {
+      text: nextText,
+      images: toPromptImages(nextImages),
+      files: toDraftFiles(nextFiles)
+    }
     setComposerDraft(sessionId, draft)
   }
 
-  const commitDraft = (nextText: string, nextImages = images) => {
+  const commitDraft = (nextText: string, nextImages = images, nextFiles = pendingFiles) => {
     setText(nextText)
     setImages(nextImages)
-    writeDraft(currentSessionId, nextText, nextImages)
+    setPendingFiles(nextFiles)
+    writeDraft(currentSessionId, nextText, nextImages, nextFiles)
   }
 
   const clearLocalDraft = () => {
     setText('')
     setCaret(0)
     setImages([])
+    setPendingFiles([])
     setImageError(null)
     setMenuDismissed(false)
     setAtDismissed(false)
@@ -166,6 +263,7 @@ export default function Composer({
     const draft = currentSessionId ? useAppStore.getState().composerDrafts[currentSessionId] : undefined
     setText(draft?.text ?? '')
     setImages(draft ? fromPromptImages(draft.images) : [])
+    setPendingFiles(draft?.files ? draft.files.map(fromDraftFile) : [])
     setCaret(draft?.text.length ?? 0)
     setMenuIndex(0)
     setMenuDismissed(false)
@@ -344,22 +442,20 @@ export default function Composer({
     })
   }
 
-  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(e.clipboardData?.items ?? [])
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter((f): f is File => f !== null)
-    if (files.length === 0) return
-    e.preventDefault()
+  /** Shared image staging pipeline for pasted and dropped files. */
+  const stageImageFiles = (files: File[]) => {
+    const remaining = Math.max(0, MAX_IMAGES - images.length)
+    let claimed = 0
     for (const file of files) {
       if (file.size > MAX_IMAGE_BYTES) {
         setImageError('tooLarge')
         continue
       }
-      if (images.length >= MAX_IMAGES) {
+      if (claimed >= remaining) {
         setImageError('max')
         continue
       }
+      claimed += 1
       const mimeType = file.type || 'image/png'
       const reader = new FileReader()
       reader.onload = () => {
@@ -370,6 +466,132 @@ export default function Composer({
       }
       reader.readAsDataURL(file)
     }
+  }
+
+  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f !== null)
+    if (files.length === 0) return
+    e.preventDefault()
+    stageImageFiles(files)
+  }
+
+  /**
+   * Stage non-image drops (files, folders, archives) as attachment chips.
+   * Paths resolve through the main process; virtual files that carry no
+   * filesystem path keep their display name. Dedupe is by resolved path.
+   */
+  const stageDroppedFiles = (dropped: DroppedEntry[]) => {
+    const sessionIdAtAction = currentSessionId
+    const textAtAction = text
+    const imagesAtAction = images
+    const resolved: DroppedAttachment[] = []
+    for (const entry of dropped) {
+      let path = entry.name
+      if (entry.file) {
+        try {
+          const resolvedPath = window.electronAPI.getPathForFile(entry.file)
+          if (resolvedPath) path = resolvedPath
+        } catch {
+          // Virtual files (dragged out of another app) carry no filesystem path.
+        }
+      }
+      if (!path) continue
+      const name = entry.name || path.split('/').pop() || path
+      resolved.push({
+        id: crypto.randomUUID(),
+        path,
+        name,
+        isDirectory: entry.isDirectory,
+        kind: attachmentKind(entry.isDirectory, name)
+      })
+    }
+    if (resolved.length === 0) return
+    setPendingFiles((prev) => {
+      const next = [...prev]
+      let added = false
+      for (const att of resolved) {
+        if (next.some((p) => p.path === att.path)) continue
+        next.push(att)
+        added = true
+      }
+      if (added) writeDraft(sessionIdAtAction, textAtAction, imagesAtAction, next)
+      return next
+    })
+  }
+
+  /**
+   * Route a drop: images join the staging pipeline, everything else (files,
+   * folders, archives) becomes an attachment chip sent as an @path reference.
+   * Items are snapshotted synchronously — File objects go stale once this
+   * handler yields.
+   */
+  const routeDroppedItems = (dt: DataTransfer) => {
+    const entries: DroppedEntry[] = []
+    for (const item of Array.from(dt.items ?? [])) {
+      let isDirectory = false
+      let entryName = ''
+      try {
+        const entry = item.webkitGetAsEntry()
+        isDirectory = entry?.isDirectory ?? false
+        entryName = entry?.name ?? ''
+      } catch {
+        // Synthetic/internal drags can carry stale entries; files still work.
+      }
+      const file = item.getAsFile()
+      if (file || entryName) entries.push({ file, isDirectory, name: file?.name || entryName })
+    }
+    if (entries.length === 0) {
+      for (const file of Array.from(dt.files)) {
+        entries.push({ file, isDirectory: false, name: file.name })
+      }
+    }
+    const imageFiles: File[] = []
+    const fileEntries: DroppedEntry[] = []
+    for (const entry of entries) {
+      // Folders never stage as images even when named like one (shot.png/).
+      if (!entry.isDirectory && entry.file && isImageFile(entry.file)) {
+        imageFiles.push(entry.file)
+      } else {
+        fileEntries.push(entry)
+      }
+    }
+    if (imageFiles.length > 0) stageImageFiles(imageFiles)
+    if (fileEntries.length > 0) stageDroppedFiles(fileEntries)
+  }
+
+  const hasFileDrag = (e: DragEvent<HTMLDivElement>) => e.dataTransfer.types.includes('Files')
+
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFileDrag(e)) return
+    e.preventDefault()
+    dragDepth.current += 1
+    setDropping(true)
+  }
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFileDrag(e)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasFileDrag(e)) return
+    // enter/leave fire for every child crossed; the depth counter only
+    // reaches zero when the drag truly exits the composer, so the
+    // highlight never flickers while moving over children.
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDropping(false)
+  }
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFileDrag(e)) return
+    e.preventDefault()
+    dragDepth.current = 0
+    setDropping(false)
+    routeDroppedItems(e.dataTransfer)
   }
 
   const handlePickImage = async () => {
@@ -425,23 +647,31 @@ export default function Composer({
     if (!trimmed || disabled) return
     const sessionIdAtSend = currentSessionId
     const imgs = stagedImages()
+    // Attachment chips ride along as one @path token per line; they are
+    // cleared on send and restored only if delivery fails (see below).
+    const staged = pendingFiles
+    const outgoing = appendAttachmentRefs(trimmed, staged)
     if (busy) {
       // Mid-turn: park the message; the store drains the queue on idle.
       if (!currentSessionId) return
       enqueueQueuedMessage(currentSessionId, {
         id: crypto.randomUUID(),
-        text: trimmed,
+        text: outgoing,
         images: imgs
       })
     } else {
       // The send is async: clear optimistically, but roll the draft back when
       // delivery failed (dead session, invalid grant) so it is never lost.
-      const staged = images
+      const stagedImagesSnapshot = images
       const restore = (ok: void | boolean) => {
         if (ok !== false) return
         const restoreSessionId = sessionIdAtSend ?? useAppStore.getState().currentSessionId
         if (restoreSessionId) {
-          setComposerDraft(restoreSessionId, { text: trimmed, images: toPromptImages(staged) })
+          setComposerDraft(restoreSessionId, {
+            text: trimmed,
+            images: toPromptImages(stagedImagesSnapshot),
+            files: toDraftFiles(staged)
+          })
         }
         if (
           (sessionIdAtSend && useAppStore.getState().currentSessionId !== sessionIdAtSend) ||
@@ -450,14 +680,15 @@ export default function Composer({
           return
         }
         setText((cur) => (cur.trim() ? cur : trimmed))
-        setImages((cur) => (cur.length ? cur : staged))
+        setImages((cur) => (cur.length ? cur : stagedImagesSnapshot))
+        setPendingFiles((cur) => (cur.length ? cur : staged))
         setCaret(trimmed.length)
       }
       if (sessionIdAtSend) clearComposerDraft(sessionIdAtSend)
       if (!sessionIdAtSend || useAppStore.getState().currentSessionId === sessionIdAtSend) {
         clearLocalDraft()
       }
-      const result = onSend(trimmed, imgs)
+      const result = onSend(outgoing, imgs)
       if (result instanceof Promise) void result.then(restore)
       else restore(result)
       return
@@ -517,30 +748,37 @@ export default function Composer({
     const trimmed = text.trim()
     if (!sessionId || !trimmed || disabled || !busy) return
     const staged = images
+    const stagedFiles = pendingFiles
     const imgs = stagedImages()
+    const outgoing = appendAttachmentRefs(trimmed, stagedFiles)
     const store = useAppStore.getState()
     store.clearComposerDraft(sessionId)
     clearLocalDraft()
 
     void dispatchSteer({
       sessionId,
-      text: trimmed,
+      text: outgoing,
       images: imgs,
       source: 'composer',
       steer: (sid, text, images) => window.electronAPI.steer(sid, text, images)
     }).then((result) => {
       const latest = useAppStore.getState()
       if (result.ok) {
-        commitAcceptedSteer(sessionId, trimmed, imgs)
+        commitAcceptedSteer(sessionId, outgoing, imgs)
         return
       }
 
       if (!latest.sessions.some((session) => session.id === sessionId)) return
-      latest.setComposerDraft(sessionId, { text: trimmed, images: toPromptImages(staged) })
+      latest.setComposerDraft(sessionId, {
+        text: trimmed,
+        images: toPromptImages(staged),
+        files: toDraftFiles(stagedFiles)
+      })
       latest.setSessionError(sessionId, steerFailureKey(result.source))
       if (latest.currentSessionId !== sessionId) return
       setText(trimmed)
       setImages(staged)
+      setPendingFiles(stagedFiles)
       setCaret(trimmed.length)
     })
   }
@@ -611,7 +849,9 @@ export default function Composer({
   const canSend = !disabled && Boolean(text.trim())
 
   return (
-    <div className="px-4 pb-4 pt-2">
+    // Home (no active session) trims the outer bottom padding: the hint line
+    // below the card takes over the rhythm.
+    <div className={`px-4 pt-2 ${currentSessionId ? 'pb-4' : 'pb-1'}`}>
       <div className="relative mx-auto w-full max-w-3xl">
         {slashQuery !== null && (
           <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop">
@@ -696,12 +936,29 @@ export default function Composer({
           </div>
         )}
         <div
-          className={`rounded-[16px] border border-line bg-ink-850 p-2 shadow-composer transition-all duration-200 ease-standard ${
-            disabled
-              ? ''
-              : 'focus-within:border-accent/40 focus-within:shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`relative rounded-[16px] border bg-ink-850 p-2 shadow-composer transition-all duration-200 ease-standard ${
+            dropping
+              ? 'border-dashed border-accent/70 shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
+              : disabled
+                ? 'border-line'
+                : 'border-line focus-within:border-accent/40 focus-within:shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
           }`}
         >
+          {dropping && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[16px] bg-ink-950/45">
+              <div className="flex items-center gap-1.5 rounded-full border border-accent/50 bg-ink-900 px-3 py-1 text-[11px] font-medium text-cream-dim shadow-pop">
+                <ImageIcon size={12} className="text-accent" />
+                <span>{t('composer.dropHint')}</span>
+              </div>
+            </div>
+          )}
+          {/* Context chips live in the dedicated workspace strip ABOVE the
+              composer card (ChatPanel, home view) — the card stays a single
+              quiet surface. */}
           {queue.length > 0 && (
             <div className="flex flex-col gap-1.5 px-1.5 pb-2 pt-0.5">
               <div className="px-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
@@ -747,8 +1004,8 @@ export default function Composer({
               ))}
             </div>
           )}
-          {images.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-1.5 pb-2 pt-0.5">
+          {(images.length > 0 || pendingFiles.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5 px-1.5 pb-2 pt-0.5">
               {images.map((img) => (
                 <div
                   key={img.id}
@@ -767,6 +1024,38 @@ export default function Composer({
                     className="absolute right-0.5 top-0.5 rounded-full bg-ink-950/85 p-0.5 text-cream-faint transition-colors hover:text-cream"
                   >
                     <X size={10} />
+                  </button>
+                </div>
+              ))}
+              {pendingFiles.map((file) => (
+                <div
+                  key={file.id}
+                  title={file.path}
+                  className="flex h-14 min-w-0 items-center gap-2 rounded-[10px] border border-line bg-ink-900 py-1 pl-2.5 pr-1"
+                >
+                  {file.kind === 'folder' ? (
+                    <Folder size={16} className="shrink-0 text-accent" />
+                  ) : file.kind === 'archive' ? (
+                    <FileArchive size={16} className="shrink-0 text-cream-faint" />
+                  ) : (
+                    <File size={16} className="shrink-0 text-cream-faint" />
+                  )}
+                  <span className="min-w-0 max-w-[150px] truncate text-[12px] text-cream-dim">
+                    {file.name}
+                  </span>
+                  <button
+                    onClick={() =>
+                      setPendingFiles((prev) => {
+                        const next = prev.filter((p) => p.id !== file.id)
+                        writeDraft(currentSessionId, text, images, next)
+                        return next
+                      })
+                    }
+                    title={t('composer.removeAttachment')}
+                    aria-label={t('composer.removeAttachment')}
+                    className="focus-ring shrink-0 rounded-full p-1 text-cream-faint transition-colors hover:bg-overlay-strong hover:text-cream"
+                  >
+                    <X size={12} />
                   </button>
                 </div>
               ))}
@@ -802,90 +1091,155 @@ export default function Composer({
                   : t('composer.placeholder')
             }
             rows={1}
-            className="max-h-40 w-full resize-none bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
+            className="max-h-72 w-full resize-none bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
           />
-          <div className="flex items-center justify-between px-1 pb-0.5 pt-0.5">
-            <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <button
-                onClick={handleAttachFile}
-                title={t('composer.attach')}
-                className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
-              >
-                <Paperclip size={12} />
-              </button>
-              <button
-                onClick={handlePickImage}
-                title={t('composer.attachImage')}
-                className="focus-ring flex h-7 w-7 items-center justify-center rounded-full border border-line text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
-              >
-                <ImageIcon size={12} />
-              </button>
-              <ModelPicker sessionId={currentSessionId} />
-              <ThinkingPicker sessionId={currentSessionId} />
-              <PermissionPicker />
-            </div>
-            {busy ? (
-              <div className="flex items-center gap-1.5">
-                {canSend && (
-                  <>
-                    <button
-                      onClick={handleSend}
-                      title={t('composer.queue')}
-                      aria-label={t('composer.queue')}
-                      className="flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong px-2.5 text-[11px] font-medium text-cream-dim shadow-card transition-all duration-150 hover:bg-overlay hover:text-cream active:scale-95"
-                    >
-                      <ListPlus size={13} strokeWidth={2.5} />
-                      <span>{t('composer.queue')}</span>
-                    </button>
-                    <button
-                      onClick={handleSteerCurrent}
-                      title={t('composer.steerNow')}
-                      aria-label={t('composer.steerNow')}
-                      className="flex h-8 items-center gap-1.5 rounded-full bg-accent px-2.5 text-[11px] font-medium text-white shadow-card transition-all duration-150 hover:bg-accent-bright active:scale-95"
-                    >
-                      <Zap size={13} strokeWidth={2.5} />
-                      <span>{t('composer.steerNow')}</span>
-                    </button>
-                  </>
-                )}
+          <div className="flex items-center justify-between gap-2 px-1 pb-0.5 pt-0.5">
+            <div className="flex items-center gap-1.5">
+              <div className="relative">
                 <button
-                  onClick={onStop}
-                  disabled={stopping}
-                  title={stopping ? t('chat.stopping') : t('composer.stop')}
-                  aria-label={stopping ? t('chat.stopping') : t('composer.stop')}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-cream text-ink-950 shadow-card transition-all duration-150 hover:opacity-85 active:scale-95 disabled:cursor-wait disabled:opacity-70"
+                  ref={addButtonRef}
+                  onClick={() => setAddMenuOpen((v) => !v)}
+                  title={t('composer.addContent')}
+                  aria-label={t('composer.addContent')}
+                  aria-haspopup="menu"
+                  aria-expanded={addMenuOpen}
+                  className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
                 >
-                  {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
+                  <Plus size={14} />
                 </button>
+                <MenuPortal
+                  open={addMenuOpen}
+                  triggerRef={addButtonRef}
+                  onClose={() => setAddMenuOpen(false)}
+                  width={176}
+                >
+                  <button
+                    onClick={() => {
+                      setAddMenuOpen(false)
+                      void handlePickImage()
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                  >
+                    <ImageIcon size={13} className="shrink-0 text-cream-faint" />
+                    {t('composer.attachImage')}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAddMenuOpen(false)
+                      void handleAttachFile()
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                  >
+                    <Paperclip size={13} className="shrink-0 text-cream-faint" />
+                    {t('composer.attach')}
+                  </button>
+                </MenuPortal>
               </div>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!canSend}
-                title={t('composer.send')}
-                className={`flex h-8 w-8 items-center justify-center rounded-full transition-all duration-150 active:scale-95 ${
-                  canSend
-                    ? 'bg-accent text-white shadow-card hover:bg-accent-bright'
-                    : 'cursor-not-allowed bg-overlay-strong text-cream-faint'
+              <PermissionPicker compact={compact} />
+              {feishuSync && (
+                <div
+                  title={t('composer.feishuSync')}
+                  className="flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[11px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay"
+                >
+                  <MessageCircle size={11} className="shrink-0 text-accent" />
+                  {!compact && <span>{t('composer.feishuSync')}</span>}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <ModelPicker sessionId={currentSessionId} compact={compact} />
+              <ThinkingPicker sessionId={currentSessionId} compact={compact} />
+              {busy ? (
+                <div className="flex items-center gap-1.5">
+                  {canSend && (
+                    <>
+                      <button
+                        onClick={handleSend}
+                        title={t('composer.queue')}
+                        aria-label={t('composer.queue')}
+                        className={`flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong text-[11px] font-medium text-cream-dim shadow-card transition-all duration-150 hover:bg-overlay hover:text-cream active:scale-95 ${
+                          compact ? 'w-8 justify-center' : 'px-2.5'
+                        }`}
+                      >
+                        <ListPlus size={13} strokeWidth={2.5} />
+                        {!compact && <span>{t('composer.queue')}</span>}
+                      </button>
+                      <button
+                        onClick={handleSteerCurrent}
+                        title={t('composer.steerNow')}
+                        aria-label={t('composer.steerNow')}
+                        className={`flex h-8 items-center gap-1.5 rounded-full bg-accent text-[11px] font-medium text-white shadow-card transition-all duration-150 hover:bg-accent-bright active:scale-95 ${
+                          compact ? 'w-8 justify-center' : 'px-2.5'
+                        }`}
+                      >
+                        <Zap size={13} strokeWidth={2.5} />
+                        {!compact && <span>{t('composer.steerNow')}</span>}
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={onStop}
+                    disabled={stopping}
+                    title={stopping ? t('chat.stopping') : t('composer.stop')}
+                    aria-label={stopping ? t('chat.stopping') : t('composer.stop')}
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-cream text-ink-950 shadow-card transition-all duration-150 hover:opacity-85 active:scale-95 disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={!canSend}
+                  title={t('composer.send')}
+                  className={`flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 active:scale-95 ${
+                    canSend
+                      ? 'bg-accent text-white shadow-card hover:bg-accent-bright'
+                      : 'cursor-not-allowed bg-overlay-strong text-cream-faint'
+                  }`}
+                >
+                  <ArrowUp size={16} strokeWidth={2.5} />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+        {currentSessionId ? (
+          <>
+            <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-cream-faint">
+              <div className="min-w-0 truncate">
+                <UsageMonitor sessionId={currentSessionId} />
+              </div>
+              {/* Shortcuts hint needs ~1100px of window AND a non-squeezed chat
+                  column (browser panel open): compact covers the panel case the
+                  window media query cannot see. Home never sees this row — its
+                  single hint line below the card replaces it. */}
+              <span
+                className={`hidden shrink-0 whitespace-nowrap min-[1100px]:inline ${
+                  compact ? '!hidden' : ''
                 }`}
               >
-                <ArrowUp size={15} strokeWidth={2.5} />
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-cream-faint">
-          <div className="min-w-0 truncate">
-            {currentSessionId && <UsageMonitor sessionId={currentSessionId} />}
-          </div>
-          <span className="hidden shrink-0 whitespace-nowrap min-[1100px]:inline">
-            {t('composer.shortcuts')}
-          </span>
-        </div>
-        <div className="mt-1 truncate whitespace-nowrap text-center text-[10.5px] text-cream-faint">
-          {t('composer.disclaimer')}
-        </div>
+                {t('composer.shortcuts')}
+              </span>
+            </div>
+            <div className="mt-1 truncate whitespace-nowrap text-center text-[10.5px] text-cream-faint">
+              {t('composer.disclaimer')}
+            </div>
+          </>
+        ) : (
+          // Home: the hint line and workspace strip render in ChatPanel below
+          // and above the card — the composer itself adds nothing here.
+          null
+        )}
       </div>
     </div>
   )
-}
+})
+
+/**
+ * Memoized: ChatPanel re-renders on every streaming delta; the composer's
+ * props (primitives + ChatPanel-stabilized callbacks) do not change then, so
+ * the whole input surface — pickers included — skips those renders. Typing
+ * latency depends on this: the textarea must not re-render on unrelated
+ * store churn.
+ */

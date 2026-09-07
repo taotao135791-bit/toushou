@@ -1,12 +1,20 @@
 import { create } from 'zustand'
-import { FileGrant, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
-import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
+import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHistoryUuid, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
+import { mergeTranscriptBackfill } from '../lib/transcriptMerge'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
 import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
+
+/**
+ * Externally created sessions whose durable transcript was backfilled once
+ * from the runtime on first open. After that, live events keep the transcript
+ * current, so each session fetches at most once per app run.
+ */
+const transcriptBackfilled = new Set<string>()
 
 export interface MessageLike {
   id: string
@@ -82,6 +90,19 @@ export type WorkspacePanel =
 /** A pending interactive extension dialog, keyed by session. */
 export type UiRequest = Extract<SessionEvent, { type: 'ui_request' }>
 
+/**
+ * An office-edit proposal the person applied in chat, on its way to the
+ * Office panel's confirm bar. Presence in the store IS the pending state:
+ * the panel applies or the user dismisses it, and either way it is cleared.
+ * Only the already-validated `proposal.edits` cross this boundary — the raw
+ * fence text never needs to leave the chat card.
+ */
+export interface OfficeEditHandoff {
+  id: string
+  edits: OfficeEditCell[]
+  note?: string
+}
+
 interface AppState {
   theme: 'dark' | 'light'
   language: Language
@@ -102,12 +123,36 @@ interface AppState {
   uiRequests: Record<string, UiRequest[]>
   packages: PackageDescriptor[]
   workspacePanel: WorkspacePanel | null
-  rightPanelOpen: boolean
   activeRightTab: 'files' | 'preview' | 'changes' | 'tools'
+  /**
+   * Office-edit proposal applied in chat, waiting for the Office panel's
+   * confirm bar (null = none pending). See OfficeEditHandoff.
+   */
+  officeEditHandoff: OfficeEditHandoff | null
+  /**
+   * True while an OfficePage holds a workbook loaded from a file. Chat-side
+   * gating only — the chat cannot reach into the panel's Univer instance,
+   * so the panel reports liveness through this flag.
+   */
+  officeWorkbookOpen: boolean
   selectedFile: string | null
   previewContent: string | null
   /** sessionId -> checkpoint creation failed once (non-git project); skip further attempts. */
   checkpointUnavailable: Record<string, boolean>
+  /**
+   * sessionId -> the session's per-turn checkpoints (oldest first), loaded
+   * once per selection from the Main-side store and appended in-memory as new
+   * turns dispatch. Fuels the transcript's per-turn change chips.
+   */
+  checkpointsBySession: Record<string, CheckpointInfo[]>
+  /**
+   * Turn checkpoint id -> the 'pre-undo' checkpoint Main minted when that
+   * turn was last undone — the redo target that keeps an undo reversible. An
+   * entry exists exactly while the row is in its undone state and is cleared
+   * when a redo succeeds. Session-scoped and in-memory by design: redo
+   * availability intentionally does not survive an app restart.
+   */
+  preUndoByTurnCheckpoint: Record<string, string>
   /** Bumped after a rollback so git views (changes tab, header chip) refetch. */
   gitInfoVersion: number
   cliAvailable: boolean | null
@@ -150,6 +195,11 @@ interface AppState {
   recentWorkspaces: RecentWorkspaceDescriptor[]
   /** True while the history list is being (re)loaded; entries may be stale. */
   historyLoading: boolean
+  /** Cross-project durable history (metadata only) for the sidebar's flat
+   * "最近" list — survives restarts, unlike the live registry. */
+  globalHistory: HistorySessionRow[]
+  /** User-defined scheduled tasks. */
+  scheduledTasks: ScheduledTask[]
   /** Runtime-reported settings overview (profile/capabilities/providers/defaults). */
   runtimeOverview: RuntimeOverview | null
   /** Runtime model catalog (current profile; legacy rides `models`). */
@@ -172,11 +222,25 @@ interface AppState {
   activateRecentWorkspace: (recentId: string) => Promise<void>
   /** Show the native folder dialog and select the resulting grant. */
   selectWorkspace: () => Promise<void>
+  createProjectWorkspace: (name: string) => Promise<boolean>
+  selectDefaultWorkspace: () => Promise<void>
   setSessions: (sessions: Session[]) => void
   /** Merge Main's live registry without clobbering a session created concurrently. */
   registerSessions: (sessions: Session[]) => void
   addSession: (session: Session, select?: boolean) => void
+  /**
+   * Register a session Main created outside the GUI (e.g. a Feishu chat
+   * route) from its minimal descriptor. Idempotent: the descriptor fires
+   * again on every channel resume. The row is a normal durable session —
+   * archive/delete and the uuid sweep work on it like any other.
+   */
+  registerExternalSession: (descriptor: ExternalSessionDescriptor) => void
   setCurrentSessionId: (id: string | null) => void
+  /**
+   * One-time durable-transcript backfill for external (Feishu-origin)
+   * sessions on first open; no-op for everything else. See backfillExternalTranscript.
+   */
+  backfillExternalTranscript: (sessionId: string) => Promise<void>
   /** Hydrate the subagent roster for a session from `get_subagents` (live merge). */
   hydrateSubagents: (sessionId: string) => Promise<void>
   /** Fold durable historical agents (reconstructed on resume) into the projection. */
@@ -196,11 +260,19 @@ interface AppState {
   resolveUiRequest: (sessionId: string, requestId: string) => void
   setPackages: (packages: PackageDescriptor[]) => void
   setWorkspacePanel: (panel: WorkspacePanel | null) => void
-  setRightPanelOpen: (open: boolean) => void
   setActiveRightTab: (tab: 'files' | 'preview' | 'changes' | 'tools') => void
+  /** Stage (or clear) a chat-applied office-edit proposal for the Office panel. */
+  setOfficeEditHandoff: (handoff: OfficeEditHandoff | null) => void
+  /** OfficePanel → store liveness signal used to gate the chat apply button. */
+  setOfficeWorkbookOpen: (open: boolean) => void
   setSelectedFile: (path: string | null) => void
   setPreviewContent: (content: string | null) => void
   setCheckpointUnavailable: (sessionId: string, unavailable: boolean) => void
+  /** (Re)load a session's persisted checkpoint list from Main, merging in any
+   * checkpoint created locally while the fetch was in flight. */
+  loadCheckpoints: (sessionId: string) => Promise<void>
+  /** Record (or, with null, clear) the redo target of an undone turn. */
+  setPreUndoForTurn: (turnCheckpointId: string, preUndoCheckpointId: string | null) => void
   bumpGitInfoVersion: () => void
   /**
    * Snapshot the project after a user message was accepted by the session.
@@ -236,7 +308,7 @@ interface AppState {
   togglePinSession: (sessionId: string) => void
   /** Replace the archived list (startup load; does not persist). */
   setArchivedSessionIds: (ids: string[]) => void
-  /** Archive/unarchive a session and persist the new list. */
+  /** Archive/unarchive a session by durable key (uuid, else runtime id) and persist the list. */
   setSessionArchived: (sessionId: string, archived: boolean) => void
   markSessionUnread: (sessionId: string) => void
   setComposerPrefill: (text: string | null) => void
@@ -251,8 +323,16 @@ interface AppState {
   removeRecentProject: (path: string) => void
   /** (Re)load the persisted session history of the current workspace; null clears the list. */
   loadHistorySessions: (grantId: string | null) => Promise<void>
+  loadAllHistorySessions: () => Promise<void>
+  setScheduledTasks: (tasks: ScheduledTask[]) => void
   /** Drop one entry from the history list (after its opaque capability was deleted). */
   removeHistorySession: (historyId: string) => void
+  /**
+   * Purge a deleted session's durable uuid from every in-memory cache —
+   * registry records of every workspace plus the cross-project history rows —
+   * so a rescan cannot resurface it.
+   */
+  purgeDeletedSession: (uuid: string) => void
   /** Update one session's display title in place. */
   setSessionTitle: (sessionId: string, title: string) => void
   setSessionFile: (sessionId: string, sessionFile: string) => void
@@ -331,11 +411,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   uiRequests: {},
   packages: [],
   workspacePanel: null,
-  rightPanelOpen: false,
   activeRightTab: 'files',
+  officeEditHandoff: null,
+  officeWorkbookOpen: false,
   selectedFile: null,
   previewContent: null,
   checkpointUnavailable: {},
+  checkpointsBySession: {},
+  preUndoByTurnCheckpoint: {},
   gitInfoVersion: 0,
   cliAvailable: null,
   setupComplete: null,
@@ -358,6 +441,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentProjects: [],
   recentWorkspaces: [],
   historyLoading: false,
+  globalHistory: [],
+  scheduledTasks: [],
   runtimeOverview: null,
   runtimeModels: [],
   runtimeModelCatalog: [],
@@ -427,17 +512,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
     }
   },
+  createProjectWorkspace: async (name) => {
+    const grant = await window.electronAPI.createProjectWorkspace(name)
+    if (!grant) return false
+    get().setCurrentWorkspace(grant)
+    get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
+    return true
+  },
+  selectDefaultWorkspace: async () => {
+    const grant = await window.electronAPI.getDefaultWorkspace()
+    if (grant) {
+      get().setCurrentWorkspace(grant)
+      get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
+    }
+  },
   setSessions: (sessions) =>
     set((state) => {
-      // Prune pin/archive/unread entries of sessions that no longer exist
+      // Prune pin/unread entries of sessions that no longer exist. Archived
+      // ids are deliberately NOT pruned here: they are durable uuids (plus a
+      // live-id fallback) and must survive the live list changing — archiving
+      // a live session kills it, and its durable row only resurfaces a moment
+      // later through the history scans.
       const ids = new Set(sessions.map((s) => s.id))
       const pinnedSessionIds = state.pinnedSessionIds.filter((id) => ids.has(id))
-      const archivedSessionIds = state.archivedSessionIds.filter((id) => ids.has(id))
       if (pinnedSessionIds.length !== state.pinnedSessionIds.length) {
         window.electronAPI.setStore('pinnedSessionIds', pinnedSessionIds)
-      }
-      if (archivedSessionIds.length !== state.archivedSessionIds.length) {
-        window.electronAPI.setStore('archivedSessionIds', archivedSessionIds)
       }
       const unreadSessionIds = Object.fromEntries(
         Object.entries(state.unreadSessionIds).filter(([id]) => ids.has(id))
@@ -447,7 +546,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         sessions,
         sessionRecords: removeLiveSessionRecords(state.sessionRecords, ids),
         pinnedSessionIds,
-        archivedSessionIds,
         unreadSessionIds,
         composerDrafts
       }
@@ -459,21 +557,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     let changed = false
     set((state) => {
       const previous = state.sessions.find((item) => item.id === session.id)
+      // Main's live registry re-reports externally-created sessions (Feishu)
+      // without their origin metadata. Keep the registered origin, readonly
+      // marker and display title so the row never downgrades to the bare
+      // project-dir title Main spawns these sessions with.
+      const merged =
+        previous?.origin && !session.origin
+          ? { ...session, origin: previous.origin, remoteReadonly: previous.remoteReadonly, title: previous.title }
+          : session
       const same =
         previous &&
-        previous.cwd === session.cwd &&
-        previous.title === session.title &&
-        previous.createdAt === session.createdAt &&
-        previous.status === session.status &&
-        previous.resumeFrom === session.resumeFrom &&
-        previous.sessionFile === session.sessionFile &&
-        previous.resumedHistoryId === session.resumedHistoryId
-      const nextCurrentSessionId = select ? session.id : state.currentSessionId
+        previous.cwd === merged.cwd &&
+        previous.title === merged.title &&
+        previous.createdAt === merged.createdAt &&
+        previous.status === merged.status &&
+        previous.resumeFrom === merged.resumeFrom &&
+        previous.sessionFile === merged.sessionFile &&
+        previous.resumedHistoryId === merged.resumedHistoryId &&
+        previous.origin === merged.origin &&
+        previous.remoteReadonly === merged.remoteReadonly
+      const nextCurrentSessionId = select ? merged.id : state.currentSessionId
       if (same && nextCurrentSessionId === state.currentSessionId) return state
       changed = true
       return {
-        sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
-        sessionRecords: upsertLiveSessionRecord(state.sessionRecords, session),
+        sessions: [merged, ...state.sessions.filter((item) => item.id !== merged.id)],
+        sessionRecords: upsertLiveSessionRecord(state.sessionRecords, merged),
         currentSessionId: nextCurrentSessionId
       }
     })
@@ -489,6 +597,57 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Hydrate the (possibly already-running) subagent roster.
     void get().hydrateSubagents(session.id)
   },
+  registerExternalSession: (descriptor) => {
+    if (!descriptor || typeof descriptor.sessionId !== 'string' || !descriptor.sessionId) return
+    set((state) => {
+      const previous = state.sessions.find((s) => s.id === descriptor.sessionId)
+      const defaultTitle = basename(descriptor.workspacePath) || descriptor.workspacePath
+      // suggestedTitle only fills a missing/default title; a rename (user or
+      // maybeNameSession) wins and is never overridden by later descriptors.
+      const title =
+        previous?.title && previous.title.trim() && previous.title !== defaultTitle
+          ? previous.title
+          : descriptor.suggestedTitle?.trim() || defaultTitle
+      const session: Session = {
+        id: descriptor.sessionId,
+        cwd: descriptor.workspacePath,
+        title,
+        createdAt: previous?.createdAt || descriptor.createdAt || Date.now(),
+        status: previous?.status ?? 'idle',
+        origin: descriptor.origin,
+        remoteReadonly: true,
+        ...(previous?.resumeFrom ? { resumeFrom: previous.resumeFrom } : {}),
+        ...(previous?.sessionFile ? { sessionFile: previous.sessionFile } : {}),
+        ...(previous?.resumedHistoryId ? { resumedHistoryId: previous.resumedHistoryId } : {})
+      }
+      const same =
+        previous &&
+        previous.cwd === session.cwd &&
+        previous.title === session.title &&
+        previous.createdAt === session.createdAt &&
+        previous.status === session.status &&
+        previous.origin === session.origin &&
+        previous.remoteReadonly === session.remoteReadonly &&
+        previous.resumeFrom === session.resumeFrom &&
+        previous.sessionFile === session.sessionFile &&
+        previous.resumedHistoryId === session.resumedHistoryId
+      // Idempotent: a repeated descriptor (channel resume on a later message)
+      // must not reorder the list or re-render every row.
+      if (same) return state
+      return {
+        sessions: [session, ...state.sessions.filter((s) => s.id !== session.id)],
+        sessionRecords: upsertLiveSessionRecord(state.sessionRecords, session)
+      }
+    })
+    // Same durable-file backfill addSession performs: the archive/delete uuid
+    // sweep needs the record linked to the session file.
+    if (!get().sessions.find((s) => s.id === descriptor.sessionId)?.sessionFile) {
+      window.electronAPI.getSessionState(descriptor.sessionId).then((st) => {
+        if (st?.sessionFile) get().setSessionFile(descriptor.sessionId, st.sessionFile)
+      })
+    }
+    void get().hydrateSubagents(descriptor.sessionId)
+  },
   setSessionFile: (sessionId, sessionFile) =>
     set((state) => {
       const current = state.sessions.find((session) => session.id === sessionId)
@@ -501,7 +660,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCurrentSessionId: (currentSessionId) => {
     // Re-attaching to a session re-hydrates its roster (reconcile any agents
     // that spawned while the user was elsewhere).
-    if (currentSessionId) void get().hydrateSubagents(currentSessionId)
+    if (currentSessionId) {
+      void get().hydrateSubagents(currentSessionId)
+      void get().backfillExternalTranscript(currentSessionId)
+    }
     set((state) => ({
       currentSessionId,
       // Selecting a session marks it read
@@ -510,6 +672,28 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...state.unreadSessionIds, [currentSessionId]: false }
           : state.unreadSessionIds
     }))
+  },
+  /**
+   * First-open transcript backfill for Feishu-origin sessions. The renderer
+   * only folded live events since this window started listening, so the
+   * durable runtime transcript is authoritative once, fetched through
+   * OMP_SESSION_TRANSCRIPT (Main-parsed). A guard set makes it once per
+   * session per app run; the alignment merge (transcriptMerge) keeps any
+   * streamed rows that landed while the fetch was in flight, so ordering
+   * with concurrently-applied live events is preserved without a refetch.
+   */
+  backfillExternalTranscript: async (sessionId) => {
+    if (transcriptBackfilled.has(sessionId)) return
+    if (get().sessions.find((s) => s.id === sessionId)?.origin !== 'feishu') return
+    transcriptBackfilled.add(sessionId)
+    const fetched = await window.electronAPI.sessionTranscript(sessionId).catch(() => null)
+    if (!fetched || fetched.length === 0) return
+    set((state) => {
+      const current = state.messages[sessionId] ?? []
+      const merged = mergeTranscriptBackfill(fetched as MessageLike[], current)
+      if (merged === current) return state
+      return { messages: { ...state.messages, [sessionId]: merged } }
+    })
   },
   hydrateSubagents: async (sessionId) => {
     const roster = await window.electronAPI.getSubagents(sessionId)
@@ -644,8 +828,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   setPackages: (packages) => set({ packages }),
   setWorkspacePanel: (workspacePanel) => set({ workspacePanel }),
-  setRightPanelOpen: (rightPanelOpen) => set({ rightPanelOpen }),
   setActiveRightTab: (activeRightTab) => set({ activeRightTab }),
+  setOfficeEditHandoff: (officeEditHandoff) => set({ officeEditHandoff }),
+  setOfficeWorkbookOpen: (officeWorkbookOpen) => set({ officeWorkbookOpen }),
   setSelectedFile: (selectedFile) => set({ selectedFile }),
   setPreviewContent: (previewContent) => set({ previewContent }),
   setCheckpointUnavailable: (sessionId, unavailable) =>
@@ -655,16 +840,74 @@ export const useAppStore = create<AppState>((set, get) => ({
         : { checkpointUnavailable: { ...state.checkpointUnavailable, [sessionId]: unavailable } }
     ),
   bumpGitInfoVersion: () => set((state) => ({ gitInfoVersion: state.gitInfoVersion + 1 })),
+  loadCheckpoints: async (sessionId) => {
+    const list = await window.electronAPI.checkpointList(sessionId)
+    set((state) => {
+      const existing = state.checkpointsBySession[sessionId]
+      if (!existing || existing.length === 0) {
+        // Keep the disk order untouched on a cold load.
+        return { checkpointsBySession: { ...state.checkpointsBySession, [sessionId]: list } }
+      }
+      // A turn dispatched while the fetch was in flight appended a checkpoint
+      // the disk list cannot contain yet — merge by id instead of clobbering.
+      const merged = new Map<string, CheckpointInfo>()
+      for (const entry of existing) merged.set(entry.id, entry)
+      for (const entry of list) merged.set(entry.id, entry)
+      const mergedList = [...merged.values()].sort((a, b) => a.createdAt - b.createdAt)
+      const same =
+        existing.length === mergedList.length &&
+        existing.every((entry, i) => entry === mergedList[i])
+      return same
+        ? state
+        : { checkpointsBySession: { ...state.checkpointsBySession, [sessionId]: mergedList } }
+    })
+  },
   createCheckpointForMessage: async (sessionId, msgIndex, text) => {
     if (get().checkpointUnavailable[sessionId] === true) return
     const info = await window.electronAPI.checkpointCreate(sessionId, msgIndex, text.slice(0, 80))
     get().setCheckpointUnavailable(sessionId, info === null)
+    if (info) {
+      set((state) => ({
+        checkpointsBySession: {
+          ...state.checkpointsBySession,
+          [sessionId]: [...(state.checkpointsBySession[sessionId] ?? []), info]
+        }
+      }))
+    }
   },
+  setPreUndoForTurn: (turnCheckpointId, preUndoCheckpointId) =>
+    set((state) => {
+      const current = state.preUndoByTurnCheckpoint[turnCheckpointId]
+      if (preUndoCheckpointId === null) {
+        if (current === undefined) return state
+        const next = { ...state.preUndoByTurnCheckpoint }
+        delete next[turnCheckpointId]
+        return { preUndoByTurnCheckpoint: next }
+      }
+      // A second undo replaces the target: every undo snapshots afresh, so the
+      // newest pre-undo checkpoint is always the right redo target.
+      if (current === preUndoCheckpointId) return state
+      return {
+        preUndoByTurnCheckpoint: {
+          ...state.preUndoByTurnCheckpoint,
+          [turnCheckpointId]: preUndoCheckpointId
+        }
+      }
+    }),
   setCliAvailable: (cliAvailable) => set({ cliAvailable }),
+  // Same-value writes are no-ops: repeated `working`/`idle` status events for
+  // a session must not replace the busy map (a new identity would re-render
+  // every Sidebar row subscriber) while a turn streams.
   setBusy: (sessionId, busy) =>
-    set((state) => ({ busy: { ...state.busy, [sessionId]: busy } })),
+    set((state) =>
+      state.busy[sessionId] === busy ? state : { busy: { ...state.busy, [sessionId]: busy } }
+    ),
   setSessionError: (sessionId, key) =>
-    set((state) => ({ sessionErrors: { ...state.sessionErrors, [sessionId]: key ?? undefined } })),
+    set((state) => {
+      const next = key ?? undefined
+      if (state.sessionErrors[sessionId] === next) return state
+      return { sessionErrors: { ...state.sessionErrors, [sessionId]: next } }
+    }),
   clearSessionErrorIf: (sessionId, key) =>
     set((state) => {
       if (state.sessionErrors[sessionId] !== key) return state
@@ -740,7 +983,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         runtimeModel: snap.modelSelector,
         runtimeThinking: snap.thinkingLevel
       })
-      set((state) => ({ busy: { ...state.busy, [sessionId]: true } }))
+      get().setBusy(sessionId, true)
       void window.electronAPI
         .sendMessage(sessionId, next.text, next.images)
         .then((sent) => {
@@ -754,7 +997,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           } else {
             // The session died underneath the queue: stop draining into
             // the void — drop the rest, release busy, flag the failure.
-            set((state) => ({ busy: { ...state.busy, [sessionId]: false } }))
+            get().setBusy(sessionId, false)
             get().clearQueuedMessages(sessionId)
             get().setSessionError(sessionId, 'chat.sendFailed')
             get().updateMessage(sessionId, bubbleId, { failed: true })
@@ -769,7 +1012,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       steeringQueuedIds: { ...state.steeringQueuedIds, [sessionId]: [] }
     })),
   setCompacting: (sessionId, compacting) =>
-    set((state) => ({ compacting: { ...state.compacting, [sessionId]: compacting } })),
+    set((state) =>
+      state.compacting[sessionId] === compacting
+        ? state
+        : { compacting: { ...state.compacting, [sessionId]: compacting } }
+    ),
   setStats: (sessionId, stats) =>
     set((state) => ({ stats: { ...state.stats, [sessionId]: stats } })),
   setPinnedSessionIds: (pinnedSessionIds) => set({ pinnedSessionIds }),
@@ -782,6 +1029,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { pinnedSessionIds }
     }),
   setArchivedSessionIds: (archivedSessionIds) => set({ archivedSessionIds }),
+  // The key is the session's durable identity — its uuid when the registry
+  // knows one, else the live runtime id — so an archive outlives the process.
   setSessionArchived: (sessionId, archived) =>
     set((state) => {
       const archivedSessionIds = archived
@@ -791,7 +1040,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { archivedSessionIds }
     }),
   markSessionUnread: (sessionId) =>
-    set((state) => ({ unreadSessionIds: { ...state.unreadSessionIds, [sessionId]: true } })),
+    set((state) =>
+      state.unreadSessionIds[sessionId] === true
+        ? state
+        : { unreadSessionIds: { ...state.unreadSessionIds, [sessionId]: true } }
+    ),
   setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
   setComposerAutosend: (composerAutosend) => set({ composerAutosend }),
   setComposerDraft: (sessionId, draft) =>
@@ -812,6 +1065,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       recentWorkspaces: state.recentWorkspaces.filter((entry) => entry.displayPath !== displayPath),
       recentProjects: state.recentProjects.filter((entry) => entry !== displayPath)
     }))
+  },
+  setScheduledTasks: (scheduledTasks) => set({ scheduledTasks }),
+  loadAllHistorySessions: async () => {
+    // Read-only metadata scan of the runtime's own session storage. This is
+    // what makes the sidebar survive restarts: the live registry is in-memory
+    // only, the durable files are not.
+    try {
+      const rows = await window.electronAPI.listAllSessionHistory()
+      set({ globalHistory: Array.isArray(rows) ? rows : [] })
+    } catch {
+      // Keep the previous list on failure — an empty sidebar reads as data loss.
+    }
   },
   loadHistorySessions: async (grantId) => {
     if (!grantId) {
@@ -835,6 +1100,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeHistorySession: (historyId) =>
     set((state) => ({
       sessionRecords: removeHistoryRecord(state.sessionRecords, historyId)
+    })),
+  purgeDeletedSession: (uuid) =>
+    set((state) => ({
+      sessionRecords: purgeHistoryUuid(state.sessionRecords, uuid),
+      globalHistory: state.globalHistory.filter((row) => row.uuid !== uuid),
+      // A deleted session cannot stay archived: drop its durable key so the
+      // list never keeps a hidden entry nothing can restore.
+      archivedSessionIds: state.archivedSessionIds.filter((id) => id !== uuid)
     })),
   setSessionTitle: (sessionId, title) =>
     set((state) => {
@@ -1026,15 +1299,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const wasBusy = Boolean(get().busy[event.sessionId])
       const nextBusy = STATUS_BUSY[event.status]
       if (event.status === 'working') {
-        set((state) => ({ busy: { ...state.busy, [event.sessionId]: true } }))
+        get().setBusy(event.sessionId, true)
       } else if (nextBusy === true) {
         // waiting_for_user / aborting: the turn is still open — stay busy.
-        set((state) => ({ busy: { ...state.busy, [event.sessionId]: true } }))
+        get().setBusy(event.sessionId, true)
       } else if (nextBusy === false) {
         // Turn ended: close any open thinking run and clear busy. The turn's
         // summary is derived from the execution projection — never a second copy.
         get().finalizeThinking(event.sessionId)
-        set((state) => ({ busy: { ...state.busy, [event.sessionId]: false } }))
+        get().setBusy(event.sessionId, false)
       }
       // Statuses outside STATUS_BUSY leave busy/turn state untouched.
       // working→idle with a non-empty queue: send the next queued message.

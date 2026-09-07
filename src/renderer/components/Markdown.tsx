@@ -1,4 +1,4 @@
-import { ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, memo, useState } from 'react'
+import { ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, memo, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Check, Copy } from 'lucide-react'
@@ -88,15 +88,58 @@ const components = {
   }
 }
 
+/** Minimum spacing between full markdown parses while a reply is streaming. */
+const STREAM_PARSE_INTERVAL_MS = 120
+
 /**
  * Memoized on `content`: during streaming only the in-flight message's
  * string changes, so every historical message skips re-parsing its markdown.
+ *
+ * Appending deltas are additionally SAMPLED at STREAM_PARSE_INTERVAL_MS:
+ * react-markdown reparses the whole string per update, so per-32ms-batch
+ * appends cost O(n²) over a long reply. Non-append changes (edits, rollbacks)
+ * always render immediately, and the trailing timer guarantees the final
+ * content lands.
  */
 const Markdown = memo(function Markdown({ content }: { content: string }) {
+  const [rendered, setRendered] = useState(content)
+  const parseClock = useRef({ at: 0, timer: null as ReturnType<typeof setTimeout> | null })
+
+  useEffect(() => {
+    const clock = parseClock.current
+    const isAppend = content.startsWith(rendered) && content.length > rendered.length
+    if (isAppend) {
+      const since = Date.now() - clock.at
+      if (since < STREAM_PARSE_INTERVAL_MS) {
+        if (clock.timer) clearTimeout(clock.timer)
+        clock.timer = setTimeout(
+          () => {
+            clock.timer = null
+            clock.at = Date.now()
+            setRendered(content)
+          },
+          STREAM_PARSE_INTERVAL_MS - since
+        )
+        return () => {
+          if (clock.timer) {
+            clearTimeout(clock.timer)
+            clock.timer = null
+          }
+        }
+      }
+    }
+    if (clock.timer) {
+      clearTimeout(clock.timer)
+      clock.timer = null
+    }
+    clock.at = Date.now()
+    setRendered(content)
+  }, [content])
+
   return (
     <div className="md">
       <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
-        {content}
+        {rendered}
       </ReactMarkdown>
     </div>
   )

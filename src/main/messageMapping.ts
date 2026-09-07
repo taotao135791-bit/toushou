@@ -1,4 +1,5 @@
 import { ChatMessage } from '../shared/types'
+import { normalizeToolCall } from '../shared/toolNames'
 
 /**
  * Mapping from pi-agent-core's AgentMessage (as returned by the RPC
@@ -110,11 +111,12 @@ export function mapAgentMessages(messages: AgentMessage[]): ChatMessage[] {
           current.thinking = current.thinking ? `${current.thinking}\n${text}` : text
         } else if (block?.type === 'toolCall') {
           const call = block as AgentToolCallBlock
+          const normalized = normalizeToolCall(String(call.name ?? 'tool'), call.arguments)
           out.push({
             id: crypto.randomUUID(),
             role: 'assistant',
             content: '',
-            toolCall: { tool: String(call.name ?? 'tool'), input: call.arguments }
+            toolCall: { tool: normalized.tool, input: normalized.input }
           })
           if (typeof call.id === 'string' && call.id) {
             pendingTools.set(call.id, out.length - 1)

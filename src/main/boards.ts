@@ -1,7 +1,12 @@
 import { app } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { BoardNoteAppendResult, KanbanBoard } from '../shared/types'
+import {
+  BoardCardsApplyResult,
+  BoardCardsCard,
+  BoardNoteAppendResult,
+  KanbanBoard
+} from '../shared/types'
 import {
   BOARD_LIMITS,
   KanbanSaveResult,
@@ -11,6 +16,7 @@ import {
   migrateBoard,
   validateBoard
 } from '../shared/boards'
+import { cardsToWidgets, parseBoardCardsProposal } from '../shared/boardCards'
 
 /**
  * Widget board persistence — a single JSON document at
@@ -152,5 +158,105 @@ export function appendBoardNote(raw: unknown, file: string = defaultBoardsFile()
     return { ok: true, board: next }
   } catch {
     return { ok: false, error: 'write-failed' }
+  }
+}
+
+export interface ApplyBoardCardsOptions {
+  file?: string
+  /**
+   * Main-only workspace authority, injected by ipc.ts: resolves a proposed
+   * file-card path against the ACTIVE workspace grant named in the request
+   * and returns its canonical workspace-relative form, or null when the path
+   * is outside that grant (or the grant is gone). Injected as a closure so
+   * this module stays fs-free and unit-testable.
+   */
+  resolveWorkspaceFile?: (filePath: string) => string | null
+}
+
+/**
+ * Apply a ```board-cards proposal to ONE board — the data-card sibling of
+ * appendBoardNote. The renderer sends the RAW fence text plus an opaque board
+ * id; Main re-parses and re-validates everything (renderer structures are
+ * never trusted), re-reads the latest board before writing so a stale chat
+ * card cannot clobber recent edits, and lands the cards through the same
+ * widget factories/save path as a hand edit. Nothing is written unless the
+ * whole operation validates.
+ */
+export function applyBoardCards(raw: unknown, opts: ApplyBoardCardsOptions = {}): BoardCardsApplyResult {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'invalid-request', issues: [] }
+  }
+  const request = raw as Record<string, unknown>
+  const boardId = request.boardId
+  const proposalRaw = request.raw
+  if (
+    typeof boardId !== 'string' ||
+    !boardId ||
+    boardId.length > BOARD_LIMITS.maxIdLength ||
+    typeof proposalRaw !== 'string'
+  ) {
+    return { ok: false, error: 'invalid-request', issues: [] }
+  }
+  // Re-parse the raw proposal — the SAME validator the preview used.
+  const parsed = parseBoardCardsProposal(proposalRaw)
+  if (!parsed.ok) return { ok: false, error: 'invalid-proposal', issues: parsed.issues }
+  const issues = [...parsed.issues]
+
+  // File cards need an authorized workspace: resolve each path against the
+  // grant now and store only the canonical relative form. Out-of-workspace
+  // cards are skipped with a warning; the apply fails only if nothing valid
+  // remains.
+  let cards: BoardCardsCard[] = parsed.proposal.cards
+  if (cards.some((card) => card.type === 'file')) {
+    const resolve = opts.resolveWorkspaceFile
+    if (!resolve) return { ok: false, error: 'no-workspace', issues }
+    const kept: BoardCardsCard[] = []
+    cards.forEach((card, index) => {
+      if (card.type !== 'file') {
+        kept.push(card)
+        return
+      }
+      const relative = resolve(card.filePath)
+      if (!relative) {
+        issues.push({
+          level: 'warning',
+          card: index,
+          message: `File "${card.filePath.slice(0, 80)}" is outside the authorized workspace; card skipped.`
+        })
+        return
+      }
+      kept.push({ ...card, filePath: relative })
+    })
+    if (kept.length === 0) {
+      return { ok: false, error: 'invalid-proposal', issues: [...issues, { level: 'error', card: null, message: 'No valid cards in this proposal.' }] }
+    }
+    cards = kept
+  }
+
+  let boards: KanbanBoard[]
+  try {
+    boards = readBoards(opts.file ?? defaultBoardsFile())
+  } catch {
+    return { ok: false, error: 'board-store-unreadable', issues }
+  }
+  const index = boards.findIndex((board) => board.id === boardId)
+  if (index < 0) return { ok: false, error: 'not-found', issues }
+  const current = boards[index]
+  const widgets = cardsToWidgets({ version: 1, cards }, current.widgets)
+  if (current.widgets.length + widgets.length > BOARD_LIMITS.maxWidgets) {
+    return { ok: false, error: 'board-full', issues }
+  }
+  const next: KanbanBoard = { ...current, widgets: [...current.widgets, ...widgets], updatedAt: Date.now() }
+  boards[index] = next
+  try {
+    writeBoards(opts.file ?? defaultBoardsFile(), boards)
+    return {
+      ok: true,
+      board: next,
+      widgetIds: widgets.map((widget) => widget.id),
+      issues
+    }
+  } catch {
+    return { ok: false, error: 'write-failed', issues }
   }
 }

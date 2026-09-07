@@ -40,6 +40,8 @@ function modelSelectorOf(state: SessionState | null): string {
 interface ThinkingPickerProps {
   /** Live session to read/change; without one the picker sets the next-session override. */
   sessionId: string | null
+  /** Squeezed chat column: trigger collapses to icon (+ tiny level letter). */
+  compact?: boolean
 }
 
 /**
@@ -52,7 +54,7 @@ interface ThinkingPickerProps {
  * capability list. This is intentionally a different enum from the config
  * `defaultThinkingLevel` (`auto`, no `off`) — never the two shall mix.
  */
-export default function ThinkingPicker({ sessionId }: ThinkingPickerProps) {
+export default function ThinkingPicker({ sessionId, compact = false }: ThinkingPickerProps) {
   const [level, setLevel] = useState<string | undefined>(undefined)
   const [loaded, setLoaded] = useState(false)
   const [open, setOpen] = useState(false)
@@ -169,15 +171,28 @@ export default function ThinkingPicker({ sessionId }: ThinkingPickerProps) {
       <button
         ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
-        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
+        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
         title={t('composer.thinking')}
+        aria-label={`${t('composer.thinking')}: ${
+          failed ? t('composer.thinkingFailed') : levelLabel(level, t)
+        }`}
       >
-        <Brain size={12} />
-        <span className={failed ? 'text-red-500' : ''}>
-          {failed
-            ? t('composer.thinkingFailed')
-            : `${t('composer.thinking')} · ${loaded ? levelLabel(level, t) : '—'}`}
-        </span>
+        <Brain size={12} className={compact && failed ? 'text-red-500' : ''} />
+        {compact ? (
+          // Icon-only at squeezed width; the level stays readable as a tiny
+          // letter (h/l/m/…), auto/follow-model shows nothing extra.
+          level && level !== 'auto' ? (
+            <span className="text-[9px] font-semibold uppercase leading-none text-accent">
+              {level.charAt(0)}
+            </span>
+          ) : null
+        ) : (
+          <span className={failed ? 'text-red-500' : ''}>
+            {failed
+              ? t('composer.thinkingFailed')
+              : `${t('composer.thinking')} · ${loaded ? levelLabel(level, t) : '—'}`}
+          </span>
+        )}
         <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
       </button>
 

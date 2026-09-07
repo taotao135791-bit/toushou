@@ -6,6 +6,8 @@ export const IPC_CHANNELS = {
   OMP_KILL_SESSION: 'omp:kill-session',
   OMP_ABORT_SESSION: 'omp:abort-session',
   OMP_SESSION_EVENT: 'omp:session-event',
+  /** Main → renderer push announcing a session created outside the GUI (e.g. Feishu). */
+  SESSION_EXTERNAL: 'session:external',
   OMP_LIST_SESSIONS: 'omp:list-sessions',
   OMP_INSTALL: 'omp:install',
   OMP_INSTALL_STATUS: 'omp:install-status',
@@ -15,6 +17,8 @@ export const IPC_CHANNELS = {
   FS_SET_ROOT: 'fs:set-root',
   FS_LIST_PROJECT_FILES: 'fs:list-project-files',
   WORKSPACE_SELECT: 'workspace:select',
+  WORKSPACE_CREATE_PROJECT: 'workspace:create-project',
+  WORKSPACE_DEFAULT: 'workspace:default',
   WORKSPACE_ACTIVATE_RECENT: 'workspace:activate-recent',
   WORKSPACE_LIST_RECENT: 'workspace:list-recent',
   WORKSPACE_CLEAR_RECENT: 'workspace:clear-recent',
@@ -22,6 +26,8 @@ export const IPC_CHANNELS = {
   WORKSPACE_ACTIVATE: 'workspace:activate',
   WORKSPACE_REVOKE: 'workspace:revoke',
   WORKSPACE_LIST: 'workspace:list',
+  /** Open a granted workspace in Finder/Terminal/VS Code; grant id in, real path resolved in Main. */
+  OPEN_WORKSPACE_IN: 'workspace:open-in',
   PACKAGES_LIST: 'packages:list',
   PACKAGES_CAPABILITIES: 'packages:capabilities',
   PACKAGES_SEARCH: 'packages:search',
@@ -71,6 +77,14 @@ export const IPC_CHANNELS = {
   BOARDS_REVEAL_DESIGN: 'boards:reveal-design',
   /** Main → renderer push when the design file changes on disk. */
   BOARDS_DESIGN_CHANGED: 'boards:design-changed',
+  /** Chat ```board-cards proposal → Main re-validates + appends widgets. */
+  BOARDS_APPLY_CARDS: 'boards:apply-cards',
+  /** Read a file widget's bound workspace file through the active grant. */
+  BOARDS_WIDGET_FILE_READ: 'boards:widget-file-read',
+  /** Native picker → workspace-relative bind path for a file widget. */
+  BOARDS_WIDGET_FILE_SELECT: 'boards:widget-file-select',
+  /** Main → renderer push when a bound file-widget file changes on disk. */
+  BOARDS_FILE_CHANGED: 'boards:file-changed',
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
   DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_SELECT_IMAGE: 'dialog:select-image',
@@ -96,15 +110,37 @@ export const IPC_CHANNELS = {
   OMP_UPDATE_APPROVAL_CONFIG: 'omp:update-approval-config',
   OMP_EXPORT_HTML: 'omp:export-html',
   OMP_SESSION_STATE: 'omp:session-state',
+  /** Validated live-session id → its full durable transcript (ChatMessage[] | null). */
+  OMP_SESSION_TRANSCRIPT: 'omp:session-transcript',
   OMP_LIST_SESSION_HISTORY: 'omp:list-session-history',
+  /** Cross-project read-only history listing (metadata, no capability). */
+  OMP_LIST_ALL_SESSION_HISTORY: 'omp:list-all-session-history',
+  // --- Scheduled tasks -------------------------------------------------------
+  TASKS_LIST: 'tasks:list',
+  TASKS_SAVE: 'tasks:save',
+  TASKS_DELETE: 'tasks:delete',
+  TASKS_TOGGLE: 'tasks:toggle',
+  TASKS_RUN_NOW: 'tasks:run-now',
+  /** Main → renderer push when a scheduled task fires/completes. */
+  TASKS_STATE_CHANGED: 'tasks:state-changed',
+  // --- Project knowledge ------------------------------------------------------
+  KNOWLEDGE_READ: 'knowledge:read',
+  KNOWLEDGE_WRITE: 'knowledge:write',
   OMP_RESUME_SESSION: 'omp:resume-session',
   OMP_DELETE_SESSION_FILE: 'omp:delete-session-file',
+  /**
+   * Delete every durable copy of one session uuid, in any project/layout.
+   * Authorization: any active workspace grant; resolution happens Main-side
+   * inside the runtime's sessions root (the renderer never sends a path).
+   */
+  OMP_DELETE_SESSION_BY_UUID: 'omp:delete-session-by-uuid',
   OMP_SET_SESSION_NAME: 'omp:set-session-name',
   OMP_GET_SUBAGENTS: 'omp:get-subagents',
   OMP_GET_SUBAGENT_MESSAGES: 'omp:get-subagent-messages',
   CHECKPOINT_CREATE: 'checkpoint:create',
   CHECKPOINT_LIST: 'checkpoint:list',
   CHECKPOINT_RESTORE: 'checkpoint:restore',
+  CHECKPOINT_DIFF: 'checkpoint:diff',
   GIT_INFO: 'git:info',
   GIT_FILE_DIFF: 'git:file-diff',
   UPDATER_STATUS: 'updater:status',
@@ -132,11 +168,28 @@ export const IPC_CHANNELS = {
   AUTH_LOGOUT: 'auth:logout',
   AUTH_OPEN_LOGIN_URL: 'auth:open-login-url',
   AUTH_LOGIN_STATE: 'auth:login-state',
+  // Connections / Feishu integration. Secrets never cross these channels.
+  CONNECTIONS_LIST: 'connections:list',
+  FEISHU_STATUS: 'feishu:status',
+  FEISHU_BEGIN_CONNECTION: 'feishu:begin-connection',
+  FEISHU_CONNECT_MANUAL: 'feishu:connect-manual',
+  FEISHU_CANCEL_CONNECTION: 'feishu:cancel-connection',
+  FEISHU_DISCONNECT: 'feishu:disconnect',
+  FEISHU_OPEN_URL: 'feishu:open-url',
+  FEISHU_OAUTH_BEGIN: 'feishu:oauth-begin',
+  FEISHU_OAUTH_POLL: 'feishu:oauth-poll',
+  FEISHU_OAUTH_CANCEL: 'feishu:oauth-cancel',
   /** In-app browser panel (Main-owned WebContentsView over the renderer). */
   BROWSER_SHOW: 'browser:show',
   BROWSER_HIDE: 'browser:hide',
   BROWSER_NAVIGATE: 'browser:navigate',
   BROWSER_SET_BOUNDS: 'browser:set-bounds',
+  /** Renderer asks for a Main-captured browser screenshot as a data URL. */
+  BROWSER_SCREENSHOT_DATA: 'browser:screenshot-data',
+  /** Renderer forwards an uncaught renderer error for the file log. */
+  RENDERER_ERROR: 'diagnostics:renderer-error',
+  /** User-initiated diagnostics bundle export (log tail + versions). */
+  DIAGNOSTICS_EXPORT: 'diagnostics:export',
   /** Main → renderer push of the browser panel's navigation state. */
   BROWSER_STATE: 'browser:state',
   /** Main → renderer push when a runtime extension asks to open a panel. */

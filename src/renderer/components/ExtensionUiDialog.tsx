@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { MessageCircleQuestion, X } from 'lucide-react'
 import { ExtensionUiAnswer } from '@shared/types'
+import { approvalToolNameFromTitle } from '@shared/toolNames'
 import { UiRequest, useAppStore } from '../store'
 import { useT } from '../i18n'
 
@@ -117,6 +118,11 @@ export default function ExtensionUiDialog({
   }, [answer])
 
   const isTextual = request.method === 'input' || request.method === 'editor'
+  // Runtime approval prompts for extension tools carry raw plumbing in the
+  // title ("Allow tool: write Path: xd://browser_click"); show the real tool
+  // name in the header and keep the full original in the mono block below.
+  const approvalToolName =
+    request.method === 'select' ? approvalToolNameFromTitle(request.title) : null
 
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center bg-ink-950/30 p-6 backdrop-blur-[2px]">
@@ -134,7 +140,9 @@ export default function ExtensionUiDialog({
           </span>
           <div className="min-w-0 flex-1">
             <h3 id={titleId} className="truncate text-[14px] font-semibold text-cream">
-              {request.title || t('uiDialog.untitled')}
+              {approvalToolName
+                ? t('uiDialog.extensionTool', { name: approvalToolName })
+                : request.title || t('uiDialog.untitled')}
             </h3>
             <p id={descriptionId} className="mt-0.5 text-[11px] text-cream-faint">
               {t('uiDialog.subtitle')}

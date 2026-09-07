@@ -1,4 +1,5 @@
 import { ExtensionUiAnswer, PanelOpenRequest, SessionEvent } from '../../shared/types'
+import { normalizeToolCall } from '../../shared/toolNames'
 import { safeBrowserPanelUrl } from '../navigation'
 import { safeExtensionExternalUrl } from './extensionLinks'
 
@@ -279,13 +280,19 @@ export function normalizeRpcFrame(
     case 'tool_execution_start':
       return {
         kind: 'event',
-        event: {
-          type: 'tool_call',
-          sessionId,
-          id: typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined,
-          tool: String(payload.toolName ?? 'tool'),
-          input: payload.args
-        }
+        event: (() => {
+          const normalized = normalizeToolCall(
+            String(payload.toolName ?? 'tool'),
+            payload.args
+          )
+          return {
+            type: 'tool_call' as const,
+            sessionId,
+            id: typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined,
+            tool: normalized.tool,
+            input: normalized.input
+          }
+        })()
       }
 
     case 'tool_execution_update':
@@ -300,7 +307,10 @@ export function normalizeRpcFrame(
           type: 'tool_result',
           sessionId,
           id: typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined,
-          tool: String(payload.toolName ?? 'tool'),
+          // Remap the name with the same rule as tool_execution_start so
+          // id-less result matching still pairs the card. Results merge by
+          // toolCallId on modern runtimes; args mirror the start event.
+          tool: normalizeToolCall(String(payload.toolName ?? 'tool'), payload.args).tool,
           output: extractToolOutput(payload.result),
           isError: Boolean(payload.isError)
         }
