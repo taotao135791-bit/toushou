@@ -457,7 +457,7 @@ export default function ChatPanel() {
           // Hero and composer form ONE centered block: mark, serif hero
           // title, composer, then one faint hint line and the scenario chips
           // below — nothing else. The top bar is a bare drag spacer on home.
-          <div className="flex h-full flex-col items-center px-8">
+          <div className="flex min-h-full flex-col items-center px-8">
             <div className="my-auto flex w-full max-w-[680px] flex-col items-center pb-[10vh] pt-6">
               <div className="rise" style={{ animationDelay: '0ms' }}>
                 <Logo size={52} />

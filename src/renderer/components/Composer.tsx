@@ -8,6 +8,7 @@ import {
   X,
   File,
   Folder,
+  GitBranch,
   FileArchive,
   ListPlus,
   Loader2,
@@ -24,6 +25,8 @@ import {
 } from '../lib/composerDraft'
 import { dispatchSteer, steerFailureKey } from '../lib/steerDispatch'
 import { useT } from '../i18n'
+import { useGitInfo } from '../lib/useGitInfo'
+import { basename } from '../lib/path'
 import ModelPicker from './ModelPicker'
 import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
@@ -161,11 +164,17 @@ function atToken(text: string, caret: number): { query: string; start: number } 
   return { query, start: at }
 }
 
-/** Fit the single-line textarea to its content (capped at the 288px max-h-72). */
+/**
+ * Fit the single-line textarea to its content. The cap follows the viewport
+ * (40vh, floored at 160px) so the card can never push its action row — or
+ * itself — out of the window; the CSS max-h-[40vh] mirrors this as a safety
+ * net when JS hasn't run yet.
+ */
 function autosize(el: HTMLTextAreaElement | null) {
   if (!el) return
   el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, 288)}px`
+  const cap = Math.max(160, Math.round(window.innerHeight * 0.4))
+  el.style.height = `${Math.min(el.scrollHeight, cap)}px`
 }
 
 export default memo(function Composer({
@@ -198,6 +207,7 @@ export default memo(function Composer({
   const [projectFiles, setProjectFiles] = useState<string[]>([])
   const filesLoadedAt = useRef(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const { info: gitInfo } = useGitInfo()
   const t = useT()
   const composerPrefill = useAppStore((s) => s.composerPrefill)
   const composerAutosend = useAppStore((s) => s.composerAutosend)
@@ -956,9 +966,34 @@ export default memo(function Composer({
               </div>
             </div>
           )}
-          {/* Context chips live in the dedicated workspace strip ABOVE the
-              composer card (ChatPanel, home view) — the card stays a single
-              quiet surface. */}
+          {/* Attached workspace header (home only): the project/branch row is
+              the card's own top section — a slightly different shade, no gap,
+              so it grows with the textarea like one continuous surface. */}
+          {currentWorkspace && !currentSessionId && (
+            <div className="flex items-center gap-1 rounded-t-[15px] bg-overlay/60 px-3 py-2.5">
+              <div
+                title={currentWorkspace.displayPath}
+                aria-label={t('composer.currentProject')}
+                className="flex shrink-0 items-center gap-1.5 text-[12px] font-medium whitespace-nowrap text-cream-dim"
+              >
+                <Folder size={12} className="shrink-0 text-accent" />
+                <span className="max-w-[180px] truncate">
+                  {currentWorkspace.source === 'default'
+                    ? t('sidebar.defaultWorkspace')
+                    : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
+                </span>
+              </div>
+              {currentWorkspace.source !== 'default' && gitInfo && (
+                <div
+                  title={gitInfo.branch}
+                  className="flex shrink-0 items-center gap-1.5 pl-2 text-[12px] font-medium whitespace-nowrap text-cream-dim"
+                >
+                  <GitBranch size={12} className="shrink-0 text-accent" />
+                  <span className="max-w-[160px] truncate font-mono">{gitInfo.branch}</span>
+                </div>
+              )}
+            </div>
+          )}
           {queue.length > 0 && (
             <div className="flex flex-col gap-1.5 px-1.5 pb-2 pt-0.5">
               <div className="px-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
@@ -1091,7 +1126,7 @@ export default memo(function Composer({
                   : t('composer.placeholder')
             }
             rows={1}
-            className="max-h-72 w-full resize-none bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
+            className="max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
           />
           <div className="flex items-center justify-between gap-2 px-1 pb-0.5 pt-0.5">
             <div className="flex items-center gap-1.5">
