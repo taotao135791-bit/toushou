@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.11.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.11.1) 下载：
+当前版本 v0.11.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.11.2) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.1/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.1/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.2/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.2/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.11.2：日志脱敏补漏。修复转义 JSON 形态（`\"app_secret\":\"…\"`，见于 axios 错误转储的请求体）与查询串形态（`app_secret=…`）的凭据未被脱敏的问题——此前飞书令牌获取失败的日志会明文记录 app secret；读取侧（诊断导出）同步生效。
 
 v0.11.1：主页输入框改为三段式布局（对齐 ZCode）。顶部为上下文行：当前项目 + git 分支芯片（非 git 项目自动隐藏）；中间输入区支持长草稿展开（约 288px 后滚动）；底部动作行左侧为"+"内容菜单（图片/附件）与权限选择，右侧为模型、思考级别与加粗的方形发送按钮。
 
