@@ -216,7 +216,50 @@ export function removeMcpConnection(
   return { ok: true }
 }
 
-/** Live MCP initialize handshake for remote servers; stdio reports untested. */
+/** Extract JSON-RPC payloads from a direct JSON or SSE (data: …) response body. */
+function parseRpcResponses(text: string): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = []
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) continue
+    try {
+      const parsed = JSON.parse(trimmed.slice(5).trim())
+      if (parsed && typeof parsed === 'object') out.push(parsed as Record<string, unknown>)
+    } catch {
+      /* 忽略非 JSON 的 data 行 */
+    }
+  }
+  if (out.length === 0) {
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed === 'object') out.push(parsed as Record<string, unknown>)
+    } catch {
+      /* 非 JSON */
+    }
+  }
+  return out
+}
+
+async function rpcCall(
+  url: string,
+  headers: Record<string, string>,
+  id: number,
+  method: string,
+  params: Record<string, unknown>
+): Promise<Response> {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
+    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+    signal: AbortSignal.timeout(8000)
+  })
+}
+
+/**
+ * Live remote verification per the MCP spec: initialize, then tools/list.
+ * Reports the discovered tool count so the user sees the service is actually
+ * usable, not merely reachable. stdio servers are runtime-verified instead.
+ */
 export async function testMcpConnection(
   name: string,
   paths: McpStorePaths = defaultMcpStorePaths()
@@ -227,32 +270,36 @@ export async function testMcpConnection(
   if (type !== 'http' && type !== 'sse') {
     return { ok: true, detail: 'stdio 服务器由运行时启动时验证' }
   }
+  const url = String(entry.url)
+  const headers = (entry.headers as Record<string, string>) ?? {}
   try {
-    const res = await fetch(String(entry.url), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        ...((entry.headers as Record<string, string>) ?? {})
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {
-          protocolVersion: '2024-11-05',
-          capabilities: {},
-          clientInfo: { name: 'toushou-probe', version: '1.0' }
-        }
-      }),
-      signal: AbortSignal.timeout(8000)
+    const init = await rpcCall(url, headers, 1, 'initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'toushou-probe', version: '1.0' }
     })
-    if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` }
-    const text = await res.text()
-    if (!text.includes('"jsonrpc"')) {
+    if (!init.ok) return { ok: false, detail: `握手失败：HTTP ${init.status}` }
+    const initText = await init.text()
+    if (!initText.includes('"jsonrpc"')) {
       return { ok: false, detail: '响应不是 MCP 协议（检查地址是否为 MCP 端点）' }
     }
-    return { ok: true, detail: '握手成功' }
+
+    let detail = '握手成功'
+    try {
+      const tools = await rpcCall(url, headers, 2, 'tools/list', {})
+      if (tools.ok) {
+        const payloads = parseRpcResponses(await tools.text())
+        const result = payloads.find((p) => p.result && typeof p.result === 'object')?.result as
+          | { tools?: unknown[] }
+          | undefined
+        if (result && Array.isArray(result.tools)) {
+          detail = `握手成功，发现 ${result.tools.length} 个工具`
+        }
+      }
+    } catch {
+      /* tools/list 失败不影响连接判定 */
+    }
+    return { ok: true, detail }
   } catch (err) {
     return { ok: false, detail: err instanceof Error ? err.message : '网络错误' }
   }

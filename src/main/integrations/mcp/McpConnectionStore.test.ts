@@ -131,15 +131,25 @@ describe('testMcpConnection', () => {
     expect(result.ok).toBe(true)
   })
 
-  it('validates a remote handshake and surfaces failures verbatim', async () => {
+  it('validates a remote handshake + tools/list and surfaces failures verbatim', async () => {
     const paths = makePaths()
     addMcpConnection({ name: 'remote', url: 'https://mcp.example.com/mcp' }, paths)
 
+    let call = 0
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response('{"jsonrpc":"2.0","id":1,"result":{}}', { status: 200 }))
+      vi.fn(async () => {
+        call += 1
+        if (call === 1) return new Response('{"jsonrpc":"2.0","id":1,"result":{}}', { status: 200 })
+        return new Response(
+          'data: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"search_ads"},{"name":"top_creatives"}]}}',
+          { status: 200 }
+        )
+      })
     )
-    expect((await testMcpConnection('remote', paths)).ok).toBe(true)
+    const ok = await testMcpConnection('remote', paths)
+    expect(ok.ok).toBe(true)
+    expect(ok.detail).toContain('2 个工具')
 
     vi.stubGlobal(
       'fetch',
