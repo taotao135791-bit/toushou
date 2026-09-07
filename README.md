@@ -6,15 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.13.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.2) 下载：
+当前版本 v0.13.3，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.3) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.2/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.2/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.3/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.3/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.3/TouShou-x64.exe) | 见 Release | 见 Release |
 
-v0.13.2：主页对齐 ZCode 的问候锚点。问候语按时间变化（早上好，今天投什么？/ 下午好呀，接下来交给投手 / 晚上好，今天辛苦啦……）；英雄区背后加入低透明度品牌水印增加层次；输入框下方常驻四个投放场景 chips——投放周报、漏斗诊断、素材评审、竞品调研，点击填入提示词但不自动发送。
+v0.13.3：工作区条栏改为 ZCode 式浮层——比输入框略窄、独立圆角面、浅色衬底带柔和投影，与输入框之间留缝，堆叠出层次；回退上一版的问候语/水印/场景方向。另：checkpoint 测试在并行负载下的超时预算提升至 20s。
 
 v0.13.1：主页布局修正。工作区（项目/分支）从输入框卡片内移到上方一条**更窄的独立条栏**（对齐 ChatGPT/Kimi 的"选择项目"条），输入框回归单一安静表面；修复主页提示行渲染两次的问题。
 
