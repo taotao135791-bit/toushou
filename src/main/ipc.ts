@@ -162,7 +162,8 @@ import {
 } from './browserPanel'
 import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
-import { FeishuCapability, FeishuManualCredentials } from '../shared/connections'
+import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
+import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
 
 const fsGuard = new FsGuard()
 const grantManager = new WorkspaceGrantManager({ fsGuard })
@@ -561,6 +562,21 @@ export function registerIpc() {
   })
   ipcMain.handle(IPC_CHANNELS.FEISHU_CANCEL_CONNECTION, async () => feishuConnectionManager.cancelConnection())
   ipcMain.handle(IPC_CHANNELS.FEISHU_DISCONNECT, async () => feishuConnectionManager.disconnect())
+
+  // MCP service connections: the app stewards the runtime's own mcp.json —
+  // the renderer never sees tokens, only masked endpoints.
+  ipcMain.handle(IPC_CHANNELS.MCP_LIST, () => listMcpConnections())
+  ipcMain.handle(IPC_CHANNELS.MCP_ADD, (_event: IpcMainInvokeEvent, input: unknown) => {
+    return addMcpConnection(
+      input && typeof input === 'object' ? (input as McpAddInput) : {}
+    )
+  })
+  ipcMain.handle(IPC_CHANNELS.MCP_REMOVE, (_event: IpcMainInvokeEvent, name: unknown) => {
+    return typeof name === 'string' ? removeMcpConnection(name) : { ok: false, error: 'invalid name' }
+  })
+  ipcMain.handle(IPC_CHANNELS.MCP_TEST, (_event: IpcMainInvokeEvent, name: unknown) => {
+    return typeof name === 'string' ? testMcpConnection(name) : { ok: false, detail: 'invalid name' }
+  })
   ipcMain.handle(IPC_CHANNELS.FEISHU_OPEN_URL, async (_event, url: unknown) => {
     return typeof url === 'string' ? feishuConnectionManager.openUrl(url) : false
   })

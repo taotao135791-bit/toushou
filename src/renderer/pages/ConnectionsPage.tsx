@@ -5,6 +5,7 @@ import { ArrowUpRight, Check, CheckCircle2, Link2, LockKeyhole, MessageCircle, Q
 import { FeishuCapability, FeishuConnectionSnapshot, FeishuOAuthAuthorizationView, FeishuRegistrationView } from '@shared/connections'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
+import McpConnectionsSection from '../components/McpConnectionsSection'
 
 const emptySnapshot: FeishuConnectionSnapshot = {
   definition: {
@@ -292,6 +293,8 @@ export default function ConnectionsPage() {
               </div>
             )}
           </section>
+
+          <McpConnectionsSection />
         </div>
       </div>
     </div>

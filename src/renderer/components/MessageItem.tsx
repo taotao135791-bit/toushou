@@ -19,6 +19,8 @@ import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { formatSeconds } from '../lib/time'
 import { useConfirm } from '../lib/confirmClick'
+import { splitConnectionMarkers } from '../lib/connectionMarkers'
+import ConnectionGuideCard from './ConnectionGuideCard'
 import Markdown from './Markdown'
 import { parseSkillChatMessage } from '@shared/skills'
 import { SaveMessageToBoardDialog } from './SaveMessageToBoardDialog'
@@ -116,6 +118,9 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
     setCopied(true)
     setTimeout(() => setCopied(false), 1200)
   }
+
+  // 连接引导标记：从正文剥离并在消息下方渲染“去连接”卡（见 connectionMarkers）。
+  const guideSplit = splitConnectionMarkers(message.content)
 
   // Prefill the composer with this message so it can be edited and resent;
   // the history entry stays untouched.
@@ -325,7 +330,8 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
           )}
         </div>
       )}
-      <Markdown content={message.content} />
+      <Markdown content={guideSplit.clean} />
+      <ConnectionGuideCard kinds={guideSplit.guides} />
       {message.content && (
         <div className="mt-1 flex items-center gap-1">
           <button

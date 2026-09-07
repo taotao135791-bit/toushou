@@ -5,7 +5,11 @@ import {
   FeishuConnectionSnapshot,
   FeishuManualCredentials,
   FeishuOAuthBeginResult,
-  FeishuCapability
+  FeishuCapability,
+  McpAddInput,
+  McpConnectionInfo,
+  McpMutationResult,
+  McpTestOutcome
 } from '../shared/connections'
 import {
   CliCapabilities,
@@ -420,6 +424,11 @@ export interface ElectronAPI {
   feishuPollOAuth: () => Promise<FeishuConnectionSnapshot>
   feishuCancelOAuth: () => Promise<FeishuConnectionSnapshot>
   onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => () => void
+  /** MCP service connections — masked listings; tokens never cross to the renderer. */
+  mcpList: () => Promise<McpConnectionInfo[]>
+  mcpAdd: (input: McpAddInput) => Promise<McpMutationResult>
+  mcpRemove: (name: string) => Promise<McpMutationResult | { ok: false; error: string }>
+  mcpTest: (name: string) => Promise<McpTestOutcome>
   /** Fetch a Main-captured browser screenshot as a PNG data URL (validated path). */
   readBrowserScreenshot: (filePath: string) => Promise<string | null>
   /** Forward a renderer exception into the main-process file log. */
@@ -753,6 +762,10 @@ const api: ElectronAPI = {
   feishuCancelConnection: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_CANCEL_CONNECTION),
   feishuDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_DISCONNECT),
   feishuOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OPEN_URL, url),
+  mcpList: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_LIST),
+  mcpAdd: (input: McpAddInput) => ipcRenderer.invoke(IPC_CHANNELS.MCP_ADD, input),
+  mcpRemove: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.MCP_REMOVE, name),
+  mcpTest: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.MCP_TEST, name),
   feishuBeginOAuth: (capability: FeishuCapability): Promise<FeishuOAuthBeginResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OAUTH_BEGIN, capability),
   feishuPollOAuth: (): Promise<FeishuConnectionSnapshot> =>
