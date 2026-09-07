@@ -31,6 +31,24 @@ function defaultUser() {
 }
 const USER = get('user', '') || defaultUser();
 
+/**
+ * --scope 只收集到下一个 --选项为止：`--scope a b --branch feat/x` 的
+ * scope 是 [a, b] 而不是把分支名也吞进去。
+ */
+function parseScope(argv) {
+  const start = argv.indexOf('--scope');
+  if (start < 0) return [];
+  const scope = [];
+  for (const item of argv.slice(start + 1)) {
+    if (item.startsWith('--')) break;
+    scope.push(item);
+  }
+  return scope;
+}
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { parseScope };
+}
+
 async function main() {
   if (LIST) {
     const res = await fetch(SERVER + '/state');
@@ -62,8 +80,7 @@ async function main() {
     console.error('需要 --title（可加 --scope 目录1 目录2 与 --branch 分支名）；--user 缺省时取 git user.name，当前未能取得，请显式传入');
     return 1;
   }
-  const scopeStart = args.indexOf('--scope');
-  const scope = scopeStart >= 0 ? args.slice(scopeStart + 1).filter((a) => !a.startsWith('--')) : [];
+  const scope = parseScope(args);
   const res = await fetch(SERVER + '/register', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -75,6 +92,11 @@ async function main() {
     console.log(`绿灯: 意图 #${data.id} 已登记，可以开工（24 小时内有效，完成后请 --close ${data.id}）`);
     return 0;
   }
+  if (data.selfInflicted) {
+    console.log('红灯（申报被拒）: ' + (data.reason || '范围过大'));
+    console.log('请收窄 --scope 到具体子目录后重新申报。');
+    return 2;
+  }
   console.log('红灯: 与进行中的意图撞车（先到先得锁）——请停止本次修改并报告用户:');
   for (const c of data.conflicts || []) {
     const age = Math.round((Date.now() - c.registeredAt) / 60000);
@@ -83,7 +105,9 @@ async function main() {
   return 2;
 }
 
-main().catch((err) => {
-  console.error('意图中台不可达: ' + err.message);
-  process.exit(1);
-}).then((code) => process.exit(code));
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('意图中台不可达: ' + err.message);
+    process.exit(1);
+  }).then((code) => process.exit(code));
+}

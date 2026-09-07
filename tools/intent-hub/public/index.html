@@ -40,7 +40,10 @@
     return m < 60 ? m + ' 分钟' : Math.round(m / 60) + ' 小时';
   };
   const esc = (s) => String(s || '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  async function unlock(id, user) {
+  // 解锁按钮经 dataset 绑定，花名等自由文本不进 JS 字符串上下文。
+  async function unlockFromButton(btn) {
+    const id = Number(btn.dataset.id);
+    const user = btn.dataset.user;
     if (!confirm(`解锁 ${user} 的意图 #${id}？\n（通常无需手动——PR 合并/关闭后自动解锁，24 小时也会自动过期）`)) return;
     await fetch('/close', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id, by: 'dashboard' }) });
@@ -63,8 +66,11 @@
             范围 <code>${esc((r.scope || []).join(' ') || '未声明')}</code><br>
             ${fmtAge(data.now - r.registeredAt)}前申报
           </div>
-          <button class="unlock" onclick="unlock(${r.id}, '${esc(r.user)}')">手动解锁</button>
+          <button class="unlock" data-id="${r.id}" data-user="${esc(r.user)}">手动解锁</button>
         </div>`).join('');
+      for (const btn of grid.querySelectorAll('button.unlock')) {
+        btn.addEventListener('click', () => unlockFromButton(btn));
+      }
     } catch {}
   }
   tick();

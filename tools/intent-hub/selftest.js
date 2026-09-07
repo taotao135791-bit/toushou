@@ -59,9 +59,26 @@ async function main() {
     });
     ok(e.verdict === 'clear', '同一用户续报不被自己拦截');
 
-    // 6. 看板数据包含全部活跃意图（c、d、e 三条在锁）
+    // 6. 超大范围（单段顶层目录）被拒——防一人锁全场
+    const broad = await post('/register', {
+      user: 'Newbie', title: '重构全部界面', scope: ['src'], branch: 'refactor/all',
+    });
+    ok(broad.verdict === 'blocked' && broad.selfInflicted, '超大范围申报被拒并要求收窄');
+
+    // 7. 短标题不误锁：两个各只有两三个词组、主题不同的标题互不拦截
+    const f = await post('/register', {
+      user: 'Newbie', title: '改按钮颜色', scope: ['src/renderer/theme'], branch: 'fix/btn',
+    });
+    ok(f.verdict === 'clear', '短标题不同任务不误锁');
+
+    // 8. CLI 范围解析：--scope 后跟 --branch 不吞分支名
+    const { parseScope } = require('./cli.js');
+    const parsed = parseScope(['--title', 'x', '--scope', 'src/a', 'src/b', '--branch', 'feat/x']);
+    ok(JSON.stringify(parsed) === JSON.stringify(['src/a', 'src/b']), '--scope 不吞 --branch 的值');
+
+    // 9. 看板数据包含全部活跃意图（c、d、e、f 四条在锁）
     const state = await (await fetch(BASE + '/state')).json();
-    ok(Array.isArray(state.intents) && state.intents.length === 3, '看板 /state 返回活跃意图');
+    ok(Array.isArray(state.intents) && state.intents.length === 4, '看板 /state 返回活跃意图');
   } finally {
     server.kill();
     try { require('fs').unlinkSync(STORE); } catch {}

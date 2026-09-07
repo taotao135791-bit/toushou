@@ -78,15 +78,40 @@ function activeIntents(now = Date.now()) {
   );
 }
 
-/** 与现有活跃意图比对（排除同一用户的续报）。返回冲突列表。 */
+/** 过期意图就地标记为关闭，防止历史数据无限累积（TTL 只读过滤会漏掉它们）。 */
+function sweepExpired(now = Date.now()) {
+  let dirty = false;
+  for (const i of state.intents) {
+    if (i.status === 'active' && now - i.updatedAt >= ACTIVE_TTL_MS) {
+      i.status = 'expired';
+      i.closedBy = 'ttl';
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
+/**
+ * 超大范围防御：单段路径（如 `src`、`tools`，等于整个顶层目录）会让
+ * 之后所有人的任何申报都"范围重叠"——一人锁全场。拒绝并要求收窄。
+ */
+function isTooBroad(scope) {
+  return (scope || []).some((p) => String(p).split('/').filter(Boolean).length < 2);
+}
+
+/** 与现有活跃意图比对（排除同一用户的续报）。返回冲突列表。
+ * 短标题（词组 < 4 个）的 Jaccard 极不稳定——重合一两个词就虚高，
+ * 因此小词表时把相似阈值提高到 0.6，避免不相干任务被误锁。 */
 function findConflicts(intent) {
   const mine = tokenize(intent.title + ' ' + (intent.detail || ''));
   const conflicts = [];
   for (const other of activeIntents()) {
     if (other.user === intent.user) continue;
     const overlap = scopeOverlap(other.scope, intent.scope);
-    const sim = similarity(mine, tokenize(other.title + ' ' + (other.detail || '')));
-    if (overlap || sim >= SIMILAR_THRESHOLD) {
+    const theirs = tokenize(other.title + ' ' + (other.detail || ''));
+    const sim = similarity(mine, theirs);
+    const threshold = Math.min(mine.size, theirs.size) < 4 ? 0.6 : SIMILAR_THRESHOLD;
+    if (overlap || sim >= threshold) {
       conflicts.push({
         id: other.id,
         user: other.user,
@@ -137,6 +162,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && req.url === '/state') {
       const now = Date.now();
+      if (sweepExpired(now)) save();
       send(res, 200, { now, intents: activeIntents(now), total: state.intents.length });
       return;
     }
@@ -146,6 +172,14 @@ const server = http.createServer(async (req, res) => {
       const title = String(body.title || '').trim().slice(0, 200);
       const scope = Array.isArray(body.scope) ? body.scope.slice(0, 10).map(normPath).filter(Boolean) : [];
       if (!user || !title) return send(res, 400, { ok: false, error: 'user 与 title 必填' });
+      if (isTooBroad(scope)) {
+        return send(res, 200, {
+          ok: true,
+          verdict: 'blocked',
+          selfInflicted: true,
+          reason: '范围过大：不允许申报单段顶层目录（如 src），请收窄到具体子目录',
+        });
+      }
       const intent = {
         user,
         title,
