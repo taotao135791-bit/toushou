@@ -1409,6 +1409,9 @@ export interface BoardDataset {
 
 export type Language = 'zh' | 'en'
 
+/** Sidebar session-list ordering preference. */
+export type SessionSortOrder = 'recent' | 'name'
+
 export interface AppSettings {
   /** Settings-file schema version; bumped only when a migration is required. */
   schemaVersion: number
@@ -1432,6 +1435,8 @@ export interface AppSettings {
   pinnedSessionIds: string[]
   /** Sidebar: sessions folded away into the archived group. */
   archivedSessionIds: string[]
+  /** Sidebar: session list ordering (durable uuids or live ids for archives). */
+  sessionSort: SessionSortOrder
   /** Sidebar: last drag-chosen width in px; the renderer clamps it on read. */
   sidebarWidth: number
   /** Version stamps + user-removal marks for app-bundled packages. */
@@ -1501,6 +1506,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notificationPreviews: false,
   pinnedSessionIds: [],
   archivedSessionIds: [],
+  sessionSort: 'recent',
   sidebarWidth: 240,
   bundledPackages: {},
   feishuExperimentalPersonalAgentRegistration: true,
@@ -1535,6 +1541,22 @@ export interface CheckpointInfo {
   /** Index of the user message this checkpoint precedes. */
   msgIndex: number
   createdAt: number
+}
+
+/** One path that differs between a checkpoint snapshot and the worktree now. */
+export interface CheckpointDiffFile {
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+  /** null for binary files (and renames, where numstat paths don't line up) */
+  additions: number | null
+  deletions: number | null
+}
+
+/** Per-turn change summary: checkpoint snapshot vs the current worktree. */
+export interface CheckpointDiff {
+  files: CheckpointDiffFile[]
+  additions: number
+  deletions: number
 }
 
 export interface GitFileChange {

@@ -6,13 +6,17 @@
 
 ## 下载安装
 
-当前版本 v0.9.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.9.0) 下载：
+当前版本 v0.11.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.11.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.9.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.9.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.9.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.11.0：Agent 底座升级（对标 ZCode / 豆包 / ChatGPT 桌面版）。**会话归档与排序**——每行可归档，侧栏底部聚合"已归档"区（可展开、可取消归档、可删除），新增排序切换（最近活动/名称）；**逐轮文件改动+撤销**——每轮结束后在对话里显示"已更改 N 个文件（+增/-删）"，可展开文件清单（新增/修改/删除徽标），一键撤销恢复到本轮之前（基于 git 检查点，非 git 项目自动隐藏）；**定时任务按项目分组**；**输入框新增当前项目芯片**；设置页运行时探测改为先骨架后报错，不再闪"无法加载运行时设置"。
+
+v0.10.0：拖拽附件化与会话治理。**拖拽上传**：图片稳定走缩略图流程（按扩展名兜底识别），其它文件/文件夹/压缩包变成输入框上方的可移除附件芯片，发送时自动以 @路径 附带；**对话降噪**：插件请求未支持的界面通道（setWidget）改为静默日志；普通对话不再出现空的"子代理动态"面板；**会话治理**：修复中文项目名被运行时 ASCII 清洗导致的"恢复失败且无法删除"；删除改为按 uuid 全盘清扫所有布局副本；全局会话行新增删除按钮；删除后从内存索引清除不再复活。
 
 v0.9.0：桌面级交互补全与流式性能。**拖拽上传**——把桌面上的图片、文件、文件夹、压缩包直接拖进输入框：图片走原贴图流程（同数量/大小限制与错误提示），其余文件以绝对路径插入消息；拖拽悬停有虚线高亮提示，并修复了拖到窗口空白处会把整个应用导航到文件的问题；**侧栏可调宽度**——右缘拖拽调整（208–420px），双击复位，宽度记忆，最小宽度下会话行不溢出；**流式更顺滑**——历史工具分组不再随流式逐帧重渲染，流式输出期间打字不再卡顿，重复状态事件不再触发侧栏重渲染，长会话滚动时屏幕外消息行跳过布局与绘制，轨迹投影从全量扫描改为有界扫描。
 

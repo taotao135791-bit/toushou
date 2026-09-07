@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   MessageSquare,
@@ -17,20 +17,28 @@ import {
   PinOff,
   Archive,
   ArchiveRestore,
+  ArrowUpDown,
+  Check,
   ChevronDown,
   ChevronRight,
   Loader2,
   Link2, Clock} from 'lucide-react'
-import { HistorySessionDescriptor, HistorySessionRow } from '@shared/types'
+import { HistorySessionDescriptor, HistorySessionRow, SessionSortOrder } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
-import { recordsForWorkspace } from '../lib/sessionRegistry'
+import {
+  recordDurableUuid,
+  recordsForWorkspace,
+  sessionFileUuid,
+  sortSessionRows
+} from '../lib/sessionRegistry'
 import { formatRelativeTime } from '../lib/time'
 import { getSessionStatus } from '../lib/sessionStatus'
 import { basename } from '../lib/path'
 import { useConfirmId } from '../lib/confirmClick'
 import Logo from './Logo'
+import MenuPortal from './MenuPortal'
 
 const EMPTY_MESSAGES: Record<string, MessageLike[]> = {}
 
@@ -125,6 +133,30 @@ export default function Sidebar() {
     }
   }, [])
 
+  // Session list ordering. Persisted through Main's typed settings store like
+  // the sidebar width; hydrated once on mount (store default is 'recent').
+  const [sessionSort, setSessionSort] = useState<SessionSortOrder>('recent')
+  const [sortMenuOpen, setSortMenuOpen] = useState(false)
+  const sortButtonRef = useRef<HTMLButtonElement>(null)
+  // Showing the archived section is a transient view toggle, not a setting.
+  const [showArchived, setShowArchived] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI.getStore('sessionSort').then((sort) => {
+      if (cancelled) return
+      if (sort === 'recent' || sort === 'name') setSessionSort(sort)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const commitSessionSort = (sort: SessionSortOrder) => {
+    setSessionSort(sort)
+    void window.electronAPI.setStore('sessionSort', sort)
+  }
+
   const commitSidebarWidth = (width: number) => {
     const next = clampSidebarWidth(width)
     sidebarWidthRef.current = next
@@ -216,11 +248,17 @@ export default function Sidebar() {
     void activateRecentWorkspace(workspace.id)
   }
 
-  /** Durable uuid from a session file name (<timestamp>_<uuid>.jsonl). */
-  const uuidFromSessionFile = (sessionFile?: string): string | null =>
-    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(
-      sessionFile ?? ''
-    )?.[1] ?? null
+  // Runtime id → registry record. The record is the renderer's only link
+  // between a live session and its durable transcript identity.
+  const recordByRuntimeId = useMemo(
+    () =>
+      new Map(
+        sessionRecords
+          .filter((record) => record.runtimeSessionId)
+          .map((record) => [record.runtimeSessionId as string, record])
+      ),
+    [sessionRecords]
+  )
 
   /**
    * Delete every durable copy of one uuid and, on success, purge it from every
@@ -240,8 +278,8 @@ export default function Sidebar() {
   const handleDeleteSession = (id: string) => {
     // The durable identity must be captured before the kill: the record is the
     // renderer's only link between the runtime id and the transcript file.
-    const record = sessionRecords.find((r) => r.runtimeSessionId === id)
-    const uuid = record?.history?.uuid ?? uuidFromSessionFile(record?.sessionFile)
+    const record = recordByRuntimeId.get(id)
+    const uuid = recordDurableUuid(record)
     window.electronAPI.killSession(id)
     setSessions(sessions.filter((s) => s.id !== id))
     if (currentSessionId === id) {
@@ -251,6 +289,35 @@ export default function Sidebar() {
     // durable scan (immediately as a history row, after restart via the
     // cross-project list) — delete every copy of it too.
     void deleteByUuidAndRefresh(uuid)
+  }
+
+  /**
+   * Archive/unarchive by the session's durable key (uuid when the registry
+   * knows one, else the runtime id). Archiving a LIVE session takes the
+   * delete path's kill WITHOUT the uuid sweep: the process dies and the live
+   * row goes, but the transcript stays on disk and resurfaces — already
+   * archived under its uuid — once the history scans refresh.
+   */
+  const handleArchiveSession = (id: string, archived: boolean) => {
+    if (!archived) {
+      // Unarchive clears every key form the entry could have been written
+      // under: the durable uuid and a runtime-id fallback from before the
+      // uuid was known. Otherwise the row could never leave the archive.
+      setSessionArchived(id, false)
+      const uuid = durableUuidOfSession(id)
+      if (uuid !== null) setSessionArchived(uuid, false)
+      return
+    }
+    setSessionArchived(durableUuidOfSession(id) ?? id, true)
+    if (!sessions.some((s) => s.id === id)) return
+    window.electronAPI.killSession(id)
+    setSessions(sessions.filter((s) => s.id !== id))
+    if (currentSessionId === id) {
+      setCurrentSessionId(null)
+    }
+    // Rescan so the durable row reappears immediately (hidden by its key).
+    void loadHistorySessions(currentWorkspace?.id ?? null)
+    void loadAllHistorySessions()
   }
 
   const handleResumeHistory = async (info: HistorySessionDescriptor) => {
@@ -384,6 +451,20 @@ export default function Sidebar() {
   const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   const archivedSet = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds])
 
+  // Archive key of a live session: its durable uuid when the registry knows
+  // one, else the runtime id. UUID keys survive the live→durable handoff.
+  const durableUuidOfSession = useCallback(
+    (id: string) => recordDurableUuid(recordByRuntimeId.get(id)),
+    [recordByRuntimeId]
+  )
+  const isSessionArchived = useCallback(
+    (id: string) => {
+      const uuid = durableUuidOfSession(id)
+      return archivedSet.has(id) || (uuid !== null && archivedSet.has(uuid))
+    },
+    [archivedSet, durableUuidOfSession]
+  )
+
   const scopedRecords = useMemo(
     () => recordsForWorkspace(sessionRecords, currentWorkspace?.realPath ?? null),
     [sessionRecords, currentWorkspace?.realPath]
@@ -401,30 +482,40 @@ export default function Sidebar() {
     return sessions.filter((session) => liveIds.has(session.id))
   }, [scopedRecords, sessions])
 
+  // Search matches live sessions on title/path and the tail of the streaming
+  // transcript. Archived live sessions live in the archive section only, so
+  // they never match here.
   const filteredSessions = useMemo(() => {
+    const base = scopedLiveSessions.filter((s) => !isSessionArchived(s.id))
     const q = query.trim().toLowerCase()
-    if (!q) return scopedLiveSessions
-    return scopedLiveSessions.filter((s) => {
+    if (!q) return base
+    return base.filter((s) => {
       if (s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q)) return true
       const list = searchMessages[s.id]
       const last = list?.[list.length - 1]
       return last ? last.content.toLowerCase().includes(q) : false
     })
-  }, [scopedLiveSessions, query, searchMessages])
+  }, [scopedLiveSessions, query, searchMessages, isSessionArchived])
 
-  // Pinned sessions first, each group keeping its original order
-  const pinnedSessions = useMemo(
-    () => filteredSessions.filter((s) => pinnedSet.has(s.id) && !archivedSet.has(s.id)),
-    [filteredSessions, pinnedSet, archivedSet]
-  )
-  const normalSessions = useMemo(
-    () => filteredSessions.filter((s) => !pinnedSet.has(s.id) && !archivedSet.has(s.id)),
-    [filteredSessions, pinnedSet, archivedSet]
-  )
-  const archivedSessions = useMemo(
-    () => filteredSessions.filter((s) => archivedSet.has(s.id)),
-    [filteredSessions, archivedSet]
-  )
+  // Search view: pinned sessions float first, each group in the chosen order.
+  const sortedSearchSessions = useMemo(() => {
+    const decorate = (session: (typeof sessions)[number]) => ({
+      session,
+      title: session.title,
+      timestamp: session.createdAt,
+      pinned: pinnedSet.has(session.id)
+    })
+    return {
+      pinned: sortSessionRows(
+        filteredSessions.filter((s) => pinnedSet.has(s.id)).map(decorate),
+        sessionSort
+      ).map((item) => item.session),
+      normal: sortSessionRows(
+        filteredSessions.filter((s) => !pinnedSet.has(s.id)).map(decorate),
+        sessionSort
+      ).map((item) => item.session)
+    }
+  }, [filteredSessions, pinnedSet, sessionSort])
 
   // ---- group live sessions by their project (session.cwd) --------------
   // (Removed in the flat-recents model: the sidebar lists live + durable
@@ -456,37 +547,35 @@ export default function Sidebar() {
 
   // ---- unified "最近" flat list ------------------------------------------
   // Live sessions (every project), workspace-bound history rows, and the
-  // cross-project durable scan merge into one recency-ordered list. The
-  // durable scan is what makes the sidebar survive restarts.
+  // cross-project durable scan merge into one list. The durable scan is what
+  // makes the sidebar survive restarts.
   type RecentEntry =
-    | { kind: 'live'; key: string; timestamp: number; projectName: string; session: (typeof sessions)[number] }
-    | { kind: 'history'; key: string; timestamp: number; projectName: string; info: HistorySessionDescriptor }
-    | { kind: 'global'; key: string; timestamp: number; projectName: string; row: (typeof globalHistory)[number] }
+    | { kind: 'live'; key: string; timestamp: number; title: string; pinned: boolean; projectName: string; session: (typeof sessions)[number] }
+    | { kind: 'history'; key: string; timestamp: number; title: string; pinned: false; projectName: string; info: HistorySessionDescriptor }
+    | { kind: 'global'; key: string; timestamp: number; title: string; pinned: false; projectName: string; row: (typeof globalHistory)[number] }
 
   const liveUuids = useMemo(() => {
     const set = new Set<string>()
-    const recordByRuntimeId = new Map(
-      sessionRecords.filter((r) => r.runtimeSessionId).map((r) => [r.runtimeSessionId as string, r])
-    )
     for (const s of sessions) {
       const record = recordByRuntimeId.get(s.id)
       if (record?.history?.uuid) set.add(record.history.uuid)
-      const fileUuid = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(
-        record?.sessionFile ?? ''
-      )?.[1]
+      const fileUuid = sessionFileUuid(record?.sessionFile)
       if (fileUuid) set.add(fileUuid)
     }
     return set
-  }, [sessionRecords, sessions])
+  }, [recordByRuntimeId, sessions])
 
-  const recentEntries = useMemo(() => {
+  // Every row candidate, deduped. Archived entries are partitioned out of it
+  // right afterwards; both lists then take the user's sort.
+  const allEntries = useMemo(() => {
     const entries: RecentEntry[] = []
     for (const s of sessions) {
-      if (archivedSet.has(s.id)) continue
       entries.push({
         kind: 'live',
         key: `live:${s.id}`,
         timestamp: s.createdAt,
+        title: s.title,
+        pinned: pinnedSet.has(s.id),
         projectName: basename(s.cwd) || s.cwd,
         session: s
       })
@@ -498,6 +587,8 @@ export default function Sidebar() {
         kind: 'history',
         key: `history:${info.id}`,
         timestamp: info.timestamp,
+        title: info.title,
+        pinned: false,
         projectName: basename(currentWorkspace?.realPath ?? '') || '',
         info
       })
@@ -508,30 +599,26 @@ export default function Sidebar() {
         kind: 'global',
         key: `global:${row.uuid}`,
         timestamp: row.timestamp,
+        title: row.title,
+        pinned: false,
         projectName: basename(row.cwd) || row.cwd,
         row
       })
     }
-    // Pinned live rows float to the top of the flat list, then recency.
-    entries.sort((a, b) => {
-      const aPinned = a.kind === 'live' && pinnedSet.has(a.session.id) ? 0 : 1
-      const bPinned = b.kind === 'live' && pinnedSet.has(b.session.id) ? 0 : 1
-      if (aPinned !== bPinned) return aPinned - bPinned
-      return b.timestamp - a.timestamp
-    })
+    // The twin dedupe below needs a deterministic base order; recency is it.
+    // The user-facing sort is applied to the partitioned lists.
+    entries.sort((a, b) => b.timestamp - a.timestamp)
     // Resuming a session forks a NEW file with a NEW uuid but the same first
     // user message, so uuid-only dedupe leaves near-identical twins (same
     // project, same title, timestamps seconds apart). Prefer the row that can
     // be opened in place: live > capability-backed history > global.
     const rank = (entry: RecentEntry) => (entry.kind === 'live' ? 0 : entry.kind === 'history' ? 1 : 2)
-    const titleOf = (entry: RecentEntry) =>
-      entry.kind === 'live' ? entry.session.title : entry.kind === 'history' ? entry.info.title : entry.row.title
     const deduped: RecentEntry[] = []
     for (const entry of entries) {
       const twin = deduped.find(
         (candidate) =>
           candidate.projectName === entry.projectName &&
-          titleOf(candidate) === titleOf(entry) &&
+          candidate.title === entry.title &&
           Math.abs(candidate.timestamp - entry.timestamp) < 60_000
       )
       if (!twin) {
@@ -541,14 +628,33 @@ export default function Sidebar() {
       if (rank(entry) < rank(twin)) deduped[deduped.indexOf(twin)] = entry
     }
     return deduped
-  }, [sessions, archivedSet, visibleHistory, globalHistory, liveUuids, pinnedSet, currentWorkspace])
+  }, [sessions, visibleHistory, globalHistory, liveUuids, pinnedSet, currentWorkspace])
+
+  // Archived test per entry kind. Live rows consult their durable uuid too, so
+  // a killed-and-resurfaced session stays archived across the handoff.
+  const isEntryArchived = useCallback(
+    (entry: RecentEntry) => {
+      if (entry.kind === 'live') return isSessionArchived(entry.session.id)
+      return archivedSet.has(entry.kind === 'history' ? entry.info.uuid : entry.row.uuid)
+    },
+    [archivedSet, isSessionArchived]
+  )
+
+  // Pinned rows float first under both orders (see sortSessionRows).
+  const recentEntries = useMemo(
+    () => sortSessionRows(allEntries.filter((entry) => !isEntryArchived(entry)), sessionSort),
+    [allEntries, isEntryArchived, sessionSort]
+  )
+  const archivedEntries = useMemo(
+    () => sortSessionRows(allEntries.filter(isEntryArchived), sessionSort),
+    [allEntries, isEntryArchived, sessionSort]
+  )
 
   const filteredRecentEntries = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return recentEntries
     return recentEntries.filter((entry) => {
-      const title = entry.kind === 'live' ? entry.session.title : entry.kind === 'history' ? entry.info.title : entry.row.title
-      if (title.toLowerCase().includes(q)) return true
+      if (entry.title.toLowerCase().includes(q)) return true
       if (entry.kind !== 'live') return false
       const list = searchMessages[entry.session.id]
       const last = list?.[list.length - 1]
@@ -578,7 +684,6 @@ export default function Sidebar() {
     const status = getSessionStatus({ busy: running, waiting, error: dead, unread })
     const statusLabel = t(`sidebar.status.${status}`)
     const pinned = pinnedSet.has(session.id)
-    const archived = archivedSet.has(session.id)
     return (
       <div
         key={session.id}
@@ -635,35 +740,32 @@ export default function Sidebar() {
         >
           {statusLabel}
         </span>
-        {!archived && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              togglePinSession(session.id)
-            }}
-            title={pinned ? t('sidebar.unpin') : t('sidebar.pin')}
-            className={
-              pinned
-                ? 'shrink-0 rounded-md p-1 text-accent transition-all hover:bg-overlay-strong'
-                : `${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`
-            }
-          >
-            {pinned ? <PinOff size={12} /> : <Pin size={12} />}
-          </button>
-        )}
-        {/* The live session can't be archived */}
-        {!active && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              setSessionArchived(session.id, !archived)
-            }}
-            title={archived ? t('sidebar.unarchive') : t('sidebar.archive')}
-            className={`${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`}
-          >
-            {archived ? <ArchiveRestore size={12} /> : <Archive size={12} />}
-          </button>
-        )}
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            togglePinSession(session.id)
+          }}
+          title={pinned ? t('sidebar.unpin') : t('sidebar.pin')}
+          className={
+            pinned
+              ? 'shrink-0 rounded-md p-1 text-accent transition-all hover:bg-overlay-strong'
+              : `${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`
+          }
+        >
+          {pinned ? <PinOff size={12} /> : <Pin size={12} />}
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            // Kills a live session (its durable file stays) and hides the
+            // durable row behind the archive key.
+            handleArchiveSession(session.id, true)
+          }}
+          title={t('sidebar.archive')}
+          className={`${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`}
+        >
+          <Archive size={12} />
+        </button>
         <button
           onClick={(e) => {
             e.stopPropagation()
@@ -680,6 +782,68 @@ export default function Sidebar() {
               ? 'shrink-0 rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
               : `${iconBtn} hover:bg-red-500/15 hover:text-red-500`
           }
+        >
+          <Trash2 size={12} />
+        </button>
+      </div>
+    )
+  }
+
+  /**
+   * Archived rows are read-only summaries: title + project suffix, unarchive
+   * and delete. Opening one auto-unarchives it — an open session is not
+   * archived — so history/global rows resume as usual with their key cleared
+   * first and the resumed live row stays visible.
+   */
+  const renderArchivedRow = (entry: RecentEntry) => {
+    const unarchiveAndOpen = () => {
+      if (entry.kind === 'live') {
+        handleArchiveSession(entry.session.id, false)
+        setCurrentSessionId(entry.session.id)
+        navigate('/')
+        return
+      }
+      setSessionArchived(entry.kind === 'history' ? entry.info.uuid : entry.row.uuid, false)
+      if (entry.kind === 'history') void handleResumeHistory(entry.info)
+      else void handleOpenGlobal(entry.row)
+    }
+    const confirmDelete = () => {
+      if (entry.kind === 'live') deleteSessionConfirm.click(entry.session.id)
+      else if (entry.kind === 'history') deleteHistoryConfirm.click(entry.info.id)
+      else deleteGlobalConfirm.click(entry.row.uuid)
+    }
+    return (
+      <div
+        key={entry.key}
+        onClick={unarchiveAndOpen}
+        title={entry.title}
+        className="group flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-[6px] transition-colors duration-150 hover:bg-overlay"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[13px] leading-5 text-cream-faint">
+            {entry.title === 'Untitled' ? t('history.untitled') : entry.title}
+          </div>
+          <div className="truncate text-[11px] leading-4 text-cream-faint/70">
+            {`${entry.projectName} · ${formatRelativeTime(entry.timestamp, language)}`}
+          </div>
+        </div>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            unarchiveAndOpen()
+          }}
+          title={t('sidebar.unarchive')}
+          className={`${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`}
+        >
+          <ArchiveRestore size={12} />
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            confirmDelete()
+          }}
+          title={t('history.delete')}
+          className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
         >
           <Trash2 size={12} />
         </button>
@@ -789,9 +953,11 @@ export default function Sidebar() {
     )
   }
 
+  // Archived live sessions don't count toward the running banner — they are
+  // killed on archive, so a remaining busy entry is a fallback-path leftover.
   const runningCount = useMemo(
-    () => Object.values(busy).filter(Boolean).length,
-    [busy]
+    () => sessions.reduce((count, s) => count + (busy[s.id] && !isSessionArchived(s.id) ? 1 : 0), 0),
+    [sessions, busy, isSessionArchived]
   )
 
   const renderRecentEntry = (entry: RecentEntry) => {
@@ -986,17 +1152,69 @@ export default function Sidebar() {
           <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
             {t('sidebar.sessions')}
           </span>
-          <button
-            onClick={() => {
-              setSearchOpen(!searchOpen)
-              if (searchOpen) setQuery('')
-            }}
-            title={t('sidebar.searchSessions')}
-            className="rounded-md p-1 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
-          >
-            {searchOpen ? <X size={12} /> : <Search size={12} />}
-          </button>
+          <div className="flex items-center gap-0.5">
+            <button
+              ref={sortButtonRef}
+              onClick={() => setSortMenuOpen((open) => !open)}
+              title={t('sidebar.sort')}
+              className={`rounded-md p-1 transition-colors hover:bg-overlay hover:text-cream ${
+                sortMenuOpen ? 'bg-overlay text-cream' : 'text-cream-faint'
+              }`}
+            >
+              <ArrowUpDown size={12} />
+            </button>
+            <button
+              onClick={() => {
+                setSearchOpen(!searchOpen)
+                if (searchOpen) setQuery('')
+              }}
+              title={t('sidebar.searchSessions')}
+              className="rounded-md p-1 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
+            >
+              {searchOpen ? <X size={12} /> : <Search size={12} />}
+            </button>
+          </div>
         </div>
+        <MenuPortal
+          open={sortMenuOpen}
+          triggerRef={sortButtonRef}
+          onClose={() => setSortMenuOpen(false)}
+          width={196}
+        >
+          {(['recent', 'name'] as const).map((sort) => (
+            <button
+              key={sort}
+              onClick={() => {
+                commitSessionSort(sort)
+                setSortMenuOpen(false)
+              }}
+              className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+            >
+              <span>{sort === 'recent' ? t('sidebar.sortRecent') : t('sidebar.sortName')}</span>
+              {sessionSort === sort && <Check size={12} className="text-accent" />}
+            </button>
+          ))}
+          <div className="my-1 border-t border-line" />
+          <button
+            role="switch"
+            aria-checked={showArchived}
+            onClick={() => setShowArchived((value) => !value)}
+            className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+          >
+            <span>{t('sidebar.showArchived')}</span>
+            <span
+              className={`relative h-3.5 w-6 shrink-0 rounded-full transition-colors ${
+                showArchived ? 'bg-accent' : 'bg-line-strong'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-cream transition-all ${
+                  showArchived ? 'left-[12px]' : 'left-0.5'
+                }`}
+              />
+            </span>
+          </button>
+        </MenuPortal>
         {searchOpen && (
           <div className="px-2 pb-2">
             <div className="relative">
@@ -1024,7 +1242,9 @@ export default function Sidebar() {
           filteredSessions.length === 0 ? (
             <div className="px-2 py-1.5 text-xs leading-5 text-cream-faint">{t('sidebar.noMatch')}</div>
           ) : (
-            <div className="space-y-0.5">{[...pinnedSessions, ...normalSessions].map(renderSessionRow)}</div>
+            <div className="space-y-0.5">
+              {[...sortedSearchSessions.pinned, ...sortedSearchSessions.normal].map(renderSessionRow)}
+            </div>
           )
         ) : filteredRecentEntries.length === 0 ? (
           <div className="px-2 py-1.5 text-xs leading-5 text-cream-faint">{t('sidebar.noSessions')}</div>
@@ -1032,10 +1252,11 @@ export default function Sidebar() {
           <div className="space-y-0.5">{filteredRecentEntries.map(renderRecentEntry)}</div>
         )}
 
-        {archivedSessions.length > 0 && (
+        {!searching && showArchived && archivedEntries.length > 0 && (
           <div className="mt-2">
             <button
               onClick={() => setArchiveOpen(!archiveOpen)}
+              title={t('sidebar.showArchived')}
               className="flex w-full items-center gap-1 px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint transition-colors hover:text-cream-dim"
             >
               {archiveOpen ? (
@@ -1043,9 +1264,11 @@ export default function Sidebar() {
               ) : (
                 <ChevronRight size={11} strokeWidth={1.5} />
               )}
-              {t('sidebar.archived', { count: archivedSessions.length })}
+              {t('sidebar.archived', { count: archivedEntries.length })}
             </button>
-            {archiveOpen && <div className="space-y-0.5">{archivedSessions.map(renderSessionRow)}</div>}
+            {archiveOpen && (
+              <div className="space-y-0.5">{archivedEntries.map(renderArchivedRow)}</div>
+            )}
           </div>
         )}
       </div>

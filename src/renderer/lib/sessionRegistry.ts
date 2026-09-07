@@ -1,4 +1,4 @@
-import { HistorySessionDescriptor, Session } from '@shared/types'
+import { HistorySessionDescriptor, Session, SessionSortOrder } from '@shared/types'
 
 /** The single renderer projection used to reason about live and historical sessions. */
 export type SessionRecordState = 'idle' | 'running' | 'waiting' | 'dead' | 'historical'
@@ -160,4 +160,53 @@ export function purgeHistoryUuid(records: SessionRecord[], uuid: string): Sessio
 export function recordsForWorkspace(records: SessionRecord[], workspaceRealPath: string | null): SessionRecord[] {
   if (!workspaceRealPath) return []
   return records.filter((record) => record.workspaceRealPath === workspaceRealPath)
+}
+
+// --- Sidebar archive + sort helpers (pure) ----------------------------------
+
+const SESSION_FILE_UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+
+/** Durable uuid embedded in a session file name (`<timestamp>_<uuid>.jsonl`). */
+export function sessionFileUuid(sessionFile: string | undefined | null): string | null {
+  return SESSION_FILE_UUID.exec(sessionFile ?? '')?.[1] ?? null
+}
+
+/**
+ * Durable identity of a registry record: the history capability's uuid when
+ * known, else the uuid embedded in its session file. The sidebar archive is
+ * keyed by this so an entry survives the live→durable handoff — killing an
+ * archived live session makes its file resurface as a history row that stays
+ * archived under the same key.
+ */
+export function recordDurableUuid(record: SessionRecord | undefined | null): string | null {
+  return record?.history?.uuid ?? sessionFileUuid(record?.sessionFile)
+}
+
+/** Structural row the generic sort needs; sidebar entry unions fit as-is. */
+export interface SortableSessionRow {
+  title: string
+  timestamp: number
+  /** Pinned rows float to the top under every sort. */
+  pinned?: boolean
+}
+
+/**
+ * Order sidebar rows by the user's sort preference. Non-mutating and stable;
+ * pinned rows always come first, 'name' falls back to recency on ties so
+ * duplicate/untitled titles keep a deterministic order.
+ */
+export function sortSessionRows<T extends SortableSessionRow>(
+  rows: readonly T[],
+  sort: SessionSortOrder
+): T[] {
+  const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true })
+  return [...rows].sort((a, b) => {
+    const pinned = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))
+    if (pinned !== 0) return pinned
+    if (sort === 'name') {
+      const byTitle = collator.compare(a.title, b.title)
+      if (byTitle !== 0) return byTitle
+    }
+    return b.timestamp - a.timestamp
+  })
 }

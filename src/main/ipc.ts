@@ -96,7 +96,8 @@ import {
   restoreCheckpoint,
   saveCheckpoint,
   listCheckpoints,
-  getCheckpoint
+  getCheckpoint,
+  diffCheckpoint
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
 import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions } from './sessionHistory'
@@ -922,6 +923,18 @@ export function registerIpc() {
       return restoreCheckpoint(session.cwd, checkpoint.sha, checkpoint.untracked)
     }
   )
+
+  // Per-turn change summary for the transcript chip. The renderer only ever
+  // sends a checkpoint id minted by Main; project dir and snapshot sha are
+  // resolved here. null = non-git project / unknown id / unavailable diff.
+  ipcMain.handle(IPC_CHANNELS.CHECKPOINT_DIFF, async (_event: IpcMainInvokeEvent, id: string) => {
+    if (typeof id !== 'string' || !id) return null
+    const checkpoint = getCheckpoint(id)
+    if (!checkpoint) return null
+    const session = getSession(checkpoint.sessionId)
+    if (!session) return null
+    return diffCheckpoint(session.cwd, checkpoint.sha)
+  })
 
   ipcMain.handle(
     IPC_CHANNELS.GIT_INFO,

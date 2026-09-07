@@ -134,6 +134,7 @@ export const IPC_CHANNELS = {
   CHECKPOINT_CREATE: 'checkpoint:create',
   CHECKPOINT_LIST: 'checkpoint:list',
   CHECKPOINT_RESTORE: 'checkpoint:restore',
+  CHECKPOINT_DIFF: 'checkpoint:diff',
   GIT_INFO: 'git:info',
   GIT_FILE_DIFF: 'git:file-diff',
   UPDATER_STATUS: 'updater:status',

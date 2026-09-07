@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { app } from 'electron'
-import { CheckpointInfo, PackageActionResult } from '../shared/types'
+import { CheckpointDiff, CheckpointDiffFile, CheckpointInfo, PackageActionResult } from '../shared/types'
 
 /**
  * Git-snapshot checkpoints.
@@ -154,6 +154,116 @@ function removeEmptyDirs(dir: string, projectDir: string): void {
       return
     }
     current = path.dirname(current)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Diff (checkpoint snapshot vs the current worktree)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse `git diff --name-status -z` output into renderer-friendly statuses.
+ * Records are NUL-separated: `<status>\0<path>\0`, with a second path for
+ * renames/copies (`R100\0<old>\0<new>\0`). Rename/copy and type changes
+ * degrade to "modified" on the path that exists in the worktree now.
+ * Exported for tests; pure.
+ */
+export function parseNameStatusZ(
+  stdout: string
+): { path: string; status: CheckpointDiffFile['status'] }[] {
+  const tokens = stdout.split('\0')
+  const files: { path: string; status: CheckpointDiffFile['status'] }[] = []
+  let i = 0
+  while (i < tokens.length) {
+    const statusToken = tokens[i]
+    i += 1
+    // Trailing NUL leaves one empty token at the end; just skip it.
+    if (!statusToken) continue
+    const pathA = tokens[i] ?? ''
+    i += 1
+    const code = statusToken[0]
+    if (code === 'A') {
+      files.push({ path: pathA, status: 'added' })
+    } else if (code === 'D') {
+      files.push({ path: pathA, status: 'deleted' })
+    } else if (code === 'R' || code === 'C') {
+      const pathB = tokens[i] ?? ''
+      i += 1
+      files.push({ path: pathB || pathA, status: 'modified' })
+    } else {
+      // M (modified) and T (type change); anything unexpected degrades to it.
+      files.push({ path: pathA, status: 'modified' })
+    }
+  }
+  return files
+}
+
+/**
+ * Parse one plain `git diff --numstat` line: `<added>\t<deleted>\t<path>`.
+ * Binary files print `-` for both counts (mapped to null). Pure; exported
+ * for tests.
+ */
+export function parseNumstatLine(
+  line: string
+): { additions: number | null; deletions: number | null; path: string } | null {
+  const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line)
+  if (!match) return null
+  return {
+    additions: match[1] === '-' ? null : Number.parseInt(match[1], 10),
+    deletions: match[2] === '-' ? null : Number.parseInt(match[2], 10),
+    path: match[3]
+  }
+}
+
+/**
+ * Per-turn change summary: everything that differs between a checkpoint
+ * snapshot and the CURRENT worktree. Plain `git diff <sha>` would miss the
+ * agent's newly created files (untracked, invisible to the index), so — like
+ * createCheckpoint — the worktree is first staged into a throwaway index and
+ * written to a tree; the comparison is then tree-to-tree and complete.
+ * Returns null outside a git repo or when the diff cannot be produced
+ * (e.g. the dangling snapshot was garbage-collected). Computed lazily per
+ * request; never touches the user's own index.
+ */
+export async function diffCheckpoint(projectDir: string, sha: string): Promise<CheckpointDiff | null> {
+  if (!(await isGitRepo(projectDir))) return null
+  const tmp = mkdtempSync(path.join(tmpdir(), 'omp-checkpoint-diff-'))
+  const indexEnv = { GIT_INDEX_FILE: path.join(tmp, 'index') }
+  try {
+    const head = await headSha(projectDir)
+    await git(projectDir, ['read-tree', ...(head ? [head] : ['--empty'])], indexEnv)
+    await git(projectDir, ['add', '-A'], indexEnv)
+    const { stdout: tree } = await git(projectDir, ['write-tree'], indexEnv)
+    const current = tree.trim()
+    // quotepath=false keeps non-ASCII paths raw so numstat lines match the
+    // authoritative -z name-status paths.
+    const [nameStatus, numstat] = await Promise.all([
+      git(projectDir, ['-c', 'core.quotepath=false', 'diff', '--name-status', '-z', sha, current]),
+      git(projectDir, ['-c', 'core.quotepath=false', 'diff', '--numstat', sha, current])
+    ])
+    const counts = new Map<string, { additions: number | null; deletions: number | null }>()
+    let additions = 0
+    let deletions = 0
+    for (const line of numstat.stdout.split('\n')) {
+      const parsed = parseNumstatLine(line)
+      if (!parsed) continue
+      if (parsed.additions !== null) additions += parsed.additions
+      if (parsed.deletions !== null) deletions += parsed.deletions
+      counts.set(parsed.path, { additions: parsed.additions, deletions: parsed.deletions })
+    }
+    return {
+      files: parseNameStatusZ(nameStatus.stdout).map((f) => ({
+        ...f,
+        ...(counts.get(f.path) ?? { additions: null, deletions: null })
+      })),
+      additions,
+      deletions
+    }
+  } catch {
+    // Snapshot garbage-collected, racing edit, broken repo — no summary.
+    return null
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
   }
 }
 

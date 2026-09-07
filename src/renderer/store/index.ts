@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { CheckpointInfo, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
@@ -131,6 +131,12 @@ interface AppState {
   previewContent: string | null
   /** sessionId -> checkpoint creation failed once (non-git project); skip further attempts. */
   checkpointUnavailable: Record<string, boolean>
+  /**
+   * sessionId -> the session's per-turn checkpoints (oldest first), loaded
+   * once per selection from the Main-side store and appended in-memory as new
+   * turns dispatch. Fuels the transcript's per-turn change chips.
+   */
+  checkpointsBySession: Record<string, CheckpointInfo[]>
   /** Bumped after a rollback so git views (changes tab, header chip) refetch. */
   gitInfoVersion: number
   cliAvailable: boolean | null
@@ -234,6 +240,9 @@ interface AppState {
   setSelectedFile: (path: string | null) => void
   setPreviewContent: (content: string | null) => void
   setCheckpointUnavailable: (sessionId: string, unavailable: boolean) => void
+  /** (Re)load a session's persisted checkpoint list from Main, merging in any
+   * checkpoint created locally while the fetch was in flight. */
+  loadCheckpoints: (sessionId: string) => Promise<void>
   bumpGitInfoVersion: () => void
   /**
    * Snapshot the project after a user message was accepted by the session.
@@ -269,7 +278,7 @@ interface AppState {
   togglePinSession: (sessionId: string) => void
   /** Replace the archived list (startup load; does not persist). */
   setArchivedSessionIds: (ids: string[]) => void
-  /** Archive/unarchive a session and persist the new list. */
+  /** Archive/unarchive a session by durable key (uuid, else runtime id) and persist the list. */
   setSessionArchived: (sessionId: string, archived: boolean) => void
   markSessionUnread: (sessionId: string) => void
   setComposerPrefill: (text: string | null) => void
@@ -378,6 +387,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedFile: null,
   previewContent: null,
   checkpointUnavailable: {},
+  checkpointsBySession: {},
   gitInfoVersion: 0,
   cliAvailable: null,
   setupComplete: null,
@@ -487,15 +497,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setSessions: (sessions) =>
     set((state) => {
-      // Prune pin/archive/unread entries of sessions that no longer exist
+      // Prune pin/unread entries of sessions that no longer exist. Archived
+      // ids are deliberately NOT pruned here: they are durable uuids (plus a
+      // live-id fallback) and must survive the live list changing — archiving
+      // a live session kills it, and its durable row only resurfaces a moment
+      // later through the history scans.
       const ids = new Set(sessions.map((s) => s.id))
       const pinnedSessionIds = state.pinnedSessionIds.filter((id) => ids.has(id))
-      const archivedSessionIds = state.archivedSessionIds.filter((id) => ids.has(id))
       if (pinnedSessionIds.length !== state.pinnedSessionIds.length) {
         window.electronAPI.setStore('pinnedSessionIds', pinnedSessionIds)
-      }
-      if (archivedSessionIds.length !== state.archivedSessionIds.length) {
-        window.electronAPI.setStore('archivedSessionIds', archivedSessionIds)
       }
       const unreadSessionIds = Object.fromEntries(
         Object.entries(state.unreadSessionIds).filter(([id]) => ids.has(id))
@@ -505,7 +515,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         sessions,
         sessionRecords: removeLiveSessionRecords(state.sessionRecords, ids),
         pinnedSessionIds,
-        archivedSessionIds,
         unreadSessionIds,
         composerDrafts
       }
@@ -714,10 +723,40 @@ export const useAppStore = create<AppState>((set, get) => ({
         : { checkpointUnavailable: { ...state.checkpointUnavailable, [sessionId]: unavailable } }
     ),
   bumpGitInfoVersion: () => set((state) => ({ gitInfoVersion: state.gitInfoVersion + 1 })),
+  loadCheckpoints: async (sessionId) => {
+    const list = await window.electronAPI.checkpointList(sessionId)
+    set((state) => {
+      const existing = state.checkpointsBySession[sessionId]
+      if (!existing || existing.length === 0) {
+        // Keep the disk order untouched on a cold load.
+        return { checkpointsBySession: { ...state.checkpointsBySession, [sessionId]: list } }
+      }
+      // A turn dispatched while the fetch was in flight appended a checkpoint
+      // the disk list cannot contain yet — merge by id instead of clobbering.
+      const merged = new Map<string, CheckpointInfo>()
+      for (const entry of existing) merged.set(entry.id, entry)
+      for (const entry of list) merged.set(entry.id, entry)
+      const mergedList = [...merged.values()].sort((a, b) => a.createdAt - b.createdAt)
+      const same =
+        existing.length === mergedList.length &&
+        existing.every((entry, i) => entry === mergedList[i])
+      return same
+        ? state
+        : { checkpointsBySession: { ...state.checkpointsBySession, [sessionId]: mergedList } }
+    })
+  },
   createCheckpointForMessage: async (sessionId, msgIndex, text) => {
     if (get().checkpointUnavailable[sessionId] === true) return
     const info = await window.electronAPI.checkpointCreate(sessionId, msgIndex, text.slice(0, 80))
     get().setCheckpointUnavailable(sessionId, info === null)
+    if (info) {
+      set((state) => ({
+        checkpointsBySession: {
+          ...state.checkpointsBySession,
+          [sessionId]: [...(state.checkpointsBySession[sessionId] ?? []), info]
+        }
+      }))
+    }
   },
   setCliAvailable: (cliAvailable) => set({ cliAvailable }),
   // Same-value writes are no-ops: repeated `working`/`idle` status events for
@@ -854,6 +893,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { pinnedSessionIds }
     }),
   setArchivedSessionIds: (archivedSessionIds) => set({ archivedSessionIds }),
+  // The key is the session's durable identity — its uuid when the registry
+  // knows one, else the live runtime id — so an archive outlives the process.
   setSessionArchived: (sessionId, archived) =>
     set((state) => {
       const archivedSessionIds = archived
@@ -927,7 +968,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   purgeDeletedSession: (uuid) =>
     set((state) => ({
       sessionRecords: purgeHistoryUuid(state.sessionRecords, uuid),
-      globalHistory: state.globalHistory.filter((row) => row.uuid !== uuid)
+      globalHistory: state.globalHistory.filter((row) => row.uuid !== uuid),
+      // A deleted session cannot stay archived: drop its durable key so the
+      // list never keeps a hidden entry nothing can restore.
+      archivedSessionIds: state.archivedSessionIds.filter((id) => id !== uuid)
     })),
   setSessionTitle: (sessionId, title) =>
     set((state) => {

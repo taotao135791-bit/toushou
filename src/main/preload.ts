@@ -28,6 +28,7 @@ import {
   PiModel,
   CommunityPackageInfo,
   CheckpointInfo,
+  CheckpointDiff,
   GitInfo,
   PromptImage,
   SessionState,
@@ -316,6 +317,11 @@ export interface ElectronAPI {
   checkpointList: (sessionId: string) => Promise<CheckpointInfo[]>
   /** Restore the project to a checkpoint; deletes files created after it. */
   checkpointRestore: (id: string) => Promise<PackageActionResult>
+  /**
+   * Files that differ between a checkpoint snapshot and the worktree now
+   * (the turn's change summary); null for non-git dirs / unknown ids.
+   */
+  checkpointDiff: (id: string) => Promise<CheckpointDiff | null>
   /** Working-tree change summary for the changes panel; null for non-git dirs. */
   gitInfo: (grantId: string) => Promise<GitInfo | null>
   /** Unified diff of one file (synthetic new-file diff for untracked files). */
@@ -639,6 +645,7 @@ const api: ElectronAPI = {
   checkpointList: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.CHECKPOINT_LIST, sessionId),
   checkpointRestore: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CHECKPOINT_RESTORE, id),
+  checkpointDiff: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CHECKPOINT_DIFF, id),
   gitInfo: (grantId: string) => ipcRenderer.invoke(IPC_CHANNELS.GIT_INFO, grantId),
   gitFileDiff: (grantId: string, filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GIT_FILE_DIFF, grantId, filePath),
