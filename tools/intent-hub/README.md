@@ -11,10 +11,18 @@ vibe coding 中没人能预知 AI 会改哪些文件，文件级探测是事后�
 与团队雷达同机常驻（建议端口 8788）：
 
 ```sh
-node tools/intent-hub/server.js --port 8788
+node tools/intent-hub/server.js --port 8788 --repo taotao135791-bit/toushou
 ```
 
 数据落在同目录 `intents.json`；活跃意图 24 小时未关闭自动过期，防止遗忘死锁。
+
+## 自动解锁（无需任何人配置）
+
+传入 `--repo` 后，服务器每 2 分钟拉取该仓库最近 PR（公开 API，无凭据）：
+
+- PR **合并或关闭** → 对应意图（PR 描述里的 `Intent: #N`）自动解锁，记录 `closedBy=pr#N`
+- PR **打开中** → 看板卡片显示 PR 编号徽章（锁继续持有，合并才放）
+- 兜底：24 小时 TTL 过期、看板"手动解锁"按钮、CLI `--close`
 
 ## AI 使用（已写入 AGENTS.md"意图中台强制上报"）
 

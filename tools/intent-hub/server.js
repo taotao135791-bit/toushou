@@ -19,15 +19,19 @@ const getArg = (k, d) => {
 const PORT = parseInt(getArg('port', '8788'), 10);
 const STORE = getArg('store', path.join(__dirname, 'intents.json'));
 const PUBLIC = path.join(__dirname, 'public', 'index.html');
+/* 传入 --repo owner/name 后启用 PR 自动解锁轮询（公开 API，无需凭据）。 */
+const REPO = getArg('repo', '');
+const POLL_MS = 120 * 1000;
 const ACTIVE_TTL_MS = 24 * 60 * 60 * 1000;
 const SIMILAR_THRESHOLD = 0.3;
 
-let state = { seq: 1, intents: [] };
+let state = { seq: 1, intents: [], releasedPrs: [] };
 try {
   state = JSON.parse(fs.readFileSync(STORE, 'utf8'));
 } catch {
   /* 首次运行无数据 */
 }
+state.releasedPrs = Array.isArray(state.releasedPrs) ? state.releasedPrs : [];
 
 const save = () => fs.writeFileSync(STORE, JSON.stringify(state, null, 2));
 
@@ -175,6 +179,69 @@ const server = http.createServer(async (req, res) => {
     send(res, 400, { ok: false, error: err.message });
   }
 });
+
+/* ---------- PR 自动解锁（服务器侧轮询，仓库主人零配置） ----------
+ * CI 已强制 PR 描述引用 Intent: #N，该编号就是解锁钥匙：服务器每 2 分钟
+ * 拉取最近 PR——open 的把编号贴到看板卡片（联名进度），merged/closed 的
+ * 自动关闭对应意图并记录 closedBy=pr#N。公开仓库 API 即可，无需任何
+ * GitHub 凭据或 webhook 配置；网络抖动跳过本轮。
+ */
+const INTENT_REF_RE = /(intent|意图)\s*[^0-9#]{0,3}#([0-9]+)/gi;
+
+function extractIntentIds(body) {
+  const ids = new Set();
+  for (const m of String(body || '').matchAll(INTENT_REF_RE)) ids.add(Number(m[2]));
+  return [...ids];
+}
+
+async function pollPullRequests() {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${REPO}/pulls?state=all&sort=updated&direction=desc&per_page=10`,
+      { headers: { accept: 'application/vnd.github+json', 'user-agent': 'intent-hub' } }
+    );
+    if (!res.ok) return;
+    const prs = await res.json();
+    let dirty = false;
+    for (const pr of Array.isArray(prs) ? prs : []) {
+      const ids = extractIntentIds(pr.body);
+      if (ids.length === 0) continue;
+      if (pr.state === 'open') {
+        for (const id of ids) {
+          const it = state.intents.find((i) => i.id === id && i.status === 'active');
+          if (it && it.pr !== pr.number) {
+            it.pr = pr.number;
+            it.updatedAt = Date.now();
+            dirty = true;
+          }
+        }
+      } else if (!state.releasedPrs.includes(pr.number)) {
+        state.releasedPrs.push(pr.number);
+        if (state.releasedPrs.length > 200) state.releasedPrs.shift();
+        for (const id of ids) {
+          const it = state.intents.find((i) => i.id === id && i.status === 'active');
+          if (it) {
+            it.status = 'closed';
+            it.updatedAt = Date.now();
+            it.closedBy = `pr#${pr.number}`;
+            console.log(`自动解锁: 意图 #${it.id} [${it.user}] 由 PR #${pr.number} 释放`);
+            dirty = true;
+          }
+        }
+        dirty = true;
+      }
+    }
+    if (dirty) save();
+  } catch {
+    /* 网络抖动，下一轮再试 */
+  }
+}
+
+if (REPO) {
+  console.log(`PR 自动解锁已启用: 监听 ${REPO}（每 2 分钟）`);
+  setTimeout(pollPullRequests, 3_000);
+  setInterval(pollPullRequests, POLL_MS);
+}
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`意图中台已启动: http://0.0.0.0:${PORT}  （先到先得锁，Ctrl+C 退出）`);

@@ -18,6 +18,11 @@
   .card .title { font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
   .card .meta { color: #8b8577; font-size: 11px; line-height: 1.7; }
   .card .meta code { background: #1f2531; border-radius: 4px; padding: 0 4px; font-size: 10px; }
+  .pr-chip { display: inline-block; background: #1d2b22; color: #6ee7a0; border-radius: 4px;
+             padding: 0 5px; font-size: 10px; font-family: monospace; margin-left: 4px; }
+  .unlock { margin-top: 8px; border: 1px solid #2a2f3a; background: transparent; color: #8b8577;
+            border-radius: 6px; padding: 2px 8px; font-size: 10px; cursor: pointer; }
+  .unlock:hover { color: #e6e1d7; border-color: #3a4150; }
   .empty { color: #8b8577; font-size: 13px; padding: 40px 0; text-align: center; }
   .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #34d399;
            margin-right: 6px; animation: p 2s infinite; }
@@ -35,6 +40,12 @@
     return m < 60 ? m + ' 分钟' : Math.round(m / 60) + ' 小时';
   };
   const esc = (s) => String(s || '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  async function unlock(id, user) {
+    if (!confirm(`解锁 ${user} 的意图 #${id}？\n（通常无需手动——PR 合并/关闭后自动解锁，24 小时也会自动过期）`)) return;
+    await fetch('/close', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, by: 'dashboard' }) });
+    tick();
+  }
   async function tick() {
     try {
       const data = await (await fetch('/state')).json();
@@ -47,10 +58,12 @@
           <div class="who"><span class="user">${esc(r.user)}</span><span class="id">#${r.id}</span></div>
           <div class="title">${esc(r.title)}</div>
           <div class="meta">
-            ${r.branch ? '分支 <code>' + esc(r.branch) + '</code><br>' : ''}
+            ${r.branch ? '分支 <code>' + esc(r.branch) + '</code>' : ''}
+            ${r.pr ? `<span class="pr-chip">PR #${r.pr}</span>` : ''}<br>
             范围 <code>${esc((r.scope || []).join(' ') || '未声明')}</code><br>
             ${fmtAge(data.now - r.registeredAt)}前申报
           </div>
+          <button class="unlock" onclick="unlock(${r.id}, '${esc(r.user)}')">手动解锁</button>
         </div>`).join('');
     } catch {}
   }
