@@ -1,12 +1,20 @@
 import { create } from 'zustand'
-import { CheckpointInfo, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
 import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHistoryUuid, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
+import { mergeTranscriptBackfill } from '../lib/transcriptMerge'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
 import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
+
+/**
+ * Externally created sessions whose durable transcript was backfilled once
+ * from the runtime on first open. After that, live events keep the transcript
+ * current, so each session fetches at most once per app run.
+ */
+const transcriptBackfilled = new Set<string>()
 
 export interface MessageLike {
   id: string
@@ -212,7 +220,19 @@ interface AppState {
   /** Merge Main's live registry without clobbering a session created concurrently. */
   registerSessions: (sessions: Session[]) => void
   addSession: (session: Session, select?: boolean) => void
+  /**
+   * Register a session Main created outside the GUI (e.g. a Feishu chat
+   * route) from its minimal descriptor. Idempotent: the descriptor fires
+   * again on every channel resume. The row is a normal durable session —
+   * archive/delete and the uuid sweep work on it like any other.
+   */
+  registerExternalSession: (descriptor: ExternalSessionDescriptor) => void
   setCurrentSessionId: (id: string | null) => void
+  /**
+   * One-time durable-transcript backfill for external (Feishu-origin)
+   * sessions on first open; no-op for everything else. See backfillExternalTranscript.
+   */
+  backfillExternalTranscript: (sessionId: string) => Promise<void>
   /** Hydrate the subagent roster for a session from `get_subagents` (live merge). */
   hydrateSubagents: (sessionId: string) => Promise<void>
   /** Fold durable historical agents (reconstructed on resume) into the projection. */
@@ -526,21 +546,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     let changed = false
     set((state) => {
       const previous = state.sessions.find((item) => item.id === session.id)
+      // Main's live registry re-reports externally-created sessions (Feishu)
+      // without their origin metadata. Keep the registered origin, readonly
+      // marker and display title so the row never downgrades to the bare
+      // project-dir title Main spawns these sessions with.
+      const merged =
+        previous?.origin && !session.origin
+          ? { ...session, origin: previous.origin, remoteReadonly: previous.remoteReadonly, title: previous.title }
+          : session
       const same =
         previous &&
-        previous.cwd === session.cwd &&
-        previous.title === session.title &&
-        previous.createdAt === session.createdAt &&
-        previous.status === session.status &&
-        previous.resumeFrom === session.resumeFrom &&
-        previous.sessionFile === session.sessionFile &&
-        previous.resumedHistoryId === session.resumedHistoryId
-      const nextCurrentSessionId = select ? session.id : state.currentSessionId
+        previous.cwd === merged.cwd &&
+        previous.title === merged.title &&
+        previous.createdAt === merged.createdAt &&
+        previous.status === merged.status &&
+        previous.resumeFrom === merged.resumeFrom &&
+        previous.sessionFile === merged.sessionFile &&
+        previous.resumedHistoryId === merged.resumedHistoryId &&
+        previous.origin === merged.origin &&
+        previous.remoteReadonly === merged.remoteReadonly
+      const nextCurrentSessionId = select ? merged.id : state.currentSessionId
       if (same && nextCurrentSessionId === state.currentSessionId) return state
       changed = true
       return {
-        sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)],
-        sessionRecords: upsertLiveSessionRecord(state.sessionRecords, session),
+        sessions: [merged, ...state.sessions.filter((item) => item.id !== merged.id)],
+        sessionRecords: upsertLiveSessionRecord(state.sessionRecords, merged),
         currentSessionId: nextCurrentSessionId
       }
     })
@@ -556,6 +586,57 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Hydrate the (possibly already-running) subagent roster.
     void get().hydrateSubagents(session.id)
   },
+  registerExternalSession: (descriptor) => {
+    if (!descriptor || typeof descriptor.sessionId !== 'string' || !descriptor.sessionId) return
+    set((state) => {
+      const previous = state.sessions.find((s) => s.id === descriptor.sessionId)
+      const defaultTitle = basename(descriptor.workspacePath) || descriptor.workspacePath
+      // suggestedTitle only fills a missing/default title; a rename (user or
+      // maybeNameSession) wins and is never overridden by later descriptors.
+      const title =
+        previous?.title && previous.title.trim() && previous.title !== defaultTitle
+          ? previous.title
+          : descriptor.suggestedTitle?.trim() || defaultTitle
+      const session: Session = {
+        id: descriptor.sessionId,
+        cwd: descriptor.workspacePath,
+        title,
+        createdAt: previous?.createdAt || descriptor.createdAt || Date.now(),
+        status: previous?.status ?? 'idle',
+        origin: descriptor.origin,
+        remoteReadonly: true,
+        ...(previous?.resumeFrom ? { resumeFrom: previous.resumeFrom } : {}),
+        ...(previous?.sessionFile ? { sessionFile: previous.sessionFile } : {}),
+        ...(previous?.resumedHistoryId ? { resumedHistoryId: previous.resumedHistoryId } : {})
+      }
+      const same =
+        previous &&
+        previous.cwd === session.cwd &&
+        previous.title === session.title &&
+        previous.createdAt === session.createdAt &&
+        previous.status === session.status &&
+        previous.origin === session.origin &&
+        previous.remoteReadonly === session.remoteReadonly &&
+        previous.resumeFrom === session.resumeFrom &&
+        previous.sessionFile === session.sessionFile &&
+        previous.resumedHistoryId === session.resumedHistoryId
+      // Idempotent: a repeated descriptor (channel resume on a later message)
+      // must not reorder the list or re-render every row.
+      if (same) return state
+      return {
+        sessions: [session, ...state.sessions.filter((s) => s.id !== session.id)],
+        sessionRecords: upsertLiveSessionRecord(state.sessionRecords, session)
+      }
+    })
+    // Same durable-file backfill addSession performs: the archive/delete uuid
+    // sweep needs the record linked to the session file.
+    if (!get().sessions.find((s) => s.id === descriptor.sessionId)?.sessionFile) {
+      window.electronAPI.getSessionState(descriptor.sessionId).then((st) => {
+        if (st?.sessionFile) get().setSessionFile(descriptor.sessionId, st.sessionFile)
+      })
+    }
+    void get().hydrateSubagents(descriptor.sessionId)
+  },
   setSessionFile: (sessionId, sessionFile) =>
     set((state) => {
       const current = state.sessions.find((session) => session.id === sessionId)
@@ -568,7 +649,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCurrentSessionId: (currentSessionId) => {
     // Re-attaching to a session re-hydrates its roster (reconcile any agents
     // that spawned while the user was elsewhere).
-    if (currentSessionId) void get().hydrateSubagents(currentSessionId)
+    if (currentSessionId) {
+      void get().hydrateSubagents(currentSessionId)
+      void get().backfillExternalTranscript(currentSessionId)
+    }
     set((state) => ({
       currentSessionId,
       // Selecting a session marks it read
@@ -577,6 +661,28 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...state.unreadSessionIds, [currentSessionId]: false }
           : state.unreadSessionIds
     }))
+  },
+  /**
+   * First-open transcript backfill for Feishu-origin sessions. The renderer
+   * only folded live events since this window started listening, so the
+   * durable runtime transcript is authoritative once, fetched through
+   * OMP_SESSION_TRANSCRIPT (Main-parsed). A guard set makes it once per
+   * session per app run; the alignment merge (transcriptMerge) keeps any
+   * streamed rows that landed while the fetch was in flight, so ordering
+   * with concurrently-applied live events is preserved without a refetch.
+   */
+  backfillExternalTranscript: async (sessionId) => {
+    if (transcriptBackfilled.has(sessionId)) return
+    if (get().sessions.find((s) => s.id === sessionId)?.origin !== 'feishu') return
+    transcriptBackfilled.add(sessionId)
+    const fetched = await window.electronAPI.sessionTranscript(sessionId).catch(() => null)
+    if (!fetched || fetched.length === 0) return
+    set((state) => {
+      const current = state.messages[sessionId] ?? []
+      const merged = mergeTranscriptBackfill(fetched as MessageLike[], current)
+      if (merged === current) return state
+      return { messages: { ...state.messages, [sessionId]: merged } }
+    })
   },
   hydrateSubagents: async (sessionId) => {
     const roster = await window.electronAPI.getSubagents(sessionId)

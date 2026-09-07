@@ -14,6 +14,7 @@ import {
   ScheduledTask,
   Session,
   SessionEvent,
+  ExternalSessionDescriptor,
   SessionStats,
   SlashCommand,
   LaunchableTool,
@@ -122,6 +123,8 @@ export interface ElectronAPI {
   killSession: (sessionId: string) => Promise<boolean>
   abortSession: (sessionId: string) => Promise<boolean>
   onSessionEvent: (callback: (event: SessionEvent) => void) => () => void
+  /** Main → renderer push: a session was created outside the GUI (e.g. Feishu). */
+  onExternalSession: (callback: (descriptor: ExternalSessionDescriptor) => void) => () => void
   installOmp: () => Promise<boolean>
   onInstallStatus: (callback: (status: InstallStatus) => void) => () => void
   /** @deprecated Workspace authority is grant-based; this stub returns false. */
@@ -285,6 +288,11 @@ export interface ElectronAPI {
   exportHtml: (sessionId: string) => Promise<string | null>
   /** Live RPC get_state snapshot of a session; null when unavailable. */
   getSessionState: (sessionId: string) => Promise<SessionState | null>
+  /**
+   * Full durable transcript of a live session (Main-parsed), for backfilling
+   * externally-created sessions; null for invalid ids or dead sessions.
+   */
+  sessionTranscript: (sessionId: string) => Promise<ChatMessage[] | null>
   /** Persisted sessions of a workspace, represented by opaque Main-held ids. */
   listSessionHistory: (grantId: string) => Promise<HistorySessionDescriptor[]>
   /** Resume an opaque history entry under the workspace grant that listed it. */
@@ -442,6 +450,13 @@ const api: ElectronAPI = {
     ipcRenderer.on(IPC_CHANNELS.OMP_SESSION_EVENT, handler)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.OMP_SESSION_EVENT, handler)
+    }
+  },
+  onExternalSession: (callback: (descriptor: ExternalSessionDescriptor) => void) => {
+    const handler = (_event: IpcRendererEvent, descriptor: ExternalSessionDescriptor) => callback(descriptor)
+    ipcRenderer.on(IPC_CHANNELS.SESSION_EXTERNAL, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.SESSION_EXTERNAL, handler)
     }
   },
   installOmp: () => ipcRenderer.invoke(IPC_CHANNELS.OMP_INSTALL),
@@ -626,6 +641,8 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_EXPORT_HTML, sessionId),
   getSessionState: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_SESSION_STATE, sessionId),
+  sessionTranscript: (sessionId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_SESSION_TRANSCRIPT, sessionId) as Promise<ChatMessage[] | null>,
   listSessionHistory: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_SESSION_HISTORY, grantId),
   resumeSession: (grantId: string, historyId: string) =>

@@ -6,6 +6,8 @@ export const IPC_CHANNELS = {
   OMP_KILL_SESSION: 'omp:kill-session',
   OMP_ABORT_SESSION: 'omp:abort-session',
   OMP_SESSION_EVENT: 'omp:session-event',
+  /** Main → renderer push announcing a session created outside the GUI (e.g. Feishu). */
+  SESSION_EXTERNAL: 'session:external',
   OMP_LIST_SESSIONS: 'omp:list-sessions',
   OMP_INSTALL: 'omp:install',
   OMP_INSTALL_STATUS: 'omp:install-status',
@@ -106,6 +108,8 @@ export const IPC_CHANNELS = {
   OMP_UPDATE_APPROVAL_CONFIG: 'omp:update-approval-config',
   OMP_EXPORT_HTML: 'omp:export-html',
   OMP_SESSION_STATE: 'omp:session-state',
+  /** Validated live-session id → its full durable transcript (ChatMessage[] | null). */
+  OMP_SESSION_TRANSCRIPT: 'omp:session-transcript',
   OMP_LIST_SESSION_HISTORY: 'omp:list-session-history',
   /** Cross-project read-only history listing (metadata, no capability). */
   OMP_LIST_ALL_SESSION_HISTORY: 'omp:list-all-session-history',

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
 import {
   SessionEvent,
+  ExternalSessionDescriptor,
   AppSettings,
   InstallStatus,
   ReadFileResult,
@@ -101,6 +102,7 @@ import {
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
 import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions } from './sessionHistory'
+import { readSessionTranscript } from './sessionTranscript'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
@@ -265,6 +267,19 @@ function broadcastSessionEvent(event: SessionEvent): void {
   }
   maybeNotifyTurnFinished(event)
   maybeNotifyUiRequest(event)
+}
+
+/**
+ * A session was created outside the GUI (Feishu channel route). Broadcast the
+ * minimal descriptor so the renderer can register a clickable live row; chat
+ * content and route details ride the normal session-event stream only.
+ */
+function broadcastExternalSession(descriptor: ExternalSessionDescriptor): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.SESSION_EXTERNAL, descriptor)
+    }
+  }
 }
 
 function sanitizeStreamingBehavior(value: unknown): StreamingBehavior | undefined {
@@ -523,6 +538,7 @@ function redactScaffoldOutputLog(value: unknown, canonicalDir: string): string {
 export function registerIpc() {
   startScheduler()
   feishuConnectionManager.setSessionEventSink(broadcastSessionEvent)
+  feishuConnectionManager.setExternalSessionSink(broadcastExternalSession)
 
   // Connections are Main-owned. The renderer receives only a public status
   // projection and a QR URL; credentials and SDK clients stay here.
@@ -761,6 +777,14 @@ export function registerIpc() {
       if (typeof sessionId !== 'string' || !sessionId) return null
       return getSessionState(sessionId)
     }
+  )
+
+  // Durable transcript of a LIVE session, validated + parsed Main-side (the
+  // same get_messages mapping the resume path uses). Used to backfill
+  // externally-created sessions (e.g. Feishu) when the GUI opens them.
+  ipcMain.handle(
+    IPC_CHANNELS.OMP_SESSION_TRANSCRIPT,
+    async (_event: IpcMainInvokeEvent, sessionId: unknown) => readSessionTranscript(sessionId)
   )
 
   // Cross-project read-only history listing. Metadata only (uuid/title/

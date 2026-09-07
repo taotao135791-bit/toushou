@@ -66,6 +66,7 @@ const en = {
   'sidebar.status.error': 'Error',
   'sidebar.status.unread': 'New',
   'sidebar.status.idle': 'Idle',
+  'sidebar.feishuSession': 'Feishu channel session',
 
   // Compact relative timestamps (session/history rows)
   'sidebar.time.secondsAgo': '{count}s ago',
@@ -163,6 +164,7 @@ const en = {
   'composer.modelFailed': "Couldn't switch model",
   'composer.thinkingFailed': "Couldn't switch thinking level",
   'composer.disclaimer': 'AI can make mistakes. Review important campaign changes before applying them.',
+  'composer.feishuSync': 'Replies are also sent to Feishu',
   'composer.slashTitle': 'Commands',
   'composer.slashBuiltin': 'built-in',
   'composer.slashCompact': 'Compact the conversation context now',
@@ -1238,6 +1240,7 @@ const zh: Record<I18nKey, string> = {
   'sidebar.status.error': '运行错误',
   'sidebar.status.unread': '新消息',
   'sidebar.status.idle': '空闲',
+  'sidebar.feishuSession': '飞书渠道会话',
 
   'sidebar.time.secondsAgo': '{count}秒钟',
   'sidebar.time.minutesAgo': '{count}分钟',
@@ -1331,6 +1334,7 @@ const zh: Record<I18nKey, string> = {
   'composer.modelFailed': '切换模型失败',
   'composer.thinkingFailed': '切换思考级别失败',
   'composer.disclaimer': 'AI 可能会犯错，重要投放变更前请人工确认。',
+  'composer.feishuSync': '回复将同步发送到飞书',
   'composer.slashTitle': '命令',
   'composer.slashBuiltin': '内置',
   'composer.slashCompact': '立即压缩当前会话的上下文',

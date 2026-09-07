@@ -196,6 +196,12 @@ function App() {
 
     const unsubscribe = window.electronAPI.onSessionEvent(onEvent)
 
+    // Sessions created outside the GUI (Feishu chat routes) announce
+    // themselves so the sidebar gets a clickable live row immediately.
+    const unsubscribeExternal = window.electronAPI.onExternalSession(
+      useAppStore.getState().registerExternalSession
+    )
+
     // Native login flow state (Settings → Authentication)
     const unsubscribeLogin = window.electronAPI.onLoginState((loginState) => {
       useAppStore.setState({ loginState })
@@ -239,6 +245,7 @@ function App() {
     return () => {
       flushDeltas()
       unsubscribe()
+      unsubscribeExternal()
       unsubscribeNotify()
       unsubscribeLogin()
       unsubscribePanelOpen()

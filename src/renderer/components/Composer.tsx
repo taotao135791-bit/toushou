@@ -12,6 +12,7 @@ import {
   GitBranch,
   ListPlus,
   Loader2,
+  MessageCircle,
   Plus
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
@@ -202,6 +203,10 @@ export default memo(function Composer({
   const autosendRef = useRef<string | null>(null)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
+  // Primitive selector: re-renders only when the Feishu-origin flag flips.
+  const feishuSync = useAppStore(
+    (s) => s.sessions.find((session) => session.id === s.currentSessionId)?.origin === 'feishu'
+  )
   /** Workspace-level branch for the header chip; null = not a git repo. */
   const { info: gitInfo } = useGitInfo()
   const [addMenuOpen, setAddMenuOpen] = useState(false)
@@ -1148,6 +1153,15 @@ export default memo(function Composer({
                 </MenuPortal>
               </div>
               <PermissionPicker />
+              {feishuSync && (
+                <div
+                  title={t('composer.feishuSync')}
+                  className="flex h-7 shrink-0 items-center gap-1 rounded-full border border-line px-2 text-[11px] font-medium whitespace-nowrap text-cream-faint"
+                >
+                  <MessageCircle size={11} className="shrink-0 text-accent" />
+                  <span className="hidden min-[560px]:inline">{t('composer.feishuSync')}</span>
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-1.5">
               <ModelPicker sessionId={currentSessionId} />

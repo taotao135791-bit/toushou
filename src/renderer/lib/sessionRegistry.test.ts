@@ -84,6 +84,19 @@ describe('session registry projection', () => {
     expect(records.some((record) => record.runtimeSessionId === 'runtime-a' && record.isLive)).toBe(true)
   })
 
+  it('keeps foreign live rows (e.g. Feishu workspace) across another workspace refresh', () => {
+    // The Feishu channel creates sessions under the app workspace (B) while
+    // the user is working in A: its live row must survive A's history merge
+    // and stay scoped to B for the workspace-bound views.
+    let records = upsertLiveSessionRecord([], live('feishu-1', B, { origin: 'feishu' }))
+    records = upsertLiveSessionRecord(records, live('local-1', A))
+    records = replaceHistoricalSessionRecords(records, A, [history('history-a', 'uuid-a')])
+
+    expect(records.filter((record) => record.runtimeSessionId === 'feishu-1')).toHaveLength(1)
+    expect(recordsForWorkspace(records, B).map((record) => record.runtimeSessionId)).toEqual(['feishu-1'])
+    expect(records.filter((record) => record.workspaceRealPath === A)).toHaveLength(2)
+  })
+
   it('purges a deleted durable uuid across all workspaces but keeps live rows', () => {
     const a = history('history-a', 'uuid-a')
     // The same durable session discovered under a DIFFERENT workspace (its

@@ -684,6 +684,11 @@ export default function Sidebar() {
     const status = getSessionStatus({ busy: running, waiting, error: dead, unread })
     const statusLabel = t(`sidebar.status.${status}`)
     const pinned = pinnedSet.has(session.id)
+    // Externally created (Feishu channel) rows keep a brand badge so users can
+    // tell where the conversation lives; foreign-workspace rows carry the
+    // project suffix like the cross-project history rows do.
+    const feishu = session.origin === 'feishu'
+    const foreignWorkspace = session.cwd !== currentWorkspace?.realPath
     return (
       <div
         key={session.id}
@@ -713,14 +718,24 @@ export default function Sidebar() {
         />
         <div className="min-w-0 flex-1">
           <div
-            className={`truncate text-[13px] font-medium leading-5 ${
+            className={`flex min-w-0 items-center gap-1.5 ${
               dead ? 'text-cream-faint line-through' : 'text-cream'
             }`}
           >
-            {session.title}
+            <span className="min-w-0 truncate text-[13px] font-medium leading-5">{session.title}</span>
+            {feishu && (
+              <span
+                className="shrink-0 rounded border border-line px-1 text-[9px] font-medium leading-[14px] text-cream-faint"
+                title={t('sidebar.feishuSession')}
+              >
+                飞书
+              </span>
+            )}
           </div>
           <div className="truncate text-[11px] leading-4 text-cream-faint">
-            {formatRelativeTime(session.createdAt, language)}
+            {foreignWorkspace
+              ? `${basename(session.cwd) || session.cwd} · ${formatRelativeTime(session.createdAt, language)}`
+              : formatRelativeTime(session.createdAt, language)}
           </div>
         </div>
         {/* min-w-0 + shrink: at the sidebar's min width the fixed action

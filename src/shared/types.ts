@@ -255,6 +255,35 @@ export interface Session {
   sessionFile?: string
   /** Opaque history capability that this renderer session resumed, if any. */
   resumedHistoryId?: string
+  /**
+   * Set when the session was created OUTSIDE the GUI (e.g. by a Feishu chat
+   * route) and announced via SESSION_EXTERNAL. Display/badge metadata only —
+   * routing details stay Main-owned.
+   */
+  origin?: 'feishu'
+  /** True when Main spawned the session with downgraded (readonly) permissions. */
+  remoteReadonly?: boolean
+}
+
+/**
+ * Path-free announcement of a session created outside the GUI (e.g. by a
+ * Feishu chat route) so the renderer can register a live sidebar row. Main
+ * deliberately keeps routing details (chat ids, route keys, session files)
+ * out of this contract — `workspacePath` is the same cwd the live Session
+ * already carries, nothing more.
+ */
+export interface ExternalSessionDescriptor {
+  sessionId: string
+  workspacePath: string
+  origin: 'feishu'
+  chatType: 'p2p' | 'group'
+  /**
+   * Display fallback for a session that has no title yet. Plain zh string per
+   * the existing Main-side convention (connection labels/errors are zh); the
+   * renderer may keep it as-is or substitute its own copy.
+   */
+  suggestedTitle?: string
+  createdAt: number
 }
 
 export type SessionEvent =

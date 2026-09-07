@@ -17,14 +17,14 @@ import {
   FeishuOAuthAuthorizationView,
   FeishuOAuthBeginResult
 } from '../../../shared/connections'
-import { SessionEvent } from '../../../shared/types'
+import { Session, SessionEvent, ExternalSessionDescriptor } from '../../../shared/types'
 import { createSession, getSession, getSessionState, killSession, resumeSession, sendMessage } from '../../omp'
 import { getStore } from '../../store'
 import { FeishuChannel } from './FeishuChannel'
 import { FeishuCredentialStore, FeishuStoredCredentials, maskSecret } from './FeishuCredentialStore'
 import { PersonalAgentRegistrationProvider, RegistrationSession } from './FeishuAppRegistration'
 import { FeishuOAuthManager } from './FeishuOAuthManager'
-import { FeishuSessionRouter } from './FeishuSessionRouter'
+import { FeishuSessionContext, FeishuSessionRouter } from './FeishuSessionRouter'
 import { FeishuToolRegistry } from './FeishuToolRegistry'
 
 const FEISHU_DEFINITION: ConnectionDefinition = {
@@ -50,6 +50,7 @@ export class FeishuConnectionManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private progressMessageKeys = new Set<string>()
   private sessionEventSink: ((event: SessionEvent) => void) | null = null
+  private externalSessionSink: ((descriptor: ExternalSessionDescriptor) => void) | null = null
   private state: FeishuConnectState = 'idle'
   private lastError: string | undefined
   private lastConnectedAt: number | undefined
@@ -62,12 +63,21 @@ export class FeishuConnectionManager {
     this.router = new FeishuSessionRouter({
       workspacePath: this.workspacePath,
       routesFile: this.routesFile,
-      createSession: (cwd, _onEvent, opts) => createSession(cwd, (event) => this.handleOmpEvent(event), opts),
+      createSession: (cwd, _onEvent, opts, ctx) => {
+        const session = createSession(cwd, (event) => this.handleOmpEvent(event), opts)
+        if (session.status !== 'error') {
+          this.emitExternalSession(session, ctx)
+        }
+        return session
+      },
       sendMessage,
       getSession,
       getSessionState,
-      resumeSession: async (cwd, _onEvent, filePath) => {
+      resumeSession: async (cwd, _onEvent, filePath, ctx) => {
         const result = await resumeSession(cwd, (event) => this.handleOmpEvent(event), filePath)
+        if (result) {
+          this.emitExternalSession(result.session, ctx)
+        }
         return result ? { session: result.session, messages: result.messages } : null
       },
       killSession,
@@ -84,6 +94,29 @@ export class FeishuConnectionManager {
 
   setSessionEventSink(sink: (event: SessionEvent) => void): void {
     this.sessionEventSink = sink
+  }
+
+  setExternalSessionSink(sink: (descriptor: ExternalSessionDescriptor) => void): void {
+    this.externalSessionSink = sink
+  }
+
+  /**
+   * Announce a channel-created session to the GUI so it can register a live
+   * sidebar row. The descriptor is path-free and carries no route data: no
+   * chat ids, no route keys, no session-file paths — those stay Main-owned.
+   */
+  private emitExternalSession(session: Session, ctx?: FeishuSessionContext): void {
+    const chatType = ctx?.chatType ?? 'p2p'
+    this.externalSessionSink?.({
+      sessionId: session.id,
+      workspacePath: this.workspacePath,
+      origin: 'feishu',
+      chatType,
+      // Main has no i18n layer; plain zh matches the existing Main-side copy
+      // convention (connection labels, error strings).
+      suggestedTitle: chatType === 'group' ? '飞书群聊' : '飞书私聊',
+      createdAt: session.createdAt || Date.now()
+    })
   }
 
   /** Non-blocking startup recovery for stored credentials. */

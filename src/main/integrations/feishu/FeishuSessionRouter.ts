@@ -16,13 +16,19 @@ export interface FeishuSessionRoute {
   updatedAt: number
 }
 
+/** Route context handed to session factories so Main can announce the row. */
+export interface FeishuSessionContext {
+  chatType: 'p2p' | 'group'
+}
+
 export interface FeishuSessionRouterOptions {
   workspacePath: string
   routesFile: string
   createSession: (
     cwd: string,
     onEvent: (event: SessionEvent) => void,
-    opts?: { permissionMode?: 'readonly' }
+    opts?: { permissionMode?: 'readonly' },
+    ctx?: FeishuSessionContext
   ) => Session
   sendMessage: (sessionId: string, text: string) => boolean
   getSession: (sessionId: string) => Session | undefined
@@ -30,7 +36,8 @@ export interface FeishuSessionRouterOptions {
   resumeSession: (
     cwd: string,
     onEvent: (event: SessionEvent) => void,
-    filePath: string
+    filePath: string,
+    ctx?: FeishuSessionContext
   ) => Promise<{ session: Session; messages: ChatMessage[] } | null>
   killSession: (sessionId: string) => boolean
   onReply: (route: FeishuSessionRoute, content: string, sourceMessageId: string) => Promise<void>
@@ -184,7 +191,12 @@ export class FeishuSessionRouter {
     }
 
     if (route.sessionFile) {
-      const resumed = await this.opts.resumeSession(this.opts.workspacePath, (event) => this.onSessionEvent(event), route.sessionFile)
+      const resumed = await this.opts.resumeSession(
+        this.opts.workspacePath,
+        (event) => this.onSessionEvent(event),
+        route.sessionFile,
+        { chatType: route.chatType }
+      )
       if (resumed) {
         route.sessionId = resumed.session.id
         await this.persist()
@@ -192,10 +204,15 @@ export class FeishuSessionRouter {
       }
     }
 
-    const session = this.opts.createSession(this.opts.workspacePath, (event) => this.onSessionEvent(event), {
-      // Remote messages must not silently gain local write/exec access.
-      permissionMode: 'readonly'
-    })
+    const session = this.opts.createSession(
+      this.opts.workspacePath,
+      (event) => this.onSessionEvent(event),
+      {
+        // Remote messages must not silently gain local write/exec access.
+        permissionMode: 'readonly'
+      },
+      { chatType: route.chatType }
+    )
     if (session.status === 'error') return null
     route.sessionId = session.id
     await this.persist()

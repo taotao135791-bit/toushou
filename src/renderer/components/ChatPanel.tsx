@@ -351,6 +351,14 @@ export default function ChatPanel() {
         <span className="min-w-0 truncate text-[13px] font-semibold tracking-tight text-cream">
           {currentSession ? currentSession.title : t('chat.noActiveSession')}
         </span>
+        {currentSession?.origin === 'feishu' && (
+          <span
+            className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[10px] font-medium text-cream-faint"
+            title={t('sidebar.feishuSession')}
+          >
+            飞书
+          </span>
+        )}
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-cream-dim">
           <button
             onClick={toggleWorkspace}
