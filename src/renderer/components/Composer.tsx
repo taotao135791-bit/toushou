@@ -9,7 +9,6 @@ import {
   File,
   Folder,
   FileArchive,
-  GitBranch,
   ListPlus,
   Loader2,
   MessageCircle,
@@ -24,14 +23,12 @@ import {
   SessionComposerDraft
 } from '../lib/composerDraft'
 import { dispatchSteer, steerFailureKey } from '../lib/steerDispatch'
-import { basename } from '../lib/path'
 import { useT } from '../i18n'
 import ModelPicker from './ModelPicker'
 import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
 import UsageMonitor from './UsageMonitor'
 import MenuPortal from './MenuPortal'
-import { useGitInfo } from '../lib/useGitInfo'
 
 interface ComposerProps {
   /** Delivers the composed text; resolves false when delivery failed and the draft is restored. */
@@ -215,7 +212,6 @@ export default memo(function Composer({
     (s) => s.sessions.find((session) => session.id === s.currentSessionId)?.origin === 'feishu'
   )
   /** Workspace-level branch for the header chip; null = not a git repo. */
-  const { info: gitInfo } = useGitInfo()
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addButtonRef = useRef<HTMLButtonElement>(null)
   const setComposerDraft = useAppStore((s) => s.setComposerDraft)
@@ -960,35 +956,9 @@ export default memo(function Composer({
               </div>
             </div>
           )}
-          {/* Context chips only on the home (no active session) view: in a
-              chat, the top bar already carries the project/branch context.
-              Ghost style (no border, no divider) — the card reads as one
-              quiet surface, ZCode-style. */}
-          {currentWorkspace && !currentSessionId && (
-            <div className="flex items-center gap-1 px-1.5 pb-0.5 pt-1">
-              <div
-                title={currentWorkspace.displayPath}
-                aria-label={t('composer.currentProject')}
-                className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay"
-              >
-                <Folder size={12} className="shrink-0 text-accent" />
-                <span className="max-w-[140px] truncate">
-                  {currentWorkspace.source === 'default'
-                    ? t('sidebar.defaultWorkspace')
-                    : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
-                </span>
-              </div>
-              {currentWorkspace.source !== 'default' && gitInfo && (
-                <div
-                  title={gitInfo.branch}
-                  className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay"
-                >
-                  <GitBranch size={12} className="shrink-0 text-accent" />
-                  <span className="max-w-[160px] truncate font-mono">{gitInfo.branch}</span>
-                </div>
-              )}
-            </div>
-          )}
+          {/* Context chips live in the dedicated workspace strip ABOVE the
+              composer card (ChatPanel, home view) — the card stays a single
+              quiet surface. */}
           {queue.length > 0 && (
             <div className="flex flex-col gap-1.5 px-1.5 pb-2 pt-0.5">
               <div className="px-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
@@ -1257,12 +1227,9 @@ export default memo(function Composer({
             </div>
           </>
         ) : (
-          // Home keeps ONE faint line under the card: the @ / command / Enter
-          // affordances moved here out of the placeholder. No disclaimer, no
-          // shortcut fragments — the composer stays the single clean surface.
-          <p className="mt-1.5 text-center text-[11px] text-cream-faint/70">
-            {t('composer.hint')}
-          </p>
+          // Home: the hint line and workspace strip render in ChatPanel below
+          // and above the card — the composer itself adds nothing here.
+          null
         )}
       </div>
     </div>
