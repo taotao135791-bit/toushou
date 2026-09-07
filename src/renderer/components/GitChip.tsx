@@ -29,7 +29,7 @@ export default function GitChip({ trailing }: { trailing?: ReactNode }) {
           setWorkspacePanel(null)
         }}
         title={info.branch}
-        className="app-no-drag flex min-w-0 items-center gap-1.5 rounded-full border border-line bg-overlay px-2 py-[3px] text-cream-dim transition hover:border-line-strong hover:text-cream"
+        className="app-no-drag flex min-w-0 items-center gap-1.5 rounded-full border border-line bg-overlay px-2.5 py-1 text-cream-dim transition hover:border-line-strong hover:text-cream"
       >
         <GitBranch size={11} className="shrink-0" />
         <span className="max-w-[120px] truncate font-mono text-[11px]">{info.branch}</span>

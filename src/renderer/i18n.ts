@@ -125,6 +125,11 @@ const en = {
   'chat.stopping': 'Stopping…',
   'chat.stopFailed': "Couldn't stop — try again.",
   'chat.queueCleared': 'Stopped; {count} queued message(s) cleared.',
+  'chat.openIn': 'Open with',
+  'chat.openInFinder': 'Reveal in Finder',
+  'chat.openInTerminal': 'Open in Terminal',
+  'chat.openInEditor': 'Open in VS Code',
+  'chat.openInFailed': "Couldn't open — make sure the app is installed",
 
   // Composer
   'composer.placeholder': 'Optimize anything — @ files, / commands, Enter to send',
@@ -1296,6 +1301,11 @@ const zh: Record<I18nKey, string> = {
   'chat.stopping': '正在停止…',
   'chat.stopFailed': '停止失败，请重试',
   'chat.queueCleared': '已停止，已清除 {count} 条排队消息',
+  'chat.openIn': '打开方式',
+  'chat.openInFinder': '在 Finder 中显示',
+  'chat.openInTerminal': '在终端中打开',
+  'chat.openInEditor': '在 VS Code 中打开',
+  'chat.openInFailed': '未能打开，请确认应用已安装',
 
   'composer.placeholder': '想优化什么？@ 引用文件 · / 命令 · Enter 发送',
   'composer.placeholderDisabled': '安装 Agent 运行时后开始对话…',

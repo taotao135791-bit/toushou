@@ -50,6 +50,8 @@ import {
   HistoricalAgentRecord,
   WorkspaceGrant,
   RecentWorkspaceDescriptor,
+  OpenWorkspaceTarget,
+  OpenWorkspaceResult,
   FileGrant,
   DirectoryGrant,
   PluginScaffoldRequest,
@@ -334,6 +336,8 @@ export interface ElectronAPI {
   gitInfo: (grantId: string) => Promise<GitInfo | null>
   /** Unified diff of one file (synthetic new-file diff for untracked files). */
   gitFileDiff: (grantId: string, filePath: string) => Promise<string | null>
+  /** Open a granted workspace in Finder/Terminal/VS Code (chat top bar menu). */
+  openWorkspaceIn: (workspaceId: string, target: OpenWorkspaceTarget) => Promise<OpenWorkspaceResult>
   /** Toggle loading of machine-local ~/.agents/skills; returns what changed. */
   setMachineSkills: (enabled: boolean) => Promise<{ enabled: boolean; excluded: string[]; available: string[] }>
   /** Read-only: names of machine-local skills present under ~/.agents/skills. */
@@ -666,6 +670,8 @@ const api: ElectronAPI = {
   gitInfo: (grantId: string) => ipcRenderer.invoke(IPC_CHANNELS.GIT_INFO, grantId),
   gitFileDiff: (grantId: string, filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GIT_FILE_DIFF, grantId, filePath),
+  openWorkspaceIn: (workspaceId: string, target: OpenWorkspaceTarget) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OPEN_WORKSPACE_IN, workspaceId, target),
   setMachineSkills: (enabled: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.PI_SET_MACHINE_SKILLS, enabled),
   listMachineSkills: () => ipcRenderer.invoke(IPC_CHANNELS.PI_LIST_MACHINE_SKILLS),

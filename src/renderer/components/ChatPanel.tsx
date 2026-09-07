@@ -1,5 +1,5 @@
 import { useCallback, useRef, useEffect, useState } from 'react'
-import { FolderOpen, FolderPlus, MessageSquare, Download, Loader2, ChevronRight, ChevronDown, PanelRight } from 'lucide-react'
+import { FolderOpen, FolderPlus, MessageSquare, Download, Loader2, ChevronDown, PanelRight } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
@@ -12,6 +12,7 @@ import ExecutionActivity from './ExecutionActivity'
 import Composer from './Composer'
 import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
+import OpenWithMenu from './OpenWithMenu'
 import Logo from './Logo'
 
 const EMPTY_MESSAGES: MessageLike[] = []
@@ -316,11 +317,6 @@ export default function ChatPanel() {
   const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
   const exportedFilename = exportSuccessPath ? exportFilename(exportSuccessPath) : null
   const showHero = sessionMessages.length === 0
-  // 开发者元素（Git 分支 chip）默认隐藏，设置页可打开。
-  const [showDevChrome, setShowDevChrome] = useState(false)
-  useEffect(() => {
-    window.electronAPI.getStore('showDevChrome').then((value) => setShowDevChrome(Boolean(value)))
-  }, [])
   const showThinking =
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
 
@@ -328,29 +324,23 @@ export default function ChatPanel() {
     <div className="relative flex h-full flex-col">
       {/* status bar, doubles as window drag region */}
       <header className="app-drag flex h-12 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
-        {/* breadcrumb: project / branch / session title */}
-        {projectName && (
-          <>
-            <span
-              className="flex min-w-0 items-center gap-1.5 text-cream-dim"
-              title={currentWorkspace?.displayPath ?? undefined}
-            >
-              <FolderOpen size={12} className="shrink-0" />
-              <span className="max-w-[160px] truncate text-[12px] font-medium">{projectName}</span>
-            </span>
-            <ChevronRight size={10} className="shrink-0 text-cream-faint" />
-          </>
-        )}
-        {/* Git 分支是开发者信息：默认收起，设置里的"开发者元素"打开后才显示。 */}
-        {showDevChrome && (
-          <>
-            <GitChip trailing={<ChevronRight size={10} className="shrink-0 text-cream-faint" />} />
-            <ChevronRight size={10} className="shrink-0 text-cream-faint" />
-          </>
-        )}
-        <span className="min-w-0 truncate text-[13px] font-semibold tracking-tight text-cream">
+        {/* ZCode-style order: bold session title first, then context pills */}
+        <span className="min-w-0 shrink truncate text-[13px] font-semibold tracking-tight text-cream">
           {currentSession ? currentSession.title : t('chat.noActiveSession')}
         </span>
+        {/* project pill: full path on hover */}
+        {projectName && currentWorkspace && (
+          <span
+            title={currentWorkspace.displayPath}
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
+          >
+            <FolderOpen size={12} className="shrink-0 text-accent" />
+            <span className="max-w-[160px] truncate">{projectName}</span>
+          </span>
+        )}
+        {/* branch pill: always on for git workspaces; GitChip hides itself
+            while loading and for non-git dirs. */}
+        <GitChip trailing={<ChevronDown size={10} className="shrink-0 text-cream-faint" />} />
         {currentSession?.origin === 'feishu' && (
           <span
             className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[10px] font-medium text-cream-faint"
@@ -360,6 +350,7 @@ export default function ChatPanel() {
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-cream-dim">
+          {currentWorkspace && <OpenWithMenu workspaceId={currentWorkspace.id} />}
           <button
             onClick={toggleWorkspace}
             aria-label={t('sidebar.workbench')}

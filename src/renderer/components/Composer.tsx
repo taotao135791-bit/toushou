@@ -951,7 +951,9 @@ export default memo(function Composer({
               </div>
             </div>
           )}
-          {currentWorkspace && (
+          {/* Context chips only on the home (no active session) view: in a
+              chat, the top bar already carries the project/branch context. */}
+          {currentWorkspace && !currentSessionId && (
             <div className="flex items-center gap-1.5 border-b border-line/60 px-1.5 pb-2 pt-1">
               <div
                 title={currentWorkspace.displayPath}

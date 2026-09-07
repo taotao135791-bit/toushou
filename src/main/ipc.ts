@@ -23,6 +23,7 @@ import {
   SubagentTranscriptSelector,
   WorkspaceGrant,
   RecentWorkspaceDescriptor,
+  OpenWorkspaceResult,
   PluginScaffoldRequest,
   CustomProvidersListResult,
   CustomProviderSaveResult,
@@ -122,6 +123,7 @@ import {
 import { importGithubSkills, previewGithubSkills } from './skillsGithub'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
+import { openWorkspaceInRequest } from './openWorkspaceIn'
 import { maybeNotifyTurnFinished, maybeNotifyUiRequest } from './notify'
 import {
   getUpdaterStatus,
@@ -977,6 +979,16 @@ export function registerIpc() {
       if (typeof filePath !== 'string' || !filePath.trim()) return null
       return getFileDiff(resolved.realPath, filePath)
     }
+  )
+
+  // Chat top bar "打开方式": reveal/open the granted workspace in Finder,
+  // a terminal, or VS Code. The renderer only ever sends the grant id and a
+  // target name; the real path is resolved here through the same grant
+  // authority as every other workspace-scoped channel.
+  ipcMain.handle(
+    IPC_CHANNELS.OPEN_WORKSPACE_IN,
+    async (_event: IpcMainInvokeEvent, grantId: unknown, target: unknown): Promise<OpenWorkspaceResult> =>
+      openWorkspaceInRequest(requireGrant, grantId, target)
   )
 
   ipcMain.handle(IPC_CHANNELS.UPDATER_GET_STATUS, async () => {

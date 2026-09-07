@@ -26,6 +26,8 @@ export const IPC_CHANNELS = {
   WORKSPACE_ACTIVATE: 'workspace:activate',
   WORKSPACE_REVOKE: 'workspace:revoke',
   WORKSPACE_LIST: 'workspace:list',
+  /** Open a granted workspace in Finder/Terminal/VS Code; grant id in, real path resolved in Main. */
+  OPEN_WORKSPACE_IN: 'workspace:open-in',
   PACKAGES_LIST: 'packages:list',
   PACKAGES_CAPABILITIES: 'packages:capabilities',
   PACKAGES_SEARCH: 'packages:search',

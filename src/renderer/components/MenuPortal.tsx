@@ -2,10 +2,12 @@ import { ReactNode, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 /**
- * Dropdown menu portaled to document.body, anchored above the trigger.
- * Menus rendered inside the composer toolbar get clipped by its
- * overflow-x-auto (a clipped axis computes the other axis to 'auto' too),
- * which made them invisible and unclickable — the portal escapes that.
+ * Dropdown menu portaled to document.body. By default it is anchored ABOVE
+ * the trigger (composer toolbars); `placement="bottom"` drops it BELOW the
+ * trigger for top-bar menus. Menus rendered inside the composer toolbar get
+ * clipped by its overflow-x-auto (a clipped axis computes the other axis to
+ * 'auto' too), which made them invisible and unclickable — the portal
+ * escapes that.
  *
  * The trigger passes its own ref; the anchor rect is captured on open.
  * `onClose` fires on any pointerdown outside both trigger and menu, or on
@@ -17,6 +19,7 @@ export default function MenuPortal({
   onClose,
   width,
   maxHeight,
+  placement = 'top',
   children
 }: {
   open: boolean
@@ -24,15 +27,23 @@ export default function MenuPortal({
   onClose: () => void
   width?: number
   maxHeight?: number
+  /** 'top' floats above the trigger (default); 'bottom' drops below it. */
+  placement?: 'top' | 'bottom'
   children: ReactNode
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
-  const [anchor, setAnchor] = useState<{ left: number; bottom: number } | null>(null)
+  const [anchor, setAnchor] = useState<{ left: number; top?: number; bottom?: number } | null>(null)
 
   useLayoutEffect(() => {
     if (!open) return
     const rect = triggerRef.current?.getBoundingClientRect()
-    if (rect) setAnchor({ left: rect.left, bottom: window.innerHeight - rect.top + 6 })
+    if (rect) {
+      setAnchor(
+        placement === 'bottom'
+          ? { left: rect.left, top: rect.bottom + 6 }
+          : { left: rect.left, bottom: window.innerHeight - rect.top + 6 }
+      )
+    }
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as Node
       if (menuRef.current?.contains(target)) return
@@ -48,7 +59,7 @@ export default function MenuPortal({
       window.removeEventListener('pointerdown', onPointerDown)
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [open, onClose, triggerRef])
+  }, [open, onClose, triggerRef, placement])
 
   if (!open || !anchor) return null
   return createPortal(
@@ -57,6 +68,7 @@ export default function MenuPortal({
       style={{
         position: 'fixed',
         left: anchor.left,
+        top: anchor.top,
         bottom: anchor.bottom,
         zIndex: 50,
         width,

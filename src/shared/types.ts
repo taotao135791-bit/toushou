@@ -175,6 +175,15 @@ export interface WorkspaceGrant {
   createdAt: number
 }
 
+/** Target app for the chat top bar "Open with" utility menu (workspace:open-in). */
+export type OpenWorkspaceTarget = 'finder' | 'terminal' | 'editor'
+
+export interface OpenWorkspaceResult {
+  ok: boolean
+  /** Stable failure reason: 'invalid-workspace' | 'invalid-target' | 'editor-missing' | 'terminal-missing'. */
+  reason?: string
+}
+
 /**
  * A short-lived, Main-held capability for one user-approved file operation.
  * The canonical path is deliberately never exposed to the renderer.
