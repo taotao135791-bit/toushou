@@ -1,0 +1,46 @@
+name: Intent check
+
+# 意图中台强制闸：每个 PR 必须引用开工前申报拿到的意图编号。
+# 语法级校验（GitHub 托管 runner 无法访问 Tailscale 内网的中台服务）：
+# PR 描述需包含 "Intent: #<数字>"（大小写不限，也接受 意图: #数字），
+# 或显式豁免 "Intent: none"（仅限文档/紧急修复，PR 审查者把关）。
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  intent-reference:
+    name: PR references a registered intent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR body for an intent id
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          body="${PR_BODY:-}"
+          if printf '%s' "$body" | grep -qiE 'intent\s*[^a-z0-9]{0,3}(none|n/a)|intent.{0,3}豁免'; then
+            echo "已声明豁免（Intent: none）——请审查者确认该 PR 确属文档/紧急修复。"
+            exit 0
+          fi
+          if printf '%s' "$body" | grep -qiE '(intent|意图)\s*[^0-9#]{0,3}#[0-9]+'; then
+            echo "PR 已引用意图编号。"
+            exit 0
+          fi
+          cat <<'MSG'
+          ❌ 缺少意图编号。
+
+          本仓库要求开工前先向意图中台申报（先到先得锁）：
+            node tools/intent-hub/cli.js --user <花名> --title "<要做什么>" \
+              --scope <目录…> --branch <分支> --server http://<中台地址>:8788
+
+          拿到绿灯后，把返回的编号写进 PR 描述，例如：Intent: #12
+          纯文档或紧急修复可写：Intent: none
+
+          详见 AGENTS.md"意图中台强制上报"。
+          MSG
+          exit 1
