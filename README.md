@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.13.3，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.3) 下载：
+当前版本 v0.13.4，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.4) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.3/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.3/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.3/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.4/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.4/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.4/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.13.4：工作区头部贴回输入框并封顶高度。项目/分支行作为输入框卡片自身的顶部区（深一档衬底、圆角对齐、无缝），多行输入时随卡片一体生长；输入区高度跟随视口封顶（40vh，JS+CSS 双保险），长文本先在框内滚动，主页列改为可滚动布局——任何字数下卡片都不会溢出窗口，动作行始终可见。
 
 v0.13.3：工作区条栏改为 ZCode 式浮层——比输入框略窄、独立圆角面、浅色衬底带柔和投影，与输入框之间留缝，堆叠出层次；回退上一版的问候语/水印/场景方向。另：checkpoint 测试在并行负载下的超时预算提升至 20s。
 
