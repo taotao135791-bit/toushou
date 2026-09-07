@@ -1,5 +1,6 @@
 import { useCallback, useRef, useEffect, useState } from 'react'
-import { FolderOpen, FolderPlus, MessageSquare, Download, Loader2, ChevronDown, PanelRight } from 'lucide-react'
+import { FolderOpen, FolderPlus, MessageSquare, Download, Loader2, ChevronDown, PanelRight, BarChart3, Filter, Palette, Telescope } from 'lucide-react'
+import { greetingBucket } from '../lib/time'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
@@ -458,15 +459,20 @@ export default function ChatPanel() {
           // title, composer, then one faint hint line and the scenario chips
           // below — nothing else. The top bar is a bare drag spacer on home.
           <div className="flex h-full flex-col items-center px-8">
-            <div className="my-auto flex w-full max-w-[680px] flex-col items-center pb-[10vh] pt-6">
-              <div className="rise" style={{ animationDelay: '0ms' }}>
+            <div className="relative my-auto flex w-full max-w-[680px] flex-col items-center pb-[10vh] pt-6">
+              {/* Brand watermark behind the hero — depth without noise,
+                  the ZCode/Kimi anchor pattern. */}
+              <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 opacity-[0.05]">
+                <Logo size={320} />
+              </div>
+              <div className="rise relative" style={{ animationDelay: '0ms' }}>
                 <Logo size={52} />
               </div>
               <h2
-                className="rise mb-10 mt-8 text-[32px] font-semibold tracking-tight text-cream"
+                className="rise relative mb-10 mt-8 text-[32px] font-semibold tracking-tight text-cream"
                 style={{ animationDelay: '60ms' }}
               >
-                {t('chat.hero.title')}
+                {t(`chat.hero.${greetingBucket(new Date())}`)}
               </h2>
               <div className="rise w-full" style={{ animationDelay: '140ms' }}>
                 {/* Dedicated workspace strip: narrower than the composer and
@@ -493,9 +499,31 @@ export default function ChatPanel() {
                     {t('composer.hint')}
                   </p>
                 )}
-                {/* Scenario chips sit BELOW the composer (Kimi/ZCode home
-                    pattern): a single centered row of ghost pills. The inline
-                    "new project folder" naming row swaps into this slot. */}
+                {/* Ad-ops scenario chips, always on home (ZCode pattern):
+                    click fills the composer via the prefill channel — never
+                    auto-sends. */}
+                {currentWorkspace && (
+                  <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                    {([
+                      { icon: BarChart3, label: t('home.scenario.report'), prompt: t('home.scenario.reportPrompt') },
+                      { icon: Filter, label: t('home.scenario.funnel'), prompt: t('home.scenario.funnelPrompt') },
+                      { icon: Palette, label: t('home.scenario.creative'), prompt: t('home.scenario.creativePrompt') },
+                      { icon: Telescope, label: t('home.scenario.research'), prompt: t('home.scenario.researchPrompt') }
+                    ] as const).map(({ icon: Icon, label, prompt }) => (
+                      <button
+                        key={label}
+                        onClick={() => useAppStore.getState().setComposerPrefill(prompt)}
+                        className="flex items-center gap-1.5 rounded-full border border-line px-3.5 py-1.5 text-xs text-cream-faint transition-colors duration-200 ease-standard hover:bg-overlay hover:text-cream"
+                      >
+                        <Icon size={12} className="shrink-0" />
+                        <span>{label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {/* Without a workspace the slot offers project setup instead
+                    of scenarios: the inline "new project folder" naming row
+                    swaps in here. */}
                 {!currentWorkspace && (
                   <div className="mt-4 flex flex-col items-center gap-2">
                     {namingProject ? (

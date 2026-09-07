@@ -26,3 +26,15 @@ export function formatSeconds(ms: number): string {
   if (s >= 10) return String(Math.round(s))
   return (Math.round(s * 10) / 10).toString()
 }
+
+export type GreetingBucket = 'morning' | 'noon' | 'afternoon' | 'evening' | 'night'
+
+/** Time-of-day bucket for the home hero greeting. Pure in the hour for tests. */
+export function greetingBucket(date: Date): GreetingBucket {
+  const h = date.getHours()
+  if (h >= 5 && h < 11) return 'morning'
+  if (h >= 11 && h < 14) return 'noon'
+  if (h >= 14 && h < 18) return 'afternoon'
+  if (h >= 18 && h < 23) return 'evening'
+  return 'night'
+}
