@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.12.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.12.2) 下载：
+当前版本 v0.13.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.2/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.2/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.13.0：主页高级感重构 + 三项底座能力。**主页重构**——去掉顶栏文字与一切碎片：英雄标题、输入框、一行浅色提示、场景 chips，仅此四样；**权限颜色锚点**——询问灰、禁止命令天蓝、只读绿、完全访问橙（触发器与菜单一致，危险一目了然）；**⌘K 全局命令面板**——搜页面、会话（含历史恢复）、定时任务与快捷操作，完整键盘导航；**撤销可逆**——每轮撤销前自动快照当前状态，撤销后可"重做本轮"，误点不再不可挽回。
 
 v0.12.2：输入框与菜单精修。移除主页输入框头部的分隔线，项目/分支/权限/模型/思考等芯片统一改为轻量"幽灵"样式（去描边、悬停浅底），整体更安静；修复所有弹出菜单在窗口边缘被裁切的问题（先测量后定位、贴边自动翻转、8px 边距），顶栏"打开方式"菜单不再溢出；新增紧凑模式——聊天列宽不足（打开浏览器面板或窗口较窄）时，顶栏与输入框的芯片自动收纳为纯图标（悬停仍有完整提示），排队/插入按钮同步收纳，任何比例下不再挤压溢出。
 
