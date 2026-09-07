@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.12.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.12.1) 下载：
+当前版本 v0.12.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.12.2) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.1/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.1/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.2/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.2/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.12.2：输入框与菜单精修。移除主页输入框头部的分隔线，项目/分支/权限/模型/思考等芯片统一改为轻量"幽灵"样式（去描边、悬停浅底），整体更安静；修复所有弹出菜单在窗口边缘被裁切的问题（先测量后定位、贴边自动翻转、8px 边距），顶栏"打开方式"菜单不再溢出；新增紧凑模式——聊天列宽不足（打开浏览器面板或窗口较窄）时，顶栏与输入框的芯片自动收纳为纯图标（悬停仍有完整提示），排队/插入按钮同步收纳，任何比例下不再挤压溢出。
 
 v0.12.1：对话顶栏升级（对齐 ZCode）。标题前置，项目与 git 分支改为胶囊芯片常驻顶栏（分支不再藏在"开发者元素"开关里，非 git 工作区自动隐藏）；顶栏右侧新增**"打开方式"菜单**——在 Finder 中显示 / 在终端中打开 / 在 VS Code 中打开，经新的工作区授权通道解析路径（渲染层永不传路径），应用未安装时本地化提示；输入框的上下文芯片行只在主页显示，聊天页由顶栏承载，两处不再重复。
 
