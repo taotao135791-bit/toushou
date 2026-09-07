@@ -97,7 +97,11 @@ function createWindow() {
 
   if (devServerUrl) {
     win.loadURL(devServerUrl)
-    win.webContents.openDevTools()
+    // DevTools stay closed on launch; open manually (View → Toggle Developer
+    // Tools / Ctrl+Shift+I) or opt back in with TOUSHOU_DEVTOOLS=1.
+    if (process.env.TOUSHOU_DEVTOOLS === '1') {
+      win.webContents.openDevTools()
+    }
   } else {
     win.loadFile(rendererEntryPath)
   }
