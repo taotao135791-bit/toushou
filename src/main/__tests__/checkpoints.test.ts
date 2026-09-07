@@ -4,6 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
+// Every test here drives real git operations; under full-suite parallel load
+// a 5s default is too tight (multiple commits/snapshots per test).
+vi.setConfig({ testTimeout: 20000 })
+
 // checkpoints.ts resolves the default store through electron's app.getPath;
 // tests always inject an explicit file, so a minimal stub is enough.
 vi.mock('electron', () => ({
@@ -251,7 +255,7 @@ describe('restoreCheckpointReversible', () => {
     })
     expect(redo.ok).toBe(true)
     expect(readFileSync(path.join(repo, 'a.txt'), 'utf-8')).toBe('changed by agent')
-  })
+  }, 15000)
 
   it('returns the bare failure (no redo target) when the restore fails', async () => {
     const plain = mkdtempSync(path.join(tmpdir(), 'omp-not-a-repo-'))

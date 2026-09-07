@@ -17,7 +17,7 @@ export default function WorkspaceStrip() {
   if (!currentWorkspace) return null
   return (
     <div
-      className="rise flex w-[92%] items-center gap-1 rounded-xl bg-overlay/60 px-3 py-2"
+      className="rise flex w-[calc(100%-56px)] items-center gap-1 rounded-2xl bg-overlay/70 px-4 py-2.5 shadow-sm"
       style={{ animationDelay: '120ms' }}
     >
       <div
