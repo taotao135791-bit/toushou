@@ -9,8 +9,10 @@ import {
   File,
   Folder,
   FileArchive,
+  GitBranch,
   ListPlus,
-  Loader2
+  Loader2,
+  Plus
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { QueuedMessage, useAppStore } from '../store'
@@ -27,6 +29,8 @@ import ModelPicker from './ModelPicker'
 import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
 import UsageMonitor from './UsageMonitor'
+import MenuPortal from './MenuPortal'
+import { useGitInfo } from '../lib/useGitInfo'
 
 interface ComposerProps {
   /** Delivers the composed text; resolves false when delivery failed and the draft is restored. */
@@ -153,11 +157,11 @@ function atToken(text: string, caret: number): { query: string; start: number } 
   return { query, start: at }
 }
 
-/** Fit the single-line textarea to its content (capped at the 160px max). */
+/** Fit the single-line textarea to its content (capped at the 288px max-h-72). */
 function autosize(el: HTMLTextAreaElement | null) {
   if (!el) return
   el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  el.style.height = `${Math.min(el.scrollHeight, 288)}px`
 }
 
 export default memo(function Composer({
@@ -198,6 +202,10 @@ export default memo(function Composer({
   const autosendRef = useRef<string | null>(null)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
+  /** Workspace-level branch for the header chip; null = not a git repo. */
+  const { info: gitInfo } = useGitInfo()
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const addButtonRef = useRef<HTMLButtonElement>(null)
   const setComposerDraft = useAppStore((s) => s.setComposerDraft)
   const clearComposerDraft = useAppStore((s) => s.clearComposerDraft)
   const queue = useAppStore((s) =>
@@ -938,6 +946,31 @@ export default memo(function Composer({
               </div>
             </div>
           )}
+          {currentWorkspace && (
+            <div className="flex items-center gap-1.5 border-b border-line/60 px-1.5 pb-2 pt-1">
+              <div
+                title={currentWorkspace.displayPath}
+                aria-label={t('composer.currentProject')}
+                className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
+              >
+                <Folder size={12} className="shrink-0 text-accent" />
+                <span className="max-w-[140px] truncate">
+                  {currentWorkspace.source === 'default'
+                    ? t('sidebar.defaultWorkspace')
+                    : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
+                </span>
+              </div>
+              {currentWorkspace.source !== 'default' && gitInfo && (
+                <div
+                  title={gitInfo.branch}
+                  className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
+                >
+                  <GitBranch size={12} className="shrink-0 text-accent" />
+                  <span className="max-w-[160px] truncate font-mono">{gitInfo.branch}</span>
+                </div>
+              )}
+            </div>
+          )}
           {queue.length > 0 && (
             <div className="flex flex-col gap-1.5 px-1.5 pb-2 pt-0.5">
               <div className="px-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
@@ -1070,90 +1103,104 @@ export default memo(function Composer({
                   : t('composer.placeholder')
             }
             rows={1}
-            className="max-h-40 w-full resize-none bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
+            className="max-h-72 w-full resize-none bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
           />
-          <div className="flex items-center justify-between px-1 pb-0.5 pt-0.5">
-            <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              {currentWorkspace && (
-                <div
-                  title={currentWorkspace.displayPath}
-                  aria-label={t('composer.currentProject')}
-                  className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
+          <div className="flex items-center justify-between gap-2 px-1 pb-0.5 pt-0.5">
+            <div className="flex items-center gap-1.5">
+              <div className="relative">
+                <button
+                  ref={addButtonRef}
+                  onClick={() => setAddMenuOpen((v) => !v)}
+                  title={t('composer.addContent')}
+                  aria-label={t('composer.addContent')}
+                  aria-haspopup="menu"
+                  aria-expanded={addMenuOpen}
+                  className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
                 >
-                  <Folder size={12} className="shrink-0 text-accent" />
-                  <span className="max-w-[140px] truncate">
-                    {currentWorkspace.source === 'default'
-                      ? t('sidebar.defaultWorkspace')
-                      : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
-                  </span>
-                </div>
-              )}
-              <button
-                onClick={handleAttachFile}
-                title={t('composer.attach')}
-                className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
-              >
-                <Paperclip size={12} />
-              </button>
-              <button
-                onClick={handlePickImage}
-                title={t('composer.attachImage')}
-                className="focus-ring flex h-7 w-7 items-center justify-center rounded-full border border-line text-cream-dim transition-all hover:border-ink-600 hover:text-cream"
-              >
-                <ImageIcon size={12} />
-              </button>
-              <ModelPicker sessionId={currentSessionId} />
-              <ThinkingPicker sessionId={currentSessionId} />
+                  <Plus size={14} />
+                </button>
+                <MenuPortal
+                  open={addMenuOpen}
+                  triggerRef={addButtonRef}
+                  onClose={() => setAddMenuOpen(false)}
+                  width={176}
+                >
+                  <button
+                    onClick={() => {
+                      setAddMenuOpen(false)
+                      void handlePickImage()
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                  >
+                    <ImageIcon size={13} className="shrink-0 text-cream-faint" />
+                    {t('composer.attachImage')}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAddMenuOpen(false)
+                      void handleAttachFile()
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                  >
+                    <Paperclip size={13} className="shrink-0 text-cream-faint" />
+                    {t('composer.attach')}
+                  </button>
+                </MenuPortal>
+              </div>
               <PermissionPicker />
             </div>
-            {busy ? (
-              <div className="flex items-center gap-1.5">
-                {canSend && (
-                  <>
-                    <button
-                      onClick={handleSend}
-                      title={t('composer.queue')}
-                      aria-label={t('composer.queue')}
-                      className="flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong px-2.5 text-[11px] font-medium text-cream-dim shadow-card transition-all duration-150 hover:bg-overlay hover:text-cream active:scale-95"
-                    >
-                      <ListPlus size={13} strokeWidth={2.5} />
-                      <span>{t('composer.queue')}</span>
-                    </button>
-                    <button
-                      onClick={handleSteerCurrent}
-                      title={t('composer.steerNow')}
-                      aria-label={t('composer.steerNow')}
-                      className="flex h-8 items-center gap-1.5 rounded-full bg-accent px-2.5 text-[11px] font-medium text-white shadow-card transition-all duration-150 hover:bg-accent-bright active:scale-95"
-                    >
-                      <Zap size={13} strokeWidth={2.5} />
-                      <span>{t('composer.steerNow')}</span>
-                    </button>
-                  </>
-                )}
+            <div className="flex items-center gap-1.5">
+              <ModelPicker sessionId={currentSessionId} />
+              <ThinkingPicker sessionId={currentSessionId} />
+              {busy ? (
+                <div className="flex items-center gap-1.5">
+                  {canSend && (
+                    <>
+                      <button
+                        onClick={handleSend}
+                        title={t('composer.queue')}
+                        aria-label={t('composer.queue')}
+                        className="flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong px-2.5 text-[11px] font-medium text-cream-dim shadow-card transition-all duration-150 hover:bg-overlay hover:text-cream active:scale-95"
+                      >
+                        <ListPlus size={13} strokeWidth={2.5} />
+                        <span>{t('composer.queue')}</span>
+                      </button>
+                      <button
+                        onClick={handleSteerCurrent}
+                        title={t('composer.steerNow')}
+                        aria-label={t('composer.steerNow')}
+                        className="flex h-8 items-center gap-1.5 rounded-full bg-accent px-2.5 text-[11px] font-medium text-white shadow-card transition-all duration-150 hover:bg-accent-bright active:scale-95"
+                      >
+                        <Zap size={13} strokeWidth={2.5} />
+                        <span>{t('composer.steerNow')}</span>
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={onStop}
+                    disabled={stopping}
+                    title={stopping ? t('chat.stopping') : t('composer.stop')}
+                    aria-label={stopping ? t('chat.stopping') : t('composer.stop')}
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-cream text-ink-950 shadow-card transition-all duration-150 hover:opacity-85 active:scale-95 disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
+                  </button>
+                </div>
+              ) : (
                 <button
-                  onClick={onStop}
-                  disabled={stopping}
-                  title={stopping ? t('chat.stopping') : t('composer.stop')}
-                  aria-label={stopping ? t('chat.stopping') : t('composer.stop')}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-cream text-ink-950 shadow-card transition-all duration-150 hover:opacity-85 active:scale-95 disabled:cursor-wait disabled:opacity-70"
+                  onClick={handleSend}
+                  disabled={!canSend}
+                  title={t('composer.send')}
+                  className={`flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 active:scale-95 ${
+                    canSend
+                      ? 'bg-accent text-white shadow-card hover:bg-accent-bright'
+                      : 'cursor-not-allowed bg-overlay-strong text-cream-faint'
+                  }`}
                 >
-                  {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
+                  <ArrowUp size={16} strokeWidth={2.5} />
                 </button>
-              </div>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!canSend}
-                title={t('composer.send')}
-                className={`flex h-8 w-8 items-center justify-center rounded-full transition-all duration-150 active:scale-95 ${
-                  canSend
-                    ? 'bg-accent text-white shadow-card hover:bg-accent-bright'
-                    : 'cursor-not-allowed bg-overlay-strong text-cream-faint'
-                }`}
-              >
-                <ArrowUp size={15} strokeWidth={2.5} />
-              </button>
-            )}
+              )}
+            </div>
           </div>
         </div>
         <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-cream-faint">
