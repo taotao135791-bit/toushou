@@ -12,6 +12,25 @@ work reviewable and preserves the Electron security boundary.
 4. Never put API keys, tokens, user transcripts, local paths, or packaged
    application output in source control.
 
+## 团队雷达强制预检（Team Radar gate，低打扰设计）
+
+本仓库由多人并行开发。coding agent 在任务开始时，对本次计划改动的目录
+（范围级，不是逐个文件）执行一次冲突预检：
+
+    node tools/team-radar/agent.js --check <目标文件或目录> --server http://<雷达服务地址>:8787
+
+按退出码执行。原则：只在"同文件并发修改"时打断用户，其余情况不打扰：
+
+- 0：范围内无并行修改。静默继续，无需向用户提及本次预检；
+- 2：范围内存在同文件并发修改。这是唯一需要暂停的情况：向用户报告冲突
+  成员与分支，用户确认（如回复"继续"）后立即放行，同一范围内不再重复询问；
+- 3：属于受保护路径（tools/team-radar/redline.json）。正常继续开发，
+  仅在方案或 PR 说明中标注"合并前需对应负责人审核"，无需停下询问；
+- 1：预检服务不可用。向用户报告一次后继续开发，不阻塞进度。
+
+频率约定：每个任务开始时检查一次；仅当扩大改动范围（进入新的目录）时补查。
+任务内的连续编辑、保存、重构均在首次预检范围内，无需重复检查。
+
 ## Architecture contracts
 
 The trust direction is:
