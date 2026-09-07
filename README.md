@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.11.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.11.2) 下载：
+当前版本 v0.12.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.12.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.2/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.11.2/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.12.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.12.0：飞书会话与应用无缝联动。在飞书发消息，投手侧栏立刻出现带飞书徽标的会话行（私聊/群聊自动命名），未读角标、归档、删除一应俱全；点开即见完整对话（含开启前的历史，经新的会话转录通道回填）；在应用里继续回复，回复仍会同步送回原飞书会话（输入框有明确提示）；应用侧发送与飞书只读权限模型不变，路由索引仍归主进程所有。
 
 v0.11.2：日志脱敏补漏。修复转义 JSON 形态（`\"app_secret\":\"…\"`，见于 axios 错误转储的请求体）与查询串形态（`app_secret=…`）的凭据未被脱敏的问题——此前飞书令牌获取失败的日志会明文记录 app secret；读取侧（诊断导出）同步生效。
 
