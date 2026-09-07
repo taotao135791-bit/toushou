@@ -31,6 +31,28 @@ work reviewable and preserves the Electron security boundary.
 频率约定：每个任务开始时检查一次；仅当扩大改动范围（进入新的目录）时补查。
 任务内的连续编辑、保存、重构均在首次预检范围内，无需重复检查。
 
+## 意图中台强制上报（Intent Hub gate，开工前）
+
+雷达按文件探测，本台按意图协调：vibe coding 无法预知 AI 会改哪些文件，
+因此每个 coding agent 在**任务开始前**先申报"要做什么"，先到先得拿锁：
+
+    node tools/intent-hub/cli.js --title "<一句话说明功能或 bug>" \
+      --scope <目录1> [目录2 …] --branch <分支>
+
+默认走 Tailscale MagicDNS 设备名（http://leoliumacbook-air:8788，团队
+成员入网即达，无需另行告知地址）；--server 可覆盖。
+
+按退出码执行：
+
+- 0：绿灯，意图已登记（24 小时有效）。静默开工，无需向用户提及；
+- 2：红灯，他人已持相似或范围重叠的意图（先到先得）。停止本次修改，
+  向用户报告持锁人（花名/意图/分支），等用户指示；用户明确让行或原意图
+  关闭后，重新申报再开工；
+- 1：服务不可达。向用户报告一次后继续，不阻塞开发。
+
+收尾约定：任务合并后执行 `--close <id>` 关闭意图释放锁；同一任务不重复
+申报；范围扩大（进入新目录）时重新申报并带上完整范围。
+
 ## Architecture contracts
 
 The trust direction is:
