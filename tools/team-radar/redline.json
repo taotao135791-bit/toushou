@@ -1,0 +1,7 @@
+[
+  "src/main/",
+  "src/shared/",
+  "src/main/preload.ts",
+  "electron-builder.json",
+  ".github/"
+]

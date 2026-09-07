@@ -220,22 +220,57 @@ export function formatSkillChatMessage(
 ): string {
   const body = stripSkillFrontMatter(content).trim()
   const title = name.trim() || 'SKILL'
+  const tag = `<team-skill name="${escapeSkillTitle(title)}">`
   if (language === 'en') {
     return [
       'Follow this team skill/playbook exactly for the rest of this conversation. Do not invent a different process. If anything is missing, ask me before acting.',
       '',
+      tag,
       '# ' + title,
       '',
-      body
+      body,
+      '</team-skill>'
     ].join('\n')
   }
   return [
     '接下来请严格按这份团队打法（SKILL）执行，不要另起一套流程。如果信息不够，先问我再动手。',
     '',
+    tag,
     '# ' + title,
     '',
     body,
+    '</team-skill>'
   ].join('\n')
+}
+
+export interface ParsedSkillChatMessage {
+  /** The instruction line(s) before the tagged block (may be empty). */
+  instruction: string
+  /** Skill display name, entity-decoded. */
+  name: string
+  /** The SOP body inside the tags, tags stripped. */
+  body: string
+}
+
+const TEAM_SKILL_BLOCK_RE = /<team-skill name="([^"]*)">([\s\S]*?)<\/team-skill>/
+
+/**
+ * Detect a skill message (as built by formatSkillChatMessage) in chat
+ * content so the renderer can show a compact card instead of the raw text.
+ * Returns null for anything that is not exactly one tagged skill block.
+ */
+export function parseSkillChatMessage(content: string): ParsedSkillChatMessage | null {
+  const match = TEAM_SKILL_BLOCK_RE.exec(content)
+  if (!match) return null
+  const name = match[1]
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+  return {
+    instruction: content.slice(0, match.index).trim(),
+    name,
+    body: match[2].trim()
+  }
 }
 
 /** Build a list entry from already-validated primitives (Main-side reader). */

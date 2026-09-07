@@ -7,6 +7,7 @@ import {
   skillKindForExtension,
   formatSkillChatReference,
   formatSkillChatMessage,
+  parseSkillChatMessage,
   formatSkillSystemPrompt,
   stripSkillFrontMatter
 } from '../skills'
@@ -153,7 +154,28 @@ describe('formatSkillChatMessage', () => {
   it('uses the English wrapper when language is en', () => {
     const message = formatSkillChatMessage('ROI tool', 'Check ROAS first.', 'en')
     expect(message).toContain('Follow this team skill/playbook exactly')
+    expect(message).toContain('<team-skill name="ROI tool">')
     expect(message).toContain('Check ROAS first.')
+    expect(message.trim().endsWith('</team-skill>')).toBe(true)
+  })
+})
+
+describe('parseSkillChatMessage', () => {
+  it('round-trips a formatted skill message', () => {
+    const message = formatSkillChatMessage('起量打法', '# 第一步\n先看 CPI', 'zh')
+    const parsed = parseSkillChatMessage(message)
+    expect(parsed).not.toBeNull()
+    expect(parsed?.name).toBe('起量打法')
+    expect(parsed?.instruction).toContain('严格按这份团队打法')
+    expect(parsed?.body).toContain('# 第一步')
+    expect(parsed?.body).toContain('先看 CPI')
+  })
+
+  it('unescapes entities in the name and rejects plain text', () => {
+    const message = formatSkillChatMessage('打"法"', '步骤', 'zh')
+    expect(parseSkillChatMessage(message)?.name).toBe('打"法"')
+    expect(parseSkillChatMessage('普通消息，没有标签')).toBeNull()
+    expect(parseSkillChatMessage('残留 <team-skill name="x">未闭合')).toBeNull()
   })
 })
 

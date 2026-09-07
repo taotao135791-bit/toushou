@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>团队雷达 · 实时协作仪表盘</title>
+<style>
+  :root { --bg:#0b1220; --panel:#111a2e; --line:#23324d; --text:#e2e8f0; --dim:#8ea0bf; --red:#f87171; --yellow:#fbbf24; --green:#34d399; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--text); font:15px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; padding:24px; max-width:1100px; margin:0 auto; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:8px; }
+  h1 { font-size:22px; }
+  h2 { font-size:15px; color:var(--dim); margin:26px 0 12px; font-weight:600; }
+  .conn { display:flex; align-items:center; gap:8px; color:var(--dim); font-size:13px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--green); display:inline-block; }
+  .dot.off { background:var(--red); }
+  .alert { background:rgba(248,113,113,.12); border:1px solid rgba(248,113,113,.45); color:#fecaca; padding:12px 14px; border-radius:10px; margin-bottom:8px; font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  .card.stale { opacity:.45; }
+  .card .head { display:flex; gap:10px; align-items:center; }
+  .avatar { width:38px; height:38px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; color:#0b1220; background:hsl(var(--h,200) 80% 65%); flex:none; }
+  .name { font-weight:700; }
+  .branch { font-size:12px; color:var(--dim); background:#0b1220; padding:1px 7px; border-radius:6px; }
+  .stats { color:var(--dim); font-size:13px; margin:10px 0 8px; }
+  .stats b { color:var(--text); }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chip { font:12px/1.4 ui-monospace,Menlo,monospace; background:#0b1220; border:1px solid var(--line); color:#bdcdf0; padding:2px 8px; border-radius:6px; }
+  .chip.red { border-color:rgba(248,113,113,.6); color:var(--red); }
+  .badge { margin-left:auto; font-size:12px; padding:2px 8px; border-radius:999px; background:rgba(251,191,36,.15); color:var(--yellow); flex:none; }
+  .pair { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--green); border-radius:10px; padding:10px 14px; margin-bottom:8px; }
+  .pair.red { border-left-color:var(--red); background:rgba(248,113,113,.07); }
+  .pair.yellow { border-left-color:var(--yellow); }
+  .pair.stale { opacity:.45; }
+  .pairTop { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .names { font-weight:700; }
+  .lv { font-size:12px; padding:2px 9px; border-radius:999px; background:rgba(52,211,153,.14); color:var(--green); flex:none; }
+  .pair.red .lv { background:rgba(248,113,113,.15); color:var(--red); }
+  .pair.yellow .lv { background:rgba(251,191,36,.15); color:var(--yellow); }
+  .empty { color:var(--dim); text-align:center; padding:40px 0; }
+  footer { margin-top:30px; color:var(--dim); font-size:12.5px; border-top:1px solid var(--line); padding-top:12px; }
+  code { font-family:ui-monospace,Menlo,monospace; color:#bdcdf0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📡 团队雷达 <span style="font-size:13px;color:var(--dim);font-weight:400">toushou 实时协作仪表盘</span></h1>
+  <div class="conn"><span id="dot" class="dot off"></span><span id="connText">连接中…</span></div>
+</header>
+<div id="banner"></div>
+<section><h2>协作成员</h2><div id="cards" class="grid"></div><div id="empty" class="empty" style="display:none">暂无客户端上报。运行 <code>node tools/team-radar/simulate.js</code> 可查看演示数据。</div></section>
+<section><h2>并行冲突预警</h2><div id="pairs"></div></section>
+<footer>变更预检：<code>node tools/team-radar/agent.js --check 目录名 --server <span id="srv"></span></code><br>客户端仅上报分支名与文件路径，不传输代码内容。</footer>
+<script>
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const hue = (s) => [...s].reduce((a,c)=>a+c.charCodeAt(0),0)*37%360;
+const ago = (t) => { const s = Math.max(0,(Date.now()-t)/1000|0); return s<60? s+'秒前' : s<3600? (s/60|0)+'分钟前' : (s/3600|0)+'小时前'; };
+const chips = (arr, red, max) => { red = red || new Set(); max = max || 8;
+  return arr.slice(0,max).map(f=>'<span class="chip'+(red.has(f)?' red':'')+'">'+esc(f)+'</span>').join('') + (arr.length>max?'<span class="chip">…等 '+arr.length+' 个</span>':''); };
+let state = null;
+function render(){
+  if(!state) return;
+  document.getElementById('srv').textContent = location.origin;
+  document.getElementById('banner').innerHTML = (state.redAlerts||[]).map(a=>
+    '<div class="alert">🔴 <b>'+esc(a.user)+'</b>（'+esc(a.branch)+'）正在修改受保护文件：'+a.files.map(esc).join('、')+' —— 共享契约路径，合并前需负责人审核</div>').join('');
+  const users = state.users||[];
+  document.getElementById('empty').style.display = users.length?'none':'block';
+  document.getElementById('cards').innerHTML = users.map(u=>{
+    const red = new Set(u.redlineFiles);
+    return '<div class="card'+(u.stale?' stale':'')+'">'+
+      '<div class="head"><span class="avatar" style="--h:'+hue(u.user)+'">'+esc(u.user[0]||'?')+'</span>'+
+      '<div><div class="name">'+esc(u.user)+'</div><span class="branch">'+esc(u.branch)+'</span></div>'+
+      (u.stale?'<span class="badge">会话超时</span>':'')+'</div>'+
+      '<div class="stats">工作区变更 <b>'+u.workFiles.length+'</b> · 分支变更 <b>'+u.branchFiles.length+'</b> · '+ago(u.lastActive)+'</div>'+
+      '<div class="chips">'+chips(u.changed, red)+'</div></div>';
+  }).join('');
+  const order = {red:0, yellow:1, green:2};
+  const pairs = [...(state.pairs||[])].sort((a,b)=>order[a.level]-order[b.level]);
+  const lvText = {red:'同文件并发修改', yellow:'同目录并行变更', green:'无冲突'};
+  document.getElementById('pairs').innerHTML = pairs.length ? pairs.map(p=>
+    '<div class="pair '+p.level+(p.stale?' stale':'')+'"><div class="pairTop"><span class="names">'+esc(p.a)+' ↔ '+esc(p.b)+'</span><span class="lv">'+lvText[p.level]+'</span></div>'+
+    (p.level==='red'?'<div class="chips">'+chips(p.shared)+'</div>':'')+
+    (p.level==='yellow'?'<div class="chips">'+chips(p.sharedDirs)+'</div>':'')+'</div>').join('') : '<div class="empty">暂无数据</div>';
+}
+const es = new EventSource('/events');
+es.onmessage = (e) => { state = JSON.parse(e.data); render(); };
+es.onopen = () => { document.getElementById('dot').classList.remove('off'); document.getElementById('connText').textContent='已连接'; };
+es.onerror = () => { document.getElementById('dot').classList.add('off'); document.getElementById('connText').textContent='重连中…'; };
+setInterval(render, 1000);
+</script>
+</body>
+</html>
