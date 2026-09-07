@@ -82,6 +82,12 @@ export default function SettingsPage() {
   // two surfaces are physically separate components — no shared mutations.
   const runtimeOverview = useAppStore((s) => s.runtimeOverview)
   const [overviewError, setOverviewError] = useState(false)
+  // True while a forced overview probe is in flight. The probe self-heals a
+  // stale/partial overview a second or two later; knowing it is still running
+  // lets the UI keep a quiet loading row instead of flashing the error state.
+  // Starts true: the mount effect fires a probe immediately, and the first
+  // paint must already treat the probe as pending.
+  const [overviewProbing, setOverviewProbing] = useState(true)
   const profile = runtimeOverview?.profile
   const isCurrent = profile === 'current'
   const isLegacy = profile === 'legacy'
@@ -92,15 +98,24 @@ export default function SettingsPage() {
   // "RPC protocol v1 · Supported" right above a "Not detected" row.
   const ompProtocol: number | null = cli?.available && caps ? caps.protocol : null
 
+  // One forced overview probe with its in-flight window tracked. The probe
+  // usually completes within a second or two and repopulates (or replaces) a
+  // stale overview; only a probe that settles into failure is an error.
+  const probeOverview = () => {
+    setOverviewProbing(true)
+    useAppStore
+      .getState()
+      .loadRuntimeOverview(true)
+      .catch(() => setOverviewError(true))
+      .finally(() => setOverviewProbing(false))
+  }
+
   useEffect(() => {
     window.electronAPI.detectCli().then(setCli)
     window.electronAPI.getCapabilities().then(setCaps)
     window.electronAPI.getAppVersion().then(setVersion)
     // Explicit error tracking: a failed overview must NOT fall back to Legacy.
-    useAppStore
-      .getState()
-      .loadRuntimeOverview(true)
-      .catch(() => setOverviewError(true))
+    probeOverview()
     useAppStore.getState().loadRuntimeModels()
     window.electronAPI.getStore('notifications').then((v) => setNotificationsState(v ?? true))
     window.electronAPI.getStore('notificationPreviews').then((v) => setNotifyPreviewsState(v ?? false))
@@ -137,10 +152,7 @@ export default function SettingsPage() {
     useAppStore.getState().setCliAvailable(info.available)
     // The runtime profile may have changed with the CLI — refresh the top
     // section too, not just this card.
-    useAppStore
-      .getState()
-      .loadRuntimeOverview(true)
-      .catch(() => setOverviewError(true))
+    probeOverview()
     useAppStore.getState().loadRuntimeModels()
     setDetecting(false)
   }
@@ -185,6 +197,18 @@ export default function SettingsPage() {
     setPermissionMode(value)
   }
 
+  // A stale 'current' overview with an empty provider list makes the model
+  // section render its "couldn't load runtime settings" error even though a
+  // fresh probe is mid-flight and usually repopulates the list. While that
+  // probe is pending, swap the section for a quiet loading row; once the
+  // probe settles (providers present, or still empty on a finished probe),
+  // the normal surfaces — form or definitive error — take over again.
+  const probingStaleOverview =
+    overviewProbing &&
+    runtimeOverview !== null &&
+    runtimeOverview.profile === 'current' &&
+    runtimeOverview.providers.length === 0
+
   const changeNotifications = async (value: boolean) => {
     setNotificationsState(value)
     await window.electronAPI.setStore('notifications', value)
@@ -218,7 +242,7 @@ export default function SettingsPage() {
 
       <div className="flex-1 overflow-y-auto p-5">
         <div className="mx-auto max-w-[680px] space-y-4">
-          {isCurrent ? (
+          {isCurrent && !probingStaleOverview ? (
             <CurrentOmpSettings />
           ) : isLegacy ? (
             <LegacyPiSettings />
@@ -231,7 +255,7 @@ export default function SettingsPage() {
                 <button
                   onClick={() => {
                     setOverviewError(false)
-                    useAppStore.getState().loadRuntimeOverview(true).catch(() => setOverviewError(true))
+                    probeOverview()
                   }}
                   className={buttonCls}
                 >
@@ -242,7 +266,10 @@ export default function SettingsPage() {
             </Section>
           ) : (
             <Section title="Oh My Pi">
-              <Note>{t('settings.runtimeLoading')}</Note>
+              <div className="flex items-center gap-2 py-2.5 text-[11px] text-cream-faint">
+                <RefreshCw size={11} className="animate-spin" />
+                {t('settings.runtimeLoading')}
+              </div>
             </Section>
           )}
 

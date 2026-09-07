@@ -21,6 +21,7 @@ import {
   SessionComposerDraft
 } from '../lib/composerDraft'
 import { dispatchSteer, steerFailureKey } from '../lib/steerDispatch'
+import { basename } from '../lib/path'
 import { useT } from '../i18n'
 import ModelPicker from './ModelPicker'
 import ThinkingPicker from './ThinkingPicker'
@@ -1073,6 +1074,20 @@ export default memo(function Composer({
           />
           <div className="flex items-center justify-between px-1 pb-0.5 pt-0.5">
             <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {currentWorkspace && (
+                <div
+                  title={currentWorkspace.displayPath}
+                  aria-label={t('composer.currentProject')}
+                  className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
+                >
+                  <Folder size={12} className="shrink-0 text-accent" />
+                  <span className="max-w-[140px] truncate">
+                    {currentWorkspace.source === 'default'
+                      ? t('sidebar.defaultWorkspace')
+                      : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
+                  </span>
+                </div>
+              )}
               <button
                 onClick={handleAttachFile}
                 title={t('composer.attach')}

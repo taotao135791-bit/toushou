@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus, Play, Trash2, Clock, Calendar, Loader2 } from 'lucide-react'
+import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2 } from 'lucide-react'
 import { ScheduledTask } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
@@ -10,6 +10,35 @@ function scheduleText(task: ScheduledTask, t: (key: never, vars?: Record<string,
   if (task.schedule.type === 'interval') return t('schedule.interval' as never, { hours: task.schedule.hours })
   if (task.schedule.type === 'weekly') return t('schedule.weekly' as never, { day: task.schedule.dayOfWeek, time: task.schedule.time })
   return ''
+}
+
+/** One per-project section: the shared cwd plus every task bound to it. */
+interface TaskGroup {
+  /** Workspace path the tasks run in; '' for tasks without a project binding. */
+  cwd: string
+  tasks: ScheduledTask[]
+}
+
+/**
+ * Group tasks by their project directory so each project reads as one
+ * section. Tasks without a project binding collapse into a single trailing
+ * "no project" group instead of disappearing. Group order is stable
+ * (alphabetical by folder name); within a group the store order is kept.
+ */
+function groupByProject(tasks: ScheduledTask[]): TaskGroup[] {
+  const byProject = new Map<string, ScheduledTask[]>()
+  for (const task of tasks) {
+    const key = task.cwd || ''
+    const existing = byProject.get(key)
+    if (existing) existing.push(task)
+    else byProject.set(key, [task])
+  }
+  const grouped = [...byProject.entries()]
+    .filter(([cwd]) => cwd !== '')
+    .sort((a, b) => (basename(a[0]) || a[0]).localeCompare(basename(b[0]) || b[0]))
+    .map(([cwd, groupTasks]) => ({ cwd, tasks: groupTasks }))
+  const ungrouped = byProject.get('')
+  return ungrouped ? [...grouped, { cwd: '', tasks: ungrouped }] : grouped
 }
 
 export default function TasksPage() {
@@ -89,39 +118,55 @@ export default function TasksPage() {
               </button>
             </div>
           ) : (
-            scheduledTasks.map(task => (
-              <div key={task.id} className={`rounded-xl border p-4 transition-colors ${task.enabled ? 'border-line bg-ink-850' : 'border-line/50 bg-ink-850/50 opacity-60'}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[14px] font-medium ${task.enabled ? 'text-cream' : 'text-cream-faint'}`}>{task.name}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${task.enabled ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
-                        {task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
-                      </span>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-cream-faint">{task.prompt}</p>
-                    <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-cream-faint">
-                      <span className="flex items-center gap-1"><Calendar size={11} /> {scheduleText(task, t)}</span>
-                      <span className="flex items-center gap-1"><Clock size={11} /> {projectName(task.cwd)}</span>
-                      {task.lastRunAt && <span>{t('tasks.lastRun')}: {new Date(task.lastRunAt).toLocaleString()}</span>}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <button onClick={() => void handleRunNow(task)} disabled={!task.enabled || running === task.id}
-                      title={t('sidebar.taskRunNow')}
-                      className="rounded-lg p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-accent disabled:opacity-30">
-                      {running === task.id ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                    </button>
-                    <button onClick={() => void handleToggle(task)} title={task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
-                      className={`relative h-5 w-9 rounded-full transition-colors ${task.enabled ? 'bg-emerald-500' : 'bg-line-strong'}`}>
-                      <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${task.enabled ? 'left-[18px]' : 'left-0.5'}`} />
-                    </button>
-                    <button onClick={() => void handleDelete(task)} title={t('sidebar.deleteSession')}
-                      className="rounded-lg p-1.5 text-cream-faint transition-colors hover:bg-red-500/10 hover:text-red-500">
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+            groupByProject(scheduledTasks).map(group => (
+              <div key={group.cwd || '__ungrouped__'} className="space-y-3">
+                <div className="flex items-center gap-1.5 px-1" title={group.cwd || undefined}>
+                  <Folder size={12} className="shrink-0 text-accent" />
+                  <span className="shrink-0 text-[12px] font-semibold text-cream-dim">
+                    {group.cwd ? projectName(group.cwd) : t('tasks.ungrouped')}
+                  </span>
+                  {group.cwd && (
+                    <span className="min-w-0 truncate font-mono text-[10.5px] text-cream-faint">{group.cwd}</span>
+                  )}
+                  <span className="ml-auto shrink-0 rounded-full bg-overlay px-2 py-0.5 text-[10px] font-medium text-cream-faint">
+                    {group.tasks.length}
+                  </span>
                 </div>
+                {group.tasks.map(task => (
+                  <div key={task.id} className={`rounded-xl border p-4 transition-colors ${task.enabled ? 'border-line bg-ink-850' : 'border-line/50 bg-ink-850/50 opacity-60'}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[14px] font-medium ${task.enabled ? 'text-cream' : 'text-cream-faint'}`}>{task.name}</span>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${task.enabled ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
+                            {task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
+                          </span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-cream-faint">{task.prompt}</p>
+                        <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-cream-faint">
+                          <span className="flex items-center gap-1"><Calendar size={11} /> {scheduleText(task, t)}</span>
+                          <span className="flex items-center gap-1"><Clock size={11} /> {projectName(task.cwd)}</span>
+                          {task.lastRunAt && <span>{t('tasks.lastRun')}: {new Date(task.lastRunAt).toLocaleString()}</span>}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button onClick={() => void handleRunNow(task)} disabled={!task.enabled || running === task.id}
+                          title={t('sidebar.taskRunNow')}
+                          className="rounded-lg p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-accent disabled:opacity-30">
+                          {running === task.id ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                        </button>
+                        <button onClick={() => void handleToggle(task)} title={task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
+                          className={`relative h-5 w-9 rounded-full transition-colors ${task.enabled ? 'bg-emerald-500' : 'bg-line-strong'}`}>
+                          <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${task.enabled ? 'left-[18px]' : 'left-0.5'}`} />
+                        </button>
+                        <button onClick={() => void handleDelete(task)} title={t('sidebar.deleteSession')}
+                          className="rounded-lg p-1.5 text-cream-faint transition-colors hover:bg-red-500/10 hover:text-red-500">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             ))
           )}
