@@ -12,7 +12,6 @@ import ExecutionActivity from './ExecutionActivity'
 import Composer from './Composer'
 import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
-import WorkspaceStrip from './WorkspaceStrip'
 import OpenWithMenu from './OpenWithMenu'
 import Logo from './Logo'
 import useElementWidth from '../lib/useElementWidth'
@@ -469,12 +468,6 @@ export default function ChatPanel() {
                 {t('chat.hero.title')}
               </h2>
               <div className="rise w-full" style={{ animationDelay: '140ms' }}>
-                {/* Dedicated workspace strip: narrower than the composer and
-                    visually separate, so project context lives ABOVE the
-                    card instead of inside it. */}
-                <div className="mb-2.5 flex justify-center">
-                  <WorkspaceStrip />
-                </div>
                 <Composer
                   onSend={handleSend}
                   onStop={handleStop}
