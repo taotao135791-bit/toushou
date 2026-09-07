@@ -30,7 +30,7 @@ node tools/intent-hub/server.js --port 8788 --repo taotao135791-bit/toushou
 # 开工前申报（退出码语义与团队雷达一致）
 node tools/intent-hub/cli.js --user 花名 --title "一句话说明要做什么" \
   --scope src/renderer/ads src/shared --branch feat/xxx \
-  --server http://100.121.200.66:8788
+  --server http://<中台地址>:8788
 ```
 
 | 退出码 | 含义 | AI 行为 |
