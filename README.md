@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.13.4，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.4) 下载：
+当前版本 v0.13.5，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.5) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.4/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.4/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.4/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.5/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.5/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.5/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.13.5：修复主页工作区行重复显示——上一版把工作区头部贴进输入框卡片时遗留了旧的浮层条，导致项目行出现两次；现在只保留卡片顶部区一处。
 
 v0.13.4：工作区头部贴回输入框并封顶高度。项目/分支行作为输入框卡片自身的顶部区（深一档衬底、圆角对齐、无缝），多行输入时随卡片一体生长；输入区高度跟随视口封顶（40vh，JS+CSS 双保险），长文本先在框内滚动，主页列改为可滚动布局——任何字数下卡片都不会溢出窗口，动作行始终可见。
 
