@@ -1,5 +1,5 @@
 #!/bin/sh
-# 傻瓜式接入（macOS）：双击这一个文件就够了
+# 简易式接入（macOS）：双击这一个文件就够了
 # 自动检查服务器 -> 自动启动探针与监视器 -> 自动打开仪表盘 -> 弹窗汇报结果
 cd "$(dirname "$0")/../.." || exit 1
 NAME=$(git config radar.user 2>/dev/null | head -1)
