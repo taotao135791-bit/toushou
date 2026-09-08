@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.13.5，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.13.5) 下载：
+当前版本 v0.14.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.14.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.5/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.5/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.13.5/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.14.0：MCP 服务连接 + 素材研究流水线 + Windows 会话修复。**连接页新增「MCP 服务」卡片**——表单（名称+地址+令牌，自动作 Bearer）或直接粘贴 MCP JSON，支持"测试连接"（真实 MCP 握手）与移除；写入运行时原生 mcp.json（零桥接，工具发现/调用全走 OMP 原生能力），保留手写条目，**令牌永不进渲染层**（列表只显示脱敏端点）。**素材研究技能包**（内置自动挂载）：SKILL 定死"前置检查 → 研究 brief → MCP 检索（不足换词放宽最多两轮，不编造）→ 归纳 → 飞书文档分段写入"全流程，附 /material 命令与工具面板入口。**对话内引导卡**：`[[connect:mcp]]`/`[[connect:feishu]]` 标记被就地渲染为"去连接"引导，不再漏出原始标记。**飞书连接**：新增"权限核验"按钮（刷新令牌并按已授权 scope 重建能力清单）、一次性全权限授权选项、授权跳转修复。**Windows junction 修复**：`~/.omp` 挪盘（junction/符号链接）场景下旧会话恢复必失败、删除静默失效的问题——containment 检查接受根的真实路径形式，防逃逸安全检查不变。
 
 v0.13.5：修复主页工作区行重复显示——上一版把工作区头部贴进输入框卡片时遗留了旧的浮层条，导致项目行出现两次；现在只保留卡片顶部区一处。
 
