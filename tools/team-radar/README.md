@@ -26,6 +26,16 @@
 
     node tools/team-radar/agent.js --user 花名 --server http://服务器IP:8787
 
+更省事的方式（一键启动，自动用 git user.name 作为花名）：
+
+- macOS：在访达里双击 tools/team-radar/start-mac.command
+  （首次如提示无法验证，右键选择"打开"一次即可）
+- Windows：右键 tools/team-radar/start-windows.ps1，选择"使用 PowerShell 运行"
+
+固定花名（每台电脑执行一次，配置保存在本地 git，不会进仓库）：
+
+    git config radar.user 花名
+
 探针每 15 秒上报一次；超过 2 分钟未上报的会话将标记为"会话超时"。
 
 ## 团队部署拓扑（3 台 Mac + 1 台 Windows）
