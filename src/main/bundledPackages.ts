@@ -74,9 +74,20 @@ export function planBundledPackageAction(
 
 /** Idempotent, best-effort: safe to call on every startup. */
 export async function ensureBundledPackages(): Promise<void> {
-  const installedNames = new Set(
-    (await listPackages().catch(() => [])).map((pkg) => pkg.name)
-  )
+  // A FAILED listing (CLI cold start, spawn timeout, transient error) says
+  // nothing about what the user removed. Treating it as an empty list used
+  // to stamp every bundled package userRemoved=true on a slow first boot,
+  // silently deregistering the whole toolkit set. Only a listing that
+  // actually came back may drive removal decisions.
+  let listed: string[] | null = null
+  try {
+    listed = (await listPackages()).map((pkg) => pkg.name)
+  } catch {
+    listed = null
+  }
+  if (listed === null) return
+
+  const installedNames = new Set(listed)
   const record: Record<string, { version: string; userRemoved: boolean }> = {
     ...(getStore('bundledPackages') ?? {})
   }
