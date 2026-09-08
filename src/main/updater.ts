@@ -43,6 +43,12 @@ function errorMessage(err: unknown): string {
   if (/code signature at url|did not pass validation/i.test(message)) {
     return '当前安装包未配置受信任的代码签名，请先安装最新版本；后续版本可直接在应用内更新。'
   }
+  // A release tag can be published minutes before its ~1GB of artifacts
+  // finish uploading; during that window latest.yml 404s and the raw
+  // HttpError reads like a broken updater. Say what is actually happening.
+  if (/Cannot find latest\.yml/i.test(message)) {
+    return '新版本刚发布，更新文件还在上传中，请几分钟后再检查。'
+  }
   return message.length > 240 ? `${message.slice(0, 237)}…` : message
 }
 

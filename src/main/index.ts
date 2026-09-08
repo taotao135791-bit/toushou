@@ -37,7 +37,17 @@ if (!gotSingleInstanceLock) {
     if (!win) return
     if (win.isMinimized()) win.restore()
     win.show()
+    win.moveTop()
     win.focus()
+    // Windows foreground lock: a background process may not steal focus, so
+    // show()/focus() from the deferring launcher can end up as a taskbar
+    // flash the user never notices — the app then looks like it "won't
+    // open". Briefly raising always-on-top forces the existing window
+    // above every stack, then releases the flag.
+    if (process.platform === 'win32') {
+      win.setAlwaysOnTop(true, 'screen-saver')
+      win.setAlwaysOnTop(false)
+    }
   })
 }
 
