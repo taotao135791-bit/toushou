@@ -6,6 +6,7 @@ import {
   HistorySessionFile,
   deleteSessionCopiesByUuid,
   isSessionUuid,
+  readSessionUuid,
   sessionDirCandidatesFor,
   sessionsRoot
 } from './sessionHistory'
@@ -175,10 +176,28 @@ export class HistorySessionGrantManager {
     }
 
     const current = await inspectSessionFile(stored.realPath)
-    if (
-      !sameIdentity(stored, current) ||
-      !(await this.belongsToWorkspaceSessionDirs(stored.realPath, context.workspaceRealPath))
-    ) {
+    if (!current) {
+      // Missing file: keep the capability so the uuid-based delete fallback
+      // (deleteStale) can still retire the row; the TTL sweeps it otherwise.
+      return null
+    }
+    if (!sameIdentity(stored, current)) {
+      // omp resume rewrites the session file in place (fork bookkeeping updates
+      // the title/header lines), so the minted dev/ino identity drifts even
+      // though the row still names the same session. Self-heal when the file's
+      // header uuid still matches the minted descriptor; a CHANGED uuid means
+      // the row is genuinely superseded.
+      const uuidNow = await readSessionUuid(stored.realPath)
+      if (uuidNow !== stored.descriptor.uuid) {
+        this.remove(historyId)
+        return null
+      }
+      const refreshed = current as PathIdentity
+      stored.realPath = refreshed.realPath
+      stored.dev = refreshed.dev
+      stored.ino = refreshed.ino
+    }
+    if (!(await this.belongsToWorkspaceSessionDirs(stored.realPath, context.workspaceRealPath))) {
       this.remove(historyId)
       return null
     }
@@ -210,6 +229,35 @@ export class HistorySessionGrantManager {
   revoke(historyId: unknown): boolean {
     if (!validOpaqueId(historyId)) return false
     return this.remove(historyId)
+  }
+
+  /**
+   * Delete fallback for a row whose file no longer matches the minted inode
+   * identity (omp resume rewrote it in place) or vanished outright. The
+   * owner/workspace/expiry binding is still enforced, and deletion sweeps by
+   * the descriptor's uuid inside the runtime's sessions root — Main-side, so
+   * no renderer path is ever trusted. True when the uuid no longer resolves
+   * anywhere (deleted, or already gone — either way the row is dead).
+   */
+  async deleteStale(
+    historyId: unknown,
+    context: HistorySessionGrantContext
+  ): Promise<boolean> {
+    this.pruneExpired()
+    if (!validOpaqueId(historyId)) return false
+    const stored = this.grants.get(historyId)
+    if (
+      !stored ||
+      stored.ownerWebContentsId !== context.ownerWebContentsId ||
+      stored.workspaceGrantId !== context.workspaceGrantId ||
+      stored.workspaceRealPath !== context.workspaceRealPath ||
+      stored.expiresAt <= this.now()
+    ) {
+      return false
+    }
+    const deleted = await deleteSessionCopiesByUuid(stored.descriptor.uuid, this.getAgentDir())
+    if (deleted) this.remove(historyId)
+    return deleted
   }
 
   /**

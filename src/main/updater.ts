@@ -329,7 +329,23 @@ export async function updaterCheck(): Promise<UpdaterStatus> {
     try {
       await autoUpdater.checkForUpdates()
     } catch (err) {
-      setStatus({ status: 'error', message: errorMessage(err) })
+      // A single check can die on a transient network blip (VPN route change
+      // surfaces as net::ERR_NETWORK_CHANGED, plus the usual timeouts). One
+      // delayed retry before the error reaches the banner — a flapping route
+      // must not read as "update failed".
+      const transient = /ERR_NETWORK_CHANGED|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed/i.test(
+        err instanceof Error ? err.message : String(err)
+      )
+      if (!transient) {
+        setStatus({ status: 'error', message: errorMessage(err) })
+      } else {
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 3000))
+          await autoUpdater.checkForUpdates()
+        } catch (retryErr) {
+          setStatus({ status: 'error', message: errorMessage(retryErr) })
+        }
+      }
     }
     return currentStatus
   })()

@@ -870,18 +870,23 @@ export function registerIpc() {
       const resolved = requireGrant(grantId)
       if (!resolved) return false
       bindHistorySessionGrantOwnerCleanup(event)
-      const deleted = await historySessionGrantManager.withResolved(historyId, {
+      const context = {
         workspaceGrantId: resolved.grant.id,
         workspaceRealPath: resolved.realPath,
         ownerWebContentsId: event.sender.id
-      }, async (filePath) => {
+      }
+      const deleted = await historySessionGrantManager.withResolved(historyId, context, async (filePath) => {
         // Copy-proof: sweep same-uuid copies in every layout, or the scanner
         // resurrects the session from its legacy/sanitized duplicate.
         const result = await deleteSessionFileEverywhere(filePath)
         if (result) historySessionGrantManager.revoke(historyId)
         return result
       })
-      return deleted === true
+      if (deleted === true) return true
+      // The inode pin no longer matches (omp resume rewrites the file in
+      // place) or the file is gone. Sweep by the descriptor's uuid instead so
+      // a rewritten row can always be deleted.
+      return historySessionGrantManager.deleteStale(historyId, context)
     }
   )
 
