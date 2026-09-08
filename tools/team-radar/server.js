@@ -180,5 +180,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// 自动清理：超过 10 分钟未上报的成员直接移除，避免"幽灵卡片"长期挂墙
+const GHOST_MS = 10 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  let removed = false;
+  for (const [k, u] of users) {
+    if (now - u.ts > GHOST_MS) {
+      users.delete(k);
+      removed = true;
+    }
+  }
+  if (removed) broadcast();
+}, HEARTBEAT_MS);
 setInterval(broadcast, HEARTBEAT_MS);
 server.listen(PORT, HOST, () => console.log('团队雷达已启动: http://' + HOST + ':' + PORT));
