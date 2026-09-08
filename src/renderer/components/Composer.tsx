@@ -354,6 +354,10 @@ export default memo(function Composer({
   // and skills join when a session provides them.
   const slashQuery = /^\/(\S*)$/.test(text) && !menuDismissed ? text.slice(1).toLowerCase() : null
   const menuItems = useMemo<SlashMenuItem[]>(() => {
+    // The menu exists ONLY while the whole input is "/partial" — without this
+    // gate the palette is always "open" and Enter would run a command instead
+    // of sending the message (basic chat breakage).
+    if (slashQuery === null) return []
     const appItems: SlashMenuItem[] = (appCommands ?? []).map((cmd) => ({
       name: cmd.name,
       description: cmd.description,

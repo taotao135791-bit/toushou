@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.14.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.14.1) 下载：
+当前版本 v0.14.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.14.2) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.1/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.1/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.2/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.2/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.14.2：**修复严重回归——无法发送消息**。v0.14.1 的斜杠面板丢失了"仅在输入 / 命令时打开"的门卫判断，导致面板常开、Enter 键被拦截执行命令而非发送消息（表现为消息发不出、输入被清空）。现已恢复该判断：斜杠面板只在输入以 / 开头时出现，正常对话不受影响。
 
 v0.14.1：斜杠命令面板（对齐 ZCode）。输入 **/** 唤起分组命令面板，主页和会话内都可用——**命令组**：新建对话、MCP 服务状态、定时任务、看板、Skill 库、插件与技能、设置，回车直接执行；**命令/技能组**：当前会话运行时提供的命令与技能（如 /material）选中即插入。过滤按名称前缀优先、描述命中兜底；键盘 ↑↓ 选择、Enter 执行、Esc 关闭。
 
