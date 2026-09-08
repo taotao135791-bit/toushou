@@ -177,8 +177,14 @@ export const IPC_CHANNELS = {
   FEISHU_DISCONNECT: 'feishu:disconnect',
   FEISHU_OPEN_URL: 'feishu:open-url',
   FEISHU_OAUTH_BEGIN: 'feishu:oauth-begin',
+  FEISHU_VERIFY_SCOPES: 'feishu:verify-scopes',
   FEISHU_OAUTH_POLL: 'feishu:oauth-poll',
   FEISHU_OAUTH_CANCEL: 'feishu:oauth-cancel',
+  /** MCP service connections (投手 stewards the runtime's native mcp.json). */
+  MCP_LIST: 'mcp:list',
+  MCP_ADD: 'mcp:add',
+  MCP_REMOVE: 'mcp:remove',
+  MCP_TEST: 'mcp:test',
   /** In-app browser panel (Main-owned WebContentsView over the renderer). */
   BROWSER_SHOW: 'browser:show',
   BROWSER_HIDE: 'browser:hide',

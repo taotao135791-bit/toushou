@@ -81,7 +81,8 @@ export interface FeishuOAuthAuthorizationView {
   verificationUri: string
   verificationUriComplete: string
   expiresAt: number
-  capability: FeishuCapability
+  /** 'all' 表示一次性申请全部可选权限。 */
+  capability: FeishuCapability | 'all'
 }
 
 export type FeishuOAuthBeginResult =
@@ -119,4 +120,34 @@ export interface FeishuToolResult {
   data?: unknown
   error?: string
   authorizationRequired?: FeishuCapability
+}
+
+/* ---------- MCP 服务连接（投手作为配置管家写入运行时原生 mcp.json） ---------- */
+
+export type McpTransport = 'http' | 'sse' | 'stdio'
+
+/** 渲染层可见的 MCP 服务器条目（端点脱敏，令牌永不出主进程）。 */
+export interface McpConnectionInfo {
+  name: string
+  transport: McpTransport
+  endpointMasked: string
+  /** true = 由投手连接页添加（可在此移除）；false = 用户手写，投手不碰。 */
+  managed: boolean
+  enabled: boolean
+}
+
+/** 添加输入：粘贴整段 JSON，或表单三件套（名称 + 地址 + 令牌）。 */
+export interface McpAddInput {
+  name?: string
+  url?: string
+  token?: string
+  headerName?: string
+  rawJson?: string
+}
+
+export type McpMutationResult = { ok: true; name: string } | { ok: false; error: string }
+
+export interface McpTestOutcome {
+  ok: boolean
+  detail: string
 }

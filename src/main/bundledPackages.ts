@@ -18,6 +18,7 @@ import { getStore, setStore } from './store'
 export const BUNDLED_PACKAGES: readonly { name: string; resourceDir: string }[] = [
   { name: 'toushou-ads-toolkit', resourceDir: 'ads-toolkit' },
   { name: 'toushou-browser-use', resourceDir: 'browser-use-toolkit' },
+  { name: 'toushou-material-research', resourceDir: 'material-research-toolkit' },
   { name: 'toushou-feishu-toolkit', resourceDir: 'feishu-toolkit' }
 ]
 

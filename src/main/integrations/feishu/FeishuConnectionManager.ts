@@ -263,7 +263,7 @@ export class FeishuConnectionManager {
     return result
   }
 
-  async beginOAuth(capability: FeishuCapability): Promise<FeishuOAuthBeginResult> {
+  async beginOAuth(capability: FeishuCapability | 'all'): Promise<FeishuOAuthBeginResult> {
     try {
       const authorization = await this.oauthManager.begin(capability)
       const view: FeishuOAuthAuthorizationView = { ...authorization, capability }
@@ -274,6 +274,14 @@ export class FeishuConnectionManager {
       this.emitState()
       return { ok: false, error: message, snapshot: this.getSnapshot() }
     }
+  }
+
+  /** 刷新令牌并按已授权 scope 重建能力清单（权限核验按钮）。 */
+  async verifyScopes(): Promise<FeishuConnectionSnapshot> {
+    await this.oauthManager.ensureFreshToken().catch(() => false)
+    this.authorizedCapabilities = await this.oauthManager.authorizedCapabilities()
+    this.emitState()
+    return this.getSnapshot()
   }
 
   async pollOAuth(): Promise<FeishuConnectionSnapshot> {

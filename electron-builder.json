@@ -33,6 +33,10 @@
     {
       "from": "resources/feishu-toolkit",
       "to": "feishu-toolkit"
+    },
+    {
+      "from": "resources/material-research-toolkit",
+      "to": "material-research-toolkit"
     }
   ],
   "mac": {
