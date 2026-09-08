@@ -244,6 +244,32 @@ describe('isSessionFilePath / deleteSessionFile', () => {
     // The outside target is untouched.
     expect(existsSync(outside)).toBe(true)
   })
+
+  it('accepts realpath-resolved files when the sessions root sits behind a junction/symlink', () => {
+    // Windows D-drive layouts redirect %USERPROFILE%\.omp through a junction;
+    // callers (HistorySessionGrantManager) hand over canonical realpaths, so
+    // the guard must accept the real spelling of a file inside the real root.
+    const realAgent = mkdtempSync(path.join(tmpdir(), 'omp-real-'))
+    const linkedAgent = agentDir + '-link'
+    symlinkSync(realAgent, linkedAgent)
+    try {
+      const dir = sessionDirFor(projectDir, linkedAgent)
+      mkdirSync(dir, { recursive: true })
+      const lexical = path.join(dir, 'linked_uuid-lk.jsonl')
+      writeFileSync(lexical, '{"type":"session"}')
+      // The realpath spelling (what the grant manager resolves and stores).
+      const canonical = realpathSync(lexical)
+      expect(canonical).not.toBe(lexical)
+      expect(isSessionFilePath(canonical, linkedAgent)).toBe(true)
+      expect(isSessionFilePath(lexical, linkedAgent)).toBe(true)
+      // A file under the real root that is NOT a session file stays rejected.
+      expect(isSessionFilePath(path.join(realpathSync(path.join(linkedAgent, 'sessions')), 'stray.jsonl'), linkedAgent)).toBe(true)
+      expect(isSessionFilePath(path.join(realAgent, 'not-sessions.jsonl'), linkedAgent)).toBe(false)
+    } finally {
+      rmSync(linkedAgent, { force: true })
+      rmSync(realAgent, { recursive: true, force: true })
+    }
+  })
 })
 
 /**

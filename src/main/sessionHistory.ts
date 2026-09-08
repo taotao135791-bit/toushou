@@ -230,16 +230,26 @@ export function isSessionFilePath(
   if (typeof filePath !== 'string' || !filePath.endsWith('.jsonl')) return false
   const root = path.resolve(sessionsRoot(agentDir))
   const resolved = path.resolve(filePath)
-  // Fast lexical reject first.
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) return false
+  // The sessions root may itself sit behind a junction/symlink (e.g. a
+  // redirected %USERPROFILE%\.omp on Windows): callers hand us canonical
+  // realpaths of files under that root, so accept containment under either
+  // the lexical root or its canonical real form. Fast lexical reject first.
+  let rootReal = root
+  try {
+    rootReal = realpathSync(root)
+  } catch {
+    // Missing/unresolvable root: the lexical form is all the evidence there is.
+  }
+  const under = (base: string, candidate: string) =>
+    candidate === base || candidate.startsWith(base + path.sep)
+  if (!under(root, resolved) && !(rootReal !== root && under(rootReal, resolved))) return false
   // Realpath containment: when the file exists, its real path must stay inside
-  // the sessions root — a `session.jsonl -> /outside/file` symlink is rejected.
+  // the real sessions root — a `session.jsonl -> /outside/file` symlink is rejected.
   // A missing/broken target has nothing to follow (no symlink-escape risk), so
   // the lexical check above already suffices there.
   try {
-    const rootReal = realpathSync(root)
     const fileReal = realpathSync(resolved)
-    return fileReal === rootReal || fileReal.startsWith(rootReal + path.sep)
+    return under(rootReal, fileReal)
   } catch {
     return true
   }
