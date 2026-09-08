@@ -1,5 +1,20 @@
-import { useCallback, useRef, useEffect, useState } from 'react'
-import { FolderOpen, FolderPlus, MessageSquare, Download, Loader2, ChevronDown, PanelRight } from 'lucide-react'
+import { useCallback, useRef, useEffect, useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  FolderOpen,
+  FolderPlus,
+  MessageSquare,
+  Download,
+  Loader2,
+  ChevronDown,
+  PanelRight,
+  LayoutDashboard,
+  CalendarClock,
+  Plug,
+  BookOpen,
+  Puzzle,
+  Settings2
+} from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
@@ -62,6 +77,27 @@ export default function ChatPanel() {
   // intermediate positions would otherwise flip pinned off mid-flight.
   const jumpingRef = useRef(false)
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
+  const navigate = useNavigate()
+  // Built-in slash commands: available in the palette everywhere (home and
+  // chat) — app commands must not depend on a live session. Deps are stable
+  // across streaming renders, so the memoized Composer's props hold.
+  const appCommands = useMemo(
+    () => [
+      {
+        name: 'new',
+        description: t('slash.new'),
+        icon: MessageSquare,
+        run: () => useAppStore.getState().setCurrentSessionId(null)
+      },
+      { name: 'mcp', description: t('slash.mcp'), icon: Plug, run: () => navigate('/connections') },
+      { name: 'tasks', description: t('slash.tasks'), icon: CalendarClock, run: () => navigate('/tasks') },
+      { name: 'boards', description: t('slash.boards'), icon: LayoutDashboard, run: () => navigate('/boards') },
+      { name: 'skills', description: t('slash.skills'), icon: BookOpen, run: () => navigate('/skills') },
+      { name: 'plugins', description: t('slash.plugins'), icon: Puzzle, run: () => navigate('/plugins') },
+      { name: 'settings', description: t('slash.settings'), icon: Settings2, run: () => navigate('/settings') }
+    ],
+    [t, navigate]
+  )
   const [exporting, setExporting] = useState(false)
   const [exportFailed, setExportFailed] = useState(false)
   const [exportSuccessPath, setExportSuccessPath] = useState<string | null>(null)
@@ -476,6 +512,7 @@ export default function ChatPanel() {
                   focusKey={currentSessionId}
                   disabled={cliAvailable === false}
                   commands={slashCommands}
+                  appCommands={appCommands}
                   onCompact={currentSessionId ? handleCompact : undefined}
                   compact={compact}
                 />
@@ -609,6 +646,7 @@ export default function ChatPanel() {
             focusKey={currentSessionId}
             disabled={cliAvailable === false}
             commands={slashCommands}
+            appCommands={appCommands}
             onCompact={currentSessionId ? handleCompact : undefined}
             compact={compact}
           />

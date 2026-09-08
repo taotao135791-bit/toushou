@@ -25,6 +25,7 @@ import {
 } from '../lib/composerDraft'
 import { dispatchSteer, steerFailureKey } from '../lib/steerDispatch'
 import { useT } from '../i18n'
+import { filterSlashItems, groupSlashItems, SlashMenuItem } from '../lib/slashCommands'
 import { useGitInfo } from '../lib/useGitInfo'
 import { basename } from '../lib/path'
 import ModelPicker from './ModelPicker'
@@ -47,6 +48,8 @@ interface ComposerProps {
   commands?: SlashCommand[]
   /** Built-in /compact action, shown first in the slash menu. */
   onCompact?: () => void
+  /** Built-in app commands — always in the slash menu, even without a session. */
+  appCommands?: AppCommandSpec[]
   /**
    * The chat column is narrower than 760px (browser panel open, small
    * window): pickers and status chips collapse to icon-only so the toolbar
@@ -55,7 +58,15 @@ interface ComposerProps {
   compact?: boolean
 }
 
-type MenuItem = SlashCommand & { builtin?: boolean }
+
+
+/** Built-in command surfaced in the slash menu regardless of session state. */
+export interface AppCommandSpec {
+  name: string
+  description: string
+  icon?: unknown
+  run: () => void
+}
 
 /** An image staged in the composer, riding along with the next send/queue. */
 interface PendingImage {
@@ -186,6 +197,7 @@ export default memo(function Composer({
   stopping = false,
   commands = [],
   onCompact,
+  appCommands,
   compact = false
 }: ComposerProps) {
   const [text, setText] = useState('')
@@ -337,19 +349,37 @@ export default memo(function Composer({
     return () => clearTimeout(timer)
   }, [imageError])
 
-  // Slash menu is active while the whole input is a single "/partial" token
+  // Slash menu is active while the whole input is a single "/partial" token.
+  // Built-in app commands (navigate/act) always participate; runtime prompts
+  // and skills join when a session provides them.
   const slashQuery = /^\/(\S*)$/.test(text) && !menuDismissed ? text.slice(1).toLowerCase() : null
-  const menuItems = useMemo<MenuItem[]>(() => {
-    if (slashQuery === null) return []
-    const all: MenuItem[] = [
+  const menuItems = useMemo<SlashMenuItem[]>(() => {
+    const appItems: SlashMenuItem[] = (appCommands ?? []).map((cmd) => ({
+      name: cmd.name,
+      description: cmd.description,
+      source: 'app' as const,
+      icon: cmd.icon,
+      run: cmd.run
+    }))
+    const all: SlashMenuItem[] = [
+      ...appItems,
       ...(onCompact
         ? [{ name: 'compact', description: t('composer.slashCompact'), source: 'prompt' as const, builtin: true }]
         : []),
-      ...commands
+      ...commands.map((c) => ({ name: c.name, description: c.description ?? '', source: c.source }))
     ]
-    return all.filter((c) => c.name.toLowerCase().startsWith(slashQuery)).slice(0, 8)
-  }, [slashQuery, commands, onCompact, t])
+    return filterSlashItems(all, slashQuery)
+  }, [slashQuery, commands, onCompact, t, appCommands])
   const menuOpen = menuItems.length > 0
+  const menuGroups = useMemo(
+    () =>
+      groupSlashItems(menuItems, {
+        app: t('slash.groupApp'),
+        command: t('slash.groupCommand'),
+        skill: t('slash.groupSkill')
+      }),
+    [menuItems, t]
+  )
 
   // @ file menu: active on a trailing "@token". Without a workspace there is
   // no file list to show — surface the reason instead of swallowing the "@".
@@ -409,7 +439,15 @@ export default memo(function Composer({
     })
   }
 
-  const pickCommand = (item: MenuItem) => {
+  const pickCommand = (item: SlashMenuItem) => {
+    if (item.run) {
+      // App command: clear the "/partial" and execute — navigation and other
+      // side effects live in the callback provided by ChatPanel.
+      commitDraft('')
+      setCaret(0)
+      item.run()
+      return
+    }
     if (item.builtin) {
       commitDraft('')
       setCaret(0)
@@ -873,28 +911,46 @@ export default memo(function Composer({
                 {t('composer.slashEmpty')}
               </div>
             ) : (
-              menuItems.map((item, i) => (
-              <button
-                key={`${item.source}-${item.name}`}
-                onMouseEnter={() => setMenuIndex(i)}
-                onClick={() => pickCommand(item)}
-                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
-                  i === menuIndex ? 'bg-overlay-strong' : ''
-                }`}
-              >
-                <Zap size={12} className={item.builtin ? 'shrink-0 text-accent' : 'shrink-0 text-cream-faint'} />
-                <span className="shrink-0 whitespace-nowrap font-mono text-[12px] text-cream">
-                  /{item.name}
-                </span>
-                {item.description && (
-                  <span className="min-w-0 truncate text-[11px] text-cream-faint">
-                    {item.description}
-                  </span>
-                )}
-                <span className="ml-auto shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-cream-faint">
-                  {item.builtin ? t('composer.slashBuiltin') : item.source}
-                </span>
-              </button>
+              menuGroups.map((group) => (
+                <div key={group.label}>
+                  <div className="px-2.5 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
+                    {group.label}
+                  </div>
+                  {group.items.map((item) => {
+                    const i = menuItems.indexOf(item)
+                    const Icon = (item.icon as typeof Zap) ?? Zap
+                    return (
+                      <button
+                        key={`${item.source}-${item.name}`}
+                        onMouseEnter={() => setMenuIndex(i)}
+                        onClick={() => pickCommand(item)}
+                        className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
+                          i === menuIndex ? 'bg-overlay-strong' : ''
+                        }`}
+                      >
+                        <Icon
+                          size={12}
+                          className={
+                            item.source === 'app' || item.builtin
+                              ? 'shrink-0 text-accent'
+                              : 'shrink-0 text-cream-faint'
+                          }
+                        />
+                        <span className="shrink-0 whitespace-nowrap font-mono text-[12px] text-cream">
+                          /{item.name}
+                        </span>
+                        {item.description && (
+                          <span className="min-w-0 truncate text-[11px] text-cream-faint">
+                            {item.description}
+                          </span>
+                        )}
+                        <span className="ml-auto shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-cream-faint">
+                          {item.builtin ? t('composer.slashBuiltin') : item.source === 'app' ? '应用' : item.source}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
               ))
             )}
           </div>
