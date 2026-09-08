@@ -96,7 +96,13 @@ export function resolvePermissionMode(mode: PermissionMode): {
  *   (subagent tool inheritance is not verified) and `computer` stays off
  *   (upstream default).
  */
-const OMP_READONLY_TOOLS = ['read', 'grep', 'glob', 'lsp', 'inspect_image', 'web_search', 'todo']
+/**
+ * omp 18.1 removed the `inspect_image` tool: its CLI now rejects any
+ * --tools allowlist mentioning it with a usage error, which kills the
+ * process before the RPC handshake (surfaced by the OMP latest canary
+ * job). Keep the list valid across both runtime generations.
+ */
+const OMP_READONLY_TOOLS = ['read', 'grep', 'glob', 'lsp', 'web_search', 'todo']
 const OMP_NO_BASH_TOOLS = [...OMP_READONLY_TOOLS, 'edit', 'write', 'notebook', 'browser']
 
 export interface CurrentPermissionPlan {

@@ -159,7 +159,7 @@ describe('current Oh My Pi (omp) — RPC v2 profile', () => {
     if (!available) return
     const live = startSession(OMP_BIN, [
       '--tools',
-      'read,grep,glob,lsp,inspect_image,web_search,todo',
+      'read,grep,glob,lsp,web_search,todo',
       '--approval-mode',
       'always-ask'
     ])
