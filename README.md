@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.14.3，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.14.3) 下载：
+当前版本 v0.14.5，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.14.5) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.3/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.3/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.3/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.5/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.5/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.5/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.14.5：会话"重启后丢失/打不开"系列修复 + 全量交互兜底。**恢复会话不再开空会话**——恢复时拉不到对话内容会自动重试一次，仍失败则明确提示"稍后重试、会话未丢失"，不再呈现空白首页让你以为数据没了；历史会话恢复凭证过期改为复核通过后自动续期，应用开久了点历史行不再"第一次没反应"；⌘K 和跨项目打开历史行不再因过期状态竞速而静默失败。**删除会话不再静默失败**——删除前先向运行时要一次凭据，失败会给明确提示，删掉的会话不再"复活"。**侧栏可读性**——正在使用的会话行标题不再被压成一个字；恢复过的会话不再全部被改名成"投手工作区"；侧栏搜索终于能搜到历史会话与跨项目会话。**交互兜底补齐**——斜杠命令面板不再被窗口上缘裁切；定时任务弹窗全面中文化、支持 Esc 关闭、保存失败保留草稿、删除需二次确认；Office 有未保存修改时关面板需确认、引擎加载失败可重试；⌘K 面板与插件对话框不再误把输入法选字回车当成提交；归档运行中的会话需要二次确认并提示排队消息被清除；checkpoint/压缩/插件启动失败均有提示；超大粘贴自动截断、拖拽附件有数量上限；看板与 Skill 弹窗支持 Esc。另修复连接页重复的"浏览云文档"权限角标、@ 菜单空工作区提示，自定义 Provider 测试不再依赖外部网络。
 
 v0.14.3：历史会话行卡死修复 + 更新检查重试。**恢复过一次的老会话不再卡死**——OMP 恢复会话时会原地重写会话文件（更换身份号），导致指纹校验失配、该行后续恢复与删除全部失效；现在恢复时校验文件头 uuid 一致则自愈指纹，删除保留按 uuid 的兜底清扫（owner/工作区授权边界不变），恢复失败后界面自动重扫两个列表、死行消失。**应用内更新更抗网络抖动**：疑似瞬断（VPN 换线路等）时延迟 3 秒自动重试一次，仍失败才报错。另含 omp 18.1 兼容（移除已下线的 inspect_image 工具白名单）与打包清单修复。
 
