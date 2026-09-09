@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import http from 'node:http'
 import path from 'node:path'
+import { PackageInfo } from '../../shared/types'
 
 // skills.ts resolves its default dir through electron's app.getPath and
 // reveals through shell; tests inject explicit dirs instead.
@@ -13,6 +14,11 @@ vi.mock('electron', () => ({
   shell: { showItemInFolder: (...args: unknown[]) => showItemInFolder(...args) }
 }))
 
+// The real packages module drags in omp/store, whose top-level app.getPath
+// call would run before userDataDir initializes (TDZ). collectBundledSkills
+// takes the package list as data, so the async listing is irrelevant here.
+vi.mock('../packages', () => ({ listPackages: async () => [] }))
+
 import {
   importSkillFile,
   listSkills,
@@ -21,7 +27,8 @@ import {
   readSkill,
   readSkillSystemPrompt,
   revealSkillsDir,
-  stopSkillsServerForTests
+  stopSkillsServerForTests,
+  collectBundledSkills
 } from '../skills'
 
 let dir: string
@@ -196,6 +203,69 @@ describe('openSkillHtml (loopback server)', () => {
     const traversal = await fetch(result.url + '%2F..%2Fescape.md')
     expect([400, 404]).toContain(traversal.status)
   }, 10_000)
+})
+
+describe('collectBundledSkills', () => {
+  const pkg = (over: Partial<PackageInfo>): PackageInfo => ({
+    source: 'npm:test',
+    kind: 'npm',
+    name: 'toushou-test',
+    enabled: true,
+    resources: [],
+    pinned: false,
+    ...over
+  })
+
+  it('collects convention skills, preferring the package prompt, wrapping the SOP otherwise', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'omp-bundled-'))
+    try {
+      mkdirSync(path.join(root, 'skills', 'creative'), { recursive: true })
+      mkdirSync(path.join(root, 'prompts'), { recursive: true })
+      writeFileSync(
+        path.join(root, 'skills', 'creative', 'SKILL.md'),
+        [
+          '---',
+          'name: creative-requirements',
+          'description: 需求文档标准',
+          '---',
+          '',
+          '# 素材需求文档标准（飞书）',
+          '',
+          'SOP 正文'
+        ].join(LINE_BREAK)
+      )
+      writeFileSync(path.join(root, 'prompts', 'creative.md'), '用创意需求技能处理本次任务。')
+      writeFileSync(path.join(root, 'skills', 'solo.md'), '单文件打法正文')
+
+      const entries = collectBundledSkills([pkg({ path: root })])
+      expect(entries.map((e) => e.id).sort()).toEqual(['toushou-test/creative', 'toushou-test/solo'])
+      const creative = entries.find((e) => e.id.endsWith('/creative'))
+      // Display name prefers the document's first H1; the front-matter slug
+      // stays the machine invocation name inside prompts.
+      expect(creative?.name).toBe('素材需求文档标准（飞书）')
+      expect(creative?.description).toBe('需求文档标准')
+      expect(creative?.prompt).toBe('用创意需求技能处理本次任务。')
+      const solo = entries.find((e) => e.id.endsWith('/solo'))
+      expect(solo?.name).toBe('solo')
+      expect(solo?.prompt).toContain('<team-skill name="solo">')
+      expect(solo?.prompt).toContain('单文件打法正文')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('skips disabled packages and packages without a skills folder', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'omp-bundled-'))
+    try {
+      mkdirSync(path.join(root, 'skills'), { recursive: true })
+      writeFileSync(path.join(root, 'skills', 'x.md'), 'x')
+      expect(collectBundledSkills([pkg({ path: root, enabled: false })])).toEqual([])
+      expect(collectBundledSkills([pkg({ path: path.join(root, 'missing') })])).toEqual([])
+      expect(collectBundledSkills([pkg({})])).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 const LINE_BREAK = '\n'

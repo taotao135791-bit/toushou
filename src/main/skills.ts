@@ -4,6 +4,8 @@ import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSy
 import path from 'node:path'
 import {
   Language,
+  BundledSkillEntry,
+  PackageInfo,
   SkillEntry,
   SkillDeleteResult,
   SkillImportResult,
@@ -14,12 +16,16 @@ import {
 import {
   SKILL_LIMITS,
   buildSkillEntry,
+  firstMarkdownHeading,
+  formatSkillChatMessage,
   formatSkillSystemPrompt,
   isValidSkillId,
+  parseSkillMetadata,
   sanitizeSkillFileName,
   skillExtensionOf,
   skillKindForExtension
 } from '../shared/skills'
+import { listPackages } from './packages'
 
 /**
  * SKILL 目录 persistence + loopback serving.
@@ -91,6 +97,90 @@ export function readSkill(id: unknown, dir: string = skillsDir()): SkillReadResu
   } catch {
     return { ok: false, error: 'read-failed' }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Toolkit-bundled skills (read-only view over installed plugin packages)
+// ---------------------------------------------------------------------------
+
+function isFile(p: string): boolean {
+  try {
+    return statSync(p).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** A package's matching prompts/<stem>.md is the designed invocation; null
+ * when the package declares none. */
+function bundledInvokePrompt(packagePath: string, stem: string): string | null {
+  const candidate = path.join(packagePath, 'prompts', `${stem}.md`)
+  if (!isFile(candidate)) return null
+  try {
+    const prompt = readFileSync(candidate, 'utf-8').trim()
+    return prompt || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Enumerate the skills shipped inside installed packages (convention layout:
+ * `skills/<name>/SKILL.md` or `skills/<name>.md`). Paths come exclusively
+ * from Main's own package listing — the renderer never supplies one — and
+ * oversized/unreadable entries are skipped, never fatal.
+ */
+export function collectBundledSkills(packages: PackageInfo[]): BundledSkillEntry[] {
+  const entries: BundledSkillEntry[] = []
+  for (const pkg of packages) {
+    if (!pkg.enabled || !pkg.path) continue
+    const skillsRoot = path.join(pkg.path, 'skills')
+    let children: string[]
+    try {
+      children = readdirSync(skillsRoot)
+    } catch {
+      continue
+    }
+    for (const child of children.sort()) {
+      const dir = path.join(skillsRoot, child)
+      let file: string | null = null
+      let stem = ''
+      if (/\.md$/i.test(child) && isFile(dir)) {
+        file = dir
+        stem = child.replace(/\.md$/i, '')
+      } else if (isFile(path.join(dir, 'SKILL.md'))) {
+        file = path.join(dir, 'SKILL.md')
+        stem = child
+      }
+      if (!file) continue
+      let content: string
+      try {
+        const raw = readFileSync(file)
+        if (raw.length > SKILL_LIMITS.maxFileBytes) continue
+        content = raw.toString('utf-8')
+      } catch {
+        continue
+      }
+      const meta = parseSkillMetadata(content, path.basename(file))
+      // Front-matter `name` is the machine invocation slug; the document's
+      // first H1 is the human display title toolkit skills are written with.
+      const displayName = firstMarkdownHeading(content) ?? meta.name
+      entries.push({
+        id: `${pkg.name}/${stem}`,
+        name: displayName,
+        description: meta.description,
+        packageName: pkg.name,
+        content,
+        prompt: bundledInvokePrompt(pkg.path, stem) ?? formatSkillChatMessage(displayName, content)
+      })
+    }
+  }
+  return entries
+}
+
+export async function listBundledSkills(): Promise<BundledSkillEntry[]> {
+  const packages = await listPackages().catch(() => [])
+  return collectBundledSkills(packages)
 }
 
 /**

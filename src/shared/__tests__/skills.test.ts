@@ -9,7 +9,8 @@ import {
   formatSkillChatMessage,
   parseSkillChatMessage,
   formatSkillSystemPrompt,
-  stripSkillFrontMatter
+  stripSkillFrontMatter,
+  firstMarkdownHeading
 } from '../skills'
 
 describe('skillExtensionOf / skillKindForExtension', () => {
@@ -176,6 +177,18 @@ describe('parseSkillChatMessage', () => {
     expect(parseSkillChatMessage(message)?.name).toBe('打"法"')
     expect(parseSkillChatMessage('普通消息，没有标签')).toBeNull()
     expect(parseSkillChatMessage('残留 <team-skill name="x">未闭合')).toBeNull()
+  })
+})
+
+describe('firstMarkdownHeading', () => {
+  it('returns the first H1 after front matter', () => {
+    const content = ['---', 'name: creative-requirements', '---', '', '# 素材需求文档标准（飞书）', '', '正文', '## 二级不算'].join(LINE_BREAK)
+    expect(firstMarkdownHeading(content)).toBe('素材需求文档标准（飞书）')
+  })
+
+  it('returns null without an H1 or with only front matter', () => {
+    expect(firstMarkdownHeading('只有正文\n没有标题')).toBeNull()
+    expect(firstMarkdownHeading(['---', 'name: x', '---', '正文'].join(LINE_BREAK))).toBeNull()
   })
 })
 

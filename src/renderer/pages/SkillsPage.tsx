@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Code2,
+  Copy,
   FileText,
   FolderOpen,
   Import,
   Library,
   Loader2,
   MessageSquare,
+  Package,
   Plus,
   RefreshCw,
   Trash2,
@@ -15,7 +17,7 @@ import {
   TriangleAlert,
   X
 } from 'lucide-react'
-import { GithubSkillFile, GithubSkillSource, Session, SkillEntry } from '@shared/types'
+import { BundledSkillEntry, GithubSkillFile, GithubSkillSource, Session, SkillEntry } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { formatRelativeTime } from '../lib/time'
@@ -36,15 +38,33 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+/** Card descriptions clamp to two lines; hovering reveals the full text in a
+ * bubble beside the card so long SOP intros stay readable without a click. */
+function DescriptionWithBubble({ text }: { text: string }) {
+  if (!text) return null
+  return (
+    <div className="group/desc relative w-full">
+      <p className="line-clamp-2 w-full text-[12px] leading-5 text-cream-faint">{text}</p>
+      <div className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden w-64 rounded-lg border border-line bg-ink-800 px-3 py-2 text-[11px] leading-5 text-cream-dim shadow-card group-hover/desc:block">
+        {text}
+      </div>
+    </div>
+  )
+}
+
 export default function SkillsPage() {
   const t = useT()
   const navigate = useNavigate()
   const language = useAppStore((s) => s.language)
   const [entries, setEntries] = useState<SkillEntry[] | null>(null)
+  const [bundled, setBundled] = useState<BundledSkillEntry[]>([])
+  const [copied, setCopied] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importFailed, setImportFailed] = useState(false)
-  const [viewer, setViewer] = useState<{ entry: SkillEntry; content: string } | null>(null)
+  const [viewer, setViewer] = useState<
+    { entry: SkillEntry; content: string; bundled?: BundledSkillEntry } | null
+  >(null)
   const [viewerFailed, setViewerFailed] = useState(false)
   const [githubOpen, setGithubOpen] = useState(false)
   useEffect(() => {
@@ -90,6 +110,14 @@ export default function SkillsPage() {
         setEntries([])
         setLoadFailed(true)
       })
+    // Toolkit-bundled skills render alongside personal ones; the packages own
+    // them, so this view is read-mostly (copy prompt / open, never delete).
+    if (typeof window.electronAPI.listBundledSkills === 'function') {
+      window.electronAPI
+        .listBundledSkills()
+        .then((result) => setBundled(result.ok ? result.entries : []))
+        .catch(() => setBundled([]))
+    }
   }, [])
 
   useEffect(() => {
@@ -191,6 +219,30 @@ export default function SkillsPage() {
       flashNotice(setViewerFailed)
     } finally {
       setLaunchingId(null)
+    }
+  }
+
+  /** One-click invoke: put a ready-to-paste prompt on the clipboard. Bundled
+   * skills carry their package's designed invocation; personal ones wrap the
+   * full SOP as the same structured chat message 在对话中使用 sends. */
+  const copyInvokePrompt = async (target: SkillEntry | BundledSkillEntry) => {
+    try {
+      let text: string
+      if ('packageName' in target) {
+        text = target.prompt
+      } else {
+        if (target.kind !== 'markdown') return
+        const result = await window.electronAPI.readSkill(target.id)
+        if (!result.ok) {
+          flashNotice(setViewerFailed)
+          return
+        }
+        text = formatSkillChatMessage(target.name, result.content, language)
+      }
+      await navigator.clipboard.writeText(text)
+      flashNotice(setCopied)
+    } catch {
+      flashNotice(setViewerFailed)
     }
   }
 
@@ -343,12 +395,18 @@ export default function SkillsPage() {
         </div>
       )}
 
+      {copied && (
+        <div className="mx-4 mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs leading-5 text-emerald-700 dark:text-emerald-200/90">
+          {t('skills.copied')}
+        </div>
+      )}
+
       <main className="min-h-0 flex-1 overflow-y-auto p-4">
         {loading ? (
           <div className="flex h-full items-center justify-center text-cream-faint">
             <Loader2 size={18} className="animate-spin" />
           </div>
-        ) : entries.length === 0 ? (
+        ) : entries.length === 0 && bundled.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
             <Library size={28} className="text-cream-faint" />
             <p className="text-[13px] font-medium text-cream">{t('skills.empty.title')}</p>
@@ -384,11 +442,7 @@ export default function SkillsPage() {
                     {entry.kind === 'html' ? t('skills.kind.html') : t('skills.kind.markdown')}
                   </span>
                 </div>
-                {entry.description && (
-                  <p className="line-clamp-2 w-full text-[12px] leading-5 text-cream-faint">
-                    {entry.description}
-                  </p>
-                )}
+                {entry.description && <DescriptionWithBubble text={entry.description} />}
                 <p className="mt-auto flex w-full items-center gap-1.5 text-[11px] text-cream-faint opacity-80">
                   {entry.author && <span className="max-w-[10rem] truncate">{entry.author}</span>}
                   {entry.author && <span>·</span>}
@@ -416,6 +470,17 @@ export default function SkillsPage() {
                 )}
                   <button
                     type="button"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void copyInvokePrompt(entry)
+                    }}
+                    className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-[11px] text-cream transition hover:border-accent/40"
+                  >
+                    <Copy size={12} />
+                    {t('skills.copyPrompt')}
+                  </button>
+                  <button
+                    type="button"
                     aria-label={t('skills.delete')}
                     onClick={(event) => {
                       event.stopPropagation()
@@ -424,6 +489,55 @@ export default function SkillsPage() {
                     className="ml-auto flex items-center rounded-lg border border-line p-1.5 text-cream-faint transition hover:border-red-400/40 hover:text-red-300"
                   >
                     <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            ))}
+            {bundled.map((skill) => (
+              <div
+                key={skill.id}
+                className="flex flex-col items-start gap-2 rounded-xl border border-line bg-ink-850 p-4 text-left shadow-card transition hover:border-accent/40"
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    setViewer({
+                      entry: {
+                        id: skill.id,
+                        kind: 'markdown',
+                        name: skill.name,
+                        author: '',
+                        description: skill.description,
+                        sizeBytes: 0,
+                        updatedAtMillis: 0
+                      },
+                      content: skill.content,
+                      bundled: skill
+                    })
+                  }
+                  className="flex w-full flex-1 flex-col items-start gap-2 text-left"
+                >
+                  <div className="flex w-full items-center gap-2">
+                    <Package size={14} className="shrink-0 text-accent" />
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-cream">
+                      {skill.name}
+                    </span>
+                    <span className="shrink-0 rounded-full border border-accent/30 px-1.5 py-0.5 text-[10px] tracking-wide text-cream-faint">
+                      {t('skills.bundledSource', {
+                        package: skill.packageName.replace(/^toushou-/, '')
+                      })}
+                    </span>
+                  </div>
+                  {skill.description && <DescriptionWithBubble text={skill.description} />}
+                </button>
+                <div className="mt-1 flex w-full items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void copyInvokePrompt(skill)}
+                    className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-[11px] text-cream transition hover:border-accent/40"
+                  >
+                    <Copy size={12} />
+                    {t('skills.copyPrompt')}
                   </button>
                 </div>
               </div>
@@ -439,7 +553,16 @@ export default function SkillsPage() {
             <span className="min-w-0 truncate text-[13px] font-medium text-cream">
               {viewer.entry.name}
             </span>
-            {viewer.entry.kind === 'markdown' && (
+            {viewer.bundled ? (
+              <button
+                type="button"
+                onClick={() => void copyInvokePrompt(viewer.bundled!)}
+                className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-cream transition hover:border-accent/40"
+              >
+                <Copy size={13} />
+                {t('skills.copyPrompt')}
+              </button>
+            ) : viewer.entry.kind === 'markdown' && (
               <button
                 type="button"
                 onClick={() => setPicker(viewer.entry)}

@@ -8,6 +8,11 @@ vi.mock('electron', () => ({
   app: { getPath: () => userDataDir }
 }))
 
+// skills.ts now pulls in the package listing chain (omp → store) whose
+// top-level app.getPath would hit this file's mock before userDataDir
+// initializes; the github import flow never lists packages anyway.
+vi.mock('../packages', () => ({ listPackages: async () => [] }))
+
 import { importGithubSkills, previewGithubSkills } from '../skillsGithub'
 import { listSkills } from '../skills'
 

@@ -208,6 +208,7 @@ export const IPC_CHANNELS = {
   OFFICE_SAVE: 'office:save',
   /** SKILL 目录 — the team-shared library of self-made docs and HTML tools. */
   SKILLS_LIST: 'skills:list',
+  SKILLS_LIST_BUNDLED: 'skills:list-bundled',
   SKILLS_READ: 'skills:read',
   SKILLS_DELETE: 'skills:delete',
   /** Native file picker → opaque, one-import FileGrant. */

@@ -1367,6 +1367,27 @@ export type SkillListResult =
   | { ok: true; entries: SkillEntry[] }
   | { ok: false; error: 'skills-unreadable' }
 
+/** A skill shipped inside an installed toolkit/plugin package. Read-only for
+ * the GUI (no delete/import) — the package owns it; the library page shows
+ * it alongside personal entries and can copy its invocation prompt. */
+export interface BundledSkillEntry {
+  /** `${packageName}/${skillStem}` — built Main-side, never a renderer path. */
+  id: string
+  name: string
+  description: string
+  /** Owning package name (e.g. toushou-material-research). */
+  packageName: string
+  /** SKILL.md body for the in-page viewer. */
+  content: string
+  /** Ready-to-paste invocation: the package's matching prompts/<stem>.md when
+   * it declares one, else the full SOP wrapped as a chat message. */
+  prompt: string
+}
+
+export type SkillBundledListResult =
+  | { ok: true; entries: BundledSkillEntry[] }
+  | { ok: false; error: 'unavailable' }
+
 export type SkillReadResult =
   | { ok: true; entry: SkillEntry; content: string }
   | { ok: false; error: 'invalid-request' | 'not-found' | 'too-large' | 'read-failed' }

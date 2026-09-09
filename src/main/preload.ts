@@ -76,6 +76,7 @@ import {
   BoardWidgetFileReadResult,
   SkillImportResult,
   SkillListResult,
+  SkillBundledListResult,
   SkillDeleteResult,
   SkillOpenHtmlResult,
   SkillReadResult,
@@ -257,6 +258,7 @@ export interface ElectronAPI {
   onBoardFileChanged: (callback: (change: BoardFileChange) => void) => () => void
   /** SKILL 目录 — the team library of self-made docs and HTML tools. */
   listSkills: () => Promise<SkillListResult>
+  listBundledSkills: () => Promise<SkillBundledListResult>
   readSkill: (id: string) => Promise<SkillReadResult>
   deleteSkill: (id: string) => Promise<SkillDeleteResult>
   /** Native picker → opaque one-import grant (no path crosses to the renderer). */
@@ -641,6 +643,8 @@ const api: ElectronAPI = {
     }
   },
   listSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST),
+  listBundledSkills: (): Promise<SkillBundledListResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_BUNDLED),
   readSkill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ, id),
   deleteSkill: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_DELETE, id),
   selectSkillFile: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_SELECT_FILE),

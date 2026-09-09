@@ -155,6 +155,20 @@ export function stripSkillFrontMatter(content: string): string {
   return content.replace(/^\uFEFF/, '')
 }
 
+/**
+ * The first Markdown H1 of a skill document (front matter skipped) — toolkit
+ * SKILL.md files carry a human display title there (e.g. 素材需求文档标准
+ * （飞书）) while the front-matter `name` stays the machine invocation slug.
+ */
+export function firstMarkdownHeading(content: string): string | null {
+  const body = stripSkillFrontMatter(content)
+  for (const line of body.split('\n')) {
+    const match = /^#\s+(.+?)\s*$/.exec(line)
+    if (match) return match[1]
+  }
+  return null
+}
+
 /** Escape a title for use inside a double-quoted XML attribute. */
 function escapeSkillTitle(name: string): string {
   return name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')

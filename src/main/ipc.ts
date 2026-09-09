@@ -127,6 +127,7 @@ import { readBoardWidgetFile, registerBoardFileBinding } from './boardFiles'
 import {
   deleteSkill,
   importSkillFile,
+  listBundledSkills,
   listSkills,
   openSkillHtml,
   readSkill,
@@ -2227,6 +2228,16 @@ export function registerIpc() {
   // the native picker mints a one-use FileGrant that import consumes.
   ipcMain.handle(IPC_CHANNELS.SKILLS_LIST, async () => {
     return listSkills()
+  })
+
+  // Toolkit-bundled skills: read-only entries the packages own; the library
+  // page shows them next to personal ones and can copy their invoke prompt.
+  ipcMain.handle(IPC_CHANNELS.SKILLS_LIST_BUNDLED, async () => {
+    try {
+      return { ok: true as const, entries: await listBundledSkills() }
+    } catch {
+      return { ok: false as const, error: 'unavailable' as const }
+    }
   })
 
   ipcMain.handle(IPC_CHANNELS.SKILLS_READ, async (_event, id: unknown) => {
