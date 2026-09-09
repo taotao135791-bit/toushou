@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
-import { ArrowUpRight, Check, CheckCircle2, Link2, LoaderCircle, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
-import { FeishuCapability, FeishuConnectionSnapshot, FeishuOAuthAuthorizationView, FeishuRegistrationView } from '@shared/connections'
+import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, Link2, LoaderCircle, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
+import { FeishuCapability, FeishuConnectionSnapshot, FeishuOAuthAuthorizationView, FeishuRegistrationView , FEISHU_CAPABILITY_SCOPES } from '@shared/connections'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import McpConnectionsSection from '../components/McpConnectionsSection'
@@ -162,6 +162,24 @@ export default function ConnectionsPage() {
   // The live websocket wins over the connect-state machine: during an SDK
   // self-reconnect the state field can lag while the channel is actually up.
   const isLive = snapshot.connected || snapshot.websocketState === 'connected'
+  // Scopes the Feishu app console has not configured (requested but the
+  // consent page refuses to grant) — drives the gap-guidance panel.
+  const missingScopes = (
+    Object.entries(FEISHU_CAPABILITY_SCOPES) as [FeishuCapability, { scope: string; label: string }][]
+  ).filter(([capability]) => !snapshot.authorizedCapabilities.includes(capability))
+  const capabilityLabel: Record<FeishuCapability, I18nKey> = {
+    'docs.read': 'connections.scopeDocsRead',
+    'docs.write': 'connections.scopeDocsWrite',
+    'drive': 'connections.scopeDrive',
+    'sheets.read': 'connections.scopeSheetsRead',
+    'sheets.write': 'connections.scopeSheetsWrite',
+    'bitable.read': 'connections.scopeBitableRead',
+    'bitable.write': 'connections.scopeBitableWrite',
+    'calendar.read': 'connections.scopeCalendarRead',
+    'calendar.write': 'connections.scopeCalendarWrite',
+    'tasks': 'connections.scopeTasks',
+    'messaging': 'connections.scopeDocsRead'
+  }
 
   const tryInChat = () => {
     const store = useAppStore.getState()
@@ -273,7 +291,11 @@ export default function ConnectionsPage() {
                       ['sheets.read', 'connections.scopeSheetsRead'],
                       ['sheets.write', 'connections.scopeSheetsWrite'],
                       ['bitable.read', 'connections.scopeBitableRead'],
-                      ['bitable.write', 'connections.scopeBitableWrite']
+                      ['bitable.write', 'connections.scopeBitableWrite'],
+                      ['calendar.read', 'connections.scopeCalendarRead'],
+                      ['calendar.write', 'connections.scopeCalendarWrite'],
+                      ['tasks', 'connections.scopeTasks'],
+                      ['drive', 'connections.scopeDrive']
                     ] as [FeishuCapability, I18nKey][]).map(([capability, key]) => {
                       const granted = snapshot.authorizedCapabilities.includes(capability)
                       return (
@@ -291,6 +313,43 @@ export default function ConnectionsPage() {
                       )
                     })}
                   </div>
+
+                  {/* Permission-gap guidance: scopes the Feishu app console has
+                      NOT configured — enable + publish a version there, then
+                      re-verify here. The console deep link is built Main-side. */}
+                  {snapshot.consoleAuthUrl && missingScopes.length > 0 && (
+                    <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/8 p-3">
+                      <div className="flex items-center gap-1.5 text-[12px] font-medium text-amber-600 dark:text-amber-400">
+                        <AlertTriangle size={12} />
+                        {t('connections.scopeGapTitle', { count: missingScopes.length })}
+                      </div>
+                      <ul className="mt-2 space-y-1">
+                        {missingScopes.map(([capability, meta]) => (
+                          <li key={capability} className="flex min-w-0 items-center gap-2 text-[11px] text-cream-faint">
+                            <span className="shrink-0 text-cream-dim">{t(capabilityLabel[capability])}</span>
+                            <code className="truncate font-mono text-[10px]">{meta.scope}</code>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          onClick={() => void navigator.clipboard.writeText(missingScopes.map(([, meta]) => meta.scope).join('\n'))}
+                          className="rounded-full border border-line px-3 py-1 text-[11px] text-cream-dim transition hover:text-cream"
+                        >
+                          {t('connections.scopeGapCopy')}
+                        </button>
+                        <button
+                          onClick={() => void window.electronAPI.openExternalUrl(snapshot.consoleAuthUrl!)}
+                          className="rounded-full border border-line px-3 py-1 text-[11px] text-cream-dim transition hover:text-cream"
+                        >
+                          {t('connections.scopeGapOpenConsole')}
+                        </button>
+                      </div>
+                      <p className="mt-1.5 text-[10.5px] leading-4 text-cream-faint/70">
+                        {t('connections.scopeGapHint')}
+                      </p>
+                    </div>
+                  )}
 
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     <select value={oauthCapability} onChange={(event) => setOauthCapability(event.target.value as FeishuCapability)} className="h-8 rounded-lg border border-line bg-ink-800 px-2 text-[11px] text-cream">

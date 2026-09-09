@@ -1,4 +1,4 @@
-import { FeishuCapability, LarkBrand } from '../../../shared/connections'
+import { FEISHU_CAPABILITY_SCOPES, FeishuCapability, LarkBrand } from '../../../shared/connections'
 import { FeishuCredentialStore } from './FeishuCredentialStore'
 
 export interface FeishuOAuthAuthorization {
@@ -14,18 +14,11 @@ interface PendingOAuth {
   brand: LarkBrand
 }
 
-const SCOPE_BY_CAPABILITY: Partial<Record<FeishuCapability, string>> = {
-  'docs.read': 'docx:document:readonly',
-  'docs.write': 'docx:document',
-  'sheets.read': 'sheets:spreadsheet:readonly',
-  'sheets.write': 'sheets:spreadsheet',
-  'bitable.read': 'bitable:app:readonly',
-  'bitable.write': 'bitable:app',
-  'calendar.read': 'calendar:calendar:readonly',
-  'calendar.write': 'calendar:calendar',
-  tasks: 'task:task:readonly',
-  drive: 'drive:drive:readonly'
-}
+// Single source of truth lives in shared (with zh labels for the
+// permission-gap guidance on the connections page).
+const SCOPE_BY_CAPABILITY: Partial<Record<FeishuCapability, string>> = Object.fromEntries(
+  Object.entries(FEISHU_CAPABILITY_SCOPES).map(([capability, meta]) => [capability, meta.scope])
+)
 
 /** On-demand user OAuth kept entirely in Main; tokens live in the secure store. */
 export class FeishuOAuthManager {

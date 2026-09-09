@@ -41,6 +41,25 @@ export type FeishuCapability =
   | 'tasks'
   | 'drive'
 
+/** Single source of truth for the OAuth scope of each capability and its
+ * zh display name — the Feishu developer console searches by the raw scope,
+ * while the connections page shows the zh label (permission-gap guidance). */
+export const FEISHU_CAPABILITY_SCOPES: Record<
+  Exclude<FeishuCapability, 'messaging'>,
+  { scope: string; label: string }
+> = {
+  'docs.read': { scope: 'docx:document:readonly', label: '查看新版文档' },
+  'docs.write': { scope: 'docx:document', label: '创建及编辑新版文档' },
+  'sheets.read': { scope: 'sheets:spreadsheet:readonly', label: '查看、评论和导出电子表格' },
+  'sheets.write': { scope: 'sheets:spreadsheet', label: '查看、评论、编辑和管理电子表格' },
+  'bitable.read': { scope: 'bitable:app:readonly', label: '查看、评论和导出多维表格' },
+  'bitable.write': { scope: 'bitable:app', label: '查看、评论、编辑和管理多维表格' },
+  'calendar.read': { scope: 'calendar:calendar:readonly', label: '获取日历、日程及忙闲信息' },
+  'calendar.write': { scope: 'calendar:calendar', label: '更新日历及日程信息' },
+  tasks: { scope: 'task:task:readonly', label: '查看任务详情' },
+  drive: { scope: 'drive:drive:readonly', label: '查看、评论和下载云空间中所有文件' }
+}
+
 export interface ConnectionDefinition {
   id: string
   kind: ConnectionKind
@@ -62,6 +81,8 @@ export interface FeishuConnectionSnapshot {
   state: FeishuConnectState
   connected: boolean
   appIdMasked?: string
+  /** Feishu developer console → this app's permission page (for gap guidance). */
+  consoleAuthUrl?: string
   tenantBrand?: LarkBrand
   botName?: string
   botOpenId?: string

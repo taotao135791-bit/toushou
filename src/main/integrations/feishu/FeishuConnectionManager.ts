@@ -151,6 +151,12 @@ export class FeishuConnectionManager {
       state: this.state,
       connected,
       appIdMasked: this.credentials?.appId ? maskSecret(this.credentials.appId) : undefined,
+      // Deep link into THIS app's permission console page (appId is public —
+      // it rides every authorize URL — so exposing the URL is safe; the
+      // renderer never sees the secret).
+      consoleAuthUrl: this.credentials?.appId
+        ? `https://open.feishu.cn/app/${this.credentials.appId}/auth`
+        : undefined,
       tenantBrand: this.credentials?.tenantBrand ?? this.credentials?.brand,
       botName: this.channel?.botName,
       botOpenId: this.channel?.botOpenId,
