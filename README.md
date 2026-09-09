@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.14.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.14.2) 下载：
+当前版本 v0.14.3，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.14.3) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.2/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.2/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.3/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.3/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.3/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.14.3：历史会话行卡死修复 + 更新检查重试。**恢复过一次的老会话不再卡死**——OMP 恢复会话时会原地重写会话文件（更换身份号），导致指纹校验失配、该行后续恢复与删除全部失效；现在恢复时校验文件头 uuid 一致则自愈指纹，删除保留按 uuid 的兜底清扫（owner/工作区授权边界不变），恢复失败后界面自动重扫两个列表、死行消失。**应用内更新更抗网络抖动**：疑似瞬断（VPN 换线路等）时延迟 3 秒自动重试一次，仍失败才报错。另含 omp 18.1 兼容（移除已下线的 inspect_image 工具白名单）与打包清单修复。
 
 v0.14.2：**修复严重回归——无法发送消息**。v0.14.1 的斜杠面板丢失了"仅在输入 / 命令时打开"的门卫判断，导致面板常开、Enter 键被拦截执行命令而非发送消息（表现为消息发不出、输入被清空）。现已恢复该判断：斜杠面板只在输入以 / 开头时出现，正常对话不受影响。
 
