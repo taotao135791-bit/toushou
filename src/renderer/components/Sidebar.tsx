@@ -332,6 +332,10 @@ export default function Sidebar() {
       if (!result) {
         setRestoreFailedHistoryId(info.id)
         console.error('Failed to resume history session:', info.id)
+        // A dead row (file rewritten in place or removed) must not linger as
+        // an unresumable, undeletable entry — rescan so it disappears.
+        void loadHistorySessions(currentWorkspace?.id ?? null)
+        void loadAllHistorySessions()
         return
       }
       const { session, messages: restored, historicalAgents } = result

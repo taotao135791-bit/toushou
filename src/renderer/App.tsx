@@ -299,6 +299,9 @@ function App() {
     const result = await window.electronAPI.resumeSession(grant.id, info.id)
     if (!result) {
       showNotice('history.restoreFailed')
+      // Dead rows (rewritten/removed files) must vanish instead of lingering.
+      void state.loadHistorySessions(state.currentWorkspace?.id ?? null)
+      void state.loadAllHistorySessions()
       return false
     }
     const { session, messages: restored, historicalAgents } = result

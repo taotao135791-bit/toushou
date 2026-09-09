@@ -162,6 +162,64 @@ describe('HistorySessionGrantManager', () => {
 })
 
 /**
+ * omp resume rewrites the session file in place (fork bookkeeping): the row's
+ * dev/ino identity drifts while the header uuid may or may not change. Resume
+ * must self-heal on a same-uuid rewrite, and delete must still work through a
+ * uuid sweep when the inode pin can no longer match.
+ */
+describe('HistorySessionGrantManager rewritten files', () => {
+  const UUID = '01234567-89ab-cdef-0123-456789abcdef'
+
+  function writeHeaderedSession(uuid: string, name: string): string {
+    const directory = sessionDirFor(workspaceA, agentDir)
+    fs.mkdirSync(directory, { recursive: true })
+    const filePath = path.join(directory, name)
+    fs.writeFileSync(filePath, `{"type":"session","id":"${uuid}"}\n`)
+    return filePath
+  }
+
+  it('self-heals the identity when the runtime rewrites the file with the same uuid', async () => {
+    const filePath = writeHeaderedSession(UUID, 'rewritten_same.jsonl')
+    const [descriptor] = await manager.mintForWorkspace([history(filePath, UUID)], context())
+    // Keep the old inode allocated, replace the file (fork rewrite).
+    fs.renameSync(filePath, `${filePath}.original`)
+    fs.writeFileSync(filePath, `{"type":"title","v":1}\n{"type":"session","id":"${UUID}"}\n`)
+
+    await expectSamePath(await manager.resolve(descriptor.id, context()), fs.realpathSync(filePath))
+  })
+
+  it('still revokes when the rewrite carried a different uuid (superseded row)', async () => {
+    const filePath = writeHeaderedSession(UUID, 'rewritten_new.jsonl')
+    const [descriptor] = await manager.mintForWorkspace([history(filePath, UUID)], context())
+    const nextUuid = '99999999-9999-9999-9999-999999999999'
+    fs.renameSync(filePath, `${filePath}.original`)
+    fs.writeFileSync(filePath, `{"type":"session","id":"${nextUuid}"}\n`)
+
+    await expect(manager.resolve(descriptor.id, context())).resolves.toBeNull()
+  })
+
+  it('deleteStale removes a row whose file was rewritten in place', async () => {
+    const filePath = writeHeaderedSession(UUID, 'stale_delete.jsonl')
+    const [descriptor] = await manager.mintForWorkspace([history(filePath, UUID)], context())
+    fs.rmSync(filePath)
+    // withResolved fails (file gone); the uuid sweep must still retire the row.
+    await expect(
+      manager.withResolved(descriptor.id, context(), async () => true)
+    ).resolves.toBeNull()
+    await expect(manager.deleteStale(descriptor.id, context())).resolves.toBe(true)
+    await expect(manager.resolve(descriptor.id, context())).resolves.toBeNull()
+  })
+
+  it('deleteStale still enforces the owner/workspace binding', async () => {
+    const filePath = writeHeaderedSession(UUID, 'stale_binding.jsonl')
+    const [descriptor] = await manager.mintForWorkspace([history(filePath, UUID)], context())
+    fs.rmSync(filePath)
+    await expect(manager.deleteStale(descriptor.id, context('workspace-b'))).resolves.toBe(false)
+    await expect(manager.deleteStale(descriptor.id, context('workspace-a', 99))).resolves.toBe(false)
+  })
+})
+
+/**
  * Workspace-independent delete: cross-project history rows carry only a uuid —
  * never a capability minted for the active workspace — so restoring-failed and
  * foreign-project rows must be deletable by uuid alone. The manager resolves
