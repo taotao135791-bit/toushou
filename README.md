@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.14.5，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.14.5) 下载：
+当前版本 v0.15.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.15.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.5/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.5/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.14.5/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.15.0：定时任务真正可用 + 飞书稳定性大修。**定时任务从本版起才真正会执行**——此前的版本里任务调度器的执行链路从未接通（到点只写日志、不创建会话，"立即运行"也静默失败）；现在到点自动创建以任务名命名、带"任务"徽标的会话并执行提示词，完成/失败有桌面通知，连续 3 次启动失败自动停用并明确告知，长任务不会自我重叠，"立即运行"的成功/运行中/失败均有反馈，任务表单支持"完成后通知"开关。**飞书稳定性**——会话重启后恢复不再丢失只读权限（此前远程会话重启后会拿到全局权限模式，默认配置下远程消息会永远卡在无人可见的审批上）；手动填写 App ID/Secret 连接后私聊不再永久无响应（首个私聊发送者自动登记为所有者并持久化）；WebSocket 断线后自动指数退避重连（此前一次断网就永久静默，且"重试"会悄悄重建一个新飞书应用）；连接徽标如实反映套接字状态；断线期间的回复进入待发队列而不是蒸发；无法解析的消息（表情包/语音）明确回复"看不懂"而不是先发"正在分析"再永久沉默；超过 3 万字的回复标注"已截断"；飞书远程对话不再触发桌面通知刷屏；凭据解密失败会明确提示重新扫码；退出应用时清理全部会话进程。**会话联动**——飞书/任务会话的来源徽标在界面重载后保留；权限选择器对飞书远程会话禁用（远程会话固定只读）；群聊中仅所有者的 @提及会驱动 Agent（防注入越权）；飞书会话恢复失败时降级新建会话而不是死循环或丢消息；OAuth 令牌刷新加互斥（并发刷新不再作废整个授权）。
 
 v0.14.5：会话"重启后丢失/打不开"系列修复 + 全量交互兜底。**恢复会话不再开空会话**——恢复时拉不到对话内容会自动重试一次，仍失败则明确提示"稍后重试、会话未丢失"，不再呈现空白首页让你以为数据没了；历史会话恢复凭证过期改为复核通过后自动续期，应用开久了点历史行不再"第一次没反应"；⌘K 和跨项目打开历史行不再因过期状态竞速而静默失败。**删除会话不再静默失败**——删除前先向运行时要一次凭据，失败会给明确提示，删掉的会话不再"复活"。**侧栏可读性**——正在使用的会话行标题不再被压成一个字；恢复过的会话不再全部被改名成"投手工作区"；侧栏搜索终于能搜到历史会话与跨项目会话。**交互兜底补齐**——斜杠命令面板不再被窗口上缘裁切；定时任务弹窗全面中文化、支持 Esc 关闭、保存失败保留草稿、删除需二次确认；Office 有未保存修改时关面板需确认、引擎加载失败可重试；⌘K 面板与插件对话框不再误把输入法选字回车当成提交；归档运行中的会话需要二次确认并提示排队消息被清除；checkpoint/压缩/插件启动失败均有提示；超大粘贴自动截断、拖拽附件有数量上限；看板与 Skill 弹窗支持 Esc。另修复连接页重复的"浏览云文档"权限角标、@ 菜单空工作区提示，自定义 Provider 测试不再依赖外部网络。
 
