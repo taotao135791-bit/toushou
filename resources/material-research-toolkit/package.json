@@ -1,6 +1,6 @@
 {
   "name": "toushou-material-research",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "素材研究成文：MCP（如 SocialPeta）找素材 → 筛选整理 → 写入飞书文档；含素材需求文档标准技能",
   "displayName": "素材研究成文",
   "author": "投手团队",
