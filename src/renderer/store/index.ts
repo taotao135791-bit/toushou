@@ -565,23 +565,38 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous?.origin && !session.origin
           ? { ...session, origin: previous.origin, remoteReadonly: previous.remoteReadonly, title: previous.title }
           : session
+      // Main re-reports running sessions with the bare project-dir title on
+      // every registry refresh. A title the user can already read (history
+      // resume, auto-naming, rename) must never silently degrade back to that
+      // default, or every sidebar row collapses into the same project name.
+      const defaultTitle = basename(merged.cwd) || merged.cwd
+      const title =
+        merged !== session
+          ? merged.title
+          : previous &&
+              previous.title.trim() &&
+              previous.title !== defaultTitle &&
+              (!merged.title.trim() || merged.title === defaultTitle)
+            ? previous.title
+            : merged.title
+      const guarded = { ...merged, title }
       const same =
         previous &&
-        previous.cwd === merged.cwd &&
-        previous.title === merged.title &&
-        previous.createdAt === merged.createdAt &&
-        previous.status === merged.status &&
-        previous.resumeFrom === merged.resumeFrom &&
-        previous.sessionFile === merged.sessionFile &&
-        previous.resumedHistoryId === merged.resumedHistoryId &&
-        previous.origin === merged.origin &&
-        previous.remoteReadonly === merged.remoteReadonly
-      const nextCurrentSessionId = select ? merged.id : state.currentSessionId
+        previous.cwd === guarded.cwd &&
+        previous.title === guarded.title &&
+        previous.createdAt === guarded.createdAt &&
+        previous.status === guarded.status &&
+        previous.resumeFrom === guarded.resumeFrom &&
+        previous.sessionFile === guarded.sessionFile &&
+        previous.resumedHistoryId === guarded.resumedHistoryId &&
+        previous.origin === guarded.origin &&
+        previous.remoteReadonly === guarded.remoteReadonly
+      const nextCurrentSessionId = select ? guarded.id : state.currentSessionId
       if (same && nextCurrentSessionId === state.currentSessionId) return state
       changed = true
       return {
-        sessions: [merged, ...state.sessions.filter((item) => item.id !== merged.id)],
-        sessionRecords: upsertLiveSessionRecord(state.sessionRecords, merged),
+        sessions: [guarded, ...state.sessions.filter((item) => item.id !== guarded.id)],
+        sessionRecords: upsertLiveSessionRecord(state.sessionRecords, guarded),
         currentSessionId: nextCurrentSessionId
       }
     })
@@ -969,41 +984,43 @@ export const useAppStore = create<AppState>((set, get) => ({
   drainQueuedMessage: (sessionId) => {
     const next = get().shiftQueuedMessage(sessionId)
     if (!next) return false
-    // Snapshot the ACTUAL dispatch-time session state, so a queued turn
-    // is tagged with the model/thinking it really runs under — even if the
-    // user hot-switched the session model while it was queued.
+    // The bubble lands immediately — waiting for the runtime snapshot (up to
+    // its 8s timeout) used to leave a silent gap after the queue chip went
+    // away. The dispatch-time model/thinking tag catches up when it resolves.
+    const bubbleId = crypto.randomUUID()
+    get().addMessage(sessionId, {
+      id: bubbleId,
+      role: 'user',
+      kind: 'prompt',
+      content: next.text,
+      images: next.images?.map(({ data, mimeType }) => ({ data, mimeType }))
+    })
+    get().setBusy(sessionId, true)
     void captureSessionSnapshot(sessionId).then((snap) => {
-      const bubbleId = crypto.randomUUID()
-      get().addMessage(sessionId, {
-        id: bubbleId,
-        role: 'user',
-        kind: 'prompt',
-        content: next.text,
-        images: next.images?.map(({ data, mimeType }) => ({ data, mimeType })),
+      get().updateMessage(sessionId, bubbleId, {
         runtimeModel: snap.modelSelector,
         runtimeThinking: snap.thinkingLevel
       })
-      get().setBusy(sessionId, true)
-      void window.electronAPI
-        .sendMessage(sessionId, next.text, next.images)
-        .then((sent) => {
-          if (sent) {
-            // A queued item successfully became a normal prompt; clear only
-            // the stale recoverable Steer feedback, never fatal session state.
-            get().clearSessionErrorIf(sessionId, 'chat.steerQueueFailed')
-            const list = get().messages[sessionId] || []
-            void get().createCheckpointForMessage(sessionId, list.length - 1, next.text)
-            void get().maybeNameSession(sessionId, next.text)
-          } else {
-            // The session died underneath the queue: stop draining into
-            // the void — drop the rest, release busy, flag the failure.
-            get().setBusy(sessionId, false)
-            get().clearQueuedMessages(sessionId)
-            get().setSessionError(sessionId, 'chat.sendFailed')
-            get().updateMessage(sessionId, bubbleId, { failed: true })
-          }
-        })
     })
+    void window.electronAPI
+      .sendMessage(sessionId, next.text, next.images)
+      .then((sent) => {
+        if (sent) {
+          // A queued item successfully became a normal prompt; clear only
+          // the stale recoverable Steer feedback, never fatal session state.
+          get().clearSessionErrorIf(sessionId, 'chat.steerQueueFailed')
+          const list = get().messages[sessionId] || []
+          void get().createCheckpointForMessage(sessionId, list.length - 1, next.text)
+          void get().maybeNameSession(sessionId, next.text)
+        } else {
+          // The session died underneath the queue: stop draining into
+          // the void — drop the rest, release busy, flag the failure.
+          get().setBusy(sessionId, false)
+          get().clearQueuedMessages(sessionId)
+          get().setSessionError(sessionId, 'chat.sendFailed')
+          get().updateMessage(sessionId, bubbleId, { failed: true })
+        }
+      })
     return true
   },
   clearQueuedMessages: (sessionId) =>
@@ -1084,17 +1101,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     set({ historyLoading: true })
-    const list = await window.electronAPI.listSessionHistory(grantId)
-    // Ignore a stale response when the workspace was switched meanwhile; the
-    // newer load owns the flag then.
-    if (get().currentWorkspace?.id === grantId) {
-      const workspaceRealPath = get().currentWorkspace?.realPath
-      set((state) => ({
-        sessionRecords: workspaceRealPath
-          ? replaceHistoricalSessionRecords(state.sessionRecords, workspaceRealPath, list)
-          : state.sessionRecords,
-        historyLoading: false
-      }))
+    try {
+      const list = await window.electronAPI.listSessionHistory(grantId)
+      // Ignore a stale response when the workspace was switched meanwhile; the
+      // newer load owns the flag then.
+      if (get().currentWorkspace?.id === grantId) {
+        const workspaceRealPath = get().currentWorkspace?.realPath
+        set((state) => ({
+          sessionRecords: workspaceRealPath
+            ? replaceHistoricalSessionRecords(state.sessionRecords, workspaceRealPath, list)
+            : state.sessionRecords,
+          historyLoading: false
+        }))
+      }
+    } catch {
+      // A rejected scan must never wedge the resume/delete guards (they
+      // early-return while historyLoading is true): keep the previous list
+      // and release the flag.
+      if (get().currentWorkspace?.id === grantId) set({ historyLoading: false })
     }
   },
   removeHistorySession: (historyId) =>
@@ -1144,13 +1168,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   loadRuntimeModels: async () => {
-    const runtimeModels = await window.electronAPI.runtimeListModels()
-    set({ runtimeModels })
+    try {
+      const runtimeModels = await window.electronAPI.runtimeListModels()
+      set({ runtimeModels })
+    } catch {
+      // Keep the previous list — a transient IPC failure must not become an
+      // unhandled rejection.
+    }
   },
 
   loadRuntimeModelCatalog: async () => {
-    const runtimeModelCatalog = await window.electronAPI.runtimeListModelCatalog()
-    set({ runtimeModelCatalog })
+    try {
+      const runtimeModelCatalog = await window.electronAPI.runtimeListModelCatalog()
+      set({ runtimeModelCatalog })
+    } catch {
+      // Same as above: keep the previous catalog on failure.
+    }
   },
 
   selectRuntimeDefaultModel: async (selector) => {
@@ -1392,6 +1425,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       }))
       if (event.recoverable === false) {
         get().setSessionError(event.sessionId, 'chat.sessionDead')
+        // The session died out of view — surface it in the sidebar like any
+        // other turn end, or the red "dead" row is easy to miss entirely.
+        if (get().currentSessionId !== event.sessionId) {
+          get().markSessionUnread(event.sessionId)
+        }
       }
     } else if (event.type === 'closed') {
       set((state) => ({

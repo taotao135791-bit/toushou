@@ -235,9 +235,15 @@ export default function ChatPanel() {
         images: images?.map(({ data, mimeType }) => ({ data, mimeType }))
       })
       // Snapshot the worktree BEFORE the prompt can make its first edit, so the
-      // checkpoint really is the "before" state of this turn.
+      // checkpoint really is the "before" state of this turn. A checkpoint
+      // failure must never swallow the prompt: send it, but tell the user
+      // rollback won't be available for this turn.
       const list = useAppStore.getState().messages[sessionId] || []
-      await store.createCheckpointForMessage(sessionId, list.length - 1, trimmed)
+      try {
+        await store.createCheckpointForMessage(sessionId, list.length - 1, trimmed)
+      } catch {
+        store.setSessionError(sessionId, 'chat.checkpointFailed')
+      }
       // Optimistic: show the working state until agent_end / error lands
       store.setBusy(sessionId, true)
       const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images)
@@ -332,8 +338,17 @@ export default function ChatPanel() {
     if (!sid) return
     const store = useAppStore.getState()
     store.setCompacting(sid, true)
-    await window.electronAPI.compactSession(sid)
-    useAppStore.getState().setCompacting(sid, false)
+    try {
+      const ok = await window.electronAPI.compactSession(sid)
+      if (!ok) {
+        // Silent "nothing happened" reads as a dead button — say it failed.
+        useAppStore.getState().setSessionError(sid, 'chat.compactFailed')
+      }
+    } catch {
+      useAppStore.getState().setSessionError(sid, 'chat.compactFailed')
+    } finally {
+      useAppStore.getState().setCompacting(sid, false)
+    }
     const stats = await window.electronAPI.getSessionStats(sid)
     if (stats) useAppStore.getState().setStats(sid, stats)
   }, [currentSessionId])

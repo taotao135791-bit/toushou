@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Check,
   Download,
@@ -157,7 +157,18 @@ export default function SettingsPage() {
     setDetecting(false)
   }
 
+  const [clearConfirming, setClearConfirming] = useState(false)
+  const clearConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearRecent = async () => {
+    // One click wipes the whole recent-projects list — make the user mean it.
+    if (!clearConfirming) {
+      setClearConfirming(true)
+      if (clearConfirmTimer.current) clearTimeout(clearConfirmTimer.current)
+      clearConfirmTimer.current = setTimeout(() => setClearConfirming(false), 3000)
+      return
+    }
+    if (clearConfirmTimer.current) clearTimeout(clearConfirmTimer.current)
+    setClearConfirming(false)
     await window.electronAPI.clearRecentWorkspaces()
     useAppStore.getState().setRecentProjects([])
     setCleared(true)
@@ -166,12 +177,21 @@ export default function SettingsPage() {
 
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false)
   const [diagnosticsExportedPath, setDiagnosticsExportedPath] = useState('')
+  const [diagnosticsExportFailed, setDiagnosticsExportFailed] = useState(false)
   const exportDiagnostics = async () => {
     setExportingDiagnostics(true)
     setDiagnosticsExportedPath('')
+    setDiagnosticsExportFailed(false)
     try {
       const result = await window.electronAPI.exportDiagnostics()
-      if (result.ok && result.path) setDiagnosticsExportedPath(result.path)
+      if (result.ok && result.path) {
+        setDiagnosticsExportedPath(result.path)
+      } else {
+        setDiagnosticsExportFailed(true)
+      }
+    } catch {
+      // A failed export must not just stop spinning with no feedback.
+      setDiagnosticsExportFailed(true)
     } finally {
       setExportingDiagnostics(false)
     }
@@ -422,6 +442,11 @@ export default function SettingsPage() {
                     <Check size={11} className="text-emerald-500" />
                     {t('settings.cleared')}
                   </>
+                ) : clearConfirming ? (
+                  <>
+                    <Trash2 size={11} />
+                    {t('settings.clearConfirm')}
+                  </>
                 ) : (
                   <>
                     <Trash2 size={11} />
@@ -538,6 +563,9 @@ export default function SettingsPage() {
                   {exportingDiagnostics ? <RefreshCw size={11} className="animate-spin" /> : <Download size={11} />}
                   {exportingDiagnostics ? t('settings.diagnosticsExporting') : t('settings.diagnosticsExport')}
                 </button>
+                {diagnosticsExportFailed && (
+                  <span className="text-[11px] text-red-500">{t('settings.exportFailed')}</span>
+                )}
                 {diagnosticsExportedPath && (
                   <span className="max-w-[240px] truncate font-mono text-[11px] text-emerald-600 dark:text-emerald-400">
                     {diagnosticsExportedPath}

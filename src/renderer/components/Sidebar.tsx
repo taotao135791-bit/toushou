@@ -105,6 +105,9 @@ export default function Sidebar() {
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [projectsExpanded, setProjectsExpanded] = useState(false)
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null)
+  const [resumingGlobalUuid, setResumingGlobalUuid] = useState<string | null>(null)
+  const [removeRecentConfirm, setRemoveRecentConfirm] = useState<string | null>(null)
+  const removeRecentTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [restoreFailedHistoryId, setRestoreFailedHistoryId] = useState<string | null>(null)
   const [deleteFailedHistoryId, setDeleteFailedHistoryId] = useState<string | null>(null)
   const [deleteFailedGlobalUuid, setDeleteFailedGlobalUuid] = useState<string | null>(null)
@@ -268,18 +271,39 @@ export default function Sidebar() {
    */
   const deleteByUuidAndRefresh = async (uuid: string | null): Promise<boolean> => {
     if (!uuid || !currentWorkspace) return false
-    const ok = await window.electronAPI.deleteSessionByUuid(currentWorkspace.id, uuid)
+    let ok = false
+    try {
+      ok = await window.electronAPI.deleteSessionByUuid(currentWorkspace.id, uuid)
+    } catch {
+      // Caller surfaces the failure — never an unhandled rejection.
+      ok = false
+    }
     if (ok) purgeDeletedSession(uuid)
     void loadHistorySessions(currentWorkspace.id)
     void loadAllHistorySessions()
     return ok
   }
 
-  const handleDeleteSession = (id: string) => {
+  const handleDeleteSession = async (id: string) => {
     // The durable identity must be captured before the kill: the record is the
     // renderer's only link between the runtime id and the transcript file.
     const record = recordByRuntimeId.get(id)
-    const uuid = recordDurableUuid(record)
+    let uuid = recordDurableUuid(record)
+    if (!uuid) {
+      // Last chance before the process dies: get_state carries the session
+      // file, whose name embeds the durable uuid. Without it the sweep below
+      // would silently skip and the transcript would resurrect as a history
+      // row — reading as a broken delete button.
+      try {
+        const st = await window.electronAPI.getSessionState(id)
+        if (st?.sessionFile) {
+          uuid = sessionFileUuid(st.sessionFile)
+          if (uuid) useAppStore.getState().setSessionFile(id, st.sessionFile)
+        }
+      } catch {
+        // Session already dead — fall through to the kill with no uuid.
+      }
+    }
     window.electronAPI.killSession(id)
     setSessions(sessions.filter((s) => s.id !== id))
     if (currentSessionId === id) {
@@ -288,7 +312,12 @@ export default function Sidebar() {
     // A killed session's transcript stays on disk and would resurface in the
     // durable scan (immediately as a history row, after restart via the
     // cross-project list) — delete every copy of it too.
-    void deleteByUuidAndRefresh(uuid)
+    const ok = await deleteByUuidAndRefresh(uuid)
+    if (!ok) {
+      // The transcript is still on disk; the rescan above will re-add it as a
+      // history row. Surface that — never a silent no-op delete.
+      showNotice('sidebar.deleteFailedDurable')
+    }
   }
 
   /**
@@ -308,6 +337,11 @@ export default function Sidebar() {
       if (uuid !== null) setSessionArchived(uuid, false)
       return
     }
+    // Archiving kills the process, and a killed session drops its queued
+    // messages without a trace. Say so before it happens — silent message
+    // loss reads as a broken app.
+    const queued = useAppStore.getState().queuedMessages[id]?.length ?? 0
+    if (queued > 0) showNotice('sidebar.archiveClearedQueue')
     setSessionArchived(durableUuidOfSession(id) ?? id, true)
     if (!sessions.some((s) => s.id === id)) return
     window.electronAPI.killSession(id)
@@ -320,6 +354,17 @@ export default function Sidebar() {
     void loadAllHistorySessions()
   }
 
+  // Archiving a RUNNING session (or one holding queued messages) kills the
+  // process and drops the queue — that needs a two-stage confirm, same as
+  // delete. Idle sessions archive straight away.
+  const archiveSessionConfirm = useConfirmId((id: string) => handleArchiveSession(id, true))
+  const requestArchiveSession = (id: string) => {
+    const running = Boolean(busy[id])
+    const queued = (useAppStore.getState().queuedMessages[id]?.length ?? 0) > 0
+    if (running || queued) archiveSessionConfirm.click(id)
+    else handleArchiveSession(id, true)
+  }
+
   const handleResumeHistory = async (info: HistorySessionDescriptor) => {
     // While the list is reloading for a new workspace its entries may still
     // belong to the previous project — resuming one would use the new grant.
@@ -329,6 +374,14 @@ export default function Sidebar() {
     setRestoreFailedHistoryId(null)
     try {
       const result = await window.electronAPI.resumeSession(grant.id, info.id)
+      if (result && 'error' in result) {
+        // The session opened but its transcript could not be loaded. Keep the
+        // row (it is NOT dead) and tell the user instead of showing a blank
+        // chat that reads as data loss.
+        setRestoreFailedHistoryId(info.id)
+        showNotice('history.transcriptUnavailable')
+        return
+      }
       if (!result) {
         setRestoreFailedHistoryId(info.id)
         console.error('Failed to resume history session:', info.id)
@@ -408,7 +461,11 @@ export default function Sidebar() {
     if (resumingHistoryId || historyLoading) return
     const state = useAppStore.getState()
     const resumeByUuid = async (): Promise<boolean> => {
-      await loadHistorySessions(state.currentWorkspace?.id ?? null)
+      // Re-read the store AFTER the (possible) workspace switch above — the
+      // captured `state` names the PREVIOUS workspace and would load/resume
+      // against the wrong grant, racing the Sidebar reload effect.
+      const fresh = useAppStore.getState()
+      await loadHistorySessions(fresh.currentWorkspace?.id ?? null)
       const match = useAppStore
         .getState()
         .sessionRecords.find((r) => !r.isLive && r.history?.uuid === row.uuid)
@@ -416,9 +473,18 @@ export default function Sidebar() {
       await handleResumeHistory(match.history)
       return true
     }
+    // Track which uuid is resuming so only that row greys (see renderGlobalRow).
+    const scopedResume = async (): Promise<boolean> => {
+      setResumingGlobalUuid(row.uuid)
+      try {
+        return await resumeByUuid()
+      } finally {
+        setResumingGlobalUuid(null)
+      }
+    }
 
     if (state.currentWorkspace && row.cwd === state.currentWorkspace.realPath) {
-      if (await resumeByUuid()) return
+      if (await scopedResume()) return
       showNotice('history.restoreFailed')
       return
     }
@@ -436,7 +502,7 @@ export default function Sidebar() {
       showNotice('sidebar.projectNotAdded')
       return
     }
-    if (await resumeByUuid()) return
+    if (await scopedResume()) return
     showNotice('sidebar.projectSwitched')
   }
 
@@ -474,58 +540,11 @@ export default function Sidebar() {
     [sessionRecords, currentWorkspace?.realPath]
   )
 
-  // Sidebar rows are projected from the unified registry, then joined to the
-  // live session map for runtime-only fields (busy, queue, approval state).
-  // On resume, the history capability is removed and a live record takes over.
-  const scopedLiveSessions = useMemo(() => {
-    const liveIds = new Set(
-      scopedRecords
-        .filter((record) => record.isLive && record.runtimeSessionId)
-        .map((record) => record.runtimeSessionId as string)
-    )
-    return sessions.filter((session) => liveIds.has(session.id))
-  }, [scopedRecords, sessions])
-
-  // Search matches live sessions on title/path and the tail of the streaming
-  // transcript. Archived live sessions live in the archive section only, so
-  // they never match here.
-  const filteredSessions = useMemo(() => {
-    const base = scopedLiveSessions.filter((s) => !isSessionArchived(s.id))
-    const q = query.trim().toLowerCase()
-    if (!q) return base
-    return base.filter((s) => {
-      if (s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q)) return true
-      const list = searchMessages[s.id]
-      const last = list?.[list.length - 1]
-      return last ? last.content.toLowerCase().includes(q) : false
-    })
-  }, [scopedLiveSessions, query, searchMessages, isSessionArchived])
-
-  // Search view: pinned sessions float first, each group in the chosen order.
-  const sortedSearchSessions = useMemo(() => {
-    const decorate = (session: (typeof sessions)[number]) => ({
-      session,
-      title: session.title,
-      timestamp: session.createdAt,
-      pinned: pinnedSet.has(session.id)
-    })
-    return {
-      pinned: sortSessionRows(
-        filteredSessions.filter((s) => pinnedSet.has(s.id)).map(decorate),
-        sessionSort
-      ).map((item) => item.session),
-      normal: sortSessionRows(
-        filteredSessions.filter((s) => !pinnedSet.has(s.id)).map(decorate),
-        sessionSort
-      ).map((item) => item.session)
-    }
-  }, [filteredSessions, pinnedSet, sessionSort])
-
-  // ---- group live sessions by their project (session.cwd) --------------
-  // (Removed in the flat-recents model: the sidebar lists live + durable
-  // sessions across projects in one recency-ordered "最近" list; each row
-  // carries its project as a suffix. Project grouping remains in the
-  // dedicated 项目 section above.)
+  // ---- unified "最近" flat list ------------------------------------------
+  // Live sessions (every project), workspace-bound history rows, and the
+  // cross-project durable scan merge into one list. The durable scan is what
+  // makes the sidebar survive restarts. Rows of projects other than the
+  // active one carry their project as a suffix.
 
   const PROJECT_FOLD_LIMIT = 5
   // The active project already has its own row above — never repeat it in
@@ -676,6 +695,9 @@ export default function Sidebar() {
   const iconBtn =
     'shrink-0 rounded-md p-1 text-cream-faint opacity-0 transition-all group-hover:opacity-100'
 
+  // (Live-row hover actions live in a single collapsible container — see
+  // renderSessionRow — so they never squeeze the title column.)
+
   const renderSessionRow = (session: (typeof sessions)[number]) => {
     const active = currentSessionId === session.id
     const running = Boolean(busy[session.id])
@@ -687,6 +709,10 @@ export default function Sidebar() {
     const dead = session.status === 'error'
     const status = getSessionStatus({ busy: running, waiting, error: dead, unread })
     const statusLabel = t(`sidebar.status.${status}`)
+    // Armed confirms must stay visible even without hover.
+    const actionsForcedVisible =
+      archiveSessionConfirm.confirmingId === session.id ||
+      deleteSessionConfirm.confirmingId === session.id
     const pinned = pinnedSet.has(session.id)
     // Externally created (Feishu channel) rows keep a brand badge so users can
     // tell where the conversation lives; foreign-workspace rows carry the
@@ -745,7 +771,7 @@ export default function Sidebar() {
         {/* min-w-0 + shrink: at the sidebar's min width the fixed action
             buttons win and the status label truncates instead of overflowing */}
         <span
-          className={`w-16 min-w-0 shrink truncate text-right text-[10px] font-medium ${
+          className={`max-w-16 min-w-0 shrink truncate text-right text-[10px] font-medium ${
             status === 'error'
               ? 'text-red-500'
               : status === 'attention'
@@ -759,51 +785,78 @@ export default function Sidebar() {
         >
           {statusLabel}
         </span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            togglePinSession(session.id)
-          }}
-          title={pinned ? t('sidebar.unpin') : t('sidebar.pin')}
-          className={
-            pinned
-              ? 'shrink-0 rounded-md p-1 text-accent transition-all hover:bg-overlay-strong'
-              : `${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`
-          }
+        {pinned && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              togglePinSession(session.id)
+            }}
+            title={t('sidebar.unpin')}
+            className="shrink-0 rounded-md p-1 text-accent transition-all hover:bg-overlay-strong"
+          >
+            <PinOff size={12} />
+          </button>
+        )}
+        <div
+          className={`flex shrink-0 items-center gap-1 transition-all ${
+            actionsForcedVisible
+              ? 'w-auto opacity-100'
+              : 'w-0 overflow-hidden opacity-0 group-hover:w-auto group-hover:opacity-100 group-focus-within:w-auto group-focus-within:opacity-100'
+          }`}
         >
-          {pinned ? <PinOff size={12} /> : <Pin size={12} />}
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            // Kills a live session (its durable file stays) and hides the
-            // durable row behind the archive key.
-            handleArchiveSession(session.id, true)
-          }}
-          title={t('sidebar.archive')}
-          className={`${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`}
-        >
-          <Archive size={12} />
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            // Two-stage confirm: deleting kills the live pi process.
-            deleteSessionConfirm.click(session.id)
-          }}
-          title={
-            deleteSessionConfirm.confirmingId === session.id
-              ? t('sidebar.deleteConfirm')
-              : t('sidebar.deleteSession')
-          }
-          className={
-            deleteSessionConfirm.confirmingId === session.id
-              ? 'shrink-0 rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
-              : `${iconBtn} hover:bg-red-500/15 hover:text-red-500`
-          }
-        >
-          <Trash2 size={12} />
-        </button>
+          {!pinned && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                togglePinSession(session.id)
+              }}
+              title={t('sidebar.pin')}
+              className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay-strong hover:text-cream-dim"
+            >
+              <Pin size={12} />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              // Kills a live session (its durable file stays) and hides the
+              // durable row behind the archive key. Running/queued sessions
+              // confirm first — the kill drops their queued messages.
+              requestArchiveSession(session.id)
+            }}
+            title={
+              archiveSessionConfirm.confirmingId === session.id
+                ? t('sidebar.archiveConfirm')
+                : t('sidebar.archive')
+            }
+            className={
+              archiveSessionConfirm.confirmingId === session.id
+                ? 'rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
+                : 'rounded-md p-1 text-cream-faint transition-all hover:bg-overlay-strong hover:text-cream-dim'
+            }
+          >
+            <Archive size={12} />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              // Two-stage confirm: deleting kills the live pi process.
+              deleteSessionConfirm.click(session.id)
+            }}
+            title={
+              deleteSessionConfirm.confirmingId === session.id
+                ? t('sidebar.deleteConfirm')
+                : t('sidebar.deleteSession')
+            }
+            className={
+              deleteSessionConfirm.confirmingId === session.id
+                ? 'rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
+                : 'rounded-md p-1 text-cream-faint transition-all hover:bg-red-500/15 hover:text-red-500'
+            }
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
       </div>
     )
   }
@@ -929,7 +982,9 @@ export default function Sidebar() {
    * active — including rows whose restore failed and never minted a capability.
    */
   const renderGlobalRow = (row: (typeof globalHistory)[number]) => {
-    const resuming = resumingHistoryId !== null
+    // Only the row being resumed greys and locks — one pending resume must
+    // not freeze every cross-project row in the list.
+    const resuming = resumingGlobalUuid === row.uuid
     const confirming = deleteGlobalConfirm.confirmingId === row.uuid
     return (
       <div
@@ -989,7 +1044,7 @@ export default function Sidebar() {
     <aside
       ref={asideRef}
       style={{ width: sidebarWidth }}
-      className="relative flex shrink-0 flex-col border-r border-line bg-ink-900"
+      className="relative flex shrink-0 flex-col border-r border-line bg-ink-900 max-w-[min(420px,30vw)]"
     >
       {/* drag spacer — clears the macOS traffic lights */}
       <div className="app-drag h-11 shrink-0" />
@@ -1129,12 +1184,30 @@ export default function Sidebar() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      removeRecentProject(path)
+                      // Removing a project drops it from the trusted list —
+                      // a mis-aimed click on a hover-only X must not do that.
+                      if (removeRecentConfirm === path) {
+                        setRemoveRecentConfirm(null)
+                        removeRecentProject(path)
+                      } else {
+                        setRemoveRecentConfirm(path)
+                        if (removeRecentTimer.current) clearTimeout(removeRecentTimer.current)
+                        removeRecentTimer.current = setTimeout(
+                          () => setRemoveRecentConfirm(null),
+                          3000
+                        )
+                      }
                     }}
-                    title={t('sidebar.removeRecent')}
-                    className={`${iconBtn} ml-auto hover:bg-overlay-strong hover:text-cream-dim`}
+                    title={
+                      removeRecentConfirm === path
+                        ? t('sidebar.removeRecentConfirm')
+                        : t('sidebar.removeRecent')
+                    }
+                    className={`${iconBtn} ml-auto ${
+                      removeRecentConfirm === path ? 'bg-red-500/15 text-red-500 opacity-100' : 'hover:bg-overlay-strong hover:text-cream-dim'
+                    }`}
                   >
-                    <X size={12} />
+                    {removeRecentConfirm === path ? <Check size={12} /> : <X size={12} />}
                   </button>
                 </div>
               )
@@ -1258,12 +1331,10 @@ export default function Sidebar() {
           </div>
         )}
         {searching ? (
-          filteredSessions.length === 0 ? (
+          filteredRecentEntries.length === 0 ? (
             <div className="px-2 py-1.5 text-xs leading-5 text-cream-faint">{t('sidebar.noMatch')}</div>
           ) : (
-            <div className="space-y-0.5">
-              {[...sortedSearchSessions.pinned, ...sortedSearchSessions.normal].map(renderSessionRow)}
-            </div>
+            <div className="space-y-0.5">{filteredRecentEntries.map(renderRecentEntry)}</div>
           )
         ) : filteredRecentEntries.length === 0 ? (
           <div className="px-2 py-1.5 text-xs leading-5 text-cream-faint">{t('sidebar.noSessions')}</div>

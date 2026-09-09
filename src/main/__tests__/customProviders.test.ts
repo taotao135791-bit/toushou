@@ -358,7 +358,8 @@ describe('saveProviderKey / clearProviderKey', () => {
     await saveCustomProvider(spec(), { modelsFile, runner: verifyRunner(['my-gateway']) })
     const r = await saveProviderKey('my-gateway', 'sk-new', {
       modelsFile,
-      runner: keyRunner(['my-gateway'], [])
+      runner: keyRunner(['my-gateway'], []),
+      fetchImpl: (() => Promise.resolve({ status: 200 })) as unknown as typeof fetch
     })
     expect(r.ok).toBe(true)
     const entry = readDoc()['my-gateway']
@@ -372,7 +373,7 @@ describe('saveProviderKey / clearProviderKey', () => {
       modelsFile,
       runner: verifyRunner(['my-gateway'])
     })
-    await saveProviderKey('my-gateway', 'sk-new', { modelsFile, runner: keyRunner(['my-gateway'], []) })
+    await saveProviderKey('my-gateway', 'sk-new', { modelsFile, runner: keyRunner(['my-gateway'], []), fetchImpl: (() => Promise.resolve({ status: 200 })) as unknown as typeof fetch })
     const entry = readDoc()['my-gateway']
     expect(entry.apiKey).toBe('sk-new')
     expect(entry.auth).toBeUndefined()

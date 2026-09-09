@@ -32,7 +32,7 @@ export default function WorkspacePanel({ panel }: WorkspacePanelProps) {
   return (
     <aside
       aria-label={workspaceLabel}
-      className="flex w-[min(38vw,560px)] min-w-[320px] shrink-0 flex-col border-l border-line bg-ink-950 shadow-[-12px_0_32px_rgba(0,0,0,0.08)]"
+      className="flex w-[min(38vw,560px)] min-w-0 shrink flex-col border-l border-line bg-ink-950 shadow-[-12px_0_32px_rgba(0,0,0,0.08)]"
     >
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line px-2">
         <button

@@ -39,6 +39,7 @@ import {
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import { useConfirmId } from '../lib/confirmClick'
+import { showNotice } from '../lib/notice'
 import { launchTool } from '../lib/launchTool'
 import Logo from '../components/Logo'
 import { PluginStudioDialog } from '../components/PluginStudioDialog'
@@ -338,7 +339,9 @@ export default function PackagesPage() {
 
   const installDroppedFiles = async (files: FileList | File[]) => {
     if (isCurrentOmp || pending) return
-    const file = Array.from(files)[0]
+    const all = Array.from(files)
+    if (all.length > 1) showNotice('packages.multiDropIgnored')
+    const file = all[0]
     if (!file) return
     try {
       const grant = await window.electronAPI.grantDroppedPackageLocalSource(file)
@@ -1024,6 +1027,17 @@ function PartCard({
   const toggling = busy && pending?.kind === 'toggle'
   const updatable = canUpdate && (pkg.canUpdate ?? (pkg.kind !== 'local' && !pkg.pinned))
   const [dragging, setDragging] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const confirmArm = () => {
+    setConfirming(true)
+    if (confirmTimer.current) clearTimeout(confirmTimer.current)
+    confirmTimer.current = setTimeout(() => setConfirming(false), 3000)
+  }
+  const confirmReset = () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current)
+    setConfirming(false)
+  }
 
   return (
     <div
@@ -1147,14 +1161,27 @@ function PartCard({
             </button>
           )}
           <button
-            onClick={onRemove}
+            onClick={() => {
+              // Uninstalling removes files — a stray click on a 13px icon
+              // must not be instant and irreversible.
+              if (confirming) {
+                confirmReset()
+                onRemove()
+              } else {
+                confirmArm()
+              }
+            }}
             disabled={pending !== null}
             title={
               removing
                 ? t('plugins.removing')
-                : t('plugins.uninstall')
+                : confirming
+                  ? t('plugins.uninstallConfirm')
+                  : t('plugins.uninstall')
             }
-            className="rounded-md p-1.5 text-cream-faint transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"
+            className={`rounded-md p-1.5 transition disabled:opacity-50 ${
+              confirming ? 'bg-red-500/15 text-red-500' : 'text-cream-faint hover:bg-red-500/10 hover:text-red-500'
+            }`}
           >
             <Trash2 size={13} />
           </button>

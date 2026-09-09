@@ -365,13 +365,16 @@ export default function BoardsPage() {
       setBoardMenuOpen(false)
       setToolsMenuOpen(false)
       setGalleryOpen(false)
+      setDatasetsOpen(false)
+      setDetailOpen(false)
+      setComposeOpen(false)
       deleteBoardConfirm.reset()
       clearConfirm.reset()
     }
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen])
+  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, datasetsOpen, detailOpen, composeOpen])
 
   const switchBoard = (id: string) => {
     closeMenus()
@@ -875,7 +878,13 @@ export default function BoardsPage() {
             autoFocus
             value={newBoardName}
             onChange={(e) => setNewBoardName(e.target.value)}
-            onBlur={commitCreate}
+            onBlur={() => {
+              // Clicking anywhere else used to CREATE a board from whatever
+              // half-typed draft was in the box. Blur now cancels; Enter or
+              // the confirm button commits.
+              setCreating(false)
+              setNewBoardName('')
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') commitCreate()
               if (e.key === 'Escape') {

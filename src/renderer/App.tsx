@@ -297,6 +297,12 @@ function App() {
     const grant = state.currentWorkspace
     if (!grant || state.historyLoading) return false
     const result = await window.electronAPI.resumeSession(grant.id, info.id)
+    if (result && 'error' in result) {
+      // Transcript could not be loaded — the row is not dead; keep it and
+      // tell the user instead of opening a blank chat.
+      showNotice('history.transcriptUnavailable')
+      return false
+    }
     if (!result) {
       showNotice('history.restoreFailed')
       // Dead rows (rewritten/removed files) must vanish instead of lingering.
@@ -329,7 +335,10 @@ function App() {
     const state = useAppStore.getState()
     if (state.historyLoading) return
     const resumeByUuid = async (): Promise<boolean> => {
-      await state.loadHistorySessions(state.currentWorkspace?.id ?? null)
+      // Re-read AFTER any workspace switch — the captured `state` names the
+      // previous workspace and would load the wrong grant's history.
+      const fresh = useAppStore.getState()
+      await fresh.loadHistorySessions(fresh.currentWorkspace?.id ?? null)
       const match = useAppStore
         .getState()
         .sessionRecords.find((r) => !r.isLive && r.history?.uuid === target.uuid)
@@ -339,6 +348,7 @@ function App() {
 
     if (state.currentWorkspace && target.cwd === state.currentWorkspace.realPath) {
       if (await resumeByUuid()) return
+      showNotice('history.restoreFailed')
       return
     }
 

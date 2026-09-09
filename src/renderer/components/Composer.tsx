@@ -28,6 +28,7 @@ import { useT } from '../i18n'
 import { filterSlashItems, groupSlashItems, SlashMenuItem } from '../lib/slashCommands'
 import { useGitInfo } from '../lib/useGitInfo'
 import { basename } from '../lib/path'
+import { showNotice } from '../lib/notice'
 import ModelPicker from './ModelPicker'
 import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
@@ -79,6 +80,8 @@ interface PendingImage {
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_IMAGES = 4
 const MAX_FILE_ITEMS = 20
+/** Hard cap for one paste; anything larger freezes the composer pipeline. */
+const MAX_PASTE_CHARS = 100_000
 /** Mirrors the main-process listProjectFiles cache window. */
 const FILE_LIST_TTL_MS = 30_000
 
@@ -521,6 +524,21 @@ export default memo(function Composer({
   }
 
   const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    // Guard the pathological case first: a multi-megabyte paste freezes the
+    // autosize/streaming pipeline. Keep the head, drop the rest, say so.
+    const pastedText = e.clipboardData?.getData('text/plain') ?? ''
+    if (pastedText.length > MAX_PASTE_CHARS) {
+      e.preventDefault()
+      const el = textareaRef.current
+      const start = el?.selectionStart ?? text.length
+      const end = el?.selectionEnd ?? text.length
+      const clipped = `${pastedText.slice(0, MAX_PASTE_CHARS)}…`
+      const next = `${text.slice(0, start)}${clipped}${text.slice(end)}`
+      setText(next)
+      setCaret(start + clipped.length)
+      showNotice('composer.pasteTruncated')
+      return
+    }
     const files = Array.from(e.clipboardData?.items ?? [])
       .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
@@ -561,14 +579,22 @@ export default memo(function Composer({
       })
     }
     if (resolved.length === 0) return
+    // A box-selected pile of 200 files is almost never intentional; the
+    // message would carry 200 @path lines. Cap the total and say so.
     setPendingFiles((prev) => {
       const next = [...prev]
       let added = false
+      let skipped = 0
       for (const att of resolved) {
         if (next.some((p) => p.path === att.path)) continue
+        if (next.length >= MAX_FILE_ITEMS) {
+          skipped += 1
+          continue
+        }
         next.push(att)
         added = true
       }
+      if (skipped > 0) showNotice('composer.tooManyFiles')
       if (added) writeDraft(sessionIdAtAction, textAtAction, imagesAtAction, next)
       return next
     })
@@ -741,8 +767,15 @@ export default memo(function Composer({
         clearLocalDraft()
       }
       const result = onSend(outgoing, imgs)
-      if (result instanceof Promise) void result.then(restore)
-      else restore(result)
+      if (result instanceof Promise) {
+        void result
+          .then(restore)
+          .catch(() => {
+            // A failed send must not eat the user's words: restore the draft
+            // anyway so it can be retried or copied out.
+            restore(false)
+          })
+      } else restore(result)
       return
     }
     if (sessionIdAtSend) clearComposerDraft(sessionIdAtSend)
@@ -900,13 +933,35 @@ export default memo(function Composer({
 
   const canSend = !disabled && Boolean(text.trim())
 
+  // Panels open ABOVE the composer (bottom-full). On the home screen the card
+  // sits mid-window, so a tall panel would run past the window's top edge and
+  // get clipped. Measure the room above and cap every panel to it.
+  const panelAnchorRef = useRef<HTMLDivElement>(null)
+  const [aboveMax, setAboveMax] = useState<number | null>(null)
+  const panelsOpen = slashQuery !== null || atOpen || atNeedProject
+  useEffect(() => {
+    if (!panelsOpen) return
+    const measure = () => {
+      const el = panelAnchorRef.current
+      if (!el) return
+      const top = el.getBoundingClientRect().top
+      setAboveMax(Math.max(140, Math.round(top - 12)))
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [panelsOpen])
+
   return (
     // Home (no active session) trims the outer bottom padding: the hint line
     // below the card takes over the rhythm.
     <div className={`px-4 pt-2 ${currentSessionId ? 'pb-4' : 'pb-1'}`}>
-      <div className="relative mx-auto w-full max-w-3xl">
+      <div ref={panelAnchorRef} className="relative mx-auto w-full max-w-3xl">
         {slashQuery !== null && (
-          <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop">
+          <div
+            className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-y-auto overflow-x-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
+            style={aboveMax !== null ? { maxHeight: aboveMax } : undefined}
+          >
             <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
               {t('composer.slashTitle')}
             </div>
@@ -960,7 +1015,10 @@ export default memo(function Composer({
           </div>
         )}
         {atNeedProject && (
-          <div className="absolute bottom-full left-0 right-0 z-20 mb-2 rounded-xl border border-line bg-ink-850 p-1 shadow-pop">
+          <div
+            className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
+            style={aboveMax !== null ? { maxHeight: aboveMax } : undefined}
+          >
             <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
               {t('composer.atTitle')}
             </div>
@@ -970,13 +1028,16 @@ export default memo(function Composer({
           </div>
         )}
         {atOpen && (
-          <div className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-72 overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop">
+          <div
+            className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-72 overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
+            style={aboveMax !== null ? { maxHeight: Math.min(aboveMax, 288) } : undefined}
+          >
             <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
               {t('composer.atTitle')}
             </div>
             {fileItems.length === 0 ? (
               <div className="px-2.5 py-2 text-[12px] text-cream-faint">
-                {t('composer.noFiles')}
+                {projectFiles.length === 0 ? t('composer.workspaceEmpty') : t('composer.noFiles')}
               </div>
             ) : (
               fileItems.map((f, i) => {

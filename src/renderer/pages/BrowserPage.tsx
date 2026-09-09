@@ -166,6 +166,7 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
           value={address}
           onChange={(e) => setAddress(e.target.value)}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return
             if (e.key === 'Enter') go(address)
           }}
           placeholder={panelState.url ? t('browser.addressPlaceholder') : t('browser.homeHint')}

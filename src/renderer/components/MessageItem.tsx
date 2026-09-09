@@ -125,7 +125,13 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
   // Prefill the composer with this message so it can be edited and resent;
   // the history entry stays untouched.
   const editContent = () => {
-    useAppStore.getState().setComposerPrefill(message.content)
+    const store = useAppStore.getState()
+    // If the composer already holds a draft, keep it: the edit prefill is
+    // appended below instead of overwriting the user's half-written text.
+    const existing = sessionId ? store.composerDrafts[sessionId]?.text : undefined
+    const merged =
+      existing && existing.trim() ? `${existing}\n\n${message.content}` : message.content
+    store.setComposerPrefill(merged)
   }
 
   const runRollback = async () => {
@@ -162,6 +168,12 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
           content: t('rollback.failed', { log: result.log })
         })
       }
+    } catch {
+      store.addMessage(sessionId, {
+        id: crypto.randomUUID(),
+        role: 'system',
+        content: t('rollback.failed', { log: t('rollback.none') })
+      })
     } finally {
       setRestoring(false)
     }
@@ -227,8 +239,32 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
               </span>
             </div>
           )}
-          {/* hover action bar: per-turn model/thinking tag, copy, edit-and-resend */}
+          {/* hover action bar: per-turn model/thinking tag, rollback, copy, edit-and-resend */}
           <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-all group-hover:opacity-100">
+            {checkpointAvailable && sessionId && index >= 0 && (
+              <button
+                onClick={handleRollbackClick}
+                disabled={restoring}
+                title={
+                  restoring
+                    ? t('rollback.restoring')
+                    : confirmRollback
+                      ? t('rollback.confirm')
+                      : t('rollback.button')
+                }
+                className={`rounded-md p-1 transition-all disabled:opacity-60 ${
+                  confirmRollback
+                    ? 'bg-red-500/10 text-red-500 opacity-100'
+                    : 'text-cream-faint hover:bg-overlay hover:text-cream'
+                }`}
+              >
+                {restoring ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <History size={12} />
+                )}
+              </button>
+            )}
             {tagLabel && (
               <span
                 title={t('composer.model')}
@@ -251,32 +287,6 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
             >
               <Pencil size={12} />
             </button>
-          </div>
-          <div className="absolute -left-7 top-1 flex flex-col gap-1">
-            {checkpointAvailable && sessionId && index >= 0 && (
-              <button
-                onClick={handleRollbackClick}
-                disabled={restoring}
-                title={
-                  restoring
-                    ? t('rollback.restoring')
-                    : confirmRollback
-                      ? t('rollback.confirm')
-                      : t('rollback.button')
-                }
-                className={`rounded-md p-1 transition-all disabled:opacity-60 ${
-                  confirmRollback
-                    ? 'bg-red-500/10 text-red-500 opacity-100'
-                    : 'text-cream-faint opacity-0 hover:bg-overlay hover:text-cream group-hover:opacity-100'
-                }`}
-              >
-                {restoring ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <History size={12} />
-                )}
-              </button>
-            )}
           </div>
         </div>
       </div>

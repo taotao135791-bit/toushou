@@ -302,11 +302,20 @@ export interface ElectronAPI {
   sessionTranscript: (sessionId: string) => Promise<ChatMessage[] | null>
   /** Persisted sessions of a workspace, represented by opaque Main-held ids. */
   listSessionHistory: (grantId: string) => Promise<HistorySessionDescriptor[]>
-  /** Resume an opaque history entry under the workspace grant that listed it. */
+  /**
+   * Resume an opaque history entry under the workspace grant that listed it.
+   * Fails with `{ error: 'transcript_unavailable' }` when the session opened
+   * but its conversation could not be loaded — callers must keep the row and
+   * surface the failure instead of opening a blank chat.
+   */
   resumeSession: (
     grantId: string,
     historyId: string
-  ) => Promise<{ session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] } | null>
+  ) => Promise<
+    | { error: 'transcript_unavailable' }
+    | { session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] }
+    | null
+  >
   /** Delete an opaque history entry under the workspace grant that listed it. */
   deleteSessionFile: (grantId: string, historyId: string) => Promise<boolean>
   /**

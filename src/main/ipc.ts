@@ -51,6 +51,7 @@ import {
   getSessionStats,
   listSessionCommands,
   compactSession,
+  ResumeTranscriptError,
   steer,
   followUp,
   setThinkingLevel,
@@ -849,7 +850,16 @@ export function registerIpc() {
           ownerWebContentsId: event.sender.id
         },
         async (filePath) => {
-          const resumed = await resumeSession(resolved.realPath, broadcastSessionEvent, filePath)
+          let resumed: Awaited<ReturnType<typeof resumeSession>>
+          try {
+            resumed = await resumeSession(resolved.realPath, broadcastSessionEvent, filePath)
+          } catch (error) {
+            // The session spawned but its transcript could not be fetched.
+            // Report this distinctly so the GUI keeps the row and tells the
+            // user, instead of opening a blank chat that reads as data loss.
+            if (error instanceof ResumeTranscriptError) return { error: 'transcript_unavailable' }
+            throw error
+          }
           if (!resumed) return null
           // The runtime keeps the file path in Main for --session and durable
           // metadata reconstruction. The renderer needs only the opaque

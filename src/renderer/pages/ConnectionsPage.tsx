@@ -294,8 +294,7 @@ export default function ConnectionsPage() {
                       ['bitable.write', 'connections.scopeBitableWrite'],
                       ['calendar.read', 'connections.scopeCalendarRead'],
                       ['calendar.write', 'connections.scopeCalendarWrite'],
-                      ['tasks', 'connections.scopeTasks'],
-                      ['drive', 'connections.scopeDrive']
+                      ['tasks', 'connections.scopeTasks']
                     ] as [FeishuCapability, I18nKey][]).map(([capability, key]) => {
                       const granted = snapshot.authorizedCapabilities.includes(capability)
                       return (

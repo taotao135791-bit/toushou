@@ -127,11 +127,15 @@ describe('HistorySessionGrantManager', () => {
     await expect(manager.resolve(descriptor.id, context())).resolves.toBeNull()
   })
 
-  it('expires and revokes grants by owner or workspace', async () => {
+  it('slides the TTL when every binding revalidates, but revokes by owner or workspace', async () => {
     const filePath = writeSession(workspaceA)
     const [expired] = await manager.mintForWorkspace([history(filePath)], context())
     now += 100
-    await expect(manager.resolve(expired.id, context())).resolves.toBeNull()
+    // Pure TTL expiry no longer breaks a row the user can still open: the
+    // full binding chain (owner/workspace/inode/uuid/dirs) revalidates, so
+    // the capability slides forward and resolves.
+    expectSamePath(await manager.resolve(expired.id, context()), fs.realpathSync(filePath))
+    expectSamePath(await manager.resolve(expired.id, context()), fs.realpathSync(filePath))
 
     const [ownerRevoked] = await manager.mintForWorkspace([history(filePath)], context())
     manager.revokeOwner(41)
@@ -140,6 +144,19 @@ describe('HistorySessionGrantManager', () => {
     const [workspaceRevoked] = await manager.mintForWorkspace([history(filePath)], context())
     manager.revokeWorkspace('workspace-a')
     await expect(manager.resolve(workspaceRevoked.id, context())).resolves.toBeNull()
+  })
+
+  it('deleteStale still sweeps an expired capability bound to the same session', async () => {
+    const UUID = '01234567-89ab-cdef-0123-456789abcdef'
+    const directory = sessionDirFor(workspaceA, agentDir)
+    fs.mkdirSync(directory, { recursive: true })
+    const filePath = path.join(directory, 'expired_delete.jsonl')
+    fs.writeFileSync(filePath, `{"type":"session","id":"${UUID}"}\n`)
+    const [expired] = await manager.mintForWorkspace([history(filePath, UUID)], context())
+    now += 100
+    await expect(manager.deleteStale(expired.id, context())).resolves.toBe(true)
+    expect(fs.existsSync(filePath)).toBe(false)
+    await expect(manager.resolve(expired.id, context())).resolves.toBeNull()
   })
 
   it('serializes a history capability through one revalidated Main-only operation', async () => {

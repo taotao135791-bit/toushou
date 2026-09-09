@@ -1,4 +1,5 @@
 import { useAppStore } from '../store'
+import { showNotice } from './notice'
 import { createSessionForCurrentProject } from './session'
 
 /**
@@ -9,7 +10,15 @@ import { createSessionForCurrentProject } from './session'
  * change because it lives in the store, not the component.
  */
 export async function launchComposerPrompt(text: string): Promise<string | null> {
-  const id = await createSessionForCurrentProject()
+  let id: string | null
+  try {
+    id = await createSessionForCurrentProject()
+  } catch {
+    // e.g. an expired workspace grant — a silent unhandled rejection reads as
+    // a dead button.
+    showNotice('packages.launchFailed')
+    return null
+  }
   if (!id) return null
   const store = useAppStore.getState()
   store.setComposerPrefill(text)
@@ -31,7 +40,13 @@ export async function launchSkillSession(
   skillId: string,
   referenceText: string
 ): Promise<string | null> {
-  const id = await createSessionForCurrentProject({ skillId })
+  let id: string | null
+  try {
+    id = await createSessionForCurrentProject({ skillId })
+  } catch {
+    showNotice('packages.launchFailed')
+    return null
+  }
   if (!id) return null
   const store = useAppStore.getState()
   store.setComposerPrefill(referenceText)

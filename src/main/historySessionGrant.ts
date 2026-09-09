@@ -157,20 +157,24 @@ export class HistorySessionGrantManager {
    * Resolve a history capability to its private session file path. Every use
    * re-checks the opaque id's owner/workspace binding, canonical inode identity,
    * and membership of the active workspace's known OMP session directories.
+   *
+   * A capability that merely aged past its TTL is not rejected: once every
+   * binding (owner, workspace, inode/uuid identity, workspace session dirs)
+   * revalidates, the TTL slides forward. This keeps the freshness property
+   * (unvalidated reuse stays impossible) while a row the user can still see
+   * and open no longer fails its first click after a long idle.
    */
   async resolve(
     historyId: unknown,
     context: HistorySessionGrantContext
   ): Promise<string | null> {
-    this.pruneExpired()
     if (!validOpaqueId(historyId)) return null
     const stored = this.grants.get(historyId)
     if (
       !stored ||
       stored.ownerWebContentsId !== context.ownerWebContentsId ||
       stored.workspaceGrantId !== context.workspaceGrantId ||
-      stored.workspaceRealPath !== context.workspaceRealPath ||
-      stored.expiresAt <= this.now()
+      stored.workspaceRealPath !== context.workspaceRealPath
     ) {
       return null
     }
@@ -201,6 +205,7 @@ export class HistorySessionGrantManager {
       this.remove(historyId)
       return null
     }
+    if (stored.expiresAt <= this.now()) stored.expiresAt = this.now() + this.ttlMs
     return stored.realPath
   }
 
@@ -243,18 +248,19 @@ export class HistorySessionGrantManager {
     historyId: unknown,
     context: HistorySessionGrantContext
   ): Promise<boolean> {
-    this.pruneExpired()
     if (!validOpaqueId(historyId)) return false
     const stored = this.grants.get(historyId)
     if (
       !stored ||
       stored.ownerWebContentsId !== context.ownerWebContentsId ||
       stored.workspaceGrantId !== context.workspaceGrantId ||
-      stored.workspaceRealPath !== context.workspaceRealPath ||
-      stored.expiresAt <= this.now()
+      stored.workspaceRealPath !== context.workspaceRealPath
     ) {
       return false
     }
+    // Age alone does not block the sweep: an expired-but-bound capability
+    // still names the same session file, and a user deleting a row must not
+    // depend on when the capability was last minted.
     const deleted = await deleteSessionCopiesByUuid(stored.descriptor.uuid, this.getAgentDir())
     if (deleted) this.remove(historyId)
     return deleted

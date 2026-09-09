@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2 } from 'lucide-react'
 import { ScheduledTask } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
+import { showNotice } from '../lib/notice'
+import { useConfirmId } from '../lib/confirmClick'
 import { basename } from '../lib/path'
 
 function scheduleText(task: ScheduledTask, t: (key: never, vars?: Record<string, string | number>) => string): string {
@@ -74,8 +76,14 @@ export default function TasksPage() {
       schedule, enabled: true, createdAt: Date.now(), notifyOnComplete: true
     }
     const result = await window.electronAPI.saveTask(task)
-    if (result.ok && result.task) setScheduledTasks([...scheduledTasks, result.task])
-    setModalOpen(false)
+    if (result.ok && result.task) {
+      setScheduledTasks([...scheduledTasks, result.task])
+      setModalOpen(false)
+    } else {
+      // Keep the modal open with the user's draft intact — closing silently
+      // would make the task they just wrote vanish without a trace.
+      showNotice('tasks.saveFailed')
+    }
   }
 
   const handleToggle = async (task: ScheduledTask) => {
@@ -89,10 +97,24 @@ export default function TasksPage() {
     setTimeout(() => setRunning(null), 3000)
   }
 
-  const handleDelete = async (task: ScheduledTask) => {
-    const ok = await window.electronAPI.deleteTask(task.id)
-    if (ok) setScheduledTasks(scheduledTasks.filter(t => t.id !== task.id))
-  }
+  // Deleting a task is permanent and cannot be undone — two-stage confirm,
+  // same pattern as deleting sessions and plugins.
+  const deleteTaskConfirm = useConfirmId((id: string) => {
+    void window.electronAPI.deleteTask(id).then((ok) => {
+      if (ok) setScheduledTasks(scheduledTasks.filter(t => t.id !== id))
+    })
+  })
+
+  // Esc closes the dialog; clicking the dimmed backdrop does too. Without
+  // this, the only way out is the small ✕ in the corner.
+  useEffect(() => {
+    if (!modalOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.isComposing) setModalOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [modalOpen])
 
   const btn = 'rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors'
   const input = 'mt-1 w-full rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50'
@@ -159,8 +181,13 @@ export default function TasksPage() {
                           className={`relative h-5 w-9 rounded-full transition-colors ${task.enabled ? 'bg-emerald-500' : 'bg-line-strong'}`}>
                           <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${task.enabled ? 'left-[18px]' : 'left-0.5'}`} />
                         </button>
-                        <button onClick={() => void handleDelete(task)} title={t('sidebar.deleteSession')}
-                          className="rounded-lg p-1.5 text-cream-faint transition-colors hover:bg-red-500/10 hover:text-red-500">
+                        <button onClick={() => deleteTaskConfirm.click(task.id)}
+                          title={deleteTaskConfirm.confirmingId === task.id ? t('tasks.deleteConfirm') : t('sidebar.deleteSession')}
+                          className={`rounded-lg p-1.5 transition-colors ${
+                            deleteTaskConfirm.confirmingId === task.id
+                              ? 'bg-red-500/15 text-red-500'
+                              : 'text-cream-faint hover:bg-red-500/10 hover:text-red-500'
+                          }`}>
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -174,7 +201,12 @@ export default function TasksPage() {
       </div>
 
       {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-6 backdrop-blur-[2px]">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-6 backdrop-blur-[2px]"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setModalOpen(false)
+          }}
+        >
           <div className="w-full max-w-md rounded-2xl border border-line bg-ink-850 p-5 shadow-pop">
             <div className="mb-4 flex items-center justify-between">
               <span className="text-[14px] font-semibold text-cream">{t('tasks.create')}</span>
@@ -190,7 +222,7 @@ export default function TasksPage() {
                 <textarea value={form.prompt} onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))} rows={3} className={`${input} resize-none py-2`} placeholder={t('sidebar.taskPromptPh')} />
               </label>
               <label className="block text-[11px] text-cream-faint">
-                Project
+                {t('tasks.project')}
                 <select value={form.cwd} onChange={e => setForm(f => ({ ...f, cwd: e.target.value }))} className={input + ' h-8'}>
                   <option value="">{t('sidebar.selectProject')}</option>
                   {recentWorkspaces.map(w => <option key={w.id} value={w.displayPath}>{w.displayPath}</option>)}
@@ -200,24 +232,26 @@ export default function TasksPage() {
                 <label className="block text-[11px] text-cream-faint">
                   {t('sidebar.taskSchedule')}
                   <select value={form.scheduleType} onChange={e => setForm(f => ({ ...f, scheduleType: e.target.value as typeof form.scheduleType }))} className={input + ' h-8'}>
-                    <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="interval">Interval</option>
+                    <option value="daily">{t('schedule.typeDaily')}</option>
+                    <option value="weekly">{t('schedule.typeWeekly')}</option>
+                    <option value="interval">{t('schedule.typeInterval')}</option>
                   </select>
                 </label>
                 {form.scheduleType !== 'interval' && (
-                  <label className="block text-[11px] text-cream-faint">Time
+                  <label className="block text-[11px] text-cream-faint">{t('tasks.time')}
                     <input type="time" value={form.time} onChange={e => setForm(f => ({ ...f, time: e.target.value }))} className={input + ' h-8'} />
                   </label>
                 )}
                 {form.scheduleType === 'interval' && (
-                  <label className="block text-[11px] text-cream-faint">Hours
+                  <label className="block text-[11px] text-cream-faint">{t('tasks.hours')}
                     <input type="number" min={1} max={168} value={form.hours} onChange={e => setForm(f => ({ ...f, hours: Number(e.target.value) || 24 }))} className={input + ' h-8'} />
                   </label>
                 )}
                 {form.scheduleType === 'weekly' && (
-                  <label className="block text-[11px] text-cream-faint">Day
+                  <label className="block text-[11px] text-cream-faint">{t('tasks.day')}
                     <select value={form.dayOfWeek} onChange={e => setForm(f => ({ ...f, dayOfWeek: Number(e.target.value) }))} className={input + ' h-8'}>
-                      <option value={1}>Mon</option><option value={2}>Tue</option><option value={3}>Wed</option>
-                      <option value={4}>Thu</option><option value={5}>Fri</option><option value={6}>Sat</option><option value={0}>Sun</option>
+                      <option value={1}>{t('schedule.dayMon')}</option><option value={2}>{t('schedule.dayTue')}</option><option value={3}>{t('schedule.dayWed')}</option>
+                      <option value={4}>{t('schedule.dayThu')}</option><option value={5}>{t('schedule.dayFri')}</option><option value={6}>{t('schedule.daySat')}</option><option value={0}>{t('schedule.daySun')}</option>
                     </select>
                   </label>
                 )}

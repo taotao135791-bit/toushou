@@ -89,6 +89,7 @@ export default function CommandPalette({ open, onClose, handlers }: CommandPalet
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // Fresh landing view on every open.
   useEffect(() => {
@@ -245,22 +246,38 @@ export default function CommandPalette({ open, onClose, handlers }: CommandPalet
     onClose()
   }
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (flat.length > 0) setActiveIndex((index) => (index + 1) % flat.length)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (flat.length > 0) setActiveIndex((index) => (index - 1 + flat.length) % flat.length)
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      const item = flat[activeIndex]
-      if (item) execute(item)
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      onClose()
+  // Keyboard lives on the window while the palette is open: clicking a group
+  // header or the hint strip (non-focusable) must not strand the arrow keys,
+  // Enter or Esc. Tab is trapped — the only focusable element is the input.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      // A Chinese IME's candidate-confirm Enter (isComposing) must never
+      // execute the highlighted command mid-composition.
+      if (e.isComposing || e.keyCode === 229) return
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        inputRef.current?.focus()
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        if (flat.length > 0) setActiveIndex((index) => (index + 1) % flat.length)
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        if (flat.length > 0) setActiveIndex((index) => (index - 1 + flat.length) % flat.length)
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        const item = flat[activeIndex]
+        if (item) execute(item)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        onClose()
+      }
     }
-  }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, flat, activeIndex, execute, onClose])
 
   const iconFor = (item: PaletteItem): LucideIcon => {
     if (item.kind === 'session') return History
@@ -291,17 +308,18 @@ export default function CommandPalette({ open, onClose, handlers }: CommandPalet
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
-      onKeyDown={onKeyDown}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={t('palette.placeholder')}
         className="fixed left-1/2 top-[15vh] w-[560px] max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-hidden rounded-xl border border-line bg-ink-850 shadow-pop"
+        onClick={() => inputRef.current?.focus()}
       >
         <div className="flex items-center gap-2.5 border-b border-line px-4">
           <Search size={15} className="shrink-0 text-cream-faint" />
           <input
+            ref={inputRef}
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}

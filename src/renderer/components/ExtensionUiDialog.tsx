@@ -249,6 +249,9 @@ export default function ExtensionUiDialog({
                   data-dialog-autofocus
                   disabled={sending}
                   onKeyDown={(e) => {
+                    // An IME candidate-confirm Enter must not submit the
+                    // half-composed text to the running agent.
+                    if (e.nativeEvent.isComposing || e.keyCode === 229) return
                     if (e.key === 'Enter') answer({ value: text })
                   }}
                   className="mb-4 w-full rounded-lg border border-line bg-ink-800 px-3 py-2.5 text-[13px] text-cream outline-none transition-all placeholder:text-cream-faint focus:border-accent/50 focus:shadow-[0_0_0_3px_var(--accent-soft)]"

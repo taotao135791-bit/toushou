@@ -43,6 +43,11 @@ function loadUniverBundles(): Promise<UniverBundles> {
       sheetsZhCN: zhCN.default,
       sheetsEnUS: enUS.default
     }))
+    // A cached REJECTED promise would keep the loading overlay up forever with
+    // no way to retry — drop it so the next open tries again.
+    univerBundlesPromise.catch(() => {
+      univerBundlesPromise = null
+    })
   }
   return univerBundlesPromise
 }
@@ -144,6 +149,10 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const bundlesRef = useRef<UniverBundles | null>(null)
   const consumedGrantIds = useRef(new Set<string>())
   const [engineReady, setEngineReady] = useState(false)
+  const [bundleError, setBundleError] = useState(false)
+  const [bundleRetryNonce, setBundleRetryNonce] = useState(0)
+  const [closeConfirming, setCloseConfirming] = useState(false)
+  const closeConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [fileName, setFileName] = useState(initialName ?? '')
   const [dirty, setDirty] = useState(false)
   const [hasData, setHasData] = useState(false)
@@ -188,7 +197,13 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       void (async () => {
         const container = containerRef.current
         if (!container || disposed) return
-        const bundles = await loadUniverBundles()
+        let bundles: UniverBundles
+        try {
+          bundles = await loadUniverBundles()
+        } catch {
+          if (!disposed) setBundleError(true)
+          return
+        }
         if (disposed || !containerRef.current) return
         bundlesRef.current = bundles
         const { createUniver, LocaleType } = bundles.presets
@@ -226,7 +241,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       univerRef.current = null
       instance?.univerAPI.dispose()
     }
-  }, [])
+  }, [bundleRetryNonce])
 
   /** Replace the current workbook with a snapshot from Main. */
   const loadSnapshot = useCallback((name: string, snapshot: OfficeWorkbookSnapshot) => {
@@ -328,6 +343,19 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   }, [fileName])
 
   const closePanel = () => {
+    // Unsaved cell edits die silently with the panel. Demand a second click
+    // (with a timeout back to normal) before throwing them away.
+    if (dirty) {
+      if (closeConfirming) {
+        if (closeConfirmTimer.current) clearTimeout(closeConfirmTimer.current)
+        setCloseConfirming(false)
+      } else {
+        setCloseConfirming(true)
+        if (closeConfirmTimer.current) clearTimeout(closeConfirmTimer.current)
+        closeConfirmTimer.current = setTimeout(() => setCloseConfirming(false), 3000)
+        return
+      }
+    }
     if (onClose) {
       onClose()
       return
@@ -523,7 +551,21 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       {/* Univer mounts into this container; it owns everything inside it. */}
       <div className="relative h-full min-h-0 w-full flex-1 overflow-hidden">
         <div ref={containerRef} className="h-full w-full" />
-        {!engineReady && (
+        {!engineReady && bundleError && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-cream-faint">
+            <span className="text-[13px]">{t('office.loadFailed')}</span>
+            <button
+              onClick={() => {
+                setBundleError(false)
+                setBundleRetryNonce((n) => n + 1)
+              }}
+              className="rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim transition-colors hover:text-cream"
+            >
+              {t('office.retry')}
+            </button>
+          </div>
+        )}
+        {!engineReady && !bundleError && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 text-cream-faint">
             <Loader2 size={16} className="animate-spin" />
             <span className="text-[13px]">{t('app.loading')}</span>

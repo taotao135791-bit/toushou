@@ -47,6 +47,17 @@ export default function SkillsPage() {
   const [viewer, setViewer] = useState<{ entry: SkillEntry; content: string } | null>(null)
   const [viewerFailed, setViewerFailed] = useState(false)
   const [githubOpen, setGithubOpen] = useState(false)
+  useEffect(() => {
+    if (!githubOpen && !viewer) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing) return
+      event.preventDefault()
+      setGithubOpen(false)
+      setViewer(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [githubOpen, viewer])
   const [githubUrl, setGithubUrl] = useState('')
   const [githubBusy, setGithubBusy] = useState(false)
   const [githubError, setGithubError] = useState<string | null>(null)

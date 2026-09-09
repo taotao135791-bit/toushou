@@ -465,6 +465,19 @@ export async function setSessionName(sessionId: string, name: string): Promise<b
 }
 
 /**
+ * The resumed session came back with an EMPTY transcript while the durable
+ * file itself demonstrably holds user turns. Surfacing this as a typed
+ * failure lets the GUI show "couldn't load the conversation" instead of
+ * silently opening a blank session that reads as data loss.
+ */
+export class ResumeTranscriptError extends Error {
+  constructor() {
+    super('resumed session returned an empty transcript for a non-empty session file')
+    this.name = 'ResumeTranscriptError'
+  }
+}
+
+/**
  * Resume a persisted session file as a new live session and return it together
  * with its transcript in one round-trip. Returns null when the path is not a
  * session file under the sessions root, or when the CLI is unavailable.
@@ -477,11 +490,21 @@ export async function resumeSession(
   if (!isSessionFilePath(filePath)) return null
   const session = createSession(cwd, onEvent, { resumeSessionPath: filePath })
   if (session.status === 'error') return null
-  const messages = await getSessionMessages(session.id)
+  let messages = await getSessionMessages(session.id)
   // Reconstruct per-turn model/thinking from the durable session JSONL and tag
   // each user message. Steer kind is already set by mapAgentMessages from the
   // `steering` flag. Unknown (unrecorded) metadata stays unknown — never guessed.
   const metadata = await reconstructSessionMetadata(filePath)
+  if (messages.length === 0 && metadata.length > 0) {
+    // A cold runtime (or a very large transcript) can miss the get_messages
+    // round-trip. Give it one more chance before declaring the transcript
+    // unavailable — but never present an empty chat for a file that has turns.
+    messages = await getSessionMessages(session.id)
+    if (messages.length === 0) {
+      killSession(session.id)
+      throw new ResumeTranscriptError()
+    }
+  }
   let metaIndex = 0
   for (const message of messages) {
     if (message.role !== 'user') continue
