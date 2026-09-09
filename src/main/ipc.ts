@@ -621,6 +621,7 @@ export function registerIpc() {
     return feishuConnectionManager.connectManual(credentials)
   })
   ipcMain.handle(IPC_CHANNELS.FEISHU_CANCEL_CONNECTION, async () => feishuConnectionManager.cancelConnection())
+  ipcMain.handle(IPC_CHANNELS.FEISHU_BEGIN_REPAIR, async () => feishuConnectionManager.beginPermissionRepair())
   ipcMain.handle(IPC_CHANNELS.FEISHU_DISCONNECT, async () => feishuConnectionManager.disconnect())
 
   // MCP service connections: the app stewards the runtime's own mcp.json —

@@ -174,6 +174,7 @@ export const IPC_CHANNELS = {
   FEISHU_BEGIN_CONNECTION: 'feishu:begin-connection',
   FEISHU_CONNECT_MANUAL: 'feishu:connect-manual',
   FEISHU_CANCEL_CONNECTION: 'feishu:cancel-connection',
+  FEISHU_BEGIN_REPAIR: 'feishu:begin-repair',
   FEISHU_DISCONNECT: 'feishu:disconnect',
   FEISHU_OPEN_URL: 'feishu:open-url',
   FEISHU_OAUTH_BEGIN: 'feishu:oauth-begin',

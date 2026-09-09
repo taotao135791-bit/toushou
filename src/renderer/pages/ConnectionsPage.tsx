@@ -100,6 +100,16 @@ export default function ConnectionsPage() {
     setBusy(false)
   }
 
+  // 更新模式扫码：确认页预填缺失权限，确认后 Main 自动打开授权页续走一键授权。
+  const beginRepair = async () => {
+    setBusy(true)
+    setChecked(false)
+    const result = await window.electronAPI.feishuBeginRepair()
+    setSnapshot(result.snapshot)
+    if (result.ok) setRegistration(result.registration ?? null)
+    setBusy(false)
+  }
+
   const connectManual = async () => {
     setBusy(true)
     const result = await window.electronAPI.feishuConnectManual({ appId, appSecret, brand })
@@ -156,6 +166,7 @@ export default function ConnectionsPage() {
   }
 
   const isWaiting = snapshot.state === 'waiting_for_scan'
+  const isRepairScan = snapshot.registrationMode === 'repair'
   const isConfiguring = ['registration_confirmed', 'storing_credentials', 'configuring_app', 'starting_channel', 'probing'].includes(snapshot.state)
   const isFailed = snapshot.status === 'failed'
   const isDegraded = snapshot.status === 'degraded'
@@ -239,9 +250,9 @@ export default function ConnectionsPage() {
 
             {isWaiting && (
               <div className="flex flex-col items-center px-5 py-6">
-                <div className="mb-4 flex items-center gap-2 text-[14px] font-medium text-cream"><QrCode size={16} className="text-accent" />{t('connections.scanTitle')}</div>
+                <div className="mb-4 flex items-center gap-2 text-[14px] font-medium text-cream"><QrCode size={16} className="text-accent" />{isRepairScan ? t('connections.repairScanTitle') : t('connections.scanTitle')}</div>
                 {qrData ? <img src={qrData} alt={t('connections.scanTitle')} className="h-64 w-64 rounded-xl border border-line bg-white p-2" /> : <div className="h-64 w-64 animate-pulse rounded-xl bg-overlay" />}
-                <p className="mt-4 text-[12px] text-cream-dim">{t('connections.scanHint')}</p>
+                <p className="mt-4 text-[12px] text-cream-dim">{isRepairScan ? t('connections.repairScanHint') : t('connections.scanHint')}</p>
                 <p className="mt-1 text-[12px] text-amber-600 dark:text-amber-300">{t('connections.waiting')}</p>
                 <div className="mt-4 flex flex-wrap justify-center gap-3">
                   <button onClick={() => registration && void window.electronAPI.feishuOpenUrl(registration.verificationUriComplete)} className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><ArrowUpRight size={12} />{t('connections.openLink')}</button>
@@ -331,6 +342,13 @@ export default function ConnectionsPage() {
                         ))}
                       </ul>
                       <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          onClick={() => void beginRepair()}
+                          disabled={busy}
+                          className="rounded-full bg-accent px-3 py-1 text-[11px] font-medium text-white transition hover:bg-accent-bright disabled:opacity-50"
+                        >
+                          {t('connections.scopeGapRepair')}
+                        </button>
                         <button
                           onClick={() => void navigator.clipboard.writeText(missingScopes.map(([, meta]) => meta.scope).join('\n'))}
                           className="rounded-full border border-line px-3 py-1 text-[11px] text-cream-dim transition hover:text-cream"

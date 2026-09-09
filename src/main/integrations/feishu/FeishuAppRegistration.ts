@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib'
 import { LarkBrand } from '../../../shared/connections'
 
 export interface RegistrationSession {
@@ -17,8 +18,17 @@ export interface RegistrationResult {
   ownerOpenId?: string
 }
 
+export interface RegistrationBeginOptions {
+  /** Existing `cli_` app id: switches the confirm page into update mode so the
+   * scanned app gets the pre-filled increments instead of a new app. */
+  appId?: string
+  /** User-identity scopes pre-filled on the confirm page — effective once the
+   * user confirms, no console visit or version publish needed. */
+  userScopes?: string[]
+}
+
 export interface FeishuAppRegistrationProvider {
-  begin(brand: LarkBrand): Promise<RegistrationSession>
+  begin(brand: LarkBrand, options?: RegistrationBeginOptions): Promise<RegistrationSession>
   poll(session: RegistrationSession, signal?: AbortSignal): Promise<RegistrationResult>
   cancel(session: RegistrationSession): Promise<void>
 }
@@ -33,6 +43,37 @@ function endpoints(brand: LarkBrand): { accounts: string; open: string } {
   return brand === 'lark'
     ? { accounts: 'https://accounts.larksuite.com', open: 'https://open.larksuite.com' }
     : { accounts: 'https://accounts.feishu.cn', open: 'https://open.feishu.cn' }
+}
+
+/**
+ * Appends the update-mode `clientID` and the gzip+base64url `addons` payload to
+ * the verification URL, mirroring the official one-click SDK: scopes declared
+ * there are pre-filled on the post-scan confirm page and take effect on user
+ * confirmation — no developer-console visit, no version publish.
+ */
+function decorateVerificationUrl(url: string, options: RegistrationBeginOptions): string {
+  try {
+    const decorated = new URL(url)
+    if (options.appId) decorated.searchParams.set('clientID', options.appId)
+    const addons = encodeRegistrationAddons(options.userScopes ?? [])
+    if (addons) decorated.searchParams.set('addons', addons)
+    return decorated.toString()
+  } catch {
+    return url
+  }
+}
+
+/** Official pipeline: JSON → gzip → base64 → URL-safe → strip '=' padding.
+ * The output only contains A-Z a-z 0-9 - _ so URLSearchParams needs no escaping. */
+export function encodeRegistrationAddons(userScopes: string[]): string {
+  const scopes = userScopes.filter((scope) => typeof scope === 'string' && scope.trim())
+  if (!scopes.length) return ''
+  const payload = JSON.stringify({ scopes: { user: scopes } })
+  return gzipSync(Buffer.from(payload, 'utf8'))
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
 }
 
 function text(value: unknown): string {
@@ -68,7 +109,7 @@ export class PersonalAgentRegistrationProvider implements FeishuAppRegistrationP
     this.now = options.now ?? Date.now
   }
 
-  async begin(brand: LarkBrand): Promise<RegistrationSession> {
+  async begin(brand: LarkBrand, options: RegistrationBeginOptions = {}): Promise<RegistrationSession> {
     const domain = endpoints(brand)
     const response = await this.fetchWithTimeout(`${domain.accounts}/oauth/v1/app/registration`, {
       method: 'POST',
@@ -97,7 +138,7 @@ export class PersonalAgentRegistrationProvider implements FeishuAppRegistrationP
       deviceCode,
       userCode,
       verificationUri,
-      verificationUriComplete,
+      verificationUriComplete: decorateVerificationUrl(verificationUriComplete, options),
       expiresIn: number(data.expires_in, 300),
       interval: number(data.interval, 5)
     }
