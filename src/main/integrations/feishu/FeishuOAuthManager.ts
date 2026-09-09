@@ -23,6 +23,9 @@ const SCOPE_BY_CAPABILITY: Partial<Record<FeishuCapability, string>> = Object.fr
 /** On-demand user OAuth kept entirely in Main; tokens live in the secure store. */
 export class FeishuOAuthManager {
   private pending: PendingOAuth | null = null
+  /** Single-flight refresh: the API rotates refresh tokens, so two parallel
+   * refreshes with the same (now-consumed) token invalidate the whole family. */
+  private refreshInFlight: Promise<boolean> | null = null
 
   constructor(private readonly store: FeishuCredentialStore, private readonly fetchImpl: typeof fetch = fetch) {}
 
@@ -38,6 +41,23 @@ export class FeishuOAuthManager {
   }
 
   async ensureFreshToken(): Promise<boolean> {
+    if (this.refreshInFlight) return this.refreshInFlight
+    const needsRefresh = await (async () => {
+      const credentials = await this.store.load()
+      if (!credentials?.accessToken) return false
+      if ((credentials.expiresAt ?? 0) > Date.now() + 5 * 60 * 1000) return false
+      return true
+    })()
+    if (!needsRefresh) return true
+    this.refreshInFlight = this.refreshToken()
+    try {
+      return await this.refreshInFlight
+    } finally {
+      this.refreshInFlight = null
+    }
+  }
+
+  private async refreshToken(): Promise<boolean> {
     const credentials = await this.store.load()
     if (!credentials?.accessToken) return false
     if ((credentials.expiresAt ?? 0) > Date.now() + 5 * 60 * 1000) return true
@@ -115,6 +135,9 @@ export class FeishuOAuthManager {
     let interval = pending.interval
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, interval * 1000))
+      // cancel() replaced/cleared the pending grant — stop polling instead of
+      // spinning to the deadline with the UI stuck on oauthBusy.
+      if (this.pending !== pending) return false
       const response = await this.fetchImpl(`${openBase(pending.brand)}/open-apis/authen/v2/oauth/token`, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },

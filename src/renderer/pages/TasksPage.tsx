@@ -53,7 +53,8 @@ export default function TasksPage() {
   const [form, setForm] = useState({
     name: '', prompt: '', cwd: '',
     scheduleType: 'daily' as 'daily' | 'weekly' | 'interval',
-    time: '09:00', dayOfWeek: 1, hours: 24
+    time: '09:00', dayOfWeek: 1, hours: 24,
+    notifyOnComplete: true
   })
 
   const projectName = (cwd: string) => basename(cwd) || cwd
@@ -61,6 +62,13 @@ export default function TasksPage() {
   const openModal = () => {
     setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '' }))
     setModalOpen(true)
+  }
+
+  // All writes re-read the store: a Main push (lastRunAt from another firing)
+  // may have landed while an await was in flight, and the closure copy would
+  // otherwise roll the list back.
+  const commitTasks = (updater: (tasks: ScheduledTask[]) => ScheduledTask[]) => {
+    setScheduledTasks(updater(useAppStore.getState().scheduledTasks))
   }
 
   const handleSave = async () => {
@@ -73,11 +81,16 @@ export default function TasksPage() {
     const task: ScheduledTask = {
       id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name: form.name.trim(), prompt: form.prompt.trim(), cwd: form.cwd,
-      schedule, enabled: true, createdAt: Date.now(), notifyOnComplete: true
+      schedule, enabled: true, createdAt: Date.now(), notifyOnComplete: form.notifyOnComplete
     }
-    const result = await window.electronAPI.saveTask(task)
+    let result: Awaited<ReturnType<typeof window.electronAPI.saveTask>>
+    try {
+      result = await window.electronAPI.saveTask(task)
+    } catch {
+      result = { ok: false }
+    }
     if (result.ok && result.task) {
-      setScheduledTasks([...scheduledTasks, result.task])
+      commitTasks((tasks) => [...tasks, result.task as ScheduledTask])
       setModalOpen(false)
     } else {
       // Keep the modal open with the user's draft intact — closing silently
@@ -87,22 +100,39 @@ export default function TasksPage() {
   }
 
   const handleToggle = async (task: ScheduledTask) => {
-    const updated = await window.electronAPI.toggleTask(task.id, !task.enabled)
-    if (updated) setScheduledTasks(scheduledTasks.map(t => t.id === task.id ? updated : t))
+    try {
+      const updated = await window.electronAPI.toggleTask(task.id, !task.enabled)
+      if (updated) commitTasks((tasks) => tasks.map(t => t.id === task.id ? updated : t))
+      else showNotice('tasks.toggleFailed')
+    } catch {
+      showNotice('tasks.toggleFailed')
+    }
   }
 
   const handleRunNow = async (task: ScheduledTask) => {
     setRunning(task.id)
-    await window.electronAPI.runTaskNow(task.id)
-    setTimeout(() => setRunning(null), 3000)
+    try {
+      const result = await window.electronAPI.runTaskNow(task.id)
+      if (result === 'ok') showNotice('tasks.runStarted')
+      else if (result === 'running') showNotice('tasks.alreadyRunning')
+      else showNotice('tasks.runFailed')
+    } catch {
+      showNotice('tasks.runFailed')
+    } finally {
+      setTimeout(() => setRunning(null), 3000)
+    }
   }
 
   // Deleting a task is permanent and cannot be undone — two-stage confirm,
   // same pattern as deleting sessions and plugins.
   const deleteTaskConfirm = useConfirmId((id: string) => {
-    void window.electronAPI.deleteTask(id).then((ok) => {
-      if (ok) setScheduledTasks(scheduledTasks.filter(t => t.id !== id))
-    })
+    void window.electronAPI
+      .deleteTask(id)
+      .then((ok) => {
+        if (ok) commitTasks((tasks) => tasks.filter(t => t.id !== id))
+        else showNotice('tasks.deleteFailed')
+      })
+      .catch(() => showNotice('tasks.deleteFailed'))
   })
 
   // Esc closes the dialog; clicking the dimmed backdrop does too. Without
@@ -163,6 +193,14 @@ export default function TasksPage() {
                           <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${task.enabled ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
                             {task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
                           </span>
+                          {!task.enabled && (task.consecutiveFailures ?? 0) > 0 && (
+                            <span
+                              title={t('tasks.autoDisabledHint')}
+                              className="rounded-full bg-red-500/12 px-2 py-0.5 text-[10px] font-medium text-red-500"
+                            >
+                              {t('tasks.failedBadge', { count: task.consecutiveFailures ?? 0 })}
+                            </span>
+                          )}
                         </div>
                         <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-cream-faint">{task.prompt}</p>
                         <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-cream-faint">
@@ -256,6 +294,15 @@ export default function TasksPage() {
                   </label>
                 )}
               </div>
+              <label className="mt-1 flex cursor-pointer items-center gap-2 text-[11px] text-cream-faint">
+                <input
+                  type="checkbox"
+                  checked={form.notifyOnComplete}
+                  onChange={(e) => setForm(f => ({ ...f, notifyOnComplete: e.target.checked }))}
+                  className="h-3.5 w-3.5 accent-[var(--accent)]"
+                />
+                {t('tasks.notifyOnComplete')}
+              </label>
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setModalOpen(false)} className={`${btn} border border-line text-cream-dim hover:text-cream`}>{t('home.cancel')}</button>

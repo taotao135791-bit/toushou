@@ -4,7 +4,7 @@ import { readdirSync, unlinkSync } from 'node:fs'
 import { getStore, setStore, applyFirstRunDefaults } from './store'
 import { ensureBundledPackages } from './bundledPackages'
 import { initBrowserUseBridge } from './browserUse'
-import { registerIpc } from './ipc'
+import { registerIpc, shutdownSessionsForQuit } from './ipc'
 import { syncMachineSkills } from './piSettings'
 import { detectCli } from './omp'
 import { initUpdater } from './updater'
@@ -160,6 +160,12 @@ app.whenReady().then(async () => {
       createWindow()
     }
   })
+})
+
+// No OMP child should outlive the GUI — a remote or task turn running on
+// after quit keeps consuming provider quota with nobody watching.
+app.on('before-quit', () => {
+  shutdownSessionsForQuit()
 })
 
 app.on('window-all-closed', () => {

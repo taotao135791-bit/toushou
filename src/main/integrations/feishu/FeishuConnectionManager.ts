@@ -48,6 +48,10 @@ export class FeishuConnectionManager {
   private registration: RegistrationSession | null = null
   private registrationAbort: AbortController | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempts = 0
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null
+  /** Replies that could not be shipped while the socket was down (M3). */
+  private readonly pendingReplies: { chatId: string; content: string; replyTo: string; inThread: boolean }[] = []
   private progressMessageKeys = new Set<string>()
   private sessionEventSink: ((event: SessionEvent) => void) | null = null
   private externalSessionSink: ((descriptor: ExternalSessionDescriptor) => void) | null = null
@@ -64,7 +68,10 @@ export class FeishuConnectionManager {
       workspacePath: this.workspacePath,
       routesFile: this.routesFile,
       createSession: (cwd, _onEvent, opts, ctx) => {
-        const session = createSession(cwd, (event) => this.handleOmpEvent(event), opts)
+        const session = createSession(cwd, (event) => this.handleOmpEvent(event), {
+          ...opts,
+          origin: 'feishu'
+        })
         if (session.status !== 'error') {
           this.emitExternalSession(session, ctx)
         }
@@ -73,8 +80,11 @@ export class FeishuConnectionManager {
       sendMessage,
       getSession,
       getSessionState,
-      resumeSession: async (cwd, _onEvent, filePath, ctx) => {
-        const result = await resumeSession(cwd, (event) => this.handleOmpEvent(event), filePath)
+      resumeSession: async (cwd, _onEvent, filePath, ctx, opts) => {
+        const result = await resumeSession(cwd, (event) => this.handleOmpEvent(event), filePath, {
+          permissionMode: opts?.permissionMode,
+          origin: 'feishu'
+        })
         if (result) {
           this.emitExternalSession(result.session, ctx)
         }
@@ -82,8 +92,21 @@ export class FeishuConnectionManager {
       },
       killSession,
       onReply: (route, content, sourceMessageId) => this.sendReply(route.chatId, content, sourceMessageId, Boolean(route.rootId || route.threadId)),
-      onProgress: (route) => this.sendProgress(route.chatId, route.lastMessageId, Boolean(route.rootId || route.threadId)),
-      ownerOpenId: undefined
+      onProgress: (route) => this.sendProgress(route.chatId, route.activeSourceMessageId ?? route.lastMessageId, Boolean(route.rootId || route.threadId)),
+      ownerOpenId: undefined,
+      onOwnerDiscovered: (openId) => {
+        // Trust-on-first-use owner (manual credentials): persist the claim so
+        // it survives restarts; without it the whole p2p channel is deaf.
+        const { savedAt: _savedAt, ...rest } = this.credentials ?? {
+          appId: '',
+          appSecret: '',
+          brand: 'feishu' as const
+        }
+        if (!rest.appId) return
+        this.credentials = { ...rest, ownerOpenId: openId, savedAt: Date.now() }
+        void this.credentialStore.save(rest).catch(() => undefined)
+        console.info('[feishu] owner learned from first direct message')
+      }
     })
     this.tools = new FeishuToolRegistry(
       () => this.channel,
@@ -124,9 +147,19 @@ export class FeishuConnectionManager {
     if (this.initialized) return
     this.initialized = true
     await mkdir(this.workspacePath, { recursive: true }).catch(() => undefined)
+    const hadStoredCredentials = await this.credentialStore.exists()
     this.credentials = await this.credentialStore.load()
+    if (hadStoredCredentials && !this.credentials) {
+      // A stored envelope that cannot be read (keychain mismatch after a
+      // system migration) must not look like "never connected".
+      this.lastError = '已保存的飞书凭据无法读取，请重新扫码连接。'
+      this.state = 'failed'
+      this.emitState()
+      return
+    }
     this.router.setOwnerOpenId(this.credentials?.ownerOpenId)
     this.authorizedCapabilities = await this.oauthManager.authorizedCapabilities()
+    this.startWatchdog()
     if (!this.credentials) return
     void this.connectSavedCredentials()
   }
@@ -136,8 +169,11 @@ export class FeishuConnectionManager {
     // drop/re-establish the socket underneath the connect-state machine (and
     // the state machine intentionally keeps working through a reconnect), so
     // the badge must never say 未连接 while the channel is actually up.
-    const wsConnected = this.channel?.websocketState === 'connected'
-    const connected = this.state === 'connected' || wsConnected
+    // Truth order: the live socket wins. A sticky 'connected' state must not
+    // mask a dead socket — but during an SDK-managed reconnect the socket
+    // reports 'reconnecting' and the session genuinely stays usable.
+    const ws = this.channel?.websocketState
+    const connected = ws === 'connected' || (this.state === 'connected' && ws === 'reconnecting')
     const status: ConnectionStatus =
       connected && this.state !== 'degraded' ? 'connected' :
       this.state === 'degraded' ? 'degraded' :
@@ -171,6 +207,20 @@ export class FeishuConnectionManager {
 
   async beginConnection(brand: LarkBrand = 'feishu'): Promise<FeishuConnectionResult> {
     if (this.state === 'connected') return { ok: true, snapshot: this.getSnapshot() }
+    // "Retry" with stored credentials means RECONNECT — a fresh QR
+    // registration would silently orphan the existing Feishu app.
+    if (this.credentials) {
+      try {
+        await this.connectCredentials(this.credentials)
+        return { ok: true, snapshot: this.getSnapshot() }
+      } catch (error) {
+        this.lastError = friendlyError(error)
+        this.state = 'failed'
+        this.emitState()
+        this.scheduleReconnect()
+        return { ok: false, error: this.lastError, snapshot: this.getSnapshot() }
+      }
+    }
     if (getStore('feishuExperimentalPersonalAgentRegistration') !== true) {
       this.state = 'unsupported_registration'
       this.lastError = '当前飞书账号暂不支持一键创建。'
@@ -341,6 +391,7 @@ export class FeishuConnectionManager {
     if (!this.credentials) return
     try {
       await this.connectCredentials(this.credentials)
+      this.reconnectAttempts = 0
     } catch (error) {
       this.lastError = friendlyError(error)
       this.state = 'failed'
@@ -372,13 +423,19 @@ export class FeishuConnectionManager {
       },
       onReconnected: () => {
         this.lastConnectedAt = Date.now()
+        this.reconnectAttempts = 0
         this.state = 'connected'
+        this.lastError = undefined
         this.emitState()
+        void this.flushPendingReplies()
       },
       onError: (error) => {
         this.lastError = friendlyError(error)
         this.state = 'degraded'
         this.emitState()
+        // Degraded used to be terminal — schedule recovery instead of
+        // leaving the bot silent until a manual disconnect.
+        this.scheduleReconnect()
       }
     })
     this.channel = channel
@@ -404,16 +461,58 @@ export class FeishuConnectionManager {
     if (current) await current.disconnect().catch(() => undefined)
   }
 
+  /** Reconnect with capped backoff: 15s → 30s → 60s → 120s → 5min cap. */
   private scheduleReconnect(): void {
     if (this.reconnectTimer || !this.credentials) return
+    const delays = [15_000, 30_000, 60_000, 120_000, 300_000]
+    const delay = delays[Math.min(this.reconnectAttempts, delays.length - 1)]
+    this.reconnectAttempts += 1
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       void this.connectSavedCredentials()
-    }, 15_000)
+    }, delay)
+  }
+
+  /**
+   * Safety net for socket states the SDK gives up on ('failed') or a
+   * degraded state with no error callback: once a minute, force a recovery
+   * attempt when things look dead.
+   */
+  private startWatchdog(): void {
+    if (this.watchdogTimer) return
+    this.watchdogTimer = setInterval(() => {
+      if (!this.credentials || this.reconnectTimer) return
+      const ws = this.channel?.websocketState
+      const dead =
+        ws === 'failed' || ws === 'idle' || (this.state === 'degraded' && ws !== 'connected')
+      if (dead) this.scheduleReconnect()
+    }, 60_000)
+  }
+
+  /** Ship replies that queued up while the socket was down (M3). */
+  private async flushPendingReplies(): Promise<void> {
+    while (this.pendingReplies.length > 0) {
+      const next = this.pendingReplies[0]
+      try {
+        await this.channel?.sendMarkdown(next.chatId, next.content, {
+          replyTo: next.replyTo || undefined,
+          replyInThread: next.inThread
+        })
+      } catch {
+        // Still down — keep the queue for the next reconnect.
+        return
+      }
+      this.pendingReplies.shift()
+    }
   }
 
   private async sendProgress(chatId: string, sourceMessageId: string | undefined, inThread: boolean): Promise<void> {
     if (!this.channel || !sourceMessageId || this.progressMessageKeys.has(sourceMessageId)) return
+    // Misaligned/abandoned turns used to leak their keys forever.
+    if (this.progressMessageKeys.size >= 500) {
+      const oldest = this.progressMessageKeys.values().next().value
+      if (oldest) this.progressMessageKeys.delete(oldest)
+    }
     this.progressMessageKeys.add(sourceMessageId)
     try {
       await this.channel.sendMarkdown(chatId, '⏳ 正在分析…', { replyTo: sourceMessageId, replyInThread: inThread })
@@ -423,13 +522,20 @@ export class FeishuConnectionManager {
   }
 
   private async sendReply(chatId: string, content: string, sourceMessageId: string, inThread: boolean): Promise<void> {
-    if (!this.channel) return
     try {
-      await this.channel.sendMarkdown(chatId, content, { replyTo: sourceMessageId || undefined, replyInThread: inThread })
+      if (!this.channel) throw new Error('channel is down')
+      // 30k is the API ceiling — tell the user instead of a silent tail-cut.
+      const body = content.length > 30_000 ? `${content.slice(0, 30_000)}\n\n（内容过长，已截断）` : content
+      await this.channel.sendMarkdown(chatId, body, { replyTo: sourceMessageId || undefined, replyInThread: inThread })
     } catch (error) {
+      // Queue instead of dropping: the answer must survive a socket blip.
+      if (this.pendingReplies.length < 50) {
+        this.pendingReplies.push({ chatId, content, replyTo: sourceMessageId, inThread })
+      }
       this.lastError = friendlyError(error)
       this.state = 'degraded'
       this.emitState()
+      this.scheduleReconnect()
     } finally {
       if (sourceMessageId) this.progressMessageKeys.delete(sourceMessageId)
     }

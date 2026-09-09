@@ -450,7 +450,11 @@ export interface ElectronAPI {
   saveTask: (task: ScheduledTask) => Promise<{ ok: boolean; task?: ScheduledTask; error?: string }>
   deleteTask: (id: string) => Promise<boolean>
   toggleTask: (id: string, enabled: boolean) => Promise<ScheduledTask | null>
-  runTaskNow: (id: string) => Promise<boolean>
+  /**
+   * Fire a task immediately. Result: 'ok' | 'running' | 'not-found' | 'failed'
+   * — callers surface anything but ok instead of spinning silently.
+   */
+  runTaskNow: (id: string) => Promise<'ok' | 'running' | 'not-found' | 'failed'>
   onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => () => void
   readKnowledge: (cwd: string) => Promise<string | null>
   writeKnowledge: (cwd: string, content: string) => Promise<boolean>
@@ -805,7 +809,9 @@ const api: ElectronAPI = {
   deleteTask: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_DELETE, id) as Promise<boolean>,
   toggleTask: (id, enabled) =>
     ipcRenderer.invoke(IPC_CHANNELS.TASKS_TOGGLE, id, enabled) as Promise<ScheduledTask | null>,
-  runTaskNow: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_RUN_NOW, id) as Promise<boolean>,
+  runTaskNow: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_RUN_NOW, id) as Promise<
+    'ok' | 'running' | 'not-found' | 'failed'
+  >,
   onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => {
     const handler = (_event: IpcRendererEvent, tasks: ScheduledTask[]) => callback(tasks)
     ipcRenderer.on(IPC_CHANNELS.TASKS_STATE_CHANGED, handler)

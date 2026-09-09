@@ -79,9 +79,15 @@ describe('FeishuConnectionManager external session announcements', () => {
     })
     vi.mocked(getSession).mockImplementation((id) => session(id, 0))
 
+    // Non-owner group @mentions are refused (injection defence)…
+    await internal.router.handleInbound(
+      message({ messageId: 'om_0', chatId: 'oc_group', chatType: 'group', senderId: 'ou_someone', mentionedBot: true })
+    )
+    expect(sink).not.toHaveBeenCalled()
+
     await internal.router.handleInbound(message())
     await internal.router.handleInbound(
-      message({ messageId: 'om_2', chatId: 'oc_group', chatType: 'group', senderId: 'ou_someone', mentionedBot: true })
+      message({ messageId: 'om_2', chatId: 'oc_group', chatType: 'group', senderId: 'ou_owner', mentionedBot: true })
     )
 
     expect(sink).toHaveBeenCalledTimes(2)
@@ -104,7 +110,10 @@ describe('FeishuConnectionManager external session announcements', () => {
     // The router still downgrades channel sessions to readonly tool access,
     // and the group route's chatType reached the manager wrapper (proven by
     // the second descriptor's chatType/suggestedTitle above).
-    expect(vi.mocked(createSession).mock.calls[0]?.[2]).toEqual({ permissionMode: 'readonly' })
+    expect(vi.mocked(createSession).mock.calls[0]?.[2]).toEqual({
+      permissionMode: 'readonly',
+      origin: 'feishu'
+    })
   })
 
   it('emits a descriptor when a dead route session is resumed from its file', async () => {

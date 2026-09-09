@@ -265,11 +265,13 @@ export interface Session {
   /** Opaque history capability that this renderer session resumed, if any. */
   resumedHistoryId?: string
   /**
-   * Set when the session was created OUTSIDE the GUI (e.g. by a Feishu chat
-   * route) and announced via SESSION_EXTERNAL. Display/badge metadata only —
-   * routing details stay Main-owned.
+   * Set when the session was created OUTSIDE the direct composer flow (Feishu
+   * chat route, scheduled task). Display/badge metadata only — routing
+   * details stay Main-owned. Carried by Main's registry so a renderer reload
+   * keeps the badge instead of presenting a remote/automated session as a
+   * plain local one.
    */
-  origin?: 'feishu'
+  origin?: 'feishu' | 'task'
   /** True when Main spawned the session with downgraded (readonly) permissions. */
   remoteReadonly?: boolean
 }
@@ -284,8 +286,9 @@ export interface Session {
 export interface ExternalSessionDescriptor {
   sessionId: string
   workspacePath: string
-  origin: 'feishu'
-  chatType: 'p2p' | 'group'
+  origin: 'feishu' | 'task'
+  /** Feishu rows say which chat they mirror; task rows omit it. */
+  chatType?: 'p2p' | 'group'
   /**
    * Display fallback for a session that has no title yet. Plain zh string per
    * the existing Main-side convention (connection labels/errors are zh); the
@@ -1509,6 +1512,10 @@ export interface ScheduledTask {
   createdAt: number
   lastRunAt?: number
   notifyOnComplete: boolean
+  /** Consecutive spawn failures; resets on success or manual re-enable. */
+  consecutiveFailures?: number
+  /** Machine-readable reason of the last failure (diagnostics only). */
+  lastFailureReason?: string
 }
 
 // --- Project knowledge -------------------------------------------------------

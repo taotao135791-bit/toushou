@@ -47,6 +47,12 @@ export function initFeishuBridge(): Promise<void> {
 export function feishuBridgeEnv(sessionId: string): Record<string, string> {
   if (port === null) return {}
   const token = randomBytes(24).toString('hex')
+  // Tokens never expired and dead sessions kept theirs — bound the map so a
+  // long-lived app does not accumulate one per spawned session forever.
+  if (tokens.size >= 200) {
+    const oldest = tokens.keys().next().value
+    if (oldest !== undefined) tokens.delete(oldest)
+  }
   tokens.set(token, sessionId)
   return { [FEISHU_TOOLS_ENV_KEY]: `http://127.0.0.1:${port}/${token}` }
 }
@@ -80,5 +86,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-  response.end(JSON.stringify(body).slice(0, 30_000))
+  // A hard 30k cut used to drop rows silently; the marker lets the runtime
+  // tell the user the data was trimmed.
+  const text = JSON.stringify(body)
+  response.end(
+    text.length > 30_000 ? `${text.slice(0, 30_000 - 20)}…","truncated":true}` : text
+  )
 }

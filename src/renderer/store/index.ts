@@ -630,7 +630,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         createdAt: previous?.createdAt || descriptor.createdAt || Date.now(),
         status: previous?.status ?? 'idle',
         origin: descriptor.origin,
-        remoteReadonly: true,
+        // Only Feishu rows are remote-readonly; task rows run with the user's
+        // own default permission profile.
+        remoteReadonly: descriptor.origin === 'feishu',
         ...(previous?.resumeFrom ? { resumeFrom: previous.resumeFrom } : {}),
         ...(previous?.sessionFile ? { sessionFile: previous.sessionFile } : {}),
         ...(previous?.resumedHistoryId ? { resumedHistoryId: previous.resumedHistoryId } : {})

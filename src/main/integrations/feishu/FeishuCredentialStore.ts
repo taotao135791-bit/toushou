@@ -86,6 +86,17 @@ export class FeishuCredentialStore {
     }
   }
 
+  /** True when a stored envelope exists — distinguishes "never connected"
+   * from "stored credentials could not be decrypted". */
+  async exists(): Promise<boolean> {
+    try {
+      await readFile(this.filePath, 'utf8')
+      return true
+    } catch {
+      return false
+    }
+  }
+
   async clear(): Promise<void> {
     try {
       await unlink(this.filePath)

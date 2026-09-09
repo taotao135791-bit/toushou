@@ -42,6 +42,7 @@ import {
   getCapabilities,
   createSession,
   sendMessage,
+  killAllSessions,
   killSession,
   abortSession,
   listSessions,
@@ -79,7 +80,18 @@ import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
 import { readBrowserScreenshotData } from './browserUse'
 import { logRendererError, readLogTail } from './lib/logger'
-import { listTasks, saveTask, deleteTask, toggleTask, runTaskNow, startScheduler } from './scheduledTasks'
+import {
+  listTasks,
+  saveTask,
+  deleteTask,
+  toggleTask,
+  runTaskNow,
+  startScheduler,
+  setTaskSpawnFn,
+  setTaskOutcomeSink,
+  isValidSchedule,
+  noteTaskSessionEvent
+} from './scheduledTasks'
 import { readKnowledge, writeKnowledge } from './projectKnowledge'
 import { listLaunchableTools } from './toolLaunch'
 import { searchCommunityPackages } from './community'
@@ -125,7 +137,12 @@ import { importGithubSkills, previewGithubSkills } from './skillsGithub'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
 import { openWorkspaceInRequest } from './openWorkspaceIn'
-import { maybeNotifyTurnFinished, maybeNotifyUiRequest } from './notify'
+import {
+  maybeNotifyTurnFinished,
+  maybeNotifyUiRequest,
+  notifyTaskFinished,
+  notifyTaskAutoDisabled
+} from './notify'
 import {
   getUpdaterStatus,
   updaterCheck,
@@ -269,6 +286,9 @@ function broadcastSessionEvent(event: SessionEvent): void {
       win.webContents.send(IPC_CHANNELS.OMP_SESSION_EVENT, event)
     }
   }
+  // Task-spawned sessions drive their completion guard/notice from the same
+  // event stream everything else uses — no second observation path to drift.
+  noteTaskSessionEvent(event.sessionId, event)
   maybeNotifyTurnFinished(event)
   maybeNotifyUiRequest(event)
 }
@@ -539,8 +559,47 @@ function redactScaffoldOutputLog(value: unknown, canonicalDir: string): string {
   return log
 }
 
+/**
+ * Best-effort cleanup on quit: no OMP child (local, remote, or task) should
+ * outlive the GUI burning provider quota in the dark.
+ */
+export function shutdownSessionsForQuit(): void {
+  try {
+    killAllSessions()
+  } catch {
+    // Quit proceeds regardless.
+  }
+}
+
 export function registerIpc() {
   startScheduler()
+  // The scheduler's execution leg: spawn a real OMP session named after the
+  // task, deliver the prompt, and let the normal session-event stream drive
+  // completion. Task sessions carry origin 'task' so the sidebar can badge
+  // them and the notification layer can treat them specially.
+  setTaskSpawnFn(async (cwd, title, prompt) => {
+    const session = createSession(cwd, broadcastSessionEvent, { origin: 'task' })
+    if (session.status === 'error') return null
+    // The prompt IS the task. A failed write means the child died at spawn —
+    // report the firing as failed so the failure counter can act.
+    if (!sendMessage(session.id, prompt)) return null
+    // Human-readable identity beats "project-dir title" for recurring runs:
+    // name the runtime session AND announce the row with that title so the
+    // sidebar shows "每日报告" instead of the bare folder name.
+    void setSessionName(session.id, title)
+    broadcastExternalSession({
+      sessionId: session.id,
+      workspacePath: cwd,
+      origin: 'task',
+      suggestedTitle: title,
+      createdAt: session.createdAt
+    })
+    return { sessionId: session.id }
+  })
+  setTaskOutcomeSink((kind, taskName) => {
+    if (kind === 'finished') notifyTaskFinished(taskName)
+    else if (kind === 'disabled') notifyTaskAutoDisabled(taskName)
+  })
   feishuConnectionManager.setSessionEventSink(broadcastSessionEvent)
   feishuConnectionManager.setExternalSessionSink(broadcastExternalSession)
 
@@ -1962,8 +2021,21 @@ export function registerIpc() {
     if (typeof t.name !== 'string' || !t.name.trim()) return { ok: false, error: 'missing-name' }
     if (typeof t.prompt !== 'string' || !t.prompt.trim()) return { ok: false, error: 'missing-prompt' }
     if (typeof t.cwd !== 'string' || !t.cwd) return { ok: false, error: 'missing-cwd' }
-    if (!t.schedule || typeof t.schedule !== 'object') return { ok: false, error: 'missing-schedule' }
-    return { ok: true, task: saveTask(task as never) }
+    if (!isValidSchedule(t.schedule)) return { ok: false, error: 'invalid-schedule' }
+    // The stored shape is exactly what passed validation — nothing else from
+    // the untrusted payload is persisted.
+    const clean = {
+      id: t.id,
+      name: t.name.trim(),
+      prompt: t.prompt.trim(),
+      cwd: t.cwd,
+      schedule: t.schedule,
+      enabled: t.enabled === true,
+      createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
+      notifyOnComplete: t.notifyOnComplete !== false,
+      ...(typeof t.lastRunAt === 'number' ? { lastRunAt: t.lastRunAt } : {})
+    }
+    return { ok: true, task: saveTask(clean) }
   })
 
   ipcMain.handle(IPC_CHANNELS.TASKS_DELETE, async (_event, id: unknown) => {
@@ -1977,7 +2049,7 @@ export function registerIpc() {
   })
 
   ipcMain.handle(IPC_CHANNELS.TASKS_RUN_NOW, async (_event, id: unknown) => {
-    if (typeof id !== 'string') return false
+    if (typeof id !== 'string') return 'failed' as const
     return runTaskNow(id)
   })
 

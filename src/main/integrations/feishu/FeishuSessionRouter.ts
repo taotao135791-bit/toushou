@@ -13,6 +13,8 @@ export interface FeishuSessionRoute {
   sessionFile?: string
   lastMessageId?: string
   lastSenderId?: string
+  /** Message the CURRENT turn is answering; cleared when the reply ships. */
+  activeSourceMessageId?: string
   updatedAt: number
 }
 
@@ -37,12 +39,20 @@ export interface FeishuSessionRouterOptions {
     cwd: string,
     onEvent: (event: SessionEvent) => void,
     filePath: string,
-    ctx?: FeishuSessionContext
+    ctx?: FeishuSessionContext,
+    opts?: { permissionMode?: 'readonly' }
   ) => Promise<{ session: Session; messages: ChatMessage[] } | null>
   killSession: (sessionId: string) => boolean
   onReply: (route: FeishuSessionRoute, content: string, sourceMessageId: string) => Promise<void>
   onProgress?: (route: FeishuSessionRoute) => Promise<void>
   ownerOpenId?: string
+  /**
+   * Manual app credentials carry no owner id (only PersonalAgent registration
+   * provides one). Trust-on-first-use: the first person to DM the bot claims
+   * ownership, and the manager persists that id so the claim survives
+   * restarts. Without this the whole p2p channel is permanently deaf.
+   */
+  onOwnerDiscovered?: (openId: string) => void
 }
 
 interface StoredRoute {
@@ -108,10 +118,23 @@ export class FeishuSessionRouter {
     if (this.seenMessageIds.has(message.messageId)) return
     this.seenMessageIds.set(message.messageId, Date.now())
 
-    // Prompt-injection defence: only the owner may use a PersonalAgent in a
-    // private chat. In groups the SDK and this second check require an @mention.
-    if (message.chatType === 'p2p' && (!this.ownerOpenId || message.senderId !== this.ownerOpenId)) return
-    if (message.chatType === 'group' && !message.mentionedBot) return
+    // Prompt-injection defence: the bot serves its owner. PersonalAgent
+    // registration knows the owner up front; manual credentials learn the
+    // owner trust-on-first-use (first p2p sender claims it, manager persists).
+    if (message.chatType === 'p2p') {
+      if (!this.ownerOpenId) {
+        this.setOwnerOpenId(message.senderId)
+        this.opts.onOwnerDiscovered?.(message.senderId)
+      } else if (message.senderId !== this.ownerOpenId) {
+        return
+      }
+    }
+    if (message.chatType === 'group') {
+      if (!message.mentionedBot) return
+      // An @mention from anyone but the owner must not drive the agent — the
+      // owner's OAuth capabilities (docs/sheets/bitable writes) are behind it.
+      if (this.ownerOpenId && message.senderId !== this.ownerOpenId) return
+    }
 
     const key = routeKey(message.chatId, message.rootId ?? message.threadId)
     let route = this.routes.get(key)
@@ -137,17 +160,24 @@ export class FeishuSessionRouter {
       return
     }
 
-    await this.opts.onProgress?.(route)
     const media = message.resources.map((resource) =>
       resource.type === 'image'
         ? `\n[已收到一张图片，资源标识为 ${resource.fileKey}]`
         : `\n[已收到一个文件${resource.fileName ? `：${resource.fileName}` : ''}，资源标识为 ${resource.fileKey}]`
     ).join('')
     const prompt = `${message.content.trim()}${media}`.trim()
-    if (!prompt) return
+    // Sticker/voice/card messages parse to nothing: say so instead of the
+    // old "⏳ 正在分析…" followed by eternal silence.
+    if (!prompt) {
+      await this.opts.onReply(route, '投手暂时看不懂这类消息，发文字给我就好。', message.messageId)
+      return
+    }
     if (!this.opts.sendMessage(session.id, prompt)) {
       await this.opts.onReply(route, '这条消息没有送达投手，请稍后重试。', message.messageId)
+      return
     }
+    route.activeSourceMessageId = message.messageId
+    await this.opts.onProgress?.(route)
   }
 
   onSessionEvent(event: SessionEvent): void {
@@ -160,12 +190,16 @@ export class FeishuSessionRouter {
     if (event.type === 'status' && event.status === 'idle' && event.isTerminal !== false) {
       const draft = (this.drafts.get(route.key) ?? '').trim()
       this.drafts.delete(route.key)
-      if (draft) void this.opts.onReply(route, draft, route.lastMessageId ?? '')
+      const replyTo = route.activeSourceMessageId ?? route.lastMessageId ?? ''
+      route.activeSourceMessageId = undefined
+      if (draft) void this.opts.onReply(route, draft, replyTo)
       return
     }
     if (event.type === 'error' && event.recoverable !== true) {
       this.drafts.delete(route.key)
-      void this.opts.onReply(route, '投手这次处理没有完成，请稍后重试。', route.lastMessageId ?? '')
+      const replyTo = route.activeSourceMessageId ?? route.lastMessageId ?? ''
+      route.activeSourceMessageId = undefined
+      void this.opts.onReply(route, '投手这次处理没有完成，请稍后重试。', replyTo)
     }
     if (event.type === 'closed') {
       route.sessionId = undefined
@@ -191,17 +225,30 @@ export class FeishuSessionRouter {
     }
 
     if (route.sessionFile) {
-      const resumed = await this.opts.resumeSession(
-        this.opts.workspacePath,
-        (event) => this.onSessionEvent(event),
-        route.sessionFile,
-        { chatType: route.chatType }
-      )
-      if (resumed) {
-        route.sessionId = resumed.session.id
-        await this.persist()
-        return resumed.session
+      try {
+        const resumed = await this.opts.resumeSession(
+          this.opts.workspacePath,
+          (event) => this.onSessionEvent(event),
+          route.sessionFile,
+          { chatType: route.chatType },
+          // Remote sessions stay readonly across resumes — dropping this
+          // once gave restarted remote chats the user's global permission.
+          { permissionMode: 'readonly' }
+        )
+        if (resumed) {
+          route.sessionId = resumed.session.id
+          await this.persist()
+          return resumed.session
+        }
+      } catch {
+        // Transcript unavailable or the runtime died on a corrupt file:
+        // fall through to a fresh session below instead of rejecting the
+        // whole inbound message (which used to drop it silently).
       }
+      // The durable file is unreadable/deleted — retrying it every message
+      // would loop forever. Drop the reference and start a new session.
+      route.sessionFile = undefined
+      await this.persist()
     }
 
     const session = this.opts.createSession(

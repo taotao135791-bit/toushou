@@ -133,6 +133,8 @@ export function createSession(
     skillSystemPrompt?: string
     /** Main-owned remote channel sessions can explicitly downgrade access. */
     permissionMode?: PermissionMode
+    /** Badge/behavior metadata for sessions spawned outside the composer. */
+    origin?: 'feishu' | 'task'
   }
 ): Session {
   const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -200,7 +202,11 @@ export function createSession(
     title: path.basename(cwd) || 'New Chat',
     createdAt: Date.now(),
     status: 'idle',
-    ...(opts?.resumeSessionPath ? { resumeFrom: opts.resumeSessionPath } : {})
+    ...(opts?.resumeSessionPath ? { resumeFrom: opts.resumeSessionPath } : {}),
+    ...(opts?.origin ? { origin: opts.origin } : {}),
+    // Remote-channel sessions stay readonly even when the spawn path is
+    // re-entered through resume; the renderer uses this to lock the picker.
+    ...(opts?.origin === 'feishu' ? { remoteReadonly: true } : {})
   }
 
   sessions.set(
@@ -253,6 +259,21 @@ export function sendMessage(
   streamingBehavior?: StreamingBehavior
 ): boolean {
   return sessions.get(sessionId)?.sendPrompt(text, images, streamingBehavior) ?? false
+}
+
+/**
+ * Best-effort shutdown of every live session. Used on app quit so no OMP
+ * child outlives the GUI (a running remote/task turn would otherwise keep
+ * consuming provider quota after the window is gone).
+ */
+export function killAllSessions(): void {
+  for (const id of [...sessions.keys()]) {
+    try {
+      killSession(id)
+    } catch {
+      // Quit must proceed even if one child refuses to die.
+    }
+  }
 }
 
 export function killSession(sessionId: string): boolean {
@@ -485,10 +506,19 @@ export class ResumeTranscriptError extends Error {
 export async function resumeSession(
   cwd: string,
   onEvent: (event: SessionEvent) => void,
-  filePath: string
+  filePath: string,
+  opts?: {
+    /** Remote channels must keep their downgraded access across resumes. */
+    permissionMode?: PermissionMode
+    origin?: 'feishu' | 'task'
+  }
 ): Promise<{ session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] } | null> {
   if (!isSessionFilePath(filePath)) return null
-  const session = createSession(cwd, onEvent, { resumeSessionPath: filePath })
+  const session = createSession(cwd, onEvent, {
+    resumeSessionPath: filePath,
+    ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {}),
+    ...(opts?.origin ? { origin: opts.origin } : {})
+  })
   if (session.status === 'error') return null
   let messages = await getSessionMessages(session.id)
   // Reconstruct per-turn model/thinking from the durable session JSONL and tag

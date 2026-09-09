@@ -41,6 +41,12 @@ export default function PermissionPicker({ compact = false }: { compact?: boolea
   const triggerRef = useRef<HTMLButtonElement>(null)
   const t = useT()
   const currentSessionId = useAppStore((s) => s.currentSessionId)
+  // Feishu-origin sessions are spawned and resumed with a Main-fixed readonly
+  // profile; a picker here would either lie or persist a global default the
+  // remote session never asked for.
+  const remoteLocked = useAppStore(
+    (s) => s.sessions.find((x) => x.id === s.currentSessionId)?.origin === 'feishu'
+  )
   // The zustand copy keeps the pill in sync with the Settings page.
   const mode = useAppStore((s) => s.permissionMode)
   const setPermissionMode = useAppStore((s) => s.setPermissionMode)
@@ -48,6 +54,7 @@ export default function PermissionPicker({ compact = false }: { compact?: boolea
 
   const pick = async (next: PermissionMode) => {
     setOpen(false)
+    if (remoteLocked) return
     // Default for future sessions…
     setPermissionMode(next)
     // …plus a hot-swap of the live session's approval config, when possible:
@@ -65,9 +72,12 @@ export default function PermissionPicker({ compact = false }: { compact?: boolea
     <div className="relative">
       <button
         ref={triggerRef}
-        onClick={() => setOpen((v) => !v)}
-        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
-        title={t('composer.permissions')}
+        onClick={() => {
+          if (!remoteLocked) setOpen((v) => !v)
+        }}
+        disabled={remoteLocked}
+        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-60"
+        title={remoteLocked ? t('permission.remoteFixed') : t('composer.permissions')}
         aria-label={t('composer.permissions')}
       >
         <Shield size={12} className={`shrink-0 ${current?.iconClass ?? 'text-cream-dim'}`} />

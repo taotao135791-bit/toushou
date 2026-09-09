@@ -12,6 +12,13 @@ import { getStore } from './store'
 export function maybeNotifyTurnFinished(event: SessionEvent): void {
   if (event.type !== 'status' || event.status !== 'idle') return
   if (getStore('notifications') === false) return
+  if (!Notification.isSupported()) return
+  // Remote-channel turns (Feishu) already deliver their answer in the chat
+  // they came from; a desktop popup per message is spam and can leak content
+  // into the notification center. Task sessions get their own dedicated
+  // notice via notifyTaskFinished instead of this generic one.
+  const origin = getSession(event.sessionId)?.origin
+  if (origin === 'feishu' || origin === 'task') return
 
   const win = BrowserWindow.getAllWindows()[0]
   if (win && !win.isDestroyed() && win.isFocused()) return
@@ -45,6 +52,7 @@ export function maybeNotifyTurnFinished(event: SessionEvent): void {
 export function maybeNotifyUiRequest(event: SessionEvent): void {
   if (event.type !== 'ui_request') return
   if (getStore('notifications') === false) return
+  if (!Notification.isSupported()) return
 
   const win = BrowserWindow.getAllWindows()[0]
   if (win && !win.isDestroyed() && win.isFocused()) return
@@ -65,4 +73,32 @@ export function maybeNotifyUiRequest(event: SessionEvent): void {
     }
   })
   notification.show()
+}
+
+
+/**
+ * Task-scoped completion notice. Fires regardless of window focus (the whole
+ * point of a scheduled task is that nobody is watching) but still honors the
+ * global notifications setting.
+ */
+export function notifyTaskFinished(taskName: string): void {
+  if (getStore('notifications') === false) return
+  if (!Notification.isSupported()) return
+  const zh = getStore('language') !== 'en'
+  new Notification({
+    title: zh ? '定时任务完成' : 'Task finished',
+    body: zh ? `任务「${taskName}」本轮已执行完成。` : `Task "${taskName}" finished its run.`
+  }).show()
+}
+
+/** A task disabled itself after repeated failures — the user must know. */
+export function notifyTaskAutoDisabled(taskName: string): void {
+  if (!Notification.isSupported()) return
+  const zh = getStore('language') !== 'en'
+  new Notification({
+    title: zh ? '定时任务已自动暂停' : 'Task auto-paused',
+    body: zh
+      ? `任务「${taskName}」连续 3 次启动失败，已自动停用。请检查项目目录和运行时后重新启用。`
+      : `Task "${taskName}" failed to start 3 times in a row and was disabled. Check its project folder and runtime, then re-enable.`
+  }).show()
 }

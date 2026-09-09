@@ -761,6 +761,14 @@ export default function Sidebar() {
                 飞书
               </span>
             )}
+            {session.origin === 'task' && (
+              <span
+                className="shrink-0 rounded border border-line px-1 text-[9px] font-medium leading-[14px] text-cream-faint"
+                title={t('sidebar.taskSession')}
+              >
+                任务
+              </span>
+            )}
           </div>
           <div className="truncate text-[11px] leading-4 text-cream-faint">
             {foreignWorkspace
