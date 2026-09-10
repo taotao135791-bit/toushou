@@ -46,7 +46,6 @@ function groupByProject(tasks: ScheduledTask[]): TaskGroup[] {
 export default function TasksPage() {
   const t = useT()
   const scheduledTasks = useAppStore((s) => s.scheduledTasks)
-  const setScheduledTasks = useAppStore((s) => s.setScheduledTasks)
   const recentWorkspaces = useAppStore((s) => s.recentWorkspaces)
   const [modalOpen, setModalOpen] = useState(false)
   const [running, setRunning] = useState<string | null>(null)
@@ -64,12 +63,10 @@ export default function TasksPage() {
     setModalOpen(true)
   }
 
-  // All writes re-read the store: a Main push (lastRunAt from another firing)
-  // may have landed while an await was in flight, and the closure copy would
-  // otherwise roll the list back.
-  const commitTasks = (updater: (tasks: ScheduledTask[]) => ScheduledTask[]) => {
-    setScheduledTasks(updater(useAppStore.getState().scheduledTasks))
-  }
+  // All mutations trust the Main-side TASKS_STATE_CHANGED broadcast: Main
+  // applies the change and pushes the authoritative list BEFORE the invoke
+  // resolves, so a local append/map here would double-apply (a saved task
+  // used to appear twice).
 
   const handleSave = async () => {
     if (!form.name.trim() || !form.prompt.trim() || !form.cwd) return
@@ -90,7 +87,6 @@ export default function TasksPage() {
       result = { ok: false }
     }
     if (result.ok && result.task) {
-      commitTasks((tasks) => [...tasks, result.task as ScheduledTask])
       setModalOpen(false)
     } else {
       // Keep the modal open with the user's draft intact — closing silently
@@ -102,8 +98,7 @@ export default function TasksPage() {
   const handleToggle = async (task: ScheduledTask) => {
     try {
       const updated = await window.electronAPI.toggleTask(task.id, !task.enabled)
-      if (updated) commitTasks((tasks) => tasks.map(t => t.id === task.id ? updated : t))
-      else showNotice('tasks.toggleFailed')
+      if (!updated) showNotice('tasks.toggleFailed')
     } catch {
       showNotice('tasks.toggleFailed')
     }
@@ -129,8 +124,7 @@ export default function TasksPage() {
     void window.electronAPI
       .deleteTask(id)
       .then((ok) => {
-        if (ok) commitTasks((tasks) => tasks.filter(t => t.id !== id))
-        else showNotice('tasks.deleteFailed')
+        if (!ok) showNotice('tasks.deleteFailed')
       })
       .catch(() => showNotice('tasks.deleteFailed'))
   })

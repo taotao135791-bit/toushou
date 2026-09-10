@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.15.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.15.0) 下载：
+当前版本 v0.15.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.15.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.1/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.1/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.15.1：修复任务保存后列表重复显示一次的回归（上版重构任务页时，本地追加与主进程推送叠加，导致新建任务出现两份——持久化数据始终只有一份，仅界面重复）。删除/开关操作的本地状态更新同样移除，全部信任主进程推送。
 
 v0.15.0：定时任务真正可用 + 飞书稳定性大修。**定时任务从本版起才真正会执行**——此前的版本里任务调度器的执行链路从未接通（到点只写日志、不创建会话，"立即运行"也静默失败）；现在到点自动创建以任务名命名、带"任务"徽标的会话并执行提示词，完成/失败有桌面通知，连续 3 次启动失败自动停用并明确告知，长任务不会自我重叠，"立即运行"的成功/运行中/失败均有反馈，任务表单支持"完成后通知"开关。**飞书稳定性**——会话重启后恢复不再丢失只读权限（此前远程会话重启后会拿到全局权限模式，默认配置下远程消息会永远卡在无人可见的审批上）；手动填写 App ID/Secret 连接后私聊不再永久无响应（首个私聊发送者自动登记为所有者并持久化）；WebSocket 断线后自动指数退避重连（此前一次断网就永久静默，且"重试"会悄悄重建一个新飞书应用）；连接徽标如实反映套接字状态；断线期间的回复进入待发队列而不是蒸发；无法解析的消息（表情包/语音）明确回复"看不懂"而不是先发"正在分析"再永久沉默；超过 3 万字的回复标注"已截断"；飞书远程对话不再触发桌面通知刷屏；凭据解密失败会明确提示重新扫码；退出应用时清理全部会话进程。**会话联动**——飞书/任务会话的来源徽标在界面重载后保留；权限选择器对飞书远程会话禁用（远程会话固定只读）；群聊中仅所有者的 @提及会驱动 Agent（防注入越权）；飞书会话恢复失败时降级新建会话而不是死循环或丢消息；OAuth 令牌刷新加互斥（并发刷新不再作废整个授权）。
 
