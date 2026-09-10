@@ -8,7 +8,12 @@ vi.mock('electron', () => ({
   shell: { openExternal: vi.fn() }
 }))
 
-import { BROWSER_PANEL_BOUNDS_LIMIT, sanitizeBrowserPanelBounds } from '../browserPanel'
+import {
+  BROWSER_PANEL_BOUNDS_LIMIT,
+  BROWSER_PANEL_PARTITION,
+  plainChromeUserAgent,
+  sanitizeBrowserPanelBounds
+} from '../browserPanel'
 
 describe('sanitizeBrowserPanelBounds', () => {
   it('accepts four finite non-negative bounded numbers', () => {
@@ -45,6 +50,33 @@ describe('sanitizeBrowserPanelBounds', () => {
       { ...good, width: null }
     ]) {
       expect(sanitizeBrowserPanelBounds(bad)).toBeNull()
+    }
+  })
+})
+
+describe('BROWSER_PANEL_PARTITION', () => {
+  it('is a persistent partition so logins survive restarts', () => {
+    expect(BROWSER_PANEL_PARTITION.startsWith('persist:')).toBe(true)
+  })
+})
+
+describe('plainChromeUserAgent', () => {
+  it('builds a plain Chrome UA per platform with the real Chromium version', () => {
+    expect(plainChromeUserAgent('darwin', '126.0.0.1')).toBe(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.1 Safari/537.36'
+    )
+    expect(plainChromeUserAgent('win32', '126.0.0.1')).toBe(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.1 Safari/537.36'
+    )
+    expect(plainChromeUserAgent('linux', '126.0.0.1')).toBe(
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.1 Safari/537.36'
+    )
+  })
+
+  it('carries no Electron or app build markers', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const ua = plainChromeUserAgent(platform, '126.0.0.1')
+      expect(ua).not.toMatch(/Electron|toushou|OMP|ompgui/i)
     }
   })
 })
