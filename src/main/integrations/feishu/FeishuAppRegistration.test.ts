@@ -1,5 +1,6 @@
+import { gunzipSync } from 'node:zlib'
 import { describe, expect, it, vi } from 'vitest'
-import { PersonalAgentRegistrationProvider } from './FeishuAppRegistration'
+import { PersonalAgentRegistrationProvider, encodeRegistrationAddons } from './FeishuAppRegistration'
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -70,5 +71,53 @@ describe('PersonalAgentRegistrationProvider', () => {
       now: () => 1_000
     })
     await expect(expired.poll(session)).rejects.toThrow('二维码已过期')
+  })
+
+  it('encodes addons with the official gzip+base64url pipeline', () => {
+    const scopes = ['docx:document:readonly', 'calendar:calendar']
+    const encoded = encodeRegistrationAddons(scopes)
+    // URL-safe, unpadded — safe to drop straight into a query param.
+    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/)
+    const decoded = JSON.parse(gunzipSync(Buffer.from(encoded, 'base64')).toString('utf8'))
+    expect(decoded).toEqual({ scopes: { user: scopes } })
+    // An effectively-empty payload must not be sent at all: the confirm page
+    // discards the whole addons payload on shape mismatch.
+    expect(encodeRegistrationAddons([])).toBe('')
+    expect(encodeRegistrationAddons(['  '])).toBe('')
+  })
+
+  it('decorates the verification URL with update mode and pre-filled scopes', async () => {
+    const scopes = ['bitable:app:readonly', 'task:task:readonly']
+    const fetchImpl = vi.fn(async () => response({
+      device_code: 'device-2',
+      user_code: 'WXYZ',
+      verification_uri: 'https://open.feishu.cn/page/cli',
+      verification_uri_complete: 'https://open.feishu.cn/page/cli?user_code=WXYZ',
+      expires_in: 300,
+      interval: 1
+    })) as unknown as typeof fetch
+    const provider = new PersonalAgentRegistrationProvider({ fetchImpl })
+    const session = await provider.begin('feishu', { appId: 'cli_existing', userScopes: scopes })
+    const url = new URL(session.verificationUriComplete)
+    expect(url.searchParams.get('user_code')).toBe('WXYZ')
+    expect(url.searchParams.get('clientID')).toBe('cli_existing')
+    const addons = url.searchParams.get('addons') ?? ''
+    expect(JSON.parse(gunzipSync(Buffer.from(addons, 'base64')).toString('utf8'))).toEqual({
+      scopes: { user: scopes }
+    })
+  })
+
+  it('keeps the verification URL untouched without repair options', async () => {
+    const fetchImpl = vi.fn(async () => response({
+      device_code: 'device-3',
+      user_code: 'PLAIN',
+      verification_uri: 'https://open.feishu.cn/page/cli',
+      verification_uri_complete: 'https://open.feishu.cn/page/cli?user_code=PLAIN',
+      expires_in: 300,
+      interval: 1
+    })) as unknown as typeof fetch
+    const provider = new PersonalAgentRegistrationProvider({ fetchImpl })
+    const session = await provider.begin('feishu')
+    expect(session.verificationUriComplete).toBe('https://open.feishu.cn/page/cli?user_code=PLAIN')
   })
 })

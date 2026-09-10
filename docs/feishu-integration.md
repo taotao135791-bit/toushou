@@ -5,7 +5,7 @@ v0.4.0 的飞书连接位于 `src/main/integrations/feishu/`，主进程是唯�
 ## 连接流程
 
 1. Renderer 只调用类型化的 preload API；它拿到的是连接状态和一次性二维码 URL。
-2. Main 调用 PersonalAgent registration provider，向 `accounts.feishu.cn` 或 `accounts.larksuite.com` 发起 `begin / poll / cancel` 设备码流程。
+2. Main 调用 PersonalAgent registration provider，向 `accounts.feishu.cn` 或 `accounts.larksuite.com` 发起 `begin / poll / cancel` 设备码流程。验证链接会附带官方 `addons` 参数（gzip+base64url 的 scope 清单），扫码确认页因此**预填投手需要的全部用户权限**，用户确认即生效——不需要去开发者后台开权限、发版本。同一接口带 `clientID` 即进入更新模式：`beginPermissionRepair` 对已存应用重扫一次即可补齐缺失权限，确认后 Main 自动打开授权页续走一键授权。
 3. 扫码确认后，App ID、App Secret、owner open_id 和 OAuth token 使用 Electron `safeStorage` 加密保存到 `userData/feishu-credentials.bin`，不会进入 `electron-store`、Renderer 或 OMP。
 4. Main 使用 `@larksuiteoapi/node-sdk` 建立 WebSocket。私聊要求 owner，群聊要求 @机器人；SDK 去重、队列和断线重连之外，Router 还会按消息 ID 做本地去重。
 5. 每个聊天/线程映射到一个 OMP session。远程 session 创建时固定传入 `permissionMode: readonly`，所以飞书消息不会悄悄获得本地写文件、shell 或其他高风险权限。
@@ -32,6 +32,7 @@ OMP 工具进程只拿到一个随机 token 的本机桥接 URL（`127.0.0.1`）
 - `二维码已过期`：在连接页重新生成二维码。
 - `连接需要处理`：检查网络、飞书应用可用性和管理员审批，然后点击重试。
 - 工具提示额外授权：在已连接卡片的“按需申请额外权限”中选择能力，打开授权链接后点击“检查授权”。
+- 授权页提示“无法授权的权限”（应用后台没配权限）：优先点连接页的“扫码一键补齐”（更新模式重扫，权限预填进确认页）；手工路径是去开发者后台开权限并发布版本。
 - 群里没有响应：确认消息中 @了投手；私聊没有响应时确认扫码账号就是 owner。
 - 手动应用无法连接：确认应用启用了机器人能力、WebSocket 事件接收以及相应 Open API 权限。
 

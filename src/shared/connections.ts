@@ -80,6 +80,9 @@ export interface FeishuConnectionSnapshot {
   status: ConnectionStatus
   state: FeishuConnectState
   connected: boolean
+  /** Which flow a pending registration belongs to: 'repair' re-scans the
+   * stored app in update mode to patch missing scopes. */
+  registrationMode?: 'connect' | 'repair'
   appIdMasked?: string
   /** Feishu developer console → this app's permission page (for gap guidance). */
   consoleAuthUrl?: string

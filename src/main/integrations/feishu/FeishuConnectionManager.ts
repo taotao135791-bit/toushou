@@ -15,7 +15,8 @@ import {
   ConnectionStatus,
   LarkBrand,
   FeishuOAuthAuthorizationView,
-  FeishuOAuthBeginResult
+  FeishuOAuthBeginResult,
+  FEISHU_CAPABILITY_SCOPES
 } from '../../../shared/connections'
 import { Session, SessionEvent, ExternalSessionDescriptor } from '../../../shared/types'
 import { createSession, getSession, getSessionState, killSession, resumeSession, sendMessage } from '../../omp'
@@ -34,6 +35,11 @@ const FEISHU_DEFINITION: ConnectionDefinition = {
   description: '把投手接入你的飞书工作空间。',
   capabilities: ['messaging', 'docs.read', 'docs.write', 'sheets.read', 'sheets.write', 'bitable.read', 'bitable.write']
 }
+
+/** Every user-identity scope 投手 can consume — pre-filled on the one-click
+ * registration/repair confirm page so the app is born (or patched) with the
+ * full set; the OAuth consent page then never refuses a requested scope. */
+const ALL_USER_SCOPES = Object.values(FEISHU_CAPABILITY_SCOPES).map((meta) => meta.scope)
 
 export class FeishuConnectionManager {
   private readonly credentialStore = new FeishuCredentialStore()
@@ -56,6 +62,8 @@ export class FeishuConnectionManager {
   private sessionEventSink: ((event: SessionEvent) => void) | null = null
   private externalSessionSink: ((descriptor: ExternalSessionDescriptor) => void) | null = null
   private state: FeishuConnectState = 'idle'
+  /** True while a scan-to-update session runs against the stored app (permission repair). */
+  private repairMode = false
   private lastError: string | undefined
   private lastConnectedAt: number | undefined
   private lastMessageAt: number | undefined
@@ -186,6 +194,8 @@ export class FeishuConnectionManager {
       status,
       state: this.state,
       connected,
+      /** Which flow the pending registration belongs to (repair = scan-to-update). */
+      registrationMode: this.repairMode ? 'repair' : 'connect',
       appIdMasked: this.credentials?.appId ? maskSecret(this.credentials.appId) : undefined,
       // Deep link into THIS app's permission console page (appId is public —
       // it rides every authorize URL — so exposing the URL is safe; the
@@ -228,10 +238,11 @@ export class FeishuConnectionManager {
       return { ok: false, error: this.lastError, snapshot: this.getSnapshot() }
     }
     this.state = 'starting_registration'
+    this.repairMode = false
     this.lastError = undefined
     this.emitState()
     try {
-      this.registration = await this.registrationProvider.begin(brand)
+      this.registration = await this.registrationProvider.begin(brand, { userScopes: ALL_USER_SCOPES })
       this.registrationAbort?.abort()
       this.registrationAbort = new AbortController()
       this.state = 'waiting_for_scan'
@@ -281,10 +292,60 @@ export class FeishuConnectionManager {
     if (this.registration) void this.registrationProvider.cancel(this.registration)
     this.registration = null
     this.registrationAbort = null
-    this.state = 'idle'
+    const wasRepair = this.repairMode
+    this.repairMode = false
+    // Cancelling a repair must not demote a live channel to “未连接”: the
+    // stored app and websocket are untouched by an aborted scan.
+    this.state = wasRepair && this.channel?.websocketState === 'connected' ? 'connected' : 'idle'
     this.lastError = undefined
     this.emitState()
     return this.getSnapshot()
+  }
+
+  /**
+   * Permission repair for an already-registered app: re-runs the one-click
+   * device flow in update mode (clientID = stored app) with every user scope
+   * pre-filled, so the confirm page patches the app in place — no developer
+   * console, no version publish. On confirmation the manager automatically
+   * opens the OAuth consent page for the full grant.
+   */
+  async beginPermissionRepair(): Promise<FeishuConnectionResult> {
+    const credentials = await this.credentialStore.load()
+    if (!credentials) {
+      this.lastError = '飞书尚未连接。'
+      this.emitState()
+      return { ok: false, error: this.lastError, snapshot: this.getSnapshot() }
+    }
+    if (getStore('feishuExperimentalPersonalAgentRegistration') !== true) {
+      this.state = 'unsupported_registration'
+      this.lastError = '当前飞书账号暂不支持一键创建。'
+      this.emitState()
+      return { ok: false, error: this.lastError, snapshot: this.getSnapshot() }
+    }
+    this.state = 'starting_registration'
+    this.repairMode = true
+    this.lastError = undefined
+    this.emitState()
+    try {
+      this.registration = await this.registrationProvider.begin(credentials.brand, {
+        appId: credentials.appId,
+        userScopes: ALL_USER_SCOPES
+      })
+      this.registrationAbort?.abort()
+      this.registrationAbort = new AbortController()
+      this.state = 'waiting_for_scan'
+      this.emitState()
+      const view: FeishuRegistrationView = {
+        verificationUri: this.registration.verificationUri,
+        verificationUriComplete: this.registration.verificationUriComplete,
+        userCode: this.registration.userCode,
+        expiresAt: Date.now() + this.registration.expiresIn * 1000
+      }
+      void this.finishRegistration(this.registration, this.registrationAbort)
+      return { ok: true, snapshot: this.getSnapshot(), registration: view }
+    } catch (error) {
+      return this.failRegistration(error)
+    }
   }
 
   async disconnect(): Promise<FeishuConnectionSnapshot> {
@@ -377,14 +438,43 @@ export class FeishuConnectionManager {
       this.credentials = stored
       this.registration = null
       this.registrationAbort = null
+      if (this.repairMode) {
+        this.repairMode = false
+        void this.chainPermissionOAuth()
+      }
     } catch (error) {
       if (controller.signal.aborted) return
+      const wasRepair = this.repairMode
+      this.repairMode = false
       this.registration = null
       this.registrationAbort = null
       this.lastError = friendlyError(error)
-      this.state = this.lastError.includes('暂不支持') ? 'unsupported_registration' : 'failed'
+      // A failed repair leaves the live channel untouched — keep it “已连接”
+      // instead of falling into the disconnected failure view.
+      this.state =
+        wasRepair && this.channel?.websocketState === 'connected'
+          ? 'connected'
+          : this.lastError.includes('暂不支持')
+            ? 'unsupported_registration'
+            : 'failed'
       this.emitState()
     }
+  }
+
+  /** After a repair confirmation: automatically open the OAuth consent page
+   * for the full grant and settle the capability checklist. Runs unattended
+   * in Main; the renderer follows along through status broadcasts. */
+  private async chainPermissionOAuth(): Promise<void> {
+    try {
+      const authorization = await this.oauthManager.begin('all')
+      await this.openUrl(authorization.verificationUriComplete)
+      const granted = await this.oauthManager.poll().catch(() => false)
+      this.authorizedCapabilities = await this.oauthManager.authorizedCapabilities()
+      if (!granted) this.lastError = '额外授权没有完成，请重新打开授权链接。'
+    } catch {
+      this.lastError = '补齐权限未完成，请重试一键授权。'
+    }
+    this.emitState()
   }
 
   private async connectSavedCredentials(): Promise<void> {

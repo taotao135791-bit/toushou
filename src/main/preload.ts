@@ -427,6 +427,7 @@ export interface ElectronAPI {
   /** Advanced fallback only; the secret is sent directly to Main. */
   feishuConnectManual: (credentials: FeishuManualCredentials) => Promise<FeishuConnectionResult>
   feishuCancelConnection: () => Promise<FeishuConnectionSnapshot>
+  feishuBeginRepair: () => Promise<FeishuConnectionResult>
   feishuDisconnect: () => Promise<FeishuConnectionSnapshot>
   feishuOpenUrl: (url: string) => Promise<boolean>
   feishuBeginOAuth: (capability: FeishuCapability | 'all') => Promise<FeishuOAuthBeginResult>
@@ -775,6 +776,8 @@ const api: ElectronAPI = {
   feishuConnectManual: (credentials: FeishuManualCredentials) =>
     ipcRenderer.invoke(IPC_CHANNELS.FEISHU_CONNECT_MANUAL, credentials),
   feishuCancelConnection: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_CANCEL_CONNECTION),
+  feishuBeginRepair: (): Promise<FeishuConnectionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FEISHU_BEGIN_REPAIR),
   feishuDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_DISCONNECT),
   feishuOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OPEN_URL, url),
   mcpList: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_LIST),
