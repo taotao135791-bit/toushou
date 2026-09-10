@@ -1,16 +1,21 @@
-import { BrowserWindow, WebContentsView, shell } from 'electron'
+import { BrowserWindow, WebContentsView, session } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
 import { BrowserNavigateAction, BrowserPanelBounds, BrowserPanelState } from '../shared/types'
-import { safeBrowserPanelUrl, safeExternalUrl } from './navigation'
+import { safeBrowserPanelUrl } from './navigation'
 
 /**
  * One in-app browser panel per window: a Main-owned WebContentsView layered
  * over the renderer at bounds the renderer mirrors from a placeholder
  * element. The view is deliberately weaker than the main renderer — no
- * preload, sandboxed, in-memory session partition (third-party cookies never
- * reach disk) — and it can load only http(s) URLs that pass
- * safeBrowserPanelUrl. Popups are denied and rerouted to the system browser
- * through the same validation as Markdown links.
+ * preload, sandboxed — and it can load only http(s) URLs that pass
+ * safeBrowserPanelUrl. Browsing state lives in a persistent partition so
+ * logins (for example a Facebook Business Manager session) survive app
+ * restarts; the trade-off is that site cookies are stored on disk under the
+ * app's userData. Popups stay in-app on the same partition and the same URL
+ * policy, so popup-based flows keep their login state instead of being
+ * rerouted to a system browser that holds no session. The session reports a
+ * plain Chrome user agent so sites do not fingerprint the embedded panel by
+ * its Electron build markers.
  *
  * The view survives hidePanel() so navigation history and page state persist
  * across route changes; it is destroyed with its window.
@@ -22,6 +27,52 @@ const panels = new Map<number, WebContentsView>()
 const attachedPanels = new Set<number>()
 /** Owner windows already wired for 'closed' cleanup. */
 const cleanupWired = new Set<number>()
+
+/** In-app popup windows opened by each panel, closed with their owner. */
+const panelChildren = new Map<number, Set<BrowserWindow>>()
+
+/** Persistent partition: browsing state (cookies, logins) survives restarts. */
+export const BROWSER_PANEL_PARTITION = 'persist:ompgui-browser-panel'
+
+/** WebPreferences shared by the panel and its in-app popup windows. */
+const PANEL_WEB_PREFERENCES = {
+  contextIsolation: true,
+  sandbox: true,
+  nodeIntegration: false,
+  partition: BROWSER_PANEL_PARTITION
+} as const
+
+/**
+ * A plain-Chrome user agent for the panel session. Electron's default UA
+ * carries app/Electron build tokens that let sites distinguish the embedded
+ * panel from an ordinary browser; this keeps the Chromium version honest
+ * while dropping the markers.
+ */
+export function plainChromeUserAgent(platform: string, chromeVersion: string): string {
+  const platformToken =
+    platform === 'darwin'
+      ? 'Macintosh; Intel Mac OS X 10_15_7'
+      : platform === 'win32'
+        ? 'Windows NT 10.0; Win64; x64'
+        : 'X11; Linux x86_64'
+  return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`
+}
+
+/** URL + popup policy shared by the panel view and its popup windows. */
+function wireGuestPolicy(webContents: Electron.WebContents): void {
+  // Popups become in-app windows on the same partition (same login state);
+  // non-http(s) targets are denied outright.
+  webContents.setWindowOpenHandler(({ url }) => {
+    if (!safeBrowserPanelUrl(url)) return { action: 'deny' }
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: { webPreferences: { ...PANEL_WEB_PREFERENCES } }
+    }
+  })
+  webContents.on('will-navigate', (event, url) => {
+    if (!safeBrowserPanelUrl(url)) event.preventDefault()
+  })
+}
 
 /**
  * The app is single-window in practice; the browser-use bridge targets the
@@ -90,28 +141,28 @@ function sendState(win: BrowserWindow, view: WebContentsView): void {
 }
 
 function createPanel(win: BrowserWindow): WebContentsView {
+  // Session-level UA covers popup windows too, which never pass through
+  // createPanel.
+  session
+    .fromPartition(BROWSER_PANEL_PARTITION)
+    .setUserAgent(plainChromeUserAgent(process.platform, process.versions.chrome))
   const view = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      sandbox: true,
-      nodeIntegration: false,
-      // In-memory partition: browsing state never persists to disk.
-      partition: 'ompgui-browser-panel'
-    }
+    webPreferences: { ...PANEL_WEB_PREFERENCES }
   })
   const { webContents } = view
 
-  // The panel is a web surface, not an app window: popups are never created.
-  // Safe web URLs go to the system browser (same policy as Markdown links).
-  webContents.setWindowOpenHandler(({ url }) => {
-    const safeUrl = safeExternalUrl(url)
-    if (safeUrl) {
-      void shell.openExternal(safeUrl).catch(() => undefined)
+  wireGuestPolicy(webContents)
+  // window.open popups become real windows on the same partition; they get
+  // the same guards and are closed together with their owner window.
+  webContents.on('did-create-window', (child) => {
+    let children = panelChildren.get(win.id)
+    if (!children) {
+      children = new Set()
+      panelChildren.set(win.id, children)
     }
-    return { action: 'deny' }
-  })
-  webContents.on('will-navigate', (event, url) => {
-    if (!safeBrowserPanelUrl(url)) event.preventDefault()
+    children.add(child)
+    child.once('closed', () => children?.delete(child))
+    wireGuestPolicy(child.webContents)
   })
 
   const emit = () => sendState(win, view)
@@ -126,6 +177,10 @@ function createPanel(win: BrowserWindow): WebContentsView {
     win.once('closed', () => {
       cleanupWired.delete(win.id)
       attachedPanels.delete(win.id)
+      for (const child of panelChildren.get(win.id) ?? []) {
+        if (!child.isDestroyed()) child.close()
+      }
+      panelChildren.delete(win.id)
       const panel = panels.get(win.id)
       panels.delete(win.id)
       if (panel && !panel.webContents.isDestroyed()) panel.webContents.close()
