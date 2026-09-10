@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.15.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.15.1) 下载：
+当前版本 v0.16.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.16.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.1/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.15.1/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.16.0：飞书权限一键补齐 + 浏览器面板登录持久化。**扫码一键补齐应用权限**——授权页提示"无法授权的权限"时，不再需要去开发者后台开权限、创建版本发布：连接页权限缺口区新增"扫码一键补齐"，用官方 addons 管线把投手需要的全部权限预填进扫码确认页，对已注册的应用走更新模式（clientID）原地修补；确认后自动打开授权页完成 OAuth 授权，全程两次扫码/确认。新注册的应用也直接预填全部用户权限，开箱即用。取消补齐扫描不会把已连接的通道误显示为"未连接"。**浏览器面板登录持久化**——面板从内存分区改为持久分区，网站登录状态跨应用重启保留；弹出窗口改为同分区的应用内窗口（继承登录态与安全守卫），不再是"弹窗被禁止"；面板以纯 Chrome UA 访问（去除 Electron 标记），减少网站兼容性拦截。
 
 v0.15.1：修复任务保存后列表重复显示一次的回归（上版重构任务页时，本地追加与主进程推送叠加，导致新建任务出现两份——持久化数据始终只有一份，仅界面重复）。删除/开关操作的本地状态更新同样移除，全部信任主进程推送。
 
