@@ -56,6 +56,18 @@ export function gateBrowserUseRequest(
   return null
 }
 
+/**
+ * Hard read-only boundary for Facebook ad surfaces (2026-09-11 directive):
+ * the agent may READ Ads Manager (navigate/snapshot/screenshot/scroll) but
+ * can never click or type there, so budget, bid, delivery switches, and
+ * publish flows are physically out of reach. Pure — unit-tested alongside
+ * gateBrowserUseRequest; runAction enforces it before any input event.
+ */
+export function isFacebookReadOnlyAction(action: BrowserUseAction, panelUrl: string | null): boolean {
+  if (action !== 'click' && action !== 'type') return false
+  return panelUrl !== null && isFacebookSnapshotUrl(panelUrl)
+}
+
 /** One entry per whitelisted action; validated in `parseBrowserUseRequest`. */
 export type BrowserUseAction =
   | 'navigate'
@@ -266,6 +278,20 @@ async function openPanelWithUrl(url: string): Promise<void> {
 }
 
 async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
+  // Hard read-only boundary on Facebook surfaces, enforced in Main before
+  // any input synthesis: click/type are the only actions that could drive
+  // Ads Manager write UIs (budget, bid, delivery switches, publish). They
+  // are refused whenever the active panel is on a facebook.com host,
+  // regardless of session, permission mode, or caller. Reading actions
+  // (navigate/snapshot/screenshot/scroll/back/forward/wait) stay available,
+  // and human clicks in the panel never pass through this bridge.
+  if (req.action === 'click' || req.action === 'type') {
+    const panel = getActiveBrowserPanel()
+    const panelUrl = panel && !panel.webContents.isDestroyed() ? panel.webContents.getURL() : null
+    if (isFacebookReadOnlyAction(req.action, panelUrl)) {
+      return { ok: false, error: 'fb-read-only' }
+    }
+  }
   switch (req.action) {
     case 'navigate': {
       const safeUrl = safeBrowserPanelUrl(req.url as string)
