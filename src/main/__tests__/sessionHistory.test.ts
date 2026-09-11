@@ -138,6 +138,44 @@ describe('listSessionHistory', () => {
     expect(list[0].title).toBe('current runtime session')
   })
 
+  it('prefers the runtime-persisted title record over the first user message', async () => {
+    // Renames and task names are rewritten into the head title record by the
+    // runtime; honoring it keeps "联动验证任务" instead of degrading the row
+    // to its prompt text after a restart.
+    writeSessionFile('titled_uuid-t.jsonl', [
+      JSON.stringify({
+        type: 'title', v: 1, title: '联动验证任务', source: 'user',
+        updatedAt: '2025-01-02T00:00:00.000Z', pad: ''
+      }),
+      sessionHeader('uuid-t', '2025-01-02T00:00:00.000Z'),
+      userMessage('请只回复四个字：联动正常')
+    ])
+    const list = await listSessionHistory(projectDir, agentDir)
+    expect(list[0].title).toBe('联动验证任务')
+  })
+
+  it('collapses whitespace and truncates the recorded title to 80 chars', async () => {
+    const long = `${'任'.repeat(3)}   务\n名`.repeat(30)
+    writeSessionFile('longtitle_uuid-l.jsonl', [
+      JSON.stringify({ type: 'title', v: 1, title: long, updatedAt: '2025-01-02T00:00:00.000Z' }),
+      sessionHeader('uuid-l', '2025-01-02T00:00:00.000Z'),
+      userMessage('prompt text')
+    ])
+    const list = await listSessionHistory(projectDir, agentDir)
+    expect(list[0].title).toBe(long.replace(/\s+/g, ' ').trim().slice(0, 80))
+    expect(list[0].title.length).toBeLessThanOrEqual(80)
+  })
+
+  it('falls back to the first user message when the recorded title is blank', async () => {
+    writeSessionFile('blank_uuid-bl.jsonl', [
+      JSON.stringify({ type: 'title', v: 1, title: '   ', updatedAt: '2025-01-02T00:00:00.000Z' }),
+      sessionHeader('uuid-bl', '2025-01-02T00:00:00.000Z'),
+      userMessage('fallback title')
+    ])
+    const list = await listSessionHistory(projectDir, agentDir)
+    expect(list[0].title).toBe('fallback title')
+  })
+
   it('discovers the current home-relative OMP directory layout', async () => {
     const dir = currentSessionDirFor(projectDir, agentDir)
     mkdirSync(dir, { recursive: true })

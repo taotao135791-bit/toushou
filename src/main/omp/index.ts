@@ -206,7 +206,12 @@ export function createSession(
     ...(opts?.origin ? { origin: opts.origin } : {}),
     // Remote-channel sessions stay readonly even when the spawn path is
     // re-entered through resume; the renderer uses this to lock the picker.
-    ...(opts?.origin === 'feishu' ? { remoteReadonly: true } : {})
+    // Only an EXPLICIT readonly downgrade locks — a GUI-resumed Feishu fork
+    // runs with the local user's permission profile and must not claim a
+    // readonly lock its process does not actually have.
+    ...(opts?.origin === 'feishu' && opts?.permissionMode === 'readonly'
+      ? { remoteReadonly: true }
+      : {})
   }
 
   sessions.set(

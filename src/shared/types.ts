@@ -771,14 +771,19 @@ export interface ChatMessage {
  */
 /** Read-only cross-project history row (no capability — metadata only). */
 export interface HistorySessionRow {
-  /** Session uuid from the file header, for deduplication only. */
+  /** Session uuid from the file header, for dedupulation only. */
   uuid: string
-  /** First user message, truncated to 80 chars; 'Untitled' when absent. */
+  /** Persisted title record if the file has one, else the first user message. */
   title: string
   /** Session start time, epoch ms. */
   timestamp: number
   /** The cwd recorded in the session header (canonical real path or ''). */
   cwd: string
+  /**
+   * Present when Main's origin index ties this durable file to a Feishu chat
+   * route or a scheduled task, so a restart-surviving row keeps its badge.
+   */
+  origin?: 'feishu' | 'task'
 }
 
 export interface HistorySessionDescriptor {
@@ -786,10 +791,12 @@ export interface HistorySessionDescriptor {
   id: string
   /** Session uuid from the file header, for display/deduplication only. */
   uuid: string
-  /** First user message, truncated to 80 chars; 'Untitled' when absent. */
+  /** Persisted title record if the file has one, else the first user message. */
   title: string
   /** Session start time, epoch ms. */
   timestamp: number
+  /** Same restart-stable origin marker as HistorySessionRow, when known. */
+  origin?: 'feishu' | 'task'
 }
 
 /**

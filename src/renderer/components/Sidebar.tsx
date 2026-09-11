@@ -698,6 +698,21 @@ export default function Sidebar() {
   // (Live-row hover actions live in a single collapsible container — see
   // renderSessionRow — so they never squeeze the title column.)
 
+  // Provenance chip shared by live, history and cross-project rows: a session
+  // spawned by a Feishu route or a scheduled task keeps its badge even after
+  // the in-memory registry is gone (origin rides the durable index).
+  const renderOriginBadge = (origin?: 'feishu' | 'task') => {
+    if (origin !== 'feishu' && origin !== 'task') return null
+    return (
+      <span
+        className="shrink-0 rounded border border-line px-1 text-[9px] font-medium leading-[14px] text-cream-faint"
+        title={origin === 'feishu' ? t('sidebar.feishuSession') : t('sidebar.taskSession')}
+      >
+        {origin === 'feishu' ? '飞书' : '任务'}
+      </span>
+    )
+  }
+
   const renderSessionRow = (session: (typeof sessions)[number]) => {
     const active = currentSessionId === session.id
     const running = Boolean(busy[session.id])
@@ -717,7 +732,6 @@ export default function Sidebar() {
     // Externally created (Feishu channel) rows keep a brand badge so users can
     // tell where the conversation lives; foreign-workspace rows carry the
     // project suffix like the cross-project history rows do.
-    const feishu = session.origin === 'feishu'
     const foreignWorkspace = session.cwd !== currentWorkspace?.realPath
     return (
       <div
@@ -753,22 +767,7 @@ export default function Sidebar() {
             }`}
           >
             <span className="min-w-0 truncate text-[13px] font-medium leading-5">{session.title}</span>
-            {feishu && (
-              <span
-                className="shrink-0 rounded border border-line px-1 text-[9px] font-medium leading-[14px] text-cream-faint"
-                title={t('sidebar.feishuSession')}
-              >
-                飞书
-              </span>
-            )}
-            {session.origin === 'task' && (
-              <span
-                className="shrink-0 rounded border border-line px-1 text-[9px] font-medium leading-[14px] text-cream-faint"
-                title={t('sidebar.taskSession')}
-              >
-                任务
-              </span>
-            )}
+            {renderOriginBadge(session.origin)}
           </div>
           <div className="truncate text-[11px] leading-4 text-cream-faint">
             {foreignWorkspace
@@ -945,8 +944,11 @@ export default function Sidebar() {
         }`}
       >
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] leading-5 text-cream-dim">
-            {info.title === 'Untitled' ? t('history.untitled') : info.title}
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
+              {info.title === 'Untitled' ? t('history.untitled') : info.title}
+            </span>
+            {renderOriginBadge(info.origin)}
           </div>
           <div
             className={`truncate text-[11px] leading-4 ${
@@ -1004,8 +1006,11 @@ export default function Sidebar() {
         }`}
       >
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] leading-5 text-cream-dim">
-            {row.title === 'Untitled' ? t('history.untitled') : row.title}
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
+              {row.title === 'Untitled' ? t('history.untitled') : row.title}
+            </span>
+            {renderOriginBadge(row.origin)}
           </div>
           <div
             className={`truncate text-[11px] leading-4 ${

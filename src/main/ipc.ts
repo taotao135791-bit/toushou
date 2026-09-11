@@ -182,6 +182,7 @@ import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkb
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
+import { SessionOriginIndex } from './sessionOrigins'
 
 const fsGuard = new FsGuard()
 const grantManager = new WorkspaceGrantManager({ fsGuard })
@@ -189,6 +190,10 @@ const operationGrantManager = getOperationGrantManager()
 const operationGrantOwnerCleanupHooks = new Set<number>()
 const historySessionGrantManager = new HistorySessionGrantManager()
 const historySessionGrantOwnerCleanupHooks = new Set<number>()
+// Durable provenance for externally-spawned sessions (Feishu routes, scheduled
+// tasks): keeps origin badges on history rows across restarts, where the live
+// registry's in-memory Session.origin is gone.
+const sessionOriginIndex = new SessionOriginIndex()
 const packageActionGrantManager = new PackageActionGrantManager()
 const packageLocalSourceGrantManager = new PackageLocalSourceGrantManager()
 const packageGrantOwnerCleanupHooks = new Set<number>()
@@ -573,6 +578,7 @@ export function shutdownSessionsForQuit(): void {
 
 export function registerIpc() {
   startScheduler()
+  void sessionOriginIndex.ready()
   // The scheduler's execution leg: spawn a real OMP session named after the
   // task, deliver the prompt, and let the normal session-event stream drive
   // completion. Task sessions carry origin 'task' so the sidebar can badge
@@ -587,6 +593,11 @@ export function registerIpc() {
     // name the runtime session AND announce the row with that title so the
     // sidebar shows "每日报告" instead of the bare folder name.
     void setSessionName(session.id, title)
+    // The durable file appears after the handshake; record provenance so the
+    // restart-surviving history row keeps its 任务 badge and title.
+    void getSessionState(session.id).then((state) => {
+      if (state?.sessionFile) sessionOriginIndex.record(state.sessionFile, 'task')
+    })
     broadcastExternalSession({
       sessionId: session.id,
       workspacePath: cwd,
@@ -602,6 +613,9 @@ export function registerIpc() {
   })
   feishuConnectionManager.setSessionEventSink(broadcastSessionEvent)
   feishuConnectionManager.setExternalSessionSink(broadcastExternalSession)
+  feishuConnectionManager.setSessionOriginRecorder((sessionFile, origin) =>
+    sessionOriginIndex.record(sessionFile, origin)
+  )
 
   // Connections are Main-owned. The renderer receives only a public status
   // projection and a QR URL; credentials and SDK clients stay here.
@@ -872,12 +886,14 @@ export function registerIpc() {
   // timestamp/cwd from the runtime's own session files) — no capability is
   // minted here; resume/delete still require the workspace-bound grant flow.
   ipcMain.handle(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY, async () => {
+    await sessionOriginIndex.ready()
     const all = await listAllSessions()
     return all.map((entry) => ({
       uuid: entry.uuid,
       title: entry.title,
       timestamp: entry.timestamp,
-      cwd: entry.cwd
+      cwd: entry.cwd,
+      ...(entry.origin ? { origin: entry.origin } : {})
     }))
   })
 
@@ -887,8 +903,13 @@ export function registerIpc() {
       const resolved = requireGrant(grantId)
       if (!resolved) return []
       bindHistorySessionGrantOwnerCleanup(event)
+      await sessionOriginIndex.ready()
       const history = await listSessionHistory(resolved.realPath)
-      return historySessionGrantManager.mintForWorkspace(history, {
+      const annotated = history.map((entry) => {
+        const origin = sessionOriginIndex.lookup(entry.filePath)
+        return origin ? { ...entry, origin } : entry
+      })
+      return historySessionGrantManager.mintForWorkspace(annotated, {
         workspaceGrantId: resolved.grant.id,
         workspaceRealPath: resolved.realPath,
         ownerWebContentsId: event.sender.id
@@ -910,9 +931,17 @@ export function registerIpc() {
           ownerWebContentsId: event.sender.id
         },
         async (filePath) => {
+          await sessionOriginIndex.ready()
+          // Provenance survives the restart through the origin index: pass it
+          // back into the resumed session so the live row regains its badge,
+          // and refresh the recording (the file may have been re-created).
+          const origin = sessionOriginIndex.lookup(filePath)
+          if (origin) sessionOriginIndex.record(filePath, origin)
           let resumed: Awaited<ReturnType<typeof resumeSession>>
           try {
-            resumed = await resumeSession(resolved.realPath, broadcastSessionEvent, filePath)
+            resumed = await resumeSession(resolved.realPath, broadcastSessionEvent, filePath, {
+              ...(origin ? { origin } : {})
+            })
           } catch (error) {
             // The session spawned but its transcript could not be fetched.
             // Report this distinctly so the GUI keeps the row and tells the

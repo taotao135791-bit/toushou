@@ -137,7 +137,8 @@ export class HistorySessionGrantManager {
         id: `history-session-${crypto.randomUUID()}`,
         uuid: entry.uuid,
         title: entry.title,
-        timestamp: entry.timestamp
+        timestamp: entry.timestamp,
+        ...(entry.origin ? { origin: entry.origin } : {})
       }
       this.grants.set(descriptor.id, {
         ...identity,

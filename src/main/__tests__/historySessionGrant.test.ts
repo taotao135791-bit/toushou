@@ -64,6 +64,20 @@ function history(filePath: string, uuid = 'session-uuid'): HistorySessionFile {
 }
 
 describe('HistorySessionGrantManager', () => {
+  it('carries the annotated origin into minted descriptors', async () => {
+    const badgedFile = writeSession(workspaceA, 'badged.jsonl')
+    const plainFile = writeSession(workspaceA, 'plain.jsonl')
+    const [badged, plain] = await manager.mintForWorkspace(
+      [
+        { ...history(badgedFile), origin: 'feishu' },
+        history(plainFile, 'session-uuid-2')
+      ],
+      context()
+    )
+    expect(badged.origin).toBe('feishu')
+    expect(plain).not.toHaveProperty('origin')
+  })
+
   it('mints a path-free descriptor and resolves it only for the listing sender and workspace grant', async () => {
     const filePath = writeSession(workspaceA)
     const [descriptor] = await manager.mintForWorkspace([history(filePath)], context())

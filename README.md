@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.16.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.16.0) 下载：
+当前版本 v0.16.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.16.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.1/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.1/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.16.1：修复重启后飞书/定时任务会话的徽标与标题丢失。**会话出身徽标跨重启保留**——飞书会话的"飞书"、定时任务会话的"任务"徽标此前只存在于内存注册表，重启后行变成普通历史行；现在主进程维护持久出身索引（会话文件→来源），历史行、跨项目行与重新打开的会话都能带徽标，存量飞书路由也会在启动时自动补标。**会话标题不再降级**——磁盘会话文件里明确持久化的标题（任务名、用户重命名）此前被历史扫描忽略、一律显示首条消息前缀；现在优先采用文件内标题记录。在 GUI 里主动恢复的飞书历史会话按本地会话对待（使用你自己的权限档位），远端消息驱动的会话仍强制只读。
 
 v0.16.0：飞书权限一键补齐 + 浏览器面板登录持久化。**扫码一键补齐应用权限**——授权页提示"无法授权的权限"时，不再需要去开发者后台开权限、创建版本发布：连接页权限缺口区新增"扫码一键补齐"，用官方 addons 管线把投手需要的全部权限预填进扫码确认页，对已注册的应用走更新模式（clientID）原地修补；确认后自动打开授权页完成 OAuth 授权，全程两次扫码/确认。新注册的应用也直接预填全部用户权限，开箱即用。取消补齐扫描不会把已连接的通道误显示为"未连接"。**浏览器面板登录持久化**——面板从内存分区改为持久分区，网站登录状态跨应用重启保留；弹出窗口改为同分区的应用内窗口（继承登录态与安全守卫），不再是"弹窗被禁止"；面板以纯 Chrome UA 访问（去除 Electron 标记），减少网站兼容性拦截。
 

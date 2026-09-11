@@ -70,6 +70,7 @@ export class FeishuConnectionManager {
   private lastReconnectAt: number | undefined
   private authorizedCapabilities: FeishuCapability[] = ['messaging']
   private initialized = false
+  private sessionOriginRecorder: ((sessionFile: string, origin: 'feishu' | 'task') => void) | undefined
 
   constructor() {
     this.router = new FeishuSessionRouter({
@@ -82,6 +83,11 @@ export class FeishuConnectionManager {
         })
         if (session.status !== 'error') {
           this.emitExternalSession(session, ctx)
+          // The durable file appears after the handshake; record provenance
+          // then so the restart-surviving history row keeps its badge.
+          void getSessionState(session.id).then((state) => {
+            if (state?.sessionFile) this.sessionOriginRecorder?.(state.sessionFile, 'feishu')
+          })
         }
         return session
       },
@@ -89,6 +95,7 @@ export class FeishuConnectionManager {
       getSession,
       getSessionState,
       resumeSession: async (cwd, _onEvent, filePath, ctx, opts) => {
+        this.sessionOriginRecorder?.(filePath, 'feishu')
         const result = await resumeSession(cwd, (event) => this.handleOmpEvent(event), filePath, {
           permissionMode: opts?.permissionMode,
           origin: 'feishu'
@@ -132,6 +139,15 @@ export class FeishuConnectionManager {
   }
 
   /**
+   * Durable provenance hook: Main's session-origin index records which durable
+   * transcript files belong to Feishu chats, so history rows keep their badge
+   * after a restart (the live registry's Session.origin is memory-only).
+   */
+  setSessionOriginRecorder(recorder: (sessionFile: string, origin: 'feishu' | 'task') => void): void {
+    this.sessionOriginRecorder = recorder
+  }
+
+  /**
    * Announce a channel-created session to the GUI so it can register a live
    * sidebar row. The descriptor is path-free and carries no route data: no
    * chat ids, no route keys, no session-file paths — those stay Main-owned.
@@ -168,6 +184,13 @@ export class FeishuConnectionManager {
     this.router.setOwnerOpenId(this.credentials?.ownerOpenId)
     this.authorizedCapabilities = await this.oauthManager.authorizedCapabilities()
     this.startWatchdog()
+    // Badge continuity for already-routed chats: the route index knows which
+    // durable files are Feishu conversations, so seed the origin index before
+    // the next inbound message instead of waiting for a resume to record it.
+    await this.router.load()
+    for (const route of this.router.listRoutes()) {
+      if (route.sessionFile) this.sessionOriginRecorder?.(route.sessionFile, 'feishu')
+    }
     if (!this.credentials) return
     void this.connectSavedCredentials()
   }

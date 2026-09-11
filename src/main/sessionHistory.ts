@@ -17,12 +17,21 @@ export interface HistorySessionFile {
   uuid: string
   /** Main-only canonical candidate path for the durable JSONL file. */
   filePath: string
-  /** First user message, truncated to 80 chars; 'Untitled' when absent. */
+  /**
+   * The runtime's own persisted title record (renames, task names) when the
+   * file has one, else the first user message. Truncated to 80 chars;
+   * 'Untitled' when neither exists.
+   */
   title: string
   /** Session start time, epoch ms. */
   timestamp: number
   /** Header metadata; informational only and never trusted for authorization. */
   cwd: string
+  /**
+   * Annotated by the IPC layer from Main's session-origin index (the durable
+   * file itself carries no provenance) so minted descriptors can badge rows.
+   */
+  origin?: 'feishu' | 'task'
 }
 
 /**
@@ -291,12 +300,17 @@ async function exists(filePath: string): Promise<boolean> {
 
 /**
  * Parse one session file: the session header for id/timestamp/cwd, then the
- * first user message (within TITLE_SCAN_BYTES) for the title. Returns null
- * for files without a parseable session header.
+ * persisted title record (preferred) or the first user message (within
+ * TITLE_SCAN_BYTES) for the title. Returns null for files without a parseable
+ * session header.
  *
  * Header position is deliberately not pinned to line 0: legacy pi opens the
  * file with {"type":"session",…} directly, current omp prepends a
  * {"type":"title",…} line. Scan the first few lines for the header instead.
+ * The title record is rewritten in place by the runtime (it carries a `pad`
+ * field exactly for that), so reading it from the head always yields the
+ * CURRENT title — honoring it keeps task names and user renames visible after
+ * a restart instead of degrading every row to its first prompt text.
  */
 async function parseSessionFile(filePath: string): Promise<HistorySessionFile | null> {
   let head: string
@@ -308,12 +322,24 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
   const lines = head.split('\n')
   let header: { id: string; timestamp?: unknown; cwd?: unknown } | null = null
   let headerIndex = -1
+  let recordedTitle = ''
   for (let i = 0; i < Math.min(lines.length, 5); i++) {
     if (!lines[i].trim()) continue
-    let candidate: { type?: unknown; id?: unknown; timestamp?: unknown; cwd?: unknown }
+    let candidate: {
+      type?: unknown
+      id?: unknown
+      timestamp?: unknown
+      cwd?: unknown
+      title?: unknown
+    }
     try {
       candidate = JSON.parse(lines[i])
     } catch {
+      continue
+    }
+    if (candidate?.type === 'title' && typeof candidate.title === 'string') {
+      const trimmed = candidate.title.replace(/\s+/g, ' ').trim()
+      if (trimmed && !recordedTitle) recordedTitle = trimmed.slice(0, 80)
       continue
     }
     if (candidate?.type === 'session' && typeof candidate.id === 'string') {
@@ -331,20 +357,22 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
     timestamp = await stat(filePath).then((s) => s.mtimeMs, () => 0)
   }
 
-  let title = UNTITLED
-  for (const line of lines.slice(headerIndex + 1)) {
-    if (!line.trim()) continue
-    let entry: { type?: unknown; message?: { role?: unknown; content?: unknown } }
-    try {
-      entry = JSON.parse(line)
-    } catch {
-      continue
-    }
-    if (entry?.type === 'message' && entry.message?.role === 'user') {
-      const text = textContentOf(entry.message.content).replace(/\s+/g, ' ').trim()
-      if (text) {
-        title = text.slice(0, 80)
-        break
+  let title = recordedTitle || UNTITLED
+  if (!recordedTitle) {
+    for (const line of lines.slice(headerIndex + 1)) {
+      if (!line.trim()) continue
+      let entry: { type?: unknown; message?: { role?: unknown; content?: unknown } }
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (entry?.type === 'message' && entry.message?.role === 'user') {
+        const text = textContentOf(entry.message.content).replace(/\s+/g, ' ').trim()
+        if (text) {
+          title = text.slice(0, 80)
+          break
+        }
       }
     }
   }
