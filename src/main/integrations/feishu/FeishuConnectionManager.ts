@@ -77,17 +77,28 @@ export class FeishuConnectionManager {
       workspacePath: this.workspacePath,
       routesFile: this.routesFile,
       createSession: (cwd, _onEvent, opts, ctx) => {
-        const session = createSession(cwd, (event) => this.handleOmpEvent(event), {
+        const session = createSession(cwd, (event) => {
+          // The durable file is only knowable after the handshake; tap the
+          // connected moment so the restart-surviving history row keeps its
+          // badge (a one-shot fetch at spawn time races the handshake).
+          if (event.type === 'connected') {
+            const tryRecord = (delayMs: number) => {
+              setTimeout(() => {
+                void getSessionState(event.sessionId).then((state) => {
+                  if (state?.sessionFile) this.sessionOriginRecorder?.(state.sessionFile, 'feishu')
+                })
+              }, delayMs)
+            }
+            tryRecord(0)
+            tryRecord(5_000)
+          }
+          this.handleOmpEvent(event)
+        }, {
           ...opts,
           origin: 'feishu'
         })
         if (session.status !== 'error') {
           this.emitExternalSession(session, ctx)
-          // The durable file appears after the handshake; record provenance
-          // then so the restart-surviving history row keeps its badge.
-          void getSessionState(session.id).then((state) => {
-            if (state?.sessionFile) this.sessionOriginRecorder?.(state.sessionFile, 'feishu')
-          })
         }
         return session
       },

@@ -584,7 +584,27 @@ export function registerIpc() {
   // completion. Task sessions carry origin 'task' so the sidebar can badge
   // them and the notification layer can treat them specially.
   setTaskSpawnFn(async (cwd, title, prompt) => {
-    const session = createSession(cwd, broadcastSessionEvent, { origin: 'task' })
+    const session = createSession(
+      cwd,
+      (event) => {
+        // The durable file is only knowable AFTER the handshake: get_state
+        // reports it once the runtime is connected, so tap that moment to
+        // record provenance (a one-shot fetch at spawn time always races it).
+        if (event.type === 'connected') {
+          const tryRecord = (delayMs: number) => {
+            setTimeout(() => {
+              void getSessionState(event.sessionId).then((state) => {
+                if (state?.sessionFile) sessionOriginIndex.record(state.sessionFile, 'task')
+              })
+            }, delayMs)
+          }
+          tryRecord(0)
+          tryRecord(5_000)
+        }
+        broadcastSessionEvent(event)
+      },
+      { origin: 'task' }
+    )
     if (session.status === 'error') return null
     // The prompt IS the task. A failed write means the child died at spawn —
     // report the firing as failed so the failure counter can act.
@@ -593,11 +613,6 @@ export function registerIpc() {
     // name the runtime session AND announce the row with that title so the
     // sidebar shows "每日报告" instead of the bare folder name.
     void setSessionName(session.id, title)
-    // The durable file appears after the handshake; record provenance so the
-    // restart-surviving history row keeps its 任务 badge and title.
-    void getSessionState(session.id).then((state) => {
-      if (state?.sessionFile) sessionOriginIndex.record(state.sessionFile, 'task')
-    })
     broadcastExternalSession({
       sessionId: session.id,
       workspacePath: cwd,
