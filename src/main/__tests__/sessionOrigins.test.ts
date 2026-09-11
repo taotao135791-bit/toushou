@@ -31,17 +31,15 @@ function indexFile(): string {
   return path.join(dir, 'session-origins.json')
 }
 
-async function settled(): Promise<void> {
-  // record() persists write-through; let the microtask queue drain.
-  await new Promise((resolve) => setTimeout(resolve, 5))
-}
+// record() persists write-through; flush() is the deterministic wait (a
+// wall-clock sleep races slow CI disks).
 
 describe('SessionOriginIndex', () => {
   it('records and looks up origins, surviving a reload', async () => {
     const file = jsonl('a.jsonl')
     const first = new SessionOriginIndex({ filePath: indexFile() })
     first.record(file, 'task')
-    await settled()
+    await first.flush()
 
     const second = new SessionOriginIndex({ filePath: indexFile() })
     await second.ready()
@@ -60,7 +58,7 @@ describe('SessionOriginIndex', () => {
     }
     const index = new SessionOriginIndex({ filePath: indexFile() })
     index.record(real, 'feishu')
-    await settled()
+    await index.flush()
     expect(index.lookup(aliased)).toBe('feishu')
   })
 
@@ -68,12 +66,12 @@ describe('SessionOriginIndex', () => {
     const file = jsonl('c.jsonl')
     const first = new SessionOriginIndex({ filePath: indexFile() })
     first.record(file, 'feishu')
-    await settled()
+    await first.flush()
 
     rmSync(file)
     const survivor = jsonl('d.jsonl')
     first.record(survivor, 'task')
-    await settled()
+    await first.flush()
 
     const second = new SessionOriginIndex({ filePath: indexFile() })
     await second.ready()

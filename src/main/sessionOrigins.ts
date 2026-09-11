@@ -28,6 +28,7 @@ export class SessionOriginIndex {
   private readonly filePath: string
   private readonly entries = new Map<string, StoredOriginEntry>()
   private loaded: Promise<void> | null = null
+  private writeChain: Promise<void> = Promise.resolve()
 
   constructor(options: { filePath?: string } = {}) {
     this.filePath = options.filePath ?? path.join(app.getPath('userData'), 'session-origins.json')
@@ -67,7 +68,17 @@ export class SessionOriginIndex {
   record(sessionFile: string, origin: SessionOrigin): void {
     if (typeof sessionFile !== 'string' || !sessionFile) return
     this.entries.set(this.key(sessionFile), { sessionFile, origin, recordedAt: Date.now() })
-    void this.persist()
+    // Serialize writes so a later recording can never overwrite an earlier
+    // persist's state with stale entries.
+    this.writeChain = this.writeChain.then(() => this.persist())
+  }
+
+  /**
+   * Resolves once every queued persist settled — the deterministic wait the
+   * tests need (a wall-clock sleep races slow CI disks, not the logic).
+   */
+  flush(): Promise<void> {
+    return this.writeChain
   }
 
   lookup(sessionFile: string): SessionOrigin | undefined {
