@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest'
-import { gateBrowserUseRequest, parseBrowserUseRequest } from '../browserUse'
+import { gateBrowserUseRequest, isFacebookReadOnlyAction, parseBrowserUseRequest } from '../browserUse'
+
+describe('isFacebookReadOnlyAction (hard FB read-only boundary)', () => {
+  it('blocks click and type on any facebook.com surface', () => {
+    for (const url of [
+      'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=1',
+      'https://business.facebook.com/latest/home',
+      'https://www.facebook.com/'
+    ]) {
+      expect(isFacebookReadOnlyAction('click', url)).toBe(true)
+      expect(isFacebookReadOnlyAction('type', url)).toBe(true)
+    }
+  })
+
+  it('allows reading actions on facebook and everything elsewhere', () => {
+    for (const action of ['navigate', 'snapshot', 'screenshot', 'scroll', 'back', 'forward', 'wait'] as const) {
+      expect(isFacebookReadOnlyAction(action, 'https://adsmanager.facebook.com/')).toBe(false)
+    }
+    expect(isFacebookReadOnlyAction('click', 'https://example.com/')).toBe(false)
+    expect(isFacebookReadOnlyAction('type', 'https://adsmanager.facebook.com.evil.com/')).toBe(false)
+    expect(isFacebookReadOnlyAction('click', null)).toBe(false)
+  })
+})
 
 describe('gateBrowserUseRequest', () => {
   it('always admits navigate (it visibly reopens and takes ownership)', () => {
