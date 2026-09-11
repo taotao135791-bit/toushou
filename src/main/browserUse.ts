@@ -5,6 +5,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import { BrowserWindow } from 'electron'
 import { getActiveBrowserPanel, isBrowserPanelVisible } from './browserPanel'
+import { appendFbSnapshot, isFacebookSnapshotUrl } from './fbSnapshots'
 import { safeBrowserPanelUrl } from './navigation'
 import { IPC_CHANNELS } from '../shared/constants'
 
@@ -293,11 +294,23 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
         text: string
         elements: Array<Record<string, unknown>>
       }>(SNAPSHOT_SCRIPT)
+      const text = snap.text.slice(0, MAX_TEXT_CHARS)
+      // Evidence chain: FB page snapshots are archived locally so readings
+      // keep a verifiable source and parser regressions can be reproduced
+      // offline. Best-effort by design — a failed archive never fails the
+      // read the user is looking at.
+      if (isFacebookSnapshotUrl(snap.url)) {
+        try {
+          appendFbSnapshot({ url: snap.url, title: snap.title, text })
+        } catch {
+          // archive is advisory; ignore storage hiccups
+        }
+      }
       return {
         ok: true,
         url: snap.url,
         title: snap.title,
-        text: snap.text.slice(0, MAX_TEXT_CHARS),
+        text,
         elements: (snap.elements ?? []).slice(0, MAX_ELEMENTS)
       }
     }
