@@ -216,6 +216,29 @@ export function removeMcpConnection(
   return { ok: true }
 }
 
+/**
+ * First-party-connection upsert (TikTok Ads-style OAuth connectors): same
+ * ownership registry as a user add, but the entry is Main-built and carries a
+ * bearer header minted from the app's own credential store. Overwrites only
+ * THIS name; other entries are untouched.
+ */
+export function upsertManagedServer(
+  name: string,
+  entry: Record<string, unknown>,
+  paths: McpStorePaths = defaultMcpStorePaths()
+): { ok: true } | { ok: false; error: string } {
+  const validated = validateEntry(name, entry)
+  if (!validated.ok) return validated
+  const file = readOmpMcp(paths)
+  file.mcpServers = file.mcpServers ?? {}
+  file.mcpServers[name] = validated.entry
+  writeOmpMcp(paths, file)
+  const managed = readRegistry(paths)
+  if (!managed.includes(name)) managed.push(name)
+  writeRegistry(paths, managed)
+  return { ok: true }
+}
+
 /** Extract JSON-RPC payloads from a direct JSON or SSE (data: …) response body. */
 function parseRpcResponses(text: string): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = []

@@ -150,6 +150,24 @@ export interface FeishuToolResult {
   authorizationRequired?: FeishuCapability
 }
 
+/* ---------- TikTok Ads 官方 MCP 连接（投手侧 OAuth，写入运行时 mcp.json） ---------- */
+
+/**
+ * Renderer-facing projection of the TikTok Ads MCP connection. No secrets:
+ * the bearer lives only in Main's encrypted envelope plus the runtime's own
+ * mcp.json entry.
+ */
+export interface TikTokAdsConnectionSnapshot {
+  definition: ConnectionDefinition
+  status: ConnectionStatus
+  connected: boolean
+  lastError?: string
+  lastConnectedAt?: number
+  tokenExpiresAt?: number
+  /** Present while waiting for the browser round-trip; lets the card offer a manual open. */
+  authorizationUrl?: string
+}
+
 /* ---------- MCP 服务连接（投手作为配置管家写入运行时原生 mcp.json） ---------- */
 
 export type McpTransport = 'http' | 'sse' | 'stdio'

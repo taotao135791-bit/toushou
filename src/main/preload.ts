@@ -9,7 +9,8 @@ import {
   McpAddInput,
   McpConnectionInfo,
   McpMutationResult,
-  McpTestOutcome
+  McpTestOutcome,
+  TikTokAdsConnectionSnapshot
 } from '../shared/connections'
 import {
   CliCapabilities,
@@ -440,6 +441,13 @@ export interface ElectronAPI {
   /** 刷新令牌并重建已授权能力清单（权限核验）。 */
   feishuVerifyScopes: () => Promise<FeishuConnectionSnapshot>
   onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => () => void
+  /** TikTok Ads official MCP connector (app-side OAuth; Main owns the bearer). */
+  tiktokStatus: () => Promise<TikTokAdsConnectionSnapshot>
+  tiktokBegin: () => Promise<TikTokAdsConnectionSnapshot>
+  tiktokCancel: () => Promise<TikTokAdsConnectionSnapshot>
+  tiktokDisconnect: () => Promise<TikTokAdsConnectionSnapshot>
+  tiktokOpenUrl: (url: string) => Promise<boolean>
+  onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => () => void
   /** MCP service connections — masked listings; tokens never cross to the renderer. */
   mcpList: () => Promise<McpConnectionInfo[]>
   mcpAdd: (input: McpAddInput) => Promise<McpMutationResult>
@@ -803,6 +811,18 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.FEISHU_BEGIN_REPAIR),
   feishuDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_DISCONNECT),
   feishuOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OPEN_URL, url),
+  tiktokStatus: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_STATUS),
+  tiktokBegin: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_BEGIN),
+  tiktokCancel: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_CANCEL),
+  tiktokDisconnect: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_DISCONNECT),
+  tiktokOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_OPEN_URL, url),
+  onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => {
+    const handler = (_event: IpcRendererEvent, snapshot: TikTokAdsConnectionSnapshot) => callback(snapshot)
+    ipcRenderer.on(IPC_CHANNELS.TIKTOK_STATUS, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.TIKTOK_STATUS, handler)
+    }
+  },
   mcpList: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_LIST),
   mcpAdd: (input: McpAddInput) => ipcRenderer.invoke(IPC_CHANNELS.MCP_ADD, input),
   mcpRemove: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.MCP_REMOVE, name),

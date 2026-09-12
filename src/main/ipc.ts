@@ -180,6 +180,7 @@ import {
 } from './browserPanel'
 import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
+import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
 import { SessionOriginIndex } from './sessionOrigins'
@@ -194,6 +195,8 @@ const historySessionGrantOwnerCleanupHooks = new Set<number>()
 // tasks): keeps origin badges on history rows across restarts, where the live
 // registry's in-memory Session.origin is gone.
 const sessionOriginIndex = new SessionOriginIndex()
+/** TikTok Ads official MCP connector — Main-owned OAuth, one instance per app. */
+const tiktokAdsConnectionManager = new TikTokAdsConnectionManager()
 const packageActionGrantManager = new PackageActionGrantManager()
 const packageLocalSourceGrantManager = new PackageLocalSourceGrantManager()
 const packageGrantOwnerCleanupHooks = new Set<number>()
@@ -579,6 +582,9 @@ export function shutdownSessionsForQuit(): void {
 export function registerIpc() {
   startScheduler()
   void sessionOriginIndex.ready()
+  // Restore a stored TikTok Ads connection (self-heals the mcp.json entry and
+  // the refresh schedule); never opens anything without a stored credential.
+  void tiktokAdsConnectionManager.initialize()
   // The scheduler's execution leg: spawn a real OMP session named after the
   // task, deliver the prompt, and let the normal session-event stream drive
   // completion. Task sessions carry origin 'task' so the sidebar can badge
@@ -692,6 +698,20 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.FEISHU_VERIFY_SCOPES, async () => feishuConnectionManager.verifyScopes())
   ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_POLL, async () => feishuConnectionManager.pollOAuth())
   ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_CANCEL, async () => feishuConnectionManager.cancelOAuth())
+
+  // --- TikTok Ads official MCP connector ---------------------------------
+  // The whole OAuth exchange (discovery, dynamic registration, PKCE loopback,
+  // token refresh, mcp.json bearer entry) stays in Main; the renderer only
+  // ever receives secret-free snapshots.
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_STATUS, async () => tiktokAdsConnectionManager.getSnapshot())
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_BEGIN, async () => tiktokAdsConnectionManager.begin())
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_CANCEL, async () => tiktokAdsConnectionManager.cancel())
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_DISCONNECT, async () => tiktokAdsConnectionManager.disconnect())
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_OPEN_URL, async (_event, url: unknown) => {
+    // Only the URL Main itself minted for the in-flight flow may be opened.
+    if (typeof url !== 'string') return false
+    return tiktokAdsConnectionManager.openAuthorizationUrl(url)
+  })
 
   ipcMain.handle(IPC_CHANNELS.OMP_DETECT, async (_event: IpcMainInvokeEvent, force?: boolean) => {
     if (force) {
