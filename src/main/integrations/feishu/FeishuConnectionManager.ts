@@ -71,6 +71,14 @@ export class FeishuConnectionManager {
   private authorizedCapabilities: FeishuCapability[] = ['messaging']
   private initialized = false
   private sessionOriginRecorder: ((sessionFile: string, origin: 'feishu' | 'task') => void) | undefined
+  /**
+   * Deterministic in-chat guidance: relayed model text was the only way a
+   * permission gap used to reach the person. Main now pushes a notice for
+   * the session directly (ipc.ts broadcasts FEISHU_AUTH_GAP to the renderer).
+   */
+  private authGapSink:
+    | ((sessionId: string, notice: { kind: 'auth'; capability: FeishuCapability } | { kind: 'paused' }) => void)
+    | undefined
 
   constructor() {
     this.router = new FeishuSessionRouter({
@@ -156,6 +164,12 @@ export class FeishuConnectionManager {
    */
   setSessionOriginRecorder(recorder: (sessionFile: string, origin: 'feishu' | 'task') => void): void {
     this.sessionOriginRecorder = recorder
+  }
+
+  setAuthGapSink(
+    sink: (sessionId: string, notice: { kind: 'auth'; capability: FeishuCapability } | { kind: 'paused' }) => void
+  ): void {
+    this.authGapSink = sink
   }
 
   /**
@@ -412,6 +426,13 @@ export class FeishuConnectionManager {
     this.authorizedCapabilities = await this.oauthManager.authorizedCapabilities()
     // executeForSession wraps execute() with the per-session failure breaker.
     const result = await this.tools.executeForSession(sessionId, request)
+    // Guidance must not depend on the model relaying the tool error: push the
+    // permission gap (and the breaker pause) into the session directly.
+    if (result.authorizationRequired) {
+      this.authGapSink?.(sessionId, { kind: 'auth', capability: result.authorizationRequired })
+    } else if (!result.ok && this.tools.isPaused(sessionId)) {
+      this.authGapSink?.(sessionId, { kind: 'paused' })
+    }
     return result
   }
 

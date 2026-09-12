@@ -1299,6 +1299,9 @@ const en = {
   'connections.scopeCalendarWrite': 'Edit calendar',
   'connections.scopeTasks': 'View tasks',
   'connections.scopeSearch': 'Search messages',
+  'feishuGap.auth': 'A Feishu capability ({capability}) needs extra authorization before the agent can use it.',
+  'feishuGap.paused':
+    'Feishu tools kept failing, so calls from this chat are paused for ~10 minutes. Check the Feishu authorization on the Connections page.',
   'connections.authorize': 'Authorize',
   'connections.authorized': 'Authorized',
   'connections.authorizationWaiting': 'Complete authorization, then check here.',
@@ -2572,6 +2575,9 @@ const zh: Record<I18nKey, string> = {
   'connections.scopeCalendarWrite': '编辑日历',
   'connections.scopeTasks': '查看任务',
   'connections.scopeSearch': '获取搜索结果中的消息',
+  'feishuGap.auth': '飞书能力（{capability}）需要额外授权，agent 暂时无法使用。',
+  'feishuGap.paused':
+    '飞书工具连续失败，本会话的调用已暂停约 10 分钟。请到「连接」页检查飞书授权。',
   'connections.authorize': '开始授权',
   'connections.authorized': '已授权',
   'connections.authorizationWaiting': '完成授权后，回到这里检查结果。',

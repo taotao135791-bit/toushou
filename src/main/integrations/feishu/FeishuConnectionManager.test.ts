@@ -176,3 +176,38 @@ describe('FeishuConnectionManager external session announcements', () => {
     expect(sink).not.toHaveBeenCalled()
   })
 })
+
+describe('FeishuConnectionManager auth-gap guidance', () => {
+  it('pushes an auth notice when a tool call is refused for authorization', async () => {
+    const manager = new FeishuConnectionManager()
+    const sink = vi.fn()
+    manager.setAuthGapSink(sink)
+
+    // The capability gate fires before the channel check: with only the
+    // default 'messaging' capability authorized, doc_read is refused with an
+    // authorizationRequired result — exactly the deterministic guidance path.
+    const result = await manager.executeTool('session-1', { action: 'doc_read', documentId: 'doc_1' })
+    expect(result.authorizationRequired).toBe('docs.read')
+    expect(sink).toHaveBeenCalledTimes(1)
+    expect(sink).toHaveBeenCalledWith('session-1', { kind: 'auth', capability: 'docs.read' })
+  })
+
+  it('pushes a paused notice once the breaker trips (after repeated refusals)', async () => {
+    const manager = new FeishuConnectionManager()
+    const sink = vi.fn()
+    manager.setAuthGapSink(sink)
+
+    // Five hard failures open the breaker; calls 1-5 carry the auth notice.
+    for (let i = 0; i < 5; i++) {
+      await manager.executeTool('session-2', { action: 'doc_read', documentId: 'doc_1' })
+    }
+    expect(sink).toHaveBeenCalledTimes(5)
+    expect(sink).toHaveBeenLastCalledWith('session-2', { kind: 'auth', capability: 'docs.read' })
+
+    // The sixth call is refused by the open breaker — no authorization field,
+    // so the paused notice explains why calls stopped.
+    await manager.executeTool('session-2', { action: 'doc_read', documentId: 'doc_1' })
+    expect(sink).toHaveBeenCalledTimes(6)
+    expect(sink).toHaveBeenLastCalledWith('session-2', { kind: 'paused' })
+  })
+})

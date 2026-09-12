@@ -125,6 +125,10 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
   // 连接引导标记：从正文剥离并在消息下方渲染“去连接”卡（见 connectionMarkers）。
   const guideSplit = splitConnectionMarkers(message.content)
 
+  // Main-pushed guidance pills (feishu auth gap / breaker pause) ride the same
+  // marker protocol, so a system pill can carry the 去连接 card too.
+  const systemGuideSplit = isSystem ? splitConnectionMarkers(message.content) : { clean: '', guides: [] }
+
   // Prefill the composer with this message so it can be edited and resent;
   // the history entry stays untouched.
   const editContent = () => {
@@ -327,8 +331,13 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
           ) : (
             <AlertTriangle size={11} className="shrink-0" />
           )}
-          <span className="min-w-0">{message.content}</span>
+          <span className="min-w-0">{systemGuideSplit.clean}</span>
         </div>
+        {isInfo && systemGuideSplit.guides.length > 0 && (
+          <div className="mt-1.5 flex w-full justify-center">
+            <ConnectionGuideCard kinds={systemGuideSplit.guides} />
+          </div>
+        )}
       </div>
     )
   }

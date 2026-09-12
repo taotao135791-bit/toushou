@@ -636,6 +636,13 @@ export function registerIpc() {
   feishuConnectionManager.setSessionOriginRecorder((sessionFile, origin) =>
     sessionOriginIndex.record(sessionFile, origin)
   )
+  // Permission gaps and breaker pauses surface in the session that hit them —
+  // guidance no longer depends on the model relaying tool-error text.
+  feishuConnectionManager.setAuthGapSink((sessionId, notice) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(IPC_CHANNELS.FEISHU_AUTH_GAP, { sessionId, ...notice })
+    }
+  })
 
   // Connections are Main-owned. The renderer receives only a public status
   // projection and a QR URL; credentials and SDK clients stay here.

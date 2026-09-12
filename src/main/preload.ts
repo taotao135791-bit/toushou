@@ -382,6 +382,10 @@ export interface ElectronAPI {
   onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => () => void
   /** Fired when a completion notification is clicked; selects the session. */
   onNotifySelectSession: (callback: (sessionId: string) => void) => () => void
+  onNotifyOpenHistory: (callback: (target: { uuid: string; cwd: string }) => void) => () => void
+  onFeishuAuthGap: (
+    callback: (notice: { sessionId: string; kind: 'auth' | 'paused'; capability?: string }) => void
+  ) => () => void
   /** Real filesystem path for a File dropped from Finder (contextIsolation-safe). */
   getPathForFile: (file: File) => string
 
@@ -733,6 +737,25 @@ const api: ElectronAPI = {
     ipcRenderer.on(IPC_CHANNELS.NOTIFY_SELECT_SESSION, handler)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.NOTIFY_SELECT_SESSION, handler)
+    }
+  },
+  onNotifyOpenHistory: (callback: (target: { uuid: string; cwd: string }) => void) => {
+    const handler = (_event: IpcRendererEvent, target: { uuid: string; cwd: string }) => callback(target)
+    ipcRenderer.on(IPC_CHANNELS.NOTIFY_OPEN_HISTORY, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.NOTIFY_OPEN_HISTORY, handler)
+    }
+  },
+  onFeishuAuthGap: (
+    callback: (notice: { sessionId: string; kind: 'auth' | 'paused'; capability?: string }) => void
+  ) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      notice: { sessionId: string; kind: 'auth' | 'paused'; capability?: string }
+    ) => callback(notice)
+    ipcRenderer.on(IPC_CHANNELS.FEISHU_AUTH_GAP, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.FEISHU_AUTH_GAP, handler)
     }
   },
   getPathForFile: (file: File) => webUtils.getPathForFile(file),

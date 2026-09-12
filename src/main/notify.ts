@@ -3,6 +3,7 @@ import { IPC_CHANNELS } from '../shared/constants'
 import { SessionEvent } from '../shared/types'
 import { getLastAssistantText, getSession } from './omp'
 import { getStore } from './store'
+import { listAllSessions } from './sessionHistory'
 
 /**
  * Desktop notification when an agent turn finishes (agent_end → status idle)
@@ -77,10 +78,27 @@ export function maybeNotifyUiRequest(event: SessionEvent): void {
 
 
 /**
+ * Where a task-notification click should land: the live run session when it
+ * still exists, else the newest durable row titled after the task (task
+ * sessions are named after their task), else nowhere (just focus).
+ */
+export async function resolveTaskNotificationTarget(
+  taskName: string,
+  sessionId?: string
+): Promise<{ kind: 'select'; sessionId: string } | { kind: 'history'; uuid: string; cwd: string } | null> {
+  if (sessionId && getSession(sessionId)) return { kind: 'select', sessionId }
+  const rows = await listAllSessions()
+  const row = rows.find((entry) => entry.title === taskName) // newest first
+  if (row) return { kind: 'history', uuid: row.uuid, cwd: row.cwd }
+  return null
+}
+
+/**
  * Task-scoped completion notice. Fires regardless of window focus (the whole
  * point of a scheduled task is that nobody is watching) but still honors the
  * global notifications setting. Clicking jumps to the run's session — the
- * same affordance the per-turn notice already has.
+ * same affordance the per-turn notice already has — and falls back to the
+ * task's newest durable transcript after a restart.
  */
 export function notifyTaskFinished(taskName: string, sessionId?: string): void {
   if (getStore('notifications') === false) return
@@ -95,7 +113,14 @@ export function notifyTaskFinished(taskName: string, sessionId?: string): void {
     if (!win || win.isDestroyed()) return
     win.show()
     win.focus()
-    if (sessionId) win.webContents.send(IPC_CHANNELS.NOTIFY_SELECT_SESSION, sessionId)
+    void resolveTaskNotificationTarget(taskName, sessionId).then((target) => {
+      if (!target || !win || win.isDestroyed()) return
+      if (target.kind === 'select') {
+        win.webContents.send(IPC_CHANNELS.NOTIFY_SELECT_SESSION, target.sessionId)
+      } else {
+        win.webContents.send(IPC_CHANNELS.NOTIFY_OPEN_HISTORY, { uuid: target.uuid, cwd: target.cwd })
+      }
+    })
   })
   notification.show()
 }

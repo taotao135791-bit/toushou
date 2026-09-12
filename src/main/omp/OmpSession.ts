@@ -89,6 +89,13 @@ export class OmpSession {
   private negotiateTimer: ReturnType<typeof setTimeout> | null = null
   /** The id OmpHandshake minted for the in-flight negotiate command. */
   private lastNegotiateId: string | null = null
+  /**
+   * Spawn-time liveness deadline: the child must produce ANY stdout byte
+   * within this window. A hung runtime (seen in the wild: `omp --mode rpc`
+   * blocking with zero output and zero CPU) otherwise wedges the session in
+   * "connecting" forever with no error and no retry path.
+   */
+  private firstFrameTimer: ReturnType<typeof setTimeout> | null = null
   private readonly stderrRing = new StderrRing()
   /** Assistant text of the in-flight turn, accumulated from text deltas. */
   private draftText = ''
@@ -106,6 +113,7 @@ export class OmpSession {
     proc.stderr?.on('data', (chunk: Buffer) => this.stderrRing.push(chunk))
     proc.on('error', (err: Error) => this.handleProcessError(err))
     proc.on('exit', (code: number | null) => this.handleExit(code))
+    this.firstFrameTimer = setTimeout(() => this.handleFirstFrameTimeout(), FIRST_FRAME_TIMEOUT_MS)
     this.state = 'idle'
     this.emit({ type: 'connected', sessionId: this.id })
   }
@@ -253,6 +261,7 @@ export class OmpSession {
     if (this.state === 'closed') return
     this.state = 'closed'
     this.clearNegotiateTimer()
+    this.clearFirstFrameTimer()
     this.resolvePending(null)
     try {
       this.proc.kill()
@@ -268,6 +277,8 @@ export class OmpSession {
     // A closed session ignores any residual output (e.g. the process is
     // still flushing after a failed handshake killed it).
     if (this.state === 'closed') return
+    // Any byte proves the child is alive — retire the spawn-liveness deadline.
+    this.clearFirstFrameTimer()
     for (const event of this.reader.push(chunk)) {
       if (event.kind === 'line') {
         this.handleLine(event.line)
@@ -432,11 +443,11 @@ export class OmpSession {
       case 'extension_ui_unsupported':
         // An extension capability diagnostic, not chat content: a transcript
         // pill would be pure noise (mature agent apps never surface it). Log
-        // once per method per session via console.info — installFileLogging
-        // tees that level into userData/logs/main.log.
+        // once per method per session at debug level — every session asking
+        // for the same method (setWidget today) made main.log all-noise.
         if (!this.unsupportedExtensionUiMethods.has(result.method)) {
           this.unsupportedExtensionUiMethods.add(result.method)
-          console.info(
+          console.debug(
             `[omp:${this.id.slice(-6)}] extension requested unsupported UI method "${result.method}"; ignored`
           )
         }
@@ -540,6 +551,43 @@ export class OmpSession {
       clearTimeout(this.negotiateTimer)
       this.negotiateTimer = null
     }
+  }
+
+  private clearFirstFrameTimer(): void {
+    if (this.firstFrameTimer) {
+      clearTimeout(this.firstFrameTimer)
+      this.firstFrameTimer = null
+    }
+  }
+
+  /**
+   * The runtime produced nothing at all within the liveness window: it is
+   * wedged at spawn (not slow — a healthy child emits its ready frame in
+   * well under a second). Fail the session loudly instead of hanging in
+   * "connecting" with no retry path.
+   */
+  private handleFirstFrameTimeout(): void {
+    this.firstFrameTimer = null
+    if (this.state === 'closed' || this.state === 'failed') return
+    this.clearNegotiateTimer()
+    this.resolvePending(null)
+    this.state = 'failed'
+    this.emit({
+      type: 'error',
+      sessionId: this.id,
+      message:
+        `OMP runtime produced no output within ${FIRST_FRAME_TIMEOUT_MS / 1000}s of starting ` +
+        '(spawn hang). Try again; if it persists, restart the machine or run "omp update".',
+      recoverable: false
+    })
+    try {
+      this.proc.kill()
+    } catch {
+      // already dead — fine
+    }
+    this.state = 'closed'
+    this.emit({ type: 'closed', sessionId: this.id })
+    this.options.onGone?.()
   }
 
   // -------------------------------------------------------- prompt lifecycle
@@ -665,6 +713,7 @@ export class OmpSession {
   private handleProcessError(err: Error): void {
     if (this.state === 'closed') return
     this.clearNegotiateTimer()
+    this.clearFirstFrameTimer()
     this.resolvePending(null)
     this.state = 'failed'
     this.emit({
@@ -681,6 +730,7 @@ export class OmpSession {
   private handleExit(code: number | null): void {
     if (this.state === 'closed') return
     this.clearNegotiateTimer()
+    this.clearFirstFrameTimer()
     // Surface a trailing line that never got its LF before wrapping up.
     for (const event of this.reader.flush()) {
       if (event.kind === 'line') this.handleLine(event.line)
@@ -704,6 +754,8 @@ export class OmpSession {
 }
 
 const NEGOTIATE_TIMEOUT_MS = 5_000
+/** Wall clock a freshly spawned runtime gets to prove it is alive. */
+const FIRST_FRAME_TIMEOUT_MS = 30_000
 
 interface PendingQuery {
   resolve: (payload: Record<string, unknown> | null) => void

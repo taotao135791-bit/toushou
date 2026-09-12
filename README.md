@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.17.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.17.0) 下载：
+当前版本 v0.17.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.17.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.1/TouShou-x64.dmg) | 见 Release | 见 Release |
 | Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.17.1：稳定性与确定性补丁。**OMP 启动死限**——运行时子进程偶发卡死（spawn 后零输出、零 CPU），会话会永远停在"连接中"且无错误无重试入口；现在启动 30 秒内没有任何输出的子进程会被明确报错并清理（提示重试/重启/omp update），正常子进程的首帧在 1 秒内到达、不受影响。**飞书权限引导确定性化**——v0.17.0 的引导卡依赖模型转述工具错误文本（概率路径）；现在主进程在工具被授权拒绝时直接向该会话推送系统提示与可点击的"去连接"卡（实测中卡首次稳定出现，且实测模型收到停止指令后 5 次请求只调用 1 次工具，不再重试）；飞书工具熔断（连续失败暂停 10 分钟）也会在会话内明确告知用户原因。**任务通知点击回退**——应用重启后点击"任务完成"通知，现在会按任务名找到最近一次运行的会话记录并打开（此前重启后点击无效果）。**日志降噪**——每个会话都刷的 setWidget 提示从 info 降为 debug，main.log 不再被刷屏。
 
 v0.17.0：体验闭环大修（飞书工具链 / 定时任务 / 看板 / 对话桥接）。**飞书工具失控修复**——"读取飞书文档"类请求此前会触发 Agent 用租户令牌反复调用需要用户令牌的搜索接口，5 分钟盲试烧掉数十万 token；现在消息搜索走独立 search 能力（缺授权时调用前即被礼貌拒绝并指路连接页）、所有工具做空参数校验、权限类错误附带"停止重试 + 去连接页"指引和 `[[connect:feishu]]` 引导标记（权限缺口引导卡由此真正可达）、每会话连续 5 次硬失败自动熔断 10 分钟。实测同一请求从 5 分钟失控变为一次拒绝、10 秒收尾并给出替代方案。**定时任务闭环**——任务支持编辑（改名/改调度不再删了重建，运行记录自动保留）；卡片新增"查看本次运行的会话"直达按钮；完成通知点击直接跳到该次运行会话（此前点击无响应）；自动停用徽标显示失败原因；任务可单独选"只读"权限档（无人值守运行不再默认全权）；上次运行时间改为相对时间。**对话→任务桥**——用户消息悬停操作栏新增"存为定时任务"，消息内容预填提示词、选项目选调度一步成任务。**看板闭环**——"加入看板"在没有任何看板时可直接输入名称新建并保存（不再是无入口死胡同）；"让 Agent 提议卡片"模板中文化并携带当前看板/数据集上下文（空工作区不再被反问来源）；卡片应用确认显示目标看板名。**其他**——跨项目历史行的飞书/任务徽标保留（此前跨项目列表不注标）；侧栏会话行补键盘可达性（role/Tab/回车）；连接页权限清单新增"获取搜索结果中的消息"项，一键授权与扫码补齐自动包含该权限。
 

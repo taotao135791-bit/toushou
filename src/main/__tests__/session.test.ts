@@ -152,17 +152,19 @@ describe('OmpSession extension UI', () => {
 
   it('logs unsupported extension UI calls once per method and never emits a chat message', () => {
     const { events, fake } = makeSession()
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    // Debug level since v0.17.1: setWidget fires on every session and info
+    // level turned main.log into wall-to-wall noise.
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
     try {
       emitLines(fake, { type: 'extension_ui_request', method: 'setWidget' })
       emitLines(fake, { type: 'extension_ui_request', method: 'setWidget' })
-      // Pure noise in the transcript — the diagnostic goes to the file logger
-      // (console.info is teed into userData/logs/main.log), deduped per method.
+      // Pure noise in the transcript — the diagnostic goes to the debug
+      // channel, deduped per method.
       expect(events.filter((event) => event.type === 'message')).toEqual([])
-      expect(info).toHaveBeenCalledTimes(1)
-      expect(String(info.mock.calls[0]?.[0])).toContain('setWidget')
+      expect(debug).toHaveBeenCalledTimes(1)
+      expect(String(debug.mock.calls[0]?.[0])).toContain('setWidget')
     } finally {
-      info.mockRestore()
+      debug.mockRestore()
     }
   })
 })
@@ -835,5 +837,57 @@ describe('OmpSession prompt lifecycle (current runtime)', () => {
       message: 'Extension opened too many panels; the newest request was ignored.',
       recoverable: true
     })
+  })
+})
+
+describe('spawn-liveness deadline', () => {
+  it('fails loudly when the runtime never produces output', async () => {
+    vi.useFakeTimers()
+    try {
+      const { s, events, gone, fake } = makeSession()
+      expect(s.runtimeState).toBe('idle')
+      // 29s: still waiting, nothing fired.
+      vi.advanceTimersByTime(29_000)
+      expect(events).toHaveLength(1) // connected only
+      expect(fake.kill).not.toHaveBeenCalled()
+      // 30s+1: the deadline trips — unrecoverable error, kill, closed, onGone.
+      await vi.advanceTimersByTimeAsync(1_001)
+      const error = events.find((e) => e.type === 'error')
+      expect(error).toMatchObject({ sessionId: 's1', recoverable: false })
+      expect((error as { message?: string }).message).toContain('no output')
+      expect(events.at(-1)).toMatchObject({ type: 'closed', sessionId: 's1' })
+      expect(fake.kill).toHaveBeenCalled()
+      expect(gone).toContain('gone')
+      expect(s.runtimeState).toBe('closed')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('any stdout byte retires the deadline (a live child is never killed)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { s, events, fake } = makeSession()
+      emitLines(fake, { type: 'agent_start' })
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(fake.kill).not.toHaveBeenCalled()
+      expect(events.some((e) => e.type === 'error' && e.recoverable === false)).toBe(false)
+      // Still mid-turn from the emitted agent_start — alive and unaffected.
+      expect(s.runtimeState).toBe('working')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('renderer-initiated kill cancels the pending deadline (no late error)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { s, events } = makeSession()
+      s.kill()
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(events.some((e) => e.type === 'error')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

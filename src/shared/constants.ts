@@ -151,6 +151,8 @@ export const IPC_CHANNELS = {
   UPDATER_OPEN_PAGE: 'updater:open-release-page',
   TOOLS_LIST: 'tools:list',
   NOTIFY_SELECT_SESSION: 'notify:select-session',
+  NOTIFY_OPEN_HISTORY: 'notify:open-history',
+  FEISHU_AUTH_GAP: 'feishu:auth-gap',
   RUNTIME_OVERVIEW: 'runtime:overview',
   RUNTIME_LIST_MODELS: 'runtime:list-models',
   RUNTIME_LIST_MODEL_CATALOG: 'runtime:list-model-catalog',

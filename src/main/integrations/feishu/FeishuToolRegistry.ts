@@ -42,6 +42,12 @@ export class FeishuToolRegistry {
     return result
   }
 
+/** True while the session's feishu calls are paused by the breaker. */
+  isPaused(sessionId: string): boolean {
+    const until = this.breaker.pausedUntil.get(sessionId)
+    return !!until && this.breaker.now() < until
+  }
+
   async execute(request: FeishuToolRequest): Promise<FeishuToolResult> {
     const capability = capabilityFor(request.action)
     if (!this.isCapabilityAuthorized(capability)) {
@@ -158,12 +164,12 @@ export class SessionToolBreaker {
   /** sessionId → consecutive hard failures. */
   private readonly failures = new Map<string, number>()
   /** sessionId → epoch ms until which calls are refused. */
-  private readonly pausedUntil = new Map<string, number>()
+  readonly pausedUntil = new Map<string, number>()
 
   constructor(
     private readonly threshold = 5,
     private readonly cooldownMs = 10 * 60 * 1000,
-    private readonly now: () => number = Date.now
+    readonly now: () => number = Date.now
   ) {}
 
   /** Refusal result when the session is paused, else null (call through). */

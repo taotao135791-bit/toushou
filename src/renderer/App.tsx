@@ -3,7 +3,7 @@ import { Routes, Route, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { HistorySessionDescriptor, SessionEvent } from '@shared/types'
 import { useAppStore } from './store'
-import { useT } from './i18n'
+import { translate, useT } from './i18n'
 import { useWindowDropGuard } from './lib/useWindowDropGuard'
 import { basename } from './lib/path'
 import { showNotice } from './lib/notice'
@@ -230,6 +230,37 @@ function App() {
       }
     })
 
+    // Task-notification clicks after a restart: Main resolved the run to a
+    // durable history row (task sessions are titled after their task).
+    const unsubscribeNotifyOpenHistory = window.electronAPI.onNotifyOpenHistory((target) => {
+      useAppStore.getState().setPendingOpenHistory(target)
+      navigate('/')
+    })
+
+    // Deterministic feishu guidance: Main pushes permission gaps and breaker
+    // pauses as system pills instead of relying on the model relaying tool
+    // errors. Deduped per session+kind so a flailing turn shows one pill.
+    // NOTE: no `t` from this render — settings (language) load after mount, so
+    // a captured hook translator would freeze these pills in English.
+    const authGapSeenAt = new Map<string, number>()
+    const unsubscribeFeishuAuthGap = window.electronAPI.onFeishuAuthGap((notice) => {
+      const key = `${notice.sessionId}:${notice.kind}`
+      const now = Date.now()
+      if (now - (authGapSeenAt.get(key) ?? 0) < 10 * 60 * 1000) return
+      authGapSeenAt.set(key, now)
+      const state = useAppStore.getState()
+      if (!state.sessions.some((s) => s.id === notice.sessionId)) return
+      state.addMessage(notice.sessionId, {
+        id: crypto.randomUUID(),
+        role: 'system',
+        variant: 'info',
+        content:
+          notice.kind === 'auth'
+            ? `${translate(state.language, 'feishuGap.auth', { capability: notice.capability ?? '' })}\n[[connect:feishu]]`
+            : translate(state.language, 'feishuGap.paused')
+      })
+    })
+
     // Runtime extensions can ask to open an in-app panel (validated in Main).
     const unsubscribePanelOpen = window.electronAPI.onPanelOpen((request) => {
       if (request.panel === 'browser' && request.url) {
@@ -250,6 +281,8 @@ function App() {
       unsubscribe()
       unsubscribeExternal()
       unsubscribeNotify()
+      unsubscribeNotifyOpenHistory()
+      unsubscribeFeishuAuthGap()
       unsubscribeLogin()
       unsubscribePanelOpen()
     }
