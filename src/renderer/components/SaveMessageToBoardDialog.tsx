@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Check, LayoutDashboard, Loader2, X } from 'lucide-react'
 import { KanbanBoard } from '@shared/types'
-import { BOARD_LIMITS } from '@shared/boards'
+import { BOARD_LIMITS, createBoard } from '@shared/boards'
 import { useT } from '../i18n'
 
 /**
@@ -27,6 +27,8 @@ export function SaveMessageToBoardDialog({
   const [loadFailed, setLoadFailed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [newBoardName, setNewBoardName] = useState('')
+  const [creatingBoard, setCreatingBoard] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -85,6 +87,43 @@ export function SaveMessageToBoardDialog({
     }
   }
 
+  /**
+   * Zero-board dead end fix: create a board in place, then save this note to
+   * it — the user never has to leave the chat and lose the reply.
+   */
+  const createBoardAndSave = async () => {
+    const name = newBoardName.trim()
+    if (!name || busy || creatingBoard) return
+    setCreatingBoard(true)
+    setError(null)
+    try {
+      const board = createBoard(name.slice(0, 60))
+      const created = await window.electronAPI.saveBoard(board)
+      if (!created.ok) {
+        setError(t('boards.chat.createFailed'))
+        return
+      }
+      const result = await window.electronAPI.appendBoardNote({
+        boardId: board.id,
+        title: title.trim().slice(0, BOARD_LIMITS.maxWidgetTitleLength) || t('boards.chat.noteTitle'),
+        text: content.slice(0, BOARD_LIMITS.maxNoteLength)
+      })
+      if (!result.ok) {
+        setError(result.error === 'board-full' ? t('boards.chat.boardFull') : t('boards.chat.saveFailed'))
+        // The board exists now — switch into pick mode so the retry targets it.
+        setBoards([board])
+        setBoardId(board.id)
+        return
+      }
+      onSaved()
+      onClose()
+    } catch {
+      setError(t('boards.chat.createFailed'))
+    } finally {
+      setCreatingBoard(false)
+    }
+  }
+
   const truncated = content.length > BOARD_LIMITS.maxNoteLength
 
   return (
@@ -130,9 +169,22 @@ export function SaveMessageToBoardDialog({
             </button>
           </div>
         ) : boards.length === 0 ? (
-          <p className="mt-5 rounded-xl border border-line bg-ink-850 px-3 py-2.5 text-xs leading-5 text-cream-dim">
-            {t('boards.chat.noBoards')}
-          </p>
+          <div className="mt-5 space-y-3">
+            <p className="rounded-xl border border-line bg-ink-850 px-3 py-2.5 text-xs leading-5 text-cream-dim">
+              {t('boards.chat.noBoards')}
+            </p>
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-cream-faint">{t('boards.chat.createBoardLabel')}</span>
+              <input
+                value={newBoardName}
+                onChange={(event) => setNewBoardName(event.target.value)}
+                maxLength={60}
+                autoFocus
+                disabled={busy || creatingBoard}
+                className="w-full rounded-lg border border-line bg-ink-850 px-2.5 py-1.5 text-[12px] text-cream outline-none focus:border-accent/50 disabled:opacity-50"
+              />
+            </label>
+          </div>
         ) : (
           <div className="mt-5 space-y-3">
             <label className="block">
@@ -168,19 +220,30 @@ export function SaveMessageToBoardDialog({
         <footer className="mt-5 flex justify-end gap-2">
           <button
             onClick={onClose}
-            disabled={busy}
+            disabled={busy || creatingBoard}
             className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition hover:border-ink-600 hover:text-cream disabled:opacity-50"
           >
             {t('boards.cancel')}
           </button>
-          <button
-            onClick={() => void save()}
-            disabled={!boardId || busy}
-            className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
-          >
-            {busy ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
-            {busy ? t('boards.chat.saving') : t('boards.chat.save')}
-          </button>
+          {(boards?.length ?? 0) === 0 ? (
+            <button
+              onClick={() => void createBoardAndSave()}
+              disabled={!newBoardName.trim() || busy || creatingBoard}
+              className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+            >
+              {creatingBoard ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+              {creatingBoard ? t('boards.chat.saving') : t('boards.chat.createAndSave')}
+            </button>
+          ) : (
+            <button
+              onClick={() => void save()}
+              disabled={!boardId || busy}
+              className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+            >
+              {busy ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+              {busy ? t('boards.chat.saving') : t('boards.chat.save')}
+            </button>
+          )}
         </footer>
       </section>
     </div>

@@ -189,6 +189,7 @@ export default function ConnectionsPage() {
     'calendar.read': 'connections.scopeCalendarRead',
     'calendar.write': 'connections.scopeCalendarWrite',
     'tasks': 'connections.scopeTasks',
+    'search': 'connections.scopeSearch',
     'messaging': 'connections.scopeDocsRead'
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildBoardChatPrompt, buildBoardDesignPrompt } from '../boardChat'
+import { buildBoardCardsPrompt, buildBoardChatPrompt, buildBoardDesignPrompt } from '../boardChat'
 import { BoardDataset, KanbanBoard } from '../types'
 
 const board: KanbanBoard = {
@@ -68,5 +68,34 @@ describe('buildBoardDesignPrompt', () => {
   it('bounds an oversized current design', () => {
     const prompt = buildBoardDesignPrompt(`## widget\naccent: #7aa2f7\n${'x'.repeat(20_000)}`)
     expect(prompt.length).toBeLessThanOrEqual(12_000)
+  })
+})
+
+describe('buildBoardCardsPrompt', () => {
+  it('keeps the schema contract and exactly one fence example', () => {
+    const prompt = buildBoardCardsPrompt()
+    expect(prompt).toContain('```board-cards')
+    expect(prompt).toContain('"type": "metric"')
+    expect(prompt).toContain('never absolute, never ".."')
+    // Exactly one standalone fence (the example); the instruction line only
+    // mentions the token inline.
+    expect(prompt.match(/^```board-cards$/m)).toHaveLength(1)
+    // Without context the draft asks for sources instead of inviting invention.
+    expect(prompt).toContain('ask me for a source')
+  })
+
+  it('localizes the brief when the app language is Chinese', () => {
+    const prompt = buildBoardCardsPrompt('zh')
+    expect(prompt).toContain('恰好一个 ```board-cards 代码块')
+    expect(prompt).toContain('不要编造数字')
+  })
+
+  it('carries the target board snapshot with dataset schemas but no data rows', () => {
+    const prompt = buildBoardCardsPrompt('zh', { board, datasets })
+    expect(prompt).toContain('目标看板：Growth review')
+    expect(prompt).toContain('Daily export')
+    expect(prompt).toContain('note text withheld')
+    expect(prompt).not.toContain('This must not leave')
+    expect(prompt).not.toContain('2026-08-01')
   })
 })

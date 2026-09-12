@@ -1523,6 +1523,13 @@ export interface ScheduledTask {
   consecutiveFailures?: number
   /** Machine-readable reason of the last failure (diagnostics only). */
   lastFailureReason?: string
+  /** Runtime id of the most recent firing's session (navigation link). */
+  lastRunSessionId?: string
+  /**
+   * Unattended sessions default to the workspace's global permission mode;
+   * 'readonly' opts a task down to read-only execution.
+   */
+  permissionMode?: 'default' | 'readonly'
 }
 
 // --- Project knowledge -------------------------------------------------------

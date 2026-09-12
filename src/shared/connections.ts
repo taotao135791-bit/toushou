@@ -30,6 +30,7 @@ export type LarkBrand = 'feishu' | 'lark'
 
 export type FeishuCapability =
   | 'messaging'
+  | 'search'
   | 'docs.read'
   | 'docs.write'
   | 'sheets.read'
@@ -57,7 +58,10 @@ export const FEISHU_CAPABILITY_SCOPES: Record<
   'calendar.read': { scope: 'calendar:calendar:readonly', label: '获取日历、日程及忙闲信息' },
   'calendar.write': { scope: 'calendar:calendar', label: '更新日历及日程信息' },
   tasks: { scope: 'task:task:readonly', label: '查看任务详情' },
-  drive: { scope: 'drive:drive:readonly', label: '查看、评论和下载云空间中所有文件' }
+  drive: { scope: 'drive:drive:readonly', label: '查看、评论和下载云空间中所有文件' },
+  // /search/v2/message only accepts user_access_token with this scope; a
+  // tenant-token call is rejected with an opaque 400 that agents then retry.
+  search: { scope: 'search:message', label: '获取搜索结果中的消息' }
 }
 
 export interface ConnectionDefinition {

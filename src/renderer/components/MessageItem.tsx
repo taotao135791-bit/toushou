@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Brain,
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronRight,
@@ -24,6 +25,7 @@ import ConnectionGuideCard from './ConnectionGuideCard'
 import Markdown from './Markdown'
 import { parseSkillChatMessage } from '@shared/skills'
 import { SaveMessageToBoardDialog } from './SaveMessageToBoardDialog'
+import { SaveMessageToTaskDialog } from './SaveMessageToTaskDialog'
 
 interface MessageItemProps {
   message: MessageLike
@@ -79,6 +81,7 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
   const [thinkingOpen, setThinkingOpen] = useState(false)
   const [boardDialogOpen, setBoardDialogOpen] = useState(false)
   const [boardSaved, setBoardSaved] = useState(false)
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false)
   const t = useT()
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
@@ -281,6 +284,13 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
               {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
             </button>
             <button
+              onClick={() => setTaskDialogOpen(true)}
+              title={t('tasks.fromChat.action')}
+              className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay hover:text-cream"
+            >
+              <CalendarClock size={12} />
+            </button>
+            <button
               onClick={editContent}
               title={t('msg.edit')}
               className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay hover:text-cream"
@@ -288,6 +298,12 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
               <Pencil size={12} />
             </button>
           </div>
+          {taskDialogOpen && (
+            <SaveMessageToTaskDialog
+              content={message.content}
+              onClose={() => setTaskDialogOpen(false)}
+            />
+          )}
         </div>
       </div>
     )

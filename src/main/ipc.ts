@@ -583,7 +583,7 @@ export function registerIpc() {
   // task, deliver the prompt, and let the normal session-event stream drive
   // completion. Task sessions carry origin 'task' so the sidebar can badge
   // them and the notification layer can treat them specially.
-  setTaskSpawnFn(async (cwd, title, prompt) => {
+  setTaskSpawnFn(async (cwd, title, prompt, opts) => {
     const session = createSession(
       cwd,
       (event) => {
@@ -603,7 +603,12 @@ export function registerIpc() {
         }
         broadcastSessionEvent(event)
       },
-      { origin: 'task' }
+      {
+        origin: 'task',
+        // An explicitly read-only task must not silently inherit the
+        // workspace's global write/exec mode while running unattended.
+        ...(opts?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
+      }
     )
     if (session.status === 'error') return null
     // The prompt IS the task. A failed write means the child died at spawn —
@@ -622,8 +627,8 @@ export function registerIpc() {
     })
     return { sessionId: session.id }
   })
-  setTaskOutcomeSink((kind, taskName) => {
-    if (kind === 'finished') notifyTaskFinished(taskName)
+  setTaskOutcomeSink((kind, taskName, sessionId) => {
+    if (kind === 'finished') notifyTaskFinished(taskName, sessionId)
     else if (kind === 'disabled') notifyTaskAutoDisabled(taskName)
   })
   feishuConnectionManager.setSessionEventSink(broadcastSessionEvent)
@@ -903,13 +908,18 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY, async () => {
     await sessionOriginIndex.ready()
     const all = await listAllSessions()
-    return all.map((entry) => ({
-      uuid: entry.uuid,
-      title: entry.title,
-      timestamp: entry.timestamp,
-      cwd: entry.cwd,
-      ...(entry.origin ? { origin: entry.origin } : {})
-    }))
+    return all.map((entry) => {
+      const origin = sessionOriginIndex.lookup(entry.filePath)
+      return {
+        uuid: entry.uuid,
+        title: entry.title,
+        timestamp: entry.timestamp,
+        cwd: entry.cwd,
+        // Same provenance annotation as the per-workspace listing: cross-project
+        // rows keep their 飞书/任务 badge instead of silently losing it.
+        ...(origin ? { origin } : {})
+      }
+    })
   })
 
   ipcMain.handle(
@@ -2067,8 +2077,12 @@ export function registerIpc() {
     if (typeof t.prompt !== 'string' || !t.prompt.trim()) return { ok: false, error: 'missing-prompt' }
     if (typeof t.cwd !== 'string' || !t.cwd) return { ok: false, error: 'missing-cwd' }
     if (!isValidSchedule(t.schedule)) return { ok: false, error: 'invalid-schedule' }
-    // The stored shape is exactly what passed validation — nothing else from
-    // the untrusted payload is persisted.
+    if (t.permissionMode !== undefined && t.permissionMode !== 'default' && t.permissionMode !== 'readonly') {
+      return { ok: false, error: 'invalid-permission-mode' }
+    }
+    // The stored shape is exactly what passed validation. Runtime-owned run
+    // ledger fields (lastRunAt, failures, last session) are merged back from
+    // the stored copy inside saveTask so an edit cannot reset them.
     const clean = {
       id: t.id,
       name: t.name.trim(),
@@ -2078,7 +2092,7 @@ export function registerIpc() {
       enabled: t.enabled === true,
       createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
       notifyOnComplete: t.notifyOnComplete !== false,
-      ...(typeof t.lastRunAt === 'number' ? { lastRunAt: t.lastRunAt } : {})
+      ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
     }
     return { ok: true, task: saveTask(clean) }
   })

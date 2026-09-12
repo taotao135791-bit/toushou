@@ -198,6 +198,12 @@ interface AppState {
   /** Cross-project durable history (metadata only) for the sidebar's flat
    * "最近" list — survives restarts, unlike the live registry. */
   globalHistory: HistorySessionRow[]
+  /**
+   * Cross-page "open this history row" request. App.tsx owns the workspace
+   * switch + resume flow; pages that only know a uuid/cwd pair (e.g. the
+   * task card's 查看运行) drop a request here and App consumes it.
+   */
+  pendingOpenHistory: { uuid: string; cwd: string } | null
   /** User-defined scheduled tasks. */
   scheduledTasks: ScheduledTask[]
   /** Runtime-reported settings overview (profile/capabilities/providers/defaults). */
@@ -236,6 +242,7 @@ interface AppState {
    */
   registerExternalSession: (descriptor: ExternalSessionDescriptor) => void
   setCurrentSessionId: (id: string | null) => void
+  setPendingOpenHistory: (target: { uuid: string; cwd: string } | null) => void
   /**
    * One-time durable-transcript backfill for external (Feishu-origin)
    * sessions on first open; no-op for everything else. See backfillExternalTranscript.
@@ -442,6 +449,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentWorkspaces: [],
   historyLoading: false,
   globalHistory: [],
+  pendingOpenHistory: null,
   scheduledTasks: [],
   runtimeOverview: null,
   runtimeModels: [],
@@ -689,6 +697,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...state.unreadSessionIds, [currentSessionId]: false }
           : state.unreadSessionIds
     }))
+  },
+  setPendingOpenHistory: (target) => {
+    set({ pendingOpenHistory: target })
   },
   /**
    * First-open transcript backfill for Feishu-origin sessions. The renderer
