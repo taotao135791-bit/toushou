@@ -190,7 +190,7 @@ export default function BoardCardsProposalBlock({ raw }: { raw: string }) {
             {applyState === 'applied' ? (
               <p className="flex items-center gap-1.5 text-[12px] text-green-400">
                 <Check size={12} />
-                {t('boards.cards.applied', { count: appliedCount })}
+                {t('boards.cards.applied', { count: appliedCount, board: (boards ?? []).find((b) => b.id === boardId)?.name ?? '' })}
               </p>
             ) : (
               <>

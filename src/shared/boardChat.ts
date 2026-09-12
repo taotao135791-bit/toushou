@@ -166,33 +166,100 @@ export function buildBoardDesignPrompt(currentMarkdown: string): string {
  * as a preview card that only an explicit Apply (validated again in Main) can
  * turn into widgets. File cards may reference workspace-relative paths only;
  * Main re-checks every such path against the authorized workspace before use.
+ *
+ * When launched from a board, the draft also carries that board's bounded
+ * snapshot (same summaries as buildBoardChatPrompt) so the agent has real
+ * context instead of bouncing the question back on an empty workspace.
  */
-export function buildBoardCardsPrompt(): string {
-  return [
-    'Help me turn insights into board cards. My boards are local and read-only to you: never claim you changed a board. Instead, propose cards with EXACTLY ONE ```board-cards code block (JSON, no other code blocks). I will preview it and apply the cards myself.',
-    '',
-    'Schema:',
-    '{ "version": 1, "cards": [ … ] }  // 1-12 cards, each one of:',
-    '- { "type": "metric", "title": string (≤60 chars), "value": number, "unit"?: string (≤12 chars), "delta"?: number, "deltaLabel"?: string (≤20 chars) }',
-    '- { "type": "list", "title": string, "items": string[] (each ≤500 chars) }',
-    '- { "type": "note", "title": string, "text": string (≤5000 chars) }',
-    '- { "type": "file", "title": string, "filePath": string }  // workspace-RELATIVE path to an existing .png/.jpg/.html file; never absolute, never ".."',
-    '',
-    'Example shape:',
-    '```board-cards',
-    '{',
-    '  "version": 1,',
-    '  "cards": [',
-    '    { "type": "metric", "title": "本周花费", "value": 1234, "unit": "USD", "delta": -12.5, "deltaLabel": "环比" },',
-    '    { "type": "list", "title": "待办清单", "items": ["暂停低效广告组", "补充否定关键词"] },',
-    '    { "type": "note", "title": "结论", "text": "ROI 连续三周上升。" },',
-    '    { "type": "file", "title": "周报图表", "filePath": "reports/weekly.html" }',
-    '  ]',
-    '}',
-    '```',
-    '',
-    'Rules: one fence total; titles in the language I am writing in; no unknown fields; file paths must already exist inside my current workspace.'
-  ]
-    .join('\n')
-    .slice(0, MAX_TEXT)
+export function buildBoardCardsPrompt(
+  language: Language = 'en',
+  context?: { board: KanbanBoard; datasets: BoardDataset[] }
+): string {
+  const isChinese = language === 'zh'
+  const head = isChinese
+    ? [
+        '请帮我把洞察转成看板卡片。看板是本地的、对你只读：绝不要声称你修改了看板。请用恰好一个 ```board-cards 代码块（JSON，不要有其他代码块）来提议卡片；我会自行预览并应用。',
+        '',
+        'Schema：',
+        '{ "version": 1, "cards": [ … ] }  // 1-12 张卡片，每张是以下之一：',
+        '- { "type": "metric", "title": string（≤60 字符）, "value": number, "unit"?: string（≤12 字符）, "delta"?: number, "deltaLabel"?: string（≤20 字符） }',
+        '- { "type": "list", "title": string, "items": string[]（每项 ≤500 字符） }',
+        '- { "type": "note", "title": string, "text": string（≤5000 字符） }',
+        '- { "type": "file", "title": string, "filePath": string }  // 工作区相对路径，指向已存在的 .png/.jpg/.html 文件；禁止绝对路径和 ".."',
+        '',
+        '示例：',
+        '```board-cards',
+        '{',
+        '  "version": 1,',
+        '  "cards": [',
+        '    { "type": "metric", "title": "本周花费", "value": 1234, "unit": "USD", "delta": -12.5, "deltaLabel": "环比" },',
+        '    { "type": "list", "title": "待办清单", "items": ["暂停低效广告组", "补充否定关键词"] },',
+        '    { "type": "note", "title": "结论", "text": "ROI 连续三周上升。" },',
+        '    { "type": "file", "title": "周报图表", "filePath": "reports/weekly.html" }',
+        '  ]',
+        '}',
+        '```',
+        '',
+        '规则：全文只有这一个代码块；标题使用我正在使用的语言；不要出现未知字段；文件路径必须已存在于我当前的工作区内。',
+        '',
+        '如果下面提供了看板/数据集上下文，请优先基于它提炼卡片；信息不足时先向我要来源，不要编造数字。'
+      ]
+    : [
+        'Help me turn insights into board cards. My boards are local and read-only to you: never claim you changed a board. Instead, propose cards with EXACTLY ONE ```board-cards code block (JSON, no other code blocks). I will preview it and apply the cards myself.',
+        '',
+        'Schema:',
+        '{ "version": 1, "cards": [ … ] }  // 1-12 cards, each one of:',
+        '- { "type": "metric", "title": string (≤60 chars), "value": number, "unit"?: string (≤12 chars), "delta"?: number, "deltaLabel"?: string (≤20 chars) }',
+        '- { "type": "list", "title": string, "items": string[] (each ≤500 chars) }',
+        '- { "type": "note", "title": string, "text": string (≤5000 chars) }',
+        '- { "type": "file", "title": string, "filePath": string }  // workspace-RELATIVE path to an existing .png/.jpg/.html file; never absolute, never ".."',
+        '',
+        'Example shape:',
+        '```board-cards',
+        '{',
+        '  "version": 1,',
+        '  "cards": [',
+        '    { "type": "metric", "title": "本周花费", "value": 1234, "unit": "USD", "delta": -12.5, "deltaLabel": "环比" },',
+        '    { "type": "list", "title": "待办清单", "items": ["暂停低效广告组", "补充否定关键词"] },',
+        '    { "type": "note", "title": "结论", "text": "ROI 连续三周上升。" },',
+        '    { "type": "file", "title": "周报图表", "filePath": "reports/weekly.html" }',
+        '  ]',
+        '}',
+        '```',
+        '',
+        'Rules: one fence total; titles in the language I am writing in; no unknown fields; file paths must already exist inside my current workspace.',
+        '',
+        'When board/dataset context is provided below, derive cards from it; if it is insufficient, ask me for a source instead of inventing numbers.'
+      ]
+  const contextLines = boardContextLines(context, isChinese)
+  return [...head, ...contextLines].filter((line) => line !== undefined).join('\n').slice(0, MAX_TEXT)
+}
+
+function boardContextLines(
+  context: { board: KanbanBoard; datasets: BoardDataset[] } | undefined,
+  isChinese: boolean
+): string[] {
+  if (!context) return []
+  const { board, datasets } = context
+  const widgets = board.widgets.slice(0, MAX_WIDGETS).map(widgetSummary)
+  const datasetLines = datasets.slice(0, MAX_DATASETS).map(datasetSummary)
+  return isChinese
+    ? [
+        '',
+        `目标看板：${compact(board.name, 200)}`,
+        `现有组件（${board.widgets.length} 个）：`,
+        ...(widgets.length ? widgets : ['- 暂无组件']),
+        '',
+        `可用数据集（仅模式，未包含数据行；${datasets.length} 个）：`,
+        ...(datasetLines.length ? datasetLines : ['- 暂无数据集'])
+      ]
+    : [
+        '',
+        `Target board: ${compact(board.name, 200)}`,
+        `Existing widgets (${board.widgets.length}):`,
+        ...(widgets.length ? widgets : ['- none yet']),
+        '',
+        `Available datasets (schema only; no data rows; ${datasets.length}):`,
+        ...(datasetLines.length ? datasetLines : ['- none yet'])
+      ]
 }

@@ -612,13 +612,20 @@ export default function BoardsPage() {
   /**
    * Hand the agent the bounded ```board-cards brief (a composer DRAFT, never
    * auto-sent). Its reply renders as a proposal card in chat; only an explicit
-   * Apply — validated again in Main — can add widgets to a board.
+   * Apply — validated again in Main — can add widgets to a board. The brief
+   * carries this board's bounded snapshot so the agent works from real
+   * context instead of asking for sources on an empty workspace.
    */
   const askAgentToProposeCards = () => {
     closeMenus()
     const store = useAppStore.getState()
     store.setCurrentSessionId(null)
-    store.setComposerPrefill(buildBoardCardsPrompt())
+    store.setComposerPrefill(
+      buildBoardCardsPrompt(
+        language,
+        current ? { board: current, datasets } : undefined
+      )
+    )
     navigate('/')
   }
 

@@ -407,10 +407,11 @@ export class FeishuConnectionManager {
     }
   }
 
-  async executeTool(_sessionId: string, request: FeishuToolRequest): Promise<FeishuToolResult> {
+  async executeTool(sessionId: string, request: FeishuToolRequest): Promise<FeishuToolResult> {
     await this.oauthManager.ensureFreshToken().catch(() => false)
     this.authorizedCapabilities = await this.oauthManager.authorizedCapabilities()
-    const result = await this.tools.execute(request)
+    // executeForSession wraps execute() with the per-session failure breaker.
+    const result = await this.tools.executeForSession(sessionId, request)
     return result
   }
 

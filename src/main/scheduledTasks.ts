@@ -32,10 +32,18 @@ export interface TaskSpawnResult {
   sessionId: string
 }
 
+/** Task-level options handed to the spawn implementation. */
+export interface TaskSpawnOptions {
+  taskId: string
+  /** 'readonly' opts the unattended session down from the global mode. */
+  permissionMode?: 'default' | 'readonly'
+}
+
 export type TaskSpawnFn = (
   cwd: string,
   title: string,
-  prompt: string
+  prompt: string,
+  opts?: TaskSpawnOptions
 ) => Promise<TaskSpawnResult | null>
 
 /** Terminal-session hook so guards and completion notices track reality. */
@@ -71,11 +79,22 @@ export function listTasks(): ScheduledTask[] {
   return getTasks()
 }
 
+/** Fields owned by the engine, never by the renderer: an edit (which sends a
+ * whole task back) must not reset the run ledger. */
+const RUNTIME_OWNED_KEYS = ['lastRunAt', 'lastRunSessionId', 'consecutiveFailures', 'lastFailureReason'] as const
+
 export function saveTask(task: ScheduledTask): ScheduledTask {
   const tasks = getTasks()
   const index = tasks.findIndex((t) => t.id === task.id)
-  if (index >= 0) tasks[index] = task
-  else tasks.push(task)
+  if (index >= 0) {
+    const previous = tasks[index]
+    const carried = Object.fromEntries(
+      RUNTIME_OWNED_KEYS.filter((key) => previous[key] !== undefined).map((key) => [key, previous[key]])
+    )
+    tasks[index] = { ...task, ...carried }
+  } else {
+    tasks.push(task)
+  }
   saveTasks(tasks)
   broadcastTasksChanged()
   return task
@@ -174,10 +193,10 @@ function broadcastTasksChanged(): void {
 }
 
 /** Completion/failure notice sink — wired by ipc.ts to desktop notifications. */
-let onTaskOutcome: ((kind: 'finished' | 'failed' | 'disabled', taskName: string) => void) | null = null
+let onTaskOutcome: ((kind: 'finished' | 'failed' | 'disabled', taskName: string, sessionId?: string) => void) | null = null
 
 export function setTaskOutcomeSink(
-  sink: (kind: 'finished' | 'failed' | 'disabled', taskName: string) => void
+  sink: (kind: 'finished' | 'failed' | 'disabled', taskName: string, sessionId?: string) => void
 ): void {
   onTaskOutcome = sink
 }
@@ -224,7 +243,7 @@ export function noteTaskSessionEvent(sessionId: string, event: {
   releaseFiring(taskId)
   const task = getTasks().find((t) => t.id === taskId)
   if (task && event.type === 'status' && task.notifyOnComplete !== false) {
-    onTaskOutcome?.('finished', task.name)
+    onTaskOutcome?.('finished', task.name, sessionId)
   }
 }
 
@@ -247,7 +266,10 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
       await recordFailure(task, 'engine-unavailable')
       return null
     }
-    const result = await spawnFn(task.cwd, task.name, task.prompt)
+    const result = await spawnFn(task.cwd, task.name, task.prompt, {
+      taskId: task.id,
+      permissionMode: task.permissionMode
+    })
     if (!result) {
       await recordFailure(task, 'spawn-failed')
       return null
@@ -261,6 +283,7 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
     const stored = tasks.find((t) => t.id === task.id)
     if (stored) {
       stored.lastRunAt = Date.now()
+      stored.lastRunSessionId = result.sessionId
       stored.consecutiveFailures = 0
       saveTasks(tasks)
     }

@@ -740,6 +740,15 @@ export default function Sidebar() {
           setCurrentSessionId(session.id)
           navigate('/')
         }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            setCurrentSessionId(session.id)
+            navigate('/')
+          }
+        }}
+        role="button"
+        tabIndex={0}
         aria-label={`${session.title}, ${statusLabel}`}
         className={`group flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-[6px] transition-all duration-150 ease-standard ${
           active ? 'border-line bg-ink-850 shadow-card' : 'border-transparent hover:bg-overlay'
@@ -938,6 +947,14 @@ export default function Sidebar() {
       <div
         key={info.id}
         onClick={() => void handleResumeHistory(info)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            void handleResumeHistory(info)
+          }
+        }}
+        role="button"
+        tabIndex={0}
         title={info.title}
         className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-[6px] transition-colors duration-150 hover:bg-overlay ${
           resuming ? 'pointer-events-none opacity-60' : ''
@@ -1000,6 +1017,14 @@ export default function Sidebar() {
       <div
         key={`global:${row.uuid}`}
         onClick={() => void handleOpenGlobal(row)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            void handleOpenGlobal(row)
+          }
+        }}
+        role="button"
+        tabIndex={0}
         title={row.cwd}
         className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-[6px] transition-colors duration-150 hover:bg-overlay ${
           resuming ? 'pointer-events-none opacity-60' : ''

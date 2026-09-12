@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.16.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.16.2) 下载：
+当前版本 v0.17.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.17.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.2/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.2/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.16.2/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.17.0：体验闭环大修（飞书工具链 / 定时任务 / 看板 / 对话桥接）。**飞书工具失控修复**——"读取飞书文档"类请求此前会触发 Agent 用租户令牌反复调用需要用户令牌的搜索接口，5 分钟盲试烧掉数十万 token；现在消息搜索走独立 search 能力（缺授权时调用前即被礼貌拒绝并指路连接页）、所有工具做空参数校验、权限类错误附带"停止重试 + 去连接页"指引和 `[[connect:feishu]]` 引导标记（权限缺口引导卡由此真正可达）、每会话连续 5 次硬失败自动熔断 10 分钟。实测同一请求从 5 分钟失控变为一次拒绝、10 秒收尾并给出替代方案。**定时任务闭环**——任务支持编辑（改名/改调度不再删了重建，运行记录自动保留）；卡片新增"查看本次运行的会话"直达按钮；完成通知点击直接跳到该次运行会话（此前点击无响应）；自动停用徽标显示失败原因；任务可单独选"只读"权限档（无人值守运行不再默认全权）；上次运行时间改为相对时间。**对话→任务桥**——用户消息悬停操作栏新增"存为定时任务"，消息内容预填提示词、选项目选调度一步成任务。**看板闭环**——"加入看板"在没有任何看板时可直接输入名称新建并保存（不再是无入口死胡同）；"让 Agent 提议卡片"模板中文化并携带当前看板/数据集上下文（空工作区不再被反问来源）；卡片应用确认显示目标看板名。**其他**——跨项目历史行的飞书/任务徽标保留（此前跨项目列表不注标）；侧栏会话行补键盘可达性（role/Tab/回车）；连接页权限清单新增"获取搜索结果中的消息"项，一键授权与扫码补齐自动包含该权限。
 
 v0.16.2：补齐 v0.16.1 的任务徽标记录时机——任务/飞书会话的出身索引此前在会话握手完成前就查询会话文件，常常落空导致任务会话重启后仍缺"任务"徽标；现在改为握手完成（connected）时记录并带 5 秒兜底重试。飞书路由存量补标与会话标题修复不受影响。
 

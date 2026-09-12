@@ -399,6 +399,16 @@ function App() {
     }
   }
 
+  // Cross-page history-open requests (e.g. the task card's 查看运行): the
+  // resume flow lives here (workspace switch + grant), pages only know uuid/cwd.
+  const pendingOpenHistory = useAppStore((s) => s.pendingOpenHistory)
+  useEffect(() => {
+    if (!pendingOpenHistory) return
+    const target = pendingOpenHistory
+    useAppStore.getState().setPendingOpenHistory(null)
+    void openHistoryRecord(target)
+  }, [pendingOpenHistory])
+
   if (setupComplete === null) {
     // Settings not loaded yet — avoid flashing the setup wizard
     return (

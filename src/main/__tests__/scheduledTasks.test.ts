@@ -173,3 +173,46 @@ describe('scheduler tick safety', () => {
     expect(tasks).toHaveLength(1)
   })
 })
+
+describe('edit-and-ledger loop closures', () => {
+  it('a firing hands the task options to the spawn fn and records the run session', async () => {
+    const task = baseTask({ permissionMode: 'readonly' })
+    tasks.push(task)
+    const calls: Array<{ cwd: string; title: string; prompt: string; opts?: { taskId: string; permissionMode?: string } }> = []
+    setTaskSpawnFn(async (cwd, title, prompt, opts) => {
+      calls.push({ cwd, title, prompt, opts })
+      return { sessionId: 'session-C' }
+    })
+
+    await runTaskNow('t1')
+    expect(calls).toEqual([
+      { cwd: '/tmp/project', title: '每日报告', prompt: '拉取昨日数据并总结', opts: { taskId: 't1', permissionMode: 'readonly' } }
+    ])
+    expect(tasks[0].lastRunSessionId).toBe('session-C')
+    expect(tasks[0].consecutiveFailures).toBe(0)
+  })
+
+  it('an edit (saveTask with the same id) keeps the engine-owned run ledger', () => {
+    tasks.push(baseTask({ lastRunAt: 123, lastRunSessionId: 'session-X', consecutiveFailures: 2, lastFailureReason: 'threw' }))
+    // The renderer edit flow sends a fresh task object without those fields.
+    saveTask(baseTask({ name: '改名后的任务', prompt: '新的提示词' }))
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0].name).toBe('改名后的任务')
+    expect(tasks[0].prompt).toBe('新的提示词')
+    expect(tasks[0].lastRunAt).toBe(123)
+    expect(tasks[0].lastRunSessionId).toBe('session-X')
+    expect(tasks[0].consecutiveFailures).toBe(2)
+    expect(tasks[0].lastFailureReason).toBe('threw')
+  })
+
+  it('the completion notice carries the run session id for click-through', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => ({ sessionId: 'session-D' }))
+    const outcomes: Array<[string, string, string | undefined]> = []
+    setTaskOutcomeSink((kind, name, sessionId) => outcomes.push([kind, name, sessionId]))
+
+    await runTaskNow('t1')
+    noteTaskSessionEvent('session-D', { type: 'status', status: 'idle' })
+    expect(outcomes).toEqual([['finished', '每日报告', 'session-D']])
+  })
+})
