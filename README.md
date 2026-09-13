@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.18.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.18.0) 下载：
+当前版本 v0.19.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.19.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.18.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.18.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.19.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.19.0/TouShou-x64.dmg) | 见 Release | 见 Release |
 | Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.19.0：Figma Dev Mode MCP 连接器（只花代码 token）。连接页新增「Figma」卡片：接入 Figma 桌面端的本地 Dev Mode MCP（127.0.0.1:3845，在 Figma 的 ⌘K 命令面板搜 MCP 启用），use_figma 在本机执行 Plugin API、全部推理由你的模型完成——不消耗任何 Figma 侧生成额度，刻意不接入会花 Figma 额度的远程 mcp.figma.com。连接时自动注册 figma MCP 服务器并安装四份配套 agent 技能（figma-use / figjam / motion / slides，完整参考树含 Plugin API 类型定义随应用打包，供 agent 按需 grep）；Figma 关闭时卡片降级提示、重开自动恢复；全程零凭据零密钥，断开连接连技能一起清理。实测失败路径（未启用开关时）正确给出启用指引且不落盘。
 
 v0.18.0：TikTok Ads 官方 MCP 连接器。连接页新增「TikTok Ads」一等连接卡片：点击后在浏览器完成 TikTok 官方 OAuth 授权（按官方文档走动态客户端注册 + PKCE + 本机回调，无需开发者应用或 API key），令牌加密存本机并自动在到期前刷新；连接成功后自动把官方 MCP 服务器（business-api.tiktok.com/open_mcp/tt-ads-mcp-layer，渐进披露 41 个核心工具：账户/BC 发现、商品目录、受众、素材、Smart+ 管理、同步报表、投放诊断）写入运行时配置并安装配套 agent 技能（含写操作确认规则）。实测从点击到 agent 可调用真实报表接口全程自动；断开连接会同时移除令牌与运行时条目。
 
