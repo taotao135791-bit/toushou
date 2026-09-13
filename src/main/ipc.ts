@@ -141,7 +141,8 @@ import {
   maybeNotifyTurnFinished,
   maybeNotifyUiRequest,
   notifyTaskFinished,
-  notifyTaskAutoDisabled
+  notifyTaskAutoDisabled,
+  taskFeishuDigest
 } from './notify'
 import {
   getUpdaterStatus,
@@ -639,9 +640,18 @@ export function registerIpc() {
     })
     return { sessionId: session.id }
   })
-  setTaskOutcomeSink((kind, taskName, sessionId) => {
-    if (kind === 'finished') notifyTaskFinished(taskName, sessionId)
-    else if (kind === 'disabled') notifyTaskAutoDisabled(taskName)
+  setTaskOutcomeSink((outcome) => {
+    const { kind, task, sessionId } = outcome
+    if (kind === 'finished') {
+      notifyTaskFinished(task.name, sessionId)
+      // A task pointed at Feishu delivers its digest there too; the desktop
+      // notice still fires above so a push failure never loses the run.
+      if (task.notifyChannel === 'feishu') {
+        void feishuConnectionManager.pushTaskResult(taskFeishuDigest(task, sessionId))
+      }
+    } else if (kind === 'disabled') {
+      notifyTaskAutoDisabled(task.name)
+    }
   })
   feishuConnectionManager.setSessionEventSink(broadcastSessionEvent)
   feishuConnectionManager.setExternalSessionSink(broadcastExternalSession)
@@ -2118,9 +2128,12 @@ export function registerIpc() {
     if (t.permissionMode !== undefined && t.permissionMode !== 'default' && t.permissionMode !== 'readonly') {
       return { ok: false, error: 'invalid-permission-mode' }
     }
+    if (t.notifyChannel !== undefined && t.notifyChannel !== 'system' && t.notifyChannel !== 'feishu') {
+      return { ok: false, error: 'invalid-notify-channel' }
+    }
     // The stored shape is exactly what passed validation. Runtime-owned run
-    // ledger fields (lastRunAt, failures, last session) are merged back from
-    // the stored copy inside saveTask so an edit cannot reset them.
+    // ledger fields (lastRunAt, failures, runs, last session) are merged back
+    // from the stored copy inside saveTask so an edit cannot reset them.
     const clean = {
       id: t.id,
       name: t.name.trim(),
@@ -2130,6 +2143,7 @@ export function registerIpc() {
       enabled: t.enabled === true,
       createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
       notifyOnComplete: t.notifyOnComplete !== false,
+      ...(t.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
       ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
     }
     return { ok: true, task: saveTask(clean) }

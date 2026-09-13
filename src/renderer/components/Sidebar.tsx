@@ -1185,12 +1185,16 @@ export default function Sidebar() {
           {t('sidebar.project')}
         </div>
         {currentWorkspace ? (
-          <div className={`${navRow(true)} cursor-default font-mono text-xs`}>
+          <div className={`${navRow(true)} cursor-default`}>
             <FolderOpen size={13} className="shrink-0 text-cream-faint" />
-            <span className="min-w-0 flex-1 truncate" title={currentWorkspace.displayPath}>
+            {/* Friendly name, not the raw path: the full location stays in the tooltip. */}
+            <span
+              className="min-w-0 flex-1 truncate"
+              title={currentWorkspace.displayPath}
+            >
               {currentWorkspace.source === 'default'
                 ? t('sidebar.defaultWorkspace')
-                : currentWorkspace.displayPath}
+                : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
             </span>
             <button
               onClick={handleSelectProject}

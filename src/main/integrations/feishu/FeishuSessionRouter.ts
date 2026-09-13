@@ -292,4 +292,15 @@ export function routeKey(chatId: string, threadOrRootId?: string): string {
   return `${chatId}:${threadOrRootId || 'conversation'}`
 }
 
+/**
+ * Destination for Main-initiated pushes (scheduled-task results): the most
+ * recently active p2p route — the owner's bot DM — falling back to the most
+ * recent group. Null when the bot has never been messaged, in which case a
+ * push has nowhere to land and must degrade to the desktop notification.
+ */
+export function mostRecentPushRoute(routes: FeishuSessionRoute[]): FeishuSessionRoute | null {
+  const sorted = [...routes].sort((a, b) => b.updatedAt - a.updatedAt)
+  return sorted.find((route) => route.chatType === 'p2p') ?? sorted[0] ?? null
+}
+
 export const FEISHU_READONLY_CAPABILITIES: FeishuCapability[] = ['messaging', 'docs.read', 'sheets.read', 'bitable.read']

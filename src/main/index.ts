@@ -10,6 +10,7 @@ import { detectCli } from './omp'
 import { initUpdater } from './updater'
 import { installNavigationGuards } from './navigation'
 import { initFeishuBridge } from './integrations/feishu/feishuBridge'
+import { initTasksBridge } from './tasksBridge'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 import { installFileLogging } from './lib/logger'
 
@@ -145,6 +146,11 @@ app.whenReady().then(async () => {
     await initFeishuBridge()
   } catch (error) {
     console.warn('[feishu] tool bridge unavailable', error)
+  }
+  try {
+    await initTasksBridge()
+  } catch (error) {
+    console.warn('[tasks] tool bridge unavailable', error)
   }
   createWindow()
   initUpdater()

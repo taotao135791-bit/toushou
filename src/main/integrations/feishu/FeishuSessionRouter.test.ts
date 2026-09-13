@@ -229,3 +229,24 @@ describe('FeishuSessionRouter — resume & owner hardening', () => {
     expect(replies[0]).toContain('看不懂')
   })
 })
+
+describe('mostRecentPushRoute', () => {
+  it('prefers the most recently updated p2p route over newer groups', async () => {
+    const { mostRecentPushRoute } = await import('./FeishuSessionRouter')
+    const routes = [
+      { key: 'g1', chatId: 'oc_group', chatType: 'group' as const, updatedAt: 300 },
+      { key: 'p1', chatId: 'om_dm', chatType: 'p2p' as const, updatedAt: 100 },
+      { key: 'p2', chatId: 'om_dm2', chatType: 'p2p' as const, updatedAt: 200 }
+    ]
+    const picked = mostRecentPushRoute(routes)
+    expect(picked?.chatId).toBe('om_dm2')
+  })
+
+  it('falls back to the most recent group when no p2p exists, null when empty', async () => {
+    const { mostRecentPushRoute } = await import('./FeishuSessionRouter')
+    expect(mostRecentPushRoute([])).toBeNull()
+    expect(
+      mostRecentPushRoute([{ key: 'g1', chatId: 'oc_g', chatType: 'group', updatedAt: 5 }])
+    ).toMatchObject({ chatId: 'oc_g' })
+  })
+})

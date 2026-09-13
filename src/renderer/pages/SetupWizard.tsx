@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Download, CheckCircle, AlertCircle, KeyRound, Loader2, Terminal, ArrowRight } from 'lucide-react'
+import { Download, CheckCircle, AlertCircle, KeyRound, Loader2, Terminal, ArrowRight, MessageCircle, BarChart3, ArrowUpRight } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
@@ -33,16 +33,23 @@ export default function SetupWizard() {
   // 'checking' = probing model config after the CLI appeared; 'needed' = no
   // provider authenticated and no catalogued model — offer the settings page
   // instead of dropping the user into a composer that cannot answer.
-  const [modelStep, setModelStep] = useState<'checking' | 'needed' | null>(null)
+  // 'connect' = model ready; offer the first data-source connection (the
+  // product's aha moment) before entering the main UI. Never traps: the skip
+  // button always completes setup.
+  const [modelStep, setModelStep] = useState<'checking' | 'needed' | 'connect' | null>(null)
+  const [connectProbing, setConnectProbing] = useState(true)
 
   // A brand-new CLI install means no provider is signed in yet. Probe the
   // runtime's own view (never a GUI-side guess): any authenticated provider
-  // or any catalogued model completes setup as before; otherwise show one
+  // or any catalogued model advances to the connect step; otherwise show one
   // extra step pointing at provider login. A slow/failed probe (cold CLI)
   // always completes setup — the wizard must not trap anyone.
+  //
+  // modelStep is deliberately NOT a dependency: setting it to 'checking'
+  // below would re-run this effect and discard the in-flight probe via the
+  // stale-`active` guard — the wizard used to hang on this spinner forever.
   useEffect(() => {
-    if (!cliAvailable || modelStep) return
-    let active = true
+    if (!cliAvailable) return
     setModelStep('checking')
     const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 12_000))
     const probe = (async () => {
@@ -58,17 +65,35 @@ export default function SetupWizard() {
       }
     })()
     void Promise.race([probe, timeout]).then((result) => {
-      if (!active) return
-      if (result === null || result) {
+      if (result === null) {
         setSetupComplete(true)
+      } else if (result) {
+        setModelStep('connect')
       } else {
         setModelStep('needed')
       }
     })
+  }, [cliAvailable, setSetupComplete])
+
+  // On the connect step: a returning setup (everything already connected)
+  // must not re-offer connections — walk straight through.
+  useEffect(() => {
+    if (modelStep !== 'connect') return
+    let active = true
+    void Promise.all([
+      window.electronAPI.feishuStatus().catch(() => null),
+      window.electronAPI.tiktokStatus().catch(() => null)
+    ]).then(([feishu, tiktok]) => {
+      if (!active) return
+      const feishuConnected = Boolean(feishu?.connected)
+      const tiktokConnected = Boolean(tiktok?.connected)
+      if (feishuConnected && tiktokConnected) setSetupComplete(true)
+      setConnectProbing(false)
+    })
     return () => {
       active = false
     }
-  }, [cliAvailable, modelStep, setSetupComplete])
+  }, [modelStep, setSetupComplete])
 
   useEffect(() => {
     // Availability only — completing setup is the model probe's job below.
@@ -126,6 +151,61 @@ export default function SetupWizard() {
         <div className="flex h-full flex-col items-center justify-center bg-ink-950">
           <Loader2 className="mb-4 animate-spin text-accent" size={30} />
           <div className="text-sm text-cream-dim">{t('setup.model.checking')}</div>
+        </div>
+      )
+    }
+    if (modelStep === 'connect') {
+      const finishAndGo = (path: string) => {
+        setSetupComplete(true)
+        navigate(path)
+      }
+      return (
+        <div className="flex h-full flex-col items-center justify-center bg-ink-950 p-8">
+          <div className="w-full max-w-xl rounded-2xl border border-line bg-ink-900 p-8">
+            <div className="mb-6 flex items-center gap-3">
+              <Logo size={40} className="shrink-0" />
+              <div>
+                <h1 className="text-xl font-semibold tracking-tight text-cream">{t('setup.connect.title')}</h1>
+                <p className="text-sm text-cream-dim">{t('setup.connect.subtitle')}</p>
+              </div>
+            </div>
+            {connectProbing ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="animate-spin text-cream-faint" size={22} />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <button
+                  onClick={() => finishAndGo('/connections')}
+                  className="flex w-full items-center gap-4 rounded-xl border border-line bg-ink-800 p-4 text-left transition hover:border-accent/40"
+                >
+                  <MessageCircle size={22} className="shrink-0 text-accent" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium text-cream">{t('setup.connect.feishu')}</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-cream-faint">{t('setup.connect.feishuHint')}</span>
+                  </span>
+                  <ArrowUpRight size={16} className="shrink-0 text-cream-faint" />
+                </button>
+                <button
+                  onClick={() => finishAndGo('/connections')}
+                  className="flex w-full items-center gap-4 rounded-xl border border-line bg-ink-800 p-4 text-left transition hover:border-accent/40"
+                >
+                  <BarChart3 size={22} className="shrink-0 text-accent" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium text-cream">{t('setup.connect.tiktok')}</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-cream-faint">{t('setup.connect.tiktokHint')}</span>
+                  </span>
+                  <ArrowUpRight size={16} className="shrink-0 text-cream-faint" />
+                </button>
+                <button
+                  onClick={() => setSetupComplete(true)}
+                  className="w-full rounded-xl px-4 py-2 text-center text-xs text-cream-faint transition hover:text-cream-dim"
+                >
+                  {t('setup.connect.skip')}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )
     }

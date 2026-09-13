@@ -10,8 +10,10 @@ vi.mock('../store', () => ({
 
 import { ScheduledTask } from '../../shared/types'
 import {
+  buildTaskFromAgentInput,
   isDue,
   isValidSchedule,
+  MAX_RUN_ENTRIES,
   nextRunAt,
   noteTaskSessionEvent,
   runTaskNow,
@@ -59,10 +61,12 @@ afterEach(() => {
 })
 
 describe('isValidSchedule', () => {
-  it('accepts the three well-formed shapes', () => {
+  it('accepts the well-formed shapes', () => {
     expect(isValidSchedule({ type: 'daily', time: '09:30' })).toBe(true)
     expect(isValidSchedule({ type: 'weekly', dayOfWeek: 0, time: '23:59' })).toBe(true)
+    expect(isValidSchedule({ type: 'weekdays', time: '09:00' })).toBe(true)
     expect(isValidSchedule({ type: 'interval', hours: 1 })).toBe(true)
+    expect(isValidSchedule({ type: 'interval', minutes: 3 })).toBe(true)
   })
 
   it('rejects malformed shapes that used to become retry loops', () => {
@@ -72,8 +76,82 @@ describe('isValidSchedule', () => {
     expect(isValidSchedule({ type: 'interval', hours: 0 })).toBe(false)
     expect(isValidSchedule({ type: 'interval', hours: 200 })).toBe(false)
     expect(isValidSchedule({ type: 'interval', hours: '24' })).toBe(false)
+    expect(isValidSchedule({ type: 'interval', minutes: 0 })).toBe(false)
+    expect(isValidSchedule({ type: 'interval', minutes: 3, hours: 1 })).toBe(false)
+    expect(isValidSchedule({ type: 'interval' })).toBe(false)
     expect(isValidSchedule({ type: 'weekly', dayOfWeek: 7, time: '09:00' })).toBe(false)
     expect(isValidSchedule(null)).toBe(false)
+  })
+})
+
+describe('nextRunAt for the newer schedule shapes', () => {
+  // Friday 2026-09-11, 10:00 local.
+  const friday = new Date(2026, 8, 11, 10, 0, 0, 0).getTime()
+
+  it('weekdays rolls past the weekend to Monday', () => {
+    const next = new Date(nextRunAt({ type: 'weekdays', time: '09:00' }, friday))
+    expect(next.getDay()).toBe(1)
+    expect(next.getDate()).toBe(14)
+  })
+
+  it('weekdays still fires later the same weekday', () => {
+    const before = new Date(2026, 8, 11, 8, 0, 0, 0).getTime()
+    const next = new Date(nextRunAt({ type: 'weekdays', time: '09:00' }, before))
+    expect(next.getDay()).toBe(5)
+    expect(next.getHours()).toBe(9)
+  })
+
+  it('minute intervals are honored (test-friendly cadence)', () => {
+    expect(nextRunAt({ type: 'interval', minutes: 3 }, 1_000)).toBe(1_000 + 3 * 60_000)
+  })
+})
+
+describe('buildTaskFromAgentInput', () => {
+  const now = 1_757_000_000_000
+  const validInput = {
+    name: '每日报告',
+    prompt: '拉取昨日数据',
+    schedule: { type: 'daily', time: '09:00' }
+  }
+
+  it('binds cwd from the session and starts enabled', () => {
+    const built = buildTaskFromAgentInput(validInput, '/tmp/project', now)
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    expect(built.task.cwd).toBe('/tmp/project')
+    expect(built.task.enabled).toBe(true)
+    expect(built.task.id).toMatch(/^task-/)
+    expect(built.task.notifyChannel).toBeUndefined()
+  })
+
+  it('keeps optional notify and permission choices', () => {
+    const built = buildTaskFromAgentInput(
+      { ...validInput, notifyChannel: 'feishu', permissionMode: 'readonly', notifyOnComplete: false },
+      '/tmp/project',
+      now
+    )
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    expect(built.task.notifyChannel).toBe('feishu')
+    expect(built.task.permissionMode).toBe('readonly')
+    expect(built.task.notifyOnComplete).toBe(false)
+  })
+
+  it('rejects bad names, prompts, schedules, and channels', () => {
+    expect(buildTaskFromAgentInput({ ...validInput, name: '   ' }, '/p', now).ok).toBe(false)
+    expect(buildTaskFromAgentInput({ ...validInput, prompt: '' }, '/p', now).ok).toBe(false)
+    expect(buildTaskFromAgentInput({ ...validInput, name: 'x'.repeat(81) }, '/p', now).ok).toBe(false)
+    expect(buildTaskFromAgentInput({ ...validInput, prompt: 'x'.repeat(4001) }, '/p', now).ok).toBe(false)
+    expect(buildTaskFromAgentInput({ ...validInput, schedule: { type: 'nope' } }, '/p', now).ok).toBe(false)
+    expect(buildTaskFromAgentInput({ ...validInput, notifyChannel: 'sms' }, '/p', now).ok).toBe(false)
+    expect(buildTaskFromAgentInput(null, '/p', now).ok).toBe(false)
+  })
+
+  it('enforces the task cap so an agent loop cannot flood the store', () => {
+    tasks = Array.from({ length: 50 }, (_, i) => baseTask({ id: `t${i}` }))
+    const built = buildTaskFromAgentInput(validInput, '/p', now)
+    expect(built.ok).toBe(false)
+    tasks = []
   })
 })
 
@@ -113,12 +191,23 @@ describe('firing lifecycle', () => {
     tasks.push(task)
     setTaskSpawnFn(async () => ({ sessionId: 'session-B' }))
     const outcomes: string[] = []
-    setTaskOutcomeSink((kind) => outcomes.push(kind))
+    setTaskOutcomeSink(({ kind }) => outcomes.push(kind))
 
     await runTaskNow('t1')
     noteTaskSessionEvent('session-B', { type: 'status', status: 'idle' })
     noteTaskSessionEvent('session-B', { type: 'closed' })
     expect(outcomes).toEqual(['finished'])
+  })
+
+  it('a silent task (notifyOnComplete=false) gets no completion notice', async () => {
+    tasks.push(baseTask({ notifyOnComplete: false }))
+    setTaskSpawnFn(async () => ({ sessionId: 'session-B2' }))
+    const outcomes: string[] = []
+    setTaskOutcomeSink(({ kind }) => outcomes.push(kind))
+
+    await runTaskNow('t1')
+    noteTaskSessionEvent('session-B2', { type: 'status', status: 'idle' })
+    expect(outcomes).toEqual([])
   })
 
   it('three consecutive failures auto-disable the task and notify loudly', async () => {
@@ -128,7 +217,7 @@ describe('firing lifecycle', () => {
       tasks.push(task)
       setTaskSpawnFn(async () => null)
       const outcomes: Array<[string, string]> = []
-      setTaskOutcomeSink((kind, name) => outcomes.push([kind, name]))
+      setTaskOutcomeSink(({ kind, task }) => outcomes.push([kind, task.name]))
 
       for (let attempt = 1; attempt <= 3; attempt++) {
         await runTaskNow('t1')
@@ -139,6 +228,27 @@ describe('firing lifecycle', () => {
         expect(stored.enabled).toBe(attempt < 3)
       }
       expect(outcomes).toContainEqual(['disabled', '每日报告'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the disabled notice still carries the task', async () => {
+    vi.useFakeTimers()
+    try {
+      const task = baseTask()
+      tasks.push(task)
+      setTaskSpawnFn(async () => null)
+      const disabled: ScheduledTask[] = []
+      setTaskOutcomeSink(({ kind, task }) => {
+        if (kind === 'disabled') disabled.push(task)
+      })
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await runTaskNow('t1')
+        await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000 + 1000)
+      }
+      expect(disabled).toHaveLength(1)
+      expect(disabled[0].id).toBe('t1')
     } finally {
       vi.useRealTimers()
     }
@@ -209,10 +319,73 @@ describe('edit-and-ledger loop closures', () => {
     tasks.push(baseTask())
     setTaskSpawnFn(async () => ({ sessionId: 'session-D' }))
     const outcomes: Array<[string, string, string | undefined]> = []
-    setTaskOutcomeSink((kind, name, sessionId) => outcomes.push([kind, name, sessionId]))
+    setTaskOutcomeSink(({ kind, task, sessionId }) => outcomes.push([kind, task.name, sessionId]))
 
     await runTaskNow('t1')
     noteTaskSessionEvent('session-D', { type: 'status', status: 'idle' })
     expect(outcomes).toEqual([['finished', '每日报告', 'session-D']])
+  })
+})
+
+describe('run ledger', () => {
+  it('a finished run lands in the ledger as success with a duration', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => ({ sessionId: 'run-1' }))
+
+    await runTaskNow('t1')
+    noteTaskSessionEvent('run-1', { type: 'status', status: 'idle' })
+
+    expect(tasks[0].runs).toHaveLength(1)
+    const run = tasks[0].runs![0]
+    expect(run.sessionId).toBe('run-1')
+    expect(run.outcome).toBe('success')
+    expect(run.finishedAt).toBeGreaterThanOrEqual(run.startedAt)
+  })
+
+  it('a mid-run fatal error flips the entry to failed with a reason', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => ({ sessionId: 'run-2' }))
+
+    await runTaskNow('t1')
+    noteTaskSessionEvent('run-2', { type: 'error', recoverable: false })
+
+    expect(tasks[0].runs).toHaveLength(1)
+    expect(tasks[0].runs![0].outcome).toBe('failed')
+    expect(tasks[0].runs![0].reason).toBe('run-error')
+  })
+
+  it('a spawn failure records a failed entry without a session', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => null)
+
+    await runTaskNow('t1')
+    expect(tasks[0].runs).toHaveLength(1)
+    expect(tasks[0].runs![0].outcome).toBe('failed')
+    expect(tasks[0].runs![0].reason).toBe('spawn-failed')
+    expect(tasks[0].runs![0].sessionId).toBeUndefined()
+  })
+
+  it('an edit (saveTask) keeps the ledger', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => ({ sessionId: 'run-3' }))
+    await runTaskNow('t1')
+    noteTaskSessionEvent('run-3', { type: 'status', status: 'idle' })
+
+    saveTask(baseTask({ name: '改名', prompt: '新提示词' }))
+    expect(tasks[0].runs).toHaveLength(1)
+    expect(tasks[0].runs![0].sessionId).toBe('run-3')
+  })
+
+  it('the ledger is capped at the newest entries', async () => {
+    tasks.push(baseTask())
+    for (let i = 0; i < MAX_RUN_ENTRIES + 4; i++) {
+      const sessionId = `run-cap-${i}`
+      setTaskSpawnFn(async () => ({ sessionId }))
+      await runTaskNow('t1')
+      noteTaskSessionEvent(sessionId, { type: 'status', status: 'idle' })
+    }
+    expect(tasks[0].runs).toHaveLength(MAX_RUN_ENTRIES)
+    // Newest first: the last fired session is at the front.
+    expect(tasks[0].runs![0].sessionId).toBe(`run-cap-${MAX_RUN_ENTRIES + 3}`)
   })
 })

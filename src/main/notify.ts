@@ -1,6 +1,6 @@
 import { BrowserWindow, Notification } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
-import { SessionEvent } from '../shared/types'
+import { ScheduledTask, SessionEvent } from '../shared/types'
 import { getLastAssistantText, getSession } from './omp'
 import { getStore } from './store'
 import { listAllSessions } from './sessionHistory'
@@ -123,6 +123,20 @@ export function notifyTaskFinished(taskName: string, sessionId?: string): void {
     })
   })
   notification.show()
+}
+
+/**
+ * Feishu digest for a finished task run: the task identity plus the run's
+ * final assistant message, trimmed so a chatty report stays readable in the
+ * chat. Falls back to a bare completion line when the transcript tail is
+ * empty (spawn died, or the turn produced no assistant text).
+ */
+export function taskFeishuDigest(task: ScheduledTask, sessionId?: string): string {
+  const header = `⏰ 定时任务「${task.name}」已完成`
+  const text = sessionId ? getLastAssistantText(sessionId).trim() : ''
+  if (!text) return `${header}（本轮没有产出文本结果）`
+  const digest = text.length > 1500 ? `${text.slice(0, 1500)}\n…（内容过长，已截断，完整结果见投手会话）` : text
+  return `${header}\n\n${digest}`
 }
 
 /** A task disabled itself after repeated failures — the user must know. */

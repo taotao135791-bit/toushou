@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { getStore, setStore } from './store'
-import { ScheduledTask, TaskSchedule } from '../shared/types'
+import { ScheduledTask, TaskFailureReason, TaskRunEntry, TaskSchedule } from '../shared/types'
 import { IPC_CHANNELS } from '../shared/constants'
 
 /**
@@ -27,6 +27,10 @@ const CHECK_INTERVAL_MS = 60_000
 const MAX_RUN_MS = 6 * 60 * 60 * 1000
 /** Consecutive spawn failures before a task disables itself. */
 const MAX_CONSECUTIVE_FAILURES = 3
+/** Cap on stored tasks — mainly so an agent-created loop cannot flood the store. */
+export const MAX_TASKS = 50
+/** Per-task run-ledger length. Older entries fall off the front. */
+export const MAX_RUN_ENTRIES = 10
 
 export interface TaskSpawnResult {
   sessionId: string
@@ -81,7 +85,7 @@ export function listTasks(): ScheduledTask[] {
 
 /** Fields owned by the engine, never by the renderer: an edit (which sends a
  * whole task back) must not reset the run ledger. */
-const RUNTIME_OWNED_KEYS = ['lastRunAt', 'lastRunSessionId', 'consecutiveFailures', 'lastFailureReason'] as const
+const RUNTIME_OWNED_KEYS = ['lastRunAt', 'lastRunSessionId', 'consecutiveFailures', 'lastFailureReason', 'runs'] as const
 
 export function saveTask(task: ScheduledTask): ScheduledTask {
   const tasks = getTasks()
@@ -109,6 +113,52 @@ export function deleteTask(id: string): boolean {
   return true
 }
 
+export type AgentTaskInputResult =
+  | { ok: true; task: ScheduledTask }
+  | { ok: false; error: string }
+
+/**
+ * Validate agent-supplied task fields and bind them to `cwd` — the session's
+ * own workspace, never a directory the agent names. The engine owns identity
+ * (id/createdAt/enabled) and the run ledger; a created task always starts
+ * enabled so "create then run" needs no second step.
+ */
+export function buildTaskFromAgentInput(raw: unknown, cwd: string, now: number): AgentTaskInputResult {
+  if (!raw || typeof raw !== 'object') return { ok: false, error: 'invalid-input' }
+  const value = raw as Record<string, unknown>
+  if (typeof value.name !== 'string' || !value.name.trim() || value.name.trim().length > 80) {
+    return { ok: false, error: 'invalid-name' }
+  }
+  if (typeof value.prompt !== 'string' || !value.prompt.trim() || value.prompt.trim().length > 4000) {
+    return { ok: false, error: 'invalid-prompt' }
+  }
+  if (!isValidSchedule(value.schedule)) return { ok: false, error: 'invalid-schedule' }
+  if (
+    value.permissionMode !== undefined &&
+    value.permissionMode !== 'default' &&
+    value.permissionMode !== 'readonly'
+  ) {
+    return { ok: false, error: 'invalid-permission-mode' }
+  }
+  if (value.notifyChannel !== undefined && value.notifyChannel !== 'system' && value.notifyChannel !== 'feishu') {
+    return { ok: false, error: 'invalid-notify-channel' }
+  }
+  if (getTasks().length >= MAX_TASKS) return { ok: false, error: 'too-many-tasks' }
+  const task: ScheduledTask = {
+    id: `task-${now}-${Math.random().toString(36).slice(2, 6)}`,
+    name: value.name.trim(),
+    prompt: value.prompt.trim(),
+    cwd,
+    schedule: value.schedule,
+    enabled: true,
+    createdAt: now,
+    notifyOnComplete: value.notifyOnComplete !== false,
+    ...(value.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+    ...(value.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
+  }
+  return { ok: true, task }
+}
+
 export function toggleTask(id: string, enabled: boolean): ScheduledTask | null {
   const tasks = getTasks()
   const task = tasks.find((t) => t.id === id)
@@ -123,11 +173,11 @@ export function toggleTask(id: string, enabled: boolean): ScheduledTask | null {
   return task
 }
 
-/** Structural validation for a schedule coming over IPC. */
+/** Structural validation for a schedule coming over IPC or the agent bridge. */
 export function isValidSchedule(value: unknown): value is TaskSchedule {
   if (!value || typeof value !== 'object') return false
   const schedule = value as Record<string, unknown>
-  if (schedule.type === 'daily' || schedule.type === 'weekly') {
+  if (schedule.type === 'daily' || schedule.type === 'weekly' || schedule.type === 'weekdays') {
     if (typeof schedule.time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.time)) return false
     if (schedule.type === 'weekly') {
       if (typeof schedule.dayOfWeek !== 'number' || !Number.isInteger(schedule.dayOfWeek)) return false
@@ -136,6 +186,17 @@ export function isValidSchedule(value: unknown): value is TaskSchedule {
     return true
   }
   if (schedule.type === 'interval') {
+    // Exactly one granularity must be present — a shape with both (or neither)
+    // would make the due computation ambiguous.
+    if (schedule.minutes !== undefined) {
+      if (schedule.hours !== undefined) return false
+      return (
+        typeof schedule.minutes === 'number' &&
+        Number.isInteger(schedule.minutes) &&
+        schedule.minutes >= 1 &&
+        schedule.minutes <= 7 * 24 * 60
+      )
+    }
     return (
       typeof schedule.hours === 'number' &&
       Number.isInteger(schedule.hours) &&
@@ -167,8 +228,18 @@ export function nextRunAt(schedule: TaskSchedule, after: number): number {
     if (next.getTime() <= after) next.setDate(next.getDate() + 7)
     return next.getTime()
   }
+  if (schedule.type === 'weekdays') {
+    const [h, m] = parseTime(schedule.time)
+    const next = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0)
+    // 0=Sun .. 6=Sat — roll forward to the next Monday–Friday slot.
+    while (next.getDay() === 0 || next.getDay() === 6 || next.getTime() <= after) {
+      next.setDate(next.getDate() + 1)
+    }
+    return next.getTime()
+  }
   if (schedule.type === 'interval') {
-    return after + schedule.hours * 3_600_000
+    if (typeof schedule.minutes === 'number') return after + schedule.minutes * 60_000
+    return after + (schedule.hours ?? 0) * 3_600_000
   }
   // Unknown schedule shape: never due (a malformed store entry must not turn
   // into a 30-minute retry loop).
@@ -192,12 +263,17 @@ function broadcastTasksChanged(): void {
   }
 }
 
-/** Completion/failure notice sink — wired by ipc.ts to desktop notifications. */
-let onTaskOutcome: ((kind: 'finished' | 'failed' | 'disabled', taskName: string, sessionId?: string) => void) | null = null
+/** Completion/failure notice sink — wired by ipc.ts to desktop notifications
+ * and the Feishu push. Receives the stored task so the sink can honor its
+ * notify options without re-reading the store. */
+type TaskOutcome = {
+  kind: 'finished' | 'failed' | 'disabled'
+  task: ScheduledTask
+  sessionId?: string
+}
+let onTaskOutcome: ((outcome: TaskOutcome) => void) | null = null
 
-export function setTaskOutcomeSink(
-  sink: (kind: 'finished' | 'failed' | 'disabled', taskName: string, sessionId?: string) => void
-): void {
+export function setTaskOutcomeSink(sink: (outcome: TaskOutcome) => void): void {
   onTaskOutcome = sink
 }
 
@@ -224,8 +300,9 @@ function releaseFiring(taskId: string): void {
 /**
  * Feed session events for task-spawned sessions. The session's terminal
  * state (idle after a turn, fatal error, or process exit) releases the
- * per-task guard so a long-running turn can never overlap itself, and fires
- * the task-scoped completion notice when the task asks for one.
+ * per-task guard so a long-running turn can never overlap itself, closes the
+ * firing's run-ledger entry, and fires the task-scoped completion notice when
+ * the task asks for one.
  */
 export function noteTaskSessionEvent(sessionId: string, event: {
   type: string
@@ -241,10 +318,45 @@ export function noteTaskSessionEvent(sessionId: string, event: {
     event.type === 'closed'
   if (!terminal) return
   releaseFiring(taskId)
-  const task = getTasks().find((t) => t.id === taskId)
-  if (task && event.type === 'status' && task.notifyOnComplete !== false) {
-    onTaskOutcome?.('finished', task.name, sessionId)
+  const tasks = getTasks()
+  const task = tasks.find((t) => t.id === taskId)
+  if (!task) return
+  if (event.type === 'status' && event.status === 'idle') {
+    finishRunEntry(taskId, sessionId, 'success')
+    if (task.notifyOnComplete !== false) onTaskOutcome?.({ kind: 'finished', task, sessionId })
+    return
   }
+  // error (fatal) or closed without a completing idle: the run did not finish
+  // cleanly — the optimistic spawn-time entry must not stay (or read) success.
+  finishRunEntry(taskId, sessionId, 'failed', 'run-error')
+}
+
+/**
+ * Append a run-ledger entry (newest first, capped). No-op when the task was
+ * deleted while its firing was in flight.
+ */
+function pushRunEntry(taskId: string, entry: TaskRunEntry): void {
+  const tasks = getTasks()
+  const stored = tasks.find((t) => t.id === taskId)
+  if (!stored) return
+  stored.runs = [entry, ...(stored.runs ?? [])].slice(0, MAX_RUN_ENTRIES)
+  saveTasks(tasks)
+}
+
+/** Close the open run entry a firing pushed at spawn time. */
+function finishRunEntry(taskId: string, sessionId: string, outcome: TaskRunEntry['outcome'], reason?: TaskFailureReason): void {
+  const tasks = getTasks()
+  const stored = tasks.find((t) => t.id === taskId)
+  if (!stored) return
+  const open = (stored.runs ?? []).find((run) => run.sessionId === sessionId && !run.finishedAt)
+  if (open) {
+    open.finishedAt = Date.now()
+    open.outcome = outcome
+    if (reason) open.reason = reason
+  } else {
+    stored.runs = [{ startedAt: Date.now(), finishedAt: Date.now(), outcome, reason, sessionId }, ...(stored.runs ?? [])].slice(0, MAX_RUN_ENTRIES)
+  }
+  saveTasks(tasks)
 }
 
 async function fireTask(task: ScheduledTask): Promise<string | null> {
@@ -279,6 +391,9 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
       running.sessionId = result.sessionId
       taskBySession.set(result.sessionId, task.id)
     }
+    // Optimistic ledger entry: the run reads as success once the session's
+    // terminal-idle arrives (finishRunEntry flips it on a fatal error).
+    pushRunEntry(task.id, { startedAt: Date.now(), outcome: 'success', sessionId: result.sessionId })
     const tasks = getTasks()
     const stored = tasks.find((t) => t.id === task.id)
     if (stored) {
@@ -297,12 +412,14 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
 }
 
 /** Count a firing failure; three in a row auto-disables the task loudly. */
-async function recordFailure(task: ScheduledTask, reason: string): Promise<void> {
+async function recordFailure(task: ScheduledTask, reason: TaskFailureReason): Promise<void> {
   const tasks = getTasks()
   const stored = tasks.find((t) => t.id === task.id)
   if (!stored) return
   stored.consecutiveFailures = (stored.consecutiveFailures ?? 0) + 1
   stored.lastFailureReason = reason
+  // The firing never produced a session — the failed ledger entry IS the record.
+  pushRunEntry(stored.id, { startedAt: Date.now(), finishedAt: Date.now(), outcome: 'failed', reason })
   let disabled = false
   if (stored.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && stored.enabled) {
     stored.enabled = false
@@ -310,7 +427,7 @@ async function recordFailure(task: ScheduledTask, reason: string): Promise<void>
   }
   saveTasks(tasks)
   broadcastTasksChanged()
-  if (disabled) onTaskOutcome?.('disabled', stored.name)
+  if (disabled) onTaskOutcome?.({ kind: 'disabled', task: stored })
 }
 
 let firingChain: Promise<void> = Promise.resolve()

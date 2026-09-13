@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare } from 'lucide-react'
+import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
 import { ScheduledTask } from '@shared/types'
 import { useAppStore } from '../store'
-import { useT } from '../i18n'
+import { useT, I18nKey } from '../i18n'
 import { showNotice } from '../lib/notice'
 import { useConfirmId } from '../lib/confirmClick'
 import { basename } from '../lib/path'
@@ -11,7 +11,13 @@ import { formatRelativeTime } from '../lib/time'
 
 function scheduleText(task: ScheduledTask, t: (key: never, vars?: Record<string, string | number>) => string): string {
   if (task.schedule.type === 'daily') return t('schedule.daily' as never, { time: task.schedule.time })
-  if (task.schedule.type === 'interval') return t('schedule.interval' as never, { hours: task.schedule.hours })
+  if (task.schedule.type === 'weekdays') return t('schedule.weekdays' as never, { time: task.schedule.time })
+  if (task.schedule.type === 'interval') {
+    if (typeof task.schedule.minutes === 'number') {
+      return t('schedule.intervalMinutes' as never, { minutes: task.schedule.minutes })
+    }
+    return t('schedule.interval' as never, { hours: task.schedule.hours ?? 0 })
+  }
   if (task.schedule.type === 'weekly') return t('schedule.weekly' as never, { day: task.schedule.dayOfWeek, time: task.schedule.time })
   return ''
 }
@@ -45,10 +51,16 @@ function groupByProject(tasks: ScheduledTask[]): TaskGroup[] {
   return ungrouped ? [...grouped, { cwd: '', tasks: ungrouped }] : grouped
 }
 
-const FAILURE_REASON_LABELS: Record<string, string> = {
-  'engine-unavailable': '运行时不可用',
-  'spawn-failed': '会话启动失败',
-  threw: '执行异常'
+const btn = 'rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors'
+const input = 'mt-1 w-full rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50'
+
+/** Compact wall-clock duration for a finished run row. */
+function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
 export default function TasksPage() {
@@ -61,11 +73,15 @@ export default function TasksPage() {
   /** Task being edited; null = creating a new one. */
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null)
   const [running, setRunning] = useState<string | null>(null)
+  /** Task ids whose run-history list is expanded. */
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
   const [form, setForm] = useState({
     name: '', prompt: '', cwd: '',
-    scheduleType: 'daily' as 'daily' | 'weekly' | 'interval',
-    time: '09:00', dayOfWeek: 1, hours: 24,
+    scheduleType: 'daily' as 'daily' | 'weekly' | 'weekdays' | 'interval',
+    time: '09:00', dayOfWeek: 1, hours: 24, intervalMinutes: 30,
+    intervalUnit: 'hour' as 'hour' | 'minute',
     notifyOnComplete: true,
+    notifyChannel: 'system' as 'system' | 'feishu',
     permissionMode: 'default' as 'default' | 'readonly'
   })
 
@@ -73,7 +89,7 @@ export default function TasksPage() {
 
   const openModal = () => {
     setEditingTask(null)
-    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default' }))
+    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system' }))
     setModalOpen(true)
   }
 
@@ -85,10 +101,13 @@ export default function TasksPage() {
       prompt: task.prompt,
       cwd: task.cwd,
       scheduleType: task.schedule.type,
-      time: task.schedule.type === 'weekly' || task.schedule.type === 'daily' ? task.schedule.time : '09:00',
+      time: task.schedule.type === 'weekly' || task.schedule.type === 'weekdays' || task.schedule.type === 'daily' ? task.schedule.time : '09:00',
       dayOfWeek: task.schedule.type === 'weekly' ? task.schedule.dayOfWeek : 1,
-      hours: task.schedule.type === 'interval' ? task.schedule.hours : 24,
+      hours: task.schedule.type === 'interval' ? task.schedule.hours ?? 24 : 24,
+      intervalMinutes: task.schedule.type === 'interval' ? task.schedule.minutes ?? 30 : 30,
+      intervalUnit: task.schedule.type === 'interval' && task.schedule.minutes !== undefined ? 'minute' : 'hour',
       notifyOnComplete: task.notifyOnComplete,
+      notifyChannel: task.notifyChannel === 'feishu' ? 'feishu' : 'system',
       permissionMode: task.permissionMode === 'readonly' ? 'readonly' : 'default'
     })
     setModalOpen(true)
@@ -105,13 +124,18 @@ export default function TasksPage() {
       ? { type: 'daily' as const, time: form.time }
       : form.scheduleType === 'weekly'
         ? { type: 'weekly' as const, dayOfWeek: form.dayOfWeek, time: form.time }
-        : { type: 'interval' as const, hours: form.hours }
+        : form.scheduleType === 'weekdays'
+          ? { type: 'weekdays' as const, time: form.time }
+          : form.intervalUnit === 'minute'
+            ? { type: 'interval' as const, minutes: form.intervalMinutes }
+            : { type: 'interval' as const, hours: form.hours }
     const task: ScheduledTask = {
       // Editing keeps the original identity so the run ledger survives.
       id: editingTask?.id ?? `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name: form.name.trim(), prompt: form.prompt.trim(), cwd: form.cwd,
       schedule, enabled: editingTask?.enabled ?? true,
       createdAt: editingTask?.createdAt ?? Date.now(), notifyOnComplete: form.notifyOnComplete,
+      ...(form.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
       ...(form.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
     }
     let result: Awaited<ReturnType<typeof window.electronAPI.saveTask>>
@@ -154,13 +178,13 @@ export default function TasksPage() {
 
   /**
    * Open the session a firing created. Live registry first; after a restart,
-   * fall back to the newest durable history row of this task (task sessions
-   * are titled after the task and live in the task's cwd).
+   * fall back to the durable history row of this task (task sessions are
+   * titled after the task and live in the task's cwd) matched by run time.
    */
-  const openRunSession = (task: ScheduledTask) => {
+  const openRunEntry = (task: ScheduledTask, run: { sessionId?: string; startedAt: number }) => {
     const state = useAppStore.getState()
-    if (task.lastRunSessionId && state.sessions.some((s) => s.id === task.lastRunSessionId)) {
-      state.setCurrentSessionId(task.lastRunSessionId)
+    if (run.sessionId && state.sessions.some((s) => s.id === run.sessionId)) {
+      state.setCurrentSessionId(run.sessionId)
       navigate('/')
       return
     }
@@ -168,7 +192,7 @@ export default function TasksPage() {
       (entry) =>
         entry.title === task.name &&
         entry.cwd === task.cwd &&
-        (!task.lastRunAt || entry.timestamp >= task.lastRunAt - 60_000)
+        Math.abs(entry.timestamp - run.startedAt) < 60_000
     )
     if (row) {
       state.setPendingOpenHistory({ uuid: row.uuid, cwd: row.cwd })
@@ -176,6 +200,19 @@ export default function TasksPage() {
     } else {
       showNotice('tasks.runSessionMissing')
     }
+  }
+
+  const openRunSession = (task: ScheduledTask) => {
+    openRunEntry(task, { sessionId: task.lastRunSessionId, startedAt: task.lastRunAt ?? 0 })
+  }
+
+  const toggleRunHistory = (taskId: string) => {
+    setExpandedRuns((prev) => {
+      const next = new Set(prev)
+      if (next.has(taskId)) next.delete(taskId)
+      else next.add(taskId)
+      return next
+    })
   }
 
   // Deleting a task is permanent and cannot be undone — two-stage confirm,
@@ -199,9 +236,6 @@ export default function TasksPage() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [modalOpen])
-
-  const btn = 'rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors'
-  const input = 'mt-1 w-full rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50'
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -254,10 +288,15 @@ export default function TasksPage() {
                           )}
                           {!task.enabled && (task.consecutiveFailures ?? 0) > 0 && (
                             <span
-                              title={task.lastFailureReason ? `${t('tasks.autoDisabledHint')} · ${FAILURE_REASON_LABELS[task.lastFailureReason] ?? task.lastFailureReason}` : t('tasks.autoDisabledHint')}
+                              title={task.lastFailureReason ? `${t('tasks.autoDisabledHint')} · ${t(`tasks.failure.${task.lastFailureReason}` as I18nKey)}` : t('tasks.autoDisabledHint')}
                               className="rounded-full bg-red-500/12 px-2 py-0.5 text-[10px] font-medium text-red-500"
                             >
                               {t('tasks.failedBadge', { count: task.consecutiveFailures ?? 0 })}
+                            </span>
+                          )}
+                          {task.notifyChannel === 'feishu' && (
+                            <span className="rounded-full bg-overlay px-2 py-0.5 text-[10px] font-medium text-cream-faint">
+                              {t('tasks.notifyFeishu')}
                             </span>
                           )}
                         </div>
@@ -271,6 +310,50 @@ export default function TasksPage() {
                             </span>
                           )}
                         </div>
+                        {(task.runs?.length ?? 0) > 0 && (
+                          <div className="mt-2">
+                            <button
+                              onClick={() => toggleRunHistory(task.id)}
+                              className="flex items-center gap-1 text-[11px] text-cream-faint transition-colors hover:text-cream-dim"
+                            >
+                              {expandedRuns.has(task.id) ? <ChevronDown size={11} strokeWidth={1.5} /> : <ChevronRight size={11} strokeWidth={1.5} />}
+                              {t('tasks.runHistory')} · {task.runs?.length}
+                            </button>
+                            {expandedRuns.has(task.id) && (
+                              <div className="mt-1 space-y-0.5">
+                                {(task.runs ?? []).map((run, index) => {
+                                  const live = !run.finishedAt
+                                  const failed = run.outcome === 'failed'
+                                  return (
+                                    <div
+                                      key={run.sessionId ?? `${run.startedAt}-${index}`}
+                                      onClick={() => !live && openRunEntry(task, run)}
+                                      className={`group flex items-center gap-2 rounded-md px-1.5 py-1 text-[11px] ${live ? 'text-cream-faint' : 'cursor-pointer text-cream-dim transition-colors hover:bg-overlay'}`}
+                                    >
+                                      {live ? (
+                                        <Loader2 size={11} className="shrink-0 animate-spin" />
+                                      ) : failed ? (
+                                        <span className="shrink-0 font-medium text-red-500">✕</span>
+                                      ) : (
+                                        <span className="shrink-0 font-medium text-emerald-500">✓</span>
+                                      )}
+                                      <span className="shrink-0">{formatRelativeTime(run.startedAt, language)}</span>
+                                      {run.finishedAt && (
+                                        <span className="shrink-0 text-cream-faint">{formatDuration(run.finishedAt - run.startedAt)}</span>
+                                      )}
+                                      {failed && run.reason && (
+                                        <span className="min-w-0 truncate text-red-400">{t(`tasks.failure.${run.reason}`)}</span>
+                                      )}
+                                      {!live && (
+                                        <MessageSquare size={11} className="ml-auto shrink-0 text-cream-faint opacity-0 transition-opacity group-hover:opacity-100" />
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
                         <button onClick={() => openRunSession(task)}
@@ -338,7 +421,7 @@ export default function TasksPage() {
                 {t('tasks.project')}
                 <select value={form.cwd} onChange={e => setForm(f => ({ ...f, cwd: e.target.value }))} className={input + ' h-8'}>
                   <option value="">{t('sidebar.selectProject')}</option>
-                  {recentWorkspaces.map(w => <option key={w.id} value={w.displayPath}>{w.displayPath}</option>)}
+                  {recentWorkspaces.map(w => <option key={w.id} value={w.displayPath}>{basename(w.displayPath) || w.displayPath}</option>)}
                 </select>
               </label>
               <div className="grid grid-cols-2 gap-2">
@@ -346,6 +429,7 @@ export default function TasksPage() {
                   {t('sidebar.taskSchedule')}
                   <select value={form.scheduleType} onChange={e => setForm(f => ({ ...f, scheduleType: e.target.value as typeof form.scheduleType }))} className={input + ' h-8'}>
                     <option value="daily">{t('schedule.typeDaily')}</option>
+                    <option value="weekdays">{t('schedule.typeWeekdays')}</option>
                     <option value="weekly">{t('schedule.typeWeekly')}</option>
                     <option value="interval">{t('schedule.typeInterval')}</option>
                   </select>
@@ -356,8 +440,23 @@ export default function TasksPage() {
                   </label>
                 )}
                 {form.scheduleType === 'interval' && (
-                  <label className="block text-[11px] text-cream-faint">{t('tasks.hours')}
-                    <input type="number" min={1} max={168} value={form.hours} onChange={e => setForm(f => ({ ...f, hours: Number(e.target.value) || 24 }))} className={input + ' h-8'} />
+                  <label className="block text-[11px] text-cream-faint">
+                    {t('sidebar.taskSchedule')}
+                    <select value={form.intervalUnit} onChange={e => setForm(f => ({ ...f, intervalUnit: e.target.value as 'hour' | 'minute' }))} className={input + ' h-8'}>
+                      <option value="minute">{t('schedule.typeIntervalMinutes')}</option>
+                      <option value="hour">{t('schedule.typeInterval')}</option>
+                    </select>
+                  </label>
+                )}
+                {form.scheduleType === 'interval' && (
+                  <label className="block text-[11px] text-cream-faint">
+                    {t('tasks.time')}
+                    <input type="number" min={1} max={form.intervalUnit === 'minute' ? 10080 : 168}
+                      value={form.intervalUnit === 'minute' ? form.intervalMinutes : form.hours}
+                      onChange={e => setForm(f => f.intervalUnit === 'minute'
+                        ? ({ ...f, intervalMinutes: Number(e.target.value) || 30 })
+                        : ({ ...f, hours: Number(e.target.value) || 24 }))}
+                      className={input + ' h-8'} />
                   </label>
                 )}
                 {form.scheduleType === 'weekly' && (
@@ -376,6 +475,16 @@ export default function TasksPage() {
                   <option value="readonly">{t('tasks.permissionReadonly')}</option>
                 </select>
               </label>
+              <label className="block text-[11px] text-cream-faint">
+                {t('tasks.notifyChannel')}
+                <select value={form.notifyChannel} onChange={e => setForm(f => ({ ...f, notifyChannel: e.target.value as 'system' | 'feishu' }))} className={input + ' h-8'}>
+                  <option value="system">{t('tasks.notifySystem')}</option>
+                  <option value="feishu">{t('tasks.notifyFeishu')}</option>
+                </select>
+              </label>
+              {form.notifyChannel === 'feishu' && (
+                <p className="text-[11px] leading-4 text-cream-faint">{t('tasks.notifyFeishuHint')}</p>
+              )}
               <label className="mt-1 flex cursor-pointer items-center gap-2 text-[11px] text-cream-faint">
                 <input
                   type="checkbox"

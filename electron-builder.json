@@ -35,6 +35,10 @@
       "to": "feishu-toolkit"
     },
     {
+      "from": "resources/tasks-toolkit",
+      "to": "tasks-toolkit"
+    },
+    {
       "from": "resources/material-research-toolkit",
       "to": "material-research-toolkit"
     },

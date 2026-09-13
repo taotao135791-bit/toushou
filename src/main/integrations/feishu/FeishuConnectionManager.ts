@@ -25,7 +25,7 @@ import { FeishuChannel } from './FeishuChannel'
 import { FeishuCredentialStore, FeishuStoredCredentials, maskSecret } from './FeishuCredentialStore'
 import { PersonalAgentRegistrationProvider, RegistrationSession } from './FeishuAppRegistration'
 import { FeishuOAuthManager } from './FeishuOAuthManager'
-import { FeishuSessionContext, FeishuSessionRouter } from './FeishuSessionRouter'
+import { FeishuSessionContext, FeishuSessionRouter, mostRecentPushRoute } from './FeishuSessionRouter'
 import { FeishuToolRegistry } from './FeishuToolRegistry'
 
 const FEISHU_DEFINITION: ConnectionDefinition = {
@@ -690,6 +690,31 @@ export class FeishuConnectionManager {
   private handleOmpEvent(event: SessionEvent): void {
     this.sessionEventSink?.(event)
     this.router.onSessionEvent(event)
+  }
+
+  /**
+   * Main-initiated push (scheduled-task result) to the owner's most recent
+   * bot chat. Read-only vs the connection state machine: a failed push must
+   * never degrade the live channel — the caller falls back to the desktop
+   * notification the task already raised.
+   */
+  async pushTaskResult(content: string): Promise<{ ok: boolean; error?: string }> {
+    const channel = this.channel
+    if (!channel || channel.websocketState !== 'connected') {
+      return { ok: false, error: 'feishu-not-connected' }
+    }
+    await this.router.load()
+    const route = mostRecentPushRoute(this.router.listRoutes())
+    if (!route) return { ok: false, error: 'no-chat' }
+    try {
+      const body = content.length > 30_000 ? `${content.slice(0, 30_000)}\n\n（内容过长，已截断）` : content
+      await channel.sendMarkdown(route.chatId, body)
+      console.info('[feishu] task push delivered')
+      return { ok: true }
+    } catch (error) {
+      console.warn('[feishu] task push failed:', error)
+      return { ok: false, error: 'send-failed' }
+    }
   }
 
   private emitState(): void {

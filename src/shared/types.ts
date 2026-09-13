@@ -1506,7 +1506,21 @@ export interface AppSettings {
 export type TaskSchedule =
   | { type: 'daily'; time: string }          // "09:30"
   | { type: 'weekly'; dayOfWeek: number; time: string }  // 0=Sun .. 6=Sat
-  | { type: 'interval'; hours: number }      // every N hours
+  | { type: 'weekdays'; time: string }       // Mon–Fri at time
+  | { type: 'interval'; hours?: number; minutes?: number }  // every N hours, or every N minutes
+
+/** One completed (or failed) firing of a task. */
+export interface TaskRunEntry {
+  startedAt: number
+  finishedAt?: number
+  outcome: 'success' | 'failed'
+  /** Machine-readable failure reason (spawn-stage or run-stage). */
+  reason?: TaskFailureReason
+  /** Runtime session id of this firing (navigation link). */
+  sessionId?: string
+}
+
+export type TaskFailureReason = 'engine-unavailable' | 'spawn-failed' | 'threw' | 'run-error'
 
 export interface ScheduledTask {
   id: string
@@ -1519,12 +1533,19 @@ export interface ScheduledTask {
   createdAt: number
   lastRunAt?: number
   notifyOnComplete: boolean
+  /**
+   * Where the completion notice lands: the OS notification center (default)
+   * or, once Feishu is connected, the owner's most recent bot DM.
+   */
+  notifyChannel?: 'system' | 'feishu'
   /** Consecutive spawn failures; resets on success or manual re-enable. */
   consecutiveFailures?: number
   /** Machine-readable reason of the last failure (diagnostics only). */
   lastFailureReason?: string
   /** Runtime id of the most recent firing's session (navigation link). */
   lastRunSessionId?: string
+  /** Recent run ledger, engine-owned, newest first, capped. */
+  runs?: TaskRunEntry[]
   /**
    * Unattended sessions default to the workspace's global permission mode;
    * 'readonly' opts a task down to read-only execution.
