@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.17.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.17.1) 下载：
+当前版本 v0.18.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.18.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.1/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.1/TouShou-x64.dmg) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.18.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.18.0/TouShou-x64.dmg) | 见 Release | 见 Release |
 | Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.17.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.18.0：TikTok Ads 官方 MCP 连接器。连接页新增「TikTok Ads」一等连接卡片：点击后在浏览器完成 TikTok 官方 OAuth 授权（按官方文档走动态客户端注册 + PKCE + 本机回调，无需开发者应用或 API key），令牌加密存本机并自动在到期前刷新；连接成功后自动把官方 MCP 服务器（business-api.tiktok.com/open_mcp/tt-ads-mcp-layer，渐进披露 41 个核心工具：账户/BC 发现、商品目录、受众、素材、Smart+ 管理、同步报表、投放诊断）写入运行时配置并安装配套 agent 技能（含写操作确认规则）。实测从点击到 agent 可调用真实报表接口全程自动；断开连接会同时移除令牌与运行时条目。
 
 v0.17.1：稳定性与确定性补丁。**OMP 启动死限**——运行时子进程偶发卡死（spawn 后零输出、零 CPU），会话会永远停在"连接中"且无错误无重试入口；现在启动 30 秒内没有任何输出的子进程会被明确报错并清理（提示重试/重启/omp update），正常子进程的首帧在 1 秒内到达、不受影响。**飞书权限引导确定性化**——v0.17.0 的引导卡依赖模型转述工具错误文本（概率路径）；现在主进程在工具被授权拒绝时直接向该会话推送系统提示与可点击的"去连接"卡（实测中卡首次稳定出现，且实测模型收到停止指令后 5 次请求只调用 1 次工具，不再重试）；飞书工具熔断（连续失败暂停 10 分钟）也会在会话内明确告知用户原因。**任务通知点击回退**——应用重启后点击"任务完成"通知，现在会按任务名找到最近一次运行的会话记录并打开（此前重启后点击无效果）。**日志降噪**——每个会话都刷的 setWidget 提示从 info 降为 debug，main.log 不再被刷屏。
 
