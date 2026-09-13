@@ -100,7 +100,7 @@ describe('FigmaConnectionManager', () => {
     // links, and degraded cross-links.
     const flat = await readFile(path.join(paths.userData, 'skills', 'figma-use.md'), 'utf-8')
     expect(flat.startsWith('<!-- installed-by: toushou-figma-connector')).toBe(true)
-    expect(flat).toContain(`](${paths.userData}/figma-skills/figma-use/references/gotchas.md)`)
+    expect(flat).toContain(`](${paths.userData.split(path.sep).join('/')}/figma-skills/figma-use/references/gotchas.md)`)
     expect(flat).toContain('generate（未随投手打包：figma-generate-design 工作流技能）')
     expect(flat).not.toContain('](../figma-generate-design')
   })

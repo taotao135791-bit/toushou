@@ -264,7 +264,9 @@ export class FigmaConnectionManager {
    * not bundled here degrade to a plain note.
    */
   rewriteSkillLinks(markdown: string, name: string, targetRoot: string): string {
-    const tree = path.join(targetRoot, name)
+    // Forward slashes keep the markdown links portable and deterministic
+    // across platforms (the agent's file tools accept them on Windows too).
+    const tree = path.join(targetRoot, name).split(path.sep).join('/')
     const out = markdown
       .replaceAll('](references/', `](${tree}/references/`)
       .replaceAll('](./references/', `](${tree}/references/`)
