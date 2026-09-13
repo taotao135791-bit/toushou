@@ -181,6 +181,7 @@ import {
 import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
+import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
 import { SessionOriginIndex } from './sessionOrigins'
@@ -197,6 +198,8 @@ const historySessionGrantOwnerCleanupHooks = new Set<number>()
 const sessionOriginIndex = new SessionOriginIndex()
 /** TikTok Ads official MCP connector — Main-owned OAuth, one instance per app. */
 const tiktokAdsConnectionManager = new TikTokAdsConnectionManager()
+/** Figma Dev Mode MCP connector — local loopback endpoint, zero credentials. */
+const figmaConnectionManager = new FigmaConnectionManager()
 const packageActionGrantManager = new PackageActionGrantManager()
 const packageLocalSourceGrantManager = new PackageLocalSourceGrantManager()
 const packageGrantOwnerCleanupHooks = new Set<number>()
@@ -585,6 +588,9 @@ export function registerIpc() {
   // Restore a stored TikTok Ads connection (self-heals the mcp.json entry and
   // the refresh schedule); never opens anything without a stored credential.
   void tiktokAdsConnectionManager.initialize()
+  // Restore the Figma Dev Mode MCP entry and probe whether the Figma desktop
+  // app is currently serving (the endpoint is loopback, no secrets involved).
+  void figmaConnectionManager.initialize()
   // The scheduler's execution leg: spawn a real OMP session named after the
   // task, deliver the prompt, and let the normal session-event stream drive
   // completion. Task sessions carry origin 'task' so the sidebar can badge
@@ -712,6 +718,11 @@ export function registerIpc() {
     if (typeof url !== 'string') return false
     return tiktokAdsConnectionManager.openAuthorizationUrl(url)
   })
+
+  // --- Figma Dev Mode MCP connector (local, code-token-only flavor) ------
+  ipcMain.handle(IPC_CHANNELS.FIGMA_STATUS, async () => figmaConnectionManager.refreshStatus())
+  ipcMain.handle(IPC_CHANNELS.FIGMA_CONNECT, async () => figmaConnectionManager.connect())
+  ipcMain.handle(IPC_CHANNELS.FIGMA_DISCONNECT, async () => figmaConnectionManager.disconnect())
 
   ipcMain.handle(IPC_CHANNELS.OMP_DETECT, async (_event: IpcMainInvokeEvent, force?: boolean) => {
     if (force) {

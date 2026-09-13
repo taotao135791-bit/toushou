@@ -37,6 +37,10 @@
     {
       "from": "resources/material-research-toolkit",
       "to": "material-research-toolkit"
+    },
+    {
+      "from": "resources/figma-skills",
+      "to": "figma-skills"
     }
   ],
   "mac": {

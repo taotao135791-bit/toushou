@@ -7,6 +7,7 @@ import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import McpConnectionsSection from '../components/McpConnectionsSection'
 import TikTokAdsConnectionCard from '../components/TikTokAdsConnectionCard'
+import FigmaConnectionCard from '../components/FigmaConnectionCard'
 
 const emptySnapshot: FeishuConnectionSnapshot = {
   definition: {
@@ -425,6 +426,7 @@ export default function ConnectionsPage() {
           </section>
 
           <TikTokAdsConnectionCard />
+          <FigmaConnectionCard />
           <McpConnectionsSection />
         </div>
       </div>

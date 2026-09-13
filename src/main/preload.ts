@@ -10,7 +10,8 @@ import {
   McpConnectionInfo,
   McpMutationResult,
   McpTestOutcome,
-  TikTokAdsConnectionSnapshot
+  TikTokAdsConnectionSnapshot,
+  FigmaConnectionSnapshot
 } from '../shared/connections'
 import {
   CliCapabilities,
@@ -448,6 +449,11 @@ export interface ElectronAPI {
   tiktokDisconnect: () => Promise<TikTokAdsConnectionSnapshot>
   tiktokOpenUrl: (url: string) => Promise<boolean>
   onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => () => void
+  /** Figma Dev Mode MCP connector (local endpoint, no credentials). */
+  figmaStatus: () => Promise<FigmaConnectionSnapshot>
+  figmaConnect: () => Promise<FigmaConnectionSnapshot>
+  figmaDisconnect: () => Promise<FigmaConnectionSnapshot>
+  onFigmaStatus: (callback: (snapshot: FigmaConnectionSnapshot) => void) => () => void
   /** MCP service connections — masked listings; tokens never cross to the renderer. */
   mcpList: () => Promise<McpConnectionInfo[]>
   mcpAdd: (input: McpAddInput) => Promise<McpMutationResult>
@@ -821,6 +827,16 @@ const api: ElectronAPI = {
     ipcRenderer.on(IPC_CHANNELS.TIKTOK_STATUS, handler)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.TIKTOK_STATUS, handler)
+    }
+  },
+  figmaStatus: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_STATUS),
+  figmaConnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_CONNECT),
+  figmaDisconnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_DISCONNECT),
+  onFigmaStatus: (callback: (snapshot: FigmaConnectionSnapshot) => void) => {
+    const handler = (_event: IpcRendererEvent, snapshot: FigmaConnectionSnapshot) => callback(snapshot)
+    ipcRenderer.on(IPC_CHANNELS.FIGMA_STATUS, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.FIGMA_STATUS, handler)
     }
   },
   mcpList: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_LIST),

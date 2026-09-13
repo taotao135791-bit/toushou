@@ -1282,6 +1282,20 @@ const en = {
   'connections.tiktokFailed': 'Connection failed',
   'connections.tiktokNote':
     'Tokens are stored encrypted on this machine; the runtime config (~/.omp/agent/mcp.json) holds a bearer entry for the runtime only. Disconnecting removes both.',
+  'connections.figma': 'Figma',
+  'connections.figmaDescription':
+    'Connect the local Dev Mode MCP server from the Figma desktop app. use_figma runs Plugin-API JavaScript on your machine — every step of the reasoning happens in your model, so it spends only code tokens and never Figma-side generation credits.',
+  'connections.figmaConnect': 'Connect Figma',
+  'connections.figmaProbing': 'Probing the local Figma endpoint…',
+  'connections.figmaConnected': 'Connected — use_figma & co. are live (figma MCP server)',
+  'connections.figmaServer': 'MCP server',
+  'connections.figmaTools': 'Tools',
+  'connections.figmaRecheck': 'Re-check',
+  'connections.figmaNotServing': 'Figma desktop is not serving the endpoint right now',
+  'connections.figmaEnableHint':
+    'Before connecting: open the Figma desktop app → Preferences → enable “Dev Mode MCP Server”, then come back and click Connect. Bundled agent skills (figma-use and friends) install on connect.',
+  'connections.figmaSkillsNote':
+    'Bundled skills figma-use / figma-use-figjam / figma-use-motion / figma-use-slides are installed into the skill library; their full reference trees live in the app data folder for the agent to grep.',
   'connections.checking': 'Checking…',
   'connections.checked': 'Connection looks good',
   'connections.degraded': 'Connection needs attention',
@@ -2572,6 +2586,20 @@ const zh: Record<I18nKey, string> = {
   'connections.tiktokFailed': '连接失败',
   'connections.tiktokNote':
     '令牌加密保存在本机；运行时配置（~/.omp/agent/mcp.json）仅为运行时保留一条 Bearer 条目。断开连接会同时移除两者。',
+  'connections.figma': 'Figma',
+  'connections.figmaDescription':
+    '接入 Figma 桌面端的本地 Dev Mode MCP。use_figma 在你的机器上执行 Plugin API——每一步推理都由你的模型完成，只花代码 token，不消耗任何 Figma 侧生成额度。',
+  'connections.figmaConnect': '连接 Figma',
+  'connections.figmaProbing': '正在探测本地 Figma 端点…',
+  'connections.figmaConnected': '已连接——use_figma 等工具已就绪（figma MCP 服务器）',
+  'connections.figmaServer': 'MCP 服务器',
+  'connections.figmaTools': '工具数',
+  'connections.figmaRecheck': '重新检测',
+  'connections.figmaNotServing': 'Figma 桌面端当前未提供端点',
+  'connections.figmaEnableHint':
+    '连接前：打开 Figma 桌面端 → 偏好设置 → 启用「Dev Mode MCP Server」，然后回来点连接。配套 agent 技能（figma-use 系列）会在连接时安装。',
+  'connections.figmaSkillsNote':
+    '已安装技能 figma-use / figma-use-figjam / figma-use-motion / figma-use-slides 到技能库；完整参考文档树保存在应用数据目录，供 agent 按需 grep。',
   'connections.checking': '检查中…',
   'connections.checked': '连接正常',
   'connections.degraded': '连接需要处理',

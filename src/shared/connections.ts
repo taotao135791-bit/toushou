@@ -168,6 +168,23 @@ export interface TikTokAdsConnectionSnapshot {
   authorizationUrl?: string
 }
 
+/* ---------- Figma Dev Mode MCP 连接（本地端点，零凭据，只花代码 token） ---------- */
+
+/**
+ * Renderer-facing projection of the Figma Dev Mode MCP connection. The local
+ * endpoint (127.0.0.1:3845, served by the Figma desktop app) carries no
+ * credentials at all, so this snapshot has no secret-shaped fields by design.
+ */
+export interface FigmaConnectionSnapshot {
+  definition: ConnectionDefinition
+  status: ConnectionStatus
+  connected: boolean
+  /** Tools discovered on the last successful probe (e.g. use_figma et al). */
+  toolCount?: number
+  lastError?: string
+  lastConnectedAt?: number
+}
+
 /* ---------- MCP 服务连接（投手作为配置管家写入运行时原生 mcp.json） ---------- */
 
 export type McpTransport = 'http' | 'sse' | 'stdio'
