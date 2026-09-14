@@ -30,7 +30,7 @@ describe('gateBrowserUseRequest', () => {
   })
 
   it('refuses every other action while the panel is hidden', () => {
-    for (const action of ['snapshot', 'click', 'type', 'scroll', 'screenshot', 'back', 'forward', 'wait'] as const) {
+    for (const action of ['snapshot', 'report', 'click', 'type', 'scroll', 'screenshot', 'back', 'forward', 'wait'] as const) {
       expect(gateBrowserUseRequest(action, 'A', 'A', false)).toBe('panel-hidden')
     }
   })
@@ -61,6 +61,7 @@ describe('parseBrowserUseRequest', () => {
 
   it('accepts snapshot, screenshot, back and forward without params', () => {
     expect(parseBrowserUseRequest({ action: 'snapshot' })).toEqual({ action: 'snapshot' })
+    expect(parseBrowserUseRequest({ action: 'report' })).toEqual({ action: 'report' })
     expect(parseBrowserUseRequest({ action: 'screenshot' })).toEqual({ action: 'screenshot' })
     expect(parseBrowserUseRequest({ action: 'back' })).toEqual({ action: 'back' })
     expect(parseBrowserUseRequest({ action: 'forward' })).toEqual({ action: 'forward' })

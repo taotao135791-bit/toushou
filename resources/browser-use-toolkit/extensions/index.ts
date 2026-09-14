@@ -18,6 +18,8 @@ interface BridgeResult {
   url?: string
   title?: string
   text?: string
+  reading?: unknown
+  verified?: boolean
   elements?: Array<{
     ref: number
     tag: string
@@ -123,6 +125,18 @@ export default function browserUseTools(api: ToolHostApi): void {
       parameters: { type: 'object', properties: {} },
       approval: 'read',
       execute: () => call({ action: 'snapshot' })
+    })
+  )
+
+  api.registerTool(
+    tool({
+      name: 'browser_report',
+      label: 'Browser Report',
+      description:
+        '读取当前 FB Ads Manager 广告系列页并返回硬核验证过的结构化读数（JSON，verified=true）：账户、日期范围、每个广告系列的消耗/单次成效/CPM/成效/点击/CTR/CPC/安装量、汇总总消耗。数字由本地严格解析器提取，且必须通过四道锁才会返回：行数=页面汇总标记数、行求和=汇总总消耗、双读结构一致、页面稳定。任何一道不过即拒报（incomplete-view / totals-mismatch / unstable-page / unparseable-page）——无数据好过错数据，自动化可安全消费。给用户转述时如实报告错误原因，不要自行估算补数。',
+      parameters: { type: 'object', properties: {} },
+      approval: 'read',
+      execute: () => call({ action: 'report' })
     })
   )
 

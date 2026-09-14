@@ -43,14 +43,23 @@ export interface FbAdsCampaignReading {
   accountId: string | null
   accountName: string | null
   dateRangeLabel: string | null
+  /** The N in the page's "N个广告系列的成效" summary marker. */
+  campaignCount: number | null
   columns: string[]
   rows: FbAdsCampaignRow[]
   /** Summary-block total spend; should equal the sum of row spends. */
   totalSpend: number | null
 }
 
-/** The fixed value-line count of the supported column preset, after the name. */
-const VALUES_PER_ROW = 9
+/**
+ * Value-line counts per row for the supported column preset. Wide view
+ * (full-width tab) renders all 9 metric cells; the in-app panel is narrow
+ * enough that FB's column virtualization keeps only the first 3 (spend,
+ * cost-per-result, CPM) in the DOM. Both shapes carry the campaign name and
+ * the summary block, so the hard gates apply either way.
+ */
+const WIDE_VALUES_PER_ROW = 9
+const NARROW_VALUES_PER_ROW = 3
 
 const SUMMARY_MARKER = /^(\d+)个(广告系列|广告组|广告)的成效$/
 const ACCOUNT_LINE = /^(.{1,120}?) \((\d{8,})\)$/
@@ -123,33 +132,55 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
   const columns = lines.slice(headerStart + 1, headerEnd)
   if (columns.length < 4) return null
 
-  // Rows: after 定制列..., until the summary marker. Each row = name + 9 values.
+  // Rows: after 定制列..., until the summary marker. Each row = name plus a
+  // run of value lines (9 wide / 3 narrow); every row must use the same mode.
   const rows: FbAdsCampaignRow[] = []
   let i = headerEnd + 1
+  let campaignCount: number | null = null
+  let rowWidth: number | null = null
   while (i < lines.length) {
-    if (SUMMARY_MARKER.test(lines[i])) break
+    const marker = lines[i].match(SUMMARY_MARKER)
+    if (marker) {
+      campaignCount = Number(marker[1])
+      break
+    }
     const name = lines[i]
     if (!name || isValueLine(name)) return null
-    const values = lines.slice(i + 1, i + 1 + VALUES_PER_ROW)
-    if (values.length < VALUES_PER_ROW) return null
-    // Positions 0-3 and 5-8 must be metric values; position 4 carries the
-    // result count's type label (应用内购买) when the result cell renders it.
-    const metricPositions = [...values.slice(0, 4), ...values.slice(5)]
-    if (!metricPositions.every(isValueLine) || !isValueOrResultLabel(values[4])) return null
+    const values: string[] = []
+    let j = i + 1
+    while (j < lines.length && values.length < WIDE_VALUES_PER_ROW) {
+      if (SUMMARY_MARKER.test(lines[j])) break
+      if (!isValueOrResultLabel(lines[j])) break
+      values.push(lines[j])
+      j += 1
+    }
+    const width = values.length
+    if (width !== WIDE_VALUES_PER_ROW && width !== NARROW_VALUES_PER_ROW) return null
+    if (rowWidth === null) rowWidth = width
+    else if (rowWidth !== width) return null
+    if (width === WIDE_VALUES_PER_ROW) {
+      // Positions 0-3 and 5-8 must be metric values; position 4 carries the
+      // result count's type label (应用内购买) when the result cell renders it.
+      const metricPositions = [...values.slice(0, 4), ...values.slice(5)]
+      if (!metricPositions.every(isValueLine) || !isValueOrResultLabel(values[4])) return null
+    } else {
+      // Narrow: spend / cost-per-result / CPM only.
+      if (!values.every(isValueLine)) return null
+    }
     rows.push({
       name,
       spend: parseFbMetricNumber(values[0]),
       costPerResult: parseFbMetricNumber(values[1]),
       cpm: parseFbMetricNumber(values[2]),
-      results: parseFbMetricNumber(values[3]),
-      resultType: values[4] === '—' ? null : values[4],
-      clicks: parseFbMetricNumber(values[5]),
-      ctr: parseFbMetricNumber(values[6]),
-      cpc: parseFbMetricNumber(values[7]),
-      installs: parseFbMetricNumber(values[8]),
+      results: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[3]) : null,
+      resultType: width === WIDE_VALUES_PER_ROW && values[4] !== '—' ? values[4] : null,
+      clicks: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[5]) : null,
+      ctr: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[6]) : null,
+      cpc: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[7]) : null,
+      installs: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[8]) : null,
       raw: values
     })
-    i += 1 + VALUES_PER_ROW
+    i += 1 + width
   }
   if (rows.length === 0) return null
 
@@ -164,7 +195,16 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
     }
   }
 
-  return { kind: 'ads-manager-campaigns', accountId, accountName, dateRangeLabel, columns, rows, totalSpend }
+  return {
+    kind: 'ads-manager-campaigns',
+    accountId,
+    accountName,
+    dateRangeLabel,
+    campaignCount,
+    columns,
+    rows,
+    totalSpend
+  }
 }
 
 /**
@@ -175,4 +215,39 @@ export function fbAdsReadingTotalsMatch(reading: FbAdsCampaignReading): boolean 
   if (reading.totalSpend === null) return null
   const sum = reading.rows.reduce((acc, r) => acc + (r.spend ?? 0), 0)
   return Math.abs(sum - reading.totalSpend) < 0.005
+}
+
+/** Rows visible must equal the count the page's summary marker claims. */
+export function fbAdsReadingRowsMatchCount(reading: FbAdsCampaignReading): boolean | null {
+  if (reading.campaignCount === null) return null
+  return reading.rows.length === reading.campaignCount
+}
+
+export type FbReadingRejection = 'incomplete-view' | 'totals-mismatch' | null
+
+/**
+ * Single-reading hard gates for automated consumption: rows must match the
+ * page's own campaign count and the row sums must equal the page summary.
+ * Returns the first failing reason, or null when fully verified.
+ */
+export function fbAdsReadingRejection(reading: FbAdsCampaignReading): FbReadingRejection {
+  if (fbAdsReadingRowsMatchCount(reading) === false) return 'incomplete-view'
+  if (fbAdsReadingTotalsMatch(reading) === false) return 'totals-mismatch'
+  return null
+}
+
+/**
+ * Double-read consistency for the bridge: same structure, and either the
+ * readings are identical (page stable) or each is individually self-
+ * consistent (live numbers ticked between reads but stayed correct).
+ */
+export function fbAdsReadingsConsistent(
+  first: FbAdsCampaignReading,
+  second: FbAdsCampaignReading
+): boolean {
+  const structureOf = (r: FbAdsCampaignReading) =>
+    [r.accountId, r.dateRangeLabel, r.campaignCount, ...r.rows.map((row) => row.name)].join('|')
+  if (structureOf(first) !== structureOf(second)) return false
+  if (JSON.stringify(first) === JSON.stringify(second)) return true
+  return fbAdsReadingRejection(first) === null && fbAdsReadingRejection(second) === null
 }

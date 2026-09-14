@@ -2,11 +2,13 @@
 
 投手内置的 browser-use 能力：Agent 通过白名单动作驱动应用内浏览器面板——
 导航、源码快照（优先）、真实输入事件点击/输入/滚动、渲染截屏（兜底）。
+FB Ads Manager 读数另有 browser_report：桥端严格解析器直接返回结构化
+JSON（消耗/点击/安装等逐行 + 行求和=汇总交叉校验），模型不转抄数字。
 
 ## 组成
 
 - `extensions/index.ts` — 注册 browser_* 工具，经本机回环桥（env `TOUSHOU_BROWSER_USE`，令牌在路径中）与 GUI 通信
-- `skills/browser-use/SKILL.md` — 操作纪律与"源码优先、截图兜底"策略
+- `skills/browser-use/SKILL.md` — 操作纪律与"源码优先、截图兜底"策略；FB 广告后台读数优先 browser_report
 
 ## 安全设计
 

@@ -12,11 +12,13 @@ description: 用投手内置浏览器完成网页操作任务：导航、读内�
 1. **先用 `browser_snapshot`**：正文文本 + 可交互元素清单（带 ref 编号）一次到手，便宜且精确
 2. **只有源码回答不了才用 `browser_screenshot`**：判断视觉版面、确认渲染效果、页面是纯图片/Canvas 时
 3. 截图返回的是 PNG 路径——用你的文件读取能力查看它
+4. **FB Ads Manager 页面读数用 `browser_report`**：返回结构化 JSON（消耗/点击/安装等逐行数字 + 汇总交叉校验），比转抄正文精确；非 Ads Manager 页它会明确报 unparseable-page，此时再退回 snapshot
 
 ## 标准工作流
 
 ```
 browser_navigate(url)          → 打开目标页（第一步永远是它）
+FB 广告后台读数 → browser_report()（结构化数字，已交叉校验）
 browser_snapshot()             → 读正文 + 拿元素 ref 清单
   ├─ 信息够 → 直接回答/交付
   ├─ 要进页面 → browser_click(ref)

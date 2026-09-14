@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { fbAdsReadingTotalsMatch, parseFbAdsCampaignsSnapshot, parseFbMetricNumber } from './fbAdsParser'
+import {
+  fbAdsReadingRejection,
+  fbAdsReadingRowsMatchCount,
+  fbAdsReadingTotalsMatch,
+  fbAdsReadingsConsistent,
+  parseFbAdsCampaignsSnapshot,
+  parseFbMetricNumber
+} from './fbAdsParser'
 
 /**
  * REAL fixture — captured 2026-09-11 from the user's live Ads Manager
@@ -234,6 +241,61 @@ describe('parseFbAdsCampaignsSnapshot', () => {
 
     expect(reading?.totalSpend).toBe(3146.47)
     expect(fbAdsReadingTotalsMatch(reading as never)).toBe(true)
+    expect(reading?.campaignCount).toBe(8)
+    expect(fbAdsReadingRowsMatchCount(reading as never)).toBe(true)
+    expect(fbAdsReadingRejection(reading as never)).toBeNull()
+  })
+
+  it('rejects when the view hides rows the summary still counts (hard gate)', () => {
+    // Real-world shape from 2026-09-14: the "全部广告" view hid a deleted
+    // campaign (its $933.76 spend stayed in the summary). The parser must
+    // surface that as a refusal reason, never silently-wrong numbers.
+    const lastRow = [
+      'adtiger_三國點將令_IOS_MO/HK/TW_FB_aeo_Ricky_0825_001',
+      '$933.76',
+      '$15.31',
+      '$17.88',
+      '129',
+      '应用内购买',
+      '1,110',
+      '2.13%',
+      '$0.84',
+      '61'
+    ].join('\n')
+    const text = REAL_CAMPAIGNS_TEXT.replace(lastRow + '\n', '')
+    const reading = parseFbAdsCampaignsSnapshot({ url: REAL_URL, text })
+    expect(reading).not.toBeNull()
+    expect(reading?.rows).toHaveLength(7)
+    expect(reading?.campaignCount).toBe(8)
+    expect(fbAdsReadingRowsMatchCount(reading as never)).toBe(false)
+    expect(fbAdsReadingRejection(reading as never)).toBe('incomplete-view')
+  })
+
+  it('rejects when row sums drift from the page summary', () => {
+    const text = REAL_CAMPAIGNS_TEXT.replace('$529.08', '$529.07')
+    const reading = parseFbAdsCampaignsSnapshot({ url: REAL_URL, text })
+    expect(reading?.rows).toHaveLength(8)
+    expect(fbAdsReadingRowsMatchCount(reading as never)).toBe(true)
+    expect(fbAdsReadingRejection(reading as never)).toBe('totals-mismatch')
+  })
+
+  it('double-read consistency: identical pass, structure change fail, live tick pass', () => {
+    const base = parseFbAdsCampaignsSnapshot({ url: REAL_URL, text: REAL_CAMPAIGNS_TEXT })
+    expect(fbAdsReadingsConsistent(base as never, base as never)).toBe(true)
+
+    const renamed = parseFbAdsCampaignsSnapshot({
+      url: REAL_URL,
+      text: REAL_CAMPAIGNS_TEXT.replace('Ricky_0825_001', 'Ricky_0826_009')
+    })
+    expect(fbAdsReadingsConsistent(base as never, renamed as never)).toBe(false)
+
+    // Live numbers tick between reads but each stays self-consistent.
+    const ticked = parseFbAdsCampaignsSnapshot({
+      url: REAL_URL,
+      text: REAL_CAMPAIGNS_TEXT.replace('$529.08', '$530.00').replace('$3,146.47', '$3,147.39')
+    })
+    expect(fbAdsReadingsConsistent(base as never, ticked as never)).toBe(true)
+    expect(fbAdsReadingRejection(ticked as never)).toBeNull()
   })
 
   it('handles the 今天 date-label variant and a small table', () => {
@@ -294,5 +356,87 @@ $98.07
     expect(parseFbAdsCampaignsSnapshot({ text: '登录 Meta 业务工具\n邮箱\n密码' })).toBeNull()
     expect(parseFbAdsCampaignsSnapshot({ text: '' })).toBeNull()
     expect(parseFbAdsCampaignsSnapshot({ text: '关/开\n定制列...' })).toBeNull()
+  })
+
+  it('parses the narrow in-app panel render (3 metric columns) and fires the incomplete-view gate on real data', () => {
+    // REAL fixture captured 2026-09-14 from the in-app browser panel: the
+    // panel is narrow enough that FB column virtualization keeps only the
+    // first 3 metric cells per row in the DOM. The "全部广告" view also hid
+    // a deleted campaign whose spend stayed in the summary — exactly the
+    // condition the hard gate must refuse.
+    const text = [
+      '广告管理工具',
+      '52',
+      'COOPLAY-ADT-IOS-03 (2131017261144314)',
+      '过去 30 天：2026年8月15日 – 2026年9月13日',
+      '关/开',
+      '广告系列',
+      '已花费金额',
+      '单次应用安装费用',
+      'CPM（千次展示费用）',
+      '成效',
+      '点击量（全部）',
+      '点击率（全部）',
+      '单次点击费用（全部）',
+      '应用安装量',
+      '移动应用安装量',
+      '投放',
+      '操作',
+      '归因设置',
+      '单次成效费用',
+      '预算',
+      '定制列...',
+      'adtiger_三國點將令_IOS_aem_HK/TW/SG/MY_aeo_leo_0911_008',
+      '$499.91',
+      '$19.23',
+      '$14.82',
+      'adtiger_三國點將令_IOS_aem_HK/TW_aeo_leo_0908_007',
+      '$639.75',
+      '$22.85',
+      '$16.49',
+      'adtiger_三國點將令_IOS_aem_SG/MY_aeo_leo_0904_006',
+      '$315.50',
+      '$26.29',
+      '$17.10',
+      'adtiger_三國點將令_IOS_aem_TW_aeo_leo_0904_005',
+      '$318.60',
+      '$17.70',
+      '$18.18',
+      'adtiger_三國點將令_IOS_aem_HK_aeo_leo_0904_004',
+      '$332.11',
+      '$23.72',
+      '$23.19',
+      'adtiger_三國點將令_IOS_skan_MO/HK/TW_FB_aeo_leo_0901_003',
+      '$240.97',
+      '$34.42',
+      '$14.19',
+      'adtiger_三國點將令_IOS_MO/HK/TW_FB_aeo_Ricky_0827_001',
+      '$476.45',
+      '$36.65',
+      '$27.34',
+      '8个广告系列的成效',
+      '$3,757.05',
+      '总花费',
+      '$20.99',
+      '每次动作',
+      '$17.94',
+      '每 1000 次展示'
+    ].join('\n')
+    const reading = parseFbAdsCampaignsSnapshot({
+      url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=2131017261144314',
+      text
+    })
+    expect(reading).not.toBeNull()
+    expect(reading?.rows).toHaveLength(7)
+    expect(reading?.rows[0].spend).toBe(499.91)
+    expect(reading?.rows[0].costPerResult).toBe(19.23)
+    expect(reading?.rows[0].cpm).toBe(14.82)
+    expect(reading?.rows[0].clicks).toBeNull()
+    expect(reading?.totalSpend).toBe(3757.05)
+    expect(fbAdsReadingRowsMatchCount(reading as never)).toBe(false)
+    // The page's own marker says 8 campaigns but the view renders 7 — a
+    // deleted campaign is hidden while its spend stays in the summary. The
+    // count gate fires first: refuse, never under-report.
+    expect(fbAdsReadingRejection(reading as never)).toBe('incomplete-view')
   })
 })
