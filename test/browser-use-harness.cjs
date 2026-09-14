@@ -88,6 +88,10 @@ app.whenReady().then(async () => {
     // the page text attached so the agent can fall back to reading it.
     record('A report (non-Ads-Manager, expect unparseable)', await post(envA, { action: 'report' }))
 
+    // 5.6 History reads the local verified store (panel-independent; the
+    // temp userData has no readings yet, so the projection is empty).
+    record('A history', await post(envA, { action: 'history' }))
+
     // 6. Screenshot fallback: file lands on disk. capturePage needs the
     //    window actually painted, so surface the hidden window for this step
     //    (in the real app the window is visible by definition).

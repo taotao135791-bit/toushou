@@ -132,6 +132,10 @@ describe('browser-use e2e (real Electron panel)', () => {
     expect(steps['A report (non-Ads-Manager, expect unparseable)'].error).toBe('unparseable-page')
     expect(steps['A report (non-Ads-Manager, expect unparseable)'].text).toContain('second page')
 
+    // History is panel-independent and reads the (empty) verified store.
+    expect(steps['A history'].ok).toBe(true)
+    expect(Array.isArray(steps['A history'].readings)).toBe(true)
+
     // Screenshot fallback writes a PNG.
     expect(steps['A screenshot'].ok).toBe(true)
     expect(existsSync(String(steps['A screenshot'].imagePath))).toBe(true)
