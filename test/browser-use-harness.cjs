@@ -84,6 +84,10 @@ app.whenReady().then(async () => {
     record('A click link', await post(envA, { action: 'click', ref: link.ref }))
     record('A snapshot after click', await post(envA, { action: 'snapshot' }))
 
+    // 5.5 Structured report on a non-Ads-Manager page: fails closed with
+    // the page text attached so the agent can fall back to reading it.
+    record('A report (non-Ads-Manager, expect unparseable)', await post(envA, { action: 'report' }))
+
     // 6. Screenshot fallback: file lands on disk. capturePage needs the
     //    window actually painted, so surface the hidden window for this step
     //    (in the real app the window is visible by definition).

@@ -127,6 +127,11 @@ describe('browser-use e2e (real Electron panel)', () => {
     expect(steps['A click link'].ok).toBe(true)
     expect(steps['A snapshot after click'].text).toContain('second page')
 
+    // Structured report fails closed off Ads Manager, with fallback text.
+    expect(steps['A report (non-Ads-Manager, expect unparseable)'].ok).toBe(false)
+    expect(steps['A report (non-Ads-Manager, expect unparseable)'].error).toBe('unparseable-page')
+    expect(steps['A report (non-Ads-Manager, expect unparseable)'].text).toContain('second page')
+
     // Screenshot fallback writes a PNG.
     expect(steps['A screenshot'].ok).toBe(true)
     expect(existsSync(String(steps['A screenshot'].imagePath))).toBe(true)

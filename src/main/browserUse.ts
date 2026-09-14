@@ -8,6 +8,11 @@ import { getActiveBrowserPanel, isBrowserPanelVisible } from './browserPanel'
 import { appendFbSnapshot, isFacebookSnapshotUrl } from './fbSnapshots'
 import { safeBrowserPanelUrl } from './navigation'
 import { IPC_CHANNELS } from '../shared/constants'
+import {
+  fbAdsReadingsConsistent,
+  fbAdsReadingRejection,
+  parseFbAdsCampaignsSnapshot
+} from '../shared/fbAdsParser'
 
 /**
  * Browser-use bridge: lets runtime extension tools drive the in-app browser
@@ -72,6 +77,7 @@ export function isFacebookReadOnlyAction(action: BrowserUseAction, panelUrl: str
 export type BrowserUseAction =
   | 'navigate'
   | 'snapshot'
+  | 'report'
   | 'click'
   | 'type'
   | 'scroll'
@@ -92,12 +98,13 @@ export interface BrowserUseRequest {
 }
 
 export type BrowserUseResult =
-  | { ok: true; url?: string; title?: string; text?: string; elements?: Array<Record<string, unknown>>; imagePath?: string }
-  | { ok: false; error: string }
+  | { ok: true; url?: string; title?: string; text?: string; elements?: Array<Record<string, unknown>>; imagePath?: string; reading?: unknown; verified?: boolean }
+  | { ok: false; error: string; text?: string; url?: string; title?: string }
 
 const ACTION_NAMES = new Set<string>([
   'navigate',
   'snapshot',
+  'report',
   'click',
   'type',
   'scroll',
@@ -126,6 +133,8 @@ export function parseBrowserUseRequest(raw: unknown): BrowserUseRequest | null {
     }
     case 'snapshot':
       return { action: 'snapshot' }
+    case 'report':
+      return { action: 'report' }
     case 'click': {
       const ref = body.ref
       if (typeof ref !== 'number' || !Number.isInteger(ref) || ref < 1 || ref > MAX_ELEMENTS) return null
@@ -338,6 +347,78 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
         title: snap.title,
         text,
         elements: (snap.elements ?? []).slice(0, MAX_ELEMENTS)
+      }
+    }
+    case 'report': {
+      // Structured FB reading, hard-verified for automated consumption: two
+      // snapshots parsed by the strict shared parser (never by a model),
+      // archived as evidence, then gated — rows must equal the page's own
+      // campaign count, row sums must equal the page summary, and the two
+      // reads must be structurally consistent. ANY gate failing refuses the
+      // numbers with a precise reason; no data beats wrong data. Non-Ads-
+      // Manager pages fail closed with raw text for agent fallback.
+      const readOnce = async () => {
+        const snap = await exec<{
+        url: string
+        title: string
+        text: string
+        elements: Array<Record<string, unknown>>
+      }>(SNAPSHOT_SCRIPT)
+        const text = snap.text.slice(0, MAX_TEXT_CHARS)
+        if (isFacebookSnapshotUrl(snap.url)) {
+          try {
+            appendFbSnapshot({ url: snap.url, title: snap.title, text })
+          } catch {
+            // archive is advisory; ignore storage hiccups
+          }
+        }
+        return {
+          url: snap.url,
+          title: snap.title,
+          text,
+          reading: parseFbAdsCampaignsSnapshot({ url: snap.url, title: snap.title, text })
+        }
+      }
+
+      // FB renders the table progressively (and virtualizes long tables);
+      // an immediate read can catch a half-rendered page, which the strict
+      // parser correctly refuses. Bounded retry until it parses cleanly.
+      let first: Awaited<ReturnType<typeof readOnce>> | null = null
+      for (let attempt = 0; attempt < 6; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 900))
+        first = await readOnce()
+        if (first.reading) break
+      }
+      const firstRead = first
+      if (!firstRead || !firstRead.reading) {
+        return {
+          ok: false,
+          error: 'unparseable-page',
+          text: firstRead ? firstRead.text.slice(0, 4_000) : '',
+          url: firstRead?.url ?? '',
+          title: firstRead?.title ?? ''
+        }
+      }
+      // Let a live page settle, then re-read: the double read catches pages
+      // that were still loading, and gates single-read consistency below.
+      await new Promise((r) => setTimeout(r, 700))
+      const second = await readOnce()
+      if (!second.reading) {
+        return { ok: false, error: 'unstable-page', url: second.url, title: second.title }
+      }
+      const rejection = fbAdsReadingRejection(second.reading)
+      if (rejection) {
+        return { ok: false, error: rejection, url: second.url, title: second.title }
+      }
+      if (!fbAdsReadingsConsistent(firstRead.reading, second.reading)) {
+        return { ok: false, error: 'unstable-page', url: second.url, title: second.title }
+      }
+      return {
+        ok: true,
+        url: second.url,
+        title: second.title,
+        reading: second.reading,
+        verified: true
       }
     }
     case 'click': {
