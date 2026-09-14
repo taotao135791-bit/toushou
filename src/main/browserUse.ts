@@ -13,6 +13,7 @@ import {
   fbAdsReadingRejection,
   parseFbAdsCampaignsSnapshot
 } from '../shared/fbAdsParser'
+import { appendFbReading } from './fbReadings'
 
 /**
  * Browser-use bridge: lets runtime extension tools drive the in-app browser
@@ -412,6 +413,14 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
       }
       if (!fbAdsReadingsConsistent(firstRead.reading, second.reading)) {
         return { ok: false, error: 'unstable-page', url: second.url, title: second.title }
+      }
+      // Verified reading → history (trend foundation for scheduled tasks
+      // and boards). Fire-and-forget like the snapshot archive: a storage
+      // hiccup never fails the report the user is looking at.
+      try {
+        appendFbReading(second.reading)
+      } catch {
+        // history is advisory; ignore storage hiccups
       }
       return {
         ok: true,
