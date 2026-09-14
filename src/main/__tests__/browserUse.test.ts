@@ -29,6 +29,11 @@ describe('gateBrowserUseRequest', () => {
     expect(gateBrowserUseRequest('navigate', 'A', null, true)).toBeNull()
   })
 
+  it('always admits history (local verified store, never touches the panel)', () => {
+    expect(gateBrowserUseRequest('history', 'B', 'A', false)).toBeNull()
+    expect(gateBrowserUseRequest('history', 'A', null, true)).toBeNull()
+  })
+
   it('refuses every other action while the panel is hidden', () => {
     for (const action of ['snapshot', 'report', 'click', 'type', 'scroll', 'screenshot', 'back', 'forward', 'wait'] as const) {
       expect(gateBrowserUseRequest(action, 'A', 'A', false)).toBe('panel-hidden')
@@ -65,6 +70,20 @@ describe('parseBrowserUseRequest', () => {
     expect(parseBrowserUseRequest({ action: 'screenshot' })).toEqual({ action: 'screenshot' })
     expect(parseBrowserUseRequest({ action: 'back' })).toEqual({ action: 'back' })
     expect(parseBrowserUseRequest({ action: 'forward' })).toEqual({ action: 'forward' })
+  })
+
+  it('accepts history with a bounded account id and limit', () => {
+    expect(parseBrowserUseRequest({ action: 'history' })).toEqual({ action: 'history', accountId: undefined, limit: 10 })
+    expect(parseBrowserUseRequest({ action: 'history', accountId: '2131017261144314', limit: 20 })).toEqual({
+      action: 'history',
+      accountId: '2131017261144314',
+      limit: 20
+    })
+    expect(parseBrowserUseRequest({ action: 'history', accountId: 'abc', limit: 999 })).toEqual({
+      action: 'history',
+      accountId: undefined,
+      limit: 10
+    })
   })
 
   it('accepts click with a bounded integer ref', () => {

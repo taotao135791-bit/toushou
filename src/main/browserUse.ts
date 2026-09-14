@@ -13,7 +13,7 @@ import {
   fbAdsReadingRejection,
   parseFbAdsCampaignsSnapshot
 } from '../shared/fbAdsParser'
-import { appendFbReading } from './fbReadings'
+import { appendFbReading, listFbReadings } from './fbReadings'
 
 /**
  * Browser-use bridge: lets runtime extension tools drive the in-app browser
@@ -56,7 +56,9 @@ export function gateBrowserUseRequest(
   owner: string | null,
   panelVisible: boolean
 ): 'panel-hidden' | 'panel-owned-by-another-session' | null {
-  if (action === 'navigate') return null
+  // navigate visibly reopens the panel; history reads the local verified
+  // store and never touches the page — both are panel-independent.
+  if (action === 'navigate' || action === 'history') return null
   if (!panelVisible) return 'panel-hidden'
   if (owner !== null && owner !== sessionId) return 'panel-owned-by-another-session'
   return null
@@ -79,6 +81,7 @@ export type BrowserUseAction =
   | 'navigate'
   | 'snapshot'
   | 'report'
+  | 'history'
   | 'click'
   | 'type'
   | 'scroll'
@@ -90,6 +93,8 @@ export type BrowserUseAction =
 export interface BrowserUseRequest {
   action: BrowserUseAction
   url?: string
+  accountId?: string
+  limit?: number
   ref?: number
   text?: string
   submit?: boolean
@@ -99,13 +104,14 @@ export interface BrowserUseRequest {
 }
 
 export type BrowserUseResult =
-  | { ok: true; url?: string; title?: string; text?: string; elements?: Array<Record<string, unknown>>; imagePath?: string; reading?: unknown; verified?: boolean }
+  | { ok: true; url?: string; title?: string; text?: string; elements?: Array<Record<string, unknown>>; imagePath?: string; reading?: unknown; verified?: boolean; readings?: unknown[] }
   | { ok: false; error: string; text?: string; url?: string; title?: string }
 
 const ACTION_NAMES = new Set<string>([
   'navigate',
   'snapshot',
   'report',
+  'history',
   'click',
   'type',
   'scroll',
@@ -136,6 +142,15 @@ export function parseBrowserUseRequest(raw: unknown): BrowserUseRequest | null {
       return { action: 'snapshot' }
     case 'report':
       return { action: 'report' }
+    case 'history': {
+      const accountId =
+        typeof body.accountId === 'string' && /^\d{6,}$/.test(body.accountId) ? body.accountId : undefined
+      const limit =
+        typeof body.limit === 'number' && Number.isInteger(body.limit) && body.limit >= 1 && body.limit <= 50
+          ? body.limit
+          : 10
+      return { action: 'history', accountId, limit }
+    }
     case 'click': {
       const ref = body.ref
       if (typeof ref !== 'number' || !Number.isInteger(ref) || ref < 1 || ref > MAX_ELEMENTS) return null
@@ -429,6 +444,22 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
         reading: second.reading,
         verified: true
       }
+    }
+    case 'history': {
+      // Verified-reading history for trends/boards. Compact projection only:
+      // name+spend per row keeps the payload inside the bridge's text cap
+      // while totals cover trend cards; full metrics stay in the store.
+      const entries = listFbReadings(req.accountId).slice(0, req.limit ?? 10)
+      const readings = entries.map((entry) => ({
+        capturedAt: entry.capturedAt,
+        accountId: entry.accountId,
+        accountName: entry.accountName,
+        dateRangeLabel: entry.dateRangeLabel,
+        campaignCount: entry.campaignCount,
+        totalSpend: entry.totalSpend,
+        rows: entry.rows.map((row) => ({ name: row.name, spend: row.spend }))
+      }))
+      return { ok: true, readings }
     }
     case 'click': {
       const center = await exec<{ x: number; y: number } | null>(`(() => {
