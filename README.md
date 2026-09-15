@@ -6,13 +6,15 @@
 
 ## 下载安装
 
-当前版本 v0.20.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.20.0) 下载：
+当前版本 v0.21.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.21.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.20.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.20.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.20.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.21.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.21.0/TouShou-x64.dmg) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.21.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+v0.21.0：「爆款竞品分析」链路进内核。新增内置打法《爆款竞品分析》（每次启动自动装进 Skill 库、带版本号升级、保留团队手工微调）：从我方 TikTok 账户表现找薄弱点 → 翻译成对标问题 → SocialPeta 竞品爆款检索（creative_rank 上升榜 / search_creatives / creative_detail / advertiser_analysis）→ 按固定模板产出「爆款竞品分析需求单」，第 0 步强制工具自检（TikTok/SocialPeta 任一未挂载即如实报告并停止，不用半套数据编结论）。定时任务新增「每周爆款竞品分析」一键模板（每周一 09:00 + 关联打法）；任务新增 skillId 字段——触发时把打法注入为会话系统提示，定时执行与手动"用于对话"走同一份 SOP（实测：任务触发后 OMP 子进程启动参数携带完整打法，Skill 库自动安装、模板预填、错误 skillId 拒绝保存均已验证）。agent 的 toushou_task_create 也支持 skillId，在对话/飞书里说"每周帮我跑一次爆款竞品分析"即可建好带打法的循环任务。
 
 v0.20.0：定时任务成为真正的员工（结果进飞书 / agent 可建任务 / 可核查）。**任务结果推送飞书**——任务新增"完成通知"选项：除了系统通知，可选择推送到飞书，每轮跑完把结果摘要自动发到你与机器人的最近聊天（实测推送成功；此前任务结果死在系统通知里，人不在电脑前就错过）。**对话内直接建任务**——新增 toushou-tasks-toolkit 扩展包，agent 在对话和飞书里可以直接创建、查看、删除定时任务（实测：对话里说"每 3 分钟巡检一次"，工具调用→校验→落盘一条链路自动完成）；安全边界保持 Main 所有：任务运行目录强制绑定当前会话的项目（agent 无法指定其他目录）、排程/长度/数量全部在主进程校验、任务数上限 50。**工作日排程与分钟级间隔**——排程新增"工作日（周一到周五）"和"每 N 分钟"（广告日报最常见的两种节奏，此前要么周末白跑要么建 5 个任务）。**运行历史**——每张任务卡片可展开最近 10 次运行（时间/成功失败/耗时/失败原因，点击直达该次运行会话），定时任务的"可靠感"从此可核查；失败原因全部中英双语。**首启引导补连接步骤**——向导在模型就绪后新增"连接你的第一个数据源"（飞书/TikTok Ads 一键前往连接页，可跳过；全部已连接时自动放行不再重复引导），并修复一个 v0.17.1 起的潜在冻结：模型探测结果会被 effect 的 active 守卫丢弃，全新首启的用户会永远卡在"正在检查模型配置"。**其他**——侧栏两个入口改名区分（「插件」与「Skill 库」，此前「插件与技能」和「Skill」并排打架）；项目行显示友好名称而非裸路径；实测 3 分钟间隔任务连续两轮自动触发、结果两次送达飞书、运行历史两条落盘。
 

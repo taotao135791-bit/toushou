@@ -14,6 +14,14 @@ import { Language, SkillEntry, SkillKind } from './types'
 export const SKILL_FILE_EXTENSIONS = ['md', 'html'] as const
 export type SkillFileExtension = (typeof SKILL_FILE_EXTENSIONS)[number]
 
+/**
+ * File id of the kernel viral-competitive-analysis skill. Main installs it
+ * into userData/skills at every startup (version-marked); the scheduled-task
+ * template and the injected playbook must never drift apart, so both sides
+ * reference this constant.
+ */
+export const KERNEL_VIRAL_SKILL_ID = '爆款竞品分析.md'
+
 export const SKILL_LIMITS = {
   /** Import/read cap per file — keeps grants, IPC and previews bounded. */
   maxFileBytes: 2 * 1024 * 1024,

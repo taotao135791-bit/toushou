@@ -134,6 +134,7 @@ import {
   revealSkillsDir
 } from './skills'
 import { importGithubSkills, previewGithubSkills } from './skillsGithub'
+import { isValidSkillId } from '../shared/skills'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
 import { openWorkspaceInRequest } from './openWorkspaceIn'
@@ -597,6 +598,16 @@ export function registerIpc() {
   // completion. Task sessions carry origin 'task' so the sidebar can badge
   // them and the notification layer can treat them specially.
   setTaskSpawnFn(async (cwd, title, prompt, opts) => {
+    // Kernel/团队打法 tasks carry a skill id: the playbook is injected as the
+    // session's system prompt so a scheduled run follows the same SOP as an
+    // interactive skill launch. A missing/deleted skill degrades gracefully
+    // to a plain prompt run.
+    let skillSystemPrompt: string | undefined
+    if (opts?.skillId) {
+      const skill = readSkillSystemPrompt(opts.skillId, getStore('language'))
+      if (skill.ok) skillSystemPrompt = skill.prompt
+      else console.warn(`[scheduled-tasks] skill "${opts.skillId}" unavailable: ${skill.error}`)
+    }
     const session = createSession(
       cwd,
       (event) => {
@@ -620,7 +631,8 @@ export function registerIpc() {
         origin: 'task',
         // An explicitly read-only task must not silently inherit the
         // workspace's global write/exec mode while running unattended.
-        ...(opts?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
+        ...(opts?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
+        ...(skillSystemPrompt ? { skillSystemPrompt } : {})
       }
     )
     if (session.status === 'error') return null
@@ -2131,6 +2143,9 @@ export function registerIpc() {
     if (t.notifyChannel !== undefined && t.notifyChannel !== 'system' && t.notifyChannel !== 'feishu') {
       return { ok: false, error: 'invalid-notify-channel' }
     }
+    if (t.skillId !== undefined && !isValidSkillId(t.skillId)) {
+      return { ok: false, error: 'invalid-skill-id' }
+    }
     // The stored shape is exactly what passed validation. Runtime-owned run
     // ledger fields (lastRunAt, failures, runs, last session) are merged back
     // from the stored copy inside saveTask so an edit cannot reset them.
@@ -2144,6 +2159,7 @@ export function registerIpc() {
       createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
       notifyOnComplete: t.notifyOnComplete !== false,
       ...(t.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+      ...(typeof t.skillId === 'string' && isValidSkillId(t.skillId) ? { skillId: t.skillId } : {}),
       ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
     }
     return { ok: true, task: saveTask(clean) }

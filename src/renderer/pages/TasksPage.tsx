@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
 import { ScheduledTask } from '@shared/types'
+import { KERNEL_VIRAL_SKILL_ID } from '@shared/skills'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import { showNotice } from '../lib/notice'
@@ -54,6 +55,26 @@ function groupByProject(tasks: ScheduledTask[]): TaskGroup[] {
 const btn = 'rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors'
 const input = 'mt-1 w-full rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50'
 
+/**
+ * One-click task templates. The viral-analysis template pairs the prompt
+ * with the kernel skill id: at fire time Main injects the playbook as the
+ * session's system prompt, so a scheduled run follows the exact same SOP as
+ * an interactive skill launch (single source of truth in Skill 库).
+ */
+const TEMPLATES = [
+  {
+    key: 'viral' as const,
+    apply: () => ({
+      name: '每周爆款竞品分析',
+      prompt: '执行《爆款竞品分析》打法（完整步骤已随本任务注入）：先做第 0 步工具自检；然后完成我方账户体检（第 1 步）、对标问题翻译（第 2 步）、竞品爆款检索（第 3 步）；按第 4 步模板输出「爆款竞品分析需求单」；最后按第 5 步说明分发方式。数据窗口默认近 7 天。',
+      scheduleType: 'weekly' as const,
+      dayOfWeek: 1,
+      time: '09:00',
+      skillId: KERNEL_VIRAL_SKILL_ID
+    })
+  }
+]
+
 /** Compact wall-clock duration for a finished run row. */
 function formatDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
@@ -82,14 +103,21 @@ export default function TasksPage() {
     intervalUnit: 'hour' as 'hour' | 'minute',
     notifyOnComplete: true,
     notifyChannel: 'system' as 'system' | 'feishu',
+    skillId: '',
     permissionMode: 'default' as 'default' | 'readonly'
   })
 
   const projectName = (cwd: string) => basename(cwd) || cwd
 
+  const applyTemplate = (key: 'viral') => {
+    const template = TEMPLATES.find(t => t.key === key)
+    if (!template) return
+    setForm(f => ({ ...f, ...template.apply(), cwd: f.cwd || (recentWorkspaces[0]?.displayPath ?? '') }))
+  }
+
   const openModal = () => {
     setEditingTask(null)
-    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system' }))
+    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', skillId: '' }))
     setModalOpen(true)
   }
 
@@ -108,6 +136,7 @@ export default function TasksPage() {
       intervalUnit: task.schedule.type === 'interval' && task.schedule.minutes !== undefined ? 'minute' : 'hour',
       notifyOnComplete: task.notifyOnComplete,
       notifyChannel: task.notifyChannel === 'feishu' ? 'feishu' : 'system',
+      skillId: task.skillId ?? '',
       permissionMode: task.permissionMode === 'readonly' ? 'readonly' : 'default'
     })
     setModalOpen(true)
@@ -136,6 +165,7 @@ export default function TasksPage() {
       schedule, enabled: editingTask?.enabled ?? true,
       createdAt: editingTask?.createdAt ?? Date.now(), notifyOnComplete: form.notifyOnComplete,
       ...(form.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+      ...(form.skillId ? { skillId: form.skillId } : {}),
       ...(form.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
     }
     let result: Awaited<ReturnType<typeof window.electronAPI.saveTask>>
@@ -409,6 +439,24 @@ export default function TasksPage() {
               <button onClick={() => setModalOpen(false)} className="text-cream-faint hover:text-cream"><Plus size={14} className="rotate-45" /></button>
             </div>
             <div className="space-y-3">
+              {!editingTask && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-cream-faint">{t('tasks.template')}</span>
+                  {TEMPLATES.map(template => (
+                    <button
+                      key={template.key}
+                      onClick={() => applyTemplate(template.key)}
+                      title={t('tasks.templateViralHint')}
+                      className="rounded-full border border-line bg-ink-800 px-2.5 py-1 text-[11px] text-cream-dim transition-colors hover:border-accent/40 hover:text-cream"
+                    >
+                      {t('tasks.templateViral')}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {editingTask && form.skillId && (
+                <p className="text-[11px] text-cream-faint">{t('tasks.skillLinked')}</p>
+              )}
               <label className="block text-[11px] text-cream-faint">
                 {t('sidebar.taskName')}
                 <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className={input} placeholder={t('sidebar.taskNamePh')} />

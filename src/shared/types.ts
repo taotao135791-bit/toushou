@@ -1547,6 +1547,11 @@ export interface ScheduledTask {
   /** Recent run ledger, engine-owned, newest first, capped. */
   runs?: TaskRunEntry[]
   /**
+   * Optional skill injected as the firing session's system prompt — the
+   * playbook is the single source of truth shared with interactive runs.
+   */
+  skillId?: string
+  /**
    * Unattended sessions default to the workspace's global permission mode;
    * 'readonly' opts a task down to read-only execution.
    */

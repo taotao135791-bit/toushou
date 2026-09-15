@@ -286,9 +286,9 @@ describe('scheduler tick safety', () => {
 
 describe('edit-and-ledger loop closures', () => {
   it('a firing hands the task options to the spawn fn and records the run session', async () => {
-    const task = baseTask({ permissionMode: 'readonly' })
+    const task = baseTask({ permissionMode: 'readonly', skillId: '爆款竞品分析.md' })
     tasks.push(task)
-    const calls: Array<{ cwd: string; title: string; prompt: string; opts?: { taskId: string; permissionMode?: string } }> = []
+    const calls: Array<{ cwd: string; title: string; prompt: string; opts?: { taskId: string; permissionMode?: string; skillId?: string } }> = []
     setTaskSpawnFn(async (cwd, title, prompt, opts) => {
       calls.push({ cwd, title, prompt, opts })
       return { sessionId: 'session-C' }
@@ -296,7 +296,7 @@ describe('edit-and-ledger loop closures', () => {
 
     await runTaskNow('t1')
     expect(calls).toEqual([
-      { cwd: '/tmp/project', title: '每日报告', prompt: '拉取昨日数据并总结', opts: { taskId: 't1', permissionMode: 'readonly' } }
+      { cwd: '/tmp/project', title: '每日报告', prompt: '拉取昨日数据并总结', opts: { taskId: 't1', permissionMode: 'readonly', skillId: '爆款竞品分析.md' } }
     ])
     expect(tasks[0].lastRunSessionId).toBe('session-C')
     expect(tasks[0].consecutiveFailures).toBe(0)

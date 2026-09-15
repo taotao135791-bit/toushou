@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron'
 import { getStore, setStore } from './store'
 import { ScheduledTask, TaskFailureReason, TaskRunEntry, TaskSchedule } from '../shared/types'
+import { isValidSkillId } from '../shared/skills'
 import { IPC_CHANNELS } from '../shared/constants'
 
 /**
@@ -41,6 +42,8 @@ export interface TaskSpawnOptions {
   taskId: string
   /** 'readonly' opts the unattended session down from the global mode. */
   permissionMode?: 'default' | 'readonly'
+  /** Skill library id injected as the firing session's system prompt. */
+  skillId?: string
 }
 
 export type TaskSpawnFn = (
@@ -143,6 +146,9 @@ export function buildTaskFromAgentInput(raw: unknown, cwd: string, now: number):
   if (value.notifyChannel !== undefined && value.notifyChannel !== 'system' && value.notifyChannel !== 'feishu') {
     return { ok: false, error: 'invalid-notify-channel' }
   }
+  if (value.skillId !== undefined && !isValidSkillId(value.skillId)) {
+    return { ok: false, error: 'invalid-skill-id' }
+  }
   if (getTasks().length >= MAX_TASKS) return { ok: false, error: 'too-many-tasks' }
   const task: ScheduledTask = {
     id: `task-${now}-${Math.random().toString(36).slice(2, 6)}`,
@@ -154,6 +160,7 @@ export function buildTaskFromAgentInput(raw: unknown, cwd: string, now: number):
     createdAt: now,
     notifyOnComplete: value.notifyOnComplete !== false,
     ...(value.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+    ...(typeof value.skillId === 'string' && isValidSkillId(value.skillId) ? { skillId: value.skillId } : {}),
     ...(value.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
   }
   return { ok: true, task }
@@ -380,7 +387,8 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
     }
     const result = await spawnFn(task.cwd, task.name, task.prompt, {
       taskId: task.id,
-      permissionMode: task.permissionMode
+      permissionMode: task.permissionMode,
+      ...(task.skillId ? { skillId: task.skillId } : {})
     })
     if (!result) {
       await recordFailure(task, 'spawn-failed')
