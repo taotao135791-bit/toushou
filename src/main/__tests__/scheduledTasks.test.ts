@@ -16,13 +16,15 @@ import {
   MAX_RUN_ENTRIES,
   nextRunAt,
   noteTaskSessionEvent,
+  noteTaskSessionFile,
   runTaskNow,
   saveTask,
   setTaskSpawnFn,
   setTaskOutcomeSink,
   setTaskOutcomeSinkResetForTest,
   resetRunningGuardsForTest,
-  startScheduler
+  startScheduler,
+  reconcileInterruptedTaskRuns
 } from '../scheduledTasks'
 
 const { getStore, setStore } = await import('../store')
@@ -288,16 +290,21 @@ describe('edit-and-ledger loop closures', () => {
   it('a firing hands the task options to the spawn fn and records the run session', async () => {
     const task = baseTask({ permissionMode: 'readonly', skillId: '爆款竞品分析.md' })
     tasks.push(task)
-    const calls: Array<{ cwd: string; title: string; prompt: string; opts?: { taskId: string; permissionMode?: string; skillId?: string } }> = []
+    const calls: Array<{ cwd: string; title: string; prompt: string; opts?: { taskId: string; runId?: string; permissionMode?: string; skillId?: string } }> = []
     setTaskSpawnFn(async (cwd, title, prompt, opts) => {
       calls.push({ cwd, title, prompt, opts })
       return { sessionId: 'session-C' }
     })
 
     await runTaskNow('t1')
-    expect(calls).toEqual([
-      { cwd: '/tmp/project', title: '每日报告', prompt: '拉取昨日数据并总结', opts: { taskId: 't1', permissionMode: 'readonly', skillId: '爆款竞品分析.md' } }
-    ])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      cwd: '/tmp/project',
+      title: '每日报告',
+      prompt: '拉取昨日数据并总结',
+      opts: { taskId: 't1', permissionMode: 'readonly', skillId: '爆款竞品分析.md' }
+    })
+    expect(calls[0].opts?.runId).toMatch(/^[0-9a-f-]{36}$/)
     expect(tasks[0].lastRunSessionId).toBe('session-C')
     expect(tasks[0].consecutiveFailures).toBe(0)
   })
@@ -354,6 +361,15 @@ describe('run ledger', () => {
     expect(tasks[0].runs![0].reason).toBe('run-error')
   })
 
+  it('records a user stop as cancelled when the runtime converges to idle', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => ({ sessionId: 'run-cancelled' }))
+    await runTaskNow('t1')
+    noteTaskSessionEvent('run-cancelled', { type: 'status', status: 'aborting' })
+    noteTaskSessionEvent('run-cancelled', { type: 'status', status: 'idle' })
+    expect(tasks[0].runs![0]).toMatchObject({ outcome: 'failed', status: 'cancelled', reason: 'cancelled' })
+  })
+
   it('a spawn failure records a failed entry without a session', async () => {
     tasks.push(baseTask())
     setTaskSpawnFn(async () => null)
@@ -363,6 +379,44 @@ describe('run ledger', () => {
     expect(tasks[0].runs![0].outcome).toBe('failed')
     expect(tasks[0].runs![0].reason).toBe('spawn-failed')
     expect(tasks[0].runs![0].sessionId).toBeUndefined()
+  })
+
+  it('releases the guard after spawn failure so a manual retry is immediate', async () => {
+    tasks.push(baseTask())
+    let attempts = 0
+    setTaskSpawnFn(async () => {
+      attempts += 1
+      return null
+    })
+
+    await expect(runTaskNow('t1')).resolves.toBe('failed')
+    await expect(runTaskNow('t1')).resolves.toBe('failed')
+    expect(attempts).toBe(2)
+    expect(tasks[0].runs?.slice(0, 2).map((run) => run.outcome)).toEqual(['failed', 'failed'])
+  })
+
+  it('keeps an open run in preparing/running state instead of optimistic success', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => ({ sessionId: 'open-run' }))
+
+    await runTaskNow('t1')
+    expect(tasks[0].runs?.[0].outcome).toBeUndefined()
+    expect(tasks[0].runs?.[0].status).toBe('running')
+    noteTaskSessionEvent('open-run', { type: 'status', status: 'idle' })
+    expect(tasks[0].runs?.[0].outcome).toBe('success')
+  })
+
+  it('reconciles open runs after an app restart as interrupted', () => {
+    tasks.push(baseTask({
+      lastRunId: 'old-run',
+      lastRunStatus: 'running',
+      runs: [{ runId: 'old-run', status: 'running', startedAt: 100, sessionId: 'old-session' }]
+    }))
+    reconcileInterruptedTaskRuns(200)
+    expect(tasks[0].runs?.[0]).toMatchObject({
+      runId: 'old-run', outcome: 'failed', status: 'interrupted', reason: 'interrupted', finishedAt: 200
+    })
+    expect(tasks[0].lastRunStatus).toBe('interrupted')
   })
 
   it('an edit (saveTask) keeps the ledger', async () => {
@@ -387,5 +441,14 @@ describe('run ledger', () => {
     expect(tasks[0].runs).toHaveLength(MAX_RUN_ENTRIES)
     // Newest first: the last fired session is at the front.
     expect(tasks[0].runs![0].sessionId).toBe(`run-cap-${MAX_RUN_ENTRIES + 3}`)
+  })
+
+  it('attaches a late durable history UUID even after the session is complete', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => ({ sessionId: 'run-late-file' }))
+    await runTaskNow('t1')
+    noteTaskSessionEvent('run-late-file', { type: 'status', status: 'idle' })
+    noteTaskSessionFile('run-late-file', tasks[0].runs![0].runId!, 'history-uuid-1')
+    expect(tasks[0].runs![0].historyUuid).toBe('history-uuid-1')
   })
 })

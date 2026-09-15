@@ -14,11 +14,12 @@ import { useT } from '../i18n'
  */
 interface BrowserPageProps {
   embedded?: boolean
+  active?: boolean
   initialUrl?: string
   onClose?: () => void
 }
 
-export default function BrowserPage({ embedded = false, initialUrl: requestedInitialUrl, onClose }: BrowserPageProps) {
+export default function BrowserPage({ embedded = false, active = true, initialUrl: requestedInitialUrl, onClose }: BrowserPageProps) {
   const t = useT()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -53,6 +54,10 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
   // once from ?url= so re-renders never retrigger a load.
   const initialUrl = requestedInitialUrl ?? searchParams.get('url')
   useLayoutEffect(() => {
+    if (!active) {
+      void window.electronAPI.browserHide()
+      return
+    }
     const el = placeholderRef.current
     if (!el) return
     const readBounds = () => {
@@ -77,7 +82,7 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
       void window.electronAPI.browserHide()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [active])
 
   // An extension open (or a fresh /browser?url=… navigation) while the page
   // is already mounted must drive the panel — the mount effect alone would

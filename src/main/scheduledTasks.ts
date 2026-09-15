@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { BrowserWindow } from 'electron'
 import { getStore, setStore } from './store'
 import { ScheduledTask, TaskFailureReason, TaskRunEntry, TaskSchedule } from '../shared/types'
@@ -25,7 +26,7 @@ import { IPC_CHANNELS } from '../shared/constants'
 
 const CHECK_INTERVAL_MS = 60_000
 /** Fallback guard lifetime if the session's terminal event never arrives. */
-const MAX_RUN_MS = 6 * 60 * 60 * 1000
+export const MAX_RUN_MS = 6 * 60 * 60 * 1000
 /** Consecutive spawn failures before a task disables itself. */
 const MAX_CONSECUTIVE_FAILURES = 3
 /** Cap on stored tasks — mainly so an agent-created loop cannot flood the store. */
@@ -35,11 +36,14 @@ export const MAX_RUN_ENTRIES = 10
 
 export interface TaskSpawnResult {
   sessionId: string
+  /** Optional cancellation hook for a spawn that returns after its run timed out. */
+  cancel?: () => void | Promise<void>
 }
 
 /** Task-level options handed to the spawn implementation. */
 export interface TaskSpawnOptions {
   taskId: string
+  runId?: string
   /** 'readonly' opts the unattended session down from the global mode. */
   permissionMode?: 'default' | 'readonly'
   /** Skill library id injected as the firing session's system prompt. */
@@ -62,12 +66,18 @@ export type TaskSessionEventNote = (
 let spawnFn: TaskSpawnFn | null = null
 /** taskId → { sessionId, fallbackTimer } for the currently-running firing. */
 interface RunningFiring {
-  sessionId: string
+  runId: string
+  sessionId?: string
+  startedAt: number
   fallbackTimer: ReturnType<typeof setTimeout>
 }
 const runningTasks = new Map<string, RunningFiring>()
 /** sessionId → taskId once a firing's session exists. */
 const taskBySession = new Map<string, string>()
+/** Durable lookup retained after a terminal event so a late runtime
+ * handshake can still attach the opaque history UUID to the finished run. */
+const taskRunBySession = new Map<string, { taskId: string; runId: string }>()
+const cancellationRequested = new Set<string>()
 
 export function setTaskSpawnFn(fn: TaskSpawnFn): void {
   spawnFn = fn
@@ -88,7 +98,15 @@ export function listTasks(): ScheduledTask[] {
 
 /** Fields owned by the engine, never by the renderer: an edit (which sends a
  * whole task back) must not reset the run ledger. */
-const RUNTIME_OWNED_KEYS = ['lastRunAt', 'lastRunSessionId', 'consecutiveFailures', 'lastFailureReason', 'runs'] as const
+const RUNTIME_OWNED_KEYS = [
+  'lastRunAt',
+  'lastRunSessionId',
+  'lastRunId',
+  'lastRunStatus',
+  'consecutiveFailures',
+  'lastFailureReason',
+  'runs'
+] as const
 
 export function saveTask(task: ScheduledTask): ScheduledTask {
   const tasks = getTasks()
@@ -294,6 +312,8 @@ export function resetRunningGuardsForTest(): void {
   for (const running of runningTasks.values()) clearTimeout(running.fallbackTimer)
   runningTasks.clear()
   taskBySession.clear()
+  taskRunBySession.clear()
+  cancellationRequested.clear()
 }
 
 function releaseFiring(taskId: string): void {
@@ -301,7 +321,7 @@ function releaseFiring(taskId: string): void {
   if (!running) return
   clearTimeout(running.fallbackTimer)
   runningTasks.delete(taskId)
-  taskBySession.delete(running.sessionId)
+  if (running.sessionId) taskBySession.delete(running.sessionId)
 }
 
 /**
@@ -323,119 +343,226 @@ export function noteTaskSessionEvent(sessionId: string, event: {
     (event.type === 'status' && event.status === 'idle' && event.isTerminal !== false) ||
     (event.type === 'error' && event.recoverable === false) ||
     event.type === 'closed'
+  if (event.type === 'status' && event.status === 'aborting') {
+    cancellationRequested.add(sessionId)
+    return
+  }
   if (!terminal) return
-  releaseFiring(taskId)
-  const tasks = getTasks()
-  const task = tasks.find((t) => t.id === taskId)
-  if (!task) return
   if (event.type === 'status' && event.status === 'idle') {
-    finishRunEntry(taskId, sessionId, 'success')
-    if (task.notifyOnComplete !== false) onTaskOutcome?.({ kind: 'finished', task, sessionId })
+    const running = runningTasks.get(taskId)
+    const cancelled = cancellationRequested.delete(sessionId)
+    if (running) settleFiring(taskId, running.runId, cancelled ? 'failed' : 'success', cancelled ? 'cancelled' : undefined, sessionId)
     return
   }
   // error (fatal) or closed without a completing idle: the run did not finish
-  // cleanly — the optimistic spawn-time entry must not stay (or read) success.
-  finishRunEntry(taskId, sessionId, 'failed', 'run-error')
+  // cleanly — an open run is settled exactly once and never reads as success.
+  const running = runningTasks.get(taskId)
+  const cancelled = cancellationRequested.delete(sessionId)
+  if (running) settleFiring(taskId, running.runId, 'failed', cancelled ? 'cancelled' : 'run-error', sessionId)
 }
 
-/**
- * Append a run-ledger entry (newest first, capped). No-op when the task was
- * deleted while its firing was in flight.
- */
-function pushRunEntry(taskId: string, entry: TaskRunEntry): void {
-  const tasks = getTasks()
-  const stored = tasks.find((t) => t.id === taskId)
-  if (!stored) return
-  stored.runs = [entry, ...(stored.runs ?? [])].slice(0, MAX_RUN_ENTRIES)
-  saveTasks(tasks)
+/** Attach the runtime's opaque durable transcript identity to this run. */
+export function noteTaskSessionFile(sessionId: string, runId: string, historyUuid: string): void {
+  const relation = taskRunBySession.get(sessionId)
+  const taskId = taskBySession.get(sessionId) ?? relation?.taskId
+  const linkedRunId = relation?.runId ?? runId
+  if (!taskId || !linkedRunId || !historyUuid || (relation && relation.runId !== runId)) return
+  updateStoredTask(taskId, (stored) => {
+    const run = (stored.runs ?? []).find((entry) => entry.runId === linkedRunId)
+    if (run && !run.historyUuid) run.historyUuid = historyUuid.slice(0, 200)
+  })
 }
 
-/** Close the open run entry a firing pushed at spawn time. */
-function finishRunEntry(taskId: string, sessionId: string, outcome: TaskRunEntry['outcome'], reason?: TaskFailureReason): void {
+/** Update one task from one fresh store snapshot, then broadcast the result. */
+function updateStoredTask(taskId: string, update: (task: ScheduledTask) => void): ScheduledTask | null {
   const tasks = getTasks()
-  const stored = tasks.find((t) => t.id === taskId)
-  if (!stored) return
-  const open = (stored.runs ?? []).find((run) => run.sessionId === sessionId && !run.finishedAt)
-  if (open) {
-    open.finishedAt = Date.now()
-    open.outcome = outcome
-    if (reason) open.reason = reason
-  } else {
-    stored.runs = [{ startedAt: Date.now(), finishedAt: Date.now(), outcome, reason, sessionId }, ...(stored.runs ?? [])].slice(0, MAX_RUN_ENTRIES)
+  const index = tasks.findIndex((task) => task.id === taskId)
+  if (index < 0) return null
+  const stored = {
+    ...tasks[index],
+    ...(tasks[index].runs ? { runs: tasks[index].runs!.map((run) => ({ ...run })) } : {})
   }
+  update(stored)
+  tasks[index] = stored
   saveTasks(tasks)
+  broadcastTasksChanged()
+  return stored
+}
+
+function updateRunEntry(
+  taskId: string,
+  runId: string,
+  update: (run: TaskRunEntry) => void
+): { task: ScheduledTask; settled: boolean } | null {
+  let settled = false
+  const task = updateStoredTask(taskId, (stored) => {
+    const run = (stored.runs ?? []).find((entry) => entry.runId === runId)
+    if (!run || run.finishedAt !== undefined) return
+    update(run)
+    settled = true
+  })
+  return task ? { task, settled } : null
+}
+
+function settleFiring(
+  taskId: string,
+  runId: string,
+  outcome: 'success' | 'failed',
+  reason?: TaskFailureReason,
+  sessionId?: string
+): void {
+  const running = runningTasks.get(taskId)
+  if (!running || running.runId !== runId) return
+  releaseFiring(taskId)
+  const updated = updateRunEntry(taskId, runId, (run) => {
+    const finishedAt = Date.now()
+    run.finishedAt = finishedAt
+    run.outcome = outcome
+    run.status = outcome === 'success' ? 'completed' : reason === 'cancelled' ? 'cancelled' : reason === 'interrupted' || reason === 'timeout' ? 'interrupted' : 'failed'
+    if (reason) run.reason = reason
+    if (reason === 'timeout' || reason === 'interrupted') {
+      run.recovery = '可以立即重试；旧运行已从任务队列中解除。'
+    } else if (reason === 'run-error') {
+      run.recovery = '检查会话错误后可重新运行。'
+    }
+    if (sessionId && !run.sessionId) run.sessionId = sessionId
+  })
+  if (!updated?.settled) return
+  const task = updateStoredTask(taskId, (stored) => {
+    stored.lastRunStatus = outcome === 'success' ? 'completed' : updated.task.runs?.find((run) => run.runId === runId)?.status
+    stored.lastRunSessionId = sessionId ?? stored.lastRunSessionId
+    stored.lastFailureReason = reason
+    stored.consecutiveFailures = outcome === 'success' ? 0 : (stored.consecutiveFailures ?? 0) + 1
+    if (outcome === 'failed' && (stored.consecutiveFailures ?? 0) >= MAX_CONSECUTIVE_FAILURES) {
+      stored.enabled = false
+    }
+  })
+  if (!task) return
+  if (outcome === 'success') {
+    if (task.notifyOnComplete !== false) onTaskOutcome?.({ kind: 'finished', task, sessionId })
+  } else if ((task.consecutiveFailures ?? 0) >= MAX_CONSECUTIVE_FAILURES && !task.enabled) {
+    onTaskOutcome?.({ kind: 'disabled', task, sessionId })
+  } else if (task.notifyOnComplete !== false) {
+    onTaskOutcome?.({ kind: 'failed', task, sessionId })
+  }
+}
+
+function beginFiring(task: ScheduledTask): { runId: string; startedAt: number } | null {
+  const runId = randomUUID()
+  const startedAt = Date.now()
+  runningTasks.set(task.id, {
+    runId,
+    startedAt,
+    fallbackTimer: setTimeout(() => {
+      // Events lost (runtime killed without a closed event) are a failed,
+      // interrupted run — never just an unlocked task with a stale "running"
+      // row. The task can be retried immediately after this settles.
+      settleFiring(task.id, runId, 'failed', 'timeout')
+    }, MAX_RUN_MS)
+  })
+  const stored = updateStoredTask(task.id, (current) => {
+    const entry: TaskRunEntry = {
+      runId,
+      status: 'preparing',
+      startedAt,
+      recovery: '正在启动运行时…'
+    }
+    current.runs = [entry, ...(current.runs ?? [])].slice(0, MAX_RUN_ENTRIES)
+    current.lastRunAt = startedAt
+    current.lastRunId = runId
+    current.lastRunStatus = 'preparing'
+    current.lastRunSessionId = undefined
+    current.lastFailureReason = undefined
+  })
+  if (!stored) {
+    releaseFiring(task.id)
+    return null
+  }
+  return { runId, startedAt }
+}
+
+async function recordFailure(taskId: string, runId: string, reason: TaskFailureReason): Promise<void> {
+  settleFiring(taskId, runId, 'failed', reason)
 }
 
 async function fireTask(task: ScheduledTask): Promise<string | null> {
-  runningTasks.set(task.id, {
-    sessionId: '',
-    fallbackTimer: setTimeout(() => {
-      // Events lost (runtime killed without a closed event): release anyway
-      // so the task is not wedged until the next app restart.
-      const running = runningTasks.get(task.id)
-      if (running) {
-        if (running.sessionId) taskBySession.delete(running.sessionId)
-        runningTasks.delete(task.id)
-      }
-    }, MAX_RUN_MS)
-  })
+  const firing = beginFiring(task)
+  if (!firing) return null
+  const { runId } = firing
   try {
     if (!spawnFn) {
       console.error('[scheduled-tasks] spawnFn not set; cannot fire task')
-      await recordFailure(task, 'engine-unavailable')
+      await recordFailure(task.id, runId, 'engine-unavailable')
       return null
     }
     const result = await spawnFn(task.cwd, task.name, task.prompt, {
       taskId: task.id,
+      runId,
       permissionMode: task.permissionMode,
       ...(task.skillId ? { skillId: task.skillId } : {})
     })
     if (!result) {
-      await recordFailure(task, 'spawn-failed')
+      await recordFailure(task.id, runId, 'spawn-failed')
       return null
     }
     const running = runningTasks.get(task.id)
+    if (!running || running.runId !== runId) {
+      // A timeout may have settled while spawnFn was still returning. Kill the
+      // late session when the real spawner supplied a cancellation hook.
+      await result.cancel?.()
+      return null
+    }
     if (running) {
       running.sessionId = result.sessionId
       taskBySession.set(result.sessionId, task.id)
+      taskRunBySession.set(result.sessionId, { taskId: task.id, runId })
     }
-    // Optimistic ledger entry: the run reads as success once the session's
-    // terminal-idle arrives (finishRunEntry flips it on a fatal error).
-    pushRunEntry(task.id, { startedAt: Date.now(), outcome: 'success', sessionId: result.sessionId })
-    const tasks = getTasks()
-    const stored = tasks.find((t) => t.id === task.id)
-    if (stored) {
-      stored.lastRunAt = Date.now()
+    updateRunEntry(task.id, runId, (run) => {
+      run.status = 'running'
+      run.sessionId = result.sessionId
+      run.recovery = '会话运行中；结束事件会更新最终结果。'
+    })
+    updateStoredTask(task.id, (stored) => {
+      stored.lastRunStatus = 'running'
       stored.lastRunSessionId = result.sessionId
+      stored.lastRunId = runId
       stored.consecutiveFailures = 0
-      saveTasks(tasks)
-    }
-    broadcastTasksChanged()
+      stored.lastFailureReason = undefined
+    })
     return result.sessionId
   } catch (error) {
     console.error(`[scheduled-tasks] failed to fire task ${task.id}:`, error)
-    await recordFailure(task, 'threw')
+    const message = error instanceof Error ? error.message : String(error)
+    const reason: TaskFailureReason = message.startsWith('skill-unavailable')
+      ? 'skill-unavailable'
+      : message.startsWith('project-unavailable')
+        ? 'project-unavailable'
+        : 'threw'
+    await recordFailure(task.id, runId, reason)
     return null
   }
 }
 
-/** Count a firing failure; three in a row auto-disables the task loudly. */
-async function recordFailure(task: ScheduledTask, reason: TaskFailureReason): Promise<void> {
+/** Mark entries left open by a previous app process as interrupted. */
+export function reconcileInterruptedTaskRuns(now = Date.now()): void {
   const tasks = getTasks()
-  const stored = tasks.find((t) => t.id === task.id)
-  if (!stored) return
-  stored.consecutiveFailures = (stored.consecutiveFailures ?? 0) + 1
-  stored.lastFailureReason = reason
-  // The firing never produced a session — the failed ledger entry IS the record.
-  pushRunEntry(stored.id, { startedAt: Date.now(), finishedAt: Date.now(), outcome: 'failed', reason })
-  let disabled = false
-  if (stored.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && stored.enabled) {
-    stored.enabled = false
-    disabled = true
+  let changed = false
+  for (const task of tasks) {
+    for (const run of task.runs ?? []) {
+      if (run.finishedAt !== undefined) continue
+      run.finishedAt = now
+      run.outcome = 'failed'
+      run.status = 'interrupted'
+      run.reason = 'interrupted'
+      run.recovery = '应用已重启；请核对会话后手动重试。'
+      if (task.lastRunId === run.runId) task.lastRunStatus = 'interrupted'
+      changed = true
+    }
   }
-  saveTasks(tasks)
-  broadcastTasksChanged()
-  if (disabled) onTaskOutcome?.({ kind: 'disabled', task: stored })
+  if (changed) {
+    saveTasks(tasks)
+    broadcastTasksChanged()
+  }
 }
 
 let firingChain: Promise<void> = Promise.resolve()
@@ -472,6 +599,10 @@ let schedulerStarted = false
 export function startScheduler(): void {
   if (schedulerStarted) return
   schedulerStarted = true
+  // A renderer/main reload cannot observe the old in-memory session registry.
+  // Close any durable open rows before the first due-task check so history
+  // never presents a run as permanently active.
+  reconcileInterruptedTaskRuns()
   setTimeout(checkAndFireTasks, 10_000)
   setInterval(() => {
     try {

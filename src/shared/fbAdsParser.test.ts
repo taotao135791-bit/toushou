@@ -358,6 +358,32 @@ $98.07
     expect(parseFbAdsCampaignsSnapshot({ text: '关/开\n定制列...' })).toBeNull()
   })
 
+  it('refuses parsed views that lack a required date or summary total', () => {
+    const withoutDate = REAL_CAMPAIGNS_TEXT.replace('过去 30 天：2026年8月12日 – 2026年9月10日\n', '')
+    const dateMissing = parseFbAdsCampaignsSnapshot({ url: REAL_URL, text: withoutDate })
+    expect(dateMissing).not.toBeNull()
+    expect(fbAdsReadingRejection(dateMissing as never)).toBe('incomplete-view')
+
+    const withoutTotal = REAL_CAMPAIGNS_TEXT.replace('$3,146.47\n总花费\n', '')
+    const totalMissing = parseFbAdsCampaignsSnapshot({ url: REAL_URL, text: withoutTotal })
+    expect(totalMissing).not.toBeNull()
+    expect(fbAdsReadingRejection(totalMissing as never)).toBe('incomplete-view')
+  })
+
+  it('records observation scope and refuses an unknown column layout', () => {
+    const reading = parseFbAdsCampaignsSnapshot({ url: REAL_URL, title: 'Ads', observedAt: Date.UTC(2026, 8, 15), text: REAL_CAMPAIGNS_TEXT })
+    expect(reading?.observation).toMatchObject({
+      sourceUrl: REAL_URL,
+      sourceTitle: 'Ads',
+      visibleRows: 8,
+      readRows: 8,
+      totalRows: 8,
+      coverage: 'complete',
+      columnMode: 'wide'
+    })
+    expect(parseFbAdsCampaignsSnapshot({ url: REAL_URL, text: REAL_CAMPAIGNS_TEXT.replace('已花费金额', 'Spend') })).toBeNull()
+  })
+
   it('parses the narrow in-app panel render (3 metric columns) and fires the incomplete-view gate on real data', () => {
     // REAL fixture captured 2026-09-14 from the in-app browser panel: the
     // panel is narrow enough that FB column virtualization keeps only the

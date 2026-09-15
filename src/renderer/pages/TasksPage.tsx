@@ -84,6 +84,30 @@ function formatDuration(ms: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
+function nextScheduledRun(task: ScheduledTask, after = Date.now()): number | null {
+  const schedule = task.schedule
+  if (schedule.type === 'interval') {
+    const interval = schedule.minutes !== undefined ? schedule.minutes * 60_000 : (schedule.hours ?? 0) * 3_600_000
+    return interval > 0 ? (task.lastRunAt ?? task.createdAt) + interval : null
+  }
+  const [hours, minutes] = schedule.time.split(':').map(Number)
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null
+  const next = new Date(after)
+  next.setHours(hours, minutes, 0, 0)
+  if (schedule.type === 'daily') {
+    if (next.getTime() <= after) next.setDate(next.getDate() + 1)
+    return next.getTime()
+  }
+  if (schedule.type === 'weekdays') {
+    while (next.getTime() <= after || next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1)
+    return next.getTime()
+  }
+  const delta = (schedule.dayOfWeek - next.getDay() + 7) % 7
+  next.setDate(next.getDate() + delta)
+  if (next.getTime() <= after) next.setDate(next.getDate() + 7)
+  return next.getTime()
+}
+
 export default function TasksPage() {
   const t = useT()
   const navigate = useNavigate()
@@ -211,19 +235,23 @@ export default function TasksPage() {
    * fall back to the durable history row of this task (task sessions are
    * titled after the task and live in the task's cwd) matched by run time.
    */
-  const openRunEntry = (task: ScheduledTask, run: { sessionId?: string; startedAt: number }) => {
+  const openRunEntry = (task: ScheduledTask, run: { sessionId?: string; historyUuid?: string; startedAt: number }) => {
     const state = useAppStore.getState()
     if (run.sessionId && state.sessions.some((s) => s.id === run.sessionId)) {
       state.setCurrentSessionId(run.sessionId)
       navigate('/')
       return
     }
-    const row = state.globalHistory.find(
-      (entry) =>
-        entry.title === task.name &&
-        entry.cwd === task.cwd &&
-        Math.abs(entry.timestamp - run.startedAt) < 60_000
-    )
+    // New runs carry the opaque durable transcript UUID. The legacy title/time
+    // fallback remains only for pre-v1 ledgers that cannot be upgraded in place.
+    const row = run.historyUuid
+      ? state.globalHistory.find((entry) => entry.uuid === run.historyUuid)
+      : state.globalHistory.find(
+          (entry) =>
+            entry.title === task.name &&
+            entry.cwd === task.cwd &&
+            Math.abs(entry.timestamp - run.startedAt) < 60_000
+        )
     if (row) {
       state.setPendingOpenHistory({ uuid: row.uuid, cwd: row.cwd })
       navigate('/')
@@ -233,7 +261,11 @@ export default function TasksPage() {
   }
 
   const openRunSession = (task: ScheduledTask) => {
-    openRunEntry(task, { sessionId: task.lastRunSessionId, startedAt: task.lastRunAt ?? 0 })
+    openRunEntry(task, {
+      sessionId: task.lastRunSessionId,
+      historyUuid: task.runs?.[0]?.historyUuid,
+      startedAt: task.lastRunAt ?? 0
+    })
   }
 
   const toggleRunHistory = (taskId: string) => {
@@ -339,6 +371,16 @@ export default function TasksPage() {
                               {t('tasks.lastRun')}: {formatRelativeTime(task.lastRunAt, language)}
                             </span>
                           )}
+                          {task.enabled && nextScheduledRun(task) && (
+                            <span title={new Date(nextScheduledRun(task) as number).toLocaleString()}>
+                              {t('tasks.nextRun')}: {new Date(nextScheduledRun(task) as number).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
+                          {task.lastRunStatus && (
+                            <span className={task.lastRunStatus === 'failed' || task.lastRunStatus === 'interrupted' ? 'text-red-400' : task.lastRunStatus === 'completed' ? 'text-emerald-500' : 'text-amber-400'}>
+                              {t('tasks.lastResult')}: {t(`tasks.status.${task.lastRunStatus}` as I18nKey)}
+                            </span>
+                          )}
                         </div>
                         {(task.runs?.length ?? 0) > 0 && (
                           <div className="mt-2">
@@ -356,7 +398,7 @@ export default function TasksPage() {
                                   const failed = run.outcome === 'failed'
                                   return (
                                     <div
-                                      key={run.sessionId ?? `${run.startedAt}-${index}`}
+                                      key={run.runId ?? run.sessionId ?? `${run.startedAt}-${index}`}
                                       onClick={() => !live && openRunEntry(task, run)}
                                       className={`group flex items-center gap-2 rounded-md px-1.5 py-1 text-[11px] ${live ? 'text-cream-faint' : 'cursor-pointer text-cream-dim transition-colors hover:bg-overlay'}`}
                                     >

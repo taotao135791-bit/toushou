@@ -74,7 +74,7 @@ describe('normalizeFbReadings', () => {
       capturedAt: at,
       accountId: '2131017261144314',
       accountName: null,
-      dateRangeLabel: null,
+      dateRangeLabel: '今天：2026年9月14日',
       campaignCount: 8,
       totalSpend: 3146.47,
       rows: [

@@ -8,6 +8,7 @@ import { mergeTranscriptBackfill } from '../lib/transcriptMerge'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
 import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
+import type { OfficeWorkbookSnapshot } from '@shared/officeWorkbook'
 
 /**
  * Externally created sessions whose durable transcript was backfilled once
@@ -101,6 +102,9 @@ export interface OfficeEditHandoff {
   id: string
   edits: OfficeEditCell[]
   note?: string
+  /** Workbook identity captured when the person staged the proposal. */
+  documentId?: string
+  baseRevision?: number
 }
 
 interface AppState {
@@ -135,6 +139,9 @@ interface AppState {
    * so the panel reports liveness through this flag.
    */
   officeWorkbookOpen: boolean
+  officeWorkbookDirty: boolean
+  officeWorkbookSnapshot: OfficeWorkbookSnapshot | null
+  officeWorkbookRevision: number
   selectedFile: string | null
   previewContent: string | null
   /** sessionId -> checkpoint creation failed once (non-git project); skip further attempts. */
@@ -272,6 +279,9 @@ interface AppState {
   setOfficeEditHandoff: (handoff: OfficeEditHandoff | null) => void
   /** OfficePanel → store liveness signal used to gate the chat apply button. */
   setOfficeWorkbookOpen: (open: boolean) => void
+  setOfficeWorkbookDirty: (dirty: boolean) => void
+  setOfficeWorkbookSnapshot: (snapshot: OfficeWorkbookSnapshot | null) => void
+  setOfficeWorkbookRevision: (revision: number) => void
   setSelectedFile: (path: string | null) => void
   setPreviewContent: (content: string | null) => void
   setCheckpointUnavailable: (sessionId: string, unavailable: boolean) => void
@@ -421,6 +431,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeRightTab: 'files',
   officeEditHandoff: null,
   officeWorkbookOpen: false,
+  officeWorkbookDirty: false,
+  officeWorkbookSnapshot: null,
+  officeWorkbookRevision: 0,
   selectedFile: null,
   previewContent: null,
   checkpointUnavailable: {},
@@ -859,6 +872,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveRightTab: (activeRightTab) => set({ activeRightTab }),
   setOfficeEditHandoff: (officeEditHandoff) => set({ officeEditHandoff }),
   setOfficeWorkbookOpen: (officeWorkbookOpen) => set({ officeWorkbookOpen }),
+  setOfficeWorkbookDirty: (officeWorkbookDirty) => set({ officeWorkbookDirty }),
+  setOfficeWorkbookSnapshot: (officeWorkbookSnapshot) => set({ officeWorkbookSnapshot }),
+  setOfficeWorkbookRevision: (officeWorkbookRevision) => set({ officeWorkbookRevision }),
   setSelectedFile: (selectedFile) => set({ selectedFile }),
   setPreviewContent: (previewContent) => set({ previewContent }),
   setCheckpointUnavailable: (sessionId, unavailable) =>

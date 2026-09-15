@@ -13,17 +13,38 @@ import type { FileGrant } from './types'
  * - Sheet names, order, visibility, raw cell values (number / string /
  *   boolean; dates become their formatted text) and basic merge ranges
  *   round-trip.
- * - Formulas keep only their computed value, never the formula text.
- * - Styles, column widths, row heights, charts, images and every other
- *   Univer/SheetJS feature are NOT preserved.
+ * - Formulas and their computed values are retained for ordinary cells.
+ * - Common cell styles, row/column sizes, merges and hidden sheets are
+ *   retained. Charts, images, macros, external links and other complex
+ *   features are intentionally outside this editor's fidelity boundary.
  */
 
 /** Mirrors Univer's CellValueType enum (numeric: STRING=1, NUMBER=2, BOOLEAN=3, FORCE_STRING=4). */
 export type OfficeCellValueType = 1 | 2 | 3 | 4
 
+export interface OfficeCellStyle {
+  bold?: boolean
+  italic?: boolean
+  fontSize?: number
+  fontColor?: string
+  fillColor?: string
+  horizontalAlign?: 'left' | 'center' | 'right' | 'justify'
+  numberFormat?: string
+}
+
 export interface OfficeCellData {
   v?: string | number | boolean
   t?: OfficeCellValueType
+  /** Formula without a leading '='; the displayed/computed value stays in v. */
+  f?: string
+  /** SheetJS display text, when it differs from the raw value. */
+  w?: string
+  style?: OfficeCellStyle
+}
+
+export interface OfficeDimensionData {
+  size?: number
+  hidden?: boolean
 }
 
 /** Basic merge range, a subset of Univer's IRange. */
@@ -44,6 +65,8 @@ export interface OfficeSheetSnapshot {
   /** Sparse object matrix: cellData[row][col], keys are 0-based indexes. */
   cellData: { [row: number]: { [col: number]: OfficeCellData } }
   mergeData: OfficeMergeRange[]
+  columnData?: { [column: number]: OfficeDimensionData }
+  rowData?: { [row: number]: OfficeDimensionData }
 }
 
 export interface OfficeWorkbookSnapshot {
@@ -70,6 +93,8 @@ export type OfficeWorkbookWarning =
   | 'too-many-cells'
   | 'cell-text-truncated'
   | 'merge-dropped'
+  | 'formula-truncated'
+  | 'style-dropped'
 
 export interface OfficeWorkbookConversion {
   snapshot: OfficeWorkbookSnapshot
@@ -175,6 +200,63 @@ function truncateCellText(value: string, warnings: Set<OfficeWorkbookWarning>): 
   return value.slice(0, OFFICE_WORKBOOK_LIMITS.maxCellTextLength)
 }
 
+const MAX_FORMULA_LENGTH = 8_192
+
+function formulaText(value: unknown, warnings: Set<OfficeWorkbookWarning>): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined
+  const normalized = value.startsWith('=') ? value.slice(1) : value
+  if (normalized.length <= MAX_FORMULA_LENGTH) return normalized
+  warnings.add('formula-truncated')
+  return normalized.slice(0, MAX_FORMULA_LENGTH)
+}
+
+function colorText(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length <= 32) return value.startsWith('#') ? value : `#${value}`
+  if (!value || typeof value !== 'object') return undefined
+  const color = value as Record<string, unknown>
+  const rgb = typeof color.rgb === 'string' ? color.rgb : typeof color.argb === 'string' ? color.argb : undefined
+  if (!rgb || rgb.length > 32) return undefined
+  return rgb.startsWith('#') ? rgb : `#${rgb.slice(-6)}`
+}
+
+function sheetJsStyle(cell: CellObject, warnings: Set<OfficeWorkbookWarning>): OfficeCellStyle | undefined {
+  const raw = (cell as CellObject & { s?: unknown }).s
+  if (!raw || typeof raw !== 'object') return undefined
+  const source = raw as Record<string, unknown>
+  const font = source.font && typeof source.font === 'object' ? source.font as Record<string, unknown> : {}
+  const fill = source.fill && typeof source.fill === 'object' ? source.fill as Record<string, unknown> : {}
+  const alignment = source.alignment && typeof source.alignment === 'object' ? source.alignment as Record<string, unknown> : {}
+  const horizontal = alignment.horizontal
+  const style: OfficeCellStyle = {
+    ...(font.bold === true ? { bold: true } : {}),
+    ...(font.italic === true ? { italic: true } : {}),
+    ...(typeof font.sz === 'number' && Number.isFinite(font.sz) ? { fontSize: Math.min(Math.max(font.sz, 6), 96) } : {}),
+    ...(colorText(font.color) ? { fontColor: colorText(font.color) } : {}),
+    ...(colorText(fill.fgColor) ? { fillColor: colorText(fill.fgColor) } : {}),
+    ...(horizontal === 'left' || horizontal === 'center' || horizontal === 'right' || horizontal === 'justify'
+      ? { horizontalAlign: horizontal }
+      : {}),
+    ...((typeof (cell as CellObject & { z?: unknown }).z === 'string' && (cell as CellObject & { z?: string }).z && (cell as CellObject & { z: string }).z !== 'General')
+      ? { numberFormat: (cell as CellObject & { z: string }).z.slice(0, 128) }
+      : {})
+  }
+  if (Object.keys(style).length === 0) {
+    warnings.add('style-dropped')
+    return undefined
+  }
+  return style
+}
+
+function cellExtras(cell: CellObject, warnings: Set<OfficeWorkbookWarning>): Pick<OfficeCellData, 'f' | 'w' | 'style'> {
+  const f = formulaText((cell as CellObject & { f?: unknown }).f, warnings)
+  const display = (cell as CellObject & { w?: unknown }).w
+  const w = typeof display === 'string' && display && display !== String((cell as { v?: unknown }).v ?? '')
+    ? truncateCellText(display, warnings)
+    : undefined
+  const style = sheetJsStyle(cell, warnings)
+  return { ...(f ? { f } : {}), ...(w ? { w } : {}), ...(style ? { style } : {}) }
+}
+
 // ---------------------------------------------------------------------------
 // SheetJS → snapshot (Main, on file open)
 // ---------------------------------------------------------------------------
@@ -182,39 +264,41 @@ function truncateCellText(value: string, warnings: Set<OfficeWorkbookWarning>): 
 /** Map one SheetJS cell to the snapshot cell; null when the cell carries no value. */
 function sheetJsCell(cell: CellObject, warnings: Set<OfficeWorkbookWarning>): OfficeCellData | null {
   const v = (cell as { v?: unknown }).v
+  const extras = cellExtras(cell, warnings)
+  const withExtras = (data: OfficeCellData): OfficeCellData => ({ ...data, ...extras })
   switch (cell.t) {
     case 'n':
-      if (typeof v === 'number' && Number.isFinite(v)) return { v, t: 2 }
+      if (typeof v === 'number' && Number.isFinite(v)) return withExtras({ v, t: 2 })
       if (v === undefined || v === null) return null
-      return { v: truncateCellText(String(v), warnings), t: 1 }
+      return withExtras({ v: truncateCellText(String(v), warnings), t: 1 })
     case 's':
       if (v === undefined || v === null) return null
-      return { v: truncateCellText(String(v), warnings), t: 1 }
+      return withExtras({ v: truncateCellText(String(v), warnings), t: 1 })
     case 'b':
-      if (typeof v === 'boolean') return { v, t: 3 }
+      if (typeof v === 'boolean') return withExtras({ v, t: 3 })
       if (v === undefined || v === null) return null
-      return { v: Boolean(v), t: 3 }
+      return withExtras({ v: Boolean(v), t: 3 })
     case 'd': {
       // Dates are stored as their formatted text (cell.w) or ISO fallback.
       const w = (cell as { w?: unknown }).w
-      if (typeof w === 'string' && w) return { v: truncateCellText(w, warnings), t: 1 }
-      if (isDate(v)) return { v: v.toISOString(), t: 1 }
+      if (typeof w === 'string' && w) return withExtras({ v: truncateCellText(w, warnings), t: 1 })
+      if (isDate(v)) return withExtras({ v: v.toISOString(), t: 1 })
       if (v === undefined || v === null) return null
-      return { v: truncateCellText(String(v), warnings), t: 1 }
+      return withExtras({ v: truncateCellText(String(v), warnings), t: 1 })
     }
     case 'e': {
       const w = (cell as { w?: unknown }).w
       const text = typeof w === 'string' && w ? w : String(v ?? '')
       if (!text) return null
-      return { v: truncateCellText(text, warnings), t: 1 }
+      return withExtras({ v: truncateCellText(text, warnings), t: 1 })
     }
     default:
       // 'z' (stub/blank) and unknown types: a formula cell keeps only its
       // computed value; anything without a value is dropped.
-      if (typeof v === 'number' && Number.isFinite(v)) return { v, t: 2 }
-      if (typeof v === 'boolean') return { v, t: 3 }
-      if (typeof v === 'string' && v) return { v: truncateCellText(v, warnings), t: 1 }
-      if (isDate(v)) return { v: v.toISOString(), t: 1 }
+      if (typeof v === 'number' && Number.isFinite(v)) return withExtras({ v, t: 2 })
+      if (typeof v === 'boolean') return withExtras({ v, t: 3 })
+      if (typeof v === 'string' && v) return withExtras({ v: truncateCellText(v, warnings), t: 1 })
+      if (isDate(v)) return withExtras({ v: v.toISOString(), t: 1 })
       return null
   }
 }
@@ -242,8 +326,30 @@ export function sheetJsToUniver(wb: WorkBook): OfficeWorkbookConversion {
     let rowsClipped = false
     let colsClipped = false
     let cellsClipped = false
+    const columnData: { [column: number]: OfficeDimensionData } = {}
+    const rowData: { [row: number]: OfficeDimensionData } = {}
 
     if (ws) {
+      const columns = ws['!cols']
+      if (Array.isArray(columns)) {
+        columns.slice(0, OFFICE_WORKBOOK_LIMITS.maxColumns).forEach((column, columnIndex) => {
+          if (!column || typeof column !== 'object') return
+          const value = column as { wpx?: unknown; wch?: unknown; width?: unknown; hidden?: unknown }
+          const rawSize = typeof value.wpx === 'number' ? value.wpx : typeof value.wch === 'number' ? value.wch * 7 : value.width
+          const size = typeof rawSize === 'number' && Number.isFinite(rawSize) ? Math.min(Math.max(rawSize, 20), 600) : undefined
+          if (size !== undefined || value.hidden === true) columnData[columnIndex] = { ...(size !== undefined ? { size } : {}), ...(value.hidden === true ? { hidden: true } : {}) }
+        })
+      }
+      const rows = ws['!rows']
+      if (Array.isArray(rows)) {
+        rows.slice(0, OFFICE_WORKBOOK_LIMITS.maxRows).forEach((row, rowIndex) => {
+          if (!row || typeof row !== 'object') return
+          const value = row as { hpx?: unknown; hpt?: unknown; height?: unknown; hidden?: unknown }
+          const rawSize = typeof value.hpx === 'number' ? value.hpx : typeof value.hpt === 'number' ? value.hpt * (96 / 72) : value.height
+          const size = typeof rawSize === 'number' && Number.isFinite(rawSize) ? Math.min(Math.max(rawSize, 12), 240) : undefined
+          if (size !== undefined || value.hidden === true) rowData[rowIndex] = { ...(size !== undefined ? { size } : {}), ...(value.hidden === true ? { hidden: true } : {}) }
+        })
+      }
       for (const key of Object.keys(ws)) {
         if (key.startsWith('!')) continue
         const m = CELL_REF_RE.exec(key)
@@ -322,7 +428,9 @@ export function sheetJsToUniver(wb: WorkBook): OfficeWorkbookConversion {
       rowCount: Math.max(Math.min(maxRow + 1, OFFICE_WORKBOOK_LIMITS.maxRows), 1000),
       columnCount: Math.max(Math.min(maxCol + 1, OFFICE_WORKBOOK_LIMITS.maxColumns), 26),
       cellData,
-      mergeData
+      mergeData,
+      ...(Object.keys(columnData).length > 0 ? { columnData } : {}),
+      ...(Object.keys(rowData).length > 0 ? { rowData } : {})
     }
   })
 
@@ -336,7 +444,9 @@ export function sheetJsToUniver(wb: WorkBook): OfficeWorkbookConversion {
       rowCount: 1000,
       columnCount: 26,
       cellData: {},
-      mergeData: []
+      mergeData: [],
+      columnData: {},
+      rowData: {}
     }
   }
 
@@ -347,7 +457,7 @@ export function sheetJsToUniver(wb: WorkBook): OfficeWorkbookConversion {
 // Snapshot → SheetJS (Main, on save-as)
 // ---------------------------------------------------------------------------
 
-/** Rebuild a SheetJS WorkBook from a sanitized snapshot (values + merges only). */
+/** Rebuild a SheetJS WorkBook from a sanitized snapshot. */
 export function univerToSheetJs(snapshot: OfficeWorkbookSnapshot): WorkBook {
   const wb: WorkBook = {
     SheetNames: [],
@@ -373,13 +483,26 @@ export function univerToSheetJs(snapshot: OfficeWorkbookSnapshot): WorkBook {
         const v = cell.v
         if (v === undefined || v === null) continue
         const ref = `${indexToColumnLabel(c)}${r + 1}`
+        const formula = typeof cell.f === 'string' && cell.f ? cell.f.replace(/^=/, '') : undefined
+        const style = cell.style ? {
+          font: {
+            ...(cell.style.bold ? { bold: true } : {}),
+            ...(cell.style.italic ? { italic: true } : {}),
+            ...(cell.style.fontSize ? { sz: cell.style.fontSize } : {}),
+            ...(cell.style.fontColor ? { color: { rgb: cell.style.fontColor.replace(/^#/, '') } } : {})
+          },
+          ...(cell.style.fillColor ? { fill: { fgColor: { rgb: cell.style.fillColor.replace(/^#/, '') } } } : {}),
+          ...(cell.style.horizontalAlign ? { alignment: { horizontal: cell.style.horizontalAlign } } : {}),
+          ...(cell.style.numberFormat ? { z: cell.style.numberFormat } : {})
+        } : undefined
+        const extras = { ...(formula ? { f: formula } : {}), ...(cell.w ? { w: cell.w } : {}), ...(style ? { s: style } : {}) }
         if (cell.t === 2 || (cell.t === undefined && typeof v === 'number')) {
-          ws[ref] = typeof v === 'number' && Number.isFinite(v) ? { t: 'n', v } : { t: 's', v: String(v) }
+          ws[ref] = typeof v === 'number' && Number.isFinite(v) ? { t: 'n', v, ...extras } : { t: 's', v: String(v), ...extras }
         } else if (cell.t === 3 || (cell.t === undefined && typeof v === 'boolean')) {
-          ws[ref] = { t: 'b', v: Boolean(v) }
+          ws[ref] = { t: 'b', v: Boolean(v), ...extras }
         } else {
           // STRING / FORCE_STRING (and anything else) write as plain text.
-          ws[ref] = { t: 's', v: String(v) }
+          ws[ref] = { t: 's', v: String(v), ...extras }
         }
         if (r > maxRow) maxRow = r
         if (c > maxCol) maxCol = c
@@ -402,6 +525,23 @@ export function univerToSheetJs(snapshot: OfficeWorkbookSnapshot): WorkBook {
         e: { r: Math.max(m.startRow, m.endRow), c: Math.max(m.startColumn, m.endColumn) }
       }))
     if (merges.length > 0) ws['!merges'] = merges
+    const columnData = sheet.columnData
+    if (columnData && Object.keys(columnData).length > 0) {
+      ws['!cols'] = Object.entries(columnData).map(([key, value]) => {
+        const column = Number(key)
+        return {
+          ...(Number.isFinite(column) && value.size !== undefined ? { wpx: value.size } : {}),
+          ...(value.hidden ? { hidden: true } : {})
+        }
+      })
+    }
+    const rowData = sheet.rowData
+    if (rowData && Object.keys(rowData).length > 0) {
+      ws['!rows'] = Object.entries(rowData).map(([, value]) => ({
+        ...(value.size !== undefined ? { hpx: value.size } : {}),
+        ...(value.hidden ? { hidden: true } : {})
+      }))
+    }
 
     wb.SheetNames.push(name)
     wb.Sheets[name] = ws
@@ -467,6 +607,8 @@ export function sanitizeOfficeSnapshot(raw: unknown): OfficeWorkbookConversion |
     const hidden = rs.hidden === 1 || rs.hidden === 2 ? 1 : 0
     const rowCount = boundedInt(rs.rowCount, OFFICE_WORKBOOK_LIMITS.maxRows) ?? 1000
     const columnCount = boundedInt(rs.columnCount, OFFICE_WORKBOOK_LIMITS.maxColumns) ?? 26
+    const columnData = sanitizeDimensionMap(rs.columnData, OFFICE_WORKBOOK_LIMITS.maxColumns, 20, 600)
+    const rowData = sanitizeDimensionMap(rs.rowData, OFFICE_WORKBOOK_LIMITS.maxRows, 12, 240)
 
     const cellData: { [row: number]: { [col: number]: OfficeCellData } } = {}
     let cellCount = 0
@@ -514,7 +656,17 @@ export function sanitizeOfficeSnapshot(raw: unknown): OfficeWorkbookConversion |
     }
 
     sheetOrder.push(id)
-    sheets[id] = { id, name, hidden, rowCount, columnCount, cellData, mergeData }
+    sheets[id] = {
+      id,
+      name,
+      hidden,
+      rowCount,
+      columnCount,
+      cellData,
+      mergeData,
+      ...(Object.keys(columnData).length > 0 ? { columnData } : {}),
+      ...(Object.keys(rowData).length > 0 ? { rowData } : {})
+    }
   }
   if (orderedIds.length > OFFICE_WORKBOOK_LIMITS.maxSheets) warnings.add('too-many-sheets')
 
@@ -543,13 +695,70 @@ function sanitizeCell(raw: unknown, warnings: Set<OfficeWorkbookWarning>): Offic
   let t: OfficeCellValueType | undefined
   if (cell.t === 1 || cell.t === 2 || cell.t === 3 || cell.t === 4) t = cell.t
   if (v === undefined || v === null || v === '') return null
+  const f = formulaText(cell.f, warnings)
+  const w = typeof cell.w === 'string' && cell.w ? truncateCellText(cell.w, warnings) : undefined
+  const style = sanitizeStyle(cell.style)
+  const extras = {
+    ...(f ? { f } : {}),
+    ...(w ? { w } : {}),
+    ...(style ? { style } : {})
+  }
   if (typeof v === 'number') {
     if (!Number.isFinite(v)) return null
-    return { v, t: t ?? 2 }
+    return { v, t: t ?? 2, ...extras }
   }
-  if (typeof v === 'boolean') return { v, t: t ?? 3 }
+  if (typeof v === 'boolean') return { v, t: t ?? 3, ...extras }
   if (typeof v === 'string') {
-    return { v: truncateCellText(v, warnings), t: t === 2 || t === 3 ? 1 : t ?? 1 }
+    // Strings beginning with '=' are forced to text unless an explicit
+    // formula field was supplied by the trusted file conversion. This keeps
+    // agent-provided values from becoming executable spreadsheet formulas.
+    const type = f ? (t === 2 || t === 3 ? 1 : t ?? 1) : v.startsWith('=') ? 4 : (t === 2 || t === 3 ? 1 : t ?? 1)
+    return { v: truncateCellText(v, warnings), t: type, ...extras }
   }
   return null
+}
+
+function sanitizeStyle(raw: unknown): OfficeCellStyle | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const value = raw as Record<string, unknown>
+  const horizontal = value.horizontalAlign
+  const style: OfficeCellStyle = {
+    ...(value.bold === true ? { bold: true } : {}),
+    ...(value.italic === true ? { italic: true } : {}),
+    ...(typeof value.fontSize === 'number' && Number.isFinite(value.fontSize)
+      ? { fontSize: Math.min(Math.max(Math.floor(value.fontSize), 6), 96) }
+      : {}),
+    ...(typeof value.fontColor === 'string' && /^#[0-9a-f]{6,8}$/i.test(value.fontColor) ? { fontColor: value.fontColor } : {}),
+    ...(typeof value.fillColor === 'string' && /^#[0-9a-f]{6,8}$/i.test(value.fillColor) ? { fillColor: value.fillColor } : {}),
+    ...(horizontal === 'left' || horizontal === 'center' || horizontal === 'right' || horizontal === 'justify'
+      ? { horizontalAlign: horizontal }
+      : {}),
+    ...(typeof value.numberFormat === 'string' && value.numberFormat.length <= 128
+      ? { numberFormat: value.numberFormat }
+      : {})
+  }
+  return Object.keys(style).length > 0 ? style : undefined
+}
+
+function sanitizeDimensionMap(
+  raw: unknown,
+  max: number,
+  minSize: number,
+  maxSize: number
+): { [index: number]: OfficeDimensionData } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const result: { [index: number]: OfficeDimensionData } = {}
+  for (const [key, item] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^\d+$/.test(key)) continue
+    const index = Number(key)
+    if (!Number.isInteger(index) || index < 0 || index >= max || !item || typeof item !== 'object') continue
+    const value = item as Record<string, unknown>
+    const rawSize = value.size ?? value.w ?? value.h
+    const size = typeof rawSize === 'number' && Number.isFinite(rawSize)
+      ? Math.min(Math.max(Math.round(rawSize), minSize), maxSize)
+      : undefined
+    const hidden = value.hidden === true || value.hd === 1
+    if (size !== undefined || hidden) result[index] = { ...(size !== undefined ? { size } : {}), ...(hidden ? { hidden: true } : {}) }
+  }
+  return result
 }

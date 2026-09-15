@@ -78,7 +78,7 @@ import { listAvailableModels, listCatalogModels, invalidateModelCache } from './
 import { getStore, rememberRecentProject, setStore } from './store'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
-import { readBrowserScreenshotData } from './browserUse'
+import { readBrowserScreenshotData, revokeBrowserUseSession } from './browserUse'
 import { logRendererError, readLogTail } from './lib/logger'
 import {
   listTasks,
@@ -90,7 +90,8 @@ import {
   setTaskSpawnFn,
   setTaskOutcomeSink,
   isValidSchedule,
-  noteTaskSessionEvent
+  noteTaskSessionEvent,
+  noteTaskSessionFile
 } from './scheduledTasks'
 import { readKnowledge, writeKnowledge } from './projectKnowledge'
 import { listLaunchableTools } from './toolLaunch'
@@ -302,6 +303,7 @@ function broadcastSessionEvent(event: SessionEvent): void {
   // Task-spawned sessions drive their completion guard/notice from the same
   // event stream everything else uses — no second observation path to drift.
   noteTaskSessionEvent(event.sessionId, event)
+  if (event.type === 'closed') revokeBrowserUseSession(event.sessionId)
   maybeNotifyTurnFinished(event)
   maybeNotifyUiRequest(event)
 }
@@ -582,6 +584,7 @@ export function shutdownSessionsForQuit(): void {
   } catch {
     // Quit proceeds regardless.
   }
+  for (const session of listSessions()) revokeBrowserUseSession(session.id)
 }
 
 export function registerIpc() {
@@ -598,15 +601,18 @@ export function registerIpc() {
   // completion. Task sessions carry origin 'task' so the sidebar can badge
   // them and the notification layer can treat them specially.
   setTaskSpawnFn(async (cwd, title, prompt, opts) => {
+    if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      throw new Error('project-unavailable')
+    }
     // Kernel/团队打法 tasks carry a skill id: the playbook is injected as the
     // session's system prompt so a scheduled run follows the same SOP as an
-    // interactive skill launch. A missing/deleted skill degrades gracefully
-    // to a plain prompt run.
+    // interactive skill launch. A missing/deleted skill blocks this run rather
+    // than silently executing a different workflow.
     let skillSystemPrompt: string | undefined
     if (opts?.skillId) {
       const skill = readSkillSystemPrompt(opts.skillId, getStore('language'))
       if (skill.ok) skillSystemPrompt = skill.prompt
-      else console.warn(`[scheduled-tasks] skill "${opts.skillId}" unavailable: ${skill.error}`)
+      else throw new Error(`skill-unavailable:${skill.error}`)
     }
     const session = createSession(
       cwd,
@@ -618,7 +624,11 @@ export function registerIpc() {
           const tryRecord = (delayMs: number) => {
             setTimeout(() => {
               void getSessionState(event.sessionId).then((state) => {
-                if (state?.sessionFile) sessionOriginIndex.record(state.sessionFile, 'task')
+                if (state?.sessionFile) {
+                  sessionOriginIndex.record(state.sessionFile, 'task')
+                  const historyUuid = path.basename(state.sessionFile).match(/_([^_]+)\.jsonl$/)?.[1]
+                  if (opts?.runId && historyUuid) noteTaskSessionFile(event.sessionId, opts.runId, historyUuid)
+                }
               })
             }, delayMs)
           }
@@ -638,7 +648,10 @@ export function registerIpc() {
     if (session.status === 'error') return null
     // The prompt IS the task. A failed write means the child died at spawn —
     // report the firing as failed so the failure counter can act.
-    if (!sendMessage(session.id, prompt)) return null
+    if (!sendMessage(session.id, prompt)) {
+      killSession(session.id)
+      return null
+    }
     // Human-readable identity beats "project-dir title" for recurring runs:
     // name the runtime session AND announce the row with that title so the
     // sidebar shows "每日报告" instead of the bare folder name.
@@ -650,7 +663,12 @@ export function registerIpc() {
       suggestedTitle: title,
       createdAt: session.createdAt
     })
-    return { sessionId: session.id }
+    return {
+      sessionId: session.id,
+      cancel: () => {
+        killSession(session.id)
+      }
+    }
   })
   setTaskOutcomeSink((outcome) => {
     const { kind, task, sessionId } = outcome

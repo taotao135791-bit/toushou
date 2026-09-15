@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import {
   FbAdsCampaignReading,
+  FbAdsObservation,
   fbAdsReadingRejection
 } from '../shared/fbAdsParser'
 
@@ -47,6 +48,7 @@ export interface FbReadingHistoryEntry {
   dateRangeLabel: string | null
   campaignCount: number | null
   totalSpend: number | null
+  observation?: FbAdsObservation
   rows: FbReadingHistoryRow[]
 }
 
@@ -77,6 +79,7 @@ export function toFbReadingEntry(
     dateRangeLabel: reading.dateRangeLabel ?? null,
     campaignCount: reading.campaignCount ?? null,
     totalSpend: reading.totalSpend ?? null,
+    ...(reading.observation ? { observation: reading.observation } : {}),
     rows: reading.rows.map((row) => ({
       name: row.name,
       spend: row.spend ?? null,
@@ -118,9 +121,10 @@ function validateFbReadingEntry(value: unknown): FbReadingHistoryEntry | null {
   if (typeof v.capturedAt !== 'string' || Number.isNaN(Date.parse(v.capturedAt))) return null
   if (typeof v.accountId !== 'string' || !/^\d{6,}$/.test(v.accountId)) return null
   if (v.accountName !== null && typeof v.accountName !== 'string') return null
-  if (v.dateRangeLabel !== null && typeof v.dateRangeLabel !== 'string') return null
-  if (v.campaignCount !== null && typeof v.campaignCount !== 'number') return null
-  if (v.totalSpend !== null && typeof v.totalSpend !== 'number') return null
+  if (typeof v.dateRangeLabel !== 'string' || !v.dateRangeLabel) return null
+  if (typeof v.campaignCount !== 'number' || !Number.isInteger(v.campaignCount) || v.campaignCount < 0) return null
+  if (typeof v.totalSpend !== 'number' || !Number.isFinite(v.totalSpend) || v.totalSpend < 0) return null
+  if (v.observation !== undefined && !validateObservation(v.observation)) return null
   if (!Array.isArray(v.rows) || v.rows.length === 0 || v.rows.length > FB_READING_LIMITS.maxRowsPerReading) {
     return null
   }
@@ -134,6 +138,24 @@ function validateFbReadingEntry(value: unknown): FbReadingHistoryEntry | null {
     if (r.resultType !== null && typeof r.resultType !== 'string') return null
   }
   return value as FbReadingHistoryEntry
+}
+
+function validateObservation(value: unknown): value is FbAdsObservation {
+  if (!value || typeof value !== 'object') return false
+  const observation = value as Record<string, unknown>
+  if (typeof observation.capturedAt !== 'string' || Number.isNaN(Date.parse(observation.capturedAt))) return false
+  if (observation.sourceUrl !== null && typeof observation.sourceUrl !== 'string') return false
+  if (observation.sourceTitle !== null && typeof observation.sourceTitle !== 'string') return false
+  if (observation.currency !== null && typeof observation.currency !== 'string') return false
+  if (observation.timezone !== null && typeof observation.timezone !== 'string') return false
+  if (observation.attributionWindow !== null && typeof observation.attributionWindow !== 'string') return false
+  if (!['complete', 'partial', 'unknown'].includes(String(observation.coverage))) return false
+  if (!['wide', 'narrow', 'unknown'].includes(String(observation.columnMode))) return false
+  for (const key of ['visibleRows', 'readRows']) {
+    if (typeof observation[key] !== 'number' || !Number.isInteger(observation[key]) || (observation[key] as number) < 0) return false
+  }
+  if (observation.totalRows !== null && (typeof observation.totalRows !== 'number' || !Number.isInteger(observation.totalRows) || observation.totalRows < 0)) return false
+  return true
 }
 
 function defaultReadingsFile(): string {

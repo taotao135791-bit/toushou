@@ -2,10 +2,11 @@ import { Language } from './types'
 
 /**
  * A bounded, reviewable snapshot used when a user asks the chat agent about
- * the workbook open in the Office panel. It intentionally includes only the
- * workbook name, sheet names, used-range sizes and a short header-row sample
- * per sheet — never full data rows. The result is a composer draft, never an
- * auto-sent prompt, so the user can edit it before it leaves the app.
+ * the workbook open in the Office panel. It includes the workbook name, sheet
+ * names, used-range sizes and a short header-row sample per sheet. A user-
+ * initiated request may additionally include a bounded sample of real rows.
+ * The result is a composer draft, never an auto-sent prompt, so the user can
+ * edit it before it leaves the app.
  *
  * The draft also teaches the ```office-edit proposal protocol (see
  * shared/officeEdit.ts): after analyzing, the agent may PROPOSE bounded cell
@@ -22,6 +23,8 @@ import { Language } from './types'
 
 const MAX_SHEETS = 50
 const MAX_HEADER_CELLS = 12
+const MAX_SAMPLE_ROWS = 20
+const MAX_SAMPLE_CELLS = 12
 const MAX_CELL_TEXT = 40
 const MAX_TEXT = 12_000
 
@@ -61,6 +64,18 @@ interface SheetSummary {
   usedRows: number
   usedCols: number
   header: string[]
+  sampleRows: string[]
+}
+
+function indexToColumnLabel(index: number): string {
+  let label = ''
+  let value = index + 1
+  while (value > 0) {
+    const remainder = (value - 1) % 26
+    label = String.fromCharCode(65 + remainder) + label
+    value = Math.floor((value - 1) / 26)
+  }
+  return label
 }
 
 function summarizeSheet(id: string, sheet: Record<string, unknown>): SheetSummary {
@@ -68,6 +83,7 @@ function summarizeSheet(id: string, sheet: Record<string, unknown>): SheetSummar
   let maxRow = -1
   let maxCol = -1
   let header: string[] = []
+  const sampleRows: string[] = []
   for (const [rowIndex, row] of rowEntries(sheet.cellData)) {
     const cells = rowEntries(row).map(([colIndex, cell]) => ({ colIndex, text: cellText(cell) }))
     for (const { colIndex, text } of cells) {
@@ -79,13 +95,21 @@ function summarizeSheet(id: string, sheet: Record<string, unknown>): SheetSummar
       const sample = cells.map((cell) => cell.text).filter(Boolean)
       if (sample.length > 0) header = sample.slice(0, MAX_HEADER_CELLS).map((text) => compact(text, MAX_CELL_TEXT))
     }
+    if (cells.some((cell) => cell.text !== '') && sampleRows.length < MAX_SAMPLE_ROWS) {
+      const values = cells
+        .filter((cell) => cell.text !== '')
+        .slice(0, MAX_SAMPLE_CELLS)
+        .map((cell) => `${indexToColumnLabel(cell.colIndex)}${rowIndex + 1}=${compact(cell.text, MAX_CELL_TEXT)}`)
+      if (values.length > 0) sampleRows.push(values.join(' | '))
+    }
   }
   return {
     name,
     hidden: sheet.hidden === 1,
     usedRows: maxRow + 1,
     usedCols: maxCol + 1,
-    header
+    header,
+    sampleRows
   }
 }
 
@@ -108,7 +132,7 @@ export function snapshotHasData(raw: unknown): boolean {
  */
 export function buildOfficeChatPrompt(
   raw: unknown,
-  options: { name?: string; language?: Language } = {}
+  options: { name?: string; language?: Language; includeDataSample?: boolean } = {}
 ): string | null {
   if (!raw || typeof raw !== 'object') return null
   const wb = raw as Record<string, unknown>
@@ -144,12 +168,17 @@ export function buildOfficeChatPrompt(
           : `; headers: ${sheet.header.join(', ')}`
         : ''
     const hidden = sheet.hidden ? (isChinese ? '（隐藏）' : ' (hidden)') : ''
-    return `- ${compact(sheet.name, 100)}${hidden}: ${size}${header}`
+    const sample = options.includeDataSample && sheet.sampleRows.length > 0
+      ? isChinese
+        ? `；已读样例（最多 ${MAX_SAMPLE_ROWS} 行）：${sheet.sampleRows.join(' / ')}`
+        : `; sampled rows (up to ${MAX_SAMPLE_ROWS}): ${sheet.sampleRows.join(' / ')}`
+      : ''
+    return `- ${compact(sheet.name, 100)}${hidden}: ${size}${header}${sample}`
   })
 
   const content = isChinese
     ? [
-        '请基于下面的本地工作簿摘要帮助我分析。它只是只读上下文：仅包含结构和表头样例，不含数据行；不要声称你已经修改了工作簿；如建议改动，请列出我可以自己执行的具体步骤。',
+        `请基于下面的本地工作簿${options.includeDataSample ? '有限数据样例' : '摘要'}帮助我分析。它只是只读上下文：${options.includeDataSample ? `每张表最多包含 ${MAX_SAMPLE_ROWS} 行、每行最多 ${MAX_SAMPLE_CELLS} 个非空单元格，不能代表完整工作簿` : '仅包含结构和表头样例，不含数据行'}；不要声称你已经修改了工作簿；如建议改动，请列出我可以自己执行的具体步骤。`,
         '',
         `工作簿：${compact(name, 200) || '（未命名）'}`,
         `工作表（${ordered.length} 个）：`,
@@ -170,7 +199,7 @@ export function buildOfficeChatPrompt(
         '```'
       ]
     : [
-        'Help me analyze this local workbook. Treat it as read-only context: only structure and header samples are included, no data rows. Do not claim that you edited the workbook; if you suggest changes, list concrete steps I can apply myself.',
+        `Help me analyze this local workbook. Treat it as read-only context: ${options.includeDataSample ? `each sheet includes at most ${MAX_SAMPLE_ROWS} sampled rows and ${MAX_SAMPLE_CELLS} non-empty cells per row, not the complete workbook` : 'only structure and header samples are included, no data rows'}. Do not claim that you edited the workbook; if you suggest changes, list concrete steps I can apply myself.`,
         '',
         `Workbook: ${compact(name, 200) || '(untitled)'}`,
         `Sheets (${ordered.length}):`,

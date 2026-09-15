@@ -1,5 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, readdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
@@ -14,6 +14,7 @@ import {
   parseFbAdsCampaignsSnapshot
 } from '../shared/fbAdsParser'
 import { appendFbReading, listFbReadings } from './fbReadings'
+import { serializeBoundedJson } from '../shared/boundedJson'
 
 /**
  * Browser-use bridge: lets runtime extension tools drive the in-app browser
@@ -96,6 +97,8 @@ export interface BrowserUseRequest {
   accountId?: string
   limit?: number
   ref?: number
+  /** Snapshot provenance token returned by browser_snapshot. Optional for legacy clients. */
+  snapshotId?: string
   text?: string
   submit?: boolean
   direction?: 'up' | 'down'
@@ -104,7 +107,7 @@ export interface BrowserUseRequest {
 }
 
 export type BrowserUseResult =
-  | { ok: true; url?: string; title?: string; text?: string; elements?: Array<Record<string, unknown>>; imagePath?: string; reading?: unknown; verified?: boolean; readings?: unknown[] }
+  | { ok: true; url?: string; title?: string; text?: string; elements?: Array<Record<string, unknown>>; imagePath?: string; reading?: unknown; verified?: boolean; readings?: unknown[]; snapshotId?: string; tabId?: number; observedAt?: number; truncated?: boolean }
   | { ok: false; error: string; text?: string; url?: string; title?: string }
 
 const ACTION_NAMES = new Set<string>([
@@ -154,14 +157,16 @@ export function parseBrowserUseRequest(raw: unknown): BrowserUseRequest | null {
     case 'click': {
       const ref = body.ref
       if (typeof ref !== 'number' || !Number.isInteger(ref) || ref < 1 || ref > MAX_ELEMENTS) return null
-      return { action: 'click', ref }
+      const snapshotId = boundedString(body.snapshotId, 128)
+      return { action: 'click', ref, ...(snapshotId ? { snapshotId } : {}) }
     }
     case 'type': {
       const ref = body.ref
       if (typeof ref !== 'number' || !Number.isInteger(ref) || ref < 1 || ref > MAX_ELEMENTS) return null
       const text = boundedString(body.text, 4_000)
       if (text === undefined) return null
-      return { action: 'type', ref, text, submit: body.submit === true }
+      const snapshotId = boundedString(body.snapshotId, 128)
+      return { action: 'type', ref, text, submit: body.submit === true, ...(snapshotId ? { snapshotId } : {}) }
     }
     case 'scroll': {
       const direction = body.direction === 'up' ? 'up' : body.direction === 'down' ? 'down' : null
@@ -302,7 +307,13 @@ async function openPanelWithUrl(url: string): Promise<void> {
   await new Promise((r) => setTimeout(r, 300))
 }
 
-async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
+async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<BrowserUseResult> {
+  if ((req.action === 'click' || req.action === 'type') && req.snapshotId) {
+    const latest = sessionId ? latestSnapshotBySession.get(sessionId) : undefined
+    if (latest !== req.snapshotId) {
+      return { ok: false, error: 'stale-snapshot', text: 'Take a fresh browser_snapshot before using this ref.' }
+    }
+  }
   // Hard read-only boundary on Facebook surfaces, enforced in Main before
   // any input synthesis: click/type are the only actions that could drive
   // Ads Manager write UIs (budget, bid, delivery switches, publish). They
@@ -319,6 +330,7 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
   }
   switch (req.action) {
     case 'navigate': {
+      if (sessionId) latestSnapshotBySession.delete(sessionId)
       const safeUrl = safeBrowserPanelUrl(req.url as string)
       if (!safeUrl) return { ok: false, error: 'invalid-url' }
       await openPanelWithUrl(safeUrl)
@@ -362,7 +374,14 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
         url: snap.url,
         title: snap.title,
         text,
-        elements: (snap.elements ?? []).slice(0, MAX_ELEMENTS)
+        elements: (snap.elements ?? []).slice(0, MAX_ELEMENTS),
+        snapshotId: (() => {
+          const id = randomUUID()
+          if (sessionId) latestSnapshotBySession.set(sessionId, id)
+          return id
+        })(),
+        tabId: getActiveBrowserPanel()?.webContents.id,
+        observedAt: Date.now()
       }
     }
     case 'report': {
@@ -392,7 +411,7 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
           url: snap.url,
           title: snap.title,
           text,
-          reading: parseFbAdsCampaignsSnapshot({ url: snap.url, title: snap.title, text })
+          reading: parseFbAdsCampaignsSnapshot({ url: snap.url, title: snap.title, text, observedAt: Date.now() })
         }
       }
 
@@ -457,6 +476,7 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
         dateRangeLabel: entry.dateRangeLabel,
         campaignCount: entry.campaignCount,
         totalSpend: entry.totalSpend,
+        observation: entry.observation,
         rows: entry.rows.map((row) => ({ name: row.name, spend: row.spend }))
       }))
       return { ok: true, readings }
@@ -480,6 +500,7 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
       await new Promise((r) => setTimeout(r, 250))
       await waitForLoad(8_000)
       const page = currentPage()
+      if (sessionId) latestSnapshotBySession.delete(sessionId)
       return { ok: true, url: page.url, title: page.title }
     }
     case 'type': {
@@ -521,12 +542,14 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
         }
       }
       const page = currentPage()
+      if (sessionId) latestSnapshotBySession.delete(sessionId)
       return { ok: true, url: page.url, title: page.title }
     }
     case 'scroll': {
       await exec(`window.scrollBy({ top: ${req.direction === 'up' ? '-' : ''}${req.amount} })`)
       await new Promise((r) => setTimeout(r, 150))
       const page = currentPage()
+      if (sessionId) latestSnapshotBySession.delete(sessionId)
       return { ok: true, url: page.url, title: page.title }
     }
     case 'screenshot': {
@@ -556,6 +579,7 @@ async function runAction(req: BrowserUseRequest): Promise<BrowserUseResult> {
       await exec(`history.${req.action}()`)
       await waitForLoad(8_000)
       const page = currentPage()
+      if (sessionId) latestSnapshotBySession.delete(sessionId)
       return { ok: true, url: page.url, title: page.title }
     }
     case 'wait': {
@@ -572,6 +596,8 @@ let bridgeReady: Promise<void> | null = null
 const sessionTokens = new Map<string, string>()
 /** Session id that currently owns the panel (last navigate). */
 let panelOwner: string | null = null
+/** The latest DOM snapshot token per runtime session. Mutating the page expires it. */
+const latestSnapshotBySession = new Map<string, string>()
 /** Browser actions must be serialized so ownership cannot change mid-action. */
 let browserActionQueue = Promise.resolve()
 
@@ -621,6 +647,15 @@ export function browserUseEnv(sessionId: string): Record<string, string> {
   return { [BROWSER_USE_ENV_KEY]: `http://127.0.0.1:${bridgePort}/${token}` }
 }
 
+/** Revoke all bridge credentials and snapshot references for a closed session. */
+export function revokeBrowserUseSession(sessionId: string): void {
+  for (const [token, owner] of sessionTokens) {
+    if (owner === sessionId) sessionTokens.delete(token)
+  }
+  latestSnapshotBySession.delete(sessionId)
+  if (panelOwner === sessionId) panelOwner = null
+}
+
 /** Test/internals hook: current ownership state. */
 export function browserUseOwner(): string | null {
   return panelOwner
@@ -629,7 +664,7 @@ export function browserUseOwner(): string | null {
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const unauthorized = (): void => {
     res.writeHead(403, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: false, error: 'forbidden' }))
+    res.end(serializeBoundedJson({ ok: false, error: 'forbidden' }))
   }
   if (req.method !== 'POST') return unauthorized()
   const token = (req.url ?? '').replace(/^\//, '')
@@ -648,13 +683,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     parsed = JSON.parse(Buffer.concat(chunks).toString('utf-8'))
   } catch {
     res.writeHead(400, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: false, error: 'bad-json' }))
+    res.end(serializeBoundedJson({ ok: false, error: 'bad-json' }))
     return
   }
   const request = parseBrowserUseRequest(parsed)
   if (!request) {
     res.writeHead(400, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: false, error: 'bad-action' }))
+    res.end(serializeBoundedJson({ ok: false, error: 'bad-action' }))
     return
   }
   await withBrowserActionLock(async () => {
@@ -667,7 +702,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (denied) {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(
-        JSON.stringify({
+        serializeBoundedJson({
           ok: false,
           error: denied,
           hint:
@@ -683,17 +718,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     // Path: xd://browser_click"); the bridge stays approval-free to avoid
     // double-prompting.
     try {
-      const result = await runAction(request)
+      const result = await runAction(request, sessionId)
       if (request.action === 'navigate' && result.ok) {
         panelOwner = sessionId
+        latestSnapshotBySession.clear()
       }
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(result))
+      res.end(serializeBoundedJson(result))
     } catch (err) {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(
-        JSON.stringify({ ok: false, error: err instanceof Error ? err.message : 'action-failed' })
-      )
+      res.end(serializeBoundedJson({ ok: false, error: err instanceof Error ? err.message : 'action-failed' }))
     }
   })
 }

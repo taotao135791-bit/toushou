@@ -27,7 +27,7 @@ describe('sheetJsToUniver', () => {
     expect(sheet.cellData[0][2]).toEqual({ v: true, t: 3 })
   })
 
-  it('keeps only the computed value of formula cells', () => {
+  it('keeps both the computed value and formula of formula cells', () => {
     const ws: XLSX.WorkSheet = {
       A1: { t: 'n', v: 3 },
       A2: { t: 'n', v: 4, f: 'SUM(A1)+1' },
@@ -35,8 +35,7 @@ describe('sheetJsToUniver', () => {
     }
     const { snapshot } = sheetJsToUniver({ SheetNames: ['S'], Sheets: { S: ws } })
     const sheet = snapshot.sheets['sheet-0']
-    expect(sheet.cellData[1][0]).toEqual({ v: 4, t: 2 })
-    expect('f' in sheet.cellData[1][0]).toBe(false)
+    expect(sheet.cellData[1][0]).toEqual({ v: 4, t: 2, f: 'SUM(A1)+1' })
   })
 
   it('converts dates to their formatted text', () => {
@@ -45,7 +44,7 @@ describe('sheetJsToUniver', () => {
       '!ref': 'A1'
     }
     const { snapshot } = sheetJsToUniver({ SheetNames: ['S'], Sheets: { S: ws } })
-    expect(snapshot.sheets['sheet-0'].cellData[0][0]).toEqual({ v: '2024/1/2', t: 1 })
+    expect(snapshot.sheets['sheet-0'].cellData[0][0]).toEqual({ v: '2024/1/2', t: 1, w: '2024/1/2' })
   })
 
   it('preserves sheet order and visibility', () => {
@@ -167,7 +166,7 @@ describe('univerToSheetJs', () => {
     const sheet = snapshot2.sheets['sheet-0']
     expect(sheet.cellData[0][0]).toEqual({ v: '渠道', t: 1 })
     expect(sheet.cellData[1][1]).toEqual({ v: 1234.5, t: 2 })
-    expect(sheet.cellData[1][2]).toEqual({ v: true, t: 3 })
+    expect(sheet.cellData[1][2]).toMatchObject({ v: true, t: 3 })
   })
 })
 
@@ -187,7 +186,7 @@ describe('sanitizeOfficeSnapshot', () => {
     expect(sanitizeOfficeSnapshot({ sheets: [] })).toBeNull()
   })
 
-  it('strips formulas and styles from renderer-supplied cells', () => {
+  it('preserves trusted formulas but strips unknown renderer style ids', () => {
     const converted = sanitizeOfficeSnapshot({
       id: 'wb',
       sheetOrder: ['s1'],
@@ -209,10 +208,36 @@ describe('sanitizeOfficeSnapshot', () => {
     })
     expect(converted).not.toBeNull()
     const sheet = converted!.snapshot.sheets.s1
-    expect(sheet.cellData[0][0]).toEqual({ v: 5, t: 2 })
+    expect(sheet.cellData[0][0]).toEqual({ v: 5, t: 2, f: 'SUM(A1)' })
     // Rich-text-only cells keep their text stream as a plain string.
     expect(sheet.cellData[0][1]).toEqual({ v: 'rich text', t: 1 })
     expect(sheet.mergeData).toEqual([{ startRow: 0, startColumn: 0, endRow: 0, endColumn: 1 }])
+  })
+
+  it('keeps common styles, dimensions, and prevents formula-like plain text', () => {
+    const snapshot = sanitizeOfficeSnapshot({
+      id: 'wb',
+      sheetOrder: ['s1'],
+      sheets: {
+        s1: {
+          name: 'S', hidden: 0, rowCount: 10, columnCount: 4,
+          columnData: { 0: { size: 120 }, 2: { hidden: true } },
+          rowData: { 1: { size: 32 } },
+          cellData: { 0: {
+            0: { v: 'Title', t: 1, style: { bold: true, fillColor: '#ffffff', horizontalAlign: 'center' } },
+            1: { v: '=not a formula', t: 1 }
+          } },
+          mergeData: []
+        }
+      }
+    })
+    expect(snapshot?.snapshot.sheets.s1.columnData?.[0]).toEqual({ size: 120 })
+    expect(snapshot?.snapshot.sheets.s1.rowData?.[1]).toEqual({ size: 32 })
+    expect(snapshot?.snapshot.sheets.s1.cellData[0][0].style?.bold).toBe(true)
+    expect(snapshot?.snapshot.sheets.s1.cellData[0][1]).toMatchObject({ v: '=not a formula', t: 4 })
+    const output = univerToSheetJs(snapshot!.snapshot)
+    expect(output.Sheets.S['!cols']?.[0]).toMatchObject({ wpx: 120 })
+    expect(output.Sheets.S.A1).toMatchObject({ t: 's', v: 'Title' })
   })
 
   it('bounds cell coordinates and merge ranges', () => {

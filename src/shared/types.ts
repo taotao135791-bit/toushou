@@ -1511,16 +1511,34 @@ export type TaskSchedule =
 
 /** One completed (or failed) firing of a task. */
 export interface TaskRunEntry {
+  /** Stable identity for this firing; survives renderer reloads and app restarts. */
+  runId?: string
+  /** Explicit lifecycle state. Older entries may omit it and are migrated on read. */
+  status?: 'preparing' | 'running' | 'waiting_user' | 'blocked' | 'cancelled' | 'failed' | 'completed' | 'interrupted'
   startedAt: number
   finishedAt?: number
-  outcome: 'success' | 'failed'
+  /** Kept for compatibility with the v0.21 ledger; absent while a run is open. */
+  outcome?: 'success' | 'failed'
   /** Machine-readable failure reason (spawn-stage or run-stage). */
   reason?: TaskFailureReason
   /** Runtime session id of this firing (navigation link). */
   sessionId?: string
+  /** Opaque durable transcript identity, used to reopen a run after restart. */
+  historyUuid?: string
+  /** Human-readable recovery action, never a substitute for the machine state. */
+  recovery?: string
 }
 
-export type TaskFailureReason = 'engine-unavailable' | 'spawn-failed' | 'threw' | 'run-error'
+export type TaskFailureReason =
+  | 'engine-unavailable'
+  | 'spawn-failed'
+  | 'threw'
+  | 'run-error'
+  | 'timeout'
+  | 'cancelled'
+  | 'interrupted'
+  | 'skill-unavailable'
+  | 'project-unavailable'
 
 export interface ScheduledTask {
   id: string
@@ -1544,6 +1562,10 @@ export interface ScheduledTask {
   lastFailureReason?: string
   /** Runtime id of the most recent firing's session (navigation link). */
   lastRunSessionId?: string
+  /** Stable id of the most recent firing. */
+  lastRunId?: string
+  /** Durable lifecycle projection for the most recent firing. */
+  lastRunStatus?: TaskRunEntry['status']
   /** Recent run ledger, engine-owned, newest first, capped. */
   runs?: TaskRunEntry[]
   /**

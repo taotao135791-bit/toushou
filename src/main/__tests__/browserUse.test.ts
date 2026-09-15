@@ -93,6 +93,15 @@ describe('parseBrowserUseRequest', () => {
     expect(parseBrowserUseRequest({ action: 'click', ref: '3' })).toBeNull()
   })
 
+  it('carries snapshot provenance for input actions when provided', () => {
+    expect(parseBrowserUseRequest({ action: 'click', ref: 3, snapshotId: 'snap-1' })).toEqual({
+      action: 'click', ref: 3, snapshotId: 'snap-1'
+    })
+    expect(parseBrowserUseRequest({ action: 'type', ref: 2, text: 'hello', snapshotId: 'snap-1' })).toEqual({
+      action: 'type', ref: 2, text: 'hello', submit: false, snapshotId: 'snap-1'
+    })
+  })
+
   it('accepts type with ref and text, submit optional', () => {
     expect(parseBrowserUseRequest({ action: 'type', ref: 2, text: 'hello' })).toEqual({
       action: 'type',

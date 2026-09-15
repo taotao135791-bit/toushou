@@ -68,9 +68,20 @@
     @apply bg-accent/20 text-cream;
   }
 
-  /* Uniform micro-transition for buttons/cards; utility classes override per-property */
+  /* Keep feedback bounded to visual properties; never animate layout or all properties globally. */
   button {
-    transition: all 120ms var(--ease);
+    transition-property: background-color, color, border-color, opacity, box-shadow, transform;
+    transition-duration: 120ms;
+    transition-timing-function: var(--ease);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 1ms !important;
+    }
   }
 
   ::-webkit-scrollbar {

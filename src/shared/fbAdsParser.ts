@@ -21,6 +21,21 @@ export interface FbAdsSnapshotInput {
   url?: string
   title?: string
   text: string
+  observedAt?: number
+}
+
+export interface FbAdsObservation {
+  capturedAt: string
+  sourceUrl: string | null
+  sourceTitle: string | null
+  currency: string | null
+  timezone: string | null
+  attributionWindow: string | null
+  visibleRows: number
+  readRows: number
+  totalRows: number | null
+  coverage: 'complete' | 'partial' | 'unknown'
+  columnMode: 'wide' | 'narrow' | 'unknown'
 }
 
 export interface FbAdsCampaignRow {
@@ -49,6 +64,8 @@ export interface FbAdsCampaignReading {
   rows: FbAdsCampaignRow[]
   /** Summary-block total spend; should equal the sum of row spends. */
   totalSpend: number | null
+  /** Evidence metadata for this observation; unknown fields stay null. */
+  observation?: FbAdsObservation
 }
 
 /**
@@ -68,6 +85,7 @@ const DATE_LINE = /^(今天|昨天|过去 \d+ 天|过去 \d+ 周|本月|上年)�
 const VALUE_LINE = /^(—|–|-|\$[\d,]+(?:\.\d+)?|[\d,]+(?:\.\d+)?%|[\d,]+(?:\.\d+)?)$/
 /** The result-type label under the 成效 column (e.g. 应用内购买). */
 const RESULT_TYPE_LABEL = /^[\u4e00-\u9fff][\u4e00-\u9fff（）()/A-Za-z0-9 ]{0,19}$/
+const REQUIRED_COLUMN_MARKERS = ['已花费金额', '单次应用安装费用', 'CPM（千次展示费用）']
 
 /** "$3,146.47" → 3146.47; "2.61%" → 2.61; "1,110" → 1110; else null. */
 export function parseFbMetricNumber(line: string): number | null {
@@ -131,6 +149,10 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
   if (headerStart < 0 || headerEnd <= headerStart + 1) return null
   const columns = lines.slice(headerStart + 1, headerEnd)
   if (columns.length < 4) return null
+  // Bind the numeric positions to the one documented column preset. A
+  // reordered, localized, or otherwise unknown view must be reported as
+  // unsupported rather than interpreted by position.
+  if (!REQUIRED_COLUMN_MARKERS.every((column) => columns.includes(column))) return null
 
   // Rows: after 定制列..., until the summary marker. Each row = name plus a
   // run of value lines (9 wide / 3 narrow); every row must use the same mode.
@@ -203,7 +225,22 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
     campaignCount,
     columns,
     rows,
-    totalSpend
+    totalSpend,
+    observation: {
+      capturedAt: typeof input.observedAt === 'number' && Number.isFinite(input.observedAt)
+        ? new Date(input.observedAt).toISOString()
+        : new Date().toISOString(),
+      sourceUrl: typeof input.url === 'string' ? input.url : null,
+      sourceTitle: typeof input.title === 'string' ? input.title : null,
+      currency: null,
+      timezone: null,
+      attributionWindow: null,
+      visibleRows: rows.length,
+      readRows: rows.length,
+      totalRows: campaignCount,
+      coverage: campaignCount !== null && rows.length === campaignCount ? (rowWidth === WIDE_VALUES_PER_ROW ? 'complete' : 'partial') : 'partial',
+      columnMode: rowWidth === WIDE_VALUES_PER_ROW ? 'wide' : rowWidth === NARROW_VALUES_PER_ROW ? 'narrow' : 'unknown'
+    }
   }
 }
 
@@ -231,6 +268,13 @@ export type FbReadingRejection = 'incomplete-view' | 'totals-mismatch' | null
  * Returns the first failing reason, or null when fully verified.
  */
 export function fbAdsReadingRejection(reading: FbAdsCampaignReading): FbReadingRejection {
+  if (
+    !reading.accountId ||
+    !reading.dateRangeLabel ||
+    reading.campaignCount === null ||
+    reading.totalSpend === null ||
+    reading.rows.some((row) => row.spend === null)
+  ) return 'incomplete-view'
   if (fbAdsReadingRowsMatchCount(reading) === false) return 'incomplete-view'
   if (fbAdsReadingTotalsMatch(reading) === false) return 'totals-mismatch'
   return null
@@ -246,7 +290,7 @@ export function fbAdsReadingsConsistent(
   second: FbAdsCampaignReading
 ): boolean {
   const structureOf = (r: FbAdsCampaignReading) =>
-    [r.accountId, r.dateRangeLabel, r.campaignCount, ...r.rows.map((row) => row.name)].join('|')
+    [r.accountId, r.accountName, r.dateRangeLabel, r.campaignCount, r.columns.join('\u001f'), ...r.rows.map((row) => row.name)].join('|')
   if (structureOf(first) !== structureOf(second)) return false
   if (JSON.stringify(first) === JSON.stringify(second)) return true
   return fbAdsReadingRejection(first) === null && fbAdsReadingRejection(second) === null
