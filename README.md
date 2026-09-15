@@ -6,13 +6,17 @@
 
 ## 下载安装
 
-当前版本 v0.21.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.21.0) 下载：
+当前版本 v1.0.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.0.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.21.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.21.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.21.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+安装包由 GitHub Actions 在推送 `v1.0.0` 标签后自动构建，并附带更新清单与 SHA-256 校验文件。
+
+v1.0.0：「体验闭环、浏览器、Office 与界面升级」。定时任务运行记录拥有稳定 `runId`，真实反映准备中、运行中、等待用户、完成、失败、取消、超时和中断恢复等状态；任务页展示下次运行、上次状态与失败恢复入口。浏览器快照携带 `snapshotId`、`tabId` 与 `observedAt`，点击/输入会拒绝陈旧快照引用，桥接响应统一做有界序列化。Facebook Ads 读取增加双读证据、覆盖率、币种、时区和归因窗口元数据，并保持只读边界。Office 工作区支持公式、显示值、常见样式、合并/隐藏、行列尺寸，文档拥有 dirty 状态与 revision 校验，Agent 提议修改必须在当前文档中批量确认后才写入；保存仍只通过用户触发的另存为流程。右侧 Browser / Office / 插件工作区统一为可调整宽度、窄屏可用并支持键盘操作，补齐减动效、无障碍标签和 [design.md](design.md) 设计契约。
 
 v0.21.0：「爆款竞品分析」链路进内核。新增内置打法《爆款竞品分析》（每次启动自动装进 Skill 库、带版本号升级、保留团队手工微调）：从我方 TikTok 账户表现找薄弱点 → 翻译成对标问题 → SocialPeta 竞品爆款检索（creative_rank 上升榜 / search_creatives / creative_detail / advertiser_analysis）→ 按固定模板产出「爆款竞品分析需求单」，第 0 步强制工具自检（TikTok/SocialPeta 任一未挂载即如实报告并停止，不用半套数据编结论）。定时任务新增「每周爆款竞品分析」一键模板（每周一 09:00 + 关联打法）；任务新增 skillId 字段——触发时把打法注入为会话系统提示，定时执行与手动"用于对话"走同一份 SOP（实测：任务触发后 OMP 子进程启动参数携带完整打法，Skill 库自动安装、模板预填、错误 skillId 拒绝保存均已验证）。agent 的 toushou_task_create 也支持 skillId，在对话/飞书里说"每周帮我跑一次爆款竞品分析"即可建好带打法的循环任务。
 
@@ -157,6 +161,8 @@ v0.1.1：流式输出渲染提速（消息增量微批合并、按会话订阅�
 
 - 插件系统：搜索安装、拖拽启停、本机编写 TypeScript 扩展
 - 看板（Boards）：自由布局的小组件墙，支持导入 CSV / XLSX 数据集
+- 浏览器工作区：在受控会话中打开网页，快照带可追踪身份，过期引用会要求重新读取页面
+- Office 工作区：本地 XLSX / CSV 另存为、公式与常见格式保真，Agent 修改必须经过确认
 - `@` 模糊引用文件、图片粘贴与附件（最多 4 张、单张 10MB）
 - 中英双语界面、明暗主题、会话导出 HTML、后台完成时系统通知
 
@@ -188,6 +194,14 @@ pnpm test        # 单元测试
 pnpm build       # 构建
 pnpm package     # 打包桌面应用
 ```
+
+运行时兼容性回归（需要本机安装当前 OMP）：
+
+```bash
+pnpm test:omp
+```
+
+发布前门禁由 `.github/workflows/release.yml` 执行：类型检查、全量测试、OMP 兼容测试、macOS/Windows 打包、校验和生成和 GitHub Release 资产上传。带凭据的 `pnpm test:omp:live` 不属于默认发布流程。
 
 ## 目录结构
 
