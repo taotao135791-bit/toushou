@@ -96,7 +96,8 @@ app.whenReady().then(async () => {
     //    window actually painted, so surface the hidden window for this step
     //    (in the real app the window is visible by definition).
     win.show()
-    await new Promise((r) => setTimeout(r, 250))
+    win.focus()
+    await new Promise((r) => setTimeout(r, 1_000))
     record('A screenshot', await post(envA, { action: 'screenshot' }))
     win.hide()
 

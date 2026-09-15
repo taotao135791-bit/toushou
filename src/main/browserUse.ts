@@ -556,7 +556,15 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
       const panel = getActiveBrowserPanel()
       if (!panel) return { ok: false, error: 'panel-not-open' }
       if (!isBrowserPanelVisible()) return { ok: false, error: 'panel-hidden' }
-      const image = await panel.webContents.capturePage()
+      // Electron can return an empty NativeImage for the first compositor
+      // frame after a WebContentsView is shown or reattached. A short bounded
+      // retry keeps screenshot fallback deterministic without hanging the
+      // bridge when the view is genuinely unavailable.
+      let image = await panel.webContents.capturePage()
+      for (let attempt = 0; image.isEmpty() && attempt < 5; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        image = await panel.webContents.capturePage()
+      }
       if (image.isEmpty()) return { ok: false, error: 'empty-capture' }
       const dir = path.join(app.getPath('userData'), 'browser-use')
       await mkdir(dir, { recursive: true })
