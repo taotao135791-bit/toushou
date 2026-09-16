@@ -956,7 +956,7 @@ export default memo(function Composer({
     // Home (no active session) trims the outer bottom padding: the hint line
     // below the card takes over the rhythm.
     <div className={`px-4 pt-2 ${currentSessionId ? 'pb-4' : 'pb-1'}`}>
-      <div ref={panelAnchorRef} className="relative mx-auto w-full max-w-3xl">
+      <div ref={panelAnchorRef} className="relative mx-auto w-full max-w-[880px]">
         {slashQuery !== null && (
           <div
             className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-y-auto overflow-x-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
@@ -1071,7 +1071,7 @@ export default memo(function Composer({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`relative rounded-[16px] border bg-ink-850 p-2 shadow-composer transition-all duration-200 ease-standard ${
+          className={`composer-shell relative rounded-[25px] border bg-ink-850 p-2 shadow-composer transition-all duration-200 ease-standard ${
             dropping
               ? 'border-dashed border-accent/70 shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
               : disabled
@@ -1249,7 +1249,7 @@ export default memo(function Composer({
             rows={1}
             className="max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
           />
-          <div className="flex items-center justify-between gap-2 px-1 pb-0.5 pt-0.5">
+          <div className="composer-toolbar flex items-center justify-between gap-2 px-1 pb-0.5 pt-0.5">
             <div className="flex items-center gap-1.5">
               <div className="relative">
                 <button

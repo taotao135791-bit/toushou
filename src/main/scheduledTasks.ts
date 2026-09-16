@@ -68,6 +68,8 @@ let spawnFn: TaskSpawnFn | null = null
 interface RunningFiring {
   runId: string
   sessionId?: string
+  /** Main-side abort handle for a session that has already spawned. */
+  cancel?: TaskSpawnResult['cancel']
   startedAt: number
   fallbackTimer: ReturnType<typeof setTimeout>
 }
@@ -455,8 +457,17 @@ function beginFiring(task: ScheduledTask): { runId: string; startedAt: number } 
     startedAt,
     fallbackTimer: setTimeout(() => {
       // Events lost (runtime killed without a closed event) are a failed,
-      // interrupted run — never just an unlocked task with a stale "running"
-      // row. The task can be retried immediately after this settles.
+      // interrupted run. If spawn already returned, invoke its real cancel
+      // handle before releasing the guard; changing the ledger alone would
+      // let an old session continue beside the retry.
+      const running = runningTasks.get(task.id)
+      if (running?.runId === runId && running.cancel) {
+        try {
+          void running.cancel()
+        } catch (error) {
+          console.warn('[scheduled-tasks] timed-out session cancellation failed:', error)
+        }
+      }
       settleFiring(task.id, runId, 'failed', 'timeout')
     }, MAX_RUN_MS)
   })
@@ -514,6 +525,7 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
     }
     if (running) {
       running.sessionId = result.sessionId
+      running.cancel = result.cancel
       taskBySession.set(result.sessionId, task.id)
       taskRunBySession.set(result.sessionId, { taskId: task.id, runId })
     }

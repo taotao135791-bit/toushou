@@ -13,7 +13,10 @@ import {
   Plug,
   BookOpen,
   Puzzle,
-  Settings2
+  Settings2,
+  Globe2,
+  FileText,
+  Table2
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
@@ -28,7 +31,6 @@ import Composer from './Composer'
 import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
 import OpenWithMenu from './OpenWithMenu'
-import Logo from './Logo'
 import useElementWidth from '../lib/useElementWidth'
 
 const EMPTY_MESSAGES: MessageLike[] = []
@@ -373,6 +375,12 @@ export default function ChatPanel() {
     setNewProjectName('')
   }
 
+  const openOfficeFile = async () => {
+    const picked = await window.electronAPI.officeOpenDialog()
+    if (!picked) return
+    setWorkspacePanel({ kind: 'office', grant: picked.grant, name: picked.name })
+  }
+
   const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
   const exportedFilename = exportSuccessPath ? exportFilename(exportSuccessPath) : null
   const showHero = sessionMessages.length === 0
@@ -504,20 +512,14 @@ export default function ChatPanel() {
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} onScroll={handleTranscriptScroll} className="relative h-full overflow-y-auto">
         {showHero ? (
-          // Hero and composer form ONE centered block: mark, serif hero
+          // Hero and composer form ONE centered block: mark, sans-serif wordmark
           // title, composer, then one faint hint line and the scenario chips
           // below — nothing else. The top bar is a bare drag spacer on home.
           <div className="flex min-h-full flex-col items-center px-8">
-            <div className="my-auto flex w-full max-w-[680px] flex-col items-center pb-[10vh] pt-6">
-              <div className="rise" style={{ animationDelay: '0ms' }}>
-                <Logo size={52} />
+            <div className="home-hero my-auto flex flex-col items-center pb-[10vh] pt-6">
+              <div className="home-wordmark rise" style={{ animationDelay: '0ms' }} aria-label="投手">
+                投手
               </div>
-              <h2
-                className="rise mb-10 mt-8 text-[32px] font-semibold tracking-tight text-cream"
-                style={{ animationDelay: '60ms' }}
-              >
-                {t('chat.hero.title')}
-              </h2>
               <div className="rise w-full" style={{ animationDelay: '140ms' }}>
                 <Composer
                   onSend={handleSend}
@@ -611,6 +613,28 @@ export default function ChatPanel() {
                     )}
                   </div>
                 )}
+                <div className="home-quick-links" aria-label="常用入口">
+                  <button type="button" onClick={() => setWorkspacePanel({ kind: 'browser' })}>
+                    <Globe2 size={15} aria-hidden="true" />
+                    <span>浏览器</span>
+                  </button>
+                  <button type="button" onClick={() => void openOfficeFile()}>
+                    <FileText size={15} aria-hidden="true" />
+                    <span>文件</span>
+                  </button>
+                  <button type="button" onClick={() => void openOfficeFile()}>
+                    <Table2 size={15} aria-hidden="true" />
+                    <span>表格</span>
+                  </button>
+                  <button type="button" onClick={() => navigate('/tasks')}>
+                    <CalendarClock size={15} aria-hidden="true" />
+                    <span>自动任务</span>
+                  </button>
+                  <button type="button" onClick={() => navigate('/plugins')}>
+                    <Puzzle size={15} aria-hidden="true" />
+                    <span>插件</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>

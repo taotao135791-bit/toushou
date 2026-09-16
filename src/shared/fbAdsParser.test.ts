@@ -465,4 +465,12 @@ $98.07
     // count gate fires first: refuse, never under-report.
     expect(fbAdsReadingRejection(reading as never)).toBe('incomplete-view')
   })
+
+  it('rejects a reordered preset instead of mapping metrics by the wrong position', () => {
+    const reordered = REAL_CAMPAIGNS_TEXT.replace(
+      '单次应用安装费用\nCPM（千次展示费用）',
+      'CPM（千次展示费用）\n单次应用安装费用'
+    )
+    expect(parseFbAdsCampaignsSnapshot({ url: REAL_URL, text: reordered })).toBeNull()
+  })
 })

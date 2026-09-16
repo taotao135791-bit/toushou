@@ -45,21 +45,25 @@ const SUBMIT_NAVIGATION_TIMEOUT_MS = 1_000
 export const BROWSER_USE_ENV_KEY = 'TOUSHOU_BROWSER_USE'
 
 /**
- * Session admission for one bridge request. `navigate` is always allowed (it
- * visibly (re)opens the panel and TAKES ownership); every other action must
- * come from the owning session while the panel is attached — the user sees
- * everything the agent does, and parallel sessions cannot silently mutate a
- * page another session is working on.
+ * Session admission for one bridge request. A navigate on an unowned panel is
+ * allowed; taking over another session requires an explicit `takeover: true`.
+ * Every other action must come from the owning session while the panel is
+ * attached — parallel sessions cannot silently mutate a page another session
+ * is working on.
  */
 export function gateBrowserUseRequest(
   action: BrowserUseAction,
   sessionId: string,
   owner: string | null,
-  panelVisible: boolean
+  panelVisible: boolean,
+  takeover = false
 ): 'panel-hidden' | 'panel-owned-by-another-session' | null {
-  // navigate visibly reopens the panel; history reads the local verified
-  // store and never touches the page — both are panel-independent.
-  if (action === 'navigate' || action === 'history') return null
+  // history reads the local verified store and never touches the page.
+  if (action === 'history') return null
+  if (action === 'navigate') {
+    if (owner !== null && owner !== sessionId && !takeover) return 'panel-owned-by-another-session'
+    return null
+  }
   if (!panelVisible) return 'panel-hidden'
   if (owner !== null && owner !== sessionId) return 'panel-owned-by-another-session'
   return null
@@ -94,10 +98,12 @@ export type BrowserUseAction =
 export interface BrowserUseRequest {
   action: BrowserUseAction
   url?: string
+  /** Navigation may explicitly transfer the visible panel to this session. */
+  takeover?: boolean
   accountId?: string
   limit?: number
   ref?: number
-  /** Snapshot provenance token returned by browser_snapshot. Optional for legacy clients. */
+  /** Snapshot provenance token returned by browser_snapshot. Required for DOM refs. */
   snapshotId?: string
   text?: string
   submit?: boolean
@@ -139,7 +145,7 @@ export function parseBrowserUseRequest(raw: unknown): BrowserUseRequest | null {
   switch (action as BrowserUseAction) {
     case 'navigate': {
       const url = boundedString(body.url, 2_048)
-      return url ? { action: 'navigate', url } : null
+      return url ? { action: 'navigate', url, ...(body.takeover === true ? { takeover: true } : {}) } : null
     }
     case 'snapshot':
       return { action: 'snapshot' }
@@ -158,7 +164,7 @@ export function parseBrowserUseRequest(raw: unknown): BrowserUseRequest | null {
       const ref = body.ref
       if (typeof ref !== 'number' || !Number.isInteger(ref) || ref < 1 || ref > MAX_ELEMENTS) return null
       const snapshotId = boundedString(body.snapshotId, 128)
-      return { action: 'click', ref, ...(snapshotId ? { snapshotId } : {}) }
+      return snapshotId ? { action: 'click', ref, snapshotId } : null
     }
     case 'type': {
       const ref = body.ref
@@ -166,7 +172,7 @@ export function parseBrowserUseRequest(raw: unknown): BrowserUseRequest | null {
       const text = boundedString(body.text, 4_000)
       if (text === undefined) return null
       const snapshotId = boundedString(body.snapshotId, 128)
-      return { action: 'type', ref, text, submit: body.submit === true, ...(snapshotId ? { snapshotId } : {}) }
+      return snapshotId ? { action: 'type', ref, text, submit: body.submit === true, snapshotId } : null
     }
     case 'scroll': {
       const direction = body.direction === 'up' ? 'up' : body.direction === 'down' ? 'down' : null
@@ -213,7 +219,10 @@ export const SNAPSHOT_SCRIPT = `(() => {
     const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.title || '').replace(/\\s+/g, ' ').trim().slice(0, 120)
     const tag = el.tagName.toLowerCase()
     const type = tag === 'input' ? (el.getAttribute('type') || 'text') : undefined
-    elements.push({ ref: n, tag, type, text, value: typeof el.value === 'string' ? el.value.slice(0, 120) : undefined })
+    // Passwords and credential-like values must never enter the ordinary DOM
+    // snapshot, archive, logs, or model context.
+    const safeValue = type === 'password' ? undefined : typeof el.value === 'string' ? el.value.slice(0, 120) : undefined
+    elements.push({ ref: n, tag, type, text, ...(safeValue !== undefined ? { value: safeValue } : {}) })
   }
   const root = document.querySelector('main') || document.querySelector('article') || document.body
   const text = (root && root.innerText ? root.innerText : '').replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, ${MAX_TEXT_CHARS})
@@ -240,7 +249,7 @@ function waitForLoad(timeoutMs = LOAD_TIMEOUT_MS, requireVisible = true): Promis
   if (requireVisible && !isBrowserPanelVisible()) return Promise.reject(new Error('panel-hidden'))
   const wc = panel.webContents
   if (!wc.isLoading()) return Promise.resolve()
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup()
       resolve() // still resolve: snapshot will see whatever loaded
@@ -249,13 +258,18 @@ function waitForLoad(timeoutMs = LOAD_TIMEOUT_MS, requireVisible = true): Promis
       cleanup()
       resolve()
     }
+    const failed = (_event: unknown, errorCode: number, errorDescription: string, _validatedURL: string, isMainFrame: boolean) => {
+      if (isMainFrame === false) return
+      cleanup()
+      reject(new Error(`navigation-failed:${errorCode}:${errorDescription || 'unknown'}`))
+    }
     const cleanup = () => {
       clearTimeout(timer)
       wc.off('did-stop-loading', done)
-      wc.off('did-fail-load', done)
+      wc.off('did-fail-load', failed)
     }
     wc.on('did-stop-loading', done)
-    wc.on('did-fail-load', done)
+    wc.on('did-fail-load', failed)
   })
 }
 
@@ -339,7 +353,7 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
       const existing = getActiveBrowserPanel()
       if (existing) {
         if (existing.webContents.getURL() !== safeUrl) {
-          await existing.webContents.loadURL(safeUrl).catch(() => undefined)
+          await existing.webContents.loadURL(safeUrl)
         }
       }
       // Navigation is the one action allowed to reopen a hidden panel. The
@@ -705,7 +719,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       request.action,
       sessionId,
       panelOwner,
-      isBrowserPanelVisible()
+      isBrowserPanelVisible(),
+      request.takeover === true
     )
     if (denied) {
       res.writeHead(200, { 'content-type': 'application/json' })

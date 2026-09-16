@@ -148,7 +148,8 @@ function buildUniverSnapshot(
  */
 function mergeOfficeFidelity(
   baseline: OfficeWorkbookSnapshot | null,
-  current: OfficeWorkbookSnapshot
+  current: OfficeWorkbookSnapshot,
+  clearedFields: ReadonlySet<string> = new Set()
 ): OfficeWorkbookSnapshot {
   if (!baseline) return current
   const sheets = { ...current.sheets }
@@ -164,11 +165,12 @@ function mergeOfficeFidelity(
         const baseCell = baseColumns[Number(column)]
         if (!baseCell) continue
         const sameValue = JSON.stringify(cell.v) === JSON.stringify(baseCell.v)
+        const cellKey = `${sheetId}:${row}:${column}`
         mergedColumns[Number(column)] = {
           ...cell,
-          ...(baseCell.style && !cell.style ? { style: baseCell.style } : {}),
+          ...(baseCell.style && !cell.style && !clearedFields.has(`${cellKey}:style`) ? { style: baseCell.style } : {}),
           ...(baseCell.w && !cell.w ? { w: baseCell.w } : {}),
-          ...(baseCell.f && !cell.f && sameValue ? { f: baseCell.f } : {})
+          ...(baseCell.f && !cell.f && sameValue && !clearedFields.has(`${cellKey}:formula`) ? { f: baseCell.f } : {})
         }
       }
       cellData[Number(row)] = mergedColumns
@@ -229,6 +231,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const bundlesRef = useRef<UniverBundles | null>(null)
   const consumedGrantIds = useRef(new Set<string>())
   const baselineSnapshotRef = useRef<OfficeWorkbookSnapshot | null>(null)
+  const clearedFieldsRef = useRef(new Set<string>())
   const [engineReady, setEngineReady] = useState(false)
   const [bundleError, setBundleError] = useState(false)
   const [bundleRetryNonce, setBundleRetryNonce] = useState(0)
@@ -291,7 +294,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     const initialLanguage = useAppStore.getState().language
     let disposed = false
     let instance: { univer: Univer; univerAPI: FUniver } | null = null
-    let disposable: { dispose: () => void } | null = null
+    const disposables: Array<{ dispose: () => void }> = []
     const frame = window.requestAnimationFrame(() => {
       void (async () => {
         const container = containerRef.current
@@ -326,9 +329,11 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
           univerRef.current = created
           created.univerAPI.createWorkbook(buildUniverSnapshot(undefined, initialLanguage, LocaleType))
           setEngineReady(true)
-          // Generic mutation events include Univer's startup bookkeeping. This
-          // event is scoped to actual cell-value changes, including paste/edit.
-          disposable = created.univerAPI.addEvent(created.univerAPI.Event.SheetValueChanged, () => {
+          // Keep the renderer's dirty/revision state in sync with all edits.
+          // The value event is the reliable cross-version hook; the snapshot
+          // comparison below also remembers intentional style/formula clears
+          // so fidelity repair cannot resurrect them on save.
+          const markWorkbookDirty = () => {
             setDirty(true)
             useAppStore.getState().setOfficeWorkbookDirty(true)
             setHasData(true)
@@ -336,9 +341,32 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
             setRevision(revisionRef.current)
             const active = created.univerAPI.getActiveWorkbook()
             const converted = active ? sanitizeOfficeSnapshot(active.save()) : null
-            if (converted) useAppStore.getState().setOfficeWorkbookSnapshot(converted.snapshot)
+            if (converted) {
+              const baseline = baselineSnapshotRef.current
+              if (baseline) {
+                for (const [sheetId, sheet] of Object.entries(converted.snapshot.sheets)) {
+                  const baselineSheet = baseline.sheets[sheetId]
+                  if (!baselineSheet) continue
+                  for (const [row, columns] of Object.entries(sheet.cellData)) {
+                    const baselineColumns = baselineSheet.cellData[Number(row)]
+                    if (!baselineColumns) continue
+                    for (const [column, cell] of Object.entries(columns)) {
+                      const baselineCell = baselineColumns[Number(column)]
+                      if (!baselineCell) continue
+                      const cellKey = `${sheetId}:${row}:${column}`
+                      if (baselineCell.style && !cell.style) clearedFieldsRef.current.add(`${cellKey}:style`)
+                      if (baselineCell.f && !cell.f && JSON.stringify(baselineCell.v) !== JSON.stringify(cell.v)) {
+                        clearedFieldsRef.current.add(`${cellKey}:formula`)
+                      }
+                    }
+                  }
+                }
+              }
+              useAppStore.getState().setOfficeWorkbookSnapshot(converted.snapshot)
+            }
             useAppStore.getState().setOfficeWorkbookRevision(revisionRef.current)
-          })
+          }
+          disposables.push(created.univerAPI.addEvent(created.univerAPI.Event.SheetValueChanged, markWorkbookDirty))
         } catch {
           instance?.univerAPI.dispose()
           instance = null
@@ -350,7 +378,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     return () => {
       disposed = true
       window.cancelAnimationFrame(frame)
-      disposable?.dispose()
+      for (const disposable of disposables) disposable.dispose()
       univerRef.current = null
       instance?.univerAPI.dispose()
     }
@@ -378,6 +406,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     if (current) api.univerAPI.disposeUnit(current.getId())
     api.univerAPI.createWorkbook(buildUniverSnapshot(documentSnapshot, locale, bundles.presets.LocaleType))
     baselineSnapshotRef.current = documentSnapshot
+    clearedFieldsRef.current.clear()
     revisionRef.current = 0
     setRevision(0)
     setFileName(name)
@@ -474,7 +503,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         setError('invalid-snapshot')
         return
       }
-      const fidelitySnapshot = mergeOfficeFidelity(baselineSnapshotRef.current, converted.snapshot)
+      const fidelitySnapshot = mergeOfficeFidelity(baselineSnapshotRef.current, converted.snapshot, clearedFieldsRef.current)
       const base = fileName.replace(/\.(xlsx|xls|csv)$/i, '') || 'workbook'
       const picked = await window.electronAPI.officeSaveDialog(`${base}.xlsx`)
       if (!picked) return
@@ -485,6 +514,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       }
       setFileName(picked.name)
       baselineSnapshotRef.current = fidelitySnapshot
+      clearedFieldsRef.current.clear()
       useAppStore.getState().setOfficeWorkbookSnapshot(fidelitySnapshot)
       if (revisionRef.current === revisionAtCapture) {
         setDirty(false)
@@ -504,11 +534,11 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   }, [fileName, flashToast, t])
 
   const closePanel = () => {
-    if (dirty && !window.confirm(t('office.discardConfirm'))) return
     if (onClose) {
       onClose()
       return
     }
+    if (dirty && !window.confirm(t('office.discardConfirm'))) return
     if (window.history.length > 1) navigate(-1)
     else navigate('/')
   }
@@ -538,7 +568,9 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const applyOfficeEditHandoff = useCallback(() => {
     const handoff = useAppStore.getState().officeEditHandoff
     if (!handoff) return
-    const workbook = univerRef.current?.univerAPI.getActiveWorkbook()
+    const api = univerRef.current
+    if (!api) return
+    const workbook = api?.univerAPI.getActiveWorkbook()
     if (!workbook) {
       // Nothing to land on — keep the proposal staged so the person can open
       // a workbook and confirm again.
@@ -579,6 +611,9 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       flashToast(t('office.edit.partialToast', { applied: 0, failed: failures.length }))
       return
     }
+    const beforeSnapshot = sanitizeOfficeSnapshot(workbook.save())?.snapshot ?? null
+    const dirtyBeforeApply = useAppStore.getState().officeWorkbookDirty
+    const clearedFieldsBeforeApply = new Set(clearedFieldsRef.current)
     let applied = 0
     for (const { edit, sheet, row, column } of validEdits) {
       try {
@@ -586,6 +621,27 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         applied += 1
       } catch {
         failures.push({ edit, reason: 'write-failed' })
+      }
+    }
+    // Univer writes cells one at a time. If a later write fails, restore the
+    // exact pre-batch projection so a partial agent proposal never remains in
+    // the in-memory workbook or gets saved by accident.
+    if (failures.length > 0 && beforeSnapshot) {
+      const bundles = bundlesRef.current
+      try {
+        api.univerAPI.disposeUnit(workbook.getId())
+        if (bundles) {
+          api.univerAPI.createWorkbook(buildUniverSnapshot(beforeSnapshot, locale, bundles.presets.LocaleType))
+        }
+        clearedFieldsRef.current = clearedFieldsBeforeApply
+        setDirty(dirtyBeforeApply)
+        useAppStore.getState().setOfficeWorkbookDirty(dirtyBeforeApply)
+        useAppStore.getState().setOfficeWorkbookSnapshot(beforeSnapshot)
+        setHasData(snapshotHasData(beforeSnapshot))
+        applied = 0
+      } catch {
+        // Preserve the visible write-failed result if the defensive restore
+        // itself cannot complete; the next open still requires a clean read.
       }
     }
     setEditResult({ applied, failures })

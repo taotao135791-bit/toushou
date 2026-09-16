@@ -22,7 +22,10 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
-  Link2, Clock} from 'lucide-react'
+  Link2,
+  Clock,
+  BriefcaseBusiness
+} from 'lucide-react'
 import { HistorySessionDescriptor, HistorySessionRow, SessionSortOrder } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
@@ -45,9 +48,9 @@ const EMPTY_MESSAGES: Record<string, MessageLike[]> = {}
 // Sidebar drag-resize bounds (px). The min keeps the widest row (a live
 // session with its three action buttons) from overflowing; the max leaves the
 // chat pane readable. Matches mature desktop agent apps.
-const SIDEBAR_MIN_WIDTH = 208
-const SIDEBAR_MAX_WIDTH = 420
-const SIDEBAR_DEFAULT_WIDTH = 240
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_MAX_WIDTH = 360
+const SIDEBAR_DEFAULT_WIDTH = 260
 
 const clampSidebarWidth = (width: number): number => {
   if (!Number.isFinite(width)) return SIDEBAR_DEFAULT_WIDTH
@@ -85,6 +88,8 @@ export default function Sidebar() {
   const selectWorkspace = useAppStore((s) => s.selectWorkspace)
   const activateRecentWorkspace = useAppStore((s) => s.activateRecentWorkspace)
   const setCurrentSessionId = useAppStore((s) => s.setCurrentSessionId)
+  const workspacePanel = useAppStore((s) => s.workspacePanel)
+  const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const setSessions = useAppStore((s) => s.setSessions)
   const setLanguage = useAppStore((s) => s.setLanguage)
   const setTheme = useAppStore((s) => s.setTheme)
@@ -1082,7 +1087,7 @@ export default function Sidebar() {
     <aside
       ref={asideRef}
       style={{ width: sidebarWidth }}
-      className="relative flex shrink-0 flex-col border-r border-line bg-ink-900 max-w-[min(420px,30vw)]"
+      className="app-sidebar relative flex shrink-0 flex-col border-r border-line bg-ink-900 max-w-[min(360px,30vw)]"
     >
       {/* drag spacer — clears the macOS traffic lights */}
       <div className="app-drag h-11 shrink-0" />
@@ -1103,21 +1108,51 @@ export default function Sidebar() {
         }`}
       />
 
-      <div className="app-drag flex items-center justify-between px-3.5 pb-3">
+      <div className="app-drag app-sidebar-brand flex items-center justify-between px-4 pb-3">
         <div className="flex items-center gap-2.5">
           <Logo size={22} className="shrink-0" />
-          <span className="text-[13.5px] font-semibold tracking-tight text-cream">投手</span>
+          <span className="text-[15px] font-semibold tracking-tight text-cream">投手</span>
         </div>
       </div>
 
-      <nav className="space-y-0.5 px-2.5">
+      <div className="px-3 pb-3">
+        <div className="app-view-segment" role="tablist" aria-label="工作视图">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={Boolean(workspacePanel)}
+            aria-pressed={Boolean(workspacePanel)}
+            onClick={() => {
+              if (workspacePanel) return
+              setWorkspacePanel({ kind: 'plugins' })
+            }}
+            className="focus-ring flex items-center justify-center gap-1.5 px-2 text-[12px] font-medium"
+          >
+            <BriefcaseBusiness size={14} aria-hidden="true" />
+            <span>Work</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!workspacePanel}
+            aria-pressed={!workspacePanel}
+            onClick={() => setWorkspacePanel(null)}
+            className="focus-ring flex items-center justify-center gap-1.5 px-2 text-[12px] font-medium"
+          >
+            <MessageSquare size={14} aria-hidden="true" />
+            <span>Chat</span>
+          </button>
+        </div>
+      </div>
+
+      <nav className="space-y-0.5 px-3" aria-label="主要导航">
         {/* 对话 = 回首页 + 清空选中。会话只在第一条消息发出时创建（⌘N 同效）。 */}
         <button
           onClick={() => {
             setCurrentSessionId(null)
             navigate('/')
           }}
-          className={navRow(location.pathname === '/' && !currentSessionId)}
+          className={`${navRow(location.pathname === '/' && !currentSessionId)} bg-ink-800/60`}
         >
           <MessageSquare size={14} className="shrink-0" />
           {t('sidebar.chat')}

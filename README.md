@@ -6,15 +6,17 @@
 
 ## 下载安装
 
-当前版本 v1.0.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.0.0) 下载：
+当前版本 v1.1.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.1.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-arm64.zip) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-x64.zip) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.0.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-x64.exe) | 见 Release | 见 Release |
 
-安装包由 GitHub Actions 在推送 `v1.0.0` 标签后自动构建，并附带更新清单与 SHA-256 校验文件。
+安装包由 GitHub Actions 在推送 `v1.1.0` 标签后自动构建，并附带更新清单与 SHA-256 校验文件。
+
+v1.1.0：「浅色工作台、可靠边界与真实入口」。首页改为浅灰侧栏、白色主画布、居中“投手”字标、宽输入框与灰色操作托盘；Work / Chat 视图、浏览器、文件、表格、自动任务和插件入口均接入现有真实路由。普通对话保持单列，打开对象才展开右侧工作区，默认工作区宽度修复为 440px。浏览器桥接按需裁剪并标记传输范围，密码字段不进入快照，点击/输入必须携带当前 `snapshotId`，导航失败与跨会话接管显式返回结果。定时任务超时会先取消已启动会话再释放运行锁。Facebook Ads 固定列布局改为严格校验。Office 提议在生成时绑定原始文档身份与 revision，保存时区分主动清除的公式/样式与投影遗漏。
 
 v1.0.0：「体验闭环、浏览器、Office 与界面升级」。定时任务运行记录拥有稳定 `runId`，真实反映准备中、运行中、等待用户、完成、失败、取消、超时和中断恢复等状态；任务页展示下次运行、上次状态与失败恢复入口。浏览器快照携带 `snapshotId`、`tabId` 与 `observedAt`，点击/输入会拒绝陈旧快照引用，桥接响应统一做有界序列化。Facebook Ads 读取增加双读证据、覆盖率、币种、时区和归因窗口元数据，并保持只读边界。Office 工作区支持公式、显示值、常见样式、合并/隐藏、行列尺寸，文档拥有 dirty 状态与 revision 校验，Agent 提议修改必须在当前文档中批量确认后才写入；保存仍只通过用户触发的另存为流程。右侧 Browser / Office / 插件工作区统一为可调整宽度、窄屏可用并支持键盘操作，补齐减动效、无障碍标签和 [design.md](design.md) 设计契约。
 

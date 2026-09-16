@@ -21,9 +21,9 @@ export default function Layout({ children }: LayoutProps) {
     (location.pathname === '/office' && panelKind === 'office')
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-ink-950 text-cream">
+    <div className="app-shell flex h-full w-full overflow-hidden bg-ink-950 text-cream">
       <Sidebar />
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="app-main flex min-w-0 flex-1 flex-col">
         <UpdateBanner />
         {children}
       </main>

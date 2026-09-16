@@ -21,7 +21,8 @@ export default function WorkspacePanel({ panel }: WorkspacePanelProps) {
   const officeWorkbookDirty = useAppStore((state) => state.officeWorkbookDirty)
   const [kind, setKind] = useState<WorkspacePanelState['kind']>(panel.kind)
   const [width, setWidth] = useState(() => {
-    const stored = Number(window.localStorage.getItem('toushou.workspace.width'))
+    const raw = window.localStorage.getItem('toushou.workspace.width')
+    const stored = raw === null ? Number.NaN : Number(raw)
     return Number.isFinite(stored) ? Math.min(Math.max(stored, 320), 720) : 440
   })
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null)
@@ -65,7 +66,7 @@ export default function WorkspacePanel({ panel }: WorkspacePanelProps) {
     <aside
       aria-label={workspaceLabel}
       style={{ '--workspace-width': `${width}px` } as React.CSSProperties}
-      className="relative flex w-[var(--workspace-width)] min-w-[320px] shrink-0 flex-col border-l border-line bg-ink-950 shadow-[-12px_0_32px_rgba(0,0,0,0.08)] max-[1100px]:absolute max-[1100px]:bottom-0 max-[1100px]:right-0 max-[1100px]:top-0 max-[1100px]:z-30 max-[1100px]:w-[min(92vw,560px)]"
+      className="workspace-panel relative flex w-[var(--workspace-width)] min-w-[320px] shrink-0 flex-col border-l border-line bg-ink-950 shadow-[-12px_0_32px_rgba(0,0,0,0.08)] max-[1100px]:absolute max-[1100px]:bottom-0 max-[1100px]:right-0 max-[1100px]:top-0 max-[1100px]:z-30 max-[1100px]:w-[min(92vw,560px)]"
     >
       <div
         role="separator"

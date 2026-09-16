@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { gateBrowserUseRequest, isFacebookReadOnlyAction, parseBrowserUseRequest } from '../browserUse'
+import { gateBrowserUseRequest, isFacebookReadOnlyAction, parseBrowserUseRequest, SNAPSHOT_SCRIPT } from '../browserUse'
 
 describe('isFacebookReadOnlyAction (hard FB read-only boundary)', () => {
   it('blocks click and type on any facebook.com surface', () => {
@@ -24,8 +24,9 @@ describe('isFacebookReadOnlyAction (hard FB read-only boundary)', () => {
 })
 
 describe('gateBrowserUseRequest', () => {
-  it('always admits navigate (it visibly reopens and takes ownership)', () => {
-    expect(gateBrowserUseRequest('navigate', 'B', 'A', false)).toBeNull()
+  it('requires explicit takeover before another session can navigate', () => {
+    expect(gateBrowserUseRequest('navigate', 'B', 'A', false)).toBe('panel-owned-by-another-session')
+    expect(gateBrowserUseRequest('navigate', 'B', 'A', false, true)).toBeNull()
     expect(gateBrowserUseRequest('navigate', 'A', null, true)).toBeNull()
   })
 
@@ -52,6 +53,11 @@ describe('gateBrowserUseRequest', () => {
 })
 
 describe('parseBrowserUseRequest', () => {
+  it('does not expose password values in the DOM snapshot projection', () => {
+    expect(SNAPSHOT_SCRIPT).toContain("type === 'password' ? undefined")
+    expect(SNAPSHOT_SCRIPT).toContain('safeValue !== undefined')
+  })
+
   it('accepts a valid navigate', () => {
     expect(parseBrowserUseRequest({ action: 'navigate', url: 'https://example.com' })).toEqual({
       action: 'navigate',
@@ -87,7 +93,8 @@ describe('parseBrowserUseRequest', () => {
   })
 
   it('accepts click with a bounded integer ref', () => {
-    expect(parseBrowserUseRequest({ action: 'click', ref: 3 })).toEqual({ action: 'click', ref: 3 })
+    expect(parseBrowserUseRequest({ action: 'click', ref: 3 })).toBeNull()
+    expect(parseBrowserUseRequest({ action: 'click', ref: 3, snapshotId: 'snap-1' })).toEqual({ action: 'click', ref: 3, snapshotId: 'snap-1' })
     expect(parseBrowserUseRequest({ action: 'click', ref: 0 })).toBeNull()
     expect(parseBrowserUseRequest({ action: 'click', ref: 2.5 })).toBeNull()
     expect(parseBrowserUseRequest({ action: 'click', ref: '3' })).toBeNull()
@@ -103,17 +110,13 @@ describe('parseBrowserUseRequest', () => {
   })
 
   it('accepts type with ref and text, submit optional', () => {
-    expect(parseBrowserUseRequest({ action: 'type', ref: 2, text: 'hello' })).toEqual({
-      action: 'type',
-      ref: 2,
-      text: 'hello',
-      submit: false
-    })
-    expect(parseBrowserUseRequest({ action: 'type', ref: 2, text: 'hi', submit: true })).toEqual({
+    expect(parseBrowserUseRequest({ action: 'type', ref: 2, text: 'hello' })).toBeNull()
+    expect(parseBrowserUseRequest({ action: 'type', ref: 2, text: 'hi', submit: true, snapshotId: 'snap-1' })).toEqual({
       action: 'type',
       ref: 2,
       text: 'hi',
-      submit: true
+      submit: true,
+      snapshotId: 'snap-1'
     })
     expect(parseBrowserUseRequest({ action: 'type', ref: 2 })).toBeNull()
   })

@@ -85,7 +85,20 @@ const DATE_LINE = /^(今天|昨天|过去 \d+ 天|过去 \d+ 周|本月|上年)�
 const VALUE_LINE = /^(—|–|-|\$[\d,]+(?:\.\d+)?|[\d,]+(?:\.\d+)?%|[\d,]+(?:\.\d+)?)$/
 /** The result-type label under the 成效 column (e.g. 应用内购买). */
 const RESULT_TYPE_LABEL = /^[\u4e00-\u9fff][\u4e00-\u9fff（）()/A-Za-z0-9 ]{0,19}$/
-const REQUIRED_COLUMN_MARKERS = ['已花费金额', '单次应用安装费用', 'CPM（千次展示费用）']
+/** The supported "leo 的列" preset is positional: row values are read in
+ * this order. Merely finding these labels anywhere in the header is unsafe,
+ * because Ads Manager lets users reorder the same columns. */
+const EXPECTED_COLUMN_PREFIX = [
+  '广告系列',
+  '已花费金额',
+  '单次应用安装费用',
+  'CPM（千次展示费用）',
+  '成效',
+  '点击量（全部）',
+  '点击率（全部）',
+  '单次点击费用（全部）',
+  '应用安装量'
+]
 
 /** "$3,146.47" → 3146.47; "2.61%" → 2.61; "1,110" → 1110; else null. */
 export function parseFbMetricNumber(line: string): number | null {
@@ -149,10 +162,10 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
   if (headerStart < 0 || headerEnd <= headerStart + 1) return null
   const columns = lines.slice(headerStart + 1, headerEnd)
   if (columns.length < 4) return null
-  // Bind the numeric positions to the one documented column preset. A
-  // reordered, localized, or otherwise unknown view must be reported as
-  // unsupported rather than interpreted by position.
-  if (!REQUIRED_COLUMN_MARKERS.every((column) => columns.includes(column))) return null
+  // Bind numeric positions to the one documented column preset. A reordered,
+  // localized, or otherwise unknown view must be reported as unsupported
+  // rather than interpreted by position.
+  if (EXPECTED_COLUMN_PREFIX.some((column, index) => columns[index] !== column)) return null
 
   // Rows: after 定制列..., until the summary marker. Each row = name plus a
   // run of value lines (9 wide / 3 narrow); every row must use the same mode.

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Check, FileSpreadsheet, Send, X } from 'lucide-react'
 import { a1ToIndices, parseOfficeEditProposal } from '@shared/officeEdit'
 import { useT } from '../i18n'
@@ -57,6 +57,15 @@ export default function OfficeEditProposalBlock({ raw }: { raw: string }) {
   const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
   const setOfficeEditHandoff = useAppStore((state) => state.setOfficeEditHandoff)
   const parsed = useMemo(() => parseOfficeEditProposal(raw), [raw])
+  // Capture the object identity when this proposal first appears. Reading the
+  // current global Office state at click time is unsafe: the person may have
+  // opened another same-named workbook while reviewing the conversation.
+  const proposalContextRef = useRef(
+    officeWorkbookSnapshot
+      ? { snapshot: officeWorkbookSnapshot, revision: officeWorkbookRevision }
+      : null
+  )
+  const proposalContext = proposalContextRef.current
   const [sent, setSent] = useState(false)
   const [dismissed, setDismissed] = useState(false)
 
@@ -67,15 +76,17 @@ export default function OfficeEditProposalBlock({ raw }: { raw: string }) {
   // proposal up from the store on mount.
   const panelOpenOnOffice = workspacePanel?.kind === 'office'
   const needsWorkbook = panelOpenOnOffice && !officeWorkbookOpen
-  const applicable = parsed.ok && errors.length === 0 && !sent && !dismissed && !needsWorkbook
+  const needsSourceContext = !proposalContext
+  const applicable = parsed.ok && errors.length === 0 && !sent && !dismissed && !needsWorkbook && !needsSourceContext
 
   const apply = () => {
-    if (!applicable || !parsed.ok) return
+    if (!applicable || !parsed.ok || !proposalContext) return
     setOfficeEditHandoff({
       id: crypto.randomUUID(),
       edits: parsed.proposal.edits,
       ...(parsed.proposal.note ? { note: parsed.proposal.note } : {}),
-      ...(officeWorkbookSnapshot ? { documentId: officeWorkbookSnapshot.id, baseRevision: officeWorkbookRevision } : {})
+      documentId: proposalContext.snapshot.id,
+      baseRevision: proposalContext.revision
     })
     if (!panelOpenOnOffice) setWorkspacePanel({ kind: 'office' })
     setSent(true)
@@ -146,13 +157,16 @@ export default function OfficeEditProposalBlock({ raw }: { raw: string }) {
                   </thead>
                   <tbody>
                     {parsed.proposal.edits.map((edit, index) => (
-                      <EditRow key={index} edit={edit} snapshot={officeWorkbookSnapshot} />
+                      <EditRow key={index} edit={edit} snapshot={proposalContext?.snapshot ?? null} />
                     ))}
                   </tbody>
                 </table>
               </div>
               {needsWorkbook && (
                 <p className="text-[11px] text-amber-400">{t('office.edit.needWorkbook')}</p>
+              )}
+              {needsSourceContext && (
+                <p className="text-[11px] text-amber-500">{t('office.edit.needSourceContext')}</p>
               )}
             </>
           )

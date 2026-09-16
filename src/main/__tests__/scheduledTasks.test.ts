@@ -406,6 +406,30 @@ describe('run ledger', () => {
     expect(tasks[0].runs?.[0].outcome).toBe('success')
   })
 
+  it('cancels a spawned session before releasing the timeout guard', async () => {
+    vi.useFakeTimers()
+    try {
+      tasks.push(baseTask())
+      let cancelled = 0
+      setTaskSpawnFn(async () => ({
+        sessionId: 'timed-out-session',
+        cancel: () => { cancelled += 1 }
+      }))
+
+      await expect(runTaskNow('t1')).resolves.toBe('ok')
+      await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000)
+
+      expect(cancelled).toBe(1)
+      expect(tasks[0].runs?.[0]).toMatchObject({ outcome: 'failed', status: 'interrupted', reason: 'timeout' })
+      // The old session is no longer mapped to the task, so its late event
+      // cannot settle or mutate a retried run.
+      noteTaskSessionEvent('timed-out-session', { type: 'status', status: 'idle' })
+      expect(tasks[0].runs?.[0].reason).toBe('timeout')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('reconciles open runs after an app restart as interrupted', () => {
     tasks.push(baseTask({
       lastRunId: 'old-run',
