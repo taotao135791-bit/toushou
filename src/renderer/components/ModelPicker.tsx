@@ -170,7 +170,8 @@ export default function ModelPicker({ sessionId, compact = false }: ModelPickerP
             {failed ? t('composer.modelFailed') : label}
           </span>
         )}
-        <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
+        {/* Compact renders icon-only; a lone caret reads as a broken label. */}
+        {!compact && <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />}
       </button>
 
       <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={256} maxHeight={320}>

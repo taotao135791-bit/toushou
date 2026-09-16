@@ -250,6 +250,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const [editResult, setEditResult] = useState<EditApplyResult | null>(null)
 
   const locale = useAppStore((state) => state.language)
+  const theme = useAppStore((state) => state.theme)
   // Chat → panel handoff: a proposal the person applied in chat, waiting for
   // THIS panel's confirm bar. Presence in the store is the pending state.
   const officeEditHandoff = useAppStore((state) => state.officeEditHandoff)
@@ -311,6 +312,8 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         try {
           const { createUniver, LocaleType } = bundles.presets
           const created = createUniver({
+            // Follow the app shell's theme; kept in sync by the effect below.
+            darkMode: useAppStore.getState().theme === 'dark',
             locale: initialLanguage === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
             locales: {
               [LocaleType.ZH_CN]: bundles.sheetsZhCN,
@@ -383,6 +386,12 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       instance?.univerAPI.dispose()
     }
   }, [bundleRetryNonce])
+
+  // App theme flips after engine creation: Univer repaints via ThemeService.
+  useEffect(() => {
+    if (!engineReady) return
+    univerRef.current?.univerAPI.toggleDarkMode(theme === 'dark')
+  }, [theme, engineReady])
 
   /** Replace the current workbook with a snapshot from Main. */
   const loadSnapshot = useCallback((name: string, snapshot: OfficeWorkbookSnapshot) => {
@@ -709,9 +718,13 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
             {t(`office.error.${errorKey}`)}
           </span>
         )}
-        <button className={iconButton} onClick={closePanel} title={t('office.close')}>
-          <X size={15} />
-        </button>
+        {/* Embedded: the workspace panel's own tab row carries the close
+            control — one chrome set per object (design.md 3.3). */}
+        {!embedded && (
+          <button className={iconButton} onClick={closePanel} title={t('office.close')}>
+            <X size={15} />
+          </button>
+        )}
       </div>
       {/* Chat handoff: confirm bar while a proposal is pending, apply result after. */}
       {(officeEditHandoff || editResult) && (
@@ -805,7 +818,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
             <FileSpreadsheet size={28} className="text-cream-faint" />
             <p className="text-[13px] text-cream-dim">{t('office.emptyHint')}</p>
             <button
-              className="pointer-events-auto mt-1 flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-50"
+              className="pointer-events-auto mt-1 flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-50"
               disabled={busy !== null}
               onClick={() => void openFile()}
             >

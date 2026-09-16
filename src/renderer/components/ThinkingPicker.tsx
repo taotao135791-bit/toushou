@@ -193,7 +193,7 @@ export default function ThinkingPicker({ sessionId, compact = false }: ThinkingP
               : `${t('composer.thinking')} · ${loaded ? levelLabel(level, t) : '—'}`}
           </span>
         )}
-        <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
+        {!compact && <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />}
       </button>
 
       <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={176}>

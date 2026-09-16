@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, ExternalLink, Loader2, MessageSquareText, RotateCw, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ExternalLink, Globe2, Loader2, MessageSquareText, RotateCw, X } from 'lucide-react'
 import { BrowserPanelState } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
@@ -193,12 +193,23 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
         >
           <ExternalLink size={15} />
         </button>
-        <button className={iconButton} onClick={closePanel} title={t('browser.close')}>
-          <X size={15} />
-        </button>
+        {/* Embedded: the workspace panel's tab row owns the close control. */}
+        {!embedded && (
+          <button className={iconButton} onClick={closePanel} title={t('browser.close')}>
+            <X size={15} />
+          </button>
+        )}
       </div>
       {/* The native WebContentsView renders exactly over this placeholder. */}
-      <div ref={placeholderRef} className="min-h-0 flex-1 bg-ink-950" />
+      <div ref={placeholderRef} className="relative min-h-0 flex-1 bg-ink-950">
+        {/* Honest empty state until a page is loaded (design.md 2.1). */}
+        {!panelState.url && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2.5 px-8 text-center">
+            <Globe2 size={26} className="text-cream-faint" aria-hidden="true" />
+            <p className="text-[13px] text-cream-faint">{t('browser.emptyState')}</p>
+          </div>
+        )}
+      </div>
       {/* Anchored to the toolbar strip: everything below it is covered by the
           native WebContentsView, which would hide a lower toast. */}
       {toast && (

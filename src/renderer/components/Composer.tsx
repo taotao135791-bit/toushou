@@ -1,4 +1,5 @@
 import { useState, useRef, useMemo, useEffect, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   ArrowUp,
   Square,
@@ -8,12 +9,16 @@ import {
   X,
   File,
   Folder,
+  FolderOpen,
   GitBranch,
   FileArchive,
   ListPlus,
   Loader2,
   MessageCircle,
-  Plus
+  Plus,
+  Check,
+  ChevronDown,
+  Puzzle
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { QueuedMessage, useAppStore } from '../store'
@@ -239,6 +244,18 @@ export default memo(function Composer({
   /** Workspace-level branch for the header chip; null = not a git repo. */
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addButtonRef = useRef<HTMLButtonElement>(null)
+  // Home tray (选择项目 / 插件) — design.md 5.2: the soft-gray base connected
+  // under the white input card carries project scope and plugin entry.
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false)
+  const projectButtonRef = useRef<HTMLButtonElement>(null)
+  const [namingProject, setNamingProject] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('')
+  const [creatingProject, setCreatingProject] = useState(false)
+  const [projectCreateFailed, setProjectCreateFailed] = useState(false)
+  const selectWorkspace = useAppStore((s) => s.selectWorkspace)
+  const selectDefaultWorkspace = useAppStore((s) => s.selectDefaultWorkspace)
+  const createProjectWorkspace = useAppStore((s) => s.createProjectWorkspace)
+  const navigate = useNavigate()
   const setComposerDraft = useAppStore((s) => s.setComposerDraft)
   const clearComposerDraft = useAppStore((s) => s.clearComposerDraft)
   const queue = useAppStore((s) =>
@@ -952,11 +969,29 @@ export default memo(function Composer({
     return () => window.removeEventListener('resize', measure)
   }, [panelsOpen])
 
+  const handleCreateProject = async () => {
+    const name = newProjectName.trim()
+    if (!name || creatingProject) return
+    setCreatingProject(true)
+    setProjectCreateFailed(false)
+    const ok = await createProjectWorkspace(name)
+    setCreatingProject(false)
+    if (!ok) {
+      setProjectCreateFailed(true)
+      return
+    }
+    setNamingProject(false)
+    setNewProjectName('')
+    setProjectMenuOpen(false)
+  }
+
   return (
     // Home (no active session) trims the outer bottom padding: the hint line
     // below the card takes over the rhythm.
     <div className={`px-4 pt-2 ${currentSessionId ? 'pb-4' : 'pb-1'}`}>
-      <div ref={panelAnchorRef} className="relative mx-auto w-full max-w-[880px]">
+      {/* Session composer aligns with the 760px reading column (design.md
+          3.2); home keeps the wider 880px hero combination. */}
+      <div ref={panelAnchorRef} className={`relative mx-auto w-full ${currentSessionId ? 'max-w-[760px]' : 'max-w-[880px]'}`}>
         {slashQuery !== null && (
           <div
             className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-y-auto overflow-x-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
@@ -1066,6 +1101,9 @@ export default memo(function Composer({
             )}
           </div>
         )}
+        {/* Home wraps the white card plus the connected gray tray in one
+            combination (design.md 5.2); sessions render the bare card. */}
+        <div className={currentSessionId ? undefined : 'entry-composer'}>
         <div
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
@@ -1085,34 +1123,6 @@ export default memo(function Composer({
                 <ImageIcon size={12} className="text-accent" />
                 <span>{t('composer.dropHint')}</span>
               </div>
-            </div>
-          )}
-          {/* Attached workspace header (home only): the project/branch row is
-              the card's own top section — a slightly different shade, no gap,
-              so it grows with the textarea like one continuous surface. */}
-          {currentWorkspace && !currentSessionId && (
-            <div className="flex items-center gap-1 rounded-t-[15px] bg-overlay/60 px-3 py-2.5">
-              <div
-                title={currentWorkspace.displayPath}
-                aria-label={t('composer.currentProject')}
-                className="flex shrink-0 items-center gap-1.5 text-[12px] font-medium whitespace-nowrap text-cream-dim"
-              >
-                <Folder size={12} className="shrink-0 text-accent" />
-                <span className="max-w-[180px] truncate">
-                  {currentWorkspace.source === 'default'
-                    ? t('sidebar.defaultWorkspace')
-                    : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
-                </span>
-              </div>
-              {currentWorkspace.source !== 'default' && gitInfo && (
-                <div
-                  title={gitInfo.branch}
-                  className="flex shrink-0 items-center gap-1.5 pl-2 text-[12px] font-medium whitespace-nowrap text-cream-dim"
-                >
-                  <GitBranch size={12} className="shrink-0 text-accent" />
-                  <span className="max-w-[160px] truncate font-mono">{gitInfo.branch}</span>
-                </div>
-              )}
             </div>
           )}
           {queue.length > 0 && (
@@ -1244,7 +1254,9 @@ export default memo(function Composer({
                 ? t('composer.placeholderDisabled')
                 : busy
                   ? t('composer.placeholderBusy')
-                  : t('composer.placeholder')
+                  : currentSessionId
+                    ? t('composer.placeholderSession')
+                    : t('composer.placeholder')
             }
             rows={1}
             className="max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
@@ -1348,7 +1360,8 @@ export default memo(function Composer({
                   onClick={handleSend}
                   disabled={!canSend}
                   title={t('composer.send')}
-                  className={`flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 active:scale-95 ${
+                  aria-label={t('composer.send')}
+                  className={`flex h-[38px] w-[38px] items-center justify-center rounded-full transition-all duration-150 active:scale-95 ${
                     canSend
                       ? 'bg-accent text-white shadow-card hover:bg-accent-bright'
                       : 'cursor-not-allowed bg-overlay-strong text-cream-faint'
@@ -1359,6 +1372,145 @@ export default memo(function Composer({
               )}
             </div>
           </div>
+        </div>
+          {!currentSessionId && (
+            <div className="composer-tray">
+              <button
+                ref={projectButtonRef}
+                type="button"
+                onClick={() => {
+                  setNamingProject(false)
+                  setProjectMenuOpen((v) => !v)
+                }}
+                title={currentWorkspace?.displayPath ?? t('composer.trayProject')}
+                aria-label={t('composer.trayProject')}
+                aria-haspopup="menu"
+                aria-expanded={projectMenuOpen}
+              >
+                <FolderOpen size={14} className="shrink-0" aria-hidden="true" />
+                <span className="max-w-[180px] truncate">
+                  {currentWorkspace
+                    ? currentWorkspace.source === 'default'
+                      ? t('sidebar.defaultWorkspace')
+                      : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath
+                    : t('composer.trayProject')}
+                </span>
+                <ChevronDown
+                  size={12}
+                  className={`shrink-0 transition ${projectMenuOpen ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                />
+              </button>
+              <MenuPortal
+                open={projectMenuOpen}
+                triggerRef={projectButtonRef}
+                onClose={() => {
+                  setProjectMenuOpen(false)
+                  setNamingProject(false)
+                }}
+                width={228}
+              >
+                {namingProject ? (
+                  <div className="flex items-center gap-1.5 p-1.5">
+                    <input
+                      autoFocus
+                      value={newProjectName}
+                      onChange={(e) => setNewProjectName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing || e.keyCode === 229) return
+                        if (e.key === 'Enter') void handleCreateProject()
+                        if (e.key === 'Escape') {
+                          setNamingProject(false)
+                          setNewProjectName('')
+                        }
+                      }}
+                      placeholder={t('home.namePlaceholder')}
+                      aria-label={t('home.namePlaceholder')}
+                      className="min-w-0 flex-1 rounded-md border border-line bg-ink-850 px-2 py-1.5 text-[12.5px] text-cream outline-none placeholder:text-cream-faint focus:border-accent/50"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleCreateProject()}
+                      disabled={!newProjectName.trim() || creatingProject}
+                      className="flex shrink-0 items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[12px] font-medium text-white transition hover:bg-accent-bright disabled:opacity-40"
+                    >
+                      {creatingProject ? <Loader2 size={12} className="animate-spin" /> : t('composer.trayCreate')}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProjectMenuOpen(false)
+                        void selectDefaultWorkspace()
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                    >
+                      <Folder size={13} className="shrink-0 text-cream-faint" />
+                      <span className="min-w-0 flex-1 truncate">{t('composer.trayDefault')}</span>
+                      {currentWorkspace?.source === 'default' && (
+                        <Check size={12} className="shrink-0 text-accent" />
+                      )}
+                    </button>
+                    {currentWorkspace && currentWorkspace.source !== 'default' && (
+                      <div
+                        title={currentWorkspace.displayPath}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream"
+                      >
+                        <FolderOpen size={13} className="shrink-0 text-cream-faint" />
+                        <span className="min-w-0 flex-1 truncate">
+                          {basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
+                        </span>
+                        <Check size={12} className="shrink-0 text-accent" />
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProjectMenuOpen(false)
+                        void selectWorkspace()
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                    >
+                      <FolderOpen size={13} className="shrink-0 text-cream-faint" />
+                      <span className="min-w-0 flex-1 truncate">{t('composer.trayPickFolder')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNamingProject(true)}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                    >
+                      <Plus size={13} className="shrink-0 text-cream-faint" />
+                      <span className="min-w-0 flex-1 truncate">{t('composer.trayNewFolder')}</span>
+                    </button>
+                  </>
+                )}
+                {projectCreateFailed && (
+                  <div className="px-2.5 pb-1.5 text-[11px] text-red-500" role="alert">
+                    {t('home.createFailed')}
+                  </div>
+                )}
+              </MenuPortal>
+              {currentWorkspace?.source !== 'default' && gitInfo && (
+                <span
+                  title={gitInfo.branch}
+                  className="flex min-w-0 items-center gap-1 text-[12px] text-cream-faint"
+                >
+                  <GitBranch size={12} className="shrink-0" aria-hidden="true" />
+                  <span className="max-w-[140px] truncate font-mono">{gitInfo.branch}</span>
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => navigate('/plugins')}
+                className="ml-auto"
+              >
+                <Puzzle size={14} className="shrink-0" aria-hidden="true" />
+                <span>{t('composer.trayPlugins')}</span>
+              </button>
+            </div>
+          )}
         </div>
         {currentSessionId ? (
           <>

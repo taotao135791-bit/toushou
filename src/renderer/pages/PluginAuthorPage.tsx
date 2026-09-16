@@ -226,7 +226,7 @@ export default function PluginAuthorPage() {
                   <button
                     onClick={handleInstall}
                     disabled={installing}
-                    className="flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Plus size={12} />
                     {installing ? t('author.installing') : t('author.install')}
@@ -393,7 +393,7 @@ export default function PluginAuthorPage() {
                 <button
                   onClick={handleSubmit}
                   disabled={submitting}
-                  className="flex items-center gap-1.5 rounded-full bg-cream px-5 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex items-center gap-1.5 rounded-lg bg-cream px-5 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Hammer size={12} />
                   {submitting ? t('author.creating') : t('author.create')}

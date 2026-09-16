@@ -9,6 +9,7 @@
     --bg-sidebar: 250 249 248;
     --bg-elev: 255 255 255;
     --bg-sunken: 247 247 247;
+    --bg-selected: 238 237 235;
     --bubble: 247 247 247;
     --text: 32 32 32;
     --text-dim: 92 92 92;
@@ -32,6 +33,7 @@
     --bg-sidebar: 27 27 27;
     --bg-elev: 35 35 35;
     --bg-sunken: 44 44 44;
+    --bg-selected: 48 48 48;
     --bubble: 44 44 44;
     --text: 237 237 237;
     --text-dim: 174 174 174;
@@ -254,7 +256,7 @@
    surface, and let the sidebar own the full-height background. */
 .app-shell {
   gap: 8px;
-  padding: 0 8px 8px 0;
+  padding: 8px 8px 8px 0;
   background: rgb(var(--bg-app));
 }
 
@@ -282,7 +284,7 @@
   min-height: 42px;
   padding: 3px;
   border-radius: 12px;
-  background: rgb(var(--bg-sunken));
+  background: rgb(var(--bg-selected));
 }
 
 .app-view-segment button {
@@ -306,15 +308,16 @@
   font-size: clamp(48px, 5vw, 62px);
   font-weight: 700;
   line-height: 1.24;
-  letter-spacing: -0.075em;
+  letter-spacing: -0.03em;
+  margin-bottom: 29px;
 }
 
 .home-quick-links {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 8px;
-  margin-top: 32px;
+  gap: 10px;
+  margin-top: 34px;
 }
 
 .home-quick-links button {
@@ -323,10 +326,10 @@
   gap: 7px;
   min-height: 40px;
   padding: 0 14px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line);
   border-radius: 999px;
   color: rgb(var(--text-dim));
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .home-quick-links button:hover {
@@ -351,10 +354,37 @@
 }
 
 .composer-toolbar {
-  margin: 9px -2px -2px;
-  padding: 9px 7px 2px;
-  border-radius: 0 0 17px 17px;
+  margin: 9px 0 0;
+  padding: 0 2px 2px;
+}
+
+/* Home only: the white input card floats on a connected soft-gray base
+   (design.md 5.2) — the tray below carries 选择项目 / 插件. */
+.entry-composer {
+  border-radius: 26px;
   background: rgb(var(--bg-sunken));
+}
+
+.composer-tray {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 4px 14px 6px;
+}
+
+.composer-tray button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 5px 6px;
+  font-size: 13px;
+  color: rgb(var(--text-dim));
+}
+
+.composer-tray button:hover {
+  color: rgb(var(--text));
 }
 
 .workspace-panel {

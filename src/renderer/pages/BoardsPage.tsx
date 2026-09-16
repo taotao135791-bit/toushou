@@ -1037,7 +1037,7 @@ export default function BoardsPage() {
               <div className="text-xs text-cream-faint">{t('boards.emptyHint')}</div>
               <button
                 onClick={openCreate}
-                className="mt-1 flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
+                className="mt-1 flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
               >
                 <Plus size={12} />
                 {t('boards.newTab')}
@@ -1066,7 +1066,7 @@ export default function BoardsPage() {
                   <div className="text-sm text-cream-dim">{t('boards.noWidgets')}</div>
                   <button
                     onClick={() => setGalleryOpen(true)}
-                    className="mt-1 flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
+                    className="mt-1 flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
                   >
                     <Plus size={12} />
                     {t('boards.addWidget')}
@@ -1414,7 +1414,7 @@ export default function BoardsPage() {
               <button
                 onClick={saveDetail}
                 disabled={!detailName.trim()}
-                className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+                className="flex items-center gap-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
               >
                 <Check size={11} />
                 {t('boards.save')}
@@ -1485,7 +1485,7 @@ export default function BoardsPage() {
               </button>
               <button
                 onClick={() => handleCompose()}
-                className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
+                className="flex items-center gap-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
               >
                 <Sparkles size={11} />
                 {t('boards.compose.generate')}

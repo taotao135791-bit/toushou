@@ -693,7 +693,7 @@ export default function Sidebar() {
   const navRow = (active: boolean) =>
     `group flex h-8 w-full items-center gap-2.5 rounded-lg border px-2.5 text-[13px] transition-all duration-150 ease-standard ${
       active
-        ? 'border-line bg-ink-850 font-medium text-cream shadow-card'
+        ? 'border-transparent bg-selected font-medium text-cream'
         : 'border-transparent text-cream-dim hover:bg-overlay hover:text-cream'
     }`
 
@@ -755,8 +755,8 @@ export default function Sidebar() {
         role="button"
         tabIndex={0}
         aria-label={`${session.title}, ${statusLabel}`}
-        className={`group flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-[6px] transition-all duration-150 ease-standard ${
-          active ? 'border-line bg-ink-850 shadow-card' : 'border-transparent hover:bg-overlay'
+        className={`group flex cursor-pointer items-center gap-2 rounded-lg border border-transparent px-2.5 py-[6px] transition-all duration-150 ease-standard ${
+          active ? 'bg-selected' : 'hover:bg-overlay'
         }`}
       >
         <span
@@ -1146,16 +1146,16 @@ export default function Sidebar() {
       </div>
 
       <nav className="space-y-0.5 px-3" aria-label="主要导航">
-        {/* 对话 = 回首页 + 清空选中。会话只在第一条消息发出时创建（⌘N 同效）。 */}
+        {/* 新建会话 = 回首页 + 清空选中。会话只在第一条消息发出时创建（⌘N 同效）。 */}
         <button
           onClick={() => {
             setCurrentSessionId(null)
             navigate('/')
           }}
-          className={`${navRow(location.pathname === '/' && !currentSessionId)} bg-ink-800/60`}
+          className={`${navRow(location.pathname === '/' && !currentSessionId)} bg-selected`}
         >
           <MessageSquare size={14} className="shrink-0" />
-          {t('sidebar.chat')}
+          {t('sidebar.newChat')}
           <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">⌘N</span>
         </button>
         <button

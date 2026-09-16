@@ -448,15 +448,17 @@ export default function PackagesPage() {
           <Puzzle size={15} className="text-accent" />
           <span className="text-[13px] font-medium text-cream">{t('plugins.pageTitle')}</span>
           <span className="text-xs text-cream-faint">
-            {!capabilitiesLoaded
-              ? t('plugins.loadingCapabilities')
-              : isCurrentOmp
+            {/* Loading reads once, in the content area — the header only
+                carries the resolved subtitle. */}
+            {capabilitiesLoaded
+              ? isCurrentOmp
                 ? t('plugins.omp.subtitle')
                 : isLegacyPi
                   ? t('plugins.subtitle')
                   : loadTimedOut
                     ? t('plugins.loadTimeout')
-                    : t('plugins.capabilitiesUnavailable')}
+                    : t('plugins.capabilitiesUnavailable')
+              : null}
           </span>
         </div>
         <button
@@ -579,7 +581,7 @@ export default function PackagesPage() {
                   <button
                     onClick={() => handleInstall()}
                     disabled={!source.trim() || pending !== null}
-                    className="flex shrink-0 items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium whitespace-nowrap text-ink-950 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex shrink-0 items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium whitespace-nowrap text-ink-950 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Plus size={12} />
                     {pending?.kind === 'install' ? t('plugins.installing') : t('plugins.install')}
@@ -952,7 +954,7 @@ function KimiComputerUseCard({
               <button
                 onClick={onToggle}
                 disabled={pending}
-                className="flex items-center gap-1.5 rounded-full bg-cream px-3.5 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-lg bg-cream px-3.5 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-50"
               >
                 {pending ? <Loader2 size={12} className="animate-spin" /> : <Power size={12} />}
                 {status.configured ? t('plugins.kimi.disable') : t('plugins.kimi.enable')}

@@ -84,7 +84,7 @@ export default function PermissionPicker({ compact = false }: { compact?: boolea
         {!compact && (
           <span className={current?.labelClass}>{t(current?.labelKey ?? 'settings.permissions.ask')}</span>
         )}
-        <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />
+        {!compact && <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />}
       </button>
 
       <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={232}>
