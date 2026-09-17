@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Check, ExternalLink, FileWarning, X } from 'lucide-react'
+import { FbReadingBody } from './FbReadingBody'
 import { BoardDataset, BoardWidget } from '@shared/types'
 import { BOARD_LIMITS, TodoItem, isValidLinkUrl } from '@shared/boards'
 import {
@@ -567,10 +568,14 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange }: Widget
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
+    case 'fb-reading':
+      return <FbReadingBody widget={widget} />
     case 'note':
       return <NoteBody widget={widget} />
     case 'counter':
       return <CounterBody widget={widget} datasets={datasets} />
+    case 'fb-reading':
+      return <FbReadingBody widget={widget} />
     case 'gauge':
       return <GaugeBody widget={widget} />
     case 'chart-line':

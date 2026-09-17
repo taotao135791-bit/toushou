@@ -61,6 +61,8 @@ export const IPC_CHANNELS = {
   STORE_SET: 'store:set',
   BOARDS_LIST: 'boards:list',
   BOARDS_SAVE: 'boards:save',
+  FB_READING_REFRESH: 'fb-reading:refresh',
+  FB_READING_HISTORY: 'fb-reading:history',
   BOARDS_DELETE: 'boards:delete',
   BOARDS_APPEND_NOTE: 'boards:append-note',
   BOARDS_DATASETS_LIST: 'boards:datasets-list',

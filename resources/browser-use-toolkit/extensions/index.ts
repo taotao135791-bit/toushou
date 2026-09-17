@@ -164,9 +164,21 @@ export default function browserUseTools(api: ToolHostApi): void {
       label: 'Browser Navigate',
       description:
         '在投手内置浏览器中打开一个 http(s) 网址并等待加载。返回最终 URL 和页面标题。这是浏览器操作的第一步。',
-      parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string' },
+          takeover: { type: 'boolean', description: '面板被其他会话占用时传 true 接管（仅 navigate 支持）' }
+        },
+        required: ['url']
+      },
       approval: 'read',
-      execute: (p) => call({ action: 'navigate', url: str(p, 'url') })
+      execute: (p) =>
+        call({
+          action: 'navigate',
+          url: str(p, 'url'),
+          ...(p.takeover === true ? { takeover: true } : {})
+        })
     })
   )
 

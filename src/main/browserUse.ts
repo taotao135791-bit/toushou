@@ -410,7 +410,7 @@ async function openPanelWithUrl(url: string): Promise<void> {
   await new Promise((r) => setTimeout(r, 300))
 }
 
-async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<BrowserUseResult> {
+export async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<BrowserUseResult> {
   if ((req.action === 'click' || req.action === 'type') && req.snapshotId) {
     const latest = sessionId ? latestSnapshotBySession.get(sessionId) : undefined
     if (latest !== req.snapshotId) {

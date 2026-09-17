@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
+import type { FbReadingHistoryListResult, FbReadingRefreshResult } from '../shared/fbReading'
 import {
   FeishuConnectionResult,
   FeishuConnectionSnapshot,
@@ -228,6 +229,10 @@ export interface ElectronAPI {
   listBoards: () => Promise<KanbanBoard[]>
   /** Whole-board upsert; rejects structurally invalid boards. */
   saveBoard: (board: KanbanBoard) => Promise<KanbanSaveResult>
+  /** Direct panel refresh of one FB reading module (no chat session). */
+  refreshFbReading: (request: { account: string; range: string }) => Promise<FbReadingRefreshResult>
+  /** Latest verified FB readings for the module to render. */
+  listFbReadings: (request: { accountId?: string }) => Promise<FbReadingHistoryListResult>
   deleteBoard: (id: string) => Promise<KanbanSaveResult>
   /** Atomically append one bounded note to the latest persisted board. */
   appendBoardNote: (request: BoardNoteAppendRequest) => Promise<BoardNoteAppendResult>
@@ -614,6 +619,10 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.STORE_SET, key, value),
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   saveBoard: (board: KanbanBoard) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE, board),
+  refreshFbReading: (request: { account: string; range: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FB_READING_REFRESH, request),
+  listFbReadings: (request: { accountId?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FB_READING_HISTORY, request),
   deleteBoard: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_DELETE, id),
   appendBoardNote: (request: BoardNoteAppendRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.BOARDS_APPEND_NOTE, request),

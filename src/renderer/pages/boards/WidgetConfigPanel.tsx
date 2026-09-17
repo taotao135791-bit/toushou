@@ -72,6 +72,17 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
   const [pickBusy, setPickBusy] = useState(false)
   const [pickError, setPickError] = useState<I18nKey | null>(null)
 
+  // FB reading module: pinned account + date window + metric set.
+  const [readingRange, setReadingRange] = useState(
+    widget.config.range === 'today' || widget.config.range === 'last3' || widget.config.range === 'last30'
+      ? (widget.config.range as 'today' | 'last3' | 'last30')
+      : 'last7'
+  )
+  const [readingMetrics, setReadingMetrics] = useState<string[]>(() => {
+    const raw = widget.config.metrics
+    return Array.isArray(raw) ? raw.filter((m): m is string => typeof m === 'string') : ['spend', 'cpi']
+  })
+
   const pickFile = async () => {
     if (!currentWorkspace || pickBusy) return
     setPickBusy(true)
@@ -193,6 +204,9 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
         // Keep the previously bound path when no new file was picked.
         config = { filePath: boundPath }
         break
+      case 'fb-reading':
+        config = { account: '三国IOS', range: readingRange, metrics: readingMetrics }
+        break
     }
     onSave({
       title: title.trim() || widget.title,
@@ -237,6 +251,58 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
             />
             {t('boards.config.showSeconds')}
           </label>
+        )}
+        {widget.type === 'fb-reading' && (
+          <>
+            <Field label={t('boards.reading.config.account')}>
+              <input value={'三国IOS'} readOnly className={`${inputClass} opacity-70`} />
+            </Field>
+            <Field label={t('boards.reading.config.range')}>
+              <div className="flex flex-wrap gap-1">
+                {([['today', '今天'], ['last3', '近3天'], ['last7', '近7天'], ['last30', '近30天']] as const).map(
+                  ([value, label]) => (
+                    <button
+                      key={value}
+                      onClick={() => setReadingRange(value)}
+                      className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                        readingRange === value
+                          ? 'border-accent/60 bg-accent-soft text-accent'
+                          : 'border-line text-cream-dim hover:text-cream'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  )
+                )}
+              </div>
+            </Field>
+            <Field label={t('boards.reading.config.metrics')}>
+              <div className="flex flex-wrap gap-1">
+                {([['spend', '消耗'], ['cpi', 'CPI'], ['cpm', 'CPM'], ['cpa', 'CPA'], ['ctr', 'CTR']] as const).map(
+                  ([value, label]) => {
+                    const active = readingMetrics.includes(value)
+                    return (
+                      <button
+                        key={value}
+                        onClick={() =>
+                          setReadingMetrics((prev) =>
+                            prev.includes(value) ? prev.filter((m) => m !== value) : [...prev, value]
+                          )
+                        }
+                      className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                          active
+                            ? 'border-accent/60 bg-accent-soft text-accent'
+                            : 'border-line text-cream-dim hover:text-cream'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    )
+                  }
+                )}
+              </div>
+            </Field>
+          </>
         )}
         {widget.type === 'note' && (
           <Field label={t('boards.config.note')}>

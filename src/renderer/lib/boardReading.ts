@@ -8,8 +8,11 @@
  * parser's failure surface.
  */
 
-export type BoardReadingMetric = 'spend' | 'cpi' | 'cpm' | 'cpa'
-export type BoardReadingRange = 'today' | 'last3' | 'last7' | 'last30'
+export type BoardReadingMetric = 'spend' | 'cpi' | 'cpm' | 'cpa' | 'ctr'
+import { buildBoardReadingUrl as buildCanonicalUrl, boardReadingRangeDates as sharedRangeDates, FB_READING_ACCOUNT_TARGETS as ACCOUNT_TARGETS } from '../../shared/fbReading'
+import type { FbReadingRange } from '../../shared/fbReading'
+
+export type BoardReadingRange = FbReadingRange
 
 /** Lifecycle of one launch, derived from store state — never a timer. */
 export type BoardReadingPhase =
@@ -34,15 +37,11 @@ export interface BoardReadingMessageLike {
 export const BOARD_READING_ACCOUNTS = ['三国IOS'] as const
 export type BoardReadingAccount = (typeof BOARD_READING_ACCOUNTS)[number]
 
-/**
- * Alias → Ads Manager target, kept in sync with the team alias table in
- * resources/browser-use-toolkit/skills/browser-use/SKILL.md. The renderer
- * builds the canonical URL itself so the request never depends on the model
- * re-deriving act/business ids or date-parameter grammar.
- */
-const BOARD_READING_ACCOUNT_TARGETS: Record<BoardReadingAccount, { act: string; businessId: string }> = {
-  三国IOS: { act: '2131017261144314', businessId: '1734414010144999' }
-}
+/** Alias → Ads Manager target, shared with Main (see shared/fbReading.ts). */
+const BOARD_READING_ACCOUNT_TARGETS = ACCOUNT_TARGETS as Record<
+  BoardReadingAccount,
+  { act: string; businessId: string }
+>
 
 export const BOARD_READING_RANGE_LABELS: Record<BoardReadingRange, string> = {
   today: '今天',
@@ -55,14 +54,8 @@ export const BOARD_READING_METRIC_LABELS: Record<BoardReadingMetric, string> = {
   spend: '消耗',
   cpi: 'CPI',
   cpm: 'CPM',
-  cpa: 'CPA'
-}
-
-function fbDateString(date: Date): string {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
+  cpa: 'CPA',
+  ctr: 'CTR'
 }
 
 /**
@@ -75,17 +68,7 @@ export function boardReadingRangeDates(
   range: BoardReadingRange,
   today: Date = new Date()
 ): { start: string; end: string; preset: string } {
-  if (range === 'today') {
-    const s = fbDateString(today)
-    return { start: s, end: s, preset: 'today' }
-  }
-  const preset = range === 'last3' ? 'last_3d' : range === 'last7' ? 'last_7d' : 'last_30d'
-  const n = range === 'last3' ? 3 : range === 'last7' ? 7 : 30
-  const end = new Date(today)
-  end.setDate(end.getDate() - 1)
-  const start = new Date(today)
-  start.setDate(start.getDate() - n)
-  return { start: fbDateString(start), end: fbDateString(end), preset }
+  return sharedRangeDates(range, today)
 }
 
 /**
@@ -97,14 +80,7 @@ export function buildBoardReadingUrl(
   range: BoardReadingRange,
   today: Date = new Date()
 ): string {
-  const target = BOARD_READING_ACCOUNT_TARGETS[account]
-  const { start, end, preset } = boardReadingRangeDates(range, today)
-  const dates = `${start}_${end},${preset}`
-  return (
-    `https://adsmanager.facebook.com/adsmanager/manage/campaigns` +
-    `?act=${target.act}&business_id=${target.businessId}` +
-    `&date=${dates}&insights_date=${dates}`
-  )
+  return buildCanonicalUrl(account, range, today)
 }
 
 /**

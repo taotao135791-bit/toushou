@@ -58,7 +58,6 @@ import {
   BOARD_READING_METRIC_LABELS,
   BOARD_READING_RANGE_LABELS,
   buildBoardReadingPrompt,
-  deriveBoardReadingPhase,
   type BoardReadingAccount,
   type BoardReadingMetric,
   type BoardReadingRange
@@ -252,14 +251,6 @@ export default function BoardsPage() {
   const boardSaveGeneration = useRef(new Map<string, number>())
 
   const current = boards?.find((b) => b.id === currentId) ?? null
-  const boardReadingLaunch = useAppStore((s) => s.boardReadingLaunch)
-  const boardReadingMessages = useAppStore((s) => s.messages[s.boardReadingLaunch?.sessionId ?? ''])
-  const boardReadingBusy = useAppStore((s) => Boolean(s.busy[s.boardReadingLaunch?.sessionId ?? '']))
-  const boardReadingPhase = deriveBoardReadingPhase(
-    boardReadingLaunch,
-    boardReadingMessages,
-    boardReadingBusy
-  )
 
   useEffect(() => {
     let alive = true
@@ -697,41 +688,6 @@ export default function BoardsPage() {
       prev.includes(metric) ? prev.filter((m) => m !== metric) : [...prev, metric]
     )
   }
-
-  /**
-   * While a launch is in flight the button jumps to that session; otherwise
-   * it opens the parameter panel. Failed/done launches fall through to the
-   * panel so the parameters survive for a retry.
-   */
-  const handleReadingButtonClick = () => {
-    if (boardReadingPhase === 'pending' || boardReadingPhase === 'reading') {
-      const sessionId = useAppStore.getState().boardReadingLaunch?.sessionId
-      if (sessionId) {
-        useAppStore.getState().setCurrentSessionId(sessionId)
-        navigate('/')
-      }
-      return
-    }
-    closeMenus()
-    setReadingOpen(true)
-  }
-
-  /** Shared label/icon for the reading entries (empty state + widget gallery). */
-  const readingEntryLabel = () => {
-    if (boardReadingPhase === 'pending' || boardReadingPhase === 'reading') return t('boards.reading.status.reading')
-    if (boardReadingPhase === 'failed') return t('boards.reading.status.failed')
-    return t('boards.reading.open')
-  }
-  const readingEntryIconClass = () =>
-    boardReadingPhase === 'pending' || boardReadingPhase === 'reading'
-      ? 'animate-pulse text-accent'
-      : boardReadingPhase === 'failed'
-        ? 'text-red-500'
-        : undefined
-  const readingEntryTitle = () =>
-    boardReadingPhase === 'pending' || boardReadingPhase === 'reading'
-      ? t('boards.reading.viewSession')
-      : t('boards.reading.open')
 
   // ---------------------------------------------------------------- datasets
 
@@ -1219,15 +1175,11 @@ export default function BoardsPage() {
                   {t('boards.importDataset')}
                 </button>
                 <button
-                  onClick={() => {
-                    setGalleryOpen(false)
-                    handleReadingButtonClick()
-                  }}
-                  title={readingEntryTitle()}
-                  className={`${menuItemClass} mb-1 text-cream-dim hover:bg-overlay hover:text-cream`}
+                  onClick={() => addWidget('fb-reading')}
+                  className={`${menuItemClass} text-cream hover:bg-overlay`}
                 >
-                  <Activity size={12} className={readingEntryIconClass()} />
-                  {readingEntryLabel()}
+                  <Activity size={12} />
+                  {t('boards.widget.fb-reading')}
                 </button>
                 <div className="mx-1.5 mb-1 border-t border-line" />
                 <div className="grid grid-cols-2 gap-0.5">

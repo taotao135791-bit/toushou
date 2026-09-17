@@ -2,6 +2,10 @@ import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from '
 import fs from 'node:fs'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
+import { buildBoardReadingUrl, FB_READING_ACCOUNT_TARGETS } from '../shared/fbReading'
+import type { FbReadingRange } from '../shared/fbReading'
+import { runAction } from './browserUse'
+import { listFbReadings } from './fbReadings'
 import {
   SessionEvent,
   ExternalSessionDescriptor,
@@ -2265,6 +2269,43 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_DATASETS_DELETE, async (_event, id: unknown) => {
     return deleteDataset(id)
+  })
+
+  // FB reading module — direct panel refresh, NO chat session involved. The
+  // canonical URL is built here (shared grammar), navigation takes over the
+  // panel from a stale owner session, and browser_report enforces the four
+  // precision gates before anything lands in fb_history. The module renders
+  // exclusively from verified history entries.
+  ipcMain.handle(
+    IPC_CHANNELS.FB_READING_REFRESH,
+    async (_event, raw: unknown) => {
+      const input = (raw ?? {}) as { account?: unknown; range?: unknown }
+      const account = input.account === '三国IOS' ? input.account : null
+      const range = input.range as FbReadingRange | undefined
+      if (
+        !account ||
+        (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30')
+      ) {
+        return { ok: false, error: 'invalid-input' }
+      }
+      const url = buildBoardReadingUrl(account, range)
+      const nav = await runAction({ action: 'navigate', url, takeover: true })
+      if (!nav.ok) return { ok: false, error: nav.error }
+      const report = await runAction({ action: 'report' })
+      if (!report.ok) return { ok: false, error: report.error }
+      const act = FB_READING_ACCOUNT_TARGETS[account]
+      const entry = listFbReadings(act.act)[0]
+      if (!entry) return { ok: false, error: 'not-stored' }
+      return { ok: true, entry }
+    }
+  )
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_HISTORY, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { accountId?: unknown }
+    const accountId = typeof input.accountId === 'string' && /^\d{6,}$/.test(input.accountId)
+      ? input.accountId
+      : undefined
+    return listFbReadings(accountId).slice(0, 10)
   })
 
   ipcMain.handle(
