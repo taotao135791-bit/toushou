@@ -716,6 +716,23 @@ export default function BoardsPage() {
     setReadingOpen(true)
   }
 
+  /** Shared label/icon for the reading entries (empty state + widget gallery). */
+  const readingEntryLabel = () => {
+    if (boardReadingPhase === 'pending' || boardReadingPhase === 'reading') return t('boards.reading.status.reading')
+    if (boardReadingPhase === 'failed') return t('boards.reading.status.failed')
+    return t('boards.reading.open')
+  }
+  const readingEntryIconClass = () =>
+    boardReadingPhase === 'pending' || boardReadingPhase === 'reading'
+      ? 'animate-pulse text-accent'
+      : boardReadingPhase === 'failed'
+        ? 'text-red-500'
+        : undefined
+  const readingEntryTitle = () =>
+    boardReadingPhase === 'pending' || boardReadingPhase === 'reading'
+      ? t('boards.reading.viewSession')
+      : t('boards.reading.open')
+
   // ---------------------------------------------------------------- datasets
 
   const refreshDatasets = async (): Promise<boolean> => {
@@ -1095,44 +1112,6 @@ export default function BoardsPage() {
         )}
       </header>
 
-      {/*
-        Account-level reading bar. Data-source launches live here — separate
-        from the canvas toolbar below — so this row can grow into per-account
-        chips when more aliases arrive, without touching the canvas tools.
-      */}
-      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
-        <button
-          onClick={handleReadingButtonClick}
-          title={
-            boardReadingPhase === 'pending' || boardReadingPhase === 'reading'
-              ? t('boards.reading.viewSession')
-              : t('boards.reading.open')
-          }
-          className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-3 py-1 text-[12px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
-        >
-          <Activity
-            size={12}
-            className={
-              boardReadingPhase === 'pending' || boardReadingPhase === 'reading'
-                ? 'animate-pulse text-accent'
-                : boardReadingPhase === 'failed'
-                  ? 'text-red-500'
-                  : undefined
-            }
-          />
-          {t('boards.reading.open')}
-        </button>
-        {boardReadingPhase && (
-          <span
-            className={`min-w-0 truncate text-[11.5px] ${
-              boardReadingPhase === 'failed' ? 'text-red-500' : 'text-cream-faint'
-            }`}
-          >
-            {t(`boards.reading.status.${boardReadingPhase}`)}
-          </span>
-        )}
-      </div>
-
       <div
         ref={boardAreaRef}
         style={boardCanvasStyle(mergeBoardStyle(design?.board, current?.style))}
@@ -1189,13 +1168,23 @@ export default function BoardsPage() {
                 <div className="flex h-[55vh] flex-col items-center justify-center gap-3 text-center">
                   <LayoutGrid size={26} className="text-cream-faint" />
                   <div className="text-sm text-cream-dim">{t('boards.noWidgets')}</div>
-                  <button
-                    onClick={() => setGalleryOpen(true)}
-                    className="mt-1 flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
-                  >
-                    <Plus size={12} />
-                    {t('boards.addWidget')}
-                  </button>
+                  <div className="mt-1 flex items-center gap-2">
+                    <button
+                      onClick={() => setGalleryOpen(true)}
+                      className="flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
+                    >
+                      <Plus size={12} />
+                      {t('boards.addWidget')}
+                    </button>
+                    <button
+                      onClick={handleReadingButtonClick}
+                      title={readingEntryTitle()}
+                      className="flex items-center gap-1.5 rounded-lg border border-line px-4 py-2 text-[12px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
+                    >
+                      <Activity size={12} className={readingEntryIconClass()} />
+                      {readingEntryLabel()}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1238,6 +1227,17 @@ export default function BoardsPage() {
                 >
                   <FileSpreadsheet size={12} />
                   {t('boards.importDataset')}
+                </button>
+                <button
+                  onClick={() => {
+                    setGalleryOpen(false)
+                    handleReadingButtonClick()
+                  }}
+                  title={readingEntryTitle()}
+                  className={`${menuItemClass} mb-1 text-cream-dim hover:bg-overlay hover:text-cream`}
+                >
+                  <Activity size={12} className={readingEntryIconClass()} />
+                  {readingEntryLabel()}
                 </button>
                 <div className="mx-1.5 mb-1 border-t border-line" />
                 <div className="grid grid-cols-2 gap-0.5">
