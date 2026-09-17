@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Activity, RefreshCw } from 'lucide-react'
 import { BoardWidget } from '@shared/types'
-import { boardReadingRangeDates } from '@shared/fbReading'
+import { boardReadingRangeDates, fbReadingMatchesWindow, FB_READING_ACCOUNT_TARGETS } from '@shared/fbReading'
 import { useT } from '../../i18n'
 
 /**
@@ -27,22 +27,20 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     rows: { name: string; spend: number | null; costPerResult: number | null; cpm: number | null; ctr: number | null }[]
   } | null>(null)
   const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  const submitting = useRef(false)
+  const requestVersion = useRef(0)
 
   const load = async () => {
-    const list = await window.electronAPI.listFbReadings({})
+    const version = requestVersion.current
+    const accountId = FB_READING_ACCOUNT_TARGETS[account]?.act
+    if (!accountId) return
+    const list = await window.electronAPI.listFbReadings({ accountId })
+    if (version !== requestVersion.current) return
     const listEntries = Array.isArray(list) ? list : []
-    const { start, end } = boardReadingRangeDates(range)
-    const toCn = (iso: string) => {
-      const y = iso.slice(0, 4)
-      const m = Number(iso.slice(5, 7))
-      const day = Number(iso.slice(8, 10))
-      return y + '年' + m + '月' + day + '日'
-    }
-    const startCn = toCn(start)
-    const endCn = toCn(end)
+    const dateWindow = boardReadingRangeDates(range)
     const hit = listEntries.find(
-      (e) => typeof e.dateRangeLabel === 'string' && e.dateRangeLabel.includes(startCn) && e.dateRangeLabel.includes(endCn)
+      (e) => fbReadingMatchesWindow(e, accountId, dateWindow)
     )
     if (hit) {
       setEntry({
@@ -63,24 +61,39 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   }
 
   useEffect(() => {
-    void load()
-  }, [range])
+    requestVersion.current += 1
+    setEntry(null)
+    setFailure(null)
+    setBusy(false)
+    submitting.current = false
+    const version = requestVersion.current
+    void load().catch(() => {
+      if (version === requestVersion.current) setFailure('history-failed')
+    })
+    return () => { requestVersion.current += 1 }
+  }, [account, range])
 
   const refresh = async () => {
-    if (busy) return
+    if (submitting.current) return
+    submitting.current = true
+    const version = requestVersion.current
     setBusy(true)
-    setFailed(false)
+    setFailure(null)
     try {
       const result = await window.electronAPI.refreshFbReading({ account, range })
+      if (version !== requestVersion.current) return
       if (result.ok) {
         await load()
       } else {
-        setFailed(true)
+        setFailure(result.error)
       }
     } catch {
-      setFailed(true)
+      if (version === requestVersion.current) setFailure('refresh-failed')
     } finally {
-      setBusy(false)
+      if (version === requestVersion.current) {
+        submitting.current = false
+        setBusy(false)
+      }
     }
   }
 
@@ -88,6 +101,12 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     v === null ? '—' : kind === 'usd' ? '$' + v.toFixed(2) : v.toFixed(2) + '%'
 
   const updated = entry ? new Date(entry.capturedAt).toLocaleString() : ''
+  const failureMessage = failure === 'page-load-failed' ? t('boards.reading.error.page')
+    : failure?.startsWith('ERR_') || failure === 'navigation-timeout' ? t('boards.reading.error.network')
+      : failure === 'date-mismatch' ? t('boards.reading.error.date')
+        : failure === 'browser-busy' ? t('boards.reading.error.busy')
+          : failure === 'panel-hidden' ? t('boards.reading.error.closed')
+            : t('boards.reading.refreshFailed')
 
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
@@ -104,7 +123,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           {busy ? t('boards.reading.refreshing') : t('boards.reading.refresh')}
         </button>
       </div>
-      {failed && <div className="text-[10.5px] text-red-500">{t('boards.reading.refreshFailed')}</div>}
+      {failure && <div role="alert" className="text-[10.5px] text-red-500">{failureMessage}</div>}
       {!entry ? (
         <div className="flex flex-1 items-center justify-center px-2 text-center text-[11px] leading-5 text-cream-faint">
           {t('boards.reading.noData')}

@@ -574,8 +574,6 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange }: Widget
       return <NoteBody widget={widget} />
     case 'counter':
       return <CounterBody widget={widget} datasets={datasets} />
-    case 'fb-reading':
-      return <FbReadingBody widget={widget} />
     case 'gauge':
       return <GaugeBody widget={widget} />
     case 'chart-line':

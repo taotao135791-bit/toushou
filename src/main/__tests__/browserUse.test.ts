@@ -1,13 +1,70 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { getActiveBrowserPanel, loadBrowserPanelUrl } from '../browserPanel'
+
+vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
+vi.mock('../browserPanel', () => ({
+  getActiveBrowserPanel: vi.fn(),
+  isBrowserPanelVisible: () => true,
+  loadBrowserPanelUrl: vi.fn(async () => {}),
+  withBrowserReadingViewport: (_view: unknown, read: () => Promise<unknown>) => read()
+}))
 import {
   gateBrowserUseRequest,
   isFacebookReadOnlyAction,
   parseBrowserUseRequest,
   readStableFbReading,
+  refreshBoardFbReading,
   SCROLL_SCRIPT,
   SNAPSHOT_SCRIPT,
   type FbReadOnce
 } from '../browserUse'
+
+describe('board refresh admission and failures', () => {
+  afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })
+
+  const prepare = () => {
+    vi.useFakeTimers()
+    const executeJavaScript = vi.fn(async () => ({
+      url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
+      title: 'Ads Manager',
+      text: '错误：组件加载失败'
+    }))
+    vi.mocked(getActiveBrowserPanel).mockReturnValue({ webContents: {
+      isDestroyed: () => false,
+      isLoading: () => false,
+      getURL: () => 'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
+      getTitle: () => 'Ads Manager',
+      executeJavaScript
+    } } as unknown as NonNullable<ReturnType<typeof getActiveBrowserPanel>>)
+    return executeJavaScript
+  }
+
+  it('joins repeated clicks and refuses a different refresh while the panel is in use', async () => {
+    const execute = prepare()
+    const first = refreshBoardFbReading('三国IOS', 'last3')
+    expect(refreshBoardFbReading('三国IOS', 'last3')).toBe(first)
+    expect(await refreshBoardFbReading('三国IOS', 'last7')).toEqual({ ok: false, error: 'browser-busy' })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await first).toEqual({ ok: false, error: 'page-load-failed' })
+    expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(1)
+    expect(execute).toHaveBeenCalledTimes(1)
+    const retry = refreshBoardFbReading('三国IOS', 'last3')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await retry).toEqual({ ok: false, error: 'page-load-failed' })
+    expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns a network failure without attempting a report or background retries', async () => {
+    const execute = prepare()
+    vi.mocked(loadBrowserPanelUrl).mockRejectedValueOnce(new Error('ERR_NETWORK_CHANGED (-21) loading private URL'))
+    const result = refreshBoardFbReading('三国IOS', 'last3')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await result).toEqual({ ok: false, error: 'ERR_NETWORK_CHANGED' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(1)
+    expect(execute).not.toHaveBeenCalled()
+  })
+})
 
 describe('isFacebookReadOnlyAction (hard FB read-only boundary)', () => {
   it('blocks click and type on any facebook.com surface', () => {
@@ -179,6 +236,28 @@ describe('readStableFbReading (progressive-render retry)', () => {
     title: 't',
     text: 'raw',
     reading
+  })
+
+  it('stops immediately on Facebook component failure instead of rereading a terminal error for 30 seconds', async () => {
+    let calls = 0
+    const result = await readStableFbReading(async () => {
+      calls += 1
+      return { ...read(null), text: '错误：组件加载失败\n出错了，请重新加载页面。' }
+    }, noRejection, fast)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('page-load-failed')
+    expect(calls).toBe(1)
+  })
+
+  it('also stops when the settled second read becomes a component error', async () => {
+    let calls = 0
+    const result = await readStableFbReading(async () => {
+      calls += 1
+      return calls === 1 ? read({ ok: true }) : { ...read(null), text: '错误：组件加载失败' }
+    }, noRejection, fast)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('page-load-failed')
+    expect(calls).toBe(2)
   })
 
   it('retries past a transient incomplete-view and returns two stable reads', async () => {

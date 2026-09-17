@@ -17,6 +17,8 @@
  *   汇总区:   "N个广告系列的成效" 之后成对的 值+标签
  */
 
+import { parseFbReadingDateRange } from './fbReading'
+
 export interface FbAdsSnapshotInput {
   url?: string
   title?: string
@@ -80,11 +82,14 @@ export interface FbAdsCampaignReading {
  */
 const WIDE_VALUES_PER_ROW = 9
 const WIDE8_VALUES_PER_ROW = 8
+// Observed 2026-09-17: a fitted side panel ends at CTR; CPC/install cells
+// remain virtualized. Only this known prefix is accepted, never shifted cells.
+const CTR_VALUES_PER_ROW = 7
 const NARROW_VALUES_PER_ROW = 3
+const ROW_HOVER_ACTIONS = ['图表', '编辑', '新建副本', '对比', '打开下拉菜单']
 
 const SUMMARY_MARKER = /^(\d+)个(广告系列|广告组|广告)的成效$/
 const ACCOUNT_LINE = /^(.{1,120}?) \((\d{8,})\)$/
-const DATE_LINE = /^(今天|昨天|过去 \d+ 天|过去 \d+ 周|本月|上年)：(.+)$/
 /** A metric value line: money, em/en dash, percentage, or plain number. */
 const VALUE_LINE = /^(—|–|-|\$[\d,]+(?:\.\d+)?|[\d,]+(?:\.\d+)?%|[\d,]+(?:\.\d+)?)$/
 /** The result-type label under the 成效 column (e.g. 应用内购买). */
@@ -153,8 +158,7 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
   // Date label: the first 今天/昨天/过去 N 天/… line.
   let dateRangeLabel: string | null = null
   for (const line of lines) {
-    const m = line.match(DATE_LINE)
-    if (m) {
+    if (parseFbReadingDateRange(line)) {
       dateRangeLabel = line
       break
     }
@@ -187,6 +191,11 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
     if (!name || isValueLine(name)) return null
     const values: string[] = []
     let j = i + 1
+    // FB mounts this exact action strip between a hovered campaign name
+    // and its metric cells. It is UI text, not another data row.
+    if (ROW_HOVER_ACTIONS.every((label, offset) => lines[j + offset] === label)) {
+      j += ROW_HOVER_ACTIONS.length
+    }
     while (j < lines.length && values.length < WIDE_VALUES_PER_ROW) {
       if (SUMMARY_MARKER.test(lines[j])) break
       if (!isValueOrResultLabel(lines[j])) break
@@ -197,13 +206,14 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
     if (
       width !== WIDE_VALUES_PER_ROW &&
       width !== WIDE8_VALUES_PER_ROW &&
+      width !== CTR_VALUES_PER_ROW &&
       width !== NARROW_VALUES_PER_ROW
     ) {
       return null
     }
     if (rowWidth === null) rowWidth = width
     else if (rowWidth !== width) return null
-    if (width === WIDE_VALUES_PER_ROW || width === WIDE8_VALUES_PER_ROW) {
+    if (width !== NARROW_VALUES_PER_ROW) {
       // Positions 0-3 and 5-8 must be metric values; position 4 carries the
       // result count's type label (应用内购买) when the result cell renders it.
       const metricPositions = [...values.slice(0, 4), ...values.slice(5)]
@@ -221,11 +231,11 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
       resultType: width === NARROW_VALUES_PER_ROW ? null : values[4] !== '—' ? values[4] : null,
       clicks: width === NARROW_VALUES_PER_ROW ? null : parseFbMetricNumber(values[5]),
       ctr: width === NARROW_VALUES_PER_ROW ? null : parseFbMetricNumber(values[6]),
-      cpc: width === NARROW_VALUES_PER_ROW ? null : parseFbMetricNumber(values[7]),
+      cpc: width < WIDE8_VALUES_PER_ROW ? null : parseFbMetricNumber(values[7]),
       installs: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[8]) : null,
       raw: values
     })
-    i += 1 + width
+    i = j
   }
   if (rows.length === 0) return null
 

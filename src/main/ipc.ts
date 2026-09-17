@@ -2,9 +2,8 @@ import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from '
 import fs from 'node:fs'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
-import { buildBoardReadingUrl, FB_READING_ACCOUNT_TARGETS } from '../shared/fbReading'
 import type { FbReadingRange } from '../shared/fbReading'
-import { runAction } from './browserUse'
+import { refreshBoardFbReading } from './browserUse'
 import { listFbReadings } from './fbReadings'
 import {
   SessionEvent,
@@ -2288,15 +2287,7 @@ export function registerIpc() {
       ) {
         return { ok: false, error: 'invalid-input' }
       }
-      const url = buildBoardReadingUrl(account, range)
-      const nav = await runAction({ action: 'navigate', url, takeover: true, keepRoute: true })
-      if (!nav.ok) return { ok: false, error: nav.error }
-      const report = await runAction({ action: 'report' })
-      if (!report.ok) return { ok: false, error: report.error }
-      const act = FB_READING_ACCOUNT_TARGETS[account]
-      const entry = listFbReadings(act.act)[0]
-      if (!entry) return { ok: false, error: 'not-stored' }
-      return { ok: true, entry }
+      return refreshBoardFbReading(account, range)
     }
   )
 

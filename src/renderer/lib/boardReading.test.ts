@@ -63,32 +63,28 @@ describe('buildBoardReadingPrompt', () => {
     expect(prompt).toContain(url)
     expect(url).toContain('act=2131017261144314')
     expect(url).toContain('business_id=1734414010144999')
-    expect(url).toContain('date=2026-09-09_2026-09-15,last_7d')
-    expect(url).toContain('insights_date=2026-09-09_2026-09-15,last_7d')
+    expect(url).toContain('date=2026-09-09_2026-09-16')
+    expect(url).toContain('insights_date=2026-09-09_2026-09-16')
   })
 })
 
 describe('boardReadingRangeDates', () => {
-  it('maps every range to explicit dates plus its preset token', () => {
+  it('maps every range to inclusive display dates', () => {
     expect(boardReadingRangeDates('today', TODAY)).toEqual({
       start: '2026-09-16',
-      end: '2026-09-16',
-      preset: 'today'
+      end: '2026-09-16'
     })
     expect(boardReadingRangeDates('last3', TODAY)).toEqual({
       start: '2026-09-13',
-      end: '2026-09-15',
-      preset: 'last_3d'
+      end: '2026-09-15'
     })
     expect(boardReadingRangeDates('last7', TODAY)).toEqual({
       start: '2026-09-09',
-      end: '2026-09-15',
-      preset: 'last_7d'
+      end: '2026-09-15'
     })
     expect(boardReadingRangeDates('last30', TODAY)).toEqual({
       start: '2026-08-17',
-      end: '2026-09-15',
-      preset: 'last_30d'
+      end: '2026-09-15'
     })
   })
 })

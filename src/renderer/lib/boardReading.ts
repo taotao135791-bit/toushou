@@ -61,19 +61,18 @@ export const BOARD_READING_METRIC_LABELS: Record<BoardReadingMetric, string> = {
 /**
  * FB "last N days" excludes today (verified against Ads Manager on 2026-09-16:
  * last_7d resolved to Sep 9–15 with Sep 16 as today), so ranges run from
- * today-N to yesterday; "today" is today alone. The preset token rides along
- * as a fallback label while the explicit dates stay authoritative.
+ * today-N to yesterday; "today" is today alone. These dates are inclusive.
  */
 export function boardReadingRangeDates(
   range: BoardReadingRange,
   today: Date = new Date()
-): { start: string; end: string; preset: string } {
+): { start: string; end: string } {
   return sharedRangeDates(range, today)
 }
 
 /**
  * Canonical Ads Manager URL: date and insights_date MUST be paired with the
- * same <start>_<end>,<preset> value or Ads Manager silently ignores them.
+ * same <start>_<exclusive-end> value, without unsupported preset tokens.
  */
 export function buildBoardReadingUrl(
   account: BoardReadingAccount,
