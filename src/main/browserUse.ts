@@ -100,6 +100,8 @@ export interface BrowserUseRequest {
   url?: string
   /** Navigation may explicitly transfer the visible panel to this session. */
   takeover?: boolean
+  /** Route-preserving panel open (board refresh): do not yank the UI home. */
+  keepRoute?: boolean
   accountId?: string
   limit?: number
   ref?: number
@@ -398,12 +400,15 @@ function waitForNavigation(previousUrl: string, timeoutMs: number): Promise<void
   })
 }
 
-async function openPanelWithUrl(url: string): Promise<void> {
+async function openPanelWithUrl(url: string, keepRoute = false): Promise<void> {
   // Reuse the renderer-driven flow so the panel lands with proper bounds and
   // the user sees exactly what the agent is about to operate on.
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send(IPC_CHANNELS.PANEL_OPEN, { panel: 'browser', url })
+      win.webContents.send(
+        IPC_CHANNELS.PANEL_OPEN,
+        keepRoute ? { panel: 'browser', url, keepRoute: true } : { panel: 'browser', url }
+      )
     }
   }
   // Give the renderer a moment to mount the panel before loading checks.
@@ -436,7 +441,7 @@ export async function runAction(req: BrowserUseRequest, sessionId?: string): Pro
       if (sessionId) latestSnapshotBySession.delete(sessionId)
       const safeUrl = safeBrowserPanelUrl(req.url as string)
       if (!safeUrl) return { ok: false, error: 'invalid-url' }
-      await openPanelWithUrl(safeUrl)
+      await openPanelWithUrl(safeUrl, req.keepRoute === true)
       // The renderer drives the visible attach; Main also loads directly so
       // navigation is real even while the attach transition is in flight.
       const existing = getActiveBrowserPanel()

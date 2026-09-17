@@ -2289,7 +2289,7 @@ export function registerIpc() {
         return { ok: false, error: 'invalid-input' }
       }
       const url = buildBoardReadingUrl(account, range)
-      const nav = await runAction({ action: 'navigate', url, takeover: true })
+      const nav = await runAction({ action: 'navigate', url, takeover: true, keepRoute: true })
       if (!nav.ok) return { ok: false, error: nav.error }
       const report = await runAction({ action: 'report' })
       if (!report.ok) return { ok: false, error: report.error }

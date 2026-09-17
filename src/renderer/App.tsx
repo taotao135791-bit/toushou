@@ -265,7 +265,15 @@ function App() {
     const unsubscribePanelOpen = window.electronAPI.onPanelOpen((request) => {
       if (request.panel === 'browser' && request.url) {
         setWorkspacePanel({ kind: 'browser', url: request.url })
-        if (window.location.hash !== '#/' && !window.location.hash.startsWith('#/?')) navigate('/')
+        // keepRoute: background refreshes (e.g. FB reading module) open the
+        // panel without yanking the user off the page they are on.
+        if (
+          request.keepRoute !== true &&
+          window.location.hash !== '#/' &&
+          !window.location.hash.startsWith('#/?')
+        ) {
+          navigate('/')
+        }
       } else if (request.panel === 'office' && request.office) {
         setWorkspacePanel({
           kind: 'office',
