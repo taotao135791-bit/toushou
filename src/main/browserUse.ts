@@ -229,6 +229,95 @@ export const SNAPSHOT_SCRIPT = `(() => {
   return { url: location.href, title: document.title, text, elements }
 })()`
 
+/** One structured read attempt: raw snapshot plus the strict parse result. */
+export interface FbReadOnce<R> {
+  url: string
+  title: string
+  text: string
+  reading: R | null
+}
+
+/**
+ * Scroll script: the main frame AND the roomiest inner scrollable container.
+ * Ads Manager tables scroll inside nested divs, not the window, so a
+ * window-only scrollBy leaves virtualized rows outside the DOM forever.
+ */
+export const SCROLL_SCRIPT = (delta: number): string => `(() => {
+  const delta = ${delta}
+  window.scrollBy({ top: delta })
+  let best = null
+  let bestRoom = 0
+  let seen = 0
+  for (const el of document.querySelectorAll('div')) {
+    if (seen >= 64) break
+    seen += 1
+    const style = window.getComputedStyle(el)
+    if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 4) {
+      const room = el.scrollHeight - el.clientHeight
+      if (room > bestRoom) { best = el; bestRoom = room }
+    }
+  }
+  if (best) best.scrollBy({ top: delta })
+  return true
+})()`
+
+/**
+ * Bounded progressive-render retry around the strict FB reading gates.
+ *
+ * A clean parse alone used to end the wait, but FB renders campaign rows
+ * progressively and virtualizes them in and out of the DOM, so a read can
+ * parse while rows are still missing (incomplete-view). Re-read until BOTH
+ * the first and the post-settle second read parse AND pass the rejection
+ * gates, then hand the pair back for the consistency check. Refusal keeps
+ * the precise gate code; no data still beats wrong data.
+ */
+export async function readStableFbReading<R>(
+  readOnce: () => Promise<FbReadOnce<R>>,
+  rejectionOf: (reading: R) => string | null,
+  opts: { delayMs?: number; firstAttempts?: number; secondAttempts?: number; settleDelayMs?: number } = {}
+): Promise<
+  | { ok: true; first: FbReadOnce<R> & { reading: R }; second: FbReadOnce<R> & { reading: R } }
+  | { ok: false; error: string; last: FbReadOnce<R> }
+> {
+  // Cold loads of Ads Manager (fresh panel after an app restart) can take
+  // 30s+ past domcontentloaded before the SPA mounts table rows; 20 × 1.5s
+  // covers that without hanging the bridge on a dead page.
+  const { delayMs = 1_500, firstAttempts = 20, secondAttempts = 3, settleDelayMs = 700 } = opts
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const stableRead = async (attempts: number): Promise<FbReadOnce<R>> => {
+    let last: FbReadOnce<R> | null = null
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (attempt > 0) await sleep(delayMs)
+      last = await readOnce()
+      if (last.reading && !rejectionOf(last.reading)) return last
+    }
+    return last as FbReadOnce<R>
+  }
+
+  const first = await stableRead(firstAttempts)
+  if (!first.reading) {
+    return { ok: false, error: 'unparseable-page', last: first }
+  }
+  const firstRejection = rejectionOf(first.reading)
+  if (firstRejection) {
+    return { ok: false, error: firstRejection, last: first }
+  }
+  await sleep(settleDelayMs)
+  const second = await stableRead(secondAttempts)
+  if (!second.reading) {
+    return { ok: false, error: 'unstable-page', last: second }
+  }
+  const secondRejection = rejectionOf(second.reading)
+  if (secondRejection) {
+    return { ok: false, error: secondRejection, last: second }
+  }
+  return {
+    ok: true,
+    first: first as FbReadOnce<R> & { reading: R },
+    second: second as FbReadOnce<R> & { reading: R }
+  }
+}
+
 function exec<T>(script: string): Promise<T> {
   const panel = getActiveBrowserPanel()
   if (!panel) return Promise.reject(new Error('panel-not-open'))
@@ -429,53 +518,59 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
         }
       }
 
-      // FB renders the table progressively (and virtualizes long tables);
-      // an immediate read can catch a half-rendered page, which the strict
-      // parser correctly refuses. Bounded retry until it parses cleanly.
-      let first: Awaited<ReturnType<typeof readOnce>> | null = null
-      for (let attempt = 0; attempt < 6; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 900))
-        first = await readOnce()
-        if (first.reading) break
+      // FB virtualizes campaign rows by viewport height: a short workspace
+      // panel can physically never mount every row (scrolling only swaps
+      // which rows are live), so the row-count gate would refuse forever.
+      // Stretch the browser view to the full window just for the gated
+      // reads, then restore the user's layout.
+      const reportPanel = getActiveBrowserPanel()
+      const reportWindow =
+        reportPanel && !reportPanel.webContents.isDestroyed()
+          ? BrowserWindow.fromWebContents(reportPanel.webContents)
+          : null
+      const prevBounds =
+        reportPanel && !reportPanel.webContents.isDestroyed()
+          ? reportPanel.getBounds()
+          : null
+      if (reportWindow && prevBounds && reportPanel) {
+        const [width, height] = reportWindow.getContentSize()
+        reportPanel.setBounds({ x: 0, y: 0, width, height })
       }
-      const firstRead = first
-      if (!firstRead || !firstRead.reading) {
-        return {
-          ok: false,
-          error: 'unparseable-page',
-          text: firstRead ? firstRead.text.slice(0, 4_000) : '',
-          url: firstRead?.url ?? '',
-          title: firstRead?.title ?? ''
-        }
-      }
-      // Let a live page settle, then re-read: the double read catches pages
-      // that were still loading, and gates single-read consistency below.
-      await new Promise((r) => setTimeout(r, 700))
-      const second = await readOnce()
-      if (!second.reading) {
-        return { ok: false, error: 'unstable-page', url: second.url, title: second.title }
-      }
-      const rejection = fbAdsReadingRejection(second.reading)
-      if (rejection) {
-        return { ok: false, error: rejection, url: second.url, title: second.title }
-      }
-      if (!fbAdsReadingsConsistent(firstRead.reading, second.reading)) {
-        return { ok: false, error: 'unstable-page', url: second.url, title: second.title }
-      }
-      // Verified reading → history (trend foundation for scheduled tasks
-      // and boards). Fire-and-forget like the snapshot archive: a storage
-      // hiccup never fails the report the user is looking at.
+      // Progressive-render + virtualization retry: both reads must parse AND
+      // pass the strict gates before the consistency check (readStableFbReading).
       try {
-        appendFbReading(second.reading)
-      } catch {
-        // history is advisory; ignore storage hiccups
-      }
-      return {
-        ok: true,
-        url: second.url,
-        title: second.title,
-        reading: second.reading,
-        verified: true
+        const stable = await readStableFbReading(readOnce, fbAdsReadingRejection)
+        if (!stable.ok) {
+          return {
+            ok: false,
+            error: stable.error,
+            text: stable.last.text.slice(0, 4_000),
+            url: stable.last.url,
+            title: stable.last.title
+          }
+        }
+        if (!fbAdsReadingsConsistent(stable.first.reading, stable.second.reading)) {
+          return { ok: false, error: 'unstable-page', url: stable.second.url, title: stable.second.title }
+        }
+        // Verified reading → history (trend foundation for scheduled tasks
+        // and boards). Fire-and-forget like the snapshot archive: a storage
+        // hiccup never fails the report the user is looking at.
+        try {
+          appendFbReading(stable.second.reading)
+        } catch {
+          // history is advisory; ignore storage hiccups
+        }
+        return {
+          ok: true,
+          url: stable.second.url,
+          title: stable.second.title,
+          reading: stable.second.reading,
+          verified: true
+        }
+      } finally {
+        if (prevBounds && reportPanel && !reportPanel.webContents.isDestroyed()) {
+          reportPanel.setBounds(prevBounds)
+        }
       }
     }
     case 'history': {
@@ -560,7 +655,8 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
       return { ok: true, url: page.url, title: page.title }
     }
     case 'scroll': {
-      await exec(`window.scrollBy({ top: ${req.direction === 'up' ? '-' : ''}${req.amount} })`)
+      const amount = typeof req.amount === 'number' ? req.amount : 4000
+      await exec(SCROLL_SCRIPT(req.direction === 'up' ? -amount : amount))
       await new Promise((r) => setTimeout(r, 150))
       const page = currentPage()
       if (sessionId) latestSnapshotBySession.delete(sessionId)

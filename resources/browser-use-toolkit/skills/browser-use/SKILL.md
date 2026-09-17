@@ -86,6 +86,14 @@ browser_snapshot()             → 读正文 + 拿元素 ref 清单
 - 流程固定为：拼 URL → `browser_navigate` → `browser_report`。日期与筛选**全部走 URL 参数**；FB 页面内点击（日期选择器/视图标签）会被只读边界拦截，那是设计行为，不要尝试
 - **URL 参数未生效时**（快照日期标签没变）：**禁止**改用点击去切换日期/视图——点击必被拦截，只会陷入空转。正确做法：按当前口径读数，并在卡片标题与汇报里如实注明（如"30 天口径"）；同时把未生效的参数原样告诉用户
 
+### 登录页中转 ≠ 未登录（2026-09-17 实战教训）
+
+Ads Manager 导航在会话校验时会 302 经过 `business.facebook.com/business/loginpage` 中转页，再自动跳回 Ads Manager。`browser_navigate` 在 `domcontentloaded` 时刻返回的 URL 可能正好落在中转页——**这是校验中转，不是登录墙**。
+
+- **禁止**凭一次中转 URL 就判「未登录」并放弃；真实判定标准是：等待 3–5 秒后再次 `browser_snapshot`，看**最终 URL 与页面内容**（有账户名/系列表格 = 已登录；仍停在 loginpage 且出现密码输入框 = 真未登录）
+ `browser_report` 内部自带多轮等待重读，中转几秒内结束它会自己读到最终页——所以即使怀疑中转，也**先跑一次 browser_report**，让它的事实说话
+- 只有二次确认仍停在登录页时，才提示用户在浏览器面板完成登录
+
 ### 拒报时的处理
 
 `browser_report` 返回错误码（incomplete-view / totals-mismatch / unstable-page / unparseable-page）时：**如实转述错误码与含义，不输出任何数字，不出看板提议**。可以建议用户换视图（如"投放过"）后重试——但换视图是用户手上的操作。

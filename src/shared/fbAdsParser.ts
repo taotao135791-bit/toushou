@@ -70,12 +70,16 @@ export interface FbAdsCampaignReading {
 
 /**
  * Value-line counts per row for the supported column preset. Wide view
- * (full-width tab) renders all 9 metric cells; the in-app panel is narrow
- * enough that FB's column virtualization keeps only the first 3 (spend,
- * cost-per-result, CPM) in the DOM. Both shapes carry the campaign name and
- * the summary block, so the hard gates apply either way.
+ * (full-width tab) renders all 9 metric cells; an intermediate stretched
+ * panel can render 8 (the trailing 应用安装量 cell drops out while the
+ * header stays complete); the in-app panel is narrow enough that FB's
+ * column virtualization keeps only the first 3 (spend, cost-per-result,
+ * CPM) in the DOM. All shapes carry the campaign name and the summary
+ * block, so the hard gates apply either way. A missing metric is kept
+ * null — never inferred from neighbouring cells.
  */
 const WIDE_VALUES_PER_ROW = 9
+const WIDE8_VALUES_PER_ROW = 8
 const NARROW_VALUES_PER_ROW = 3
 
 const SUMMARY_MARKER = /^(\d+)个(广告系列|广告组|广告)的成效$/
@@ -190,10 +194,16 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
       j += 1
     }
     const width = values.length
-    if (width !== WIDE_VALUES_PER_ROW && width !== NARROW_VALUES_PER_ROW) return null
+    if (
+      width !== WIDE_VALUES_PER_ROW &&
+      width !== WIDE8_VALUES_PER_ROW &&
+      width !== NARROW_VALUES_PER_ROW
+    ) {
+      return null
+    }
     if (rowWidth === null) rowWidth = width
     else if (rowWidth !== width) return null
-    if (width === WIDE_VALUES_PER_ROW) {
+    if (width === WIDE_VALUES_PER_ROW || width === WIDE8_VALUES_PER_ROW) {
       // Positions 0-3 and 5-8 must be metric values; position 4 carries the
       // result count's type label (应用内购买) when the result cell renders it.
       const metricPositions = [...values.slice(0, 4), ...values.slice(5)]
@@ -207,11 +217,11 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
       spend: parseFbMetricNumber(values[0]),
       costPerResult: parseFbMetricNumber(values[1]),
       cpm: parseFbMetricNumber(values[2]),
-      results: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[3]) : null,
-      resultType: width === WIDE_VALUES_PER_ROW && values[4] !== '—' ? values[4] : null,
-      clicks: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[5]) : null,
-      ctr: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[6]) : null,
-      cpc: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[7]) : null,
+      results: width === NARROW_VALUES_PER_ROW ? null : parseFbMetricNumber(values[3]),
+      resultType: width === NARROW_VALUES_PER_ROW ? null : values[4] !== '—' ? values[4] : null,
+      clicks: width === NARROW_VALUES_PER_ROW ? null : parseFbMetricNumber(values[5]),
+      ctr: width === NARROW_VALUES_PER_ROW ? null : parseFbMetricNumber(values[6]),
+      cpc: width === NARROW_VALUES_PER_ROW ? null : parseFbMetricNumber(values[7]),
       installs: width === WIDE_VALUES_PER_ROW ? parseFbMetricNumber(values[8]) : null,
       raw: values
     })
