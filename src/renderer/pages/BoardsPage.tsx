@@ -1168,23 +1168,13 @@ export default function BoardsPage() {
                 <div className="flex h-[55vh] flex-col items-center justify-center gap-3 text-center">
                   <LayoutGrid size={26} className="text-cream-faint" />
                   <div className="text-sm text-cream-dim">{t('boards.noWidgets')}</div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <button
-                      onClick={() => setGalleryOpen(true)}
-                      className="flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
-                    >
-                      <Plus size={12} />
-                      {t('boards.addWidget')}
-                    </button>
-                    <button
-                      onClick={handleReadingButtonClick}
-                      title={readingEntryTitle()}
-                      className="flex items-center gap-1.5 rounded-lg border border-line px-4 py-2 text-[12px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
-                    >
-                      <Activity size={12} className={readingEntryIconClass()} />
-                      {readingEntryLabel()}
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => setGalleryOpen(true)}
+                    className="mt-1 flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
+                  >
+                    <Plus size={12} />
+                    {t('boards.addWidget')}
+                  </button>
                 </div>
               )}
             </div>
