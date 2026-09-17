@@ -84,6 +84,7 @@ browser_snapshot()             → 读正文 + 拿元素 ref 清单
 - 时间范围：**date 与 insights_date 必须同时带**，缺一个 Ads Manager 可能忽略（例：`&date=2026-09-12_2026-09-15,last_3d&insights_date=2026-09-12_2026-09-15,last_3d`），预设可用 today / last_3d / last_7d / last_14d / last_30d
 - 只要投放中的系列：`&filter_set=campaign.impressions-NUMBER%5EGREATER_THAN%5E0%1DCAMPAIGN_GROUP_DELIVERY_STATUS-STRING_SET%5EIN%5E%5B%22active%22%5D`
 - 流程固定为：拼 URL → `browser_navigate` → `browser_report`。日期与筛选**全部走 URL 参数**；FB 页面内点击（日期选择器/视图标签）会被只读边界拦截，那是设计行为，不要尝试
+- **面板被其他会话占用**（`panel-owned-by-another-session`）：`browser_navigate` 请求体加 `"takeover": true` 即可接管面板（takeover 仅 navigate 支持）。发起新读数的会话默认带上，避免被上一次会话的持有权卡死
 - **URL 参数未生效时**（快照日期标签没变）：**禁止**改用点击去切换日期/视图——点击必被拦截，只会陷入空转。正确做法：按当前口径读数，并在卡片标题与汇报里如实注明（如"30 天口径"）；同时把未生效的参数原样告诉用户
 
 ### 登录页中转 ≠ 未登录（2026-09-17 实战教训）

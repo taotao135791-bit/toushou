@@ -17,7 +17,8 @@ describe('buildBoardReadingPrompt', () => {
     expect(prompt!).toContain('「三国IOS」近7天的消耗、CPI、CPA')
     expect(prompt!.indexOf('消耗')).toBeLessThan(prompt!.indexOf('CPI'))
     expect(prompt!.indexOf('CPI')).toBeLessThan(prompt!.indexOf('CPA'))
-    expect(prompt!).not.toContain('CPM')
+    // Unselected metrics stay out of the request sentence; the field-mapping line may mention CPM generically.
+    expect(prompt!.split('。')[0]).not.toContain('CPM')
   })
 
   it('embeds each date range label', () => {
@@ -37,10 +38,23 @@ describe('buildBoardReadingPrompt', () => {
 
   it('carries the read-only and verified-source constraints', () => {
     const prompt = buildBoardReadingPrompt('三国IOS', 'last7', ['spend'])!
-    expect(prompt).toContain('browser_report 中 verified=true')
+    expect(prompt).toContain('browser_report')
+    expect(prompt).toContain('仅 verified=true 的结果可用')
     expect(prompt).toContain('fb_history')
     expect(prompt).toContain('禁止修改预算、出价')
     expect(prompt).toContain('未登录')
+  })
+
+  it('inline execution recipe: history-first, takeover, strict JSON envelope', () => {
+    const prompt = buildBoardReadingPrompt('三国IOS', 'last7', ['spend', 'cpi'], TODAY)!
+    // history-first short-circuit with a pinned account and window
+    expect(prompt).toContain('fb_history 查 accountId=2131017261144314')
+    expect(prompt).toContain('日期窗口=2026-09-09~2026-09-15')
+    expect(prompt.indexOf('第1步')).toBeLessThan(prompt.indexOf('第2步'))
+    // panel takeover so a stale owner session cannot block navigation
+    expect(prompt).toContain('"takeover": true')
+    // strict fence envelope to keep Apply enabled first try
+    expect(prompt).toContain('"version":1')
   })
 
   it('embeds the canonical paired-date URL for the model to navigate verbatim', () => {

@@ -574,9 +574,10 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
       }
     }
     case 'history': {
-      // Verified-reading history for trends/boards. Compact projection only:
-      // name+spend per row keeps the payload inside the bridge's text cap
-      // while totals cover trend cards; full metrics stay in the store.
+      // Verified-reading history for trends/boards. Metrics per row ride
+      // along so a full-metric window hit can serve board cards without a
+      // live re-read; entries are small (8 rows typical) so the bridge text
+      // cap stays comfortably out of reach.
       const entries = listFbReadings(req.accountId).slice(0, req.limit ?? 10)
       const readings = entries.map((entry) => ({
         capturedAt: entry.capturedAt,
@@ -586,7 +587,17 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
         campaignCount: entry.campaignCount,
         totalSpend: entry.totalSpend,
         observation: entry.observation,
-        rows: entry.rows.map((row) => ({ name: row.name, spend: row.spend }))
+        rows: entry.rows.map((row) => ({
+          name: row.name,
+          spend: row.spend,
+          costPerResult: row.costPerResult,
+          cpm: row.cpm,
+          results: row.results,
+          clicks: row.clicks,
+          ctr: row.ctr,
+          cpc: row.cpc,
+          installs: row.installs
+        }))
       }))
       return { ok: true, readings }
     }
