@@ -120,6 +120,21 @@ describe('appendFbReading / listFbReadings', () => {
     expect(JSON.parse(readFileSync(file, 'utf-8'))).toBeInstanceOf(Array)
   })
 
+  it('persists verified readings whose totals were clipped by a banner (totalSpend null)', () => {
+    // Reproduces the AND-account failure: the Singapore verification
+    // banner pushed the summary block out of the snapshot, leaving
+    // totalSpend null while rows=count still verified. The entry used to
+    // be silently dropped at write time ("not-stored:find-failed").
+    const file = tempFile()
+    const reading = verifiedReading()
+    reading.totalSpend = null
+    const result = appendFbReading(reading, file)
+    expect(result.ok).toBe(true)
+    const listed = listFbReadings(undefined, file)
+    expect(listed).toHaveLength(1)
+    expect(listed[0].totalSpend).toBeNull()
+  })
+
   it('refuses unverified readings without touching the store', () => {
     const file = tempFile()
     const result = appendFbReading(brokenReading(), file)
