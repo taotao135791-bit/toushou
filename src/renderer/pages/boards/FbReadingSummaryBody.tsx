@@ -12,6 +12,7 @@ import {
 } from '@shared/fbReading'
 import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { useT } from '../../i18n'
+import { useAppStore } from '../../store'
 
 interface AccountRecord {
   alias: string
@@ -32,6 +33,7 @@ const SUMMARY_METRICS: FbReadingSummaryMetric[] = ['spend', 'balance', 'cpi', 'c
  */
 export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
   const t = useT()
+  const inChat = useAppStore((s) => s.workspacePanel) === null
   const accounts = useMemo(() => resolveFbReadingSummaryAccounts(widget.config), [widget.config])
   const range = (typeof widget.config.range === 'string' ? widget.config.range : 'last7') as FbReadingRange
   const metrics = useMemo(() => {
@@ -250,7 +252,8 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
           {metrics.includes('balance') && (
             <button
               onClick={() => void refreshBalances()}
-              disabled={busyIndex !== null || balanceBusyIndex !== null}
+              disabled={busyIndex !== null || balanceBusyIndex !== null || inChat}
+              title={inChat ? t('boards.reading.inChat') : undefined}
               className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
             >
               {balanceBusyIndex !== null ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
@@ -264,7 +267,8 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
           )}
           <button
             onClick={() => void refresh()}
-            disabled={busyIndex !== null || balanceBusyIndex !== null}
+            disabled={busyIndex !== null || balanceBusyIndex !== null || inChat}
+            title={inChat ? t('boards.reading.inChat') : undefined}
             className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
           >
             {busyIndex !== null ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
