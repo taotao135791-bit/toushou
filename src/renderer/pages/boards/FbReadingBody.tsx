@@ -4,6 +4,37 @@ import { BoardWidget } from '@shared/types'
 import { boardReadingRangeDates, fbReadingMatchesWindow, resolveFbReadingWidgetAccount } from '@shared/fbReading'
 import { useT } from '../../i18n'
 
+interface FbReadingDisplayRow {
+  name: string
+  spend: number | null
+  costPerResult: number | null
+  cpm: number | null
+  ctr: number | null
+  impressions: number | null
+  clicks: number | null
+  installs: number | null
+  results: number | null
+  resultType: string | null
+}
+
+const APP_INSTALL_TYPES = new Set(['应用安装量', '移动应用安装量', 'App installs', 'Mobile app installs'])
+
+const cpiOf = (row: FbReadingDisplayRow): number | null => {
+  if (row.installs !== null && row.installs > 0) return row.spend !== null ? row.spend / row.installs : null
+  return row.resultType && APP_INSTALL_TYPES.has(row.resultType) && row.results !== null && row.results > 0 && row.spend !== null
+    ? row.spend / row.results
+    : null
+}
+
+const cpaOf = (row: FbReadingDisplayRow): number | null =>
+  row.resultType && row.results !== null && row.results > 0 && row.spend !== null ? row.spend / row.results : null
+
+const cpmOf = (row: FbReadingDisplayRow): number | null =>
+  row.spend !== null && row.impressions !== null && row.impressions > 0 ? (row.spend / row.impressions) * 1000 : null
+
+const ctrOf = (row: FbReadingDisplayRow): number | null =>
+  row.clicks !== null && row.impressions !== null && row.impressions > 0 ? (row.clicks / row.impressions) * 100 : null
+
 /**
  * FB reading module: renders the LATEST verified reading that matches the
  * module's date window, straight from fb_history (verified-only store).
@@ -25,7 +56,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     capturedAt: string
     totalSpend: number | null
     campaignCount: number | null
-    rows: { name: string; spend: number | null; costPerResult: number | null; cpm: number | null; ctr: number | null }[]
+    rows: FbReadingDisplayRow[]
   } | null>(null)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
@@ -54,7 +85,12 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           spend: r.spend,
           costPerResult: r.costPerResult,
           cpm: r.cpm,
-          ctr: r.ctr
+          ctr: r.ctr,
+          impressions: r.impressions,
+          clicks: r.clicks,
+          installs: r.installs,
+          results: r.results,
+          resultType: r.resultType
         }))
       })
     } else {
@@ -198,10 +234,10 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
                       {row.name.split('_').pop() ?? row.name}
                     </td>
                     {metrics.includes('spend') && <td className="px-1 py-0.5 font-mono tabular-nums">{cell(row.spend, 'usd')}</td>}
-                    {metrics.includes('cpi') && <td className="px-1 py-0.5 font-mono tabular-nums">{cell(row.costPerResult, 'usd')}</td>}
-                    {metrics.includes('cpm') && <td className="px-1 py-0.5 font-mono tabular-nums">{cell(row.cpm, 'usd')}</td>}
-                    {metrics.includes('ctr') && <td className="px-1 py-0.5 font-mono tabular-nums">{cell(row.ctr, 'pct')}</td>}
-                    {metrics.includes('cpa') && <td className="px-1 py-0.5 text-cream-faint">—</td>}
+                    {metrics.includes('cpi') && <td className="px-1 py-0.5 font-mono tabular-nums">{cell(cpiOf(row), 'usd')}</td>}
+                    {metrics.includes('cpm') && <td className="px-1 py-0.5 font-mono tabular-nums">{cell(cpmOf(row), 'usd')}</td>}
+                    {metrics.includes('ctr') && <td className="px-1 py-0.5 font-mono tabular-nums">{cell(ctrOf(row), 'pct')}</td>}
+                    {metrics.includes('cpa') && <td className="px-1 py-0.5 font-mono tabular-nums">{cell(cpaOf(row), 'usd')}</td>}
                   </tr>
                 ))}
               </tbody>

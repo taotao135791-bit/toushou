@@ -571,12 +571,35 @@ export default function BoardsPage() {
     if (created.length < picked.length) flashToast(t('boards.widgetLimit'), false)
   }
 
+  const addFbReadingSummaryWidget = () => {
+    if (!current) return
+    const picked = readingAccounts.filter((entry) => readingPicked.has(entry.act))
+    if (picked.length === 0) return
+    const size = WIDGET_DEFAULT_SIZES['fb-reading-summary']
+    if (current.widgets.length >= BOARD_LIMITS.maxWidgets) {
+      setReadingPickerOpen(false)
+      flashToast(t('boards.widgetLimit'), false)
+      return
+    }
+    const slot = findFreeSlot(current.widgets, size.w, size.h)
+    const widget = createWidget('fb-reading-summary', t('boards.reading.summary.moduleName'), slot, {
+      accounts: picked.map((entry) => ({ alias: entry.alias, act: entry.act, businessId: entry.businessId })),
+      range: 'last7',
+      metrics: ['spend', 'cpi', 'cpm']
+    })
+    mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, widget] }))
+    setReadingPickerOpen(false)
+    setReadingPicked(new Set())
+  }
+
   // Serial board-level refresh: each module runs its own bounded pipeline
   // and reports completion; the hard cap keeps one stuck module from
   // freezing the whole queue.
   const refreshReadingModules = async () => {
     if (!current || boardRefreshBusy) return
-    const widgets = current.widgets.filter((widget) => widget.type === 'fb-reading')
+    const widgets = current.widgets.filter(
+      (widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary'
+    )
     if (widgets.length === 0) return
     setBoardRefreshBusy(true)
     setBoardRefreshProgress({ done: 0, total: widgets.length })
@@ -595,7 +618,11 @@ export default function BoardsPage() {
           const detail = (event as CustomEvent).detail as { widgetId?: string }
           if (detail?.widgetId === widget.id) finish()
         }
-        const cap = setTimeout(finish, 180_000)
+        const accountCount =
+          widget.type === 'fb-reading-summary' && Array.isArray(widget.config.accounts)
+            ? Math.max(1, widget.config.accounts.length)
+            : 1
+        const cap = setTimeout(finish, 180_000 * accountCount)
         window.addEventListener('fb-reading:module-done', onDone)
         window.dispatchEvent(new CustomEvent('fb-reading:board-refresh', { detail: { widgetId: widget.id } }))
       })
@@ -1255,6 +1282,7 @@ export default function BoardsPage() {
                 </button>
                 <button
                   onClick={() => void openReadingPicker()}
+                  autoFocus
                   className={`${menuItemClass} text-cream hover:bg-overlay`}
                 >
                   <Activity size={12} />
@@ -1323,6 +1351,13 @@ export default function BoardsPage() {
                 >
                   {t('boards.reading.picker.create').replace('{n}', String(readingPicked.size))}
                 </button>
+                <button
+                  onClick={addFbReadingSummaryWidget}
+                  disabled={readingPicked.size === 0}
+                  className="mt-1 w-full rounded-lg border border-line px-2 py-1.5 text-[11.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+                >
+                  {t('boards.reading.picker.createSummary')}
+                </button>
               </div>
             )}
             {toolsMenuOpen && (
@@ -1386,7 +1421,7 @@ export default function BoardsPage() {
               <ToolButton title={t('boards.tidy')} onClick={handleTidy}>
                 <LayoutGrid size={14} />
               </ToolButton>
-              {current.widgets.some((widget) => widget.type === 'fb-reading') && (
+              {current.widgets.some((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary') && (
                 <ToolButton
                   title={
                     boardRefreshBusy

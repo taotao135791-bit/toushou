@@ -619,6 +619,7 @@ export async function runAction(req: BrowserUseRequest, sessionId?: string): Pro
           spend: row.spend,
           costPerResult: row.costPerResult,
           cpm: row.cpm,
+          impressions: row.impressions,
           results: row.results,
           clicks: row.clicks,
           ctr: row.ctr,
@@ -978,7 +979,7 @@ export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReading
       // Read the page as-is first: many column views (e.g. the AND
       // account) already mount a parseable prefix at full stretch, and a
       // reload can cost 30s+ of blank-table time on slow networks. Only
-      // when that read is unverified or lacks CTR/installs do we reload
+      // when that read is unverified or lacks CTR/installs/impressions do we reload
       // inside the stretch and read again for the wide columns.
       const readVerified = async (): Promise<
         | { kind: 'ok'; reading: FbAdsCampaignReading; stored: boolean | string }
@@ -993,7 +994,9 @@ export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReading
         return { kind: 'ok', reading: report.reading, stored: report.stored ?? 'no-flag' }
       }
       let attempt = await readVerified()
-      const rich = attempt.kind === 'ok' && (attempt.reading.rows.some((row) => row.ctr !== null || row.installs !== null))
+      const rich =
+        attempt.kind === 'ok' &&
+        (attempt.reading.rows.some((row) => row.ctr !== null || row.installs !== null || row.impressions !== null))
       // Page failures fail fast: a reload pass would only repeat them.
       const fastFail = attempt.kind === 'failed' && (attempt.error === 'page-load-failed' || attempt.error === 'login-required')
       if (!rich && !fastFail) {

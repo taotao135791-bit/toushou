@@ -46,6 +46,7 @@ export interface FbAdsCampaignRow {
   spend: number | null
   costPerResult: number | null
   cpm: number | null
+  impressions: number | null
   results: number | null
   resultType: string | null
   clicks: number | null
@@ -75,7 +76,10 @@ const ROW_HOVER_ACTIONS = ['图表', '编辑', '新建副本', '对比', '打开
 
 /** What one column-header label tells us about its row cells. */
 type HeaderOp =
-  | { kind: 'field'; field: 'spend' | 'costPerResult' | 'cpm' | 'clicks' | 'ctr' | 'cpc' | 'installs' }
+  | {
+      kind: 'field'
+      field: 'spend' | 'costPerResult' | 'cpm' | 'impressions' | 'clicks' | 'ctr' | 'cpc' | 'installs'
+    }
   | { kind: 'results' }
   | { kind: 'skip' }
   | { kind: 'icon' }
@@ -116,8 +120,8 @@ const HEADER_OPS: Record<string, HeaderOp> = {
   '移动应用安装量': { kind: 'field', field: 'installs' },
   'App installs': { kind: 'field', field: 'installs' },
   'Mobile app installs': { kind: 'field', field: 'installs' },
-  '展示次数': { kind: 'skip' },
-  'Impressions': { kind: 'skip' },
+  '展示次数': { kind: 'field', field: 'impressions' },
+  'Impressions': { kind: 'field', field: 'impressions' },
   '覆盖人数': { kind: 'skip' },
   'Reach': { kind: 'skip' },
   '频次': { kind: 'skip' },
@@ -288,7 +292,7 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
 
   const consumeRowValues = (values: string[], choice: boolean[]): Omit<FbAdsCampaignRow, 'name' | 'raw'> | null => {
     const cells = {
-      spend: null, costPerResult: null, cpm: null, results: null, resultType: null,
+      spend: null, costPerResult: null, cpm: null, impressions: null, results: null, resultType: null,
       clicks: null, ctr: null, cpc: null, installs: null
     } as Omit<FbAdsCampaignRow, 'name' | 'raw'>
     let token = 0
@@ -305,7 +309,7 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
       const cell = values[token]
       if (op.kind === 'results') {
         if (!(isDash(cell) || isCount(cell))) return null
-        cells.results = parseFbMetricNumber(cell)
+        cells.results = isDash(cell) ? 0 : parseFbMetricNumber(cell)
         token += 1
         const next = values[token]
         if (next !== undefined && isResultLabel(next)) {
@@ -322,7 +326,8 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
         } else {
           if (!(isDash(cell) || isCount(cell))) return null
         }
-        cells[op.field] = parseFbMetricNumber(cell)
+        const isCountField = op.field === 'impressions' || op.field === 'clicks' || op.field === 'installs'
+        cells[op.field] = isCountField && isDash(cell) ? 0 : parseFbMetricNumber(cell)
         token += 1
         continue
       }
@@ -431,11 +436,15 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
       totalRows: campaignCount,
       coverage:
         campaignCount !== null && rows.length === campaignCount
-          ? rows.some((row) => row.ctr !== null)
+          ? rows.some((row) => row.ctr !== null || row.impressions !== null)
             ? 'complete'
             : 'partial'
           : 'partial',
-      columnMode: rows.some((row) => row.installs !== null) ? 'wide' : rowWidth === 3 ? 'narrow' : 'unknown'
+      columnMode: rows.some((row) => row.installs !== null || row.impressions !== null)
+        ? 'wide'
+        : rowWidth === 3
+          ? 'narrow'
+          : 'unknown'
     }
   }
 }

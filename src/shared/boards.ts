@@ -16,9 +16,12 @@ import {
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
 import {
+  FB_READING_SUMMARY_ACCOUNT_LIMIT,
+  FB_READING_SUMMARY_METRICS,
   FB_READING_ACCOUNT_TARGETS,
   isValidFbReadingAct,
-  isValidFbReadingBusinessId
+  isValidFbReadingBusinessId,
+  type FbReadingAccountRef
 } from './fbReading'
 
 export const BOARD_LIMITS = {
@@ -55,6 +58,7 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'note',
   'counter',
   'fb-reading',
+  'fb-reading-summary',
   'gauge',
   'chart-line',
   'chart-bar',
@@ -80,6 +84,7 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   note: { w: 3, h: 3 },
   counter: { w: 3, h: 2 },
   'fb-reading': { w: 6, h: 5 },
+  'fb-reading-summary': { w: 6, h: 6 },
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
   'chart-bar': { w: 6, h: 4 },
@@ -99,6 +104,14 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
         businessId: FB_READING_ACCOUNT_TARGETS['三国IOS'].businessId,
         range: 'last7',
         metrics: ['spend', 'cpi']
+      }
+    case 'fb-reading-summary':
+      return {
+        accounts: FB_READING_ACCOUNT_TARGETS['三国IOS']
+          ? [{ ...FB_READING_ACCOUNT_TARGETS['三国IOS'], alias: '三国IOS' }]
+          : [],
+        range: 'last7',
+        metrics: ['spend', 'cpi', 'cpm']
       }
     case 'note':
       return { text: '' }
@@ -715,6 +728,37 @@ function validateWidgetConfig(
         return { account: alias, act: builtin.act, businessId: builtin.businessId, range, metrics }
       }
       return null
+    }
+    case 'fb-reading-summary': {
+      const range = raw.range
+      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
+      const metrics: string[] = []
+      for (const metric of raw.metrics) {
+        const allowedSummaryMetrics: readonly string[] = FB_READING_SUMMARY_METRICS
+        if (typeof metric !== 'string' || !allowedSummaryMetrics.includes(metric) || metrics.includes(metric)) {
+          return null
+        }
+        metrics.push(metric)
+      }
+      if (!Array.isArray(raw.accounts) || raw.accounts.length === 0 || raw.accounts.length > FB_READING_SUMMARY_ACCOUNT_LIMIT) {
+        return null
+      }
+      const accounts: FbReadingAccountRef[] = []
+      const seen = new Set<string>()
+      for (const item of raw.accounts) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+        const candidate = item as Record<string, unknown>
+        const alias = typeof candidate.alias === 'string' ? candidate.alias.trim() : ''
+        if (!alias || alias.length > 40) return null
+        if (!isValidFbReadingAct(candidate.act)) return null
+        const businessId = isValidFbReadingBusinessId(candidate.businessId) ? candidate.businessId : null
+        if (businessId === null && candidate.businessId !== null && candidate.businessId !== undefined) return null
+        if (seen.has(candidate.act)) return null
+        seen.add(candidate.act)
+        accounts.push({ alias, act: candidate.act, businessId })
+      }
+      return { accounts, range, metrics }
     }
   }
 }

@@ -250,7 +250,7 @@ describe('parseFbAdsCampaignsSnapshot', () => {
     const idle = reading?.rows[0]
     expect(idle?.name).toBe('adtiger_三國點將令_IOS_aem_HK/TW/SG/MY_aeo_leo_0911_008')
     expect(idle?.spend).toBe(0)
-    expect(idle?.clicks).toBeNull()
+    expect(idle?.clicks).toBe(0)
     expect(idle?.resultType).toBe('应用内购买')
 
     const active = reading?.rows[1]
@@ -258,7 +258,7 @@ describe('parseFbAdsCampaignsSnapshot', () => {
     expect(active?.spend).toBe(529.08)
     expect(active?.costPerResult).toBe(22.05)
     expect(active?.cpm).toBe(17.51)
-    expect(active?.results).toBeNull()
+    expect(active?.results).toBe(0)
     expect(active?.clicks).toBe(788)
     expect(active?.ctr).toBe(2.61)
     expect(active?.cpc).toBe(0.67)
@@ -626,16 +626,37 @@ $98.07
       '$8.73',
       '4',
       'Purchases',
+      '40,000',
+      '$8.73',
+      '525',
+      '1.31%',
+      '1.50%',
+      '40',
+      '40',
       'adtiger_sanguo_and_SG/MY_aeo_0904_006',
       '$210.94',
       '$7.53',
       '10',
       'Purchases',
+      '30,000',
+      '$7.03',
+      '400',
+      '1.33%',
+      '1.40%',
+      '28',
+      '28',
       'adtiger_sanguo_and_TW_aeo_0904_005',
       '$0.00',
       '—',
       '—',
       'Purchases',
+      '10,000',
+      '$0.00',
+      '0',
+      '0.00%',
+      '0.00%',
+      '—',
+      '—',
       'Performance for 3 campaigns',
       '$560.33',
       'Amount spent'
@@ -647,7 +668,10 @@ $98.07
       spend: 349.39,
       costPerResult: 8.73,
       results: 4,
-      resultType: 'Purchases'
+      resultType: 'Purchases',
+      impressions: 40_000,
+      clicks: 525,
+      installs: 40
     })
     expect(reading?.totalSpend).toBe(560.33)
     expect(fbAdsReadingRejection(reading as never)).toBe(null)

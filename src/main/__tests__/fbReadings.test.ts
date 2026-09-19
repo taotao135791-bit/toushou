@@ -103,6 +103,7 @@ describe('normalizeFbReadings', () => {
       2
     )
     expect(kept.map((e) => e.id)).toEqual(['b', 'c'])
+    expect(kept[0].rows[0].impressions).toBeNull()
   })
 })
 
