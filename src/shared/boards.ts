@@ -15,6 +15,11 @@ import {
   WidgetType
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
+import {
+  FB_READING_ACCOUNT_TARGETS,
+  isValidFbReadingAct,
+  isValidFbReadingBusinessId
+} from './fbReading'
 
 export const BOARD_LIMITS = {
   maxBoards: 50,
@@ -88,7 +93,13 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
     case 'clock':
       return { showSeconds: true }
     case 'fb-reading':
-      return { account: '三国IOS', range: 'last7', metrics: ['spend', 'cpi'] }
+      return {
+        account: '三国IOS',
+        act: FB_READING_ACCOUNT_TARGETS['三国IOS'].act,
+        businessId: FB_READING_ACCOUNT_TARGETS['三国IOS'].businessId,
+        range: 'last7',
+        metrics: ['spend', 'cpi']
+      }
     case 'note':
       return { text: '' }
     case 'counter':
@@ -115,7 +126,8 @@ export function createBoard(name: string, now: number = Date.now()): KanbanBoard
 export function createWidget(
   type: WidgetType,
   title: string,
-  slot: { x: number; y: number }
+  slot: { x: number; y: number },
+  configOverride?: Record<string, unknown>
 ): BoardWidget {
   const size = WIDGET_DEFAULT_SIZES[type]
   return {
@@ -123,7 +135,7 @@ export function createWidget(
     type,
     title,
     layout: { x: slot.x, y: slot.y, w: size.w, h: size.h },
-    config: defaultWidgetConfig(type)
+    config: configOverride ?? defaultWidgetConfig(type)
   }
 }
 
@@ -682,8 +694,8 @@ function validateWidgetConfig(
       return config
     }
     case 'fb-reading': {
-      // Reading-module config: pinned account + date window + metric set.
-      if (raw.account !== '三国IOS') return null
+      // Reading-module config: account reference + date window + metric set.
+      // Legacy alias-only configs are upgraded via the builtin account table.
       const range = raw.range
       if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
       const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr']
@@ -693,7 +705,16 @@ function validateWidgetConfig(
         if (typeof metric !== 'string' || !allowed.includes(metric) || metrics.includes(metric)) return null
         metrics.push(metric)
       }
-      return { account: raw.account, range, metrics }
+      const alias = typeof raw.account === 'string' ? raw.account.trim() : ''
+      if (!alias || alias.length > BOARD_LIMITS.maxWidgetTitleLength) return null
+      if (isValidFbReadingAct(raw.act) && isValidFbReadingBusinessId(raw.businessId ?? null)) {
+        return { account: alias, act: raw.act, businessId: raw.businessId ?? null, range, metrics }
+      }
+      const builtin = FB_READING_ACCOUNT_TARGETS[alias]
+      if (builtin) {
+        return { account: alias, act: builtin.act, businessId: builtin.businessId, range, metrics }
+      }
+      return null
     }
   }
 }

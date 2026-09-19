@@ -37,7 +37,12 @@ function navigationKey(raw: string): string {
   return url.toString()
 }
 
-export function loadBrowserPanelUrl(webContents: Electron.WebContents, raw: string, refresh = false): Promise<void> {
+export function loadBrowserPanelUrl(
+  webContents: Electron.WebContents,
+  raw: string,
+  refresh = false,
+  timeoutMs = 20_000
+): Promise<void> {
   const url = safeBrowserPanelUrl(raw)
   if (!url) return Promise.reject(new Error('invalid-url'))
   const key = navigationKey(url)
@@ -52,7 +57,7 @@ export function loadBrowserPanelUrl(webContents: Electron.WebContents, raw: stri
     timer = setTimeout(() => {
       reject(new Error('navigation-timeout'))
       if (pendingNavigations.get(webContents)?.key === key && !webContents.isDestroyed()) webContents.stop()
-    }, 20_000)
+  }, timeoutMs)
   })
   const done = Promise.race([Promise.resolve().then(() => webContents.loadURL(url)), timeout]).finally(() => {
     clearTimeout(timer)
@@ -71,6 +76,10 @@ export function loadBrowserPanelUrl(webContents: Electron.WebContents, raw: stri
  * restore runs even when the read refuses.
  */
 export async function withBrowserReadingViewport<T>(view: WebContentsView, read: () => Promise<T>): Promise<T> {
+  // Reentrant: the board refresh wraps reload+report in ONE stretch so the
+  // table mounts wide; the nested report call must not restore bounds early.
+  if (readingStretchedViews.has(view)) return read()
+  readingStretchedViews.add(view)
   const wc = view.webContents
   const previous = view.getBounds()
   const owner = BrowserWindow.fromWebContents(wc)
@@ -81,9 +90,12 @@ export async function withBrowserReadingViewport<T>(view: WebContentsView, read:
   try {
     return await read()
   } finally {
+    readingStretchedViews.delete(view)
     if (!wc.isDestroyed()) view.setBounds(previous)
   }
 }
+
+const readingStretchedViews = new WeakSet<WebContentsView>()
 
 /** In-app popup windows opened by each panel, closed with their owner. */
 const panelChildren = new Map<number, Set<BrowserWindow>>()

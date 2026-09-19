@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Activity, RefreshCw } from 'lucide-react'
 import { BoardWidget } from '@shared/types'
-import { boardReadingRangeDates, fbReadingMatchesWindow, FB_READING_ACCOUNT_TARGETS } from '@shared/fbReading'
+import { boardReadingRangeDates, fbReadingMatchesWindow, resolveFbReadingWidgetAccount } from '@shared/fbReading'
 import { useT } from '../../i18n'
 
 /**
@@ -11,7 +11,8 @@ import { useT } from '../../i18n'
  */
 export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   const t = useT()
-  const account = typeof widget.config.account === 'string' ? widget.config.account : '三国IOS'
+  const accountRef = resolveFbReadingWidgetAccount(widget.config)
+  const account = accountRef?.alias ?? (typeof widget.config.account === 'string' ? widget.config.account : '')
   const range = (typeof widget.config.range === 'string' ? widget.config.range : 'last7') as
     | 'today'
     | 'last3'
@@ -28,12 +29,13 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   } | null>(null)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
+  const [failureDetail, setFailureDetail] = useState<string | null>(null)
   const submitting = useRef(false)
   const requestVersion = useRef(0)
 
   const load = async () => {
     const version = requestVersion.current
-    const accountId = FB_READING_ACCOUNT_TARGETS[account]?.act
+    const accountId = accountRef?.act
     if (!accountId) return
     const list = await window.electronAPI.listFbReadings({ accountId })
     if (version !== requestVersion.current) return
@@ -74,22 +76,39 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   }, [account, range])
 
   const refresh = async () => {
-    if (submitting.current) return
+    if (!accountRef) {
+      setFailure('invalid-input')
+      window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
+      return
+    }
+    if (submitting.current) {
+      window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
+      return
+    }
     submitting.current = true
     const version = requestVersion.current
     setBusy(true)
     setFailure(null)
+    setFailureDetail(null)
     try {
-      const result = await window.electronAPI.refreshFbReading({ account, range })
+      const result = await window.electronAPI.refreshFbReading({
+        alias: accountRef.alias,
+        act: accountRef.act,
+        businessId: accountRef.businessId,
+        range
+      })
       if (version !== requestVersion.current) return
       if (result.ok) {
         await load()
       } else {
         setFailure(result.error)
+        setFailureDetail(result.error)
       }
     } catch {
       if (version === requestVersion.current) setFailure('refresh-failed')
+      setFailureDetail('invoke-failed')
     } finally {
+      window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
       if (version === requestVersion.current) {
         submitting.current = false
         setBusy(false)
@@ -97,16 +116,38 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     }
   }
 
+  // Board-level "refresh all readings" drives each module's own refresh
+  // serially; the module reports completion so the queue can proceed.
+  const refreshRef = useRef(refresh)
+  refreshRef.current = refresh
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { widgetId?: string }
+      if (detail?.widgetId !== widget.id) return
+      void refreshRef.current()
+    }
+    window.addEventListener('fb-reading:board-refresh', onRequest)
+    return () => window.removeEventListener('fb-reading:board-refresh', onRequest)
+  }, [widget.id])
+
   const cell = (v: number | null, kind: 'usd' | 'pct') =>
     v === null ? '—' : kind === 'usd' ? '$' + v.toFixed(2) : v.toFixed(2) + '%'
 
   const updated = entry ? new Date(entry.capturedAt).toLocaleString() : ''
   const failureMessage = failure === 'page-load-failed' ? t('boards.reading.error.page')
+    : failure === 'login-required' ? t('boards.reading.error.login')
     : failure?.startsWith('ERR_') || failure === 'navigation-timeout' ? t('boards.reading.error.network')
       : failure === 'date-mismatch' ? t('boards.reading.error.date')
         : failure === 'browser-busy' ? t('boards.reading.error.busy')
           : failure === 'panel-hidden' ? t('boards.reading.error.closed')
             : t('boards.reading.refreshFailed')
+
+  const failureNode = (
+    <>
+      {failureMessage}
+      {failureDetail ? ' (' + failureDetail + ')' : ''}
+    </>
+  )
 
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
@@ -123,7 +164,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           {busy ? t('boards.reading.refreshing') : t('boards.reading.refresh')}
         </button>
       </div>
-      {failure && <div role="alert" className="text-[10.5px] text-red-500">{failureMessage}</div>}
+      {failure && <div role="alert" className="text-[10.5px] text-red-500">{failureNode}</div>}
       {!entry ? (
         <div className="flex flex-1 items-center justify-center px-2 text-center text-[11px] leading-5 text-cream-faint">
           {t('boards.reading.noData')}

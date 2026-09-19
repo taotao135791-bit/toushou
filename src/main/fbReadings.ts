@@ -123,7 +123,10 @@ function validateFbReadingEntry(value: unknown): FbReadingHistoryEntry | null {
   if (v.accountName !== null && typeof v.accountName !== 'string') return null
   if (typeof v.dateRangeLabel !== 'string' || !v.dateRangeLabel) return null
   if (typeof v.campaignCount !== 'number' || !Number.isInteger(v.campaignCount) || v.campaignCount < 0) return null
-  if (typeof v.totalSpend !== 'number' || !Number.isFinite(v.totalSpend) || v.totalSpend < 0) return null
+  // A clipped summary block (banner pushing totals out of the snapshot)
+  // leaves totalSpend null; rows=count and consistency still verify the
+  // read, so the entry must persist instead of being silently dropped.
+  if (v.totalSpend !== null && (typeof v.totalSpend !== 'number' || !Number.isFinite(v.totalSpend) || v.totalSpend < 0)) return null
   if (v.observation !== undefined && !validateObservation(v.observation)) return null
   if (!Array.isArray(v.rows) || v.rows.length === 0 || v.rows.length > FB_READING_LIMITS.maxRowsPerReading) {
     return null

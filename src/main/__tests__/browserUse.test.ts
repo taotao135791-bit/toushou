@@ -34,6 +34,7 @@ describe('board refresh admission and failures', () => {
       isLoading: () => false,
       getURL: () => 'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
       getTitle: () => 'Ads Manager',
+      reload: vi.fn(),
       executeJavaScript
     } } as unknown as NonNullable<ReturnType<typeof getActiveBrowserPanel>>)
     return executeJavaScript
@@ -41,14 +42,15 @@ describe('board refresh admission and failures', () => {
 
   it('joins repeated clicks and refuses a different refresh while the panel is in use', async () => {
     const execute = prepare()
-    const first = refreshBoardFbReading('三国IOS', 'last3')
-    expect(refreshBoardFbReading('三国IOS', 'last3')).toBe(first)
-    expect(await refreshBoardFbReading('三国IOS', 'last7')).toEqual({ ok: false, error: 'browser-busy' })
+    const ref = { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' }
+    const first = refreshBoardFbReading(ref, 'last3')
+    expect(refreshBoardFbReading(ref, 'last3')).toBe(first)
+    expect(await refreshBoardFbReading(ref, 'last7')).toEqual({ ok: false, error: 'browser-busy' })
     await vi.advanceTimersByTimeAsync(300)
     expect(await first).toEqual({ ok: false, error: 'page-load-failed' })
     expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(1)
     expect(execute).toHaveBeenCalledTimes(1)
-    const retry = refreshBoardFbReading('三国IOS', 'last3')
+    const retry = refreshBoardFbReading(ref, 'last3')
     await vi.advanceTimersByTimeAsync(300)
     expect(await retry).toEqual({ ok: false, error: 'page-load-failed' })
     expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(2)
@@ -57,7 +59,10 @@ describe('board refresh admission and failures', () => {
   it('returns a network failure without attempting a report or background retries', async () => {
     const execute = prepare()
     vi.mocked(loadBrowserPanelUrl).mockRejectedValueOnce(new Error('ERR_NETWORK_CHANGED (-21) loading private URL'))
-    const result = refreshBoardFbReading('三国IOS', 'last3')
+    const result = refreshBoardFbReading(
+      { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' },
+      'last3'
+    )
     await vi.advanceTimersByTimeAsync(300)
     expect(await result).toEqual({ ok: false, error: 'ERR_NETWORK_CHANGED' })
     await vi.advanceTimersByTimeAsync(60_000)
