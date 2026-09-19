@@ -31,6 +31,7 @@ export interface FbReadingHistoryRow {
   spend: number | null
   costPerResult: number | null
   cpm: number | null
+  impressions: number | null
   results: number | null
   resultType: string | null
   clicks: number | null
@@ -85,6 +86,7 @@ export function toFbReadingEntry(
       spend: row.spend ?? null,
       costPerResult: row.costPerResult ?? null,
       cpm: row.cpm ?? null,
+      impressions: row.impressions ?? null,
       results: row.results ?? null,
       resultType: row.resultType ?? null,
       clicks: row.clicks ?? null,
@@ -123,7 +125,10 @@ function validateFbReadingEntry(value: unknown): FbReadingHistoryEntry | null {
   if (v.accountName !== null && typeof v.accountName !== 'string') return null
   if (typeof v.dateRangeLabel !== 'string' || !v.dateRangeLabel) return null
   if (typeof v.campaignCount !== 'number' || !Number.isInteger(v.campaignCount) || v.campaignCount < 0) return null
-  if (typeof v.totalSpend !== 'number' || !Number.isFinite(v.totalSpend) || v.totalSpend < 0) return null
+  // A clipped summary block (banner pushing totals out of the snapshot)
+  // leaves totalSpend null; rows=count and consistency still verify the
+  // read, so the entry must persist instead of being silently dropped.
+  if (v.totalSpend !== null && (typeof v.totalSpend !== 'number' || !Number.isFinite(v.totalSpend) || v.totalSpend < 0)) return null
   if (v.observation !== undefined && !validateObservation(v.observation)) return null
   if (!Array.isArray(v.rows) || v.rows.length === 0 || v.rows.length > FB_READING_LIMITS.maxRowsPerReading) {
     return null
@@ -135,9 +140,15 @@ function validateFbReadingEntry(value: unknown): FbReadingHistoryEntry | null {
     for (const key of ['spend', 'costPerResult', 'cpm', 'results', 'clicks', 'ctr', 'cpc', 'installs']) {
       if (r[key] !== null && typeof r[key] !== 'number') return null
     }
+    if (r.impressions !== undefined && r.impressions !== null && typeof r.impressions !== 'number') return null
     if (r.resultType !== null && typeof r.resultType !== 'string') return null
   }
-  return value as FbReadingHistoryEntry
+  // Older captures predate the impressions column. Normalize them to null so
+  // history consumers see one shape while files remain backward-compatible.
+  return {
+    ...value,
+    rows: (value as FbReadingHistoryEntry).rows.map((row) => ({ ...row, impressions: row.impressions ?? null }))
+  } as FbReadingHistoryEntry
 }
 
 function validateObservation(value: unknown): value is FbAdsObservation {

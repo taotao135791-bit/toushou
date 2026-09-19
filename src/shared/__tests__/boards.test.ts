@@ -349,6 +349,27 @@ describe('factories', () => {
       expect(validateBoard(board)?.widgets[0].type).toBe(type)
     }
   })
+
+  it('validates summary reading configs with bounded, unique account refs', () => {
+    const config = {
+      accounts: [
+        { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' },
+        { alias: '三国AND', act: '27893958520273993', businessId: null }
+      ],
+      range: 'last3',
+      metrics: ['spend', 'cpi', 'cpm']
+    }
+    const board = withWidget(
+      widgetOf('fb-reading-summary', config, { x: 0, y: 0, w: 6, h: 6 })
+    )
+    expect(board?.widgets[0].config).toEqual(config)
+    expect(withWidget(widgetOf('fb-reading-summary', { ...config, accounts: [] }))?.widgets).toHaveLength(0)
+    expect(
+      withWidget(widgetOf('fb-reading-summary', { ...config, accounts: [...config.accounts, config.accounts[0]] }))
+        ?.widgets
+    ).toHaveLength(0)
+    expect(withWidget(widgetOf('fb-reading-summary', { ...config, metrics: [] }))?.widgets).toHaveLength(0)
+  })
 })
 
 describe('composeBoard + presets', () => {

@@ -34,6 +34,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { BoardDataset, BoardDesignSpec, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
+import type { FbReadingAccountEntry } from '@shared/fbReading'
 import {
   BOARD_LIMITS,
   GRID_COLS,
@@ -64,6 +65,7 @@ import {
 } from '../lib/boardReading'
 import { WidgetBody } from './boards/WidgetBody'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
+import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
@@ -227,6 +229,12 @@ export default function BoardsPage() {
   const [boardMenuOpen, setBoardMenuOpen] = useState(false)
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
   const [galleryOpen, setGalleryOpen] = useState(false)
+  const [readingAccounts, setReadingAccounts] = useState<FbReadingAccountEntry[]>([])
+  const [readingPickerOpen, setReadingPickerOpen] = useState(false)
+  const [readingPicked, setReadingPicked] = useState<Set<string>>(new Set())
+  const [readingManagerOpen, setReadingManagerOpen] = useState(false)
+  const [boardRefreshBusy, setBoardRefreshBusy] = useState(false)
+  const [boardRefreshProgress, setBoardRefreshProgress] = useState({ done: 0, total: 0 })
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailName, setDetailName] = useState('')
   const [detailDesc, setDetailDesc] = useState('')
@@ -366,6 +374,7 @@ export default function BoardsPage() {
     setBoardMenuOpen(false)
     setToolsMenuOpen(false)
     setGalleryOpen(false)
+    setReadingPickerOpen(false)
     deleteBoardConfirm.reset()
     clearConfirm.reset()
   }
@@ -373,7 +382,7 @@ export default function BoardsPage() {
   // The toolbar menus are transient controls, so keyboard users need the
   // same predictable dismissal path as pointer users clicking the backdrop.
   useEffect(() => {
-    if (!createMenuOpen && !boardMenuOpen && !toolsMenuOpen && !galleryOpen) return
+    if (!createMenuOpen && !boardMenuOpen && !toolsMenuOpen && !galleryOpen && !readingPickerOpen) return
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
@@ -382,6 +391,7 @@ export default function BoardsPage() {
       setBoardMenuOpen(false)
       setToolsMenuOpen(false)
       setGalleryOpen(false)
+      setReadingPickerOpen(false)
       setDatasetsOpen(false)
       setDetailOpen(false)
       setComposeOpen(false)
@@ -391,7 +401,7 @@ export default function BoardsPage() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, datasetsOpen, detailOpen, composeOpen])
+  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, readingPickerOpen, datasetsOpen, detailOpen, composeOpen])
 
   const switchBoard = (id: string) => {
     closeMenus()
@@ -523,6 +533,113 @@ export default function BoardsPage() {
     setGalleryOpen(false)
     mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, widget] }))
     if (CONFIG_ON_ADD.includes(type)) setConfigWidgetId(widget.id)
+  }
+
+  const openReadingPicker = () => {
+    setGalleryOpen(false)
+    setReadingPicked(new Set())
+    setReadingManagerOpen(readingAccounts.length === 0)
+    setReadingPickerOpen(true)
+  }
+
+  const handleReadingAccountsChange = (entries: FbReadingAccountEntry[]) => {
+    setReadingAccounts(entries)
+    setReadingPicked((prev) => new Set([...prev].filter((act) => entries.some((entry) => entry.act === act))))
+  }
+
+  const handleReadingAccountsAdded = (entries: FbReadingAccountEntry[]) => {
+    setReadingPicked((prev) => new Set([...prev, ...entries.map((entry) => entry.act)]))
+  }
+
+  const handleReadingAccountsRemoved = (acts: string[]) => {
+    const removed = new Set(acts)
+    setReadingPicked((prev) => new Set([...prev].filter((act) => !removed.has(act))))
+  }
+
+  const addFbReadingWidgets = () => {
+    if (!current) return
+    const picked = readingAccounts.filter((entry) => readingPicked.has(entry.act))
+    if (picked.length === 0) return
+    const created: BoardWidget[] = []
+    const widgets = [...current.widgets]
+    for (const entry of picked) {
+      if (widgets.length + created.length >= BOARD_LIMITS.maxWidgets) break
+      const size = WIDGET_DEFAULT_SIZES['fb-reading']
+      const slot = findFreeSlot([...widgets, ...created], size.w, size.h)
+      created.push(
+        createWidget('fb-reading', t('boards.reading.moduleName'), slot, {
+          account: entry.alias,
+          act: entry.act,
+          businessId: entry.businessId,
+          range: 'last7',
+          metrics: ['spend', 'balance', 'cpi']
+        })
+      )
+    }
+    mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, ...created] }))
+    setReadingPickerOpen(false)
+    setReadingPicked(new Set())
+    if (created.length < picked.length) flashToast(t('boards.widgetLimit'), false)
+  }
+
+  const addFbReadingSummaryWidget = () => {
+    if (!current) return
+    const picked = readingAccounts.filter((entry) => readingPicked.has(entry.act))
+    if (picked.length === 0) return
+    const size = WIDGET_DEFAULT_SIZES['fb-reading-summary']
+    if (current.widgets.length >= BOARD_LIMITS.maxWidgets) {
+      setReadingPickerOpen(false)
+      flashToast(t('boards.widgetLimit'), false)
+      return
+    }
+    const slot = findFreeSlot(current.widgets, size.w, size.h)
+    const widget = createWidget('fb-reading-summary', t('boards.reading.summary.moduleName'), slot, {
+      accounts: picked.map((entry) => ({ alias: entry.alias, act: entry.act, businessId: entry.businessId })),
+      range: 'last7',
+      metrics: ['spend', 'balance', 'cpi', 'cpm']
+    })
+    mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, widget] }))
+    setReadingPickerOpen(false)
+    setReadingPicked(new Set())
+  }
+
+  // Serial board-level refresh: each module runs its own bounded pipeline
+  // and reports completion; the hard cap keeps one stuck module from
+  // freezing the whole queue.
+  const refreshReadingModules = async () => {
+    if (!current || boardRefreshBusy) return
+    const widgets = current.widgets.filter(
+      (widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary'
+    )
+    if (widgets.length === 0) return
+    setBoardRefreshBusy(true)
+    setBoardRefreshProgress({ done: 0, total: widgets.length })
+    for (let index = 0; index < widgets.length; index += 1) {
+      const widget = widgets[index]
+      await new Promise<void>((resolve) => {
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          window.removeEventListener('fb-reading:module-done', onDone)
+          clearTimeout(cap)
+          resolve()
+        }
+        const onDone = (event: Event) => {
+          const detail = (event as CustomEvent).detail as { widgetId?: string }
+          if (detail?.widgetId === widget.id) finish()
+        }
+        const accountCount =
+          widget.type === 'fb-reading-summary' && Array.isArray(widget.config.accounts)
+            ? Math.max(1, widget.config.accounts.length)
+            : 1
+        const cap = setTimeout(finish, 180_000 * accountCount)
+        window.addEventListener('fb-reading:module-done', onDone)
+        window.dispatchEvent(new CustomEvent('fb-reading:board-refresh', { detail: { widgetId: widget.id } }))
+      })
+      setBoardRefreshProgress({ done: index + 1, total: widgets.length })
+    }
+    setBoardRefreshBusy(false)
   }
 
   const removeWidget = (widgetId: string) => {
@@ -1175,7 +1292,8 @@ export default function BoardsPage() {
                   {t('boards.importDataset')}
                 </button>
                 <button
-                  onClick={() => addWidget('fb-reading')}
+                  onClick={() => void openReadingPicker()}
+                  autoFocus
                   className={`${menuItemClass} text-cream hover:bg-overlay`}
                 >
                   <Activity size={12} />
@@ -1196,6 +1314,78 @@ export default function BoardsPage() {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+            {readingPickerOpen && (
+              <div className="fade-in absolute bottom-full left-1/2 mb-2 w-[340px] -translate-x-1/2 rounded-2xl border border-line bg-ink-900 p-2 shadow-pop">
+                <div className="px-1.5 pb-1.5 pt-1 text-[10.5px] font-semibold uppercase tracking-wider text-cream-faint">
+                  {t('boards.reading.picker.title')}
+                </div>
+                <div className={`space-y-0.5 overflow-y-auto ${
+                  readingManagerOpen ? 'max-h-[132px]' : 'max-h-[240px]'
+                }`}>
+                  {readingAccounts.length === 0 && (
+                    <div className="px-1.5 py-2 text-[11px] text-cream-faint">{t('boards.reading.picker.none')}</div>
+                  )}
+                  {readingAccounts.map((entry) => {
+                    const checked = readingPicked.has(entry.act)
+                    return (
+                      <button
+                        key={entry.id}
+                        onClick={() =>
+                          setReadingPicked((prev) => {
+                            const next = new Set(prev)
+                            if (checked) next.delete(entry.act)
+                            else next.add(entry.act)
+                            return next
+                          })
+                        }
+                        className={`flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition \${
+                          checked ? 'bg-accent-soft text-accent' : 'text-cream-dim hover:bg-overlay hover:text-cream'
+                        }`}
+                      >
+                        <span
+                          className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border \${
+                            checked ? 'border-accent bg-accent text-ink-950' : 'border-line'
+                          }`}
+                        >
+                          {checked && <Check size={9} />}
+                        </span>
+                        <span className="truncate text-[12px]">{entry.alias}</span>
+                        <span className="ml-auto shrink-0 text-[10px] text-cream-faint">{entry.act}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReadingManagerOpen((open) => !open)}
+                  className="mt-1.5 w-full rounded-lg border border-line px-2 py-1.5 text-[11.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
+                >
+                  {t('boards.reading.picker.manageAccounts')}
+                </button>
+                <FbReadingAccountManager
+                  open={readingManagerOpen}
+                  accounts={readingAccounts}
+                  onAccountsChange={handleReadingAccountsChange}
+                  onAccountsAdded={handleReadingAccountsAdded}
+                  onAccountsRemoved={handleReadingAccountsRemoved}
+                  showAccounts={false}
+                />
+                <button
+                  onClick={addFbReadingWidgets}
+                  disabled={readingPicked.size === 0}
+                  className="mt-1.5 w-full rounded-lg bg-cream px-2 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+                >
+                  {t('boards.reading.picker.create').replace('{n}', String(readingPicked.size))}
+                </button>
+                <button
+                  onClick={addFbReadingSummaryWidget}
+                  disabled={readingPicked.size === 0}
+                  className="mt-1 w-full rounded-lg border border-line px-2 py-1.5 text-[11.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+                >
+                  {t('boards.reading.picker.createSummary')}
+                </button>
               </div>
             )}
             {toolsMenuOpen && (
@@ -1259,6 +1449,26 @@ export default function BoardsPage() {
               <ToolButton title={t('boards.tidy')} onClick={handleTidy}>
                 <LayoutGrid size={14} />
               </ToolButton>
+              {current.widgets.some((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary') && (
+                <ToolButton
+                  title={
+                    boardRefreshBusy
+                      ? t('boards.reading.refreshAllBusy')
+                          .replace('{done}', String(boardRefreshProgress.done))
+                          .replace('{total}', String(boardRefreshProgress.total))
+                      : t('boards.reading.refreshAll')
+                  }
+                  onClick={() => void refreshReadingModules()}
+                >
+                  {boardRefreshBusy ? (
+                    <span className="min-w-[20px] text-center text-[10px] tabular-nums">
+                      {boardRefreshProgress.done}/{boardRefreshProgress.total}
+                    </span>
+                  ) : (
+                    <Activity size={14} />
+                  )}
+                </ToolButton>
+              )}
               <ToolButton title={t('boards.refresh')} onClick={handleRefresh}>
                 <RefreshCw size={14} />
               </ToolButton>
@@ -1283,7 +1493,7 @@ export default function BoardsPage() {
         )}
       </div>
 
-      {(createMenuOpen || boardMenuOpen || toolsMenuOpen || galleryOpen) && (
+      {(createMenuOpen || boardMenuOpen || toolsMenuOpen || galleryOpen || readingPickerOpen) && (
         <div className="fixed inset-0 z-20" onClick={closeMenus} />
       )}
 

@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Check, FilePlus2, X } from 'lucide-react'
 import { BoardDataset, BoardWidget, BoardWidgetStyle } from '@shared/types'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
+import { resolveFbReadingSummaryAccounts, resolveFbReadingWidgetAccount } from '@shared/fbReading'
+import type { FbReadingAccountEntry } from '@shared/fbReading'
 import { useAppStore } from '../../store'
 import { useT, I18nKey } from '../../i18n'
+import { FbReadingAccountManager } from './FbReadingAccountManager'
 
 /**
  * In-card widget configuration layer: covers the widget body with a small
@@ -82,6 +85,53 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
     const raw = widget.config.metrics
     return Array.isArray(raw) ? raw.filter((m): m is string => typeof m === 'string') : ['spend', 'cpi']
   })
+  const [accounts, setAccounts] = useState<FbReadingAccountEntry[]>([])
+  const [selectedAct, setSelectedAct] = useState(
+    () => resolveFbReadingWidgetAccount(widget.config)?.act ?? ''
+  )
+  const [manageOpen, setManageOpen] = useState(false)
+  const [accountError, setAccountError] = useState<'none' | null>(null)
+  const [summarySelectedActs, setSummarySelectedActs] = useState<Set<string>>(
+    () => new Set(resolveFbReadingSummaryAccounts(widget.config).map((account) => account.act))
+  )
+  const [readingMetricEmpty, setReadingMetricEmpty] = useState(false)
+
+  const summaryAccountOptions = useMemo(() => {
+    const merged = new Map<string, FbReadingAccountEntry>()
+    for (const account of resolveFbReadingSummaryAccounts(widget.config)) {
+      merged.set(account.act, { ...account, id: account.act, createdAt: 0 })
+    }
+    for (const account of accounts) merged.set(account.act, account)
+    return Array.from(merged.values())
+  }, [accounts, widget.config])
+
+  const selectedAccount = accounts.find((entry) => entry.act === selectedAct) ?? null
+  const handleReadingAccountsChange = (entries: FbReadingAccountEntry[]) => {
+    setAccounts(entries)
+    setSelectedAct((prev) => (entries.some((entry) => entry.act === prev) ? prev : entries[0]?.act ?? ''))
+  }
+
+  const handleReadingAccountsAdded = (entries: FbReadingAccountEntry[]) => {
+    const acts = entries.map((entry) => entry.act)
+    if (acts.length > 0) setSelectedAct(acts[0])
+    setSummarySelectedActs((prev) => new Set([...prev, ...acts]))
+    setAccountError(null)
+  }
+
+  const handleReadingAccountsRemoved = (acts: string[]) => {
+    const removed = new Set(acts)
+    setSummarySelectedActs((prev) => new Set([...prev].filter((act) => !removed.has(act))))
+    setAccountError(null)
+  }
+
+  const readingMetricLabel = (value: string): string => {
+    if (value === 'spend') return t('boards.reading.summary.metric.spend')
+    if (value === 'balance') return t('boards.reading.balance.label')
+    if (value === 'cpi') return t('boards.reading.summary.metric.cpi')
+    if (value === 'cpm') return t('boards.reading.summary.metric.cpm')
+    if (value === 'cpa') return t('boards.reading.summary.metric.cpa')
+    return t('boards.reading.summary.metric.ctr')
+  }
 
   const pickFile = async () => {
     if (!currentWorkspace || pickBusy) return
@@ -205,8 +255,36 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
         config = { filePath: boundPath }
         break
       case 'fb-reading':
-        config = { account: '三国IOS', range: readingRange, metrics: readingMetrics }
+        {
+          const ref = selectedAccount ?? resolveFbReadingWidgetAccount(widget.config)
+          if (!ref) {
+            setAccountError('none')
+            return
+          }
+          if (readingMetrics.length === 0) {
+            setReadingMetricEmpty(true)
+            return
+          }
+          config = { account: ref.alias, act: ref.act, businessId: ref.businessId, range: readingRange, metrics: readingMetrics }
+        }
         break
+      case 'fb-reading-summary': {
+        const selected = summaryAccountOptions.filter((account) => summarySelectedActs.has(account.act))
+        if (selected.length === 0) {
+          setAccountError('none')
+          return
+        }
+        if (readingMetrics.length === 0) {
+          setReadingMetricEmpty(true)
+          return
+        }
+        config = {
+          accounts: selected.map((account) => ({ alias: account.alias, act: account.act, businessId: account.businessId })),
+          range: readingRange,
+          metrics: readingMetrics
+        }
+        break
+      }
     }
     onSave({
       title: title.trim() || widget.title,
@@ -252,11 +330,84 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
             {t('boards.config.showSeconds')}
           </label>
         )}
-        {widget.type === 'fb-reading' && (
+        {(widget.type === 'fb-reading' || widget.type === 'fb-reading-summary') && (
           <>
-            <Field label={t('boards.reading.config.account')}>
-              <input value={'三国IOS'} readOnly className={`${inputClass} opacity-70`} />
-            </Field>
+            {widget.type === 'fb-reading' ? (
+              <Field label={t('boards.reading.config.account')}>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={selectedAct}
+                    onChange={(e) => {
+                      setSelectedAct(e.target.value)
+                      setAccountError(null)
+                    }}
+                    className={inputClass}
+                  >
+                    {accounts.length === 0 && <option value="">{t('boards.reading.accounts.loading')}</option>}
+                    {accounts.map((entry) => (
+                      <option key={entry.id} value={entry.act}>
+                        {entry.alias}（{entry.act}）
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setManageOpen((open) => !open)}
+                    className="shrink-0 rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:text-cream"
+                  >
+                    {t('boards.reading.accounts.manage')}
+                  </button>
+                </div>
+              </Field>
+            ) : (
+              <Field label={t('boards.reading.summary.configAccounts')}>
+                <div className="max-h-[132px] space-y-1 overflow-y-auto rounded-lg border border-line bg-ink-850/60 p-1.5">
+                  {summaryAccountOptions.map((entry) => {
+                    const checked = summarySelectedActs.has(entry.act)
+                    return (
+                      <label key={entry.act} className="flex cursor-pointer items-center gap-2 text-[11px] text-cream-dim">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setSummarySelectedActs((prev) => {
+                              const next = new Set(prev)
+                              if (checked) next.delete(entry.act)
+                              else next.add(entry.act)
+                              return next
+                            })
+                            setAccountError(null)
+                          }}
+                          className="accent-[rgb(var(--accent))]"
+                        />
+                        <span className="truncate">{entry.alias}</span>
+                        <span className="ml-auto shrink-0 text-[10px] text-cream-faint">{entry.act}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setManageOpen((open) => !open)}
+                  className="mt-1.5 w-full rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:text-cream"
+                >
+                  {t('boards.reading.accounts.manage')}
+                </button>
+              </Field>
+            )}
+            {accountError === 'none' && (
+              <div className="text-[11px] text-red-400">{t('boards.reading.accounts.noneSelected')}</div>
+            )}
+            {readingMetricEmpty && (
+              <div className="text-[11px] text-red-400">{t('boards.reading.needMetric')}</div>
+            )}
+            <FbReadingAccountManager
+              open={manageOpen}
+              accounts={accounts}
+              onAccountsChange={handleReadingAccountsChange}
+              onAccountsAdded={handleReadingAccountsAdded}
+              onAccountsRemoved={handleReadingAccountsRemoved}
+            />
             <Field label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
                 {([['today', '今天'], ['last3', '近3天'], ['last7', '近7天'], ['last30', '近30天']] as const).map(
@@ -278,28 +429,27 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
             </Field>
             <Field label={t('boards.reading.config.metrics')}>
               <div className="flex flex-wrap gap-1">
-                {([['spend', '消耗'], ['cpi', 'CPI'], ['cpm', 'CPM'], ['cpa', 'CPA'], ['ctr', 'CTR']] as const).map(
-                  ([value, label]) => {
+                {(['spend', 'balance', 'cpi', 'cpm', 'cpa', 'ctr'] as const).map((value) => {
                     const active = readingMetrics.includes(value)
                     return (
                       <button
                         key={value}
-                        onClick={() =>
+                        onClick={() => {
+                          setReadingMetricEmpty(false)
                           setReadingMetrics((prev) =>
                             prev.includes(value) ? prev.filter((m) => m !== value) : [...prev, value]
                           )
-                        }
+                        }}
                       className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
                           active
                             ? 'border-accent/60 bg-accent-soft text-accent'
                             : 'border-line text-cream-dim hover:text-cream'
                         }`}
                       >
-                        {label}
+                        {readingMetricLabel(value)}
                       </button>
                     )
-                  }
-                )}
+                })}
               </div>
             </Field>
           </>

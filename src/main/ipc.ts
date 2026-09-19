@@ -2,9 +2,17 @@ import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from '
 import fs from 'node:fs'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
-import type { FbReadingRange } from '../shared/fbReading'
-import { refreshBoardFbReading } from './browserUse'
+import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
+import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
+import {
+  captureFbReadingAccountFromPanel,
+  discoverFbReadingAccounts,
+  refreshBoardFbReading,
+  refreshFbAccountBalance
+} from './browserUse'
 import { listFbReadings } from './fbReadings'
+import { listFbAccountBalances } from './fbBalances'
+import { appendFbReadingAccounts, listFbReadingAccounts, removeFbReadingAccount } from './fbReadingAccounts'
 import {
   SessionEvent,
   ExternalSessionDescriptor,
@@ -2278,18 +2286,80 @@ export function registerIpc() {
   ipcMain.handle(
     IPC_CHANNELS.FB_READING_REFRESH,
     async (_event, raw: unknown) => {
-      const input = (raw ?? {}) as { account?: unknown; range?: unknown }
-      const account = input.account === '三国IOS' ? input.account : null
+      const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown; range?: unknown }
+      const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
+      const businessId = input.businessId ?? null
       const range = input.range as FbReadingRange | undefined
-      if (
-        !account ||
-        (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30')
-      ) {
+      const ref: FbReadingAccountRef | null =
+        alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
+          ? { alias, act: input.act, businessId }
+          : null
+      if (!ref || (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
         return { ok: false, error: 'invalid-input' }
       }
-      return refreshBoardFbReading(account, range)
+      return refreshBoardFbReading(ref, range)
     }
   )
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCE_REFRESH, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown }
+    const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
+    const businessId = input.businessId ?? null
+    const ref: FbReadingAccountRef | null =
+      alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
+        ? { alias, act: input.act, businessId }
+        : null
+    return ref ? refreshFbAccountBalance(ref) : { ok: false, error: 'invalid-input' }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCES_LIST, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { accountId?: unknown }
+    const accountId = typeof input.accountId === 'string' && /^\d{6,}$/.test(input.accountId)
+      ? input.accountId
+      : undefined
+    return listFbAccountBalances(accountId)
+  })
+
+  // Local account registry: IDs only, no credentials; every entry stays on
+  // this machine. Widgets snapshot the act into their config at creation.
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_LIST, () => listFbReadingAccounts())
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_ADD, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { accounts?: unknown }
+    if (!Array.isArray(input.accounts) || input.accounts.length === 0) {
+      return { ok: false, error: 'invalid-input' }
+    }
+    const refs: FbReadingAccountRef[] = []
+    for (const item of input.accounts.slice(0, 20)) {
+      const candidate = (item ?? {}) as Record<string, unknown>
+      const alias = typeof candidate.alias === 'string' ? candidate.alias.trim() : ''
+      const businessId = candidate.businessId ?? null
+      if (!alias || alias.length > 40) return { ok: false, error: 'invalid-input' }
+      if (!isValidFbReadingAct(candidate.act)) return { ok: false, error: 'invalid-input' }
+      if (!isValidFbReadingBusinessId(businessId)) return { ok: false, error: 'invalid-input' }
+      refs.push({ alias, act: candidate.act, businessId })
+    }
+    const { accounts, added } = appendFbReadingAccounts(refs)
+    return { ok: true, accounts, added }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_REMOVE, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { id?: unknown }
+    if (typeof input.id !== 'string' || input.id.length === 0 || input.id.length > 64) {
+      return { ok: false, error: 'invalid-input' }
+    }
+    return { ok: true, accounts: removeFbReadingAccount(input.id) }
+  })
+
+  // Enumerates accessible ad accounts from the logged-in browser panel.
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_DISCOVER, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { query?: unknown }
+    const query = typeof input.query === 'string' ? input.query.trim() : ''
+    if (query !== '' && query.length > 30) return { ok: false, error: 'invalid-input' }
+    return discoverFbReadingAccounts(query)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_CAPTURE, () => captureFbReadingAccountFromPanel())
 
   ipcMain.handle(IPC_CHANNELS.FB_READING_HISTORY, (_event, raw: unknown) => {
     const input = (raw ?? {}) as { accountId?: unknown }

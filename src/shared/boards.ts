@@ -15,6 +15,14 @@ import {
   WidgetType
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
+import {
+  FB_READING_SUMMARY_ACCOUNT_LIMIT,
+  FB_READING_SUMMARY_METRICS,
+  FB_READING_ACCOUNT_TARGETS,
+  isValidFbReadingAct,
+  isValidFbReadingBusinessId,
+  type FbReadingAccountRef
+} from './fbReading'
 
 export const BOARD_LIMITS = {
   maxBoards: 50,
@@ -50,6 +58,7 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'note',
   'counter',
   'fb-reading',
+  'fb-reading-summary',
   'gauge',
   'chart-line',
   'chart-bar',
@@ -75,6 +84,7 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   note: { w: 3, h: 3 },
   counter: { w: 3, h: 2 },
   'fb-reading': { w: 6, h: 5 },
+  'fb-reading-summary': { w: 6, h: 6 },
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
   'chart-bar': { w: 6, h: 4 },
@@ -88,7 +98,21 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
     case 'clock':
       return { showSeconds: true }
     case 'fb-reading':
-      return { account: '三国IOS', range: 'last7', metrics: ['spend', 'cpi'] }
+      return {
+        account: '三国IOS',
+        act: FB_READING_ACCOUNT_TARGETS['三国IOS'].act,
+        businessId: FB_READING_ACCOUNT_TARGETS['三国IOS'].businessId,
+        range: 'last7',
+        metrics: ['spend', 'balance', 'cpi']
+      }
+    case 'fb-reading-summary':
+      return {
+        accounts: FB_READING_ACCOUNT_TARGETS['三国IOS']
+          ? [{ ...FB_READING_ACCOUNT_TARGETS['三国IOS'], alias: '三国IOS' }]
+          : [],
+        range: 'last7',
+        metrics: ['spend', 'balance', 'cpi', 'cpm']
+      }
     case 'note':
       return { text: '' }
     case 'counter':
@@ -115,7 +139,8 @@ export function createBoard(name: string, now: number = Date.now()): KanbanBoard
 export function createWidget(
   type: WidgetType,
   title: string,
-  slot: { x: number; y: number }
+  slot: { x: number; y: number },
+  configOverride?: Record<string, unknown>
 ): BoardWidget {
   const size = WIDGET_DEFAULT_SIZES[type]
   return {
@@ -123,7 +148,7 @@ export function createWidget(
     type,
     title,
     layout: { x: slot.x, y: slot.y, w: size.w, h: size.h },
-    config: defaultWidgetConfig(type)
+    config: configOverride ?? defaultWidgetConfig(type)
   }
 }
 
@@ -682,18 +707,58 @@ function validateWidgetConfig(
       return config
     }
     case 'fb-reading': {
-      // Reading-module config: pinned account + date window + metric set.
-      if (raw.account !== '三国IOS') return null
+      // Reading-module config: account reference + date window + metric set.
+      // Legacy alias-only configs are upgraded via the builtin account table.
       const range = raw.range
       if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
-      const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr']
+      const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr', 'balance']
       if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
       const metrics: string[] = []
       for (const metric of raw.metrics) {
         if (typeof metric !== 'string' || !allowed.includes(metric) || metrics.includes(metric)) return null
         metrics.push(metric)
       }
-      return { account: raw.account, range, metrics }
+      const alias = typeof raw.account === 'string' ? raw.account.trim() : ''
+      if (!alias || alias.length > BOARD_LIMITS.maxWidgetTitleLength) return null
+      if (isValidFbReadingAct(raw.act) && isValidFbReadingBusinessId(raw.businessId ?? null)) {
+        return { account: alias, act: raw.act, businessId: raw.businessId ?? null, range, metrics }
+      }
+      const builtin = FB_READING_ACCOUNT_TARGETS[alias]
+      if (builtin) {
+        return { account: alias, act: builtin.act, businessId: builtin.businessId, range, metrics }
+      }
+      return null
+    }
+    case 'fb-reading-summary': {
+      const range = raw.range
+      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
+      const metrics: string[] = []
+      for (const metric of raw.metrics) {
+        const allowedSummaryMetrics: readonly string[] = FB_READING_SUMMARY_METRICS
+        if (typeof metric !== 'string' || !allowedSummaryMetrics.includes(metric) || metrics.includes(metric)) {
+          return null
+        }
+        metrics.push(metric)
+      }
+      if (!Array.isArray(raw.accounts) || raw.accounts.length === 0 || raw.accounts.length > FB_READING_SUMMARY_ACCOUNT_LIMIT) {
+        return null
+      }
+      const accounts: FbReadingAccountRef[] = []
+      const seen = new Set<string>()
+      for (const item of raw.accounts) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+        const candidate = item as Record<string, unknown>
+        const alias = typeof candidate.alias === 'string' ? candidate.alias.trim() : ''
+        if (!alias || alias.length > 40) return null
+        if (!isValidFbReadingAct(candidate.act)) return null
+        const businessId = isValidFbReadingBusinessId(candidate.businessId) ? candidate.businessId : null
+        if (businessId === null && candidate.businessId !== null && candidate.businessId !== undefined) return null
+        if (seen.has(candidate.act)) return null
+        seen.add(candidate.act)
+        accounts.push({ alias, act: candidate.act, businessId })
+      }
+      return { accounts, range, metrics }
     }
   }
 }

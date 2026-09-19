@@ -82,6 +82,25 @@ describe('panel navigation and report layout', () => {
     vi.mocked(BrowserWindow.fromWebContents).mockReset()
     vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(null)
   })
+
+  it('keeps a background reading panel full-size but outside the visible window', async () => {
+    const setBounds = vi.fn()
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({
+      getContentSize: () => [1440, 900]
+    } as never)
+    const view = {
+      getBounds: () => ({ x: 1540, y: 0, width: 720, height: 700 }),
+      setBounds,
+      webContents: { isDestroyed: () => false }
+    } as unknown as WebContentsView
+    await withBrowserReadingViewport(view, async () => {
+      expect(setBounds).toHaveBeenCalledWith({ x: 1540, y: 0, width: 1440, height: 900 })
+      return 'verified'
+    })
+    expect(setBounds).toHaveBeenLastCalledWith({ x: 1540, y: 0, width: 720, height: 700 })
+    vi.mocked(BrowserWindow.fromWebContents).mockReset()
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(null)
+  })
 })
 
 describe('sanitizeBrowserPanelBounds', () => {
