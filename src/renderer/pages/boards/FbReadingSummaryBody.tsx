@@ -10,6 +10,7 @@ import {
   type FbReadingRange,
   type FbReadingSummaryMetric
 } from '@shared/fbReading'
+import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { useT } from '../../i18n'
 
 interface AccountRecord {
@@ -18,9 +19,11 @@ interface AccountRecord {
   businessId: string | null
   entry: FbReadingHistoryEntry | null
   error: string | null
+  balance: FbAccountBalance | null
+  balanceError: string | null
 }
 
-const SUMMARY_METRICS: FbReadingSummaryMetric[] = ['spend', 'cpi', 'cpm', 'ctr', 'cpa']
+const SUMMARY_METRICS: FbReadingSummaryMetric[] = ['spend', 'balance', 'cpi', 'cpm', 'ctr', 'cpa']
 
 /**
  * Product-level FB reading summary. Accounts refresh serially through the
@@ -36,10 +39,12 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
     return raw.filter((metric): metric is FbReadingSummaryMetric => SUMMARY_METRICS.includes(metric as FbReadingSummaryMetric))
   }, [widget.config.metrics])
   const [records, setRecords] = useState<AccountRecord[]>(() =>
-    accounts.map((account) => ({ ...account, entry: null, error: null }))
+    accounts.map((account) => ({ ...account, entry: null, error: null, balance: null, balanceError: null }))
   )
   const [busyIndex, setBusyIndex] = useState<number | null>(null)
+  const [balanceBusyIndex, setBalanceBusyIndex] = useState<number | null>(null)
   const submitting = useRef(false)
+  const balanceSubmitting = useRef(false)
   const requestVersion = useRef(0)
   const recordsRef = useRef(records)
   recordsRef.current = records
@@ -51,16 +56,21 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
         const entries = Array.isArray(list) ? list : []
         const dateWindow = boardReadingRangeDates(range)
         const entry = entries.find((item) => fbReadingMatchesWindow(item, account.act, dateWindow)) ?? null
-        return { ...account, entry, error: null }
+        const balances = metrics.includes('balance')
+          ? await window.electronAPI.listFbAccountBalances({ accountId: account.act })
+          : []
+        return { ...account, entry, error: null, balance: balances[0] ?? null, balanceError: null }
       })
     )
 
   useEffect(() => {
     requestVersion.current += 1
     const version = requestVersion.current
-    setRecords(accounts.map((account) => ({ ...account, entry: null, error: null })))
+    setRecords(accounts.map((account) => ({ ...account, entry: null, error: null, balance: null, balanceError: null })))
     setBusyIndex(null)
+    setBalanceBusyIndex(null)
     submitting.current = false
+    balanceSubmitting.current = false
     void loadRecords()
       .then((next) => {
         if (version === requestVersion.current) setRecords(next)
@@ -73,7 +83,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
     return () => {
       requestVersion.current += 1
     }
-  }, [accounts, range])
+  }, [accounts, range, metrics])
 
   const refresh = async () => {
     if (accounts.length === 0 || submitting.current) {
@@ -84,7 +94,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
     const version = requestVersion.current
     let current = recordsRef.current
     if (current.length !== accounts.length) {
-      current = accounts.map((account) => ({ ...account, entry: null, error: null }))
+      current = accounts.map((account) => ({ ...account, entry: null, error: null, balance: null, balanceError: null }))
       if (version === requestVersion.current) setRecords(current)
     }
     try {
@@ -92,7 +102,9 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
         const account = accounts[index]
         if (version !== requestVersion.current) return
         setBusyIndex(index)
-        setRecords((prev) => prev.map((record) => (record.act === account.act ? { ...record, error: null } : record)))
+        setRecords((prev) =>
+          prev.map((record) => (record.act === account.act ? { ...record, error: null } : record))
+        )
         const result = await window.electronAPI.refreshFbReading({
           alias: account.alias,
           act: account.act,
@@ -103,7 +115,11 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
         setRecords((prev) =>
           prev.map((record) =>
             record.act === account.act
-              ? { ...record, entry: result.ok ? result.entry : record.entry, error: result.ok ? null : result.error }
+              ? {
+                  ...record,
+                  entry: result.ok ? result.entry : record.entry,
+                  error: result.ok ? null : result.error
+                }
               : record
           )
         )
@@ -121,6 +137,48 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
     }
   }
 
+  const refreshBalances = async () => {
+    if (accounts.length === 0 || !metrics.includes('balance') || balanceSubmitting.current || submitting.current) return
+    balanceSubmitting.current = true
+    const version = requestVersion.current
+    try {
+      for (let index = 0; index < accounts.length; index += 1) {
+        const account = accounts[index]
+        if (version !== requestVersion.current) return
+        setBalanceBusyIndex(index)
+        setRecords((prev) =>
+          prev.map((record) => (record.act === account.act ? { ...record, balanceError: null } : record))
+        )
+        const result = await window.electronAPI.refreshFbAccountBalance({
+          alias: account.alias,
+          act: account.act,
+          businessId: account.businessId
+        })
+        if (version !== requestVersion.current) return
+        setRecords((prev) =>
+          prev.map((record) =>
+            record.act === account.act
+              ? {
+                  ...record,
+                  balance: result.ok ? result.balance : record.balance,
+                  balanceError: result.ok ? null : result.error
+                }
+              : record
+          )
+        )
+      }
+    } catch {
+      if (version === requestVersion.current) {
+        setRecords((prev) => prev.map((record) => ({ ...record, balanceError: record.balanceError ?? 'invoke-failed' })))
+      }
+    } finally {
+      if (version === requestVersion.current) {
+        balanceSubmitting.current = false
+        setBalanceBusyIndex(null)
+      }
+    }
+  }
+
   const refreshRef = useRef(refresh)
   refreshRef.current = refresh
   useEffect(() => {
@@ -134,7 +192,12 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
   }, [widget.id])
 
   const summary = useMemo(
-    () => summarizeFbReadings(accounts, Object.fromEntries(records.map((record) => [record.act, record.entry]))),
+    () =>
+      summarizeFbReadings(
+        accounts,
+        Object.fromEntries(records.map((record) => [record.act, record.entry])),
+        Object.fromEntries(records.map((record) => [record.act, record.balance]))
+      ),
     [accounts, records]
   )
   const rangeLabel = range === 'today' ? '今天' : range === 'last3' ? '近3天' : range === 'last7' ? '近7天' : '近30天'
@@ -145,12 +208,17 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
     value === null ? '—' : kind === 'usd' ? '$' + value.toFixed(2) : value.toFixed(2) + '%'
   const metricLabel = (metric: FbReadingSummaryMetric) => {
     if (metric === 'spend') return t('boards.reading.summary.metric.spend')
+    if (metric === 'balance') return t('boards.reading.balance.label')
     if (metric === 'cpi') return t('boards.reading.summary.metric.cpi')
     if (metric === 'cpm') return t('boards.reading.summary.metric.cpm')
     if (metric === 'ctr') return t('boards.reading.summary.metric.ctr')
     return t('boards.reading.summary.metric.cpa')
   }
   const metricValue = (metric: FbReadingSummaryMetric) => {
+    if (metric === 'balance') {
+      if (records.some((record) => record.balanceError !== null) || summary.balance === null) return '—'
+      return formatMoney(summary.balance, summary.balanceCurrency)
+    }
     if (!completeForDisplay) return '—'
     if (metric === 'spend') return cell(summary.spend, 'usd')
     if (metric === 'cpi') return cell(summary.cpi, 'usd')
@@ -166,8 +234,11 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
     if (code === 'date-mismatch') return t('boards.reading.error.date')
     if (code === 'browser-busy') return t('boards.reading.error.busy')
     if (code === 'panel-hidden') return t('boards.reading.error.closed')
+    if (code === '2fa-required') return t('boards.reading.balance.error.2fa')
     return t('boards.reading.refreshFailed')
   }
+  const formatMoney = (value: number, currency: string | null): string =>
+    currency === 'USD' ? '$' + value.toFixed(2) : `${value.toFixed(2)} ${currency ?? ''}`.trim()
 
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
@@ -175,16 +246,33 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
         <span className="truncate text-[10.5px] text-cream-faint">
           {accounts.map((account) => account.alias).join(' + ') || t('boards.reading.summary.noAccounts')} · {rangeLabel}
         </span>
-        <button
-          onClick={() => void refresh()}
-          disabled={busyIndex !== null}
-          className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
-        >
-          {busyIndex !== null ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
-          {busyIndex !== null
-            ? t('boards.reading.summary.refreshing', { done: String(busyIndex + 1), total: String(accounts.length) })
-            : t('boards.reading.refresh')}
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {metrics.includes('balance') && (
+            <button
+              onClick={() => void refreshBalances()}
+              disabled={busyIndex !== null || balanceBusyIndex !== null}
+              className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+            >
+              {balanceBusyIndex !== null ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
+              {balanceBusyIndex !== null
+                ? t('boards.reading.balance.refreshingAccounts', {
+                    done: String(balanceBusyIndex + 1),
+                    total: String(accounts.length)
+                  })
+                : t('boards.reading.balance.refresh')}
+            </button>
+          )}
+          <button
+            onClick={() => void refresh()}
+            disabled={busyIndex !== null || balanceBusyIndex !== null}
+            className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+          >
+            {busyIndex !== null ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
+            {busyIndex !== null
+              ? t('boards.reading.summary.refreshing', { done: String(busyIndex + 1), total: String(accounts.length) })
+              : t('boards.reading.refresh')}
+          </button>
+        </div>
       </div>
 
       {accounts.length === 0 ? (
@@ -221,6 +309,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
                 <tr className="text-cream-faint">
                   <th className="px-1 py-0.5 font-normal">{t('boards.reading.summary.account')}</th>
                   {metrics.includes('spend') && <th className="px-1 py-0.5 font-normal">{metricLabel('spend')}</th>}
+                  {metrics.includes('balance') && <th className="px-1 py-0.5 font-normal">{metricLabel('balance')}</th>}
                   {metrics.includes('cpi') && <th className="px-1 py-0.5 font-normal">{metricLabel('cpi')}</th>}
                   {metrics.includes('cpm') && <th className="px-1 py-0.5 font-normal">{metricLabel('cpm')}</th>}
                   {metrics.includes('ctr') && <th className="px-1 py-0.5 font-normal">{metricLabel('ctr')}</th>}
@@ -231,7 +320,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
               <tbody>
                 {records.map((record) => {
                   const account = summary.accounts.find((item) => item.act === record.act)
-                  const error = errorText(record.error)
+                  const error = errorText(record.error ?? record.balanceError)
                   return (
                     <tr key={record.act} className="border-t border-line/60">
                       <td className="max-w-[110px] truncate px-1 py-0.5 text-cream-dim" title={record.alias}>
@@ -239,6 +328,11 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
                       </td>
                       {metrics.includes('spend') && (
                         <td className="px-1 py-0.5 font-mono tabular-nums">{cell(account?.spend ?? null, 'usd')}</td>
+                      )}
+                      {metrics.includes('balance') && (
+                        <td className="px-1 py-0.5 font-mono tabular-nums" title={account?.balanceText ?? ''}>
+                          {account?.balanceText ?? '—'}
+                        </td>
                       )}
                       {metrics.includes('cpi') && (
                         <td className="px-1 py-0.5 font-mono tabular-nums">{cell(account?.cpi ?? null, 'usd')}</td>

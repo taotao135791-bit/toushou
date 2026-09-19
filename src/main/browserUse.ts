@@ -4,7 +4,13 @@ import { mkdir, readdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
 import { BrowserWindow } from 'electron'
-import { getActiveBrowserPanel, isBrowserPanelVisible, loadBrowserPanelUrl, withBrowserReadingViewport } from './browserPanel'
+import {
+  ensureBrowserPanel,
+  getActiveBrowserPanel,
+  isBrowserPanelVisible,
+  loadBrowserPanelUrl,
+  withBrowserReadingViewport
+} from './browserPanel'
 import { appendFbSnapshot, isFacebookSnapshotUrl } from './fbSnapshots'
 import { safeBrowserPanelUrl } from './navigation'
 import { IPC_CHANNELS } from '../shared/constants'
@@ -16,14 +22,22 @@ import {
 import type { FbAdsCampaignReading } from '../shared/fbAdsParser'
 import {
   boardReadingRangeDates,
+  buildFbAccountOverviewUrlForRef,
   buildFbReadingUrlForRef,
   fbReadingMatchesWindow,
   isValidFbReadingAct,
   isValidFbReadingBusinessId
 } from '../shared/fbReading'
-import type { FbReadingAccountRef, FbReadingRange, FbReadingRefreshResult } from '../shared/fbReading'
+import type {
+  FbAccountBalanceRefreshResult,
+  FbReadingAccountRef,
+  FbReadingRange,
+  FbReadingRefreshResult
+} from '../shared/fbReading'
+import { parseFbAccountBalanceSnapshot, type FbAccountBalanceParseResult } from '../shared/fbBillingParser'
 import { appendFbReading, listFbReadings } from './fbReadings'
 import { listFbReadingAccounts } from './fbReadingAccounts'
+import { saveFbAccountBalance } from './fbBalances'
 import { serializeBoundedJson } from '../shared/boundedJson'
 
 /**
@@ -112,6 +126,8 @@ export interface BrowserUseRequest {
   takeover?: boolean
   /** Route-preserving panel open (board refresh): do not yank the UI home. */
   keepRoute?: boolean
+  /** Internal read-only board refresh: drive a detached persistent panel. */
+  background?: boolean
   /** Internal callers may extend the navigation deadline (cold FB loads). */
   navTimeoutMs?: number
   accountId?: string
@@ -345,10 +361,15 @@ function fbLoginWall(page: { url: string; title: string }): boolean {
     /(?:^|\s)(?:登录 Facebook|Log in to Facebook)(?:$|\s)/i.test(page.title)
 }
 
-function exec<T>(script: string): Promise<T> {
+/** Meta can demand a fresh 2FA even when ordinary Ads Manager stays logged in. */
+function fbReauthWall(page: { url: string; title: string }): boolean {
+  return /\/security\/twofactor\/reauth\//.test(page.url) || /2FA Entry/i.test(page.title)
+}
+
+function exec<T>(script: string, requireVisible = true): Promise<T> {
   const panel = getActiveBrowserPanel()
   if (!panel) return Promise.reject(new Error('panel-not-open'))
-  if (!isBrowserPanelVisible()) return Promise.reject(new Error('panel-hidden'))
+  if (requireVisible && !isBrowserPanelVisible()) return Promise.reject(new Error('panel-hidden'))
   return panel.webContents.executeJavaScript(script, true) as Promise<T>
 }
 
@@ -466,6 +487,11 @@ export async function runAction(req: BrowserUseRequest, sessionId?: string): Pro
       if (sessionId) latestSnapshotBySession.delete(sessionId)
       const safeUrl = safeBrowserPanelUrl(req.url as string)
       if (!safeUrl) return { ok: false, error: 'invalid-url' }
+      if (req.background === true && !getActiveBrowserPanel()) {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) ensureBrowserPanel(win)
+        }
+      }
       const beforeOpen = getActiveBrowserPanel()
       // Start once in Main when a panel exists. Renderer attach/go calls
       // join this promise; repeated explicit refreshes still fetch afresh.
@@ -475,7 +501,7 @@ export async function runAction(req: BrowserUseRequest, sessionId?: string): Pro
           (error: unknown) => error instanceof Error ? error : new Error('navigation-failed')
         )
         : null
-      await openPanelWithUrl(safeUrl, req.keepRoute === true)
+      if (req.background !== true) await openPanelWithUrl(safeUrl, req.keepRoute === true)
       // Join the renderer's pending load instead of aborting it with a
       // second loadURL (getURL still reports the old page while loading).
       const existing = getActiveBrowserPanel()
@@ -499,7 +525,7 @@ export async function runAction(req: BrowserUseRequest, sessionId?: string): Pro
         title: string
         text: string
         elements: Array<Record<string, unknown>>
-      }>(SNAPSHOT_SCRIPT)
+      }>(SNAPSHOT_SCRIPT, req.background !== true)
       const text = snap.text.slice(0, MAX_TEXT_CHARS)
       // Evidence chain: FB page snapshots are archived locally so readings
       // keep a verifiable source and parser regressions can be reproduced
@@ -541,7 +567,7 @@ export async function runAction(req: BrowserUseRequest, sessionId?: string): Pro
         title: string
         text: string
         elements: Array<Record<string, unknown>>
-      }>(SNAPSHOT_SCRIPT)
+      }>(SNAPSHOT_SCRIPT, req.background !== true)
         const text = snap.text.slice(0, MAX_TEXT_CHARS)
         if (isFacebookSnapshotUrl(snap.url)) {
           try {
@@ -768,6 +794,7 @@ function withBrowserActionLock<T>(task: () => Promise<T>): Promise<T> {
 }
 
 let boardRefresh: { key: string; result: Promise<FbReadingRefreshResult> } | null = null
+let balanceRefresh: { key: string; result: Promise<FbAccountBalanceRefreshResult> } | null = null
 
 /** Opens the Ads Manager account switcher unless its menu is already open. */
 const OPEN_ACCOUNT_SWITCHER_SCRIPT = `(() => {
@@ -880,6 +907,7 @@ export async function discoverFbReadingAccounts(query = ''): Promise<
           action: 'navigate',
           url: targetUrl,
           keepRoute: true,
+          background: true,
           navTimeoutMs: 45_000
         })
         if (!nav.ok && !campaignsHere(currentPage(false))) return { ok: false, error: nav.error }
@@ -930,7 +958,7 @@ export async function discoverFbReadingAccounts(query = ''): Promise<
     } catch {
       return { ok: false, error: 'unparseable-page' }
     }
-    await runAction({ action: 'navigate', url: targetUrl, keepRoute: true, navTimeoutMs: 45_000 }).catch(() => undefined)
+    await runAction({ action: 'navigate', url: targetUrl, keepRoute: true, background: true, navTimeoutMs: 45_000 }).catch(() => undefined)
     const accounts = Array.from(byAct.entries()).map(([act, name]) => ({ name, act }))
     return accounts.length > 0 ? { ok: true, accounts } : { ok: false, error: 'accounts-not-found' }
   })
@@ -970,7 +998,12 @@ export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReading
   const result = withBrowserActionLock<FbReadingRefreshResult>(async () => {
     const startedAt = Date.now()
     try {
-      const nav = await runAction({ action: 'navigate', url: buildFbReadingUrlForRef(ref, range, today), keepRoute: true })
+      const nav = await runAction({
+        action: 'navigate',
+        url: buildFbReadingUrlForRef(ref, range, today),
+        keepRoute: true,
+        background: true
+      })
       if (!nav.ok) return { ok: false, error: nav.error }
       const page = currentPage(false)
       if (fbLoginWall(page)) return { ok: false, error: 'login-required' }
@@ -985,7 +1018,7 @@ export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReading
         | { kind: 'ok'; reading: FbAdsCampaignReading; stored: boolean | string }
         | { kind: 'failed'; error: string }
       > => {
-        const report = await runAction({ action: 'report' })
+        const report = await runAction({ action: 'report', background: true })
         if (!report.ok) return { kind: 'failed', error: report.error }
         if (fbLoginWall({ url: report.url ?? '', title: report.title ?? '' })) {
           return { kind: 'failed', error: 'login-required' }
@@ -1004,7 +1037,7 @@ export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReading
         if (widePanel && !widePanel.webContents.isDestroyed()) {
           await withBrowserReadingViewport(widePanel, async () => {
             widePanel.webContents.reload()
-            await waitForLoad(20_000)
+            await waitForLoad(20_000, isBrowserPanelVisible())
           })
         }
         const second = await readVerified()
@@ -1026,6 +1059,95 @@ export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReading
     }
   }).finally(() => { boardRefresh = null })
   boardRefresh = { key, result }
+  return result
+}
+
+interface FbBalanceReadOnce {
+  parse: FbAccountBalanceParseResult
+}
+
+/**
+ * Refresh one ad account's Account Overview available spend. Navigation and
+ * DOM reads are read-only; the parser must identify both the account and the
+ * labeled spend-limit/spend pair, and two stable reads must agree.
+ */
+export function refreshFbAccountBalance(ref: FbReadingAccountRef): Promise<FbAccountBalanceRefreshResult> {
+  if (balanceRefresh) {
+    return balanceRefresh.key === ref.act ? balanceRefresh.result : Promise.resolve({ ok: false, error: 'browser-busy' })
+  }
+  const known =
+    isValidFbReadingAct(ref.act) &&
+    isValidFbReadingBusinessId(ref.businessId) &&
+    listFbReadingAccounts().some((entry) => entry.act === ref.act)
+  if (!known) return Promise.resolve({ ok: false, error: 'invalid-input' })
+
+  const result = withBrowserActionLock<FbAccountBalanceRefreshResult>(async () => {
+    const targetUrl = buildFbAccountOverviewUrlForRef(ref)
+    try {
+      let navigationError: string | null = null
+      try {
+        const nav = await runAction({ action: 'navigate', url: targetUrl, keepRoute: true, background: true, navTimeoutMs: 45_000 })
+        if (!nav.ok) navigationError = nav.error
+      } catch (error) {
+        // Account Overview can run a redirect chain; continue only when the
+        // panel visibly landed on the expected route or Meta's reauth gate.
+        navigationError = error instanceof Error ? error.message : 'navigation-failed'
+      }
+      await waitForLoad(20_000, false)
+      const landing = currentPage(false)
+      if (fbReauthWall(landing)) return { ok: false, error: '2fa-required' }
+      if (fbLoginWall(landing)) return { ok: false, error: 'login-required' }
+      const onAccountOverview = /adsmanager\.facebook\.com\/adsmanager\/manage\/accounts/i.test(landing.url)
+      if (navigationError !== null && !onAccountOverview) {
+        return { ok: false, error: navigationError.match(/ERR_[A-Z_]+/)?.[0] ?? 'navigation-failed' }
+      }
+
+      panelOwner = 'fb-account-balance'
+      latestSnapshotBySession.clear()
+      const readOnce = async (): Promise<FbReadOnce<FbBalanceReadOnce>> => {
+        const snap = await exec<{ url: string; title: string; text: string }>(SNAPSHOT_SCRIPT, false)
+        const text = snap.text.slice(0, MAX_TEXT_CHARS)
+        if (isFacebookSnapshotUrl(snap.url)) {
+          try {
+            appendFbSnapshot({ url: snap.url, title: snap.title, text })
+          } catch {
+            // Evidence archival is advisory.
+          }
+        }
+        return { url: snap.url, title: snap.title, text, reading: { parse: parseFbAccountBalanceSnapshot({ ...snap, text, observedAt: Date.now() }, ref.act) } }
+      }
+      const rejectionOf = (read: FbBalanceReadOnce) =>
+        read.parse.kind === 'ok' ? null : read.parse.kind
+      const stable = await readStableFbReading(readOnce, rejectionOf, { firstAttempts: 12, secondAttempts: 3 })
+      if (!stable.ok) {
+        if (fbReauthWall(stable.last)) return { ok: false, error: '2fa-required' }
+        if (fbLoginWall(stable.last)) return { ok: false, error: 'login-required' }
+        return { ok: false, error: stable.error }
+      }
+      if (stable.first.reading.parse.kind !== 'ok' || stable.second.reading.parse.kind !== 'ok') {
+        return { ok: false, error: 'unparseable-balance-page' }
+      }
+      const first = stable.first.reading.parse.balance
+      const second = stable.second.reading.parse.balance
+      if (
+        first.accountId !== second.accountId ||
+        first.kind !== second.kind ||
+        first.amount !== second.amount ||
+        first.currency !== second.currency
+      ) return { ok: false, error: 'unstable-balance' }
+      const entry = saveFbAccountBalance(second)
+      return { ok: true, balance: entry }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ''
+      return {
+        ok: false,
+        error:
+          message.match(/ERR_[A-Z_]+/)?.[0] ??
+          (['navigation-timeout', 'panel-hidden', 'panel-not-open'].includes(message) ? message : 'balance-refresh-failed')
+      }
+    }
+  }).finally(() => { balanceRefresh = null })
+  balanceRefresh = { key: ref.act, result }
   return result
 }
 

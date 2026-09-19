@@ -62,6 +62,8 @@ export const IPC_CHANNELS = {
   BOARDS_LIST: 'boards:list',
   BOARDS_SAVE: 'boards:save',
   FB_READING_REFRESH: 'fb-reading:refresh',
+  FB_READING_BALANCE_REFRESH: 'fb-reading:balance:refresh',
+  FB_READING_BALANCES_LIST: 'fb-reading:balances:list',
   FB_READING_HISTORY: 'fb-reading:history',
   FB_READING_ACCOUNTS_LIST: 'fb-reading:accounts:list',
   FB_READING_ACCOUNTS_ADD: 'fb-reading:accounts:add',

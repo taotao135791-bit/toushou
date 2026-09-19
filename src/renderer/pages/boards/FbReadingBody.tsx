@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Activity, RefreshCw } from 'lucide-react'
 import { BoardWidget } from '@shared/types'
 import { boardReadingRangeDates, fbReadingMatchesWindow, resolveFbReadingWidgetAccount } from '@shared/fbReading'
+import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { useT } from '../../i18n'
 
 interface FbReadingDisplayRow {
@@ -52,6 +53,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   const metrics = Array.isArray(widget.config.metrics)
     ? (widget.config.metrics as string[]).filter((m) => typeof m === 'string')
     : ['spend', 'cpi']
+  const includeBalance = metrics.includes('balance')
   const [entry, setEntry] = useState<{
     capturedAt: string
     totalSpend: number | null
@@ -61,7 +63,11 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
   const [failureDetail, setFailureDetail] = useState<string | null>(null)
+  const [balance, setBalance] = useState<FbAccountBalance | null>(null)
+  const [balanceFailure, setBalanceFailure] = useState<string | null>(null)
+  const [balanceBusy, setBalanceBusy] = useState(false)
   const submitting = useRef(false)
+  const balanceSubmitting = useRef(false)
   const requestVersion = useRef(0)
 
   const load = async () => {
@@ -98,18 +104,31 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     }
   }
 
+  const loadBalance = async () => {
+    const version = requestVersion.current
+    const accountId = accountRef?.act
+    if (!accountId || !includeBalance) return
+    const list = await window.electronAPI.listFbAccountBalances({ accountId })
+    if (version !== requestVersion.current) return
+    setBalance(Array.isArray(list) && list.length > 0 ? list[0] : null)
+  }
+
   useEffect(() => {
     requestVersion.current += 1
     setEntry(null)
+    setBalance(null)
     setFailure(null)
+    setBalanceFailure(null)
     setBusy(false)
+    setBalanceBusy(false)
     submitting.current = false
+    balanceSubmitting.current = false
     const version = requestVersion.current
-    void load().catch(() => {
+    void Promise.all([load(), loadBalance()]).catch(() => {
       if (version === requestVersion.current) setFailure('history-failed')
     })
     return () => { requestVersion.current += 1 }
-  }, [account, range])
+  }, [account, accountRef?.act, range, includeBalance])
 
   const refresh = async () => {
     if (!accountRef) {
@@ -152,6 +171,31 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     }
   }
 
+  const refreshBalance = async () => {
+    if (!accountRef || !includeBalance || balanceSubmitting.current || submitting.current) return
+    balanceSubmitting.current = true
+    const version = requestVersion.current
+    setBalanceBusy(true)
+    setBalanceFailure(null)
+    try {
+      const result = await window.electronAPI.refreshFbAccountBalance({
+        alias: accountRef.alias,
+        act: accountRef.act,
+        businessId: accountRef.businessId
+      })
+      if (version !== requestVersion.current) return
+      if (result.ok) setBalance(result.balance)
+      else setBalanceFailure(result.error)
+    } catch {
+      if (version === requestVersion.current) setBalanceFailure('invoke-failed')
+    } finally {
+      if (version === requestVersion.current) {
+        balanceSubmitting.current = false
+        setBalanceBusy(false)
+      }
+    }
+  }
+
   // Board-level "refresh all readings" drives each module's own refresh
   // serially; the module reports completion so the queue can proceed.
   const refreshRef = useRef(refresh)
@@ -185,35 +229,78 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     </>
   )
 
+  const balanceFailureMessage = balanceFailure === '2fa-required'
+    ? t('boards.reading.balance.error.2fa')
+    : balanceFailure === 'login-required'
+      ? t('boards.reading.error.login')
+      : balanceFailure?.startsWith('ERR_') || balanceFailure === 'navigation-timeout'
+        ? t('boards.reading.error.network')
+        : t('boards.reading.balance.error.failed')
+
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-[10.5px] text-cream-faint">
           {account} · {range === 'today' ? '今天' : range === 'last3' ? '近3天' : range === 'last7' ? '近7天' : '近30天'}
         </span>
-        <button
-          onClick={() => void refresh()}
-          disabled={busy}
-          className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
-        >
-          {busy ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
-          {busy ? t('boards.reading.refreshing') : t('boards.reading.refresh')}
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {includeBalance && (
+            <button
+              onClick={() => void refreshBalance()}
+              disabled={busy || balanceBusy}
+              className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+            >
+              {balanceBusy ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
+              {balanceBusy
+                ? t('boards.reading.balance.refreshing')
+                : t('boards.reading.balance.refresh')}
+            </button>
+          )}
+          <button
+            onClick={() => void refresh()}
+            disabled={busy || balanceBusy}
+            className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+          >
+            {busy ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
+            {busy ? t('boards.reading.refreshing') : t('boards.reading.refresh')}
+          </button>
+        </div>
       </div>
       {failure && <div role="alert" className="text-[10.5px] text-red-500">{failureNode}</div>}
+      {balanceFailure && (
+        <div role="alert" className="text-[10.5px] text-amber-400">{balanceFailureMessage}</div>
+      )}
       {!entry ? (
-        <div className="flex flex-1 items-center justify-center px-2 text-center text-[11px] leading-5 text-cream-faint">
-          {t('boards.reading.noData')}
-        </div>
+        <>
+          {includeBalance && (
+            <div className="rounded-lg bg-ink-850 px-2 py-1.5">
+              <div className="text-[10.5px] text-cream-faint">{t('boards.reading.balance.label')}</div>
+              <div className="truncate font-mono text-[16px] font-semibold text-cream tabular-nums" title={balance?.amountText ?? ''}>
+                {balance?.amountText ?? '—'}
+              </div>
+            </div>
+          )}
+          <div className="flex flex-1 items-center justify-center px-2 text-center text-[11px] leading-5 text-cream-faint">
+            {t('boards.reading.noData')}
+          </div>
+        </>
       ) : (
         <>
-          <div className="rounded-lg bg-ink-850 px-2 py-1.5">
+          <div className={`rounded-lg bg-ink-850 px-2 py-1.5 ${includeBalance ? 'grid grid-cols-2 gap-2' : ''}`}>
             <div className="text-[10.5px] text-cream-faint">
               {entry.campaignCount ?? '—'} 系列 · {t('boards.reading.updatedAt', { time: updated })}
             </div>
             <div className="font-mono text-[16px] font-semibold text-cream tabular-nums">
               ${entry.totalSpend?.toFixed(2) ?? '—'}
             </div>
+            {includeBalance && (
+              <div className="min-w-0">
+                <div className="text-[10.5px] text-cream-faint">{t('boards.reading.balance.label')}</div>
+                <div className="truncate font-mono text-[16px] font-semibold text-cream tabular-nums" title={balance?.amountText ?? ''}>
+                  {balance?.amountText ?? '—'}
+                </div>
+              </div>
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
             <table className="w-full border-collapse text-left text-[10.5px]">

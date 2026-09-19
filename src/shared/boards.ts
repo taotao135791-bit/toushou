@@ -103,7 +103,7 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
         act: FB_READING_ACCOUNT_TARGETS['三国IOS'].act,
         businessId: FB_READING_ACCOUNT_TARGETS['三国IOS'].businessId,
         range: 'last7',
-        metrics: ['spend', 'cpi']
+        metrics: ['spend', 'balance', 'cpi']
       }
     case 'fb-reading-summary':
       return {
@@ -111,7 +111,7 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
           ? [{ ...FB_READING_ACCOUNT_TARGETS['三国IOS'], alias: '三国IOS' }]
           : [],
         range: 'last7',
-        metrics: ['spend', 'cpi', 'cpm']
+        metrics: ['spend', 'balance', 'cpi', 'cpm']
       }
     case 'note':
       return { text: '' }
@@ -711,7 +711,7 @@ function validateWidgetConfig(
       // Legacy alias-only configs are upgraded via the builtin account table.
       const range = raw.range
       if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
-      const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr']
+      const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr', 'balance']
       if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
       const metrics: string[] = []
       for (const metric of raw.metrics) {

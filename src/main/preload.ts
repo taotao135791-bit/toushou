@@ -1,11 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
 import type {
+  FbAccountBalanceRefreshResult,
   FbReadingAccountEntry,
   FbReadingAccountRef,
   FbReadingHistoryListResult,
   FbReadingRefreshResult
 } from '../shared/fbReading'
+import type { FbAccountBalance } from '../shared/fbBillingParser'
 import {
   FeishuConnectionResult,
   FeishuConnectionSnapshot,
@@ -241,6 +243,14 @@ export interface ElectronAPI {
     businessId: string | null
     range: string
   }) => Promise<FbReadingRefreshResult>
+  /** Read one ad account's Account Overview available spend through Main. */
+  refreshFbAccountBalance: (request: {
+    alias: string
+    act: string
+    businessId: string | null
+  }) => Promise<FbAccountBalanceRefreshResult>
+  /** Latest verified balances, newest first. */
+  listFbAccountBalances: (request?: { accountId?: string }) => Promise<Array<FbAccountBalance & { id?: string }>>
   /** Latest verified FB readings for the module to render. */
   listFbReadings: (request: { accountId?: string }) => Promise<FbReadingHistoryListResult>
   /** Local FB account registry (IDs only; nothing leaves the machine). */
@@ -639,6 +649,10 @@ const api: ElectronAPI = {
   saveBoard: (board: KanbanBoard) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE, board),
   refreshFbReading: (request: { alias: string; act: string; businessId: string | null; range: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_READING_REFRESH, request),
+  refreshFbAccountBalance: (request: { alias: string; act: string; businessId: string | null }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FB_READING_BALANCE_REFRESH, request),
+  listFbAccountBalances: (request?: { accountId?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FB_READING_BALANCES_LIST, request),
   listFbReadings: (request: { accountId?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_READING_HISTORY, request),
   listFbReadingAccounts: () =>

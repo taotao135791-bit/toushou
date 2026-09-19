@@ -4,8 +4,14 @@ import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
 import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
-import { captureFbReadingAccountFromPanel, discoverFbReadingAccounts, refreshBoardFbReading } from './browserUse'
+import {
+  captureFbReadingAccountFromPanel,
+  discoverFbReadingAccounts,
+  refreshBoardFbReading,
+  refreshFbAccountBalance
+} from './browserUse'
 import { listFbReadings } from './fbReadings'
+import { listFbAccountBalances } from './fbBalances'
 import { appendFbReadingAccounts, listFbReadingAccounts, removeFbReadingAccount } from './fbReadingAccounts'
 import {
   SessionEvent,
@@ -2294,6 +2300,25 @@ export function registerIpc() {
       return refreshBoardFbReading(ref, range)
     }
   )
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCE_REFRESH, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown }
+    const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
+    const businessId = input.businessId ?? null
+    const ref: FbReadingAccountRef | null =
+      alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
+        ? { alias, act: input.act, businessId }
+        : null
+    return ref ? refreshFbAccountBalance(ref) : { ok: false, error: 'invalid-input' }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCES_LIST, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { accountId?: unknown }
+    const accountId = typeof input.accountId === 'string' && /^\d{6,}$/.test(input.accountId)
+      ? input.accountId
+      : undefined
+    return listFbAccountBalances(accountId)
+  })
 
   // Local account registry: IDs only, no credentials; every entry stays on
   // this machine. Widgets snapshot the act into their config at creation.

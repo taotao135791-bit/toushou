@@ -1,3 +1,5 @@
+import type { FbAccountBalance } from './fbBillingParser'
+
 /**
  * FB reading targets and URL grammar, shared by the renderer (prompt
  * building) and Main (refresh IPC): the same canonical URL drives both the
@@ -198,8 +200,12 @@ export type FbReadingRefreshResult =
 export type FbReadingHistoryListResult = FbReadingHistoryEntry[]
 
 export const FB_READING_SUMMARY_ACCOUNT_LIMIT = 10
-export const FB_READING_SUMMARY_METRICS = ['spend', 'cpi', 'cpm', 'ctr', 'cpa'] as const
+export const FB_READING_SUMMARY_METRICS = ['spend', 'cpi', 'cpm', 'ctr', 'cpa', 'balance'] as const
 export type FbReadingSummaryMetric = (typeof FB_READING_SUMMARY_METRICS)[number]
+
+export type FbAccountBalanceRefreshResult =
+  | { ok: true; balance: FbAccountBalance & { id?: string } }
+  | { ok: false; error: string }
 
 export interface FbReadingSummaryAccount {
   alias: string
@@ -216,6 +222,10 @@ export interface FbReadingSummaryAccount {
   cpm: number | null
   ctr: number | null
   cpa: number | null
+  balance: number | null
+  balanceKind: FbAccountBalance['kind'] | null
+  balanceCurrency: string | null
+  balanceText: string | null
 }
 
 export interface FbReadingSummary {
@@ -234,6 +244,10 @@ export interface FbReadingSummary {
   cpm: number | null
   ctr: number | null
   cpa: number | null
+  balance: number | null
+  balanceKind: FbAccountBalance['kind'] | null
+  balanceCurrency: string | null
+  balanceText: string | null
   accounts: FbReadingSummaryAccount[]
 }
 
@@ -255,7 +269,11 @@ function metricRatio(numerator: number | null, denominator: number | null, facto
   return (numerator / denominator) * factor
 }
 
-function projectSummaryAccount(ref: FbReadingAccountRef, entry: FbReadingHistoryEntry): FbReadingSummaryAccount {
+function projectSummaryAccount(
+  ref: FbReadingAccountRef,
+  entry: FbReadingHistoryEntry,
+  balance: FbAccountBalance | null | undefined
+): FbReadingSummaryAccount {
   const rows = entry.rows ?? []
   const spend = sumAll(rows.map((row) => row.spend))
   const installs = sumAll(rows.map(installCountOf))
@@ -278,7 +296,34 @@ function projectSummaryAccount(ref: FbReadingAccountRef, entry: FbReadingHistory
     cpi: metricRatio(spend, installs),
     cpm: metricRatio(spend, impressions, 1000),
     ctr: metricRatio(clicks, impressions, 100),
-    cpa: resultType ? metricRatio(spend, results) : null
+    cpa: resultType ? metricRatio(spend, results) : null,
+    balance: balance?.amount ?? null,
+    balanceKind: balance?.kind ?? null,
+    balanceCurrency: balance?.currency ?? null,
+    balanceText: balance?.amountText ?? null
+  }
+}
+
+function emptySummaryAccount(ref: FbReadingAccountRef, balance: FbAccountBalance | null | undefined): FbReadingSummaryAccount {
+  return {
+    alias: ref.alias,
+    act: ref.act,
+    capturedAt: '',
+    campaignCount: null,
+    spend: null,
+    installs: null,
+    impressions: null,
+    clicks: null,
+    results: null,
+    resultType: null,
+    cpi: null,
+    cpm: null,
+    ctr: null,
+    cpa: null,
+    balance: balance?.amount ?? null,
+    balanceKind: balance?.kind ?? null,
+    balanceCurrency: balance?.currency ?? null,
+    balanceText: balance?.amountText ?? null
   }
 }
 
@@ -290,13 +335,14 @@ function projectSummaryAccount(ref: FbReadingAccountRef, entry: FbReadingHistory
  */
 export function summarizeFbReadings(
   accounts: FbReadingAccountRef[],
-  entriesByAct: Record<string, FbReadingHistoryEntry | null | undefined>
+  entriesByAct: Record<string, FbReadingHistoryEntry | null | undefined>,
+  balancesByAct: Record<string, FbAccountBalance | null | undefined> = {}
 ): FbReadingSummary {
   const projected = accounts.map((ref) => {
     const entry = entriesByAct[ref.act]
-    return entry ? projectSummaryAccount(ref, entry) : null
+    return entry ? projectSummaryAccount(ref, entry, balancesByAct[ref.act]) : emptySummaryAccount(ref, balancesByAct[ref.act])
   })
-  const available = projected.filter((account): account is FbReadingSummaryAccount => account !== null)
+  const available = projected.filter((account): account is FbReadingSummaryAccount => account.capturedAt !== '')
   const spend = sumAll(available.map((account) => account.spend))
   const installs = sumAll(available.map((account) => account.installs))
   const impressions = sumAll(available.map((account) => account.impressions))
@@ -306,11 +352,20 @@ export function summarizeFbReadings(
     new Set(available.map((account) => account.resultType).filter((type): type is string => Boolean(type)))
   )
   const resultType = resultTypes.length === 1 ? resultTypes[0] : null
+  const balanceKinds = Array.from(new Set(projected.map((account) => account.balanceKind).filter(Boolean))) as Array<FbAccountBalance['kind']>
+  const balanceCurrencies = Array.from(new Set(projected.map((account) => account.balanceCurrency).filter(Boolean))) as string[]
+  const balanceKind = balanceKinds.length === 1 ? balanceKinds[0] : null
+  const balanceCurrency = balanceCurrencies.length === 1 ? balanceCurrencies[0] : null
+  const canSumBalances =
+    accounts.length > 0 &&
+    projected.every((account) => account.balance !== null && account.balanceKind === balanceKind && account.balanceCurrency === balanceCurrency) &&
+    balanceKind !== null &&
+    balanceCurrency !== null
   return {
     complete: accounts.length > 0 && available.length === accounts.length,
     verifiedCount: available.length,
     accountCount: accounts.length,
-    capturedAt: available.map((account) => account.capturedAt).sort()[0] ?? null,
+    capturedAt: available.map((account) => account.capturedAt).filter(Boolean).sort()[0] ?? null,
     campaignCount: sumAll(available.map((account) => account.campaignCount)),
     spend,
     installs,
@@ -322,24 +377,11 @@ export function summarizeFbReadings(
     cpm: metricRatio(spend, impressions, 1000),
     ctr: metricRatio(clicks, impressions, 100),
     cpa: resultType ? metricRatio(spend, results) : null,
-    accounts: projected.map((account, index) =>
-      account ?? {
-        alias: accounts[index].alias,
-        act: accounts[index].act,
-        capturedAt: '',
-        campaignCount: null,
-        spend: null,
-        installs: null,
-        impressions: null,
-        clicks: null,
-        results: null,
-        resultType: null,
-        cpi: null,
-        cpm: null,
-        ctr: null,
-        cpa: null
-      }
-    )
+    balance: canSumBalances ? sumAll(projected.map((account) => account.balance)) : null,
+    balanceKind: canSumBalances ? balanceKind : null,
+    balanceCurrency: canSumBalances ? balanceCurrency : null,
+    balanceText: null,
+    accounts: projected
   }
 }
 
@@ -380,4 +422,16 @@ export function buildFbReadingUrlForRef(
     `&columns=${encodeURIComponent(columns)}` +
     `&date=${dates}&insights_date=${dates}`
   )
+}
+
+/** Read-only Ads Manager Account Overview URL pinned to one ad account. */
+export function buildFbAccountOverviewUrlForRef(ref: FbReadingAccountRef | null): string {
+  if (!ref || !isValidFbReadingAct(ref.act)) return ''
+  const params = new URLSearchParams({
+    act: ref.act,
+    nav_entry_point: 'ads_ecosystem_navigation_menu',
+    nav_source: 'ads_manager'
+  })
+  if (ref.businessId) params.set('business_id', ref.businessId)
+  return `https://adsmanager.facebook.com/adsmanager/manage/accounts?${params.toString()}`
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Check, FilePlus2, X } from 'lucide-react'
 import { BoardDataset, BoardWidget, BoardWidgetStyle } from '@shared/types'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
@@ -7,6 +7,7 @@ import { resolveFbReadingSummaryAccounts, resolveFbReadingWidgetAccount } from '
 import type { FbReadingAccountEntry } from '@shared/fbReading'
 import { useAppStore } from '../../store'
 import { useT, I18nKey } from '../../i18n'
+import { FbReadingAccountManager } from './FbReadingAccountManager'
 
 /**
  * In-card widget configuration layer: covers the widget body with a small
@@ -89,16 +90,7 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
     () => resolveFbReadingWidgetAccount(widget.config)?.act ?? ''
   )
   const [manageOpen, setManageOpen] = useState(false)
-  const [formAlias, setFormAlias] = useState('')
-  const [formAct, setFormAct] = useState('')
-  const [formBusinessId, setFormBusinessId] = useState('')
-  const [accountError, setAccountError] = useState<'invalid' | 'none' | null>(null)
-  const [accountBusy, setAccountBusy] = useState(false)
-  const [discoverBusy, setDiscoverBusy] = useState(false)
-  const [discoverQuery, setDiscoverQuery] = useState('')
-  const [discovered, setDiscovered] = useState<Array<{ name: string; act: string }> | null>(null)
-  const [discoverFailed, setDiscoverFailed] = useState(false)
-  const [discoverError, setDiscoverError] = useState<string | null>(null)
+  const [accountError, setAccountError] = useState<'none' | null>(null)
   const [summarySelectedActs, setSummarySelectedActs] = useState<Set<string>>(
     () => new Set(resolveFbReadingSummaryAccounts(widget.config).map((account) => account.act))
   )
@@ -113,123 +105,32 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
     return Array.from(merged.values())
   }, [accounts, widget.config])
 
-  useEffect(() => {
-    if (widget.type !== 'fb-reading' && widget.type !== 'fb-reading-summary') return
-    let alive = true
-    void window.electronAPI
-      .listFbReadingAccounts()
-      .then((list) => {
-        if (!alive) return
-        const entries = Array.isArray(list) ? list : []
-        setAccounts(entries)
-        setSelectedAct((prev) => prev || entries[0]?.act || '')
-      })
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [widget.type])
-
   const selectedAccount = accounts.find((entry) => entry.act === selectedAct) ?? null
+  const handleReadingAccountsChange = (entries: FbReadingAccountEntry[]) => {
+    setAccounts(entries)
+    setSelectedAct((prev) => (entries.some((entry) => entry.act === prev) ? prev : entries[0]?.act ?? ''))
+  }
 
-  const addAccount = async () => {
-    const alias = formAlias.trim()
-    const act = formAct.trim()
-    const businessId = formBusinessId.trim()
-    if (!alias || !/^\d{6,20}$/.test(act) || (businessId !== '' && !/^\d{6,20}$/.test(businessId))) {
-      setAccountError('invalid')
-      return
-    }
-    setAccountBusy(true)
+  const handleReadingAccountsAdded = (entries: FbReadingAccountEntry[]) => {
+    const acts = entries.map((entry) => entry.act)
+    if (acts.length > 0) setSelectedAct(acts[0])
+    setSummarySelectedActs((prev) => new Set([...prev, ...acts]))
     setAccountError(null)
-    try {
-      const result = await window.electronAPI.addFbReadingAccounts({
-        accounts: [{ alias, act, businessId: businessId === '' ? null : businessId }]
-      })
-      if (!result.ok || !result.accounts) {
-        setAccountError('invalid')
-        return
-      }
-      setAccounts(result.accounts)
-      setSelectedAct(act)
-      setFormAlias('')
-      setFormAct('')
-      setFormBusinessId('')
-    } catch {
-      setAccountError('invalid')
-    } finally {
-      setAccountBusy(false)
-    }
   }
 
-  const removeAccount = async (id: string) => {
-    try {
-      const result = await window.electronAPI.removeFbReadingAccount({ id })
-      if (result.ok && result.accounts) {
-        const entries = result.accounts
-        setAccounts(entries)
-        setSelectedAct((prev) => (entries.some((entry) => entry.act === prev) ? prev : entries[0]?.act ?? ''))
-      }
-    } catch {
-      // Removal is best-effort; the list refresh below shows current state.
-    }
+  const handleReadingAccountsRemoved = (acts: string[]) => {
+    const removed = new Set(acts)
+    setSummarySelectedActs((prev) => new Set([...prev].filter((act) => !removed.has(act))))
+    setAccountError(null)
   }
 
-  const discover = async () => {
-    setDiscoverBusy(true)
-    setDiscovered(null)
-    setDiscoverFailed(false)
-    setDiscoverError(null)
-    try {
-      const result = await window.electronAPI.discoverFbReadingAccounts({ query: discoverQuery.trim() })
-      if (result.ok && result.accounts && result.accounts.length > 0) {
-        setDiscovered(result.accounts)
-      } else {
-        setDiscoverFailed(true)
-        setDiscoverError(result.error ?? 'unknown')
-      }
-    } catch {
-      setDiscoverFailed(true)
-      setDiscoverError('invoke-failed')
-    } finally {
-      setDiscoverBusy(false)
-    }
-  }
-
-  const addDiscovered = async (entry: { name: string; act: string }) => {
-    if (accounts.some((account) => account.act === entry.act)) return
-    setAccountBusy(true)
-    try {
-      const result = await window.electronAPI.addFbReadingAccounts({
-        accounts: [{ alias: entry.name, act: entry.act, businessId: null }]
-      })
-      if (result.ok && result.accounts) {
-        setAccounts(result.accounts)
-        setSelectedAct(entry.act)
-      }
-    } catch {
-      // Keep the discovered list; the user can retry or add manually.
-    } finally {
-      setAccountBusy(false)
-    }
-  }
-
-  const captureFromPanel = async () => {
-    setDiscoverFailed(false)
-    setDiscoverError(null)
-    try {
-      const result = await window.electronAPI.captureFbReadingAccount()
-      if (!result.ok || !result.account) {
-        setDiscoverFailed(true)
-        setDiscoverError(result.error ?? 'unknown')
-        return
-      }
-      setFormAct(result.account.act)
-      setFormBusinessId(result.account.businessId ?? '')
-    } catch {
-      setDiscoverFailed(true)
-      setDiscoverError('invoke-failed')
-    }
+  const readingMetricLabel = (value: string): string => {
+    if (value === 'spend') return t('boards.reading.summary.metric.spend')
+    if (value === 'balance') return t('boards.reading.balance.label')
+    if (value === 'cpi') return t('boards.reading.summary.metric.cpi')
+    if (value === 'cpm') return t('boards.reading.summary.metric.cpm')
+    if (value === 'cpa') return t('boards.reading.summary.metric.cpa')
+    return t('boards.reading.summary.metric.ctr')
   }
 
   const pickFile = async () => {
@@ -485,6 +386,13 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
                     )
                   })}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setManageOpen((open) => !open)}
+                  className="mt-1.5 w-full rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:text-cream"
+                >
+                  {t('boards.reading.accounts.manage')}
+                </button>
               </Field>
             )}
             {accountError === 'none' && (
@@ -493,108 +401,13 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
             {readingMetricEmpty && (
               <div className="text-[11px] text-red-400">{t('boards.reading.needMetric')}</div>
             )}
-            {manageOpen && (
-              <div className="space-y-2 rounded-xl border border-line bg-ink-850/60 p-2">
-                {accounts.map((entry) => (
-                  <div key={entry.id} className="flex items-center justify-between gap-2 text-[11px] text-cream-dim">
-                    <span className="truncate">
-                      {entry.alias} · {entry.act}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void removeAccount(entry.id)}
-                      className="shrink-0 text-cream-faint transition hover:text-red-400"
-                    >
-                      {t('boards.reading.accounts.remove')}
-                    </button>
-                  </div>
-                ))}
-                <div className="space-y-1.5 border-t border-line pt-2">
-                  <input
-                    value={discoverQuery}
-                    onChange={(e) => setDiscoverQuery(e.target.value)}
-                    maxLength={30}
-                    placeholder={t('boards.reading.accounts.query')}
-                    className={inputClass}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void discover()}
-                    disabled={discoverBusy}
-                    className="w-full rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:text-cream disabled:opacity-40"
-                  >
-                    {discoverBusy ? t('boards.reading.accounts.discovering') : t('boards.reading.accounts.discover')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void captureFromPanel()}
-                    className="w-full rounded-lg border border-accent/50 px-2 py-1 text-[11px] text-accent transition hover:opacity-80"
-                  >
-                    {t('boards.reading.accounts.capture')}
-                  </button>
-                  {discoverFailed && (
-                    <div className="text-[11px] text-red-400">
-                      {t('boards.reading.accounts.discoverFailed')} ({discoverError ?? 'unknown'})
-                    </div>
-                  )}
-                  {discovered && discovered.length === 0 && (
-                    <div className="text-[11px] text-cream-faint">{t('boards.reading.accounts.discoveredNone')}</div>
-                  )}
-                  {discovered && discovered.length > 0 && (
-                    <div className="max-h-[120px] space-y-0.5 overflow-y-auto">
-                      {discovered.map((entry) => {
-                        const exists = accounts.some((account) => account.act === entry.act)
-                        return (
-                          <div key={entry.act} className="flex items-center justify-between gap-2 text-[11px] text-cream-dim">
-                            <span className="truncate">{entry.name} · {entry.act}</span>
-                            <button
-                              type="button"
-                              onClick={() => void addDiscovered(entry)}
-                              disabled={exists || accountBusy}
-                              className="shrink-0 text-accent transition hover:opacity-80 disabled:opacity-40"
-                            >
-                              {exists ? t('boards.reading.accounts.exists') : t('boards.reading.accounts.addShort')}
-                            </button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                  <input
-                    value={formAlias}
-                    onChange={(e) => setFormAlias(e.target.value)}
-                    maxLength={40}
-                    placeholder={t('boards.reading.accounts.alias')}
-                    className={inputClass}
-                  />
-                  <input
-                    value={formAct}
-                    onChange={(e) => setFormAct(e.target.value)}
-                    inputMode="numeric"
-                    placeholder={t('boards.reading.accounts.act')}
-                    className={inputClass}
-                  />
-                  <input
-                    value={formBusinessId}
-                    onChange={(e) => setFormBusinessId(e.target.value)}
-                    inputMode="numeric"
-                    placeholder={t('boards.reading.accounts.businessId')}
-                    className={inputClass}
-                  />
-                  {accountError === 'invalid' && (
-                    <div className="text-[11px] text-red-400">{t('boards.reading.accounts.invalid')}</div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void addAccount()}
-                    disabled={accountBusy}
-                    className="w-full rounded-lg border border-accent/50 bg-accent-soft px-2 py-1 text-[11px] text-accent transition hover:opacity-80 disabled:opacity-40"
-                  >
-                    {t('boards.reading.accounts.add')}
-                  </button>
-                </div>
-              </div>
-            )}
+            <FbReadingAccountManager
+              open={manageOpen}
+              accounts={accounts}
+              onAccountsChange={handleReadingAccountsChange}
+              onAccountsAdded={handleReadingAccountsAdded}
+              onAccountsRemoved={handleReadingAccountsRemoved}
+            />
             <Field label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
                 {([['today', '今天'], ['last3', '近3天'], ['last7', '近7天'], ['last30', '近30天']] as const).map(
@@ -616,8 +429,7 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
             </Field>
             <Field label={t('boards.reading.config.metrics')}>
               <div className="flex flex-wrap gap-1">
-                {([['spend', '消耗'], ['cpi', 'CPI'], ['cpm', 'CPM'], ['cpa', 'CPA'], ['ctr', 'CTR']] as const).map(
-                  ([value, label]) => {
+                {(['spend', 'balance', 'cpi', 'cpm', 'cpa', 'ctr'] as const).map((value) => {
                     const active = readingMetrics.includes(value)
                     return (
                       <button
@@ -634,11 +446,10 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
                             : 'border-line text-cream-dim hover:text-cream'
                         }`}
                       >
-                        {label}
+                        {readingMetricLabel(value)}
                       </button>
                     )
-                  }
-                )}
+                })}
               </div>
             </Field>
           </>

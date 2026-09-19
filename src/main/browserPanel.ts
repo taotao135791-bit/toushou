@@ -85,7 +85,19 @@ export async function withBrowserReadingViewport<T>(view: WebContentsView, read:
   const owner = BrowserWindow.fromWebContents(wc)
   const size = owner && !wc.isDestroyed() ? owner.getContentSize() : null
   if (size && size.length === 2 && (size[0] !== previous.width || size[1] !== previous.height)) {
-    view.setBounds({ x: 0, y: 0, width: size[0], height: size[1] })
+    const insideWindow =
+      previous.x >= 0 &&
+      previous.y >= 0 &&
+      previous.x < size[0] &&
+      previous.y < size[1]
+    view.setBounds(
+      insideWindow
+        ? { x: 0, y: 0, width: size[0], height: size[1] }
+        // Background reads still need a full-size layout for Ads Manager's
+        // virtualized table. Keep the attached view clipped outside the window
+        // so it never covers the user's board.
+        : { x: size[0] + 100, y: 0, width: size[0], height: size[1] }
+    )
   }
   try {
     return await read()
@@ -108,6 +120,10 @@ const PANEL_WEB_PREFERENCES = {
   contextIsolation: true,
   sandbox: true,
   nodeIntegration: false,
+  // Ads Manager virtualizes rows by viewport. A background board refresh may
+  // use a detached (hidden) view; keep its layout/timers active so the strict
+  // parser still sees a real table instead of a throttled empty shell.
+  backgroundThrottling: false,
   partition: BROWSER_PANEL_PARTITION
 } as const
 
@@ -154,6 +170,22 @@ export function getActiveBrowserPanel(): WebContentsView | null {
     if (panel && !panel.webContents.isDestroyed()) return panel
   }
   return null
+}
+
+/**
+ * Get or create the persistent panel without attaching it to the window.
+ * Internal read-only board refreshes use this as a background surface; the
+ * user can later attach the exact same session with showBrowserPanel.
+ */
+export function ensureBrowserPanel(win: BrowserWindow): WebContentsView | null {
+  if (win.isDestroyed()) return null
+  const view = panels.get(win.id) ?? createPanel(win)
+  if (!attachedPanels.has(win.id)) {
+    const [width, height] = win.getContentSize()
+    win.contentView.addChildView(view)
+    view.setBounds({ x: width + 100, y: 0, width, height })
+  }
+  return view
 }
 
 /**

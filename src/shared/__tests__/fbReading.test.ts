@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import type { FbAccountBalance } from '../fbBillingParser'
 import {
   boardReadingRangeDates,
   buildBoardReadingUrl,
+  buildFbAccountOverviewUrlForRef,
   fbReadingMatchesWindow,
   parseFbReadingDateRange,
   summarizeFbReadings,
@@ -11,6 +13,16 @@ import {
 
 describe('FB reading date window', () => {
   const today = new Date(2026, 8, 17)
+  const balance = (act: string, amount: number): FbAccountBalance => ({
+    accountId: act,
+    kind: 'available',
+    amount,
+    currency: 'USD',
+    amountText: `$${amount.toFixed(2)}`,
+    label: '账户余额',
+    capturedAt: '2026-09-19T02:00:00.000Z',
+    sourceUrl: null
+  })
   it.each([
     ['today', '2026-09-17_2026-09-18'],
     ['last3', '2026-09-14_2026-09-17'],
@@ -29,6 +41,15 @@ describe('FB reading date window', () => {
     expect(boardReadingRangeDates('last3', new Date(2024, 2, 1))).toEqual({ start: '2024-02-27', end: '2024-02-29' })
     expect(new URL(buildBoardReadingUrl('三国IOS', 'today', new Date(2026, 11, 31))).searchParams.get('date'))
       .toBe('2026-12-31_2027-01-01')
+  })
+
+  it('pins the account-overview balance URL to one ad account', () => {
+    const url = new URL(
+      buildFbAccountOverviewUrlForRef({ alias: '三国AND', act: '27893958520273993', businessId: '1734414010144999' })
+    )
+    expect(url.pathname).toContain('/adsmanager/manage/accounts')
+    expect(url.searchParams.get('act')).toBe('27893958520273993')
+    expect(url.searchParams.get('business_id')).toBe('1734414010144999')
   })
 
   it('recognizes actual custom and preset labels, including a single day', () => {
@@ -88,6 +109,10 @@ describe('FB reading date window', () => {
         '27893958520273993': entry([
           row({ name: 'and', spend: 200, impressions: 20_000, clicks: 150, installs: 100, results: 10, resultType: 'Purchases' })
         ])
+      },
+      {
+        '2131017261144314': balance('2131017261144314', 120),
+        '27893958520273993': balance('27893958520273993', 80)
       }
     )
     expect(summary.complete).toBe(true)
@@ -99,6 +124,9 @@ describe('FB reading date window', () => {
     expect(summary.cpm).toBe(10)
     expect(summary.ctr).toBeCloseTo(0.833333, 5)
     expect(summary.cpa).toBe(20)
+    expect(summary.balance).toBe(200)
+    expect(summary.balanceKind).toBe('available')
+    expect(summary.balanceCurrency).toBe('USD')
   })
 
   it('hides ratio denominators when a required column or account is missing', () => {
@@ -126,14 +154,21 @@ describe('FB reading date window', () => {
       totalSpend: 100,
       rows: [row]
     }
-    const summary = summarizeFbReadings([ref, { alias: '三国AND', act: '27893958520273993', businessId: null }], {
-      [ref.act]: entry
-    })
+    const summary = summarizeFbReadings(
+      [ref, { alias: '三国AND', act: '27893958520273993', businessId: null }],
+      { [ref.act]: entry },
+      {
+        '2131017261144314': balance('2131017261144314', 25),
+        '27893958520273993': balance('27893958520273993', 75)
+      }
+    )
     expect(summary.complete).toBe(false)
     expect(summary.verifiedCount).toBe(1)
     expect(summary.spend).toBe(100)
     expect(summary.cpi).toBeNull()
     expect(summary.cpm).toBeNull()
     expect(summary.ctr).toBeNull()
+    expect(summary.balance).toBe(100)
+    expect(summary.accounts.find((account) => account.act === '27893958520273993')?.balance).toBe(75)
   })
 })

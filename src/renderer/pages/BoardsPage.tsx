@@ -65,6 +65,7 @@ import {
 } from '../lib/boardReading'
 import { WidgetBody } from './boards/WidgetBody'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
+import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
@@ -231,6 +232,7 @@ export default function BoardsPage() {
   const [readingAccounts, setReadingAccounts] = useState<FbReadingAccountEntry[]>([])
   const [readingPickerOpen, setReadingPickerOpen] = useState(false)
   const [readingPicked, setReadingPicked] = useState<Set<string>>(new Set())
+  const [readingManagerOpen, setReadingManagerOpen] = useState(false)
   const [boardRefreshBusy, setBoardRefreshBusy] = useState(false)
   const [boardRefreshProgress, setBoardRefreshProgress] = useState({ done: 0, total: 0 })
   const [detailOpen, setDetailOpen] = useState(false)
@@ -533,16 +535,25 @@ export default function BoardsPage() {
     if (CONFIG_ON_ADD.includes(type)) setConfigWidgetId(widget.id)
   }
 
-  const openReadingPicker = async () => {
+  const openReadingPicker = () => {
     setGalleryOpen(false)
-    try {
-      const list = await window.electronAPI.listFbReadingAccounts()
-      setReadingAccounts(Array.isArray(list) ? list : [])
-    } catch {
-      setReadingAccounts([])
-    }
     setReadingPicked(new Set())
+    setReadingManagerOpen(readingAccounts.length === 0)
     setReadingPickerOpen(true)
+  }
+
+  const handleReadingAccountsChange = (entries: FbReadingAccountEntry[]) => {
+    setReadingAccounts(entries)
+    setReadingPicked((prev) => new Set([...prev].filter((act) => entries.some((entry) => entry.act === act))))
+  }
+
+  const handleReadingAccountsAdded = (entries: FbReadingAccountEntry[]) => {
+    setReadingPicked((prev) => new Set([...prev, ...entries.map((entry) => entry.act)]))
+  }
+
+  const handleReadingAccountsRemoved = (acts: string[]) => {
+    const removed = new Set(acts)
+    setReadingPicked((prev) => new Set([...prev].filter((act) => !removed.has(act))))
   }
 
   const addFbReadingWidgets = () => {
@@ -561,7 +572,7 @@ export default function BoardsPage() {
           act: entry.act,
           businessId: entry.businessId,
           range: 'last7',
-          metrics: ['spend', 'cpi']
+          metrics: ['spend', 'balance', 'cpi']
         })
       )
     }
@@ -585,7 +596,7 @@ export default function BoardsPage() {
     const widget = createWidget('fb-reading-summary', t('boards.reading.summary.moduleName'), slot, {
       accounts: picked.map((entry) => ({ alias: entry.alias, act: entry.act, businessId: entry.businessId })),
       range: 'last7',
-      metrics: ['spend', 'cpi', 'cpm']
+      metrics: ['spend', 'balance', 'cpi', 'cpm']
     })
     mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, widget] }))
     setReadingPickerOpen(false)
@@ -1306,11 +1317,13 @@ export default function BoardsPage() {
               </div>
             )}
             {readingPickerOpen && (
-              <div className="fade-in absolute bottom-full left-1/2 mb-2 w-[300px] -translate-x-1/2 rounded-2xl border border-line bg-ink-900 p-2 shadow-pop">
+              <div className="fade-in absolute bottom-full left-1/2 mb-2 w-[340px] -translate-x-1/2 rounded-2xl border border-line bg-ink-900 p-2 shadow-pop">
                 <div className="px-1.5 pb-1.5 pt-1 text-[10.5px] font-semibold uppercase tracking-wider text-cream-faint">
                   {t('boards.reading.picker.title')}
                 </div>
-                <div className="max-h-[240px] space-y-0.5 overflow-y-auto">
+                <div className={`space-y-0.5 overflow-y-auto ${
+                  readingManagerOpen ? 'max-h-[132px]' : 'max-h-[240px]'
+                }`}>
                   {readingAccounts.length === 0 && (
                     <div className="px-1.5 py-2 text-[11px] text-cream-faint">{t('boards.reading.picker.none')}</div>
                   )}
@@ -1344,6 +1357,21 @@ export default function BoardsPage() {
                     )
                   })}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setReadingManagerOpen((open) => !open)}
+                  className="mt-1.5 w-full rounded-lg border border-line px-2 py-1.5 text-[11.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
+                >
+                  {t('boards.reading.picker.manageAccounts')}
+                </button>
+                <FbReadingAccountManager
+                  open={readingManagerOpen}
+                  accounts={readingAccounts}
+                  onAccountsChange={handleReadingAccountsChange}
+                  onAccountsAdded={handleReadingAccountsAdded}
+                  onAccountsRemoved={handleReadingAccountsRemoved}
+                  showAccounts={false}
+                />
                 <button
                   onClick={addFbReadingWidgets}
                   disabled={readingPicked.size === 0}
