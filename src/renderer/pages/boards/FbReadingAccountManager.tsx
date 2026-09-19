@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FbReadingAccountEntry } from '@shared/fbReading'
 import { useT } from '../../i18n'
+import { useAppStore } from '../../store'
 
 interface FbReadingAccountManagerProps {
   open: boolean
@@ -29,6 +30,7 @@ export function FbReadingAccountManager({
   showAccounts = true
 }: FbReadingAccountManagerProps) {
   const t = useT()
+  const inChat = useAppStore((s) => s.workspacePanel) === null
   const [loading, setLoading] = useState(true)
   const [formAlias, setFormAlias] = useState('')
   const [formAct, setFormAct] = useState('')
@@ -199,7 +201,8 @@ export function FbReadingAccountManager({
           <button
             type="button"
             onClick={() => void discover()}
-            disabled={discoverBusy}
+            disabled={discoverBusy || inChat}
+            title={inChat ? t('boards.reading.inChat') : undefined}
             className="rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:text-cream disabled:opacity-40"
           >
             {discoverBusy ? t('boards.reading.accounts.discovering') : t('boards.reading.accounts.discover')}
@@ -207,6 +210,8 @@ export function FbReadingAccountManager({
           <button
             type="button"
             onClick={() => void captureFromPanel()}
+            disabled={inChat}
+            title={inChat ? t('boards.reading.inChat') : undefined}
             className="rounded-lg border border-accent/50 px-2 py-1 text-[11px] text-accent transition hover:opacity-80"
           >
             {t('boards.reading.accounts.capture')}

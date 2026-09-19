@@ -1076,6 +1076,9 @@ const en = {
   'boards.reading.accounts.query': 'Keyword (e.g. AND — optional)',
   'boards.reading.accounts.discovering': 'Discovering…',
   'boards.reading.accounts.discoverFailed': 'Could not list accounts. Check the panel login, then retry.',
+  'boards.reading.inChat': 'Readings run in the Work view',
+  'boards.reading.inChatBanner': 'Board readings depend on the browser panel — switch to the Work view.',
+  'boards.reading.switchToWork': 'Switch to Work',
   'boards.reading.accounts.discoveredNone': 'No accounts found in the switcher.',
   'boards.reading.accounts.invalid': 'Check the alias and account ID.',
   'boards.reading.accounts.noneSelected': 'Pick an account first.',
@@ -1127,6 +1130,7 @@ const en = {
   'boards.preset.finance.trend': 'Price trend',
   'boards.preset.daily': 'Everyday',
   'boards.preset.blank': 'Blank board',
+  'boards.preset.fbDaily': 'FB daily report',
 
   // Plugin author page (/plugins/new)
   'author.back': 'Back to plugins',
@@ -1294,6 +1298,7 @@ const en = {
   'boards.newTemplate': 'Choose a starting template',
   'boards.template.blank': 'Blank board',
   'boards.template.ads': 'Ad daily report',
+  'boards.template.fbDaily': 'FB daily report',
   'boards.template.daily': 'Daily journal',
   'boards.template.finance': 'Market watch',
   // Office / browser → chat handoff
@@ -2527,6 +2532,9 @@ const zh: Record<I18nKey, string> = {
   'boards.reading.accounts.query': '关键词（如 AND，可选）',
   'boards.reading.accounts.discovering': '发现中…',
   'boards.reading.accounts.discoverFailed': '无法列出账户，请检查面板登录后重试。',
+  'boards.reading.inChat': '请在 Work 视图使用读数',
+  'boards.reading.inChatBanner': '看板读数依赖浏览器面板，请切换到 Work 视图使用。',
+  'boards.reading.switchToWork': '切换到 Work',
   'boards.reading.accounts.discoveredNone': '切换器里没有发现账户。',
   'boards.reading.accounts.invalid': '请检查别名和账户 ID。',
   'boards.reading.accounts.noneSelected': '请先选择账户。',
@@ -2578,6 +2586,7 @@ const zh: Record<I18nKey, string> = {
   'boards.preset.finance.trend': '价格走势',
   'boards.preset.daily': '日常通用',
   'boards.preset.blank': '空白看板',
+  'boards.preset.fbDaily': 'FB 投放日报',
 
   // Plugin author page (/plugins/new)
   'author.back': '返回插件页',
@@ -2738,6 +2747,7 @@ const zh: Record<I18nKey, string> = {
   'boards.newTemplate': '选择起始模板',
   'boards.template.blank': '空白看板',
   'boards.template.ads': '投放日报',
+  'boards.template.fbDaily': 'FB 投放日报',
   'boards.template.daily': '日常记录',
   'boards.template.finance': '行情盯盘',
   'office.askAgent': '让 Agent 分析这个工作簿',
