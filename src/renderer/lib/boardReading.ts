@@ -103,7 +103,7 @@ export function buildBoardReadingPrompt(
   const { start, end } = boardReadingRangeDates(range, today)
   return [
     `请读取「${account}」${BOARD_READING_RANGE_LABELS[range]}的${metricText}，生成可由我点击 Apply 的 board-cards 提议。执行规则已内联，无需重读 skill 文档。`,
-    `第1步（先做，命中即跳过实时读数）：fb_history 查 accountId=${target.act}；若存在 verified 读数满足 日期窗口=${start}~${end} 且含所需指标，直接用该读数执行第3步。字段对照：CPI 即 rows 的 costPerResult（FB「单次应用安装费用」列），CPM 即 cpm。`,
+    `第1步（先做，命中即跳过实时读数）：fb_history 查 accountId=${target.act}；若存在 verified 读数满足 日期窗口=${start}~${end} 且含所需指标，直接用该读数执行第3步。字段口径：CPI = spend ÷ installs（仅当 resultType 是应用安装且 installs 缺失时才可用 results）；CPM = spend ÷ impressions × 1000；CTR = clicks ÷ impressions × 100；CPA = spend ÷ results，且仅当所有行 resultType 一致。禁止把 purchases 的 costPerResult 标成 CPI。`,
     `第2步（第1步未命中才做）：browser_navigate 到 ${url}（请求体带 "takeover": true，面板可能被上次会话占用；URL 参数已含成对 date 与 insights_date，勿改动），页面稳定后 browser_report；仅 verified=true 的结果可用。`,
     '第3步 出卡：board-cards 围栏 JSON 压成一行，顶层必须带 "version":1，例如 {"version":1,"cards":[{"type":"metric","title":"总消耗","value":1234.56,"unit":"USD"},{"type":"list","title":"系列明细","items":["_008 $100.00 · CPI $10.00"]}]}，数值只来自上述合规来源。',
     '硬约束：FB 全程只读，禁止修改预算、出价等一切设置；未登录时提示我先在浏览器面板登录；口径不匹配或指标缺失时如实说明原因，不猜测、不用其他口径补齐；实时读数失败后最多重试两次即如实拒报收尾，禁止把重试循环放到后台反复导航浏览器面板打扰用户。'

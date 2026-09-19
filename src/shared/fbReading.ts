@@ -56,6 +56,24 @@ export function resolveFbReadingWidgetAccount(config: Record<string, unknown>): 
   return builtin ? { alias, act: builtin.act, businessId: builtin.businessId } : null
 }
 
+/** Resolve the account list snapshotted into a summary-widget config. */
+export function resolveFbReadingSummaryAccounts(config: Record<string, unknown>): FbReadingAccountRef[] {
+  if (!Array.isArray(config.accounts)) return []
+  const accounts: FbReadingAccountRef[] = []
+  for (const item of config.accounts) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const candidate = item as Record<string, unknown>
+    const alias = typeof candidate.alias === 'string' ? candidate.alias.trim() : ''
+    if (!alias || !isValidFbReadingAct(candidate.act)) continue
+    accounts.push({
+      alias,
+      act: candidate.act,
+      businessId: isValidFbReadingBusinessId(candidate.businessId) ? candidate.businessId : null
+    })
+  }
+  return accounts
+}
+
 export const FB_READING_ACCOUNT_TARGETS: Record<string, { act: string; businessId: string }> = {
   三国IOS: { act: '2131017261144314', businessId: '1734414010144999' }
 }
@@ -150,6 +168,7 @@ export interface FbReadingHistoryRow {
   spend: number | null
   costPerResult: number | null
   cpm: number | null
+  impressions: number | null
   results: number | null
   resultType: string | null
   clicks: number | null
@@ -178,6 +197,152 @@ export type FbReadingRefreshResult =
 /** History list for the reading module (latest verified entries first). */
 export type FbReadingHistoryListResult = FbReadingHistoryEntry[]
 
+export const FB_READING_SUMMARY_ACCOUNT_LIMIT = 10
+export const FB_READING_SUMMARY_METRICS = ['spend', 'cpi', 'cpm', 'ctr', 'cpa'] as const
+export type FbReadingSummaryMetric = (typeof FB_READING_SUMMARY_METRICS)[number]
+
+export interface FbReadingSummaryAccount {
+  alias: string
+  act: string
+  capturedAt: string
+  campaignCount: number | null
+  spend: number | null
+  installs: number | null
+  impressions: number | null
+  clicks: number | null
+  results: number | null
+  resultType: string | null
+  cpi: number | null
+  cpm: number | null
+  ctr: number | null
+  cpa: number | null
+}
+
+export interface FbReadingSummary {
+  complete: boolean
+  verifiedCount: number
+  accountCount: number
+  capturedAt: string | null
+  campaignCount: number | null
+  spend: number | null
+  installs: number | null
+  impressions: number | null
+  clicks: number | null
+  results: number | null
+  resultType: string | null
+  cpi: number | null
+  cpm: number | null
+  ctr: number | null
+  cpa: number | null
+  accounts: FbReadingSummaryAccount[]
+}
+
+const APP_INSTALL_RESULT_TYPES = new Set(['应用安装量', '移动应用安装量', 'App installs', 'Mobile app installs'])
+
+function sumAll(values: Array<number | null | undefined>): number | null {
+  if (values.some((value) => value === null || value === undefined)) return null
+  return values.reduce<number>((total, value) => (value === null || value === undefined ? total : total + value), 0)
+}
+
+function installCountOf(row: FbReadingHistoryRow): number | null {
+  if (row.installs !== null && row.installs !== undefined) return row.installs
+  if (row.resultType && APP_INSTALL_RESULT_TYPES.has(row.resultType)) return row.results ?? null
+  return null
+}
+
+function metricRatio(numerator: number | null, denominator: number | null, factor = 1): number | null {
+  if (numerator === null || denominator === null || denominator <= 0) return null
+  return (numerator / denominator) * factor
+}
+
+function projectSummaryAccount(ref: FbReadingAccountRef, entry: FbReadingHistoryEntry): FbReadingSummaryAccount {
+  const rows = entry.rows ?? []
+  const spend = sumAll(rows.map((row) => row.spend))
+  const installs = sumAll(rows.map(installCountOf))
+  const impressions = sumAll(rows.map((row) => row.impressions ?? null))
+  const clicks = sumAll(rows.map((row) => row.clicks))
+  const results = sumAll(rows.map((row) => row.results))
+  const resultTypes = Array.from(new Set(rows.map((row) => row.resultType).filter((type): type is string => Boolean(type))))
+  const resultType = resultTypes.length === 1 ? resultTypes[0] : null
+  return {
+    alias: ref.alias,
+    act: ref.act,
+    capturedAt: entry.capturedAt,
+    campaignCount: entry.campaignCount ?? rows.length,
+    spend,
+    installs,
+    impressions,
+    clicks,
+    results,
+    resultType,
+    cpi: metricRatio(spend, installs),
+    cpm: metricRatio(spend, impressions, 1000),
+    ctr: metricRatio(clicks, impressions, 100),
+    cpa: resultType ? metricRatio(spend, results) : null
+  }
+}
+
+/**
+ * Aggregate verified account readings into one product-level projection.
+ * Additive fields sum first; CPI/CPM/CTR/CPA are recomputed from summed
+ * denominators. Missing rows leave the dependent metric null rather than
+ * averaging account-level ratios.
+ */
+export function summarizeFbReadings(
+  accounts: FbReadingAccountRef[],
+  entriesByAct: Record<string, FbReadingHistoryEntry | null | undefined>
+): FbReadingSummary {
+  const projected = accounts.map((ref) => {
+    const entry = entriesByAct[ref.act]
+    return entry ? projectSummaryAccount(ref, entry) : null
+  })
+  const available = projected.filter((account): account is FbReadingSummaryAccount => account !== null)
+  const spend = sumAll(available.map((account) => account.spend))
+  const installs = sumAll(available.map((account) => account.installs))
+  const impressions = sumAll(available.map((account) => account.impressions))
+  const clicks = sumAll(available.map((account) => account.clicks))
+  const results = sumAll(available.map((account) => account.results))
+  const resultTypes = Array.from(
+    new Set(available.map((account) => account.resultType).filter((type): type is string => Boolean(type)))
+  )
+  const resultType = resultTypes.length === 1 ? resultTypes[0] : null
+  return {
+    complete: accounts.length > 0 && available.length === accounts.length,
+    verifiedCount: available.length,
+    accountCount: accounts.length,
+    capturedAt: available.map((account) => account.capturedAt).sort()[0] ?? null,
+    campaignCount: sumAll(available.map((account) => account.campaignCount)),
+    spend,
+    installs,
+    impressions,
+    clicks,
+    results,
+    resultType,
+    cpi: metricRatio(spend, installs),
+    cpm: metricRatio(spend, impressions, 1000),
+    ctr: metricRatio(clicks, impressions, 100),
+    cpa: resultType ? metricRatio(spend, results) : null,
+    accounts: projected.map((account, index) =>
+      account ?? {
+        alias: accounts[index].alias,
+        act: accounts[index].act,
+        capturedAt: '',
+        campaignCount: null,
+        spend: null,
+        installs: null,
+        impressions: null,
+        clicks: null,
+        results: null,
+        resultType: null,
+        cpi: null,
+        cpm: null,
+        ctr: null,
+        cpa: null
+      }
+    )
+  }
+}
+
 export function buildBoardReadingUrl(account: string, range: FbReadingRange, today: Date = new Date()): string {
   const target = FB_READING_ACCOUNT_TARGETS[account]
   return buildFbReadingUrlForRef(
@@ -199,9 +364,20 @@ export function buildFbReadingUrlForRef(
   const [year, month, day] = end.split('-').map(Number)
   const exclusiveEnd = fbDateString(new Date(year, month - 1, day + 1))
   const dates = `${start}_${exclusiveEnd}`
+  // Canonical columns prevent each account's saved Ads Manager view from
+  // omitting a denominator needed by product-level aggregation.
+  const columns = [
+    'name',
+    'results',
+    'spend',
+    'impressions',
+    'actions:mobile_app_install',
+    'clicks'
+  ].join(',')
   return (
     'https://adsmanager.facebook.com/adsmanager/manage/campaigns' +
     `?act=${ref.act}${ref.businessId ? `&business_id=${ref.businessId}` : ''}` +
+    `&columns=${encodeURIComponent(columns)}` +
     `&date=${dates}&insights_date=${dates}`
   )
 }

@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, FilePlus2, X } from 'lucide-react'
 import { BoardDataset, BoardWidget, BoardWidgetStyle } from '@shared/types'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
-import { resolveFbReadingWidgetAccount } from '@shared/fbReading'
+import { resolveFbReadingSummaryAccounts, resolveFbReadingWidgetAccount } from '@shared/fbReading'
 import type { FbReadingAccountEntry } from '@shared/fbReading'
 import { useAppStore } from '../../store'
 import { useT, I18nKey } from '../../i18n'
@@ -99,9 +99,22 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
   const [discovered, setDiscovered] = useState<Array<{ name: string; act: string }> | null>(null)
   const [discoverFailed, setDiscoverFailed] = useState(false)
   const [discoverError, setDiscoverError] = useState<string | null>(null)
+  const [summarySelectedActs, setSummarySelectedActs] = useState<Set<string>>(
+    () => new Set(resolveFbReadingSummaryAccounts(widget.config).map((account) => account.act))
+  )
+  const [readingMetricEmpty, setReadingMetricEmpty] = useState(false)
+
+  const summaryAccountOptions = useMemo(() => {
+    const merged = new Map<string, FbReadingAccountEntry>()
+    for (const account of resolveFbReadingSummaryAccounts(widget.config)) {
+      merged.set(account.act, { ...account, id: account.act, createdAt: 0 })
+    }
+    for (const account of accounts) merged.set(account.act, account)
+    return Array.from(merged.values())
+  }, [accounts, widget.config])
 
   useEffect(() => {
-    if (widget.type !== 'fb-reading') return
+    if (widget.type !== 'fb-reading' && widget.type !== 'fb-reading-summary') return
     let alive = true
     void window.electronAPI
       .listFbReadingAccounts()
@@ -347,9 +360,30 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
             setAccountError('none')
             return
           }
+          if (readingMetrics.length === 0) {
+            setReadingMetricEmpty(true)
+            return
+          }
           config = { account: ref.alias, act: ref.act, businessId: ref.businessId, range: readingRange, metrics: readingMetrics }
         }
         break
+      case 'fb-reading-summary': {
+        const selected = summaryAccountOptions.filter((account) => summarySelectedActs.has(account.act))
+        if (selected.length === 0) {
+          setAccountError('none')
+          return
+        }
+        if (readingMetrics.length === 0) {
+          setReadingMetricEmpty(true)
+          return
+        }
+        config = {
+          accounts: selected.map((account) => ({ alias: account.alias, act: account.act, businessId: account.businessId })),
+          range: readingRange,
+          metrics: readingMetrics
+        }
+        break
+      }
     }
     onSave({
       title: title.trim() || widget.title,
@@ -395,36 +429,69 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
             {t('boards.config.showSeconds')}
           </label>
         )}
-        {widget.type === 'fb-reading' && (
+        {(widget.type === 'fb-reading' || widget.type === 'fb-reading-summary') && (
           <>
-            <Field label={t('boards.reading.config.account')}>
-              <div className="flex items-center gap-1.5">
-                <select
-                  value={selectedAct}
-                  onChange={(e) => {
-                    setSelectedAct(e.target.value)
-                    setAccountError(null)
-                  }}
-                  className={inputClass}
-                >
-                  {accounts.length === 0 && <option value="">{t('boards.reading.accounts.loading')}</option>}
-                  {accounts.map((entry) => (
-                    <option key={entry.id} value={entry.act}>
-                      {entry.alias}（{entry.act}）
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => setManageOpen((open) => !open)}
-                  className="shrink-0 rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:text-cream"
-                >
-                  {t('boards.reading.accounts.manage')}
-                </button>
-              </div>
-            </Field>
+            {widget.type === 'fb-reading' ? (
+              <Field label={t('boards.reading.config.account')}>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={selectedAct}
+                    onChange={(e) => {
+                      setSelectedAct(e.target.value)
+                      setAccountError(null)
+                    }}
+                    className={inputClass}
+                  >
+                    {accounts.length === 0 && <option value="">{t('boards.reading.accounts.loading')}</option>}
+                    {accounts.map((entry) => (
+                      <option key={entry.id} value={entry.act}>
+                        {entry.alias}（{entry.act}）
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setManageOpen((open) => !open)}
+                    className="shrink-0 rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:text-cream"
+                  >
+                    {t('boards.reading.accounts.manage')}
+                  </button>
+                </div>
+              </Field>
+            ) : (
+              <Field label={t('boards.reading.summary.configAccounts')}>
+                <div className="max-h-[132px] space-y-1 overflow-y-auto rounded-lg border border-line bg-ink-850/60 p-1.5">
+                  {summaryAccountOptions.map((entry) => {
+                    const checked = summarySelectedActs.has(entry.act)
+                    return (
+                      <label key={entry.act} className="flex cursor-pointer items-center gap-2 text-[11px] text-cream-dim">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setSummarySelectedActs((prev) => {
+                              const next = new Set(prev)
+                              if (checked) next.delete(entry.act)
+                              else next.add(entry.act)
+                              return next
+                            })
+                            setAccountError(null)
+                          }}
+                          className="accent-[rgb(var(--accent))]"
+                        />
+                        <span className="truncate">{entry.alias}</span>
+                        <span className="ml-auto shrink-0 text-[10px] text-cream-faint">{entry.act}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </Field>
+            )}
             {accountError === 'none' && (
               <div className="text-[11px] text-red-400">{t('boards.reading.accounts.noneSelected')}</div>
+            )}
+            {readingMetricEmpty && (
+              <div className="text-[11px] text-red-400">{t('boards.reading.needMetric')}</div>
             )}
             {manageOpen && (
               <div className="space-y-2 rounded-xl border border-line bg-ink-850/60 p-2">
@@ -555,11 +622,12 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
                     return (
                       <button
                         key={value}
-                        onClick={() =>
+                        onClick={() => {
+                          setReadingMetricEmpty(false)
                           setReadingMetrics((prev) =>
                             prev.includes(value) ? prev.filter((m) => m !== value) : [...prev, value]
                           )
-                        }
+                        }}
                       className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
                           active
                             ? 'border-accent/60 bg-accent-soft text-accent'
