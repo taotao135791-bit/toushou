@@ -6,6 +6,7 @@ import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRos
 import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHistoryUuid, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
 import { mergeTranscriptBackfill } from '../lib/transcriptMerge'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
+import type { BoardReadingLaunch } from '../lib/boardReading'
 import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
 import type { OfficeWorkbookSnapshot } from '@shared/officeWorkbook'
@@ -194,6 +195,8 @@ interface AppState {
   composerPrefill: string | null
   /** Send the prefill automatically once its session is ready (one-click tool launch). */
   composerAutosend: boolean
+  /** Latest one-click board reading launch; the boards page projects its phase from messages/busy. */
+  boardReadingLaunch: BoardReadingLaunch | null
   /** Unsent composer text/images keyed by their owning runtime session. */
   composerDrafts: ComposerDrafts
   /** Sidebar: recent project folders, MRU first (persisted in electron-store). */
@@ -330,6 +333,7 @@ interface AppState {
   markSessionUnread: (sessionId: string) => void
   setComposerPrefill: (text: string | null) => void
   setComposerAutosend: (composerAutosend: boolean) => void
+  setBoardReadingLaunch: (launch: BoardReadingLaunch | null) => void
   setComposerDraft: (sessionId: string, draft: SessionComposerDraft) => void
   clearComposerDraft: (sessionId: string) => void
   /** Replace the recent-projects list (startup load; does not persist). */
@@ -457,6 +461,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   unreadSessionIds: {},
   composerPrefill: null,
   composerAutosend: false,
+  boardReadingLaunch: null,
   composerDrafts: {},
   recentProjects: [],
   recentWorkspaces: [],
@@ -1093,6 +1098,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     ),
   setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
   setComposerAutosend: (composerAutosend) => set({ composerAutosend }),
+  setBoardReadingLaunch: (boardReadingLaunch) => set({ boardReadingLaunch }),
   setComposerDraft: (sessionId, draft) =>
     set((state) => ({
       composerDrafts: setComposerDraft(state.composerDrafts, sessionId, draft)

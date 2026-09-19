@@ -2,6 +2,9 @@ import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from '
 import fs from 'node:fs'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
+import type { FbReadingRange } from '../shared/fbReading'
+import { refreshBoardFbReading } from './browserUse'
+import { listFbReadings } from './fbReadings'
 import {
   SessionEvent,
   ExternalSessionDescriptor,
@@ -2265,6 +2268,35 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_DATASETS_DELETE, async (_event, id: unknown) => {
     return deleteDataset(id)
+  })
+
+  // FB reading module — direct panel refresh, NO chat session involved. The
+  // canonical URL is built here (shared grammar), navigation takes over the
+  // panel from a stale owner session, and browser_report enforces the four
+  // precision gates before anything lands in fb_history. The module renders
+  // exclusively from verified history entries.
+  ipcMain.handle(
+    IPC_CHANNELS.FB_READING_REFRESH,
+    async (_event, raw: unknown) => {
+      const input = (raw ?? {}) as { account?: unknown; range?: unknown }
+      const account = input.account === '三国IOS' ? input.account : null
+      const range = input.range as FbReadingRange | undefined
+      if (
+        !account ||
+        (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30')
+      ) {
+        return { ok: false, error: 'invalid-input' }
+      }
+      return refreshBoardFbReading(account, range)
+    }
+  )
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_HISTORY, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { accountId?: unknown }
+    const accountId = typeof input.accountId === 'string' && /^\d{6,}$/.test(input.accountId)
+      ? input.accountId
+      : undefined
+    return listFbReadings(accountId).slice(0, 10)
   })
 
   ipcMain.handle(

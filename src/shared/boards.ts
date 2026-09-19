@@ -49,6 +49,7 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'clock',
   'note',
   'counter',
+  'fb-reading',
   'gauge',
   'chart-line',
   'chart-bar',
@@ -73,6 +74,7 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   clock: { w: 3, h: 3 },
   note: { w: 3, h: 3 },
   counter: { w: 3, h: 2 },
+  'fb-reading': { w: 6, h: 5 },
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
   'chart-bar': { w: 6, h: 4 },
@@ -85,6 +87,8 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
   switch (type) {
     case 'clock':
       return { showSeconds: true }
+    case 'fb-reading':
+      return { account: '三国IOS', range: 'last7', metrics: ['spend', 'cpi'] }
     case 'note':
       return { text: '' }
     case 'counter':
@@ -676,6 +680,20 @@ function validateWidgetConfig(
         if (filePath) config.filePath = filePath
       }
       return config
+    }
+    case 'fb-reading': {
+      // Reading-module config: pinned account + date window + metric set.
+      if (raw.account !== '三国IOS') return null
+      const range = raw.range
+      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr']
+      if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
+      const metrics: string[] = []
+      for (const metric of raw.metrics) {
+        if (typeof metric !== 'string' || !allowed.includes(metric) || metrics.includes(metric)) return null
+        metrics.push(metric)
+      }
+      return { account: raw.account, range, metrics }
     }
   }
 }

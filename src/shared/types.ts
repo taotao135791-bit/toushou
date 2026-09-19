@@ -1084,6 +1084,7 @@ export type WidgetType =
   | 'clock'
   | 'note'
   | 'counter'
+  | 'fb-reading'
   | 'gauge'
   | 'chart-line'
   | 'chart-bar'
@@ -1757,6 +1758,8 @@ export interface BrowserPanelState {
 export interface PanelOpenRequest {
   panel: 'browser' | 'office'
   url?: string
+  /** Board-refresh opens keep the current route instead of jumping home. */
+  keepRoute?: boolean
   path?: string
   /** Renderer-facing office payload: one read grant + display basename. */
   office?: { grant: FileGrant; name: string }

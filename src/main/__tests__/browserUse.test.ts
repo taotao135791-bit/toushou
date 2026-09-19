@@ -1,5 +1,70 @@
-import { describe, expect, it } from 'vitest'
-import { gateBrowserUseRequest, isFacebookReadOnlyAction, parseBrowserUseRequest, SNAPSHOT_SCRIPT } from '../browserUse'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { getActiveBrowserPanel, loadBrowserPanelUrl } from '../browserPanel'
+
+vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
+vi.mock('../browserPanel', () => ({
+  getActiveBrowserPanel: vi.fn(),
+  isBrowserPanelVisible: () => true,
+  loadBrowserPanelUrl: vi.fn(async () => {}),
+  withBrowserReadingViewport: (_view: unknown, read: () => Promise<unknown>) => read()
+}))
+import {
+  gateBrowserUseRequest,
+  isFacebookReadOnlyAction,
+  parseBrowserUseRequest,
+  readStableFbReading,
+  refreshBoardFbReading,
+  SCROLL_SCRIPT,
+  SNAPSHOT_SCRIPT,
+  type FbReadOnce
+} from '../browserUse'
+
+describe('board refresh admission and failures', () => {
+  afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })
+
+  const prepare = () => {
+    vi.useFakeTimers()
+    const executeJavaScript = vi.fn(async () => ({
+      url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
+      title: 'Ads Manager',
+      text: '错误：组件加载失败'
+    }))
+    vi.mocked(getActiveBrowserPanel).mockReturnValue({ webContents: {
+      isDestroyed: () => false,
+      isLoading: () => false,
+      getURL: () => 'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
+      getTitle: () => 'Ads Manager',
+      executeJavaScript
+    } } as unknown as NonNullable<ReturnType<typeof getActiveBrowserPanel>>)
+    return executeJavaScript
+  }
+
+  it('joins repeated clicks and refuses a different refresh while the panel is in use', async () => {
+    const execute = prepare()
+    const first = refreshBoardFbReading('三国IOS', 'last3')
+    expect(refreshBoardFbReading('三国IOS', 'last3')).toBe(first)
+    expect(await refreshBoardFbReading('三国IOS', 'last7')).toEqual({ ok: false, error: 'browser-busy' })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await first).toEqual({ ok: false, error: 'page-load-failed' })
+    expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(1)
+    expect(execute).toHaveBeenCalledTimes(1)
+    const retry = refreshBoardFbReading('三国IOS', 'last3')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await retry).toEqual({ ok: false, error: 'page-load-failed' })
+    expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns a network failure without attempting a report or background retries', async () => {
+    const execute = prepare()
+    vi.mocked(loadBrowserPanelUrl).mockRejectedValueOnce(new Error('ERR_NETWORK_CHANGED (-21) loading private URL'))
+    const result = refreshBoardFbReading('三国IOS', 'last3')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await result).toEqual({ ok: false, error: 'ERR_NETWORK_CHANGED' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(1)
+    expect(execute).not.toHaveBeenCalled()
+  })
+})
 
 describe('isFacebookReadOnlyAction (hard FB read-only boundary)', () => {
   it('blocks click and type on any facebook.com surface', () => {
@@ -146,5 +211,130 @@ describe('parseBrowserUseRequest', () => {
     expect(parseBrowserUseRequest({ action: 'eval', code: 'process.exit()' })).toBeNull()
     expect(parseBrowserUseRequest('navigate')).toBeNull()
     expect(parseBrowserUseRequest(null)).toBeNull()
+  })
+})
+
+describe('SCROLL_SCRIPT', () => {
+  it('scrolls the main frame and the roomiest inner scrollable container', () => {
+    const script = SCROLL_SCRIPT(-800)
+    expect(script).toContain('window.scrollBy({ top: delta })')
+    expect(script).toContain("-800")
+    // The inner-container scan is what rescues Ads Manager tables: their rows
+    // virtualize inside a nested scroller the window never moves.
+    expect(script).toContain("overflowY === 'auto' || style.overflowY === 'scroll'")
+    expect(script).toContain('best.scrollBy({ top: delta })')
+  })
+})
+
+describe('readStableFbReading (progressive-render retry)', () => {
+  const fast = { delayMs: 1, settleDelayMs: 1 }
+  const noRejection = () => null
+  const incomplete = () => 'incomplete-view'
+
+  const read = (reading: object | null): FbReadOnce<unknown> => ({
+    url: 'https://adsmanager.facebook.com/x',
+    title: 't',
+    text: 'raw',
+    reading
+  })
+
+  it('stops immediately on Facebook component failure instead of rereading a terminal error for 30 seconds', async () => {
+    let calls = 0
+    const result = await readStableFbReading(async () => {
+      calls += 1
+      return { ...read(null), text: '错误：组件加载失败\n出错了，请重新加载页面。' }
+    }, noRejection, fast)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('page-load-failed')
+    expect(calls).toBe(1)
+  })
+
+  it('also stops when the settled second read becomes a component error', async () => {
+    let calls = 0
+    const result = await readStableFbReading(async () => {
+      calls += 1
+      return calls === 1 ? read({ ok: true }) : { ...read(null), text: '错误：组件加载失败' }
+    }, noRejection, fast)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('page-load-failed')
+    expect(calls).toBe(2)
+  })
+
+  it('retries past a transient incomplete-view and returns two stable reads', async () => {
+    const good = { campaignCount: 8 }
+    const reads = [read(null), read({ broken: true }), read(good), read(good)]
+    let calls = 0
+    const result = await readStableFbReading(
+      async () => reads[calls++],
+      (r) => ((r as { broken?: boolean }).broken ? incomplete() : noRejection()),
+      { ...fast, firstAttempts: 4, secondAttempts: 2 }
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.first.reading).toEqual(good)
+      expect(result.second.reading).toEqual(good)
+    }
+    expect(calls).toBe(4)
+  })
+
+  it('refuses with the precise gate code when the first read never passes', async () => {
+    const bad = { campaignCount: 8, rows: 3 }
+    let calls = 0
+    const result = await readStableFbReading(
+      async () => { calls += 1; return read(bad) },
+      incomplete,
+      { ...fast, firstAttempts: 3 }
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toBe('incomplete-view')
+      expect(result.last.reading).toEqual(bad)
+    }
+    expect(calls).toBe(3)
+  })
+
+  it('refuses with unparseable-page when nothing ever parses', async () => {
+    const result = await readStableFbReading(async () => read(null), noRejection, { ...fast, firstAttempts: 2 })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('unparseable-page')
+  })
+
+  it('gives the settled second read its own bounded retries', async () => {
+    const good = { ok: true }
+    const reads = [read(good), read({ wobble: true }), read({ wobble: true }), read(good)]
+    let calls = 0
+    const result = await readStableFbReading(
+      async () => reads[calls++],
+      (r) => ((r as { wobble?: boolean }).wobble ? incomplete() : noRejection()),
+      { ...fast, firstAttempts: 2, secondAttempts: 3 }
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toBe(4)
+  })
+
+  it('refuses with the gate code when the second read stays unstable', async () => {
+    const good = { ok: 1 }
+    const reads = [read(good), read({ late: true }), read({ late: true })]
+    let calls = 0
+    const result = await readStableFbReading(
+      async () => reads[calls++],
+      (r) => ((r as { late?: boolean }).late ? 'totals-mismatch' : noRejection()),
+      { ...fast, firstAttempts: 1, secondAttempts: 2 }
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('totals-mismatch')
+  })
+
+  it('refuses with unstable-page when the second read stops parsing', async () => {
+    const good = { ok: 1 }
+    const reads = [read(good), read(null), read(null)]
+    let calls = 0
+    const result = await readStableFbReading(
+      async () => reads[calls++],
+      noRejection,
+      { ...fast, firstAttempts: 1, secondAttempts: 2 }
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('unstable-page')
   })
 })

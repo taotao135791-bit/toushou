@@ -4,7 +4,7 @@ import { mkdir, readdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
 import { BrowserWindow } from 'electron'
-import { getActiveBrowserPanel, isBrowserPanelVisible } from './browserPanel'
+import { getActiveBrowserPanel, isBrowserPanelVisible, loadBrowserPanelUrl, withBrowserReadingViewport } from './browserPanel'
 import { appendFbSnapshot, isFacebookSnapshotUrl } from './fbSnapshots'
 import { safeBrowserPanelUrl } from './navigation'
 import { IPC_CHANNELS } from '../shared/constants'
@@ -13,6 +13,9 @@ import {
   fbAdsReadingRejection,
   parseFbAdsCampaignsSnapshot
 } from '../shared/fbAdsParser'
+import type { FbAdsCampaignReading } from '../shared/fbAdsParser'
+import { boardReadingRangeDates, buildBoardReadingUrl, fbReadingMatchesWindow, FB_READING_ACCOUNT_TARGETS } from '../shared/fbReading'
+import type { FbReadingRange, FbReadingRefreshResult } from '../shared/fbReading'
 import { appendFbReading, listFbReadings } from './fbReadings'
 import { serializeBoundedJson } from '../shared/boundedJson'
 
@@ -100,6 +103,8 @@ export interface BrowserUseRequest {
   url?: string
   /** Navigation may explicitly transfer the visible panel to this session. */
   takeover?: boolean
+  /** Route-preserving panel open (board refresh): do not yank the UI home. */
+  keepRoute?: boolean
   accountId?: string
   limit?: number
   ref?: number
@@ -113,7 +118,7 @@ export interface BrowserUseRequest {
 }
 
 export type BrowserUseResult =
-  | { ok: true; url?: string; title?: string; text?: string; elements?: Array<Record<string, unknown>>; imagePath?: string; reading?: unknown; verified?: boolean; readings?: unknown[]; snapshotId?: string; tabId?: number; observedAt?: number; truncated?: boolean }
+  | { ok: true; url?: string; title?: string; text?: string; elements?: Array<Record<string, unknown>>; imagePath?: string; reading?: FbAdsCampaignReading; verified?: boolean; readings?: unknown[]; snapshotId?: string; tabId?: number; observedAt?: number; truncated?: boolean }
   | { ok: false; error: string; text?: string; url?: string; title?: string }
 
 const ACTION_NAMES = new Set<string>([
@@ -229,6 +234,101 @@ export const SNAPSHOT_SCRIPT = `(() => {
   return { url: location.href, title: document.title, text, elements }
 })()`
 
+/** One structured read attempt: raw snapshot plus the strict parse result. */
+export interface FbReadOnce<R> {
+  url: string
+  title: string
+  text: string
+  reading: R | null
+}
+
+/**
+ * Scroll script: the main frame AND the roomiest inner scrollable container.
+ * Ads Manager tables scroll inside nested divs, not the window, so a
+ * window-only scrollBy leaves virtualized rows outside the DOM forever.
+ */
+export const SCROLL_SCRIPT = (delta: number): string => `(() => {
+  const delta = ${delta}
+  window.scrollBy({ top: delta })
+  let best = null
+  let bestRoom = 0
+  let seen = 0
+  for (const el of document.querySelectorAll('div')) {
+    if (seen >= 64) break
+    seen += 1
+    const style = window.getComputedStyle(el)
+    if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 4) {
+      const room = el.scrollHeight - el.clientHeight
+      if (room > bestRoom) { best = el; bestRoom = room }
+    }
+  }
+  if (best) best.scrollBy({ top: delta })
+  return true
+})()`
+
+/**
+ * Bounded progressive-render retry around the strict FB reading gates.
+ *
+ * A clean parse alone used to end the wait, but FB renders campaign rows
+ * progressively and virtualizes them in and out of the DOM, so a read can
+ * parse while rows are still missing (incomplete-view). Re-read until BOTH
+ * the first and the post-settle second read parse AND pass the rejection
+ * gates, then hand the pair back for the consistency check. Refusal keeps
+ * the precise gate code; no data still beats wrong data.
+ */
+export async function readStableFbReading<R>(
+  readOnce: () => Promise<FbReadOnce<R>>,
+  rejectionOf: (reading: R) => string | null,
+  opts: { delayMs?: number; firstAttempts?: number; secondAttempts?: number; settleDelayMs?: number } = {}
+): Promise<
+  | { ok: true; first: FbReadOnce<R> & { reading: R }; second: FbReadOnce<R> & { reading: R } }
+  | { ok: false; error: string; last: FbReadOnce<R> }
+> {
+  // Cold loads of Ads Manager (fresh panel after an app restart) can take
+  // 30s+ past domcontentloaded before the SPA mounts table rows; 20 × 1.5s
+  // covers that without hanging the bridge on a dead page.
+  const { delayMs = 1_500, firstAttempts = 20, secondAttempts = 3, settleDelayMs = 700 } = opts
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const stableRead = async (attempts: number): Promise<FbReadOnce<R>> => {
+    let last: FbReadOnce<R> | null = null
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (attempt > 0) await sleep(delayMs)
+      last = await readOnce()
+      if (fbPageLoadFailure(last) || (last.reading && !rejectionOf(last.reading))) return last
+    }
+    return last as FbReadOnce<R>
+  }
+
+  const first = await stableRead(firstAttempts)
+  if (fbPageLoadFailure(first)) return { ok: false, error: 'page-load-failed', last: first }
+  if (!first.reading) {
+    return { ok: false, error: 'unparseable-page', last: first }
+  }
+  const firstRejection = rejectionOf(first.reading)
+  if (firstRejection) {
+    return { ok: false, error: firstRejection, last: first }
+  }
+  await sleep(settleDelayMs)
+  const second = await stableRead(secondAttempts)
+  if (fbPageLoadFailure(second)) return { ok: false, error: 'page-load-failed', last: second }
+  if (!second.reading) {
+    return { ok: false, error: 'unstable-page', last: second }
+  }
+  const secondRejection = rejectionOf(second.reading)
+  if (secondRejection) {
+    return { ok: false, error: secondRejection, last: second }
+  }
+  return {
+    ok: true,
+    first: first as FbReadOnce<R> & { reading: R },
+    second: second as FbReadOnce<R> & { reading: R }
+  }
+}
+
+function fbPageLoadFailure(page: { url: string; text: string }): boolean {
+  return isFacebookSnapshotUrl(page.url) && /(?:错误[：:]\s*组件加载失败|Error:\s*Component failed to load)/i.test(page.text)
+}
+
 function exec<T>(script: string): Promise<T> {
   const panel = getActiveBrowserPanel()
   if (!panel) return Promise.reject(new Error('panel-not-open'))
@@ -309,19 +409,22 @@ function waitForNavigation(previousUrl: string, timeoutMs: number): Promise<void
   })
 }
 
-async function openPanelWithUrl(url: string): Promise<void> {
+async function openPanelWithUrl(url: string, keepRoute = false): Promise<void> {
   // Reuse the renderer-driven flow so the panel lands with proper bounds and
   // the user sees exactly what the agent is about to operate on.
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send(IPC_CHANNELS.PANEL_OPEN, { panel: 'browser', url })
+      win.webContents.send(
+        IPC_CHANNELS.PANEL_OPEN,
+        keepRoute ? { panel: 'browser', url, keepRoute: true } : { panel: 'browser', url }
+      )
     }
   }
   // Give the renderer a moment to mount the panel before loading checks.
   await new Promise((r) => setTimeout(r, 300))
 }
 
-async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<BrowserUseResult> {
+export async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<BrowserUseResult> {
   if ((req.action === 'click' || req.action === 'type') && req.snapshotId) {
     const latest = sessionId ? latestSnapshotBySession.get(sessionId) : undefined
     if (latest !== req.snapshotId) {
@@ -347,14 +450,24 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
       if (sessionId) latestSnapshotBySession.delete(sessionId)
       const safeUrl = safeBrowserPanelUrl(req.url as string)
       if (!safeUrl) return { ok: false, error: 'invalid-url' }
-      await openPanelWithUrl(safeUrl)
-      // The renderer drives the visible attach; Main also loads directly so
-      // navigation is real even while the attach transition is in flight.
+      const beforeOpen = getActiveBrowserPanel()
+      // Start once in Main when a panel exists. Renderer attach/go calls
+      // join this promise; repeated explicit refreshes still fetch afresh.
+      const navigation = beforeOpen
+        ? loadBrowserPanelUrl(beforeOpen.webContents, safeUrl, true).then(
+          () => null,
+          (error: unknown) => error instanceof Error ? error : new Error('navigation-failed')
+        )
+        : null
+      await openPanelWithUrl(safeUrl, req.keepRoute === true)
+      // Join the renderer's pending load instead of aborting it with a
+      // second loadURL (getURL still reports the old page while loading).
       const existing = getActiveBrowserPanel()
-      if (existing) {
-        if (existing.webContents.getURL() !== safeUrl) {
-          await existing.webContents.loadURL(safeUrl)
-        }
+      if (navigation) {
+        const error = await navigation
+        if (error) throw error
+      } else if (existing) {
+        await loadBrowserPanelUrl(existing.webContents, safeUrl)
       }
       // Navigation is the one action allowed to reopen a hidden panel. The
       // renderer may attach it just after this request returns (for example
@@ -429,59 +542,48 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
         }
       }
 
-      // FB renders the table progressively (and virtualizes long tables);
-      // an immediate read can catch a half-rendered page, which the strict
-      // parser correctly refuses. Bounded retry until it parses cleanly.
-      let first: Awaited<ReturnType<typeof readOnce>> | null = null
-      for (let attempt = 0; attempt < 6; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 900))
-        first = await readOnce()
-        if (first.reading) break
-      }
-      const firstRead = first
-      if (!firstRead || !firstRead.reading) {
-        return {
-          ok: false,
-          error: 'unparseable-page',
-          text: firstRead ? firstRead.text.slice(0, 4_000) : '',
-          url: firstRead?.url ?? '',
-          title: firstRead?.title ?? ''
+      // Fit virtualized rows by temporarily zooming inside the existing
+      // panel. Native view bounds must remain owned by the renderer layout.
+      const reportPanel = getActiveBrowserPanel()
+      if (!reportPanel || reportPanel.webContents.isDestroyed()) return { ok: false, error: 'panel-not-open' }
+      // Progressive-render + virtualization retry: both reads must parse AND
+      // pass the strict gates before the consistency check (readStableFbReading).
+      return withBrowserReadingViewport<BrowserUseResult>(reportPanel, async () => {
+        const stable = await readStableFbReading(readOnce, fbAdsReadingRejection)
+        if (!stable.ok) {
+          return {
+            ok: false,
+            error: stable.error,
+            text: stable.last.text.slice(0, 4_000),
+            url: stable.last.url,
+            title: stable.last.title
+          }
         }
-      }
-      // Let a live page settle, then re-read: the double read catches pages
-      // that were still loading, and gates single-read consistency below.
-      await new Promise((r) => setTimeout(r, 700))
-      const second = await readOnce()
-      if (!second.reading) {
-        return { ok: false, error: 'unstable-page', url: second.url, title: second.title }
-      }
-      const rejection = fbAdsReadingRejection(second.reading)
-      if (rejection) {
-        return { ok: false, error: rejection, url: second.url, title: second.title }
-      }
-      if (!fbAdsReadingsConsistent(firstRead.reading, second.reading)) {
-        return { ok: false, error: 'unstable-page', url: second.url, title: second.title }
-      }
-      // Verified reading → history (trend foundation for scheduled tasks
-      // and boards). Fire-and-forget like the snapshot archive: a storage
-      // hiccup never fails the report the user is looking at.
-      try {
-        appendFbReading(second.reading)
-      } catch {
-        // history is advisory; ignore storage hiccups
-      }
-      return {
-        ok: true,
-        url: second.url,
-        title: second.title,
-        reading: second.reading,
-        verified: true
-      }
+        if (!fbAdsReadingsConsistent(stable.first.reading, stable.second.reading)) {
+          return { ok: false, error: 'unstable-page', url: stable.second.url, title: stable.second.title }
+        }
+        // Verified reading → history (trend foundation for scheduled tasks
+        // and boards). Fire-and-forget like the snapshot archive: a storage
+        // hiccup never fails the report the user is looking at.
+        try {
+          appendFbReading(stable.second.reading)
+        } catch {
+          // history is advisory; ignore storage hiccups
+        }
+        return {
+          ok: true,
+          url: stable.second.url,
+          title: stable.second.title,
+          reading: stable.second.reading,
+          verified: true
+        }
+      })
     }
     case 'history': {
-      // Verified-reading history for trends/boards. Compact projection only:
-      // name+spend per row keeps the payload inside the bridge's text cap
-      // while totals cover trend cards; full metrics stay in the store.
+      // Verified-reading history for trends/boards. Metrics per row ride
+      // along so a full-metric window hit can serve board cards without a
+      // live re-read; entries are small (8 rows typical) so the bridge text
+      // cap stays comfortably out of reach.
       const entries = listFbReadings(req.accountId).slice(0, req.limit ?? 10)
       const readings = entries.map((entry) => ({
         capturedAt: entry.capturedAt,
@@ -491,7 +593,17 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
         campaignCount: entry.campaignCount,
         totalSpend: entry.totalSpend,
         observation: entry.observation,
-        rows: entry.rows.map((row) => ({ name: row.name, spend: row.spend }))
+        rows: entry.rows.map((row) => ({
+          name: row.name,
+          spend: row.spend,
+          costPerResult: row.costPerResult,
+          cpm: row.cpm,
+          results: row.results,
+          clicks: row.clicks,
+          ctr: row.ctr,
+          cpc: row.cpc,
+          installs: row.installs
+        }))
       }))
       return { ok: true, readings }
     }
@@ -560,7 +672,8 @@ async function runAction(req: BrowserUseRequest, sessionId?: string): Promise<Br
       return { ok: true, url: page.url, title: page.title }
     }
     case 'scroll': {
-      await exec(`window.scrollBy({ top: ${req.direction === 'up' ? '-' : ''}${req.amount} })`)
+      const amount = typeof req.amount === 'number' ? req.amount : 4000
+      await exec(SCROLL_SCRIPT(req.direction === 'up' ? -amount : amount))
       await new Promise((r) => setTimeout(r, 150))
       const page = currentPage()
       if (sessionId) latestSnapshotBySession.delete(sessionId)
@@ -630,6 +743,43 @@ function withBrowserActionLock<T>(task: () => Promise<T>): Promise<T> {
     () => undefined
   )
   return run
+}
+
+let boardRefresh: { key: string; result: Promise<FbReadingRefreshResult> } | null = null
+
+/** One bounded refresh, serialized with chat browser tools; no background loop. */
+export function refreshBoardFbReading(account: string, range: FbReadingRange): Promise<FbReadingRefreshResult> {
+  const key = `${account}:${range}`
+  if (boardRefresh) {
+    return boardRefresh.key === key ? boardRefresh.result : Promise.resolve({ ok: false, error: 'browser-busy' })
+  }
+  const today = new Date()
+  const expected = boardReadingRangeDates(range, today)
+  const target = FB_READING_ACCOUNT_TARGETS[account]
+  if (!target) return Promise.resolve({ ok: false, error: 'invalid-input' })
+  const result = withBrowserActionLock<FbReadingRefreshResult>(async () => {
+    const startedAt = Date.now()
+    try {
+      const nav = await runAction({ action: 'navigate', url: buildBoardReadingUrl(account, range, today), keepRoute: true })
+      if (!nav.ok) return { ok: false, error: nav.error }
+      panelOwner = 'board-reading'
+      latestSnapshotBySession.clear()
+      const report = await runAction({ action: 'report' })
+      if (!report.ok) return { ok: false, error: report.error }
+      if (!report.verified || !report.reading) return { ok: false, error: 'unverified-reading' }
+      if (!fbReadingMatchesWindow(report.reading, target.act, expected)) return { ok: false, error: 'date-mismatch' }
+      const entry = listFbReadings(target.act).find((e) =>
+        Date.parse(e.capturedAt) >= startedAt && fbReadingMatchesWindow(e, target.act, expected)
+      )
+      return entry ? { ok: true, entry } : { ok: false, error: 'not-stored' }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ''
+      return { ok: false, error: message.match(/ERR_[A-Z_]+/)?.[0] ??
+        (['navigation-timeout', 'panel-hidden', 'panel-not-open'].includes(message) ? message : 'refresh-failed') }
+    }
+  }).finally(() => { boardRefresh = null })
+  boardRefresh = { key, result }
+  return result
 }
 
 /** Start the loopback server at app startup; safe to call more than once. */

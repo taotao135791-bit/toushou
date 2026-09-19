@@ -81,10 +81,19 @@ browser_snapshot()             → 读正文 + 拿元素 ref 清单
 ### URL 语法（日期与筛选免点击直达）
 
 基础：`https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=<act>&business_id=<bid>`
-- 时间范围：**date 与 insights_date 必须同时带**，缺一个 Ads Manager 可能忽略（例：`&date=2026-09-12_2026-09-15,last_3d&insights_date=2026-09-12_2026-09-15,last_3d`），预设可用 today / last_3d / last_7d / last_14d / last_30d
+- 时间范围：**date 与 insights_date 必须同时带相同的 `起始日_排他结束日`**。例如读取 9 月 14–16 日：`&date=2026-09-14_2026-09-17&insights_date=2026-09-14_2026-09-17`。URL 结束日是最后统计日的次日；今天也要写到明天。近 N 天沿用不含今天的口径。**不要添加 `last_3d` 等未经验证的预设标记**：`last_3d` 已实测触发“组件加载失败”。读取后必须核对页面实际日期标签与请求一致
 - 只要投放中的系列：`&filter_set=campaign.impressions-NUMBER%5EGREATER_THAN%5E0%1DCAMPAIGN_GROUP_DELIVERY_STATUS-STRING_SET%5EIN%5E%5B%22active%22%5D`
 - 流程固定为：拼 URL → `browser_navigate` → `browser_report`。日期与筛选**全部走 URL 参数**；FB 页面内点击（日期选择器/视图标签）会被只读边界拦截，那是设计行为，不要尝试
-- **URL 参数未生效时**（快照日期标签没变）：**禁止**改用点击去切换日期/视图——点击必被拦截，只会陷入空转。正确做法：按当前口径读数，并在卡片标题与汇报里如实注明（如"30 天口径"）；同时把未生效的参数原样告诉用户
+- **面板被其他会话占用**（`panel-owned-by-another-session`）：`browser_navigate` 请求体加 `"takeover": true` 即可接管面板（takeover 仅 navigate 支持）。发起新读数的会话默认带上，避免被上一次会话的持有权卡死
+- **URL 参数未生效时**（实际日期与请求不符）：停止本次读数并说明日期不匹配。不得用其他日期的数据或历史补齐，不出看板提议；禁止改用点击去切换日期/视图
+
+### 登录页中转 ≠ 未登录（2026-09-17 实战教训）
+
+Ads Manager 导航在会话校验时会 302 经过 `business.facebook.com/business/loginpage` 中转页，再自动跳回 Ads Manager。`browser_navigate` 在 `domcontentloaded` 时刻返回的 URL 可能正好落在中转页——**这是校验中转，不是登录墙**。
+
+- **禁止**凭一次中转 URL 就判「未登录」并放弃；真实判定标准是：等待 3–5 秒后再次 `browser_snapshot`，看**最终 URL 与页面内容**（有账户名/系列表格 = 已登录；仍停在 loginpage 且出现密码输入框 = 真未登录）
+ `browser_report` 内部自带多轮等待重读，中转几秒内结束它会自己读到最终页——所以即使怀疑中转，也**先跑一次 browser_report**，让它的事实说话
+- 只有二次确认仍停在登录页时，才提示用户在浏览器面板完成登录
 
 ### 拒报时的处理
 

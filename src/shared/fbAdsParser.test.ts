@@ -208,6 +208,31 @@ describe('parseFbMetricNumber', () => {
 })
 
 describe('parseFbAdsCampaignsSnapshot', () => {
+  it('reads the observed CTR-ending viewport and ignores only the exact row hover action strip', () => {
+    const text = REAL_CAMPAIGNS_TEXT
+      .replace(/(adtiger_[^\n]+\n)((?:[^\n]+\n){9})/g, (_match, name: string, values: string) =>
+        name + values.split('\n').slice(0, 7).join('\n') + '\n')
+      .replace('Ricky_0825_001\n', 'Ricky_0825_001\n图表\n编辑\n新建副本\n对比\n打开下拉菜单\n')
+    const reading = parseFbAdsCampaignsSnapshot({ url: REAL_URL, text })
+    expect(reading?.rows).toHaveLength(8)
+    expect(reading?.rows[1].ctr).toBe(2.61)
+    expect(reading?.rows[1].clicks).toBe(788)
+    expect(reading?.rows[1].cpc).toBeNull()
+    expect(reading?.rows[1].installs).toBeNull()
+    expect(fbAdsReadingRejection(reading!)).toBeNull()
+    // Unexpected text must still refuse the page, not be silently stripped.
+    expect(parseFbAdsCampaignsSnapshot({ url: REAL_URL, text: text.replace('图表\n编辑\n', '未知内容\n编辑\n') })).toBeNull()
+  })
+
+  it.each(['2026年8月12日 – 2026年9月10日', '2026年9月10日'])('recognizes a custom date label: %s', (label) => {
+    const reading = parseFbAdsCampaignsSnapshot({
+      url: REAL_URL,
+      text: REAL_CAMPAIGNS_TEXT.replace('过去 30 天：2026年8月12日 – 2026年9月10日', label)
+    })
+    expect(reading?.dateRangeLabel).toBe(label)
+    expect(fbAdsReadingRejection(reading!)).toBeNull()
+  })
+
   it('parses the real campaigns fixture exactly', () => {
     const reading = parseFbAdsCampaignsSnapshot({
       url: REAL_URL,
