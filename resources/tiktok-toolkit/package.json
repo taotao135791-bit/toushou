@@ -1,0 +1,26 @@
+{
+  "name": "toushou-tiktok-toolkit",
+  "version": "0.1.0",
+  "description": "投手 TikTok 工具：让助手在对话里拉取 TikTok 报表并更新看板数据集",
+  "displayName": "TikTok 看板工具",
+  "author": "投手团队",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "tiktok",
+    "boards"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  },
+  "files": [
+    "extensions"
+  ]
+}

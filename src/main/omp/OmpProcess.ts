@@ -12,6 +12,7 @@ import { spawnCommand } from '../command'
 import { browserUseEnv } from '../browserUse'
 import { feishuBridgeEnv } from '../integrations/feishu/feishuBridge'
 import { tasksBridgeEnv } from '../tasksBridge'
+import { tiktokBridgeEnv } from '../tiktokBridge'
 
 /**
  * Process assembly for `pi --mode rpc` sessions: CLI argument construction
@@ -208,7 +209,8 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       // per-session token binds bridge actions to this session.
       ...browserUseEnv(sessionId),
       ...feishuBridgeEnv(sessionId),
-      ...tasksBridgeEnv(sessionId)
+      ...tasksBridgeEnv(sessionId),
+      ...tiktokBridgeEnv(sessionId)
     }),
     approvalConfigFile
   }

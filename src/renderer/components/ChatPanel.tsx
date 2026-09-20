@@ -13,6 +13,7 @@ import {
   BookOpen,
   Puzzle,
   Settings2,
+  BarChart3,
   Globe2,
   FileText,
   Table2
@@ -89,6 +90,12 @@ export default function ChatPanel() {
         run: () => useAppStore.getState().setCurrentSessionId(null)
       },
       { name: 'mcp', description: t('slash.mcp'), icon: Plug, run: () => navigate('/connections') },
+      {
+        name: 'tiktok',
+        description: t('slash.tiktok'),
+        icon: BarChart3,
+        run: () => useAppStore.getState().setComposerPrefill(t('slash.tiktokPrompt'))
+      },
       { name: 'tasks', description: t('slash.tasks'), icon: CalendarClock, run: () => navigate('/tasks') },
       { name: 'boards', description: t('slash.boards'), icon: LayoutDashboard, run: () => navigate('/boards') },
       { name: 'skills', description: t('slash.skills'), icon: BookOpen, run: () => navigate('/skills') },
