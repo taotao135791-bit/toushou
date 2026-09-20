@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -92,8 +92,13 @@ describe('credentials round-trip + masking', () => {
     expect(JSON.stringify(info)).not.toContain('refresh-token-abcdef123456')
   })
 
-  it('writes the credentials file with mode 0600', () => {
+  it('writes the credentials file with mode 0600 (POSIX; Windows NTFS ACLs govern instead)', () => {
     setTikTokCredentials({ accessToken: 'a'.repeat(32) }, file)
+    if (process.platform === 'win32') {
+      // Windows keeps no POSIX mode bits — access control is NTFS ACL territory.
+      expect(existsSync(file)).toBe(true)
+      return
+    }
     const mode = statSync(file).mode & 0o777
     expect(mode).toBe(0o600)
   })
