@@ -1522,6 +1522,11 @@ export interface AppSettings {
   showDevChrome: boolean
   /** User-defined scheduled task definitions. */
   scheduledTasks: ScheduledTask[]
+  /**
+   * TikTok 报表自动刷新开关（TikTokRefreshService 每 30 分钟拉一次并覆写
+   * "TikTok 报表" 数据集）。与 prompt 式定时任务无关，只是这一个轻量开关。
+   */
+  tiktokAutoRefresh: boolean
 }
 
 // --- Scheduled tasks --------------------------------------------------------
@@ -1645,7 +1650,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bundledPackages: {},
   feishuExperimentalPersonalAgentRegistration: true,
   showDevChrome: false,
-  scheduledTasks: []
+  scheduledTasks: [],
+  tiktokAutoRefresh: false
 }
 
 /** Snapshot of a live session, from the RPC get_state command. */

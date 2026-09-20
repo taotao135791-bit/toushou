@@ -9,6 +9,7 @@ import {
   DATASET_LIMITS,
   DatasetImportResult,
   DatasetMutationResult,
+  BuiltDataset,
   buildDataset,
   isValidDatasetId,
   isValidDatasetName,
@@ -18,10 +19,12 @@ import {
 /**
  * Board dataset persistence + import — a single JSON document at
  * userData/board-datasets.json, written atomically (tmp + rename, same as
- * boards.ts). importDataset is the only writer: IPC resolves an opaque
- * FileGrant to a trusted, Main-held CSV/XLSX path before this function reads
- * it. It then parses a raw string grid (papaparse / xlsx) and lets the shared
- * pure layer infer types and clean values. Every read re-validates via
+ * boards.ts). importDataset is the only file-import writer: IPC resolves an
+ * opaque FileGrant to a trusted, Main-held CSV/XLSX path before this function
+ * reads it. It then parses a raw string grid (papaparse / xlsx) and lets the
+ * shared pure layer infer types and clean values. createOrUpdateDataset is
+ * the structured in-Main writer (TikTok 报表 refresh): same storage, same
+ * validation, replace-by-name instead of append. Every read re-validates via
  * validateDataset; a missing file is empty, while a corrupt/unreadable store
  * is surfaced and protected from destructive writes.
  */
@@ -202,6 +205,54 @@ export function importDataset(
   }
   try {
     writeDatasets(file, [...datasets, dataset])
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'write-failed',
+      detail: err instanceof Error ? err.message : String(err)
+    }
+  }
+  return { ok: true, dataset, truncated: built.truncated }
+}
+
+// ---------------------------------------------------------------------------
+// Structured upsert — Main-internal report writers (TikTok 报表 refresh).
+// Same storage + validation as file import, but replace-by-name so repeated
+// refreshes update ONE dataset instead of accumulating copies.
+// ---------------------------------------------------------------------------
+
+export function createOrUpdateDataset(
+  name: unknown,
+  built: BuiltDataset,
+  file: string = defaultDatasetsFile()
+): DatasetImportResult {
+  if (!isValidDatasetName(name)) return { ok: false, error: 'invalid-name' }
+  if (built.columns.length === 0) return { ok: false, error: 'empty' }
+  let datasets: BoardDataset[]
+  try {
+    datasets = readDatasets(file)
+  } catch {
+    return { ok: false, error: 'dataset-store-unreadable' }
+  }
+  const index = datasets.findIndex((d) => d.name === name)
+  if (index < 0 && datasets.length >= DATASET_LIMITS.maxDatasets) {
+    return { ok: false, error: 'dataset-limit' }
+  }
+  const dataset: BoardDataset = {
+    // Replace-by-name keeps the existing id/createdAt so widget bindings that
+    // reference the dataset id survive a refresh.
+    id: index >= 0 ? datasets[index].id : crypto.randomUUID(),
+    name: name as string,
+    columns: built.columns,
+    rows: built.rows,
+    createdAt: index >= 0 ? datasets[index].createdAt : Date.now()
+  }
+  const next =
+    index >= 0
+      ? datasets.map((d, i) => (i === index ? dataset : d))
+      : [...datasets, dataset]
+  try {
+    writeDatasets(file, next)
   } catch (err) {
     return {
       ok: false,

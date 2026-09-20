@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, ExternalLink, FileWarning, X } from 'lucide-react'
 import { FbReadingBody } from './FbReadingBody'
 import { FbReadingSummaryBody } from './FbReadingSummaryBody'
@@ -63,7 +63,9 @@ function resolveBinding(widget: BoardWidget, datasets: BoardDataset[], needsDim:
   const metric = configStr(widget.config.metric)
   const dimension = configStr(widget.config.dimension)
   if (!datasetId || !metric || (needsDim && !dimension)) return { kind: 'incomplete' }
-  const dataset = datasets.find((d) => d.id === datasetId)
+  // Preset templates bind by dataset NAME ("TikTok 报表") — id match first,
+  // name fallback so template widgets resolve without knowing generated ids.
+  const dataset = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
   if (!dataset) return { kind: 'missing-dataset' }
   const metricIndex = columnIndex(dataset, metric)
   const dimIndex = needsDim ? columnIndex(dataset, dimension) : -1
@@ -217,7 +219,70 @@ function chartFormat(v: number): string {
   return `${Math.round(v * 100) / 100}`
 }
 
-/** Hand-rolled SVG line/bar chart with gridlines and min/mid/max readouts. */
+/**
+ * Chart point shape contract (rendering-side only — nothing upstream is
+ * required to emit the extended form yet). A series entry is either a plain
+ * number (an observed value) or an object:
+ *
+ *   { value: number, forecast?: boolean, lo?: number, hi?: number }
+ *
+ * - `value` — the plotted number, same unit as plain-number points.
+ * - `forecast: true` — projection point: the segment leading into it renders
+ *   dashed and semi-transparent instead of solid.
+ * - `lo` / `hi` — optional confidence-band bounds; when present on forecast
+ *   points of a line chart they render as a light band around the line and
+ *   widen the y-scale. Bars ignore the band but keep the dashed styling.
+ *
+ * NOTE: persistence for the extended shape (and for chart `config.showValues`)
+ * lives in the per-type config whitelist in `src/shared/boards.ts`; until that
+ * whitelist is extended, this renderer tolerates both shapes so the charts
+ * already display forecast series fed from any source.
+ */
+interface ChartPoint {
+  value: number
+  forecast: boolean
+  lo: number | null
+  hi: number | null
+}
+
+/** Accepts a plain number or the extended { value, forecast?, lo?, hi? } shape. */
+function parseChartPoint(raw: unknown): ChartPoint | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return { value: raw, forecast: false, lo: null, hi: null }
+  }
+  if (typeof raw !== 'object' || raw === null) return null
+  const rec = raw as Record<string, unknown>
+  if (typeof rec.value !== 'number' || !Number.isFinite(rec.value)) return null
+  return {
+    value: rec.value,
+    forecast: rec.forecast === true,
+    lo: typeof rec.lo === 'number' && Number.isFinite(rec.lo) ? rec.lo : null,
+    hi: typeof rec.hi === 'number' && Number.isFinite(rec.hi) ? rec.hi : null
+  }
+}
+
+/** Minimum horizontal slot (svg units) per bar for an always-on value label; below it the label shows on hover only. */
+const BAR_LABEL_MIN_SLOT = 28
+
+/** Rough per-character width at the axis font size; CJK glyphs are full-width. */
+function approxTextWidth(s: string, fontSize: number): number {
+  let w = 0
+  for (const ch of s) w += ch.charCodeAt(0) > 0x2e80 ? fontSize : fontSize * 0.56
+  return w
+}
+
+/** Axis labels are truncated so the skip-interval estimate stays bounded. */
+function truncateAxisLabel(s: string): string {
+  return s.length > 10 ? `${s.slice(0, 9)}…` : s
+}
+
+/**
+ * Hand-rolled SVG line/bar chart: gridlines, min/mid/max readouts, always-on
+ * (bar) or toggleable (line) value labels, skip-interval x-axis labels, hover
+ * crosshair/highlight with an in-widget HTML tooltip, and dashed
+ * semi-transparent rendering for `forecast: true` points (with a lo/hi
+ * confidence band on line charts).
+ */
 function ChartBody({
   widget,
   bar,
@@ -228,8 +293,15 @@ function ChartBody({
   datasets: BoardDataset[]
 }) {
   const t = useT()
-  let points: number[]
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  // Hover snapshot in wrapper pixel coordinates (index + tooltip anchor), so
+  // the tooltip can be a plain absolutely-positioned div inside the widget
+  // instead of a portal.
+  const [hover, setHover] = useState<{ i: number; x: number; y: number } | null>(null)
+  let points: ChartPoint[]
   let labels: string[]
+  let dimName = ''
+  let metricName = ''
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, true)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} />
@@ -240,13 +312,15 @@ function ChartBody({
       configOp(widget.config.op),
       t('boards.datasets.other')
     )
-    points = grouped.points
+    points = grouped.points.map(parseChartPoint).filter((p): p is ChartPoint => p !== null)
     labels = grouped.labels
+    dimName = binding.dataset.columns[binding.dimIndex]?.name ?? ''
+    metricName = binding.dataset.columns[binding.metricIndex]?.name ?? ''
   } else {
     points = Array.isArray(widget.config.points)
-      ? (widget.config.points as unknown[]).filter(
-          (n): n is number => typeof n === 'number' && Number.isFinite(n)
-        )
+      ? (widget.config.points as unknown[])
+          .map(parseChartPoint)
+          .filter((p): p is ChartPoint => p !== null)
       : []
     labels = Array.isArray(widget.config.labels)
       ? (widget.config.labels as unknown[]).filter((s): s is string => typeof s === 'string')
@@ -259,29 +333,144 @@ function ChartBody({
       </div>
     )
   }
+  const values = points.map((p) => p.value)
   const W = 320
   const H = 120
   const padL = 30
   const padR = 6
-  const padT = 8
+  const padT = 14 // headroom for always-on value labels above the tallest mark
   const padB = 16
   const iw = W - padL - padR
   const ih = H - padT - padB
-  let min = Math.min(...points)
-  const max = Math.max(...points)
+  let min = Math.min(...values)
+  let max = Math.max(...values)
+  if (!bar) {
+    // The confidence band is drawn, so its bounds must fit the scale.
+    for (const p of points) {
+      if (p.lo !== null) min = Math.min(min, p.lo)
+      if (p.hi !== null) max = Math.max(max, p.hi)
+    }
+  }
   if (min === max) min = max - 1
   const lo = bar ? Math.min(0, min) : min
   const span = max - lo || 1
   const px = (i: number) => padL + (points.length === 1 ? iw / 2 : (i / (points.length - 1)) * iw)
   const py = (v: number) => padT + ih - ((v - lo) / span) * ih
   const gridVals = [lo, lo + span / 2, max]
-  const firstLabel = labels[0]
-  const lastLabel = labels.length > 1 ? labels[labels.length - 1] : undefined
   const zeroY = py(0)
 
+  // Value labels: on by default for bars (thin bars degrade to hover-only);
+  // for lines on when there are at most 12 points. config.showValues wins.
+  const showValues =
+    typeof widget.config.showValues === 'boolean'
+      ? widget.config.showValues
+      : bar || points.length <= 12
+
+  // Skip-interval x labeling: estimate the widest (truncated) label and step
+  // by however many slots it needs, so every Nth label shows and neighbors
+  // never collide — instead of dropping all middle labels.
+  const slot = iw / points.length
+  const maxLabelW = Math.max(
+    0,
+    ...labels.slice(0, points.length).map((l) => approxTextWidth(truncateAxisLabel(l), 7.5))
+  )
+  const labelStep = Math.max(1, Math.ceil((maxLabelW + 4) / slot))
+
+  const tooltipText = (p: ChartPoint): string => {
+    const value = p.value.toLocaleString()
+    if (dimName && metricName) return `${dimName} ${metricName}: ${value}`
+    if (metricName) return `${metricName}: ${value}`
+    return value
+  }
+
+  const handleMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = wrapRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    // The svg fills the wrapper and letterboxes its viewBox (xMidYMid meet),
+    // so convert pointer → viewBox coordinates through the meet transform.
+    const scale = Math.min(rect.width / W, rect.height / H) || 1
+    const offX = (rect.width - W * scale) / 2
+    const offY = (rect.height - H * scale) / 2
+    const sx = (e.clientX - rect.left - offX) / scale
+    if (sx < padL - 4 || sx > W - padR + 4 || points.length === 0) {
+      setHover(null)
+      return
+    }
+    const i = bar
+      ? Math.max(0, Math.min(points.length - 1, Math.floor((sx - padL) / slot)))
+      : points.reduce(
+          (best, _p, idx) => (Math.abs(px(idx) - sx) < Math.abs(px(best) - sx) ? idx : best),
+          0
+        )
+    const p = points[i]
+    // Tooltip anchors to the mark itself: bar centers, line points.
+    const anchorX = bar ? padL + slot * i + slot / 2 : px(i)
+    const anchorY = py(p.value)
+    const clampW = Math.max(rect.width, 112)
+    setHover({
+      i,
+      x: Math.min(Math.max(offX + anchorX * scale, 56), clampW - 56),
+      y: offY + anchorY * scale
+    })
+  }
+
+  const hoverPoint = hover && hover.i < points.length ? points[hover.i] : null
+  const hoverLabel = hover ? (labels[hover.i] ?? `#${hover.i + 1}`) : ''
+
+  // Forecast split for the line chart: everything up to the last observed
+  // point stays solid; the span into the forecast points renders dashed and
+  // semi-transparent. With no forecast points this reduces to today's path.
+  const lastObserved = points.reduce(
+    (last, p, i) => (p.forecast ? last : i),
+    -1
+  )
+  const hasForecast = lastObserved < points.length - 1
+  const linePath = (from: number, to: number) =>
+    points
+      .slice(from, to + 1)
+      .map((p, k) => `${k === 0 ? 'M' : 'L'} ${px(from + k).toFixed(2)} ${py(p.value).toFixed(2)}`)
+      .join(' ')
+  const areaPath = (from: number, to: number) =>
+    `${linePath(from, to)} L ${px(to).toFixed(2)} ${py(lo).toFixed(2)} L ${px(from).toFixed(2)} ${py(lo).toFixed(2)} Z`
+  // Confidence band: anchored at the last observed point, then every forecast
+  // point that carries both lo and hi.
+  const bandIndices = hasForecast
+    ? [
+        Math.max(lastObserved, 0),
+        ...points
+          .map((p, i) => ({ p, i }))
+          .slice(Math.max(lastObserved, 0) + 1)
+          .filter(({ p }) => p.forecast && p.lo !== null && p.hi !== null)
+          .map(({ i }) => i)
+      ]
+    : []
+  const bandPath =
+    bandIndices.length >= 2
+      ? `${bandIndices
+          .map((i, k) => {
+            // The anchor point has no band of its own — pinch to its value.
+            const top = points[i].hi ?? points[i].value
+            return `${k === 0 ? 'M' : 'L'} ${px(i).toFixed(2)} ${py(top).toFixed(2)}`
+          })
+          .join(' ')} ${bandIndices
+          .slice()
+          .reverse()
+          .map((i) => {
+            const bottom = points[i].lo ?? points[i].value
+            return `L ${px(i).toFixed(2)} ${py(bottom).toFixed(2)}`
+          })
+          .join(' ')} Z`
+      : null
+
   return (
-    <div className="flex h-full items-center justify-center">
-      <svg viewBox={`0 0 ${W} ${H}`} className="max-h-full w-full">
+    <div
+      ref={wrapRef}
+      className="relative flex h-full items-center justify-center"
+      onMouseMove={handleMove}
+      onMouseLeave={() => setHover(null)}
+    >
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full">
         {gridVals.map((v) => (
           <g key={v}>
             <line
@@ -301,57 +490,194 @@ function ChartBody({
           <line x1={padL} y1={zeroY} x2={W - padR} y2={zeroY} stroke="var(--board-widget-border)" strokeWidth={1} />
         )}
         {bar ? (
-          points.map((v, i) => {
-            const slot = iw / points.length
+          points.map((p, i) => {
             const bw = Math.min(26, slot * 0.62)
             const bx = padL + slot * i + (slot - bw) / 2
-            const top = py(Math.max(v, 0))
-            const height = Math.max(1, Math.abs(py(v) - py(Math.max(lo, 0))))
+            const top = py(Math.max(p.value, 0))
+            const height = Math.max(1, Math.abs(py(p.value) - py(Math.max(lo, 0))))
+            const hovered = hover?.i === i
+            // Labels need ~28px of slot width to fit between neighbors;
+            // thinner slots show the label on hover only.
+            const showLabel = slot >= BAR_LABEL_MIN_SLOT || hovered
+            const labelY = p.value >= 0 ? top - 3 : py(p.value) + 9
             return (
-              <rect
-                key={i}
-                x={bx}
-                y={v >= 0 ? top : py(Math.max(lo, 0))}
-                width={bw}
-                height={height}
-                rx={1.5}
-                fill="var(--board-widget-accent)"
-                fillOpacity={0.8}
-              />
+              <g key={i}>
+                <rect
+                  x={bx}
+                  y={p.value >= 0 ? top : py(Math.max(lo, 0))}
+                  width={bw}
+                  height={height}
+                  rx={1.5}
+                  fill="var(--board-widget-accent)"
+                  fillOpacity={p.forecast ? 0.35 : hovered ? 1 : 0.8}
+                  stroke={p.forecast ? 'var(--board-widget-accent)' : undefined}
+                  strokeWidth={p.forecast ? 0.8 : undefined}
+                  strokeDasharray={p.forecast ? '2 2' : undefined}
+                />
+                {showLabel && (
+                  <text
+                    x={bx + bw / 2}
+                    y={labelY}
+                    textAnchor="middle"
+                    fontSize={7.5}
+                    className={hovered ? 'fill-cream font-mono tabular-nums' : 'fill-cream-faint font-mono tabular-nums'}
+                  >
+                    {chartFormat(p.value)}
+                  </text>
+                )}
+              </g>
             )
           })
         ) : (
           <>
-            <path
-              d={`${points.map((v, i) => `${i === 0 ? 'M' : 'L'} ${px(i).toFixed(2)} ${py(v).toFixed(2)}`).join(' ')} L ${px(points.length - 1).toFixed(2)} ${py(lo).toFixed(2)} L ${px(0).toFixed(2)} ${py(lo).toFixed(2)} Z`}
-              fill="var(--board-widget-accent)"
-              fillOpacity={0.1}
-            />
-            <polyline
-              points={points.map((v, i) => `${px(i).toFixed(2)},${py(v).toFixed(2)}`).join(' ')}
-              fill="none"
-              stroke="var(--board-widget-accent)"
-              strokeWidth={1.5}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
+            {hasForecast ? (
+              <>
+                {lastObserved >= 0 && (
+                  <path
+                    d={areaPath(0, lastObserved)}
+                    fill="var(--board-widget-accent)"
+                    fillOpacity={0.1}
+                  />
+                )}
+                <path
+                  d={areaPath(Math.max(lastObserved, 0), points.length - 1)}
+                  fill="var(--board-widget-accent)"
+                  fillOpacity={0.05}
+                />
+                {bandPath && (
+                  <path d={bandPath} fill="var(--board-widget-accent)" fillOpacity={0.12} stroke="none" />
+                )}
+                {lastObserved >= 0 && (
+                  <polyline
+                    points={points
+                      .slice(0, lastObserved + 1)
+                      .map((p, i) => `${px(i).toFixed(2)},${py(p.value).toFixed(2)}`)
+                      .join(' ')}
+                    fill="none"
+                    stroke="var(--board-widget-accent)"
+                    strokeWidth={1.5}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                )}
+                <polyline
+                  points={points
+                    .slice(Math.max(lastObserved, 0))
+                    .map((p, i) => `${px(Math.max(lastObserved, 0) + i).toFixed(2)},${py(p.value).toFixed(2)}`)
+                    .join(' ')}
+                  fill="none"
+                  stroke="var(--board-widget-accent)"
+                  strokeOpacity={0.6}
+                  strokeWidth={1.5}
+                  strokeDasharray="3 3"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              </>
+            ) : (
+              <>
+                <path
+                  d={areaPath(0, points.length - 1)}
+                  fill="var(--board-widget-accent)"
+                  fillOpacity={0.1}
+                />
+                <polyline
+                  points={points.map((p, i) => `${px(i).toFixed(2)},${py(p.value).toFixed(2)}`).join(' ')}
+                  fill="none"
+                  stroke="var(--board-widget-accent)"
+                  strokeWidth={1.5}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              </>
+            )}
             {points.length <= 40 &&
-              points.map((v, i) => (
-                <circle key={i} cx={px(i)} cy={py(v)} r={1.6} fill="var(--board-widget-accent)" />
+              points.map((p, i) =>
+                p.forecast ? (
+                  <circle
+                    key={i}
+                    cx={px(i)}
+                    cy={py(p.value)}
+                    r={1.8}
+                    fill="none"
+                    stroke="var(--board-widget-accent)"
+                    strokeOpacity={0.7}
+                    strokeWidth={0.8}
+                  />
+                ) : (
+                  <circle key={i} cx={px(i)} cy={py(p.value)} r={1.6} fill="var(--board-widget-accent)" />
+                )
+              )}
+            {showValues &&
+              points.length <= 40 &&
+              points.map((p, i) => (
+                <text
+                  key={i}
+                  x={px(i)}
+                  y={py(p.value) - 4}
+                  textAnchor="middle"
+                  fontSize={6.5}
+                  className="fill-cream-faint font-mono tabular-nums"
+                >
+                  {chartFormat(p.value)}
+                </text>
               ))}
+            {hover && hoverPoint && (
+              <>
+                <line
+                  x1={px(hover.i)}
+                  y1={padT}
+                  x2={px(hover.i)}
+                  y2={padT + ih}
+                  stroke="var(--board-widget-border)"
+                  strokeWidth={1}
+                  strokeDasharray="2 3"
+                />
+                <circle
+                  cx={px(hover.i)}
+                  cy={py(hoverPoint.value)}
+                  r={3.2}
+                  fill="var(--board-widget-accent)"
+                  stroke="var(--board-widget-border)"
+                  strokeWidth={1}
+                />
+              </>
+            )}
           </>
         )}
-        {firstLabel !== undefined && (
-          <text x={padL} y={H - 4} fontSize={7.5} className="fill-cream-faint">
-            {firstLabel}
-          </text>
-        )}
-        {lastLabel !== undefined && (
-          <text x={W - padR} y={H - 4} textAnchor="end" fontSize={7.5} className="fill-cream-faint">
-            {lastLabel}
-          </text>
+        {labels.slice(0, points.length).map((label, i) =>
+          i % labelStep === 0 ? (
+            <text
+              key={i}
+              x={px(i)}
+              y={H - 4}
+              textAnchor={i === 0 ? (points.length === 1 ? 'middle' : 'start') : i === points.length - 1 ? 'end' : 'middle'}
+              fontSize={7.5}
+              className="fill-cream-faint"
+            >
+              {truncateAxisLabel(label)}
+            </text>
+          ) : null
         )}
       </svg>
+      {hover && hoverPoint && (
+        <div
+          role="tooltip"
+          className="pointer-events-none absolute z-10 max-w-[190px] rounded-md border border-line bg-ink-900/95 px-2 py-1.5 shadow-xl"
+          style={{
+            left: hover.x,
+            top: hover.y,
+            transform:
+              hover.y < 48 ? 'translate(-50%, 10px)' : 'translate(-50%, calc(-100% - 8px))'
+          }}
+        >
+          <div className="truncate text-[10.5px] font-medium leading-4 text-cream">{hoverLabel}</div>
+          <div className="text-[10.5px] leading-4 text-cream-dim">{tooltipText(hoverPoint)}</div>
+          {hoverPoint.forecast && (
+            <div className="text-[9.5px] leading-[14px] text-cream-faint">{t('boards.chart.forecast')}</div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

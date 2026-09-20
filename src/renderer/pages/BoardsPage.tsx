@@ -98,6 +98,7 @@ const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart
 /** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
   { preset: 'fb-daily', labelKey: 'boards.template.fbDaily' },
+  { preset: 'tiktok', labelKey: 'boards.template.tiktok' },
   { preset: 'blank', labelKey: 'boards.template.blank' },
   { preset: 'ads', labelKey: 'boards.template.ads' },
   { preset: 'daily', labelKey: 'boards.template.daily' },
@@ -118,7 +119,9 @@ const DATASET_ERROR_KEYS: Record<DatasetImportError, I18nKey> = {
   empty: 'boards.datasets.error.empty',
   'dataset-limit': 'boards.datasets.error.limit',
   'dataset-store-unreadable': 'boards.datasets.error.storeUnreadable',
-  'write-failed': 'boards.datasets.error.writeFailed'
+  'write-failed': 'boards.datasets.error.writeFailed',
+  // Main-internal writer path only (TikTok 报表 refresh) — never user-facing here.
+  'invalid-name': 'boards.datasets.error.invalidName'
 }
 
 function hasFileDrag(e: DragEvent): boolean {

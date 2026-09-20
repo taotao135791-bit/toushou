@@ -196,6 +196,8 @@ import {
 import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
+import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
+import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
@@ -770,6 +772,23 @@ export function registerIpc() {
     if (typeof url !== 'string') return false
     return tiktokAdsConnectionManager.openAuthorizationUrl(url)
   })
+
+  // --- TikTok 报表接入（Open API v1.3 → "TikTok 报表" 数据集） -------------
+  // Credentials stay in Main (0600 userData JSON); the renderer only receives
+  // the masked projection. Every payload is length/shape bounded here — no
+  // filesystem paths, ever.
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_CREDENTIALS_SET, (_event, raw: unknown) => {
+    return setTikTokCredentials(raw)
+  })
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_CREDENTIALS_LIST, () => tiktokReportService.getStatus().info)
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_REFRESH_NOW, () => tiktokReportService.refreshNow())
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_AUTOREFRESH_SET, (_event, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') {
+      return { ...tiktokReportService.getStatus(), error: 'invalid-input' }
+    }
+    return tiktokReportService.setAutoRefresh(enabled)
+  })
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_REPORT_STATUS, () => tiktokReportService.getStatus())
 
   // --- Figma Dev Mode MCP connector (local, code-token-only flavor) ------
   ipcMain.handle(IPC_CHANNELS.FIGMA_STATUS, async () => figmaConnectionManager.refreshStatus())

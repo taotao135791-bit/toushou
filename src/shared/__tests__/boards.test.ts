@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { BoardWidget, KanbanBoard } from '../types'
 import {
   BOARD_LIMITS,
+  GRID_COLS,
+  GRID_MAX_H,
   WIDGET_DEFAULT_SIZES,
   WIDGET_TYPES,
   compactWidgets,
@@ -14,6 +16,7 @@ import {
   migrateBoard,
   overseasAdsPreset,
   reflowWidgets,
+  tiktokAdsPreset,
   validateBoard
 } from '../boards'
 
@@ -544,6 +547,108 @@ describe('overseasAdsPreset', () => {
     expect(note?.title).toBe('boards.preset.ads.note')
     expect(note?.config).toEqual({ text: '' })
     expect(note?.layout).toEqual({ x: 8, y: 9, w: 4, h: 5 })
+  })
+})
+
+describe('tiktokAdsPreset', () => {
+  const t = (key: string) => key
+
+  it('builds eight dataset-bound widgets and passes validation', () => {
+    const widgets = tiktokAdsPreset(t)
+    expect(widgets.map((w) => w.type)).toEqual([
+      'counter',
+      'counter',
+      'counter',
+      'counter',
+      'chart-line',
+      'chart-bar',
+      'chart-line',
+      'note'
+    ])
+    const board = { ...createBoard('TikTok', 1), widgets }
+    expect(validateBoard(board)?.widgets).toHaveLength(8)
+    // composeBoard routes the chip-selected preset to the same widgets.
+    const composed = composeBoard('tiktok ads', t, 'tiktok')
+    expect(composed.name).toBe('boards.preset.tiktok')
+    expect(composed.widgets).toHaveLength(8)
+  })
+
+  it('keeps the grid clean: every widget inside 12 cols and no overlaps', () => {
+    const widgets = tiktokAdsPreset(t)
+    for (const w of widgets) {
+      const { x, y, w: width, h } = w.layout
+      expect(x).toBeGreaterThanOrEqual(0)
+      expect(y).toBeGreaterThanOrEqual(0)
+      expect(x + width).toBeLessThanOrEqual(GRID_COLS)
+      expect(h).toBeLessThanOrEqual(GRID_MAX_H)
+    }
+    for (let i = 0; i < widgets.length; i++) {
+      for (let j = i + 1; j < widgets.length; j++) {
+        const a = widgets[i].layout
+        const b = widgets[j].layout
+        const collides =
+          a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+        expect(collides, `${i} overlaps ${j}`).toBe(false)
+      }
+    }
+  })
+
+  it('binds the four KPI counters to the TikTok dataset across the top row', () => {
+    const counters = tiktokAdsPreset(t).filter((w) => w.type === 'counter')
+    expect(counters.map((w) => w.layout)).toEqual([
+      { x: 0, y: 0, w: 3, h: 3 },
+      { x: 3, y: 0, w: 3, h: 3 },
+      { x: 6, y: 0, w: 3, h: 3 },
+      { x: 9, y: 0, w: 3, h: 3 }
+    ])
+    expect(counters.map((w) => w.title)).toEqual([
+      'boards.preset.tiktok.kpiSpend',
+      'boards.preset.tiktok.kpiClicks',
+      'boards.preset.tiktok.kpiCtr',
+      'boards.preset.tiktok.kpiConversions'
+    ])
+    // Binding contract: the dataset NAME lives in the datasetId field.
+    expect(counters.map((w) => w.config)).toEqual([
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '消耗', op: 'sum' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '点击', op: 'sum' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '点击率', op: 'avg' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '转化', op: 'sum' }
+    ])
+  })
+
+  it('binds the spend/conversion trends and the per-campaign comparison', () => {
+    const widgets = tiktokAdsPreset(t)
+    const charts = widgets.filter((w) => w.type === 'chart-line' || w.type === 'chart-bar')
+    expect(charts.map((w) => [w.type, w.title])).toEqual([
+      ['chart-line', 'boards.preset.tiktok.spendTrend'],
+      ['chart-bar', 'boards.preset.tiktok.campaignSpend'],
+      ['chart-line', 'boards.preset.tiktok.conversionTrend']
+    ])
+    expect(charts.map((w) => w.layout)).toEqual([
+      { x: 0, y: 3, w: 6, h: 6 },
+      { x: 6, y: 3, w: 6, h: 6 },
+      { x: 0, y: 9, w: 6, h: 6 }
+    ])
+    for (const chart of charts) {
+      expect(chart.config.source).toBe('dataset')
+      expect(chart.config.datasetId).toBe('TikTok 报表')
+      expect(chart.config.op).toBe('sum')
+    }
+    // Trend metrics differ (消耗 vs 转化); only the campaign bar groups by
+    // 活动名称, the trends run over 日期.
+    expect(charts[0].config.metric).toBe('消耗')
+    expect(charts[0].config.dimension).toBe('日期')
+    expect(charts[1].config.dimension).toBe('活动名称')
+    expect(charts[2].config.metric).toBe('转化')
+    expect(charts[2].config.dimension).toBe('日期')
+  })
+
+  it('seeds the data-source note below the conversion trend', () => {
+    const note = tiktokAdsPreset(t).find((w) => w.type === 'note')
+    expect(note?.title).toBe('boards.preset.tiktok.note')
+    expect(note?.layout).toEqual({ x: 6, y: 9, w: 6, h: 6 })
+    expect(typeof note?.config.text).toBe('string')
+    expect(note?.config.text).not.toBe('')
   })
 })
 
