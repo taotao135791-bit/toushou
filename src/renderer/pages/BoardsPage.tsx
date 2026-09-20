@@ -97,6 +97,7 @@ const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart
 
 /** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
+  { preset: 'fb-daily', labelKey: 'boards.template.fbDaily' },
   { preset: 'blank', labelKey: 'boards.template.blank' },
   { preset: 'ads', labelKey: 'boards.template.ads' },
   { preset: 'daily', labelKey: 'boards.template.daily' },
@@ -211,6 +212,8 @@ export default function BoardsPage() {
   const t = useT()
   const navigate = useNavigate()
   const language = useAppStore((state) => state.language)
+  const inChatView = useAppStore((state) => state.workspacePanel) === null
+  const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
   const [boards, setBoards] = useState<KanbanBoard[] | null>(null)
   const [boardsLoadFailed, setBoardsLoadFailed] = useState(false)
   const [boardsLoadGeneration, setBoardsLoadGeneration] = useState(0)
@@ -1184,6 +1187,17 @@ export default function BoardsPage() {
           </div>
         )}
       </header>
+      {inChatView && (
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line bg-amber-500/10 px-4 py-1.5 text-[11.5px] text-amber-300">
+          <span>{t('boards.reading.inChatBanner')}</span>
+          <button
+            onClick={() => setWorkspacePanel({ kind: 'plugins' })}
+            className="shrink-0 rounded-full border border-amber-400/40 px-2.5 py-0.5 text-[11px] text-amber-200 transition hover:border-amber-300 hover:text-amber-100"
+          >
+            {t('boards.reading.switchToWork')}
+          </button>
+        </div>
+      )}
 
       <div
         ref={boardAreaRef}
@@ -1739,6 +1753,7 @@ export default function BoardsPage() {
             <div className="mt-3 flex flex-wrap gap-1.5">
               {(
                 [
+                  { preset: 'fb-daily', label: t('boards.preset.fbDaily') },
                   { preset: 'ads', label: t('boards.preset.ads') },
                   { preset: 'daily', label: t('boards.preset.daily') },
                   { preset: 'blank', label: t('boards.compose.chipBlank') }

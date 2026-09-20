@@ -4,6 +4,7 @@ import { BoardWidget } from '@shared/types'
 import { boardReadingRangeDates, fbReadingMatchesWindow, resolveFbReadingWidgetAccount } from '@shared/fbReading'
 import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { useT } from '../../i18n'
+import { useAppStore } from '../../store'
 
 interface FbReadingDisplayRow {
   name: string
@@ -43,6 +44,7 @@ const ctrOf = (row: FbReadingDisplayRow): number | null =>
  */
 export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   const t = useT()
+  const inChat = useAppStore((s) => s.workspacePanel) === null
   const accountRef = resolveFbReadingWidgetAccount(widget.config)
   const account = accountRef?.alias ?? (typeof widget.config.account === 'string' ? widget.config.account : '')
   const range = (typeof widget.config.range === 'string' ? widget.config.range : 'last7') as
@@ -247,7 +249,8 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           {includeBalance && (
             <button
               onClick={() => void refreshBalance()}
-              disabled={busy || balanceBusy}
+              disabled={busy || balanceBusy || inChat}
+              title={inChat ? t('boards.reading.inChat') : undefined}
               className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
             >
               {balanceBusy ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
@@ -258,7 +261,8 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           )}
           <button
             onClick={() => void refresh()}
-            disabled={busy || balanceBusy}
+            disabled={busy || balanceBusy || inChat}
+            title={inChat ? t('boards.reading.inChat') : undefined}
             className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
           >
             {busy ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}

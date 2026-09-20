@@ -16,6 +16,7 @@ import {
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
 import {
+  FB_READING_BUILTIN_ACCOUNTS,
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   FB_READING_SUMMARY_METRICS,
   FB_READING_ACCOUNT_TARGETS,
@@ -162,7 +163,7 @@ export function createWidget(
 /** Translator shape the presets need; the renderer passes its i18n `t`. */
 export type BoardText = (key: string) => string
 
-export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank'
+export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily'
 
 export interface ComposedBoard {
   name: string
@@ -185,6 +186,9 @@ const ADS_KEYWORDS = [
   'roas'
 ]
 const FINANCE_KEYWORDS = ['财经', '股票', 'clock', 'stock']
+// FB daily matches before the generic ads keywords: "读数/汇总/日报" name the
+// real-data reading board, while "广告/fb/…" keeps the demo ads board.
+const FB_DAILY_KEYWORDS = ['读数', '汇总', '账户日报', '产品汇总', '投放日报']
 
 function matchesKeyword(text: string, keyword: string): boolean {
   // eslint-disable-next-line no-control-regex
@@ -195,6 +199,7 @@ function matchesKeyword(text: string, keyword: string): boolean {
 /** Pick a preset from a free-form description; anything unknown falls back to daily. */
 export function detectPreset(description: string): BoardPresetId {
   const text = description.toLowerCase()
+  if (FB_DAILY_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'fb-daily'
   if (ADS_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'ads'
   if (FINANCE_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'finance'
   return 'daily'
@@ -281,6 +286,40 @@ export function dailyPreset(t: BoardText): BoardWidget[] {
 }
 
 /**
+ * FB daily board: the optimiser's whole workflow in one view — the
+ * cross-account summary (totals + per-account rows) on top, then one
+ * campaign-level detail card per account, seeded with the builtin account
+ * (colleagues add their own detail cards via 添加模块).
+ */
+export function fbDailyPreset(t: BoardText): BoardWidget[] {
+  const builtin = FB_READING_ACCOUNT_TARGETS['三国IOS']
+  return [
+    presetWidget(
+      'fb-reading-summary',
+      t('boards.widget.fb-reading-summary'),
+      { x: 0, y: 0, w: 8, h: 7 },
+      {
+        accounts: FB_READING_BUILTIN_ACCOUNTS.map((a) => ({ ...a })),
+        range: 'last7',
+        metrics: [...FB_READING_SUMMARY_METRICS]
+      }
+    ),
+    presetWidget(
+      'fb-reading',
+      t('boards.widget.fb-reading'),
+      { x: 0, y: 7, w: 6, h: 5 },
+      {
+        account: '三国IOS',
+        act: builtin.act,
+        businessId: builtin.businessId,
+        range: 'last3',
+        metrics: ['spend', 'cpi', 'cpm', 'ctr']
+      }
+    )
+  ]
+}
+
+/**
  * Deterministically compose a new board from a free-form description. A
  * chip-selected `preset` skips keyword detection entirely. The caller turns
  * the result into a real board via `createBoard` and switches to it.
@@ -296,6 +335,8 @@ export function composeBoard(
       return { name: t('boards.preset.ads'), widgets: overseasAdsPreset(t) }
     case 'finance':
       return { name: t('boards.preset.finance'), widgets: financePreset(t) }
+    case 'fb-daily':
+      return { name: t('boards.preset.fbDaily'), widgets: fbDailyPreset(t) }
     case 'blank':
       return { name: t('boards.preset.blank'), widgets: [] }
     default:
