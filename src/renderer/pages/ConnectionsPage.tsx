@@ -209,10 +209,9 @@ export default function ConnectionsPage() {
       </header>
       <div className="flex-1 overflow-y-auto p-5">
         <div className="mx-auto max-w-[720px] space-y-5">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-cream">{t('connections.title')}</h1>
-            <p className="mt-1 text-[13px] text-cream-faint">{t('connections.subtitle')}</p>
-          </div>
+          {/* One title only (design.md 3.3): the topbar owns the page name,
+              the content keeps just the intro line. */}
+          <p className="text-[13px] text-cream-faint">{t('connections.subtitle')}</p>
 
           <section className="overflow-hidden rounded-[18px] border border-line bg-ink-850 shadow-card">
             <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
@@ -242,7 +241,7 @@ export default function ConnectionsPage() {
                   ))}
                 </div>
                 <div className="mt-5 flex flex-wrap items-center gap-3">
-                  <button onClick={() => void begin()} disabled={busy} className="flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-[12px] font-medium text-white shadow-card hover:bg-accent-bright disabled:opacity-50">
+                  <button onClick={() => void begin()} disabled={busy} className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-[12px] font-medium text-white shadow-card hover:bg-accent-bright disabled:opacity-50">
                     <QrCode size={14} /> {t('connections.connect')}
                   </button>
                   <button onClick={() => setShowAdvanced(true)} className="text-[12px] text-cream-faint underline decoration-line-strong underline-offset-4 hover:text-cream">{t('connections.advanced')}</button>
@@ -282,7 +281,7 @@ export default function ConnectionsPage() {
                   <InfoRow label={t('connections.docs')} value={t('connections.onDemand')} />
                 </div>
                 <div className="mt-5 flex flex-wrap items-center gap-3">
-                  <button onClick={tryInChat} className="flex items-center gap-1.5 rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:bg-accent-bright"><MessageCircle size={12} />{t('connections.tryInChat')}</button>
+                  <button onClick={tryInChat} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:bg-accent-bright"><MessageCircle size={12} />{t('connections.tryInChat')}</button>
                   <button onClick={() => void testConnection()} className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><RefreshCw size={12} />{checked ? t('connections.checked') : t('connections.check')}</button>
                   <button onClick={() => void disconnect()} disabled={busy} className="flex items-center gap-1.5 rounded-full border border-red-500/20 px-3 py-1.5 text-[12px] text-red-500 hover:bg-red-500/10"><Unplug size={12} />{t('connections.disconnect')}</button>
                 </div>
@@ -290,7 +289,7 @@ export default function ConnectionsPage() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="text-[12px] font-medium text-cream">{t('connections.extraAccess')}</div>
                     <div className="flex flex-wrap gap-2">
-                      <button onClick={() => void beginOAuth('all')} disabled={oauthBusy} className="rounded-full bg-accent px-3 py-1.5 text-[11px] font-medium text-white hover:bg-accent-bright disabled:opacity-50">{t('connections.authorizeAll')}</button>
+                      <button onClick={() => void beginOAuth('all')} disabled={oauthBusy} className="rounded-lg bg-accent px-3 py-1.5 text-[11px] font-medium text-white hover:bg-accent-bright disabled:opacity-50">{t('connections.authorizeAll')}</button>
                       <button onClick={() => void verifyScopes()} disabled={oauthBusy} className="flex items-center gap-1 rounded-full border border-line px-3 py-1.5 text-[11px] text-cream-dim hover:text-cream disabled:opacity-50"><RefreshCw size={11} />{t('connections.verifyScopes')}</button>
                     </div>
                   </div>
@@ -348,7 +347,7 @@ export default function ConnectionsPage() {
                         <button
                           onClick={() => void beginRepair()}
                           disabled={busy}
-                          className="rounded-full bg-accent px-3 py-1 text-[11px] font-medium text-white transition hover:bg-accent-bright disabled:opacity-50"
+                          className="rounded-lg bg-accent px-3 py-1 text-[11px] font-medium text-white transition hover:bg-accent-bright disabled:opacity-50"
                         >
                           {t('connections.scopeGapRepair')}
                         </button>
@@ -402,11 +401,11 @@ export default function ConnectionsPage() {
             )}
 
             {isDegraded && (
-              <div className="px-5 py-5"><div className="text-[13px] font-medium text-amber-600 dark:text-amber-300">{t('connections.degraded')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.degradedHint')}</p><button onClick={() => void begin()} className="mt-4 flex items-center gap-1.5 rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white"><RefreshCw size={12} />{t('connections.retry')}</button></div>
+              <div className="px-5 py-5"><div className="text-[13px] font-medium text-amber-600 dark:text-amber-300">{t('connections.degraded')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.degradedHint')}</p><button onClick={() => void begin()} className="mt-4 flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white"><RefreshCw size={12} />{t('connections.retry')}</button></div>
             )}
 
             {isFailed && !showAdvanced && (
-              <div className="px-5 py-5"><div className="text-[13px] font-medium text-red-500">{t('connections.error')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.errorHint')}</p><div className="mt-4 flex gap-3"><button onClick={() => void begin()} className="flex items-center gap-1.5 rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white"><RefreshCw size={12} />{t('connections.retry')}</button><button onClick={() => setShowAdvanced(true)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.advanced')}</button></div></div>
+              <div className="px-5 py-5"><div className="text-[13px] font-medium text-red-500">{t('connections.error')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.errorHint')}</p><div className="mt-4 flex gap-3"><button onClick={() => void begin()} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white"><RefreshCw size={12} />{t('connections.retry')}</button><button onClick={() => setShowAdvanced(true)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.advanced')}</button></div></div>
             )}
 
             {showAdvanced && !isLive && (
@@ -419,7 +418,7 @@ export default function ConnectionsPage() {
                 </div>
                 <label className="mt-3 block text-[11px] text-cream-faint">{t('connections.brand')}<select value={brand} onChange={(event) => setBrand(event.target.value as 'feishu' | 'lark')} className="mt-1 h-9 rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream outline-none"><option value="feishu">{t('connections.feishuRegion')}</option><option value="lark">{t('connections.larkRegion')}</option></select></label>
                 {snapshot.lastError && <p className="mt-3 text-[11px] text-red-500">{snapshot.lastError}</p>}
-                <div className="mt-4 flex flex-wrap gap-3"><button onClick={() => void connectManual()} disabled={busy || !appId || !appSecret} className="rounded-full bg-accent px-4 py-2 text-[12px] font-medium text-white disabled:opacity-50">{t('connections.saveAdvanced')}</button><button onClick={() => setShowAdvanced(false)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.hideAdvanced')}</button></div>
+                <div className="mt-4 flex flex-wrap gap-3"><button onClick={() => void connectManual()} disabled={busy || !appId || !appSecret} className="rounded-lg bg-accent px-4 py-2 text-[12px] font-medium text-white disabled:opacity-50">{t('connections.saveAdvanced')}</button><button onClick={() => setShowAdvanced(false)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.hideAdvanced')}</button></div>
                 <div className="mt-4 flex items-center gap-2 text-[11px] text-cream-faint"><LockKeyhole size={12} />{t('connections.secureNote')}</div>
               </div>
             )}

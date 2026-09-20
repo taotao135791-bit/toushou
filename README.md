@@ -6,13 +6,21 @@
 
 ## 下载安装
 
-当前版本 v0.20.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v0.20.0) 下载：
+当前版本 v1.1.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.1.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.20.0/TouShou-arm64.dmg) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v0.20.0/TouShou-x64.dmg) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v0.20.0/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.1.0/TouShou-x64.exe) | 见 Release | 见 Release |
+
+安装包由 GitHub Actions 在推送 `v1.1.0` 标签后自动构建，并附带更新清单与 SHA-256 校验文件。
+
+v1.1.0：「浅色工作台、可靠边界与真实入口」。首页改为浅灰侧栏、白色主画布、居中“投手”字标、宽输入框与灰色操作托盘；Work / Chat 视图、浏览器、文件、表格、自动任务和插件入口均接入现有真实路由。普通对话保持单列，打开对象才展开右侧工作区，默认工作区宽度修复为 440px。浏览器桥接按需裁剪并标记传输范围，密码字段不进入快照，点击/输入必须携带当前 `snapshotId`，导航失败与跨会话接管显式返回结果。定时任务超时会先取消已启动会话再释放运行锁。Facebook Ads 固定列布局改为严格校验。Office 提议在生成时绑定原始文档身份与 revision，保存时区分主动清除的公式/样式与投影遗漏。
+
+v1.0.0：「体验闭环、浏览器、Office 与界面升级」。定时任务运行记录拥有稳定 `runId`，真实反映准备中、运行中、等待用户、完成、失败、取消、超时和中断恢复等状态；任务页展示下次运行、上次状态与失败恢复入口。浏览器快照携带 `snapshotId`、`tabId` 与 `observedAt`，点击/输入会拒绝陈旧快照引用，桥接响应统一做有界序列化。Facebook Ads 读取增加双读证据、覆盖率、币种、时区和归因窗口元数据，并保持只读边界。Office 工作区支持公式、显示值、常见样式、合并/隐藏、行列尺寸，文档拥有 dirty 状态与 revision 校验，Agent 提议修改必须在当前文档中批量确认后才写入；保存仍只通过用户触发的另存为流程。右侧 Browser / Office / 插件工作区统一为可调整宽度、窄屏可用并支持键盘操作，补齐减动效、无障碍标签和 [design.md](design.md) 设计契约。
+
+v0.21.0：「爆款竞品分析」链路进内核。新增内置打法《爆款竞品分析》（每次启动自动装进 Skill 库、带版本号升级、保留团队手工微调）：从我方 TikTok 账户表现找薄弱点 → 翻译成对标问题 → SocialPeta 竞品爆款检索（creative_rank 上升榜 / search_creatives / creative_detail / advertiser_analysis）→ 按固定模板产出「爆款竞品分析需求单」，第 0 步强制工具自检（TikTok/SocialPeta 任一未挂载即如实报告并停止，不用半套数据编结论）。定时任务新增「每周爆款竞品分析」一键模板（每周一 09:00 + 关联打法）；任务新增 skillId 字段——触发时把打法注入为会话系统提示，定时执行与手动"用于对话"走同一份 SOP（实测：任务触发后 OMP 子进程启动参数携带完整打法，Skill 库自动安装、模板预填、错误 skillId 拒绝保存均已验证）。agent 的 toushou_task_create 也支持 skillId，在对话/飞书里说"每周帮我跑一次爆款竞品分析"即可建好带打法的循环任务。
 
 v0.20.0：定时任务成为真正的员工（结果进飞书 / agent 可建任务 / 可核查）。**任务结果推送飞书**——任务新增"完成通知"选项：除了系统通知，可选择推送到飞书，每轮跑完把结果摘要自动发到你与机器人的最近聊天（实测推送成功；此前任务结果死在系统通知里，人不在电脑前就错过）。**对话内直接建任务**——新增 toushou-tasks-toolkit 扩展包，agent 在对话和飞书里可以直接创建、查看、删除定时任务（实测：对话里说"每 3 分钟巡检一次"，工具调用→校验→落盘一条链路自动完成）；安全边界保持 Main 所有：任务运行目录强制绑定当前会话的项目（agent 无法指定其他目录）、排程/长度/数量全部在主进程校验、任务数上限 50。**工作日排程与分钟级间隔**——排程新增"工作日（周一到周五）"和"每 N 分钟"（广告日报最常见的两种节奏，此前要么周末白跑要么建 5 个任务）。**运行历史**——每张任务卡片可展开最近 10 次运行（时间/成功失败/耗时/失败原因，点击直达该次运行会话），定时任务的"可靠感"从此可核查；失败原因全部中英双语。**首启引导补连接步骤**——向导在模型就绪后新增"连接你的第一个数据源"（飞书/TikTok Ads 一键前往连接页，可跳过；全部已连接时自动放行不再重复引导），并修复一个 v0.17.1 起的潜在冻结：模型探测结果会被 effect 的 active 守卫丢弃，全新首启的用户会永远卡在"正在检查模型配置"。**其他**——侧栏两个入口改名区分（「插件」与「Skill 库」，此前「插件与技能」和「Skill」并排打架）；项目行显示友好名称而非裸路径；实测 3 分钟间隔任务连续两轮自动触发、结果两次送达飞书、运行历史两条落盘。
 
@@ -155,6 +163,8 @@ v0.1.1：流式输出渲染提速（消息增量微批合并、按会话订阅�
 
 - 插件系统：搜索安装、拖拽启停、本机编写 TypeScript 扩展
 - 看板（Boards）：自由布局的小组件墙，支持导入 CSV / XLSX 数据集
+- 浏览器工作区：在受控会话中打开网页，快照带可追踪身份，过期引用会要求重新读取页面
+- Office 工作区：本地 XLSX / CSV 另存为、公式与常见格式保真，Agent 修改必须经过确认
 - `@` 模糊引用文件、图片粘贴与附件（最多 4 张、单张 10MB）
 - 中英双语界面、明暗主题、会话导出 HTML、后台完成时系统通知
 
@@ -186,6 +196,14 @@ pnpm test        # 单元测试
 pnpm build       # 构建
 pnpm package     # 打包桌面应用
 ```
+
+运行时兼容性回归（需要本机安装当前 OMP）：
+
+```bash
+pnpm test:omp
+```
+
+发布前门禁由 `.github/workflows/release.yml` 执行：类型检查、全量测试、OMP 兼容测试、macOS/Windows 打包、校验和生成和 GitHub Release 资产上传。带凭据的 `pnpm test:omp:live` 不属于默认发布流程。
 
 ## 目录结构
 

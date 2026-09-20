@@ -349,6 +349,27 @@ describe('factories', () => {
       expect(validateBoard(board)?.widgets[0].type).toBe(type)
     }
   })
+
+  it('validates summary reading configs with bounded, unique account refs', () => {
+    const config = {
+      accounts: [
+        { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' },
+        { alias: '三国AND', act: '27893958520273993', businessId: null }
+      ],
+      range: 'last3',
+      metrics: ['spend', 'cpi', 'cpm']
+    }
+    const board = withWidget(
+      widgetOf('fb-reading-summary', config, { x: 0, y: 0, w: 6, h: 6 })
+    )
+    expect(board?.widgets[0].config).toEqual(config)
+    expect(withWidget(widgetOf('fb-reading-summary', { ...config, accounts: [] }))?.widgets).toHaveLength(0)
+    expect(
+      withWidget(widgetOf('fb-reading-summary', { ...config, accounts: [...config.accounts, config.accounts[0]] }))
+        ?.widgets
+    ).toHaveLength(0)
+    expect(withWidget(widgetOf('fb-reading-summary', { ...config, metrics: [] }))?.widgets).toHaveLength(0)
+  })
 })
 
 describe('composeBoard + presets', () => {
@@ -417,6 +438,30 @@ describe('composeBoard + presets', () => {
       expect(validated).not.toBeNull()
       expect(validated?.widgets).toHaveLength(composed.widgets.length)
     }
+  })
+
+  it('routes reading/summary descriptions to the FB daily preset before ads', () => {
+    for (const text of ['fb 读数', '三国 账户日报', '读数看板', '产品汇总', 'fb 汇总', '多账户汇总', '投放日报']) {
+      expect(detectPreset(text), text).toBe('fb-daily')
+      expect(composeBoard(text, t).name).toBe('boards.preset.fbDaily')
+    }
+    // Generic ads keywords keep their existing meaning.
+    expect(detectPreset('fb 广告')).toBe('ads')
+  })
+
+  it('fb daily preset layers summary over account detail', () => {
+    const composed = composeBoard('读数', t, 'fb-daily')
+    expect(composed.widgets).toHaveLength(2)
+    expect(composed.widgets[0].type).toBe('fb-reading-summary')
+    expect(composed.widgets[1].type).toBe('fb-reading')
+    expect(composed.widgets[1].layout.y).toBeGreaterThanOrEqual(
+      composed.widgets[0].layout.y + composed.widgets[0].layout.h
+    )
+
+    const board = { ...createBoard(composed.name, 1), widgets: composed.widgets }
+    const validated = validateBoard(board)
+    expect(validated).not.toBeNull()
+    expect(validated?.widgets).toHaveLength(2)
   })
 })
 

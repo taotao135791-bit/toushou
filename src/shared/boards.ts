@@ -15,6 +15,15 @@ import {
   WidgetType
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
+import {
+  FB_READING_BUILTIN_ACCOUNTS,
+  FB_READING_SUMMARY_ACCOUNT_LIMIT,
+  FB_READING_SUMMARY_METRICS,
+  FB_READING_ACCOUNT_TARGETS,
+  isValidFbReadingAct,
+  isValidFbReadingBusinessId,
+  type FbReadingAccountRef
+} from './fbReading'
 
 export const BOARD_LIMITS = {
   maxBoards: 50,
@@ -49,6 +58,8 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'clock',
   'note',
   'counter',
+  'fb-reading',
+  'fb-reading-summary',
   'gauge',
   'chart-line',
   'chart-bar',
@@ -73,6 +84,8 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   clock: { w: 3, h: 3 },
   note: { w: 3, h: 3 },
   counter: { w: 3, h: 2 },
+  'fb-reading': { w: 6, h: 5 },
+  'fb-reading-summary': { w: 6, h: 6 },
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
   'chart-bar': { w: 6, h: 4 },
@@ -85,6 +98,22 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
   switch (type) {
     case 'clock':
       return { showSeconds: true }
+    case 'fb-reading':
+      return {
+        account: '三国IOS',
+        act: FB_READING_ACCOUNT_TARGETS['三国IOS'].act,
+        businessId: FB_READING_ACCOUNT_TARGETS['三国IOS'].businessId,
+        range: 'last7',
+        metrics: ['spend', 'balance', 'cpi']
+      }
+    case 'fb-reading-summary':
+      return {
+        accounts: FB_READING_ACCOUNT_TARGETS['三国IOS']
+          ? [{ ...FB_READING_ACCOUNT_TARGETS['三国IOS'], alias: '三国IOS' }]
+          : [],
+        range: 'last7',
+        metrics: ['spend', 'balance', 'cpi', 'cpm']
+      }
     case 'note':
       return { text: '' }
     case 'counter':
@@ -111,7 +140,8 @@ export function createBoard(name: string, now: number = Date.now()): KanbanBoard
 export function createWidget(
   type: WidgetType,
   title: string,
-  slot: { x: number; y: number }
+  slot: { x: number; y: number },
+  configOverride?: Record<string, unknown>
 ): BoardWidget {
   const size = WIDGET_DEFAULT_SIZES[type]
   return {
@@ -119,7 +149,7 @@ export function createWidget(
     type,
     title,
     layout: { x: slot.x, y: slot.y, w: size.w, h: size.h },
-    config: defaultWidgetConfig(type)
+    config: configOverride ?? defaultWidgetConfig(type)
   }
 }
 
@@ -133,7 +163,7 @@ export function createWidget(
 /** Translator shape the presets need; the renderer passes its i18n `t`. */
 export type BoardText = (key: string) => string
 
-export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank'
+export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily'
 
 export interface ComposedBoard {
   name: string
@@ -156,6 +186,9 @@ const ADS_KEYWORDS = [
   'roas'
 ]
 const FINANCE_KEYWORDS = ['财经', '股票', 'clock', 'stock']
+// FB daily matches before the generic ads keywords: "读数/汇总/日报" name the
+// real-data reading board, while "广告/fb/…" keeps the demo ads board.
+const FB_DAILY_KEYWORDS = ['读数', '汇总', '账户日报', '产品汇总', '投放日报']
 
 function matchesKeyword(text: string, keyword: string): boolean {
   // eslint-disable-next-line no-control-regex
@@ -166,6 +199,7 @@ function matchesKeyword(text: string, keyword: string): boolean {
 /** Pick a preset from a free-form description; anything unknown falls back to daily. */
 export function detectPreset(description: string): BoardPresetId {
   const text = description.toLowerCase()
+  if (FB_DAILY_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'fb-daily'
   if (ADS_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'ads'
   if (FINANCE_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'finance'
   return 'daily'
@@ -252,6 +286,40 @@ export function dailyPreset(t: BoardText): BoardWidget[] {
 }
 
 /**
+ * FB daily board: the optimiser's whole workflow in one view — the
+ * cross-account summary (totals + per-account rows) on top, then one
+ * campaign-level detail card per account, seeded with the builtin account
+ * (colleagues add their own detail cards via 添加模块).
+ */
+export function fbDailyPreset(t: BoardText): BoardWidget[] {
+  const builtin = FB_READING_ACCOUNT_TARGETS['三国IOS']
+  return [
+    presetWidget(
+      'fb-reading-summary',
+      t('boards.widget.fb-reading-summary'),
+      { x: 0, y: 0, w: 8, h: 7 },
+      {
+        accounts: FB_READING_BUILTIN_ACCOUNTS.map((a) => ({ ...a })),
+        range: 'last7',
+        metrics: [...FB_READING_SUMMARY_METRICS]
+      }
+    ),
+    presetWidget(
+      'fb-reading',
+      t('boards.widget.fb-reading'),
+      { x: 0, y: 7, w: 6, h: 5 },
+      {
+        account: '三国IOS',
+        act: builtin.act,
+        businessId: builtin.businessId,
+        range: 'last3',
+        metrics: ['spend', 'cpi', 'cpm', 'ctr']
+      }
+    )
+  ]
+}
+
+/**
  * Deterministically compose a new board from a free-form description. A
  * chip-selected `preset` skips keyword detection entirely. The caller turns
  * the result into a real board via `createBoard` and switches to it.
@@ -267,6 +335,8 @@ export function composeBoard(
       return { name: t('boards.preset.ads'), widgets: overseasAdsPreset(t) }
     case 'finance':
       return { name: t('boards.preset.finance'), widgets: financePreset(t) }
+    case 'fb-daily':
+      return { name: t('boards.preset.fbDaily'), widgets: fbDailyPreset(t) }
     case 'blank':
       return { name: t('boards.preset.blank'), widgets: [] }
     default:
@@ -676,6 +746,60 @@ function validateWidgetConfig(
         if (filePath) config.filePath = filePath
       }
       return config
+    }
+    case 'fb-reading': {
+      // Reading-module config: account reference + date window + metric set.
+      // Legacy alias-only configs are upgraded via the builtin account table.
+      const range = raw.range
+      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr', 'balance']
+      if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
+      const metrics: string[] = []
+      for (const metric of raw.metrics) {
+        if (typeof metric !== 'string' || !allowed.includes(metric) || metrics.includes(metric)) return null
+        metrics.push(metric)
+      }
+      const alias = typeof raw.account === 'string' ? raw.account.trim() : ''
+      if (!alias || alias.length > BOARD_LIMITS.maxWidgetTitleLength) return null
+      if (isValidFbReadingAct(raw.act) && isValidFbReadingBusinessId(raw.businessId ?? null)) {
+        return { account: alias, act: raw.act, businessId: raw.businessId ?? null, range, metrics }
+      }
+      const builtin = FB_READING_ACCOUNT_TARGETS[alias]
+      if (builtin) {
+        return { account: alias, act: builtin.act, businessId: builtin.businessId, range, metrics }
+      }
+      return null
+    }
+    case 'fb-reading-summary': {
+      const range = raw.range
+      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
+      const metrics: string[] = []
+      for (const metric of raw.metrics) {
+        const allowedSummaryMetrics: readonly string[] = FB_READING_SUMMARY_METRICS
+        if (typeof metric !== 'string' || !allowedSummaryMetrics.includes(metric) || metrics.includes(metric)) {
+          return null
+        }
+        metrics.push(metric)
+      }
+      if (!Array.isArray(raw.accounts) || raw.accounts.length === 0 || raw.accounts.length > FB_READING_SUMMARY_ACCOUNT_LIMIT) {
+        return null
+      }
+      const accounts: FbReadingAccountRef[] = []
+      const seen = new Set<string>()
+      for (const item of raw.accounts) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+        const candidate = item as Record<string, unknown>
+        const alias = typeof candidate.alias === 'string' ? candidate.alias.trim() : ''
+        if (!alias || alias.length > 40) return null
+        if (!isValidFbReadingAct(candidate.act)) return null
+        const businessId = isValidFbReadingBusinessId(candidate.businessId) ? candidate.businessId : null
+        if (businessId === null && candidate.businessId !== null && candidate.businessId !== undefined) return null
+        if (seen.has(candidate.act)) return null
+        seen.add(candidate.act)
+        accounts.push({ alias, act: candidate.act, businessId })
+      }
+      return { accounts, range, metrics }
     }
   }
 }

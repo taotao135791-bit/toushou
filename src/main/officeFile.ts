@@ -91,8 +91,8 @@ export async function readOfficeWorkbook(realPath: string): Promise<OfficeReadRe
     const ext = extensionOf(realPath)
     const wb =
       ext === 'csv'
-        ? XLSX.read(buffer.toString('utf-8').replace(/^\uFEFF/, ''), { type: 'string', cellDates: true })
-        : XLSX.read(buffer, { type: 'buffer', cellDates: true })
+        ? XLSX.read(buffer.toString('utf-8').replace(/^\uFEFF/, ''), { type: 'string', cellDates: true, cellNF: true, cellStyles: true })
+        : XLSX.read(buffer, { type: 'buffer', cellDates: true, cellNF: true, cellStyles: true })
     const { snapshot, warnings } = sheetJsToUniver(wb)
     snapshot.name = name
     return { ok: true, name, snapshot, warnings }
@@ -135,7 +135,8 @@ export async function officeSaveDialog(
 export async function saveOfficeWorkbook(targetPath: string, rawSnapshot: unknown): Promise<OfficeSaveResult> {
   let jsonSize: number
   try {
-    jsonSize = JSON.stringify(rawSnapshot)?.length ?? 0
+    const serialized = JSON.stringify(rawSnapshot)
+    jsonSize = serialized ? Buffer.byteLength(serialized, 'utf8') : 0
   } catch {
     return { ok: false, error: 'invalid-snapshot' }
   }
@@ -145,8 +146,8 @@ export async function saveOfficeWorkbook(targetPath: string, rawSnapshot: unknow
   try {
     const wb = univerToSheetJs(parsed.snapshot)
     const bookType = extensionOf(targetPath) === 'csv' ? 'csv' : 'xlsx'
-    const out = XLSX.write(wb, { type: 'buffer', bookType }) as Buffer
-    const tmp = `${targetPath}.tmp-${process.pid}`
+    const out = XLSX.write(wb, { type: 'buffer', bookType, cellStyles: true }) as Buffer
+    const tmp = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     fs.writeFileSync(tmp, out)
     fs.renameSync(tmp, targetPath)
     return { ok: true }

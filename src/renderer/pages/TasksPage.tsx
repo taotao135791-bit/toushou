@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
 import { ScheduledTask } from '@shared/types'
+import { KERNEL_VIRAL_SKILL_ID } from '@shared/skills'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import { showNotice } from '../lib/notice'
@@ -54,6 +55,26 @@ function groupByProject(tasks: ScheduledTask[]): TaskGroup[] {
 const btn = 'rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors'
 const input = 'mt-1 w-full rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50'
 
+/**
+ * One-click task templates. The viral-analysis template pairs the prompt
+ * with the kernel skill id: at fire time Main injects the playbook as the
+ * session's system prompt, so a scheduled run follows the exact same SOP as
+ * an interactive skill launch (single source of truth in Skill 库).
+ */
+const TEMPLATES = [
+  {
+    key: 'viral' as const,
+    apply: () => ({
+      name: '每周爆款竞品分析',
+      prompt: '执行《爆款竞品分析》打法（完整步骤已随本任务注入）：先做第 0 步工具自检；然后完成我方账户体检（第 1 步）、对标问题翻译（第 2 步）、竞品爆款检索（第 3 步）；按第 4 步模板输出「爆款竞品分析需求单」；最后按第 5 步说明分发方式。数据窗口默认近 7 天。',
+      scheduleType: 'weekly' as const,
+      dayOfWeek: 1,
+      time: '09:00',
+      skillId: KERNEL_VIRAL_SKILL_ID
+    })
+  }
+]
+
 /** Compact wall-clock duration for a finished run row. */
 function formatDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
@@ -61,6 +82,30 @@ function formatDuration(ms: number): string {
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}m ${s % 60}s`
   return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+function nextScheduledRun(task: ScheduledTask, after = Date.now()): number | null {
+  const schedule = task.schedule
+  if (schedule.type === 'interval') {
+    const interval = schedule.minutes !== undefined ? schedule.minutes * 60_000 : (schedule.hours ?? 0) * 3_600_000
+    return interval > 0 ? (task.lastRunAt ?? task.createdAt) + interval : null
+  }
+  const [hours, minutes] = schedule.time.split(':').map(Number)
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null
+  const next = new Date(after)
+  next.setHours(hours, minutes, 0, 0)
+  if (schedule.type === 'daily') {
+    if (next.getTime() <= after) next.setDate(next.getDate() + 1)
+    return next.getTime()
+  }
+  if (schedule.type === 'weekdays') {
+    while (next.getTime() <= after || next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1)
+    return next.getTime()
+  }
+  const delta = (schedule.dayOfWeek - next.getDay() + 7) % 7
+  next.setDate(next.getDate() + delta)
+  if (next.getTime() <= after) next.setDate(next.getDate() + 7)
+  return next.getTime()
 }
 
 export default function TasksPage() {
@@ -82,14 +127,21 @@ export default function TasksPage() {
     intervalUnit: 'hour' as 'hour' | 'minute',
     notifyOnComplete: true,
     notifyChannel: 'system' as 'system' | 'feishu',
+    skillId: '',
     permissionMode: 'default' as 'default' | 'readonly'
   })
 
   const projectName = (cwd: string) => basename(cwd) || cwd
 
+  const applyTemplate = (key: 'viral') => {
+    const template = TEMPLATES.find(t => t.key === key)
+    if (!template) return
+    setForm(f => ({ ...f, ...template.apply(), cwd: f.cwd || (recentWorkspaces[0]?.displayPath ?? '') }))
+  }
+
   const openModal = () => {
     setEditingTask(null)
-    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system' }))
+    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', skillId: '' }))
     setModalOpen(true)
   }
 
@@ -108,6 +160,7 @@ export default function TasksPage() {
       intervalUnit: task.schedule.type === 'interval' && task.schedule.minutes !== undefined ? 'minute' : 'hour',
       notifyOnComplete: task.notifyOnComplete,
       notifyChannel: task.notifyChannel === 'feishu' ? 'feishu' : 'system',
+      skillId: task.skillId ?? '',
       permissionMode: task.permissionMode === 'readonly' ? 'readonly' : 'default'
     })
     setModalOpen(true)
@@ -136,6 +189,7 @@ export default function TasksPage() {
       schedule, enabled: editingTask?.enabled ?? true,
       createdAt: editingTask?.createdAt ?? Date.now(), notifyOnComplete: form.notifyOnComplete,
       ...(form.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+      ...(form.skillId ? { skillId: form.skillId } : {}),
       ...(form.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
     }
     let result: Awaited<ReturnType<typeof window.electronAPI.saveTask>>
@@ -181,19 +235,23 @@ export default function TasksPage() {
    * fall back to the durable history row of this task (task sessions are
    * titled after the task and live in the task's cwd) matched by run time.
    */
-  const openRunEntry = (task: ScheduledTask, run: { sessionId?: string; startedAt: number }) => {
+  const openRunEntry = (task: ScheduledTask, run: { sessionId?: string; historyUuid?: string; startedAt: number }) => {
     const state = useAppStore.getState()
     if (run.sessionId && state.sessions.some((s) => s.id === run.sessionId)) {
       state.setCurrentSessionId(run.sessionId)
       navigate('/')
       return
     }
-    const row = state.globalHistory.find(
-      (entry) =>
-        entry.title === task.name &&
-        entry.cwd === task.cwd &&
-        Math.abs(entry.timestamp - run.startedAt) < 60_000
-    )
+    // New runs carry the opaque durable transcript UUID. The legacy title/time
+    // fallback remains only for pre-v1 ledgers that cannot be upgraded in place.
+    const row = run.historyUuid
+      ? state.globalHistory.find((entry) => entry.uuid === run.historyUuid)
+      : state.globalHistory.find(
+          (entry) =>
+            entry.title === task.name &&
+            entry.cwd === task.cwd &&
+            Math.abs(entry.timestamp - run.startedAt) < 60_000
+        )
     if (row) {
       state.setPendingOpenHistory({ uuid: row.uuid, cwd: row.cwd })
       navigate('/')
@@ -203,7 +261,11 @@ export default function TasksPage() {
   }
 
   const openRunSession = (task: ScheduledTask) => {
-    openRunEntry(task, { sessionId: task.lastRunSessionId, startedAt: task.lastRunAt ?? 0 })
+    openRunEntry(task, {
+      sessionId: task.lastRunSessionId,
+      historyUuid: task.runs?.[0]?.historyUuid,
+      startedAt: task.lastRunAt ?? 0
+    })
   }
 
   const toggleRunHistory = (taskId: string) => {
@@ -309,6 +371,16 @@ export default function TasksPage() {
                               {t('tasks.lastRun')}: {formatRelativeTime(task.lastRunAt, language)}
                             </span>
                           )}
+                          {task.enabled && nextScheduledRun(task) && (
+                            <span title={new Date(nextScheduledRun(task) as number).toLocaleString()}>
+                              {t('tasks.nextRun')}: {new Date(nextScheduledRun(task) as number).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
+                          {task.lastRunStatus && (
+                            <span className={task.lastRunStatus === 'failed' || task.lastRunStatus === 'interrupted' ? 'text-red-400' : task.lastRunStatus === 'completed' ? 'text-emerald-500' : 'text-amber-400'}>
+                              {t('tasks.lastResult')}: {t(`tasks.status.${task.lastRunStatus}` as I18nKey)}
+                            </span>
+                          )}
                         </div>
                         {(task.runs?.length ?? 0) > 0 && (
                           <div className="mt-2">
@@ -326,7 +398,7 @@ export default function TasksPage() {
                                   const failed = run.outcome === 'failed'
                                   return (
                                     <div
-                                      key={run.sessionId ?? `${run.startedAt}-${index}`}
+                                      key={run.runId ?? run.sessionId ?? `${run.startedAt}-${index}`}
                                       onClick={() => !live && openRunEntry(task, run)}
                                       className={`group flex items-center gap-2 rounded-md px-1.5 py-1 text-[11px] ${live ? 'text-cream-faint' : 'cursor-pointer text-cream-dim transition-colors hover:bg-overlay'}`}
                                     >
@@ -409,6 +481,24 @@ export default function TasksPage() {
               <button onClick={() => setModalOpen(false)} className="text-cream-faint hover:text-cream"><Plus size={14} className="rotate-45" /></button>
             </div>
             <div className="space-y-3">
+              {!editingTask && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-cream-faint">{t('tasks.template')}</span>
+                  {TEMPLATES.map(template => (
+                    <button
+                      key={template.key}
+                      onClick={() => applyTemplate(template.key)}
+                      title={t('tasks.templateViralHint')}
+                      className="rounded-full border border-line bg-ink-800 px-2.5 py-1 text-[11px] text-cream-dim transition-colors hover:border-accent/40 hover:text-cream"
+                    >
+                      {t('tasks.templateViral')}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {editingTask && form.skillId && (
+                <p className="text-[11px] text-cream-faint">{t('tasks.skillLinked')}</p>
+              )}
               <label className="block text-[11px] text-cream-faint">
                 {t('sidebar.taskName')}
                 <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className={input} placeholder={t('sidebar.taskNamePh')} />

@@ -2,6 +2,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { ScheduledTask } from '../shared/types'
 import { buildTaskFromAgentInput, deleteTask, listTasks, saveTask } from './scheduledTasks'
+import { serializeBoundedJson } from '../shared/boundedJson'
 
 /**
  * Loopback bridge for the bundled tasks toolkit: the OMP extension registers
@@ -139,7 +140,7 @@ function dispatch(tool: TaskBridgeRequest, cwd: string): Record<string, unknown>
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-  response.end(JSON.stringify(body))
+  response.end(serializeBoundedJson(body, 30_000))
 }
 
 /** Test-only: drop tokens so module state cannot leak between cases. */

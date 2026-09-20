@@ -2,6 +2,17 @@ import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from '
 import fs from 'node:fs'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
+import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
+import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
+import {
+  captureFbReadingAccountFromPanel,
+  discoverFbReadingAccounts,
+  refreshBoardFbReading,
+  refreshFbAccountBalance
+} from './browserUse'
+import { listFbReadings } from './fbReadings'
+import { listFbAccountBalances } from './fbBalances'
+import { appendFbReadingAccounts, listFbReadingAccounts, removeFbReadingAccount } from './fbReadingAccounts'
 import {
   SessionEvent,
   ExternalSessionDescriptor,
@@ -78,7 +89,7 @@ import { listAvailableModels, listCatalogModels, invalidateModelCache } from './
 import { getStore, rememberRecentProject, setStore } from './store'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
-import { readBrowserScreenshotData } from './browserUse'
+import { readBrowserScreenshotData, revokeBrowserUseSession } from './browserUse'
 import { logRendererError, readLogTail } from './lib/logger'
 import {
   listTasks,
@@ -90,7 +101,8 @@ import {
   setTaskSpawnFn,
   setTaskOutcomeSink,
   isValidSchedule,
-  noteTaskSessionEvent
+  noteTaskSessionEvent,
+  noteTaskSessionFile
 } from './scheduledTasks'
 import { readKnowledge, writeKnowledge } from './projectKnowledge'
 import { listLaunchableTools } from './toolLaunch'
@@ -135,6 +147,7 @@ import {
   revealSkillsDir
 } from './skills'
 import { importGithubSkills, previewGithubSkills } from './skillsGithub'
+import { isValidSkillId } from '../shared/skills'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
 import { openWorkspaceInRequest } from './openWorkspaceIn'
@@ -302,6 +315,7 @@ function broadcastSessionEvent(event: SessionEvent): void {
   // Task-spawned sessions drive their completion guard/notice from the same
   // event stream everything else uses — no second observation path to drift.
   noteTaskSessionEvent(event.sessionId, event)
+  if (event.type === 'closed') revokeBrowserUseSession(event.sessionId)
   maybeNotifyTurnFinished(event)
   maybeNotifyUiRequest(event)
 }
@@ -582,6 +596,7 @@ export function shutdownSessionsForQuit(): void {
   } catch {
     // Quit proceeds regardless.
   }
+  for (const session of listSessions()) revokeBrowserUseSession(session.id)
 }
 
 export function registerIpc() {
@@ -598,6 +613,19 @@ export function registerIpc() {
   // completion. Task sessions carry origin 'task' so the sidebar can badge
   // them and the notification layer can treat them specially.
   setTaskSpawnFn(async (cwd, title, prompt, opts) => {
+    if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      throw new Error('project-unavailable')
+    }
+    // Kernel/团队打法 tasks carry a skill id: the playbook is injected as the
+    // session's system prompt so a scheduled run follows the same SOP as an
+    // interactive skill launch. A missing/deleted skill blocks this run rather
+    // than silently executing a different workflow.
+    let skillSystemPrompt: string | undefined
+    if (opts?.skillId) {
+      const skill = readSkillSystemPrompt(opts.skillId, getStore('language'))
+      if (skill.ok) skillSystemPrompt = skill.prompt
+      else throw new Error(`skill-unavailable:${skill.error}`)
+    }
     const session = createSession(
       cwd,
       (event) => {
@@ -608,7 +636,11 @@ export function registerIpc() {
           const tryRecord = (delayMs: number) => {
             setTimeout(() => {
               void getSessionState(event.sessionId).then((state) => {
-                if (state?.sessionFile) sessionOriginIndex.record(state.sessionFile, 'task')
+                if (state?.sessionFile) {
+                  sessionOriginIndex.record(state.sessionFile, 'task')
+                  const historyUuid = path.basename(state.sessionFile).match(/_([^_]+)\.jsonl$/)?.[1]
+                  if (opts?.runId && historyUuid) noteTaskSessionFile(event.sessionId, opts.runId, historyUuid)
+                }
               })
             }, delayMs)
           }
@@ -621,13 +653,17 @@ export function registerIpc() {
         origin: 'task',
         // An explicitly read-only task must not silently inherit the
         // workspace's global write/exec mode while running unattended.
-        ...(opts?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
+        ...(opts?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
+        ...(skillSystemPrompt ? { skillSystemPrompt } : {})
       }
     )
     if (session.status === 'error') return null
     // The prompt IS the task. A failed write means the child died at spawn —
     // report the firing as failed so the failure counter can act.
-    if (!sendMessage(session.id, prompt)) return null
+    if (!sendMessage(session.id, prompt)) {
+      killSession(session.id)
+      return null
+    }
     // Human-readable identity beats "project-dir title" for recurring runs:
     // name the runtime session AND announce the row with that title so the
     // sidebar shows "每日报告" instead of the bare folder name.
@@ -639,7 +675,12 @@ export function registerIpc() {
       suggestedTitle: title,
       createdAt: session.createdAt
     })
-    return { sessionId: session.id }
+    return {
+      sessionId: session.id,
+      cancel: () => {
+        killSession(session.id)
+      }
+    }
   })
   setTaskOutcomeSink((outcome) => {
     const { kind, task, sessionId } = outcome
@@ -2132,6 +2173,9 @@ export function registerIpc() {
     if (t.notifyChannel !== undefined && t.notifyChannel !== 'system' && t.notifyChannel !== 'feishu') {
       return { ok: false, error: 'invalid-notify-channel' }
     }
+    if (t.skillId !== undefined && !isValidSkillId(t.skillId)) {
+      return { ok: false, error: 'invalid-skill-id' }
+    }
     // The stored shape is exactly what passed validation. Runtime-owned run
     // ledger fields (lastRunAt, failures, runs, last session) are merged back
     // from the stored copy inside saveTask so an edit cannot reset them.
@@ -2145,6 +2189,7 @@ export function registerIpc() {
       createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
       notifyOnComplete: t.notifyOnComplete !== false,
       ...(t.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+      ...(typeof t.skillId === 'string' && isValidSkillId(t.skillId) ? { skillId: t.skillId } : {}),
       ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
     }
     return { ok: true, task: saveTask(clean) }
@@ -2232,6 +2277,97 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_DATASETS_DELETE, async (_event, id: unknown) => {
     return deleteDataset(id)
+  })
+
+  // FB reading module — direct panel refresh, NO chat session involved. The
+  // canonical URL is built here (shared grammar), navigation takes over the
+  // panel from a stale owner session, and browser_report enforces the four
+  // precision gates before anything lands in fb_history. The module renders
+  // exclusively from verified history entries.
+  ipcMain.handle(
+    IPC_CHANNELS.FB_READING_REFRESH,
+    async (_event, raw: unknown) => {
+      const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown; range?: unknown }
+      const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
+      const businessId = input.businessId ?? null
+      const range = input.range as FbReadingRange | undefined
+      const ref: FbReadingAccountRef | null =
+        alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
+          ? { alias, act: input.act, businessId }
+          : null
+      if (!ref || (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
+        return { ok: false, error: 'invalid-input' }
+      }
+      return refreshBoardFbReading(ref, range)
+    }
+  )
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCE_REFRESH, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown }
+    const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
+    const businessId = input.businessId ?? null
+    const ref: FbReadingAccountRef | null =
+      alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
+        ? { alias, act: input.act, businessId }
+        : null
+    return ref ? refreshFbAccountBalance(ref) : { ok: false, error: 'invalid-input' }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCES_LIST, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { accountId?: unknown }
+    const accountId = typeof input.accountId === 'string' && /^\d{6,}$/.test(input.accountId)
+      ? input.accountId
+      : undefined
+    return listFbAccountBalances(accountId)
+  })
+
+  // Local account registry: IDs only, no credentials; every entry stays on
+  // this machine. Widgets snapshot the act into their config at creation.
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_LIST, () => listFbReadingAccounts())
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_ADD, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { accounts?: unknown }
+    if (!Array.isArray(input.accounts) || input.accounts.length === 0) {
+      return { ok: false, error: 'invalid-input' }
+    }
+    const refs: FbReadingAccountRef[] = []
+    for (const item of input.accounts.slice(0, 20)) {
+      const candidate = (item ?? {}) as Record<string, unknown>
+      const alias = typeof candidate.alias === 'string' ? candidate.alias.trim() : ''
+      const businessId = candidate.businessId ?? null
+      if (!alias || alias.length > 40) return { ok: false, error: 'invalid-input' }
+      if (!isValidFbReadingAct(candidate.act)) return { ok: false, error: 'invalid-input' }
+      if (!isValidFbReadingBusinessId(businessId)) return { ok: false, error: 'invalid-input' }
+      refs.push({ alias, act: candidate.act, businessId })
+    }
+    const { accounts, added } = appendFbReadingAccounts(refs)
+    return { ok: true, accounts, added }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_REMOVE, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { id?: unknown }
+    if (typeof input.id !== 'string' || input.id.length === 0 || input.id.length > 64) {
+      return { ok: false, error: 'invalid-input' }
+    }
+    return { ok: true, accounts: removeFbReadingAccount(input.id) }
+  })
+
+  // Enumerates accessible ad accounts from the logged-in browser panel.
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_DISCOVER, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { query?: unknown }
+    const query = typeof input.query === 'string' ? input.query.trim() : ''
+    if (query !== '' && query.length > 30) return { ok: false, error: 'invalid-input' }
+    return discoverFbReadingAccounts(query)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_CAPTURE, () => captureFbReadingAccountFromPanel())
+
+  ipcMain.handle(IPC_CHANNELS.FB_READING_HISTORY, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { accountId?: unknown }
+    const accountId = typeof input.accountId === 'string' && /^\d{6,}$/.test(input.accountId)
+      ? input.accountId
+      : undefined
+    return listFbReadings(accountId).slice(0, 10)
   })
 
   ipcMain.handle(

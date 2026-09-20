@@ -4,49 +4,51 @@
 
 @layer base {
   :root {
-    /* Light theme — warm paper, editorial neutrals, terracotta accent */
-    --bg-app: 250 249 247;
-    --bg-sidebar: 244 243 240;
+    /* v1.1.0 visual contract — neutral desktop surfaces, one black action */
+    --bg-app: 250 249 248;
+    --bg-sidebar: 250 249 248;
     --bg-elev: 255 255 255;
-    --bg-sunken: 240 239 236;
-    --bubble: 238 234 228;
-    --text: 28 27 25;
-    --text-dim: 110 107 100;
-    --text-faint: 164 160 152;
-    --line: rgba(28, 27, 25, 0.06);
-    --line-strong: rgba(28, 27, 25, 0.14);
-    --overlay: rgba(28, 27, 25, 0.04);
-    --overlay-strong: rgba(28, 27, 25, 0.07);
-    --accent: 217 119 87;
-    --accent-bright: 199 101 69;
-    --accent-deep: 176 90 58;
-    --accent-soft: rgba(217, 119, 87, 0.12);
-    --shadow-pop: 0 1px 2px rgba(28, 27, 25, 0.05), 0 12px 32px rgba(28, 27, 25, 0.12);
-    --shadow-card: 0 1px 2px rgba(28, 27, 25, 0.04), 0 4px 16px rgba(28, 27, 25, 0.05);
-    --shadow-composer: 0 2px 8px rgba(28, 27, 25, 0.04), 0 12px 32px rgba(28, 27, 25, 0.08);
+    --bg-sunken: 247 247 247;
+    --bg-selected: 238 237 235;
+    --bubble: 247 247 247;
+    --text: 32 32 32;
+    --text-dim: 92 92 92;
+    --text-faint: 120 120 120;
+    --line: rgba(32, 32, 32, 0.08);
+    --line-strong: rgba(32, 32, 32, 0.16);
+    --overlay: rgba(32, 32, 32, 0.045);
+    --overlay-strong: rgba(32, 32, 32, 0.08);
+    --accent: 32 32 32;
+    --accent-bright: 64 64 64;
+    --accent-deep: 32 32 32;
+    --accent-soft: rgba(32, 32, 32, 0.08);
+    --shadow-pop: 0 5px 20px rgba(32, 32, 32, 0.08);
+    --shadow-card: 0 2px 8px rgba(32, 32, 32, 0.05);
+    --shadow-composer: 0 3px 5px rgba(32, 32, 32, 0.02), 0 9px 18px rgba(32, 32, 32, 0.04);
     --ease: cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .dark {
-    --bg-app: 20 19 17;
-    --bg-sidebar: 24 23 21;
-    --bg-elev: 29 28 26;
-    --bg-sunken: 16 15 14;
-    --bubble: 46 44 40;
-    --text: 235 231 228;
-    --text-dim: 158 152 145;
-    --text-faint: 110 105 99;
-    --line: rgba(235, 231, 228, 0.07);
-    --line-strong: rgba(235, 231, 228, 0.13);
-    --overlay: rgba(235, 231, 228, 0.045);
-    --overlay-strong: rgba(235, 231, 228, 0.08);
-    --accent: 224 138 106;
-    --accent-bright: 233 158 128;
-    --accent-deep: 204 116 82;
-    --accent-soft: rgba(224, 138, 106, 0.14);
-    --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.3), 0 16px 40px rgba(0, 0, 0, 0.45);
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 20px rgba(0, 0, 0, 0.24);
-    --shadow-composer: 0 2px 8px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.42);
+    --bg-app: 27 27 27;
+    --bg-sidebar: 27 27 27;
+    --bg-elev: 35 35 35;
+    --bg-sunken: 44 44 44;
+    --bg-selected: 48 48 48;
+    --bubble: 44 44 44;
+    --text: 237 237 237;
+    --text-dim: 174 174 174;
+    --text-faint: 145 145 145;
+    --line: rgba(237, 237, 237, 0.09);
+    --line-strong: rgba(237, 237, 237, 0.18);
+    --overlay: rgba(237, 237, 237, 0.05);
+    --overlay-strong: rgba(237, 237, 237, 0.09);
+    --accent: 237 237 237;
+    --accent-bright: 255 255 255;
+    --accent-deep: 237 237 237;
+    --accent-soft: rgba(237, 237, 237, 0.1);
+    --shadow-pop: 0 6px 24px rgba(0, 0, 0, 0.28);
+    --shadow-card: 0 3px 10px rgba(0, 0, 0, 0.22);
+    --shadow-composer: 0 4px 10px rgba(0, 0, 0, 0.2), 0 12px 28px rgba(0, 0, 0, 0.16);
   }
 
   html, body, #root {
@@ -55,8 +57,17 @@
 
   body {
     @apply bg-ink-950 text-cream antialiased;
-    font-feature-settings: 'ss01', 'cv11';
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-feature-settings: 'tnum', 'ss01', 'cv11';
     text-rendering: optimizeLegibility;
+  }
+
+  button, input, textarea, select {
+    font: inherit;
+  }
+
+  button:active:not(:disabled) {
+    transform: translateY(1px) scale(0.99);
   }
 
   /* CJK readability: slightly looser line height */
@@ -68,9 +79,20 @@
     @apply bg-accent/20 text-cream;
   }
 
-  /* Uniform micro-transition for buttons/cards; utility classes override per-property */
+  /* Keep feedback bounded to visual properties; never animate layout or all properties globally. */
   button {
-    transition: all 120ms var(--ease);
+    transition-property: background-color, color, border-color, opacity, box-shadow, transform;
+    transition-duration: 120ms;
+    transition-timing-function: var(--ease);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 1ms !important;
+    }
   }
 
   ::-webkit-scrollbar {
@@ -228,6 +250,161 @@
     0%, 60%, 100% { opacity: 0.25; }
     30% { opacity: 1; }
   }
+}
+
+/* v1.1.0 shell: keep the native window chrome, inset only the white work
+   surface, and let the sidebar own the full-height background. */
+.app-shell {
+  gap: 8px;
+  padding: 8px 8px 8px 0;
+  background: rgb(var(--bg-app));
+}
+
+.app-sidebar {
+  background: rgb(var(--bg-sidebar));
+  border-color: var(--line);
+}
+
+.app-main {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 19px;
+  background: rgb(var(--bg-elev));
+}
+
+.app-sidebar-brand {
+  letter-spacing: -0.035em;
+}
+
+.app-view-segment {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  min-height: 42px;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgb(var(--bg-selected));
+}
+
+.app-view-segment button {
+  min-width: 0;
+  border-radius: 9px;
+  color: rgb(var(--text-dim));
+}
+
+.app-view-segment button[aria-pressed="true"] {
+  background: rgb(var(--bg-elev));
+  color: rgb(var(--text));
+  box-shadow: 0 1px 3px rgba(32, 32, 32, 0.06);
+}
+
+.home-hero {
+  width: min(100%, 880px);
+}
+
+.home-wordmark {
+  color: rgb(var(--text));
+  font-size: clamp(48px, 5vw, 62px);
+  font-weight: 700;
+  line-height: 1.24;
+  letter-spacing: -0.03em;
+  margin-bottom: 29px;
+}
+
+.home-quick-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 34px;
+}
+
+.home-quick-links button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: rgb(var(--text-dim));
+  font-size: 14px;
+}
+
+.home-quick-links button:hover {
+  background: rgb(var(--bg-sunken));
+  color: rgb(var(--text));
+  border-color: var(--line-strong);
+}
+
+.composer-shell {
+  border-radius: 25px !important;
+  background: rgb(var(--bg-elev)) !important;
+  border-color: var(--line-strong) !important;
+  box-shadow: var(--shadow-composer) !important;
+  padding: 10px !important;
+}
+
+.composer-shell textarea {
+  min-height: 94px;
+  padding: 9px 11px;
+  font-size: 18px;
+  line-height: 1.65;
+}
+
+.composer-toolbar {
+  margin: 9px 0 0;
+  padding: 0 2px 2px;
+}
+
+/* Home only: the white input card floats on a connected soft-gray base
+   (design.md 5.2) — the tray below carries 选择项目 / 插件. */
+.entry-composer {
+  border-radius: 26px;
+  background: rgb(var(--bg-sunken));
+}
+
+.composer-tray {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 4px 14px 6px;
+}
+
+.composer-tray button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 5px 6px;
+  font-size: 13px;
+  color: rgb(var(--text-dim));
+}
+
+.composer-tray button:hover {
+  color: rgb(var(--text));
+}
+
+.workspace-panel {
+  background: rgb(var(--bg-elev));
+  border-color: var(--line);
+  box-shadow: -12px 0 32px rgba(32, 32, 32, 0.06);
+}
+
+.page-surface {
+  background: rgb(var(--bg-elev));
+}
+
+@media (max-width: 1100px) {
+  .app-shell { padding-right: 0; }
+  .home-hero { width: min(100%, 760px); }
+}
+
+@media (max-width: 700px) {
+  .home-quick-links { margin-top: 24px; }
+  .home-quick-links button { min-height: 38px; padding-inline: 11px; }
 }
 
 /* react-grid-layout overrides — unlayered on purpose so they beat the vendor

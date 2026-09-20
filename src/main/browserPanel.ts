@@ -28,6 +28,87 @@ const attachedPanels = new Set<number>()
 /** Owner windows already wired for 'closed' cleanup. */
 const cleanupWired = new Set<number>()
 
+/** Both renderer attachment and the tool bridge join the same navigation. */
+const pendingNavigations = new WeakMap<Electron.WebContents, { key: string; done: Promise<void> }>()
+
+function navigationKey(raw: string): string {
+  const url = new URL(raw)
+  url.searchParams.sort()
+  return url.toString()
+}
+
+export function loadBrowserPanelUrl(
+  webContents: Electron.WebContents,
+  raw: string,
+  refresh = false,
+  timeoutMs = 20_000
+): Promise<void> {
+  const url = safeBrowserPanelUrl(raw)
+  if (!url) return Promise.reject(new Error('invalid-url'))
+  const key = navigationKey(url)
+  const pending = pendingNavigations.get(webContents)
+  if (pending?.key === key) return pending.done
+  const current = safeBrowserPanelUrl(webContents.getURL())
+  if (!refresh && !pending && current && navigationKey(current) === key && !webContents.isLoading()) {
+    return Promise.resolve()
+  }
+  let timer: ReturnType<typeof setTimeout>
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('navigation-timeout'))
+      if (pendingNavigations.get(webContents)?.key === key && !webContents.isDestroyed()) webContents.stop()
+  }, timeoutMs)
+  })
+  const done = Promise.race([Promise.resolve().then(() => webContents.loadURL(url)), timeout]).finally(() => {
+    clearTimeout(timer)
+    if (pendingNavigations.get(webContents)?.done === done) pendingNavigations.delete(webContents)
+  })
+  pendingNavigations.set(webContents, { key, done })
+  return done
+}
+
+/**
+ * Ads Manager virtualizes campaign rows by viewport height. Electron
+ * zoomFactor is not an option: at both 0.5 and 0.75 (reproduced
+ * 2026-09-17) the page totals render but the table body stays empty, so
+ * the row-count gate refuses forever. Stretch the view to the full window
+ * only for the gated reads, then restore the renderer-owned bounds. The
+ * restore runs even when the read refuses.
+ */
+export async function withBrowserReadingViewport<T>(view: WebContentsView, read: () => Promise<T>): Promise<T> {
+  // Reentrant: the board refresh wraps reload+report in ONE stretch so the
+  // table mounts wide; the nested report call must not restore bounds early.
+  if (readingStretchedViews.has(view)) return read()
+  readingStretchedViews.add(view)
+  const wc = view.webContents
+  const previous = view.getBounds()
+  const owner = BrowserWindow.fromWebContents(wc)
+  const size = owner && !wc.isDestroyed() ? owner.getContentSize() : null
+  if (size && size.length === 2 && (size[0] !== previous.width || size[1] !== previous.height)) {
+    const insideWindow =
+      previous.x >= 0 &&
+      previous.y >= 0 &&
+      previous.x < size[0] &&
+      previous.y < size[1]
+    view.setBounds(
+      insideWindow
+        ? { x: 0, y: 0, width: size[0], height: size[1] }
+        // Background reads still need a full-size layout for Ads Manager's
+        // virtualized table. Keep the attached view clipped outside the window
+        // so it never covers the user's board.
+        : { x: size[0] + 100, y: 0, width: size[0], height: size[1] }
+    )
+  }
+  try {
+    return await read()
+  } finally {
+    readingStretchedViews.delete(view)
+    if (!wc.isDestroyed()) view.setBounds(previous)
+  }
+}
+
+const readingStretchedViews = new WeakSet<WebContentsView>()
+
 /** In-app popup windows opened by each panel, closed with their owner. */
 const panelChildren = new Map<number, Set<BrowserWindow>>()
 
@@ -39,6 +120,10 @@ const PANEL_WEB_PREFERENCES = {
   contextIsolation: true,
   sandbox: true,
   nodeIntegration: false,
+  // Ads Manager virtualizes rows by viewport. A background board refresh may
+  // use a detached (hidden) view; keep its layout/timers active so the strict
+  // parser still sees a real table instead of a throttled empty shell.
+  backgroundThrottling: false,
   partition: BROWSER_PANEL_PARTITION
 } as const
 
@@ -85,6 +170,22 @@ export function getActiveBrowserPanel(): WebContentsView | null {
     if (panel && !panel.webContents.isDestroyed()) return panel
   }
   return null
+}
+
+/**
+ * Get or create the persistent panel without attaching it to the window.
+ * Internal read-only board refreshes use this as a background surface; the
+ * user can later attach the exact same session with showBrowserPanel.
+ */
+export function ensureBrowserPanel(win: BrowserWindow): WebContentsView | null {
+  if (win.isDestroyed()) return null
+  const view = panels.get(win.id) ?? createPanel(win)
+  if (!attachedPanels.has(win.id)) {
+    const [width, height] = win.getContentSize()
+    win.contentView.addChildView(view)
+    view.setBounds({ x: width + 100, y: 0, width, height })
+  }
+  return view
 }
 
 /**
@@ -205,7 +306,7 @@ export function showBrowserPanel(
   if (url !== undefined) {
     const safeUrl = safeBrowserPanelUrl(url)
     if (!safeUrl) return { ok: false, error: 'invalid-url' }
-    void view.webContents.loadURL(safeUrl).catch(() => sendState(win, view))
+    void loadBrowserPanelUrl(view.webContents, safeUrl).catch(() => sendState(win, view))
   }
   // Re-adding an already attached view is harmless; setBounds keeps the
   // panel aligned with the renderer placeholder.
@@ -257,7 +358,7 @@ export function navigateBrowserPanel(
     case 'go': {
       const safeUrl = safeBrowserPanelUrl(url)
       if (!safeUrl) return { ok: false, error: 'invalid-url' }
-      void webContents.loadURL(safeUrl).catch(() => sendState(win, view))
+      void loadBrowserPanelUrl(webContents, safeUrl).catch(() => sendState(win, view))
       return { ok: true }
     }
   }

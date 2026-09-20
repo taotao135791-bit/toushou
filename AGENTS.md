@@ -55,6 +55,10 @@ work reviewable and preserves the Electron security boundary.
 
 ## Architecture contracts
 
+For renderer/layout work, read the repository-level [`design.md`](design.md)
+alongside this agreement. It records the implemented visual and interaction
+contract; it does not replace the security or collaboration rules below.
+
 The trust direction is:
 
 ```text

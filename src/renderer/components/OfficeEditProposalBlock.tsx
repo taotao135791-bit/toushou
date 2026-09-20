@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Check, FileSpreadsheet, Send, X } from 'lucide-react'
-import { parseOfficeEditProposal } from '@shared/officeEdit'
+import { a1ToIndices, parseOfficeEditProposal } from '@shared/officeEdit'
 import { useT } from '../i18n'
 import { useAppStore } from '../store'
 
@@ -18,14 +18,29 @@ function previewValue(value: string | number | boolean, max = 60): string {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text
 }
 
-function EditRow({ edit }: { edit: { sheet: string; cell: string; value: string | number | boolean } }) {
+function oldValueForEdit(
+  edit: { sheet: string; cell: string },
+  snapshot: ReturnType<typeof useAppStore.getState>['officeWorkbookSnapshot']
+): string {
+  if (!snapshot) return '—'
+  const sheet = Object.values(snapshot.sheets).find((candidate) => candidate.name === edit.sheet)
+  const position = a1ToIndices(edit.cell)
+  if (!sheet || !position) return '—'
+  const cell = sheet.cellData[position.row]?.[position.column]
+  if (!cell || (cell.v === undefined && !cell.f)) return '—'
+  const display = cell.w ?? cell.v
+  const value = typeof display === 'string' ? display : String(display)
+  return cell.f ? `${value} · ƒ ${cell.f}` : value
+}
+
+function EditRow({ edit, snapshot }: { edit: { sheet: string; cell: string; value: string | number | boolean }; snapshot: ReturnType<typeof useAppStore.getState>['officeWorkbookSnapshot'] }) {
   return (
     <tr className="border-t border-line/60">
       <td className="max-w-[110px] truncate px-2 py-1 text-cream-dim" title={edit.sheet}>
         {edit.sheet}
       </td>
       <td className="px-2 py-1 font-mono text-cream-dim">{edit.cell}</td>
-      <td className="px-2 py-1 text-cream-faint">—</td>
+      <td className="max-w-[180px] truncate px-2 py-1 text-cream-faint" title={oldValueForEdit(edit, snapshot)}>{oldValueForEdit(edit, snapshot)}</td>
       <td className="max-w-[160px] truncate px-2 py-1 font-mono text-cream" title={previewValue(edit.value, 200)}>
         {previewValue(edit.value)}
       </td>
@@ -37,9 +52,20 @@ export default function OfficeEditProposalBlock({ raw }: { raw: string }) {
   const t = useT()
   const workspacePanel = useAppStore((state) => state.workspacePanel)
   const officeWorkbookOpen = useAppStore((state) => state.officeWorkbookOpen)
+  const officeWorkbookSnapshot = useAppStore((state) => state.officeWorkbookSnapshot)
+  const officeWorkbookRevision = useAppStore((state) => state.officeWorkbookRevision)
   const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
   const setOfficeEditHandoff = useAppStore((state) => state.setOfficeEditHandoff)
   const parsed = useMemo(() => parseOfficeEditProposal(raw), [raw])
+  // Capture the object identity when this proposal first appears. Reading the
+  // current global Office state at click time is unsafe: the person may have
+  // opened another same-named workbook while reviewing the conversation.
+  const proposalContextRef = useRef(
+    officeWorkbookSnapshot
+      ? { snapshot: officeWorkbookSnapshot, revision: officeWorkbookRevision }
+      : null
+  )
+  const proposalContext = proposalContextRef.current
   const [sent, setSent] = useState(false)
   const [dismissed, setDismissed] = useState(false)
 
@@ -50,14 +76,17 @@ export default function OfficeEditProposalBlock({ raw }: { raw: string }) {
   // proposal up from the store on mount.
   const panelOpenOnOffice = workspacePanel?.kind === 'office'
   const needsWorkbook = panelOpenOnOffice && !officeWorkbookOpen
-  const applicable = parsed.ok && errors.length === 0 && !sent && !dismissed && !needsWorkbook
+  const needsSourceContext = !proposalContext
+  const applicable = parsed.ok && errors.length === 0 && !sent && !dismissed && !needsWorkbook && !needsSourceContext
 
   const apply = () => {
-    if (!applicable || !parsed.ok) return
+    if (!applicable || !parsed.ok || !proposalContext) return
     setOfficeEditHandoff({
       id: crypto.randomUUID(),
       edits: parsed.proposal.edits,
-      ...(parsed.proposal.note ? { note: parsed.proposal.note } : {})
+      ...(parsed.proposal.note ? { note: parsed.proposal.note } : {}),
+      documentId: proposalContext.snapshot.id,
+      baseRevision: proposalContext.revision
     })
     if (!panelOpenOnOffice) setWorkspacePanel({ kind: 'office' })
     setSent(true)
@@ -128,13 +157,16 @@ export default function OfficeEditProposalBlock({ raw }: { raw: string }) {
                   </thead>
                   <tbody>
                     {parsed.proposal.edits.map((edit, index) => (
-                      <EditRow key={index} edit={edit} />
+                      <EditRow key={index} edit={edit} snapshot={proposalContext?.snapshot ?? null} />
                     ))}
                   </tbody>
                 </table>
               </div>
               {needsWorkbook && (
                 <p className="text-[11px] text-amber-400">{t('office.edit.needWorkbook')}</p>
+              )}
+              {needsSourceContext && (
+                <p className="text-[11px] text-amber-500">{t('office.edit.needSourceContext')}</p>
               )}
             </>
           )

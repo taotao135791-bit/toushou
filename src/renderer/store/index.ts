@@ -6,8 +6,10 @@ import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRos
 import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHistoryUuid, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
 import { mergeTranscriptBackfill } from '../lib/transcriptMerge'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
+import type { BoardReadingLaunch } from '../lib/boardReading'
 import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
+import type { OfficeWorkbookSnapshot } from '@shared/officeWorkbook'
 
 /**
  * Externally created sessions whose durable transcript was backfilled once
@@ -101,6 +103,9 @@ export interface OfficeEditHandoff {
   id: string
   edits: OfficeEditCell[]
   note?: string
+  /** Workbook identity captured when the person staged the proposal. */
+  documentId?: string
+  baseRevision?: number
 }
 
 interface AppState {
@@ -135,6 +140,9 @@ interface AppState {
    * so the panel reports liveness through this flag.
    */
   officeWorkbookOpen: boolean
+  officeWorkbookDirty: boolean
+  officeWorkbookSnapshot: OfficeWorkbookSnapshot | null
+  officeWorkbookRevision: number
   selectedFile: string | null
   previewContent: string | null
   /** sessionId -> checkpoint creation failed once (non-git project); skip further attempts. */
@@ -187,6 +195,8 @@ interface AppState {
   composerPrefill: string | null
   /** Send the prefill automatically once its session is ready (one-click tool launch). */
   composerAutosend: boolean
+  /** Latest one-click board reading launch; the boards page projects its phase from messages/busy. */
+  boardReadingLaunch: BoardReadingLaunch | null
   /** Unsent composer text/images keyed by their owning runtime session. */
   composerDrafts: ComposerDrafts
   /** Sidebar: recent project folders, MRU first (persisted in electron-store). */
@@ -272,6 +282,9 @@ interface AppState {
   setOfficeEditHandoff: (handoff: OfficeEditHandoff | null) => void
   /** OfficePanel → store liveness signal used to gate the chat apply button. */
   setOfficeWorkbookOpen: (open: boolean) => void
+  setOfficeWorkbookDirty: (dirty: boolean) => void
+  setOfficeWorkbookSnapshot: (snapshot: OfficeWorkbookSnapshot | null) => void
+  setOfficeWorkbookRevision: (revision: number) => void
   setSelectedFile: (path: string | null) => void
   setPreviewContent: (content: string | null) => void
   setCheckpointUnavailable: (sessionId: string, unavailable: boolean) => void
@@ -320,6 +333,7 @@ interface AppState {
   markSessionUnread: (sessionId: string) => void
   setComposerPrefill: (text: string | null) => void
   setComposerAutosend: (composerAutosend: boolean) => void
+  setBoardReadingLaunch: (launch: BoardReadingLaunch | null) => void
   setComposerDraft: (sessionId: string, draft: SessionComposerDraft) => void
   clearComposerDraft: (sessionId: string) => void
   /** Replace the recent-projects list (startup load; does not persist). */
@@ -421,6 +435,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeRightTab: 'files',
   officeEditHandoff: null,
   officeWorkbookOpen: false,
+  officeWorkbookDirty: false,
+  officeWorkbookSnapshot: null,
+  officeWorkbookRevision: 0,
   selectedFile: null,
   previewContent: null,
   checkpointUnavailable: {},
@@ -444,6 +461,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   unreadSessionIds: {},
   composerPrefill: null,
   composerAutosend: false,
+  boardReadingLaunch: null,
   composerDrafts: {},
   recentProjects: [],
   recentWorkspaces: [],
@@ -859,6 +877,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveRightTab: (activeRightTab) => set({ activeRightTab }),
   setOfficeEditHandoff: (officeEditHandoff) => set({ officeEditHandoff }),
   setOfficeWorkbookOpen: (officeWorkbookOpen) => set({ officeWorkbookOpen }),
+  setOfficeWorkbookDirty: (officeWorkbookDirty) => set({ officeWorkbookDirty }),
+  setOfficeWorkbookSnapshot: (officeWorkbookSnapshot) => set({ officeWorkbookSnapshot }),
+  setOfficeWorkbookRevision: (officeWorkbookRevision) => set({ officeWorkbookRevision }),
   setSelectedFile: (selectedFile) => set({ selectedFile }),
   setPreviewContent: (previewContent) => set({ previewContent }),
   setCheckpointUnavailable: (sessionId, unavailable) =>
@@ -1077,6 +1098,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     ),
   setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
   setComposerAutosend: (composerAutosend) => set({ composerAutosend }),
+  setBoardReadingLaunch: (boardReadingLaunch) => set({ boardReadingLaunch }),
   setComposerDraft: (sessionId, draft) =>
     set((state) => ({
       composerDrafts: setComposerDraft(state.composerDrafts, sessionId, draft)

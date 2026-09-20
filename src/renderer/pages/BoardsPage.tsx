@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout'
 import {
+  Activity,
   ChartBar,
   ChartLine,
   Check,
@@ -33,6 +34,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { BoardDataset, BoardDesignSpec, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
+import type { FbReadingAccountEntry } from '@shared/fbReading'
 import {
   BOARD_LIMITS,
   GRID_COLS,
@@ -51,8 +53,19 @@ import { DatasetImportError } from '@shared/datasets'
 import { useT, I18nKey } from '../i18n'
 import { useAppStore } from '../store'
 import { useConfirm, useConfirmId } from '../lib/confirmClick'
+import { createSessionForCurrentProject } from '../lib/session'
+import {
+  BOARD_READING_ACCOUNTS,
+  BOARD_READING_METRIC_LABELS,
+  BOARD_READING_RANGE_LABELS,
+  buildBoardReadingPrompt,
+  type BoardReadingAccount,
+  type BoardReadingMetric,
+  type BoardReadingRange
+} from '../lib/boardReading'
 import { WidgetBody } from './boards/WidgetBody'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
+import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
@@ -84,6 +97,7 @@ const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart
 
 /** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
+  { preset: 'fb-daily', labelKey: 'boards.template.fbDaily' },
   { preset: 'blank', labelKey: 'boards.template.blank' },
   { preset: 'ads', labelKey: 'boards.template.ads' },
   { preset: 'daily', labelKey: 'boards.template.daily' },
@@ -198,6 +212,8 @@ export default function BoardsPage() {
   const t = useT()
   const navigate = useNavigate()
   const language = useAppStore((state) => state.language)
+  const inChatView = useAppStore((state) => state.workspacePanel) === null
+  const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
   const [boards, setBoards] = useState<KanbanBoard[] | null>(null)
   const [boardsLoadFailed, setBoardsLoadFailed] = useState(false)
   const [boardsLoadGeneration, setBoardsLoadGeneration] = useState(0)
@@ -207,9 +223,21 @@ export default function BoardsPage() {
   const [createMenuOpen, setCreateMenuOpen] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
   const [composeText, setComposeText] = useState('')
+  const [readingOpen, setReadingOpen] = useState(false)
+  const [readingAccount, setReadingAccount] = useState<BoardReadingAccount>(BOARD_READING_ACCOUNTS[0])
+  const [readingRange, setReadingRange] = useState<BoardReadingRange>('last7')
+  const [readingMetrics, setReadingMetrics] = useState<BoardReadingMetric[]>(['spend', 'cpi'])
+  const [readingSubmitting, setReadingSubmitting] = useState(false)
+  const [readingError, setReadingError] = useState<I18nKey | null>(null)
   const [boardMenuOpen, setBoardMenuOpen] = useState(false)
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
   const [galleryOpen, setGalleryOpen] = useState(false)
+  const [readingAccounts, setReadingAccounts] = useState<FbReadingAccountEntry[]>([])
+  const [readingPickerOpen, setReadingPickerOpen] = useState(false)
+  const [readingPicked, setReadingPicked] = useState<Set<string>>(new Set())
+  const [readingManagerOpen, setReadingManagerOpen] = useState(false)
+  const [boardRefreshBusy, setBoardRefreshBusy] = useState(false)
+  const [boardRefreshProgress, setBoardRefreshProgress] = useState({ done: 0, total: 0 })
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailName, setDetailName] = useState('')
   const [detailDesc, setDetailDesc] = useState('')
@@ -349,6 +377,7 @@ export default function BoardsPage() {
     setBoardMenuOpen(false)
     setToolsMenuOpen(false)
     setGalleryOpen(false)
+    setReadingPickerOpen(false)
     deleteBoardConfirm.reset()
     clearConfirm.reset()
   }
@@ -356,7 +385,7 @@ export default function BoardsPage() {
   // The toolbar menus are transient controls, so keyboard users need the
   // same predictable dismissal path as pointer users clicking the backdrop.
   useEffect(() => {
-    if (!createMenuOpen && !boardMenuOpen && !toolsMenuOpen && !galleryOpen) return
+    if (!createMenuOpen && !boardMenuOpen && !toolsMenuOpen && !galleryOpen && !readingPickerOpen) return
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
@@ -365,6 +394,7 @@ export default function BoardsPage() {
       setBoardMenuOpen(false)
       setToolsMenuOpen(false)
       setGalleryOpen(false)
+      setReadingPickerOpen(false)
       setDatasetsOpen(false)
       setDetailOpen(false)
       setComposeOpen(false)
@@ -374,7 +404,7 @@ export default function BoardsPage() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, datasetsOpen, detailOpen, composeOpen])
+  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, readingPickerOpen, datasetsOpen, detailOpen, composeOpen])
 
   const switchBoard = (id: string) => {
     closeMenus()
@@ -508,6 +538,113 @@ export default function BoardsPage() {
     if (CONFIG_ON_ADD.includes(type)) setConfigWidgetId(widget.id)
   }
 
+  const openReadingPicker = () => {
+    setGalleryOpen(false)
+    setReadingPicked(new Set())
+    setReadingManagerOpen(readingAccounts.length === 0)
+    setReadingPickerOpen(true)
+  }
+
+  const handleReadingAccountsChange = (entries: FbReadingAccountEntry[]) => {
+    setReadingAccounts(entries)
+    setReadingPicked((prev) => new Set([...prev].filter((act) => entries.some((entry) => entry.act === act))))
+  }
+
+  const handleReadingAccountsAdded = (entries: FbReadingAccountEntry[]) => {
+    setReadingPicked((prev) => new Set([...prev, ...entries.map((entry) => entry.act)]))
+  }
+
+  const handleReadingAccountsRemoved = (acts: string[]) => {
+    const removed = new Set(acts)
+    setReadingPicked((prev) => new Set([...prev].filter((act) => !removed.has(act))))
+  }
+
+  const addFbReadingWidgets = () => {
+    if (!current) return
+    const picked = readingAccounts.filter((entry) => readingPicked.has(entry.act))
+    if (picked.length === 0) return
+    const created: BoardWidget[] = []
+    const widgets = [...current.widgets]
+    for (const entry of picked) {
+      if (widgets.length + created.length >= BOARD_LIMITS.maxWidgets) break
+      const size = WIDGET_DEFAULT_SIZES['fb-reading']
+      const slot = findFreeSlot([...widgets, ...created], size.w, size.h)
+      created.push(
+        createWidget('fb-reading', t('boards.reading.moduleName'), slot, {
+          account: entry.alias,
+          act: entry.act,
+          businessId: entry.businessId,
+          range: 'last7',
+          metrics: ['spend', 'balance', 'cpi']
+        })
+      )
+    }
+    mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, ...created] }))
+    setReadingPickerOpen(false)
+    setReadingPicked(new Set())
+    if (created.length < picked.length) flashToast(t('boards.widgetLimit'), false)
+  }
+
+  const addFbReadingSummaryWidget = () => {
+    if (!current) return
+    const picked = readingAccounts.filter((entry) => readingPicked.has(entry.act))
+    if (picked.length === 0) return
+    const size = WIDGET_DEFAULT_SIZES['fb-reading-summary']
+    if (current.widgets.length >= BOARD_LIMITS.maxWidgets) {
+      setReadingPickerOpen(false)
+      flashToast(t('boards.widgetLimit'), false)
+      return
+    }
+    const slot = findFreeSlot(current.widgets, size.w, size.h)
+    const widget = createWidget('fb-reading-summary', t('boards.reading.summary.moduleName'), slot, {
+      accounts: picked.map((entry) => ({ alias: entry.alias, act: entry.act, businessId: entry.businessId })),
+      range: 'last7',
+      metrics: ['spend', 'balance', 'cpi', 'cpm']
+    })
+    mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, widget] }))
+    setReadingPickerOpen(false)
+    setReadingPicked(new Set())
+  }
+
+  // Serial board-level refresh: each module runs its own bounded pipeline
+  // and reports completion; the hard cap keeps one stuck module from
+  // freezing the whole queue.
+  const refreshReadingModules = async () => {
+    if (!current || boardRefreshBusy) return
+    const widgets = current.widgets.filter(
+      (widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary'
+    )
+    if (widgets.length === 0) return
+    setBoardRefreshBusy(true)
+    setBoardRefreshProgress({ done: 0, total: widgets.length })
+    for (let index = 0; index < widgets.length; index += 1) {
+      const widget = widgets[index]
+      await new Promise<void>((resolve) => {
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          window.removeEventListener('fb-reading:module-done', onDone)
+          clearTimeout(cap)
+          resolve()
+        }
+        const onDone = (event: Event) => {
+          const detail = (event as CustomEvent).detail as { widgetId?: string }
+          if (detail?.widgetId === widget.id) finish()
+        }
+        const accountCount =
+          widget.type === 'fb-reading-summary' && Array.isArray(widget.config.accounts)
+            ? Math.max(1, widget.config.accounts.length)
+            : 1
+        const cap = setTimeout(finish, 180_000 * accountCount)
+        window.addEventListener('fb-reading:module-done', onDone)
+        window.dispatchEvent(new CustomEvent('fb-reading:board-refresh', { detail: { widgetId: widget.id } }))
+      })
+      setBoardRefreshProgress({ done: index + 1, total: widgets.length })
+    }
+    setBoardRefreshBusy(false)
+  }
+
   const removeWidget = (widgetId: string) => {
     if (!currentId) return
     setConfigWidgetId((id) => (id === widgetId ? null : id))
@@ -627,6 +764,49 @@ export default function BoardsPage() {
       )
     )
     navigate('/')
+  }
+
+  /**
+   * One-click reading (Phase A): create the NEW session here so the launch can
+   * be tracked by id, then hand the prompt to the existing composer
+   * prefill + autosend path. The button's phase is projected from the same
+   * messages/busy slices the chat uses — never from a timer.
+   */
+  const submitBoardReading = async () => {
+    if (readingSubmitting) return
+    const prompt = buildBoardReadingPrompt(readingAccount, readingRange, readingMetrics)
+    if (!prompt) {
+      setReadingError('boards.reading.needMetric')
+      return
+    }
+    setReadingSubmitting(true)
+    setReadingError(null)
+    try {
+      const sessionId = await createSessionForCurrentProject()
+      if (!sessionId) {
+        setReadingError('boards.reading.createFailed')
+        setReadingSubmitting(false)
+        return
+      }
+      const store = useAppStore.getState()
+      store.setBoardReadingLaunch({ sessionId, prompt, startedAt: Date.now() })
+      store.setCurrentSessionId(sessionId)
+      store.setComposerPrefill(prompt)
+      store.setComposerAutosend(true)
+      setReadingOpen(false)
+      setReadingSubmitting(false)
+      navigate('/')
+    } catch (err) {
+      console.error('Board reading session creation failed:', err)
+      setReadingError('boards.reading.createFailed')
+      setReadingSubmitting(false)
+    }
+  }
+
+  const toggleReadingMetric = (metric: BoardReadingMetric) => {
+    setReadingMetrics((prev) =>
+      prev.includes(metric) ? prev.filter((m) => m !== metric) : [...prev, metric]
+    )
   }
 
   // ---------------------------------------------------------------- datasets
@@ -1007,6 +1187,17 @@ export default function BoardsPage() {
           </div>
         )}
       </header>
+      {inChatView && (
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line bg-amber-500/10 px-4 py-1.5 text-[11.5px] text-amber-300">
+          <span>{t('boards.reading.inChatBanner')}</span>
+          <button
+            onClick={() => setWorkspacePanel({ kind: 'plugins' })}
+            className="shrink-0 rounded-full border border-amber-400/40 px-2.5 py-0.5 text-[11px] text-amber-200 transition hover:border-amber-300 hover:text-amber-100"
+          >
+            {t('boards.reading.switchToWork')}
+          </button>
+        </div>
+      )}
 
       <div
         ref={boardAreaRef}
@@ -1037,7 +1228,7 @@ export default function BoardsPage() {
               <div className="text-xs text-cream-faint">{t('boards.emptyHint')}</div>
               <button
                 onClick={openCreate}
-                className="mt-1 flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
+                className="mt-1 flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
               >
                 <Plus size={12} />
                 {t('boards.newTab')}
@@ -1066,7 +1257,7 @@ export default function BoardsPage() {
                   <div className="text-sm text-cream-dim">{t('boards.noWidgets')}</div>
                   <button
                     onClick={() => setGalleryOpen(true)}
-                    className="mt-1 flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
+                    className="mt-1 flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
                   >
                     <Plus size={12} />
                     {t('boards.addWidget')}
@@ -1114,6 +1305,14 @@ export default function BoardsPage() {
                   <FileSpreadsheet size={12} />
                   {t('boards.importDataset')}
                 </button>
+                <button
+                  onClick={() => void openReadingPicker()}
+                  autoFocus
+                  className={`${menuItemClass} text-cream hover:bg-overlay`}
+                >
+                  <Activity size={12} />
+                  {t('boards.widget.fb-reading')}
+                </button>
                 <div className="mx-1.5 mb-1 border-t border-line" />
                 <div className="grid grid-cols-2 gap-0.5">
                   {WIDGET_GALLERY.map(({ type, Icon }) => (
@@ -1129,6 +1328,78 @@ export default function BoardsPage() {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+            {readingPickerOpen && (
+              <div className="fade-in absolute bottom-full left-1/2 mb-2 w-[340px] -translate-x-1/2 rounded-2xl border border-line bg-ink-900 p-2 shadow-pop">
+                <div className="px-1.5 pb-1.5 pt-1 text-[10.5px] font-semibold uppercase tracking-wider text-cream-faint">
+                  {t('boards.reading.picker.title')}
+                </div>
+                <div className={`space-y-0.5 overflow-y-auto ${
+                  readingManagerOpen ? 'max-h-[132px]' : 'max-h-[240px]'
+                }`}>
+                  {readingAccounts.length === 0 && (
+                    <div className="px-1.5 py-2 text-[11px] text-cream-faint">{t('boards.reading.picker.none')}</div>
+                  )}
+                  {readingAccounts.map((entry) => {
+                    const checked = readingPicked.has(entry.act)
+                    return (
+                      <button
+                        key={entry.id}
+                        onClick={() =>
+                          setReadingPicked((prev) => {
+                            const next = new Set(prev)
+                            if (checked) next.delete(entry.act)
+                            else next.add(entry.act)
+                            return next
+                          })
+                        }
+                        className={`flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition \${
+                          checked ? 'bg-accent-soft text-accent' : 'text-cream-dim hover:bg-overlay hover:text-cream'
+                        }`}
+                      >
+                        <span
+                          className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border \${
+                            checked ? 'border-accent bg-accent text-ink-950' : 'border-line'
+                          }`}
+                        >
+                          {checked && <Check size={9} />}
+                        </span>
+                        <span className="truncate text-[12px]">{entry.alias}</span>
+                        <span className="ml-auto shrink-0 text-[10px] text-cream-faint">{entry.act}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReadingManagerOpen((open) => !open)}
+                  className="mt-1.5 w-full rounded-lg border border-line px-2 py-1.5 text-[11.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
+                >
+                  {t('boards.reading.picker.manageAccounts')}
+                </button>
+                <FbReadingAccountManager
+                  open={readingManagerOpen}
+                  accounts={readingAccounts}
+                  onAccountsChange={handleReadingAccountsChange}
+                  onAccountsAdded={handleReadingAccountsAdded}
+                  onAccountsRemoved={handleReadingAccountsRemoved}
+                  showAccounts={false}
+                />
+                <button
+                  onClick={addFbReadingWidgets}
+                  disabled={readingPicked.size === 0}
+                  className="mt-1.5 w-full rounded-lg bg-cream px-2 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+                >
+                  {t('boards.reading.picker.create').replace('{n}', String(readingPicked.size))}
+                </button>
+                <button
+                  onClick={addFbReadingSummaryWidget}
+                  disabled={readingPicked.size === 0}
+                  className="mt-1 w-full rounded-lg border border-line px-2 py-1.5 text-[11.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+                >
+                  {t('boards.reading.picker.createSummary')}
+                </button>
               </div>
             )}
             {toolsMenuOpen && (
@@ -1192,6 +1463,26 @@ export default function BoardsPage() {
               <ToolButton title={t('boards.tidy')} onClick={handleTidy}>
                 <LayoutGrid size={14} />
               </ToolButton>
+              {current.widgets.some((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary') && (
+                <ToolButton
+                  title={
+                    boardRefreshBusy
+                      ? t('boards.reading.refreshAllBusy')
+                          .replace('{done}', String(boardRefreshProgress.done))
+                          .replace('{total}', String(boardRefreshProgress.total))
+                      : t('boards.reading.refreshAll')
+                  }
+                  onClick={() => void refreshReadingModules()}
+                >
+                  {boardRefreshBusy ? (
+                    <span className="min-w-[20px] text-center text-[10px] tabular-nums">
+                      {boardRefreshProgress.done}/{boardRefreshProgress.total}
+                    </span>
+                  ) : (
+                    <Activity size={14} />
+                  )}
+                </ToolButton>
+              )}
               <ToolButton title={t('boards.refresh')} onClick={handleRefresh}>
                 <RefreshCw size={14} />
               </ToolButton>
@@ -1216,7 +1507,7 @@ export default function BoardsPage() {
         )}
       </div>
 
-      {(createMenuOpen || boardMenuOpen || toolsMenuOpen || galleryOpen) && (
+      {(createMenuOpen || boardMenuOpen || toolsMenuOpen || galleryOpen || readingPickerOpen) && (
         <div className="fixed inset-0 z-20" onClick={closeMenus} />
       )}
 
@@ -1414,7 +1705,7 @@ export default function BoardsPage() {
               <button
                 onClick={saveDetail}
                 disabled={!detailName.trim()}
-                className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+                className="flex items-center gap-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
               >
                 <Check size={11} />
                 {t('boards.save')}
@@ -1462,6 +1753,7 @@ export default function BoardsPage() {
             <div className="mt-3 flex flex-wrap gap-1.5">
               {(
                 [
+                  { preset: 'fb-daily', label: t('boards.preset.fbDaily') },
                   { preset: 'ads', label: t('boards.preset.ads') },
                   { preset: 'daily', label: t('boards.preset.daily') },
                   { preset: 'blank', label: t('boards.compose.chipBlank') }
@@ -1485,10 +1777,109 @@ export default function BoardsPage() {
               </button>
               <button
                 onClick={() => handleCompose()}
-                className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
+                className="flex items-center gap-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
               >
                 <Sparkles size={11} />
                 {t('boards.compose.generate')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {readingOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => {
+            if (!readingSubmitting) setReadingOpen(false)
+          }}
+        >
+          <div
+            className="fade-in w-full max-w-[400px] rounded-2xl border border-line bg-ink-900 p-5 shadow-pop"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[14px] font-semibold text-cream">{t('boards.reading.title')}</span>
+              <button
+                onClick={() => {
+                  if (!readingSubmitting) setReadingOpen(false)
+                }}
+                title={t('boards.cancel')}
+                className="rounded-md p-1 text-cream-faint transition hover:bg-overlay hover:text-cream"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <label className="mt-4 block">
+              <span className="mb-1 block text-[11px] text-cream-faint">{t('boards.reading.account')}</span>
+              <select
+                value={readingAccount}
+                onChange={(e) => setReadingAccount(e.target.value as BoardReadingAccount)}
+                className="w-full rounded-lg border border-line bg-ink-850 px-2.5 py-1.5 text-[12.5px] text-cream outline-none transition focus:border-accent/50"
+              >
+                {BOARD_READING_ACCOUNTS.map((account) => (
+                  <option key={account} value={account}>
+                    {account}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="mt-3">
+              <span className="mb-1 block text-[11px] text-cream-faint">{t('boards.reading.range')}</span>
+              <div className="flex flex-wrap gap-1.5">
+                {(Object.keys(BOARD_READING_RANGE_LABELS) as BoardReadingRange[]).map((range) => (
+                  <button
+                    key={range}
+                    onClick={() => setReadingRange(range)}
+                    className={
+                      readingRange === range
+                        ? 'rounded-full border border-accent/60 bg-accent-soft px-3 py-1 text-[12px] text-accent'
+                        : 'rounded-full border border-line px-3 py-1 text-[12px] text-cream-dim transition hover:border-accent/50 hover:text-cream'
+                    }
+                  >
+                    {BOARD_READING_RANGE_LABELS[range]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="mt-3">
+              <span className="mb-1 block text-[11px] text-cream-faint">{t('boards.reading.metrics')}</span>
+              <div className="flex flex-wrap gap-1.5">
+                {(Object.keys(BOARD_READING_METRIC_LABELS) as BoardReadingMetric[]).map((metric) => (
+                  <button
+                    key={metric}
+                    onClick={() => toggleReadingMetric(metric)}
+                    className={
+                      readingMetrics.includes(metric)
+                        ? 'rounded-full border border-accent/60 bg-accent-soft px-3 py-1 text-[12px] text-accent'
+                        : 'rounded-full border border-line px-3 py-1 text-[12px] text-cream-dim transition hover:border-accent/50 hover:text-cream'
+                    }
+                  >
+                    {BOARD_READING_METRIC_LABELS[metric]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {readingError && (
+              <p className="mt-3 text-[11.5px] leading-5 text-red-500">{t(readingError)}</p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  if (!readingSubmitting) setReadingOpen(false)
+                }}
+                disabled={readingSubmitting}
+                className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition hover:border-ink-600 hover:text-cream disabled:opacity-40"
+              >
+                {t('boards.cancel')}
+              </button>
+              <button
+                onClick={() => void submitBoardReading()}
+                disabled={readingSubmitting || readingMetrics.length === 0}
+                className="flex items-center gap-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+              >
+                <Activity size={11} className={readingSubmitting ? 'animate-pulse' : undefined} />
+                {readingSubmitting ? t('boards.reading.submitting') : t('boards.reading.submit')}
               </button>
             </div>
           </div>

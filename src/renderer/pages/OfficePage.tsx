@@ -30,7 +30,8 @@ let univerBundlesPromise: Promise<UniverBundles> | null = null
 
 function loadUniverBundles(): Promise<UniverBundles> {
   if (!univerBundlesPromise) {
-    univerBundlesPromise = Promise.all([
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    const bundleLoad = Promise.all([
       import('@univerjs/presets'),
       import('@univerjs/preset-sheets-core'),
       import('@univerjs/preset-sheets-core/locales/zh-CN'),
@@ -43,6 +44,12 @@ function loadUniverBundles(): Promise<UniverBundles> {
       sheetsZhCN: zhCN.default,
       sheetsEnUS: enUS.default
     }))
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('office-engine-timeout')), 30_000)
+    })
+    univerBundlesPromise = Promise.race([bundleLoad, timeout]).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
     // A cached REJECTED promise would keep the loading overlay up forever with
     // no way to retry — drop it so the next open tries again.
     univerBundlesPromise.catch(() => {
@@ -72,20 +79,48 @@ function buildUniverSnapshot(
       resources: []
     }
   }
+  const styles: Record<string, unknown> = {}
+  const styleIds = new Map<string, string>()
+  const toUniverStyle = (style: NonNullable<OfficeWorkbookSnapshot['sheets'][string]['cellData'][number][number]['style']>) => ({
+    ...(style.bold ? { bl: 1 } : {}),
+    ...(style.italic ? { it: 1 } : {}),
+    ...(style.fontSize ? { fs: style.fontSize } : {}),
+    ...(style.fontColor ? { fc: style.fontColor } : {}),
+    ...(style.fillColor ? { bg: { rgb: style.fillColor } } : {}),
+    ...(style.horizontalAlign ? { ht: style.horizontalAlign === 'left' ? 1 : style.horizontalAlign === 'center' ? 2 : style.horizontalAlign === 'right' ? 3 : 4 } : {}),
+    ...(style.numberFormat ? { n: style.numberFormat } : {})
+  })
+  const mapCellData = (cellData: OfficeWorkbookSnapshot['sheets'][string]['cellData']) => Object.fromEntries(
+    Object.entries(cellData).map(([row, columns]) => [row, Object.fromEntries(
+      Object.entries(columns).map(([column, cell]) => {
+        const formulaCell = cell.f ? { ...cell, f: `=${cell.f}` } : cell
+        if (!cell.style) return [column, formulaCell]
+        const key = JSON.stringify(cell.style)
+        let styleId = styleIds.get(key)
+        if (!styleId) {
+          styleId = `office-style-${styleIds.size + 1}`
+          styleIds.set(key, styleId)
+          styles[styleId] = toUniverStyle(cell.style)
+        }
+        return [column, { ...formulaCell, s: styleId }]
+      })
+    )])
+  )
   return {
     id: snapshot.id || 'workbook',
     name: snapshot.name,
     appVersion: UNIVER_APP_VERSION,
     locale: currentLocale,
-    styles: {},
+    styles: styles as IWorkbookData['styles'],
     sheetOrder: snapshot.sheetOrder,
     sheets: Object.fromEntries(
       Object.entries(snapshot.sheets).map(([sheetId, sheet]) => [
         sheetId,
         {
           ...sheet,
-          rowData: {},
-          columnData: {},
+          cellData: mapCellData(sheet.cellData),
+          rowData: Object.fromEntries(Object.entries(sheet.rowData ?? {}).map(([index, value]) => [index, { ...(value.size !== undefined ? { h: value.size } : {}), ...(value.hidden ? { hd: 1 } : {}) }])),
+          columnData: Object.fromEntries(Object.entries(sheet.columnData ?? {}).map(([index, value]) => [index, { ...(value.size !== undefined ? { w: value.size } : {}), ...(value.hidden ? { hd: 1 } : {}) }])),
           tabColor: '',
           zoomRatio: 1,
           scrollTop: 0,
@@ -102,6 +137,52 @@ function buildUniverSnapshot(
     ),
     resources: []
   }
+}
+
+/**
+ * Univer is the editing projection, not the source-of-truth file model. When
+ * its save snapshot omits a supported style/formula field, carry that field
+ * forward from the last loaded/saved baseline. Cleared cells are not
+ * resurrected because only cells still present in the current projection are
+ * merged.
+ */
+function mergeOfficeFidelity(
+  baseline: OfficeWorkbookSnapshot | null,
+  current: OfficeWorkbookSnapshot,
+  clearedFields: ReadonlySet<string> = new Set()
+): OfficeWorkbookSnapshot {
+  if (!baseline) return current
+  const sheets = { ...current.sheets }
+  for (const [sheetId, sheet] of Object.entries(current.sheets)) {
+    const baseSheet = baseline.sheets[sheetId]
+    if (!baseSheet) continue
+    const cellData = { ...sheet.cellData }
+    for (const [row, columns] of Object.entries(sheet.cellData)) {
+      const baseColumns = baseSheet.cellData[Number(row)]
+      if (!baseColumns) continue
+      const mergedColumns = { ...columns }
+      for (const [column, cell] of Object.entries(columns)) {
+        const baseCell = baseColumns[Number(column)]
+        if (!baseCell) continue
+        const sameValue = JSON.stringify(cell.v) === JSON.stringify(baseCell.v)
+        const cellKey = `${sheetId}:${row}:${column}`
+        mergedColumns[Number(column)] = {
+          ...cell,
+          ...(baseCell.style && !cell.style && !clearedFields.has(`${cellKey}:style`) ? { style: baseCell.style } : {}),
+          ...(baseCell.w && !cell.w ? { w: baseCell.w } : {}),
+          ...(baseCell.f && !cell.f && sameValue && !clearedFields.has(`${cellKey}:formula`) ? { f: baseCell.f } : {})
+        }
+      }
+      cellData[Number(row)] = mergedColumns
+    }
+    sheets[sheetId] = {
+      ...sheet,
+      cellData,
+      ...(sheet.columnData ? {} : baseSheet.columnData ? { columnData: baseSheet.columnData } : {}),
+      ...(sheet.rowData ? {} : baseSheet.rowData ? { rowData: baseSheet.rowData } : {})
+    }
+  }
+  return { ...current, sheets }
 }
 
 /**
@@ -125,7 +206,7 @@ interface OfficePageProps {
 /** One chat-proposed edit that could not be applied to the open workbook. */
 interface EditFailure {
   edit: OfficeEditCell
-  reason: 'sheet-missing' | 'out-of-bounds' | 'write-failed'
+  reason: 'sheet-missing' | 'out-of-bounds' | 'write-failed' | 'revision-conflict'
 }
 
 /** Result of the last confirm-bar apply, kept visible until dismissed. */
@@ -137,7 +218,8 @@ interface EditApplyResult {
 const EDIT_FAILURE_REASON_KEY: Record<EditFailure['reason'], I18nKey> = {
   'sheet-missing': 'office.edit.reasonSheetMissing',
   'out-of-bounds': 'office.edit.reasonOutOfBounds',
-  'write-failed': 'office.edit.reasonWriteFailed'
+  'write-failed': 'office.edit.reasonWriteFailed',
+  'revision-conflict': 'office.edit.reasonRevisionConflict'
 }
 
 export default function OfficePage({ embedded = false, initialGrant, initialName, onClose }: OfficePageProps) {
@@ -148,13 +230,17 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const univerRef = useRef<{ univer: Univer; univerAPI: FUniver } | null>(null)
   const bundlesRef = useRef<UniverBundles | null>(null)
   const consumedGrantIds = useRef(new Set<string>())
+  const baselineSnapshotRef = useRef<OfficeWorkbookSnapshot | null>(null)
+  const clearedFieldsRef = useRef(new Set<string>())
   const [engineReady, setEngineReady] = useState(false)
   const [bundleError, setBundleError] = useState(false)
   const [bundleRetryNonce, setBundleRetryNonce] = useState(0)
-  const [closeConfirming, setCloseConfirming] = useState(false)
-  const closeConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [fileName, setFileName] = useState(initialName ?? '')
   const [dirty, setDirty] = useState(false)
+  const revisionRef = useRef(0)
+  const [revision, setRevision] = useState(0)
+  const openRequestGeneration = useRef(0)
+  const pendingSnapshot = useRef<{ name: string; snapshot: OfficeWorkbookSnapshot } | null>(null)
   const [hasData, setHasData] = useState(false)
   const [busy, setBusy] = useState<'open' | 'save' | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -164,6 +250,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const [editResult, setEditResult] = useState<EditApplyResult | null>(null)
 
   const locale = useAppStore((state) => state.language)
+  const theme = useAppStore((state) => state.theme)
   // Chat → panel handoff: a proposal the person applied in chat, waiting for
   // THIS panel's confirm bar. Presence in the store is the pending state.
   const officeEditHandoff = useAppStore((state) => state.officeEditHandoff)
@@ -175,9 +262,25 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       // The chat gates its Apply button on this flag; never leak a stale
       // "workbook open" signal after the panel goes away.
       useAppStore.getState().setOfficeWorkbookOpen(false)
+      useAppStore.getState().setOfficeWorkbookDirty(false)
+      useAppStore.getState().setOfficeWorkbookSnapshot(null)
+      useAppStore.getState().setOfficeWorkbookRevision(0)
     },
     []
   )
+
+  // Electron can close the window without routing through the panel's own
+  // close button. Keep the native beforeunload guard in place for dirty
+  // workbooks so a quit/reload cannot silently discard edits.
+  useEffect(() => {
+    if (!dirty) return
+    const guard = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = t('office.discardConfirm')
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [dirty, t])
 
   const flashToast = useCallback((text: string) => {
     setToast(text)
@@ -192,7 +295,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     const initialLanguage = useAppStore.getState().language
     let disposed = false
     let instance: { univer: Univer; univerAPI: FUniver } | null = null
-    let disposable: { dispose: () => void } | null = null
+    const disposables: Array<{ dispose: () => void }> = []
     const frame = window.requestAnimationFrame(() => {
       void (async () => {
         const container = containerRef.current
@@ -206,63 +309,143 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         }
         if (disposed || !containerRef.current) return
         bundlesRef.current = bundles
-        const { createUniver, LocaleType } = bundles.presets
-        const created = createUniver({
-          locale: initialLanguage === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
-          locales: {
-            [LocaleType.ZH_CN]: bundles.sheetsZhCN,
-            [LocaleType.EN_US]: bundles.sheetsEnUS
-          },
-          presets: [
-            bundles.sheetsCore.UniverSheetsCorePreset({
-              container,
-              header: false,
-              footer: false,
-              disableAutoFocus: true
-            })
-          ]
-        })
-        instance = created
-        univerRef.current = created
-        created.univerAPI.createWorkbook(buildUniverSnapshot(undefined, initialLanguage, LocaleType))
-        setEngineReady(true)
-        // Generic mutation events include Univer's startup bookkeeping. This
-        // event is scoped to actual cell-value changes, including paste/edit.
-        disposable = created.univerAPI.addEvent(created.univerAPI.Event.SheetValueChanged, () => {
-          setDirty(true)
-          setHasData(true)
-        })
+        try {
+          const { createUniver, LocaleType } = bundles.presets
+          const created = createUniver({
+            // Follow the app shell's theme; kept in sync by the effect below.
+            darkMode: useAppStore.getState().theme === 'dark',
+            locale: initialLanguage === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US,
+            locales: {
+              [LocaleType.ZH_CN]: bundles.sheetsZhCN,
+              [LocaleType.EN_US]: bundles.sheetsEnUS
+            },
+            presets: [
+              bundles.sheetsCore.UniverSheetsCorePreset({
+                container,
+                header: false,
+                footer: false,
+                disableAutoFocus: true
+              })
+            ]
+          })
+          instance = created
+          univerRef.current = created
+          created.univerAPI.createWorkbook(buildUniverSnapshot(undefined, initialLanguage, LocaleType))
+          setEngineReady(true)
+          // Keep the renderer's dirty/revision state in sync with all edits.
+          // The value event is the reliable cross-version hook; the snapshot
+          // comparison below also remembers intentional style/formula clears
+          // so fidelity repair cannot resurrect them on save.
+          const markWorkbookDirty = () => {
+            setDirty(true)
+            useAppStore.getState().setOfficeWorkbookDirty(true)
+            setHasData(true)
+            revisionRef.current += 1
+            setRevision(revisionRef.current)
+            const active = created.univerAPI.getActiveWorkbook()
+            const converted = active ? sanitizeOfficeSnapshot(active.save()) : null
+            if (converted) {
+              const baseline = baselineSnapshotRef.current
+              if (baseline) {
+                for (const [sheetId, sheet] of Object.entries(converted.snapshot.sheets)) {
+                  const baselineSheet = baseline.sheets[sheetId]
+                  if (!baselineSheet) continue
+                  for (const [row, columns] of Object.entries(sheet.cellData)) {
+                    const baselineColumns = baselineSheet.cellData[Number(row)]
+                    if (!baselineColumns) continue
+                    for (const [column, cell] of Object.entries(columns)) {
+                      const baselineCell = baselineColumns[Number(column)]
+                      if (!baselineCell) continue
+                      const cellKey = `${sheetId}:${row}:${column}`
+                      if (baselineCell.style && !cell.style) clearedFieldsRef.current.add(`${cellKey}:style`)
+                      if (baselineCell.f && !cell.f && JSON.stringify(baselineCell.v) !== JSON.stringify(cell.v)) {
+                        clearedFieldsRef.current.add(`${cellKey}:formula`)
+                      }
+                    }
+                  }
+                }
+              }
+              useAppStore.getState().setOfficeWorkbookSnapshot(converted.snapshot)
+            }
+            useAppStore.getState().setOfficeWorkbookRevision(revisionRef.current)
+          }
+          disposables.push(created.univerAPI.addEvent(created.univerAPI.Event.SheetValueChanged, markWorkbookDirty))
+        } catch {
+          instance?.univerAPI.dispose()
+          instance = null
+          univerRef.current = null
+          if (!disposed) setBundleError(true)
+        }
       })()
     })
     return () => {
       disposed = true
       window.cancelAnimationFrame(frame)
-      disposable?.dispose()
+      for (const disposable of disposables) disposable.dispose()
       univerRef.current = null
       instance?.univerAPI.dispose()
     }
   }, [bundleRetryNonce])
 
+  // App theme flips after engine creation: Univer repaints via ThemeService.
+  useEffect(() => {
+    if (!engineReady) return
+    univerRef.current?.univerAPI.toggleDarkMode(theme === 'dark')
+  }, [theme, engineReady])
+
   /** Replace the current workbook with a snapshot from Main. */
   const loadSnapshot = useCallback((name: string, snapshot: OfficeWorkbookSnapshot) => {
     const api = univerRef.current
     const bundles = bundlesRef.current
-    if (!api || !bundles) return
+    if (!api || !bundles) {
+      // A passive open can arrive before the several-megabyte Univer bundle
+      // finishes loading. Keep the already-authorized snapshot until the
+      // editor handshake completes instead of consuming it into a void.
+      pendingSnapshot.current = { name, snapshot }
+      return
+    }
+    // A file open is a new document identity even when the shared file
+    // adapter uses the generic workbook id. This prevents a staged chat edit
+    // from being applied to a different file opened in the same panel.
+    const documentSnapshot: OfficeWorkbookSnapshot = {
+      ...snapshot,
+      id: `document-${crypto.randomUUID()}`
+    }
     const current = api.univerAPI.getActiveWorkbook()
     if (current) api.univerAPI.disposeUnit(current.getId())
-    api.univerAPI.createWorkbook(buildUniverSnapshot(snapshot, locale, bundles.presets.LocaleType))
+    api.univerAPI.createWorkbook(buildUniverSnapshot(documentSnapshot, locale, bundles.presets.LocaleType))
+    baselineSnapshotRef.current = documentSnapshot
+    clearedFieldsRef.current.clear()
+    revisionRef.current = 0
+    setRevision(0)
     setFileName(name)
     setDirty(false)
-    setHasData(snapshotHasData(snapshot))
+    useAppStore.getState().setOfficeWorkbookDirty(false)
+    setHasData(snapshotHasData(documentSnapshot))
     useAppStore.getState().setOfficeWorkbookOpen(true)
+    useAppStore.getState().setOfficeWorkbookSnapshot(documentSnapshot)
+    useAppStore.getState().setOfficeWorkbookRevision(0)
   }, [locale])
+
+  useEffect(() => {
+    if (!engineReady || !pendingSnapshot.current) return
+    const next = pendingSnapshot.current
+    pendingSnapshot.current = null
+    loadSnapshot(next.name, next.snapshot)
+  }, [engineReady, loadSnapshot])
 
   const openWithGrant = useCallback(
     async (grant: FileGrant) => {
+      const requestGeneration = ++openRequestGeneration.current
       setBusy('open')
       setError(null)
       try {
+        if (dirty) {
+          setError('unsaved-changes')
+          return
+        }
         const result = await window.electronAPI.officeRead(grant.id)
+        if (requestGeneration !== openRequestGeneration.current) return
         if (!result.ok) {
           setError(result.error)
           return
@@ -275,7 +458,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         setBusy(null)
       }
     },
-    [loadSnapshot]
+    [dirty, loadSnapshot]
   )
 
   // Passive open (extension open_panel): App routes here with the Main-minted
@@ -292,12 +475,15 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   }, [location.state, location.pathname, navigate, openWithGrant, initialGrant])
 
   const openFile = useCallback(async () => {
+    if (dirty && !window.confirm(t('office.discardConfirm'))) return
+    const requestGeneration = ++openRequestGeneration.current
     setBusy('open')
     setError(null)
     try {
       const picked = await window.electronAPI.officeOpenDialog()
       if (!picked) return
       const result = await window.electronAPI.officeRead(picked.grant.id)
+      if (requestGeneration !== openRequestGeneration.current) return
       if (!result.ok) {
         setError(result.error)
         return
@@ -309,12 +495,13 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     } finally {
       setBusy(null)
     }
-  }, [loadSnapshot])
+  }, [dirty, loadSnapshot, t])
 
   const saveAs = useCallback(async () => {
     const api = univerRef.current
     const workbook: FWorkbook | null = api?.univerAPI.getActiveWorkbook() ?? null
     if (!workbook) return
+    const revisionAtCapture = revisionRef.current
     setBusy('save')
     setError(null)
     try {
@@ -325,41 +512,42 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         setError('invalid-snapshot')
         return
       }
+      const fidelitySnapshot = mergeOfficeFidelity(baselineSnapshotRef.current, converted.snapshot, clearedFieldsRef.current)
       const base = fileName.replace(/\.(xlsx|xls|csv)$/i, '') || 'workbook'
       const picked = await window.electronAPI.officeSaveDialog(`${base}.xlsx`)
       if (!picked) return
-      const result = await window.electronAPI.officeSave(picked.grant.id, converted.snapshot)
+      const result = await window.electronAPI.officeSave(picked.grant.id, fidelitySnapshot)
       if (!result.ok) {
         setError(result.error)
         return
       }
       setFileName(picked.name)
-      setDirty(false)
+      baselineSnapshotRef.current = fidelitySnapshot
+      clearedFieldsRef.current.clear()
+      useAppStore.getState().setOfficeWorkbookSnapshot(fidelitySnapshot)
+      if (revisionRef.current === revisionAtCapture) {
+        setDirty(false)
+        useAppStore.getState().setOfficeWorkbookDirty(false)
+      } else {
+        // Edits made while the native dialog or disk write was in flight are
+        // newer than the saved revision and must remain visibly dirty.
+        setDirty(true)
+        useAppStore.getState().setOfficeWorkbookDirty(true)
+        flashToast(t('office.saveKeptChanges'))
+      }
     } catch {
       setError('write-failed')
     } finally {
       setBusy(null)
     }
-  }, [fileName])
+  }, [fileName, flashToast, t])
 
   const closePanel = () => {
-    // Unsaved cell edits die silently with the panel. Demand a second click
-    // (with a timeout back to normal) before throwing them away.
-    if (dirty) {
-      if (closeConfirming) {
-        if (closeConfirmTimer.current) clearTimeout(closeConfirmTimer.current)
-        setCloseConfirming(false)
-      } else {
-        setCloseConfirming(true)
-        if (closeConfirmTimer.current) clearTimeout(closeConfirmTimer.current)
-        closeConfirmTimer.current = setTimeout(() => setCloseConfirming(false), 3000)
-        return
-      }
-    }
     if (onClose) {
       onClose()
       return
     }
+    if (dirty && !window.confirm(t('office.discardConfirm'))) return
     if (window.history.length > 1) navigate(-1)
     else navigate('/')
   }
@@ -368,12 +556,11 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const askAgentAboutWorkbook = () => {
     const workbook = univerRef.current?.univerAPI.getActiveWorkbook()
     if (!workbook) return
-    const prompt = buildOfficeChatPrompt(workbook.save(), { name: fileName, language: locale })
+    const prompt = buildOfficeChatPrompt(workbook.save(), { name: fileName, language: locale, includeDataSample: true })
     if (!prompt) return
     const store = useAppStore.getState()
-    // The question is about THIS workbook — start a fresh conversation so the
-    // summary cannot leak into an unrelated session's draft.
-    store.setCurrentSessionId(null)
+    // Preserve the current conversation: workbook context is a user-authored
+    // draft addition, not an implicit new-chat action.
     store.setComposerPrefill(prompt)
     flashToast(t('office.contextReady'))
     navigate('/')
@@ -390,15 +577,28 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   const applyOfficeEditHandoff = useCallback(() => {
     const handoff = useAppStore.getState().officeEditHandoff
     if (!handoff) return
-    const workbook = univerRef.current?.univerAPI.getActiveWorkbook()
+    const api = univerRef.current
+    if (!api) return
+    const workbook = api?.univerAPI.getActiveWorkbook()
     if (!workbook) {
       // Nothing to land on — keep the proposal staged so the person can open
       // a workbook and confirm again.
       flashToast(t('office.edit.noWorkbook'))
       return
     }
+    const currentIdentity = useAppStore.getState()
+    if (
+      (handoff.documentId && currentIdentity.officeWorkbookSnapshot?.id !== handoff.documentId) ||
+      (handoff.baseRevision !== undefined && currentIdentity.officeWorkbookRevision !== handoff.baseRevision)
+    ) {
+      const failures = handoff.edits.map((edit) => ({ edit, reason: 'revision-conflict' as const }))
+      setEditResult({ applied: 0, failures })
+      setOfficeEditHandoff(null)
+      flashToast(t('office.edit.conflictToast'))
+      return
+    }
     const failures: EditFailure[] = []
-    let applied = 0
+    const validEdits: Array<{ edit: OfficeEditCell; sheet: NonNullable<ReturnType<FWorkbook['getSheetByName']>>; row: number; column: number }> = []
     for (const edit of handoff.edits) {
       const sheet = workbook.getSheetByName(edit.sheet)
       if (!sheet) {
@@ -410,11 +610,47 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         failures.push({ edit, reason: 'out-of-bounds' })
         continue
       }
+      validEdits.push({ edit, sheet, row: position.row, column: position.column })
+    }
+    // Known validation failures do not partially mutate the workbook. The
+    // batch stays reviewable and can be regenerated against the current doc.
+    if (failures.length > 0) {
+      setEditResult({ applied: 0, failures })
+      setOfficeEditHandoff(null)
+      flashToast(t('office.edit.partialToast', { applied: 0, failed: failures.length }))
+      return
+    }
+    const beforeSnapshot = sanitizeOfficeSnapshot(workbook.save())?.snapshot ?? null
+    const dirtyBeforeApply = useAppStore.getState().officeWorkbookDirty
+    const clearedFieldsBeforeApply = new Set(clearedFieldsRef.current)
+    let applied = 0
+    for (const { edit, sheet, row, column } of validEdits) {
       try {
-        sheet.getRange(position.row, position.column).setValue(edit.value)
+        sheet.getRange(row, column).setValue(edit.value)
         applied += 1
       } catch {
         failures.push({ edit, reason: 'write-failed' })
+      }
+    }
+    // Univer writes cells one at a time. If a later write fails, restore the
+    // exact pre-batch projection so a partial agent proposal never remains in
+    // the in-memory workbook or gets saved by accident.
+    if (failures.length > 0 && beforeSnapshot) {
+      const bundles = bundlesRef.current
+      try {
+        api.univerAPI.disposeUnit(workbook.getId())
+        if (bundles) {
+          api.univerAPI.createWorkbook(buildUniverSnapshot(beforeSnapshot, locale, bundles.presets.LocaleType))
+        }
+        clearedFieldsRef.current = clearedFieldsBeforeApply
+        setDirty(dirtyBeforeApply)
+        useAppStore.getState().setOfficeWorkbookDirty(dirtyBeforeApply)
+        useAppStore.getState().setOfficeWorkbookSnapshot(beforeSnapshot)
+        setHasData(snapshotHasData(beforeSnapshot))
+        applied = 0
+      } catch {
+        // Preserve the visible write-failed result if the defensive restore
+        // itself cannot complete; the next open still requires a clean read.
       }
     }
     setEditResult({ applied, failures })
@@ -442,6 +678,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     | 'invalid-snapshot'
     | 'snapshot-too-large'
     | 'write-failed'
+    | 'unsaved-changes'
     | null
 
   return (
@@ -464,6 +701,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
         <div className="flex min-w-0 flex-1 items-center gap-1.5 px-2 text-[13px] text-cream">
           <FileSpreadsheet size={14} className="shrink-0 text-cream-faint" />
           <span className="truncate">{fileName || t('office.untitled')}</span>
+          <span className="shrink-0 text-[11px] text-cream-faint" title="Document revision">v{revision}</span>
           {dirty && <span className="shrink-0 text-cream-faint">· {t('office.unsaved')}</span>}
         </div>
         {warnings.length > 0 && (
@@ -480,9 +718,13 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
             {t(`office.error.${errorKey}`)}
           </span>
         )}
-        <button className={iconButton} onClick={closePanel} title={t('office.close')}>
-          <X size={15} />
-        </button>
+        {/* Embedded: the workspace panel's own tab row carries the close
+            control — one chrome set per object (design.md 3.3). */}
+        {!embedded && (
+          <button className={iconButton} onClick={closePanel} title={t('office.close')}>
+            <X size={15} />
+          </button>
+        )}
       </div>
       {/* Chat handoff: confirm bar while a proposal is pending, apply result after. */}
       {(officeEditHandoff || editResult) && (
@@ -576,7 +818,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
             <FileSpreadsheet size={28} className="text-cream-faint" />
             <p className="text-[13px] text-cream-dim">{t('office.emptyHint')}</p>
             <button
-              className="pointer-events-auto mt-1 flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-50"
+              className="pointer-events-auto mt-1 flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-50"
               disabled={busy !== null}
               onClick={() => void openFile()}
             >

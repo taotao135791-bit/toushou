@@ -48,6 +48,14 @@ describe('buildOfficeChatPrompt', () => {
     expect(prompt).toContain('（隐藏）: 空表')
   })
 
+  it('includes only a bounded, addressable data sample when explicitly requested', () => {
+    const prompt = buildOfficeChatPrompt(workbook, { language: 'en', includeDataSample: true })
+    expect(prompt).toContain('sampled rows')
+    expect(prompt).toContain('A2=2026-08-01')
+    expect(prompt).toContain('B2=42')
+    expect(prompt).toContain('C2=secret-row-value')
+  })
+
   it('returns null when the snapshot holds no sheets', () => {
     expect(buildOfficeChatPrompt(null)).toBeNull()
     expect(buildOfficeChatPrompt({})).toBeNull()

@@ -29,11 +29,53 @@ interface BridgeResult {
     value?: string
   }>
   imagePath?: string
+  truncated?: boolean
+  snapshotId?: string
+  tabId?: number
+  observedAt?: number
 }
 
 const BRIDGE = process.env.TOUSHOU_BROWSER_USE
 
-async function call(body: Record<string, unknown>): Promise<string> {
+function serializeResult(result: BridgeResult): string {
+  const projected: BridgeResult = {
+    ...result,
+    ...(typeof result.text === 'string' && result.text.length > 12_000
+      ? { text: `${result.text.slice(0, 11_999)}…`, truncated: true }
+      : {}),
+    ...(result.elements ? { elements: result.elements.slice(0, 80) } : {}),
+    ...(result.readings
+      ? {
+          readings: result.readings.slice(0, 8).map((reading) => {
+            if (!reading || typeof reading !== 'object') return reading
+            const value = reading as Record<string, unknown>
+            return {
+              ...value,
+              ...(Array.isArray(value.rows)
+                ? { rows: value.rows.slice(0, 24), ...(value.rows.length > 24 ? { truncated: true } : {}) }
+                : {})
+            }
+          })
+        }
+      : {})
+  }
+  let text = JSON.stringify(projected)
+  if (new TextEncoder().encode(text).byteLength <= 24_000) return text
+  const fallback: Record<string, unknown> = {
+    ok: projected.ok,
+    truncated: true,
+    truncation: { reason: 'transport-byte-limit' }
+  }
+  if (projected.error) fallback.error = projected.error
+  if (projected.url) fallback.url = projected.url
+  if (projected.title) fallback.title = projected.title
+  text = JSON.stringify(fallback)
+  return new TextEncoder().encode(text).byteLength <= 24_000
+    ? text
+    : JSON.stringify({ ok: false, truncated: true, error: 'result-too-large' })
+}
+
+async function call(body: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
   let result: BridgeResult
   if (!BRIDGE) {
     result = {
@@ -42,17 +84,28 @@ async function call(body: Record<string, unknown>): Promise<string> {
     }
   } else {
     try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 20_000)
+      const onAbort = () => controller.abort()
+      if (signal?.aborted) controller.abort()
+      signal?.addEventListener('abort', onAbort, { once: true })
       const res = await fetch(BRIDGE, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: controller.signal
       })
-      result = (await res.json()) as BridgeResult
+      try {
+        result = (await res.json()) as BridgeResult
+      } finally {
+        clearTimeout(timeout)
+        signal?.removeEventListener('abort', onAbort)
+      }
     } catch (err) {
       result = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
-  return JSON.stringify(result).slice(0, 24_000)
+  return serializeResult(result)
 }
 
 interface ToolDef {
@@ -61,7 +114,7 @@ interface ToolDef {
   description: string
   parameters: unknown
   approval?: 'read' | 'write' | 'exec'
-  execute: (params: Record<string, unknown>) => Promise<string>
+  execute: (params: Record<string, unknown>, signal?: AbortSignal) => Promise<string>
 }
 
 interface ToolHostApi {
@@ -88,8 +141,8 @@ function tool(def: ToolDef): Parameters<ToolHostApi['registerTool']>[0] {
     description: def.description,
     parameters: def.parameters,
     approval: def.approval,
-    execute: async (_toolCallId, params) => ({
-      content: [{ type: 'text', text: await def.execute(params ?? {}) }]
+    execute: async (_toolCallId, params, signal) => ({
+      content: [{ type: 'text', text: await def.execute(params ?? {}, signal) }]
     })
   }
 }
@@ -111,9 +164,21 @@ export default function browserUseTools(api: ToolHostApi): void {
       label: 'Browser Navigate',
       description:
         '在投手内置浏览器中打开一个 http(s) 网址并等待加载。返回最终 URL 和页面标题。这是浏览器操作的第一步。',
-      parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string' },
+          takeover: { type: 'boolean', description: '面板被其他会话占用时传 true 接管（仅 navigate 支持）' }
+        },
+        required: ['url']
+      },
       approval: 'read',
-      execute: (p) => call({ action: 'navigate', url: str(p, 'url') })
+      execute: (p) =>
+        call({
+          action: 'navigate',
+          url: str(p, 'url'),
+          ...(p.takeover === true ? { takeover: true } : {})
+        })
     })
   )
 
@@ -122,7 +187,7 @@ export default function browserUseTools(api: ToolHostApi): void {
       name: 'browser_snapshot',
       label: 'Browser Snapshot',
       description:
-        '读取当前页面的源码快照（优先使用这个，不要急着截图）：返回页面正文文本和可交互元素列表，每个元素带 ref 编号，供 browser_click / browser_type 使用。',
+        '读取当前页面的源码快照（优先使用这个，不要急着截图）：返回页面正文文本、可交互元素列表，以及 snapshotId/tabId/observedAt。每个元素带 ref；click/type 必须使用同一快照的 snapshotId，页面变化后先重新 snapshot。',
       parameters: { type: 'object', properties: {} },
       approval: 'read',
       execute: () => call({ action: 'snapshot' })
@@ -170,9 +235,9 @@ export default function browserUseTools(api: ToolHostApi): void {
       label: 'Browser Click',
       description:
         '用真实鼠标事件点击快照中某个 ref 编号的元素（链接/按钮等）。点击后返回新页面的 URL 与标题。',
-      parameters: { type: 'object', properties: { ref: { type: 'number' } }, required: ['ref'] },
+      parameters: { type: 'object', properties: { ref: { type: 'number' }, snapshotId: { type: 'string' } }, required: ['ref', 'snapshotId'] },
       approval: 'write',
-      execute: (p) => call({ action: 'click', ref: num(p, 'ref', 0) })
+      execute: (p) => call({ action: 'click', ref: num(p, 'ref', 0), snapshotId: str(p, 'snapshotId') })
     })
   )
 
@@ -186,14 +251,15 @@ export default function browserUseTools(api: ToolHostApi): void {
         type: 'object',
         properties: {
           ref: { type: 'number' },
+          snapshotId: { type: 'string' },
           text: { type: 'string' },
           submit: { type: 'boolean' }
         },
-        required: ['ref', 'text']
+        required: ['ref', 'text', 'snapshotId']
       },
       approval: 'write',
       execute: (p) =>
-        call({ action: 'type', ref: num(p, 'ref', 0), text: str(p, 'text'), submit: p.submit === true })
+        call({ action: 'type', ref: num(p, 'ref', 0), text: str(p, 'text'), submit: p.submit === true, snapshotId: str(p, 'snapshotId') })
     })
   )
 

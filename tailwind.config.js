@@ -17,6 +17,7 @@ module.exports = {
           700: 'rgb(var(--bubble) / <alpha-value>)',
           600: 'var(--line-strong)'
         },
+        selected: 'rgb(var(--bg-selected) / <alpha-value>)',
         cream: {
           DEFAULT: 'rgb(var(--text) / <alpha-value>)',
           dim: 'rgb(var(--text-dim) / <alpha-value>)',

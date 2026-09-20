@@ -2,7 +2,6 @@ import { useCallback, useRef, useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   FolderOpen,
-  FolderPlus,
   MessageSquare,
   Download,
   Loader2,
@@ -13,7 +12,10 @@ import {
   Plug,
   BookOpen,
   Puzzle,
-  Settings2
+  Settings2,
+  Globe2,
+  FileText,
+  Table2
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
@@ -28,7 +30,6 @@ import Composer from './Composer'
 import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
 import OpenWithMenu from './OpenWithMenu'
-import Logo from './Logo'
 import useElementWidth from '../lib/useElementWidth'
 
 const EMPTY_MESSAGES: MessageLike[] = []
@@ -47,8 +48,6 @@ export default function ChatPanel() {
   const workspacePanel = useAppStore((s) => s.workspacePanel)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const selectWorkspace = useAppStore((s) => s.selectWorkspace)
-  const createProjectWorkspace = useAppStore((s) => s.createProjectWorkspace)
-  const selectDefaultWorkspace = useAppStore((s) => s.selectDefaultWorkspace)
   // Per-session slices only: streaming deltas of OTHER sessions must not
   // re-render this chat, and unrelated store writes must not either.
   const sessionMessages = useAppStore((s) =>
@@ -109,10 +108,6 @@ export default function ChatPanel() {
   // Session-less send failure (create threw — e.g. a stale workspace grant)
   const [sendError, setSendError] = useState<I18nKey | null>(null)
   // Home hero: inline "new project folder" naming state
-  const [namingProject, setNamingProject] = useState(false)
-  const [newProjectName, setNewProjectName] = useState('')
-  const [creatingProject, setCreatingProject] = useState(false)
-  const [projectCreateFailed, setProjectCreateFailed] = useState(false)
 
   const isStopping = currentSessionId !== null && stoppingSessionId === currentSessionId
 
@@ -357,20 +352,10 @@ export default function ChatPanel() {
     await selectWorkspace()
   }
 
-  const handleCreateProject = async () => {
-    const name = newProjectName.trim()
-    if (!name || creatingProject) return
-    setCreatingProject(true)
-    setProjectCreateFailed(false)
-    const ok = await createProjectWorkspace(name)
-    setCreatingProject(false)
-    if (!ok) {
-      setProjectCreateFailed(true)
-      setTimeout(() => setProjectCreateFailed(false), 3000)
-      return
-    }
-    setNamingProject(false)
-    setNewProjectName('')
+  const openOfficeFile = async () => {
+    const picked = await window.electronAPI.officeOpenDialog()
+    if (!picked) return
+    setWorkspacePanel({ kind: 'office', grant: picked.grant, name: picked.name })
   }
 
   const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
@@ -504,20 +489,17 @@ export default function ChatPanel() {
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} onScroll={handleTranscriptScroll} className="relative h-full overflow-y-auto">
         {showHero ? (
-          // Hero and composer form ONE centered block: mark, serif hero
+          // Hero and composer form ONE centered block: mark, sans-serif wordmark
           // title, composer, then one faint hint line and the scenario chips
           // below — nothing else. The top bar is a bare drag spacer on home.
           <div className="flex min-h-full flex-col items-center px-8">
-            <div className="my-auto flex w-full max-w-[680px] flex-col items-center pb-[10vh] pt-6">
-              <div className="rise" style={{ animationDelay: '0ms' }}>
-                <Logo size={52} />
+            {/* Top-anchored per design.md 3.2 (~18vh, clamped 80–175px): the
+                brand + composer + entries read as one top-down column, not a
+                vertically centered block. */}
+            <div className="home-hero flex flex-col items-center pb-10 pt-[clamp(80px,18vh,175px)]">
+              <div className="home-wordmark rise" style={{ animationDelay: '0ms' }} aria-label="投手">
+                投手
               </div>
-              <h2
-                className="rise mb-10 mt-8 text-[32px] font-semibold tracking-tight text-cream"
-                style={{ animationDelay: '60ms' }}
-              >
-                {t('chat.hero.title')}
-              </h2>
               <div className="rise w-full" style={{ animationDelay: '140ms' }}>
                 <Composer
                   onSend={handleSend}
@@ -538,79 +520,30 @@ export default function ChatPanel() {
                     {t('composer.hint')}
                   </p>
                 )}
-                {/* Scenario chips sit BELOW the composer (Kimi/ZCode home
-                    pattern): a single centered row of ghost pills. The inline
-                    "new project folder" naming row swaps into this slot. */}
-                {!currentWorkspace && (
-                  <div className="mt-4 flex flex-col items-center gap-2">
-                    {namingProject ? (
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          autoFocus
-                          value={newProjectName}
-                          onChange={(e) => setNewProjectName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') void handleCreateProject()
-                            if (e.key === 'Escape') {
-                              setNamingProject(false)
-                              setNewProjectName('')
-                            }
-                          }}
-                          placeholder={t('home.namePlaceholder')}
-                          className="h-8 w-52 rounded-full border border-line bg-ink-850 px-3.5 text-xs text-cream placeholder-cream-faint outline-none transition-colors focus:border-accent/50"
-                        />
-                        <button
-                          onClick={() => void handleCreateProject()}
-                          disabled={!newProjectName.trim() || creatingProject}
-                          className="flex h-8 items-center gap-1.5 rounded-full bg-cream px-3.5 text-xs font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
-                        >
-                          {creatingProject ? (
-                            <Loader2 size={11} className="animate-spin" />
-                          ) : (
-                            <FolderPlus size={11} />
-                          )}
-                          {t('home.create')}
-                        </button>
-                        <button
-                          onClick={() => {
-                            setNamingProject(false)
-                            setNewProjectName('')
-                          }}
-                          className="flex h-8 items-center rounded-full border border-line px-3 text-xs text-cream-dim transition hover:border-line-strong hover:text-cream"
-                        >
-                          {t('home.cancel')}
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap items-center justify-center gap-2">
-                        {([
-                          { icon: FolderPlus, label: t('home.action.newFolder'), onClick: () => setNamingProject(true) },
-                          { icon: FolderOpen, label: t('home.action.pickFolder'), onClick: () => void handleSelectProject() },
-                          { icon: MessageSquare, label: t('home.action.noProject'), onClick: () => void selectDefaultWorkspace() }
-                        ] as const).map(({ icon: Icon, label, onClick }) => (
-                          <button
-                            key={label}
-                            onClick={onClick}
-                            title={
-                              label === t('home.action.noProject')
-                                ? t('home.noProjectHint')
-                                : undefined
-                            }
-                            className="flex max-w-[240px] items-center gap-1.5 rounded-full border border-line px-3.5 py-1.5 text-xs text-cream-faint transition-colors duration-200 ease-standard hover:bg-overlay hover:text-cream"
-                          >
-                            <Icon size={12} className="shrink-0" />
-                            <span className="truncate">{label}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {projectCreateFailed && (
-                      <p className="text-[11px] text-red-500" aria-live="polite">
-                        {t('home.createFailed')}
-                      </p>
-                    )}
-                  </div>
-                )}
+                {/* Project choice lives in the composer's connected tray now
+                    (选择项目 menu: default workspace / pick / new folder). */}
+                <div className="home-quick-links" aria-label={t('home.quickLabel')}>
+                  <button type="button" onClick={() => setWorkspacePanel({ kind: 'browser' })}>
+                    <Globe2 size={15} aria-hidden="true" />
+                    <span>{t('home.quick.browser')}</span>
+                  </button>
+                  <button type="button" onClick={() => void openOfficeFile()}>
+                    <FileText size={15} aria-hidden="true" />
+                    <span>{t('home.quick.files')}</span>
+                  </button>
+                  <button type="button" onClick={() => void openOfficeFile()}>
+                    <Table2 size={15} aria-hidden="true" />
+                    <span>{t('home.quick.sheets')}</span>
+                  </button>
+                  <button type="button" onClick={() => navigate('/tasks')}>
+                    <CalendarClock size={15} aria-hidden="true" />
+                    <span>{t('home.quick.tasks')}</span>
+                  </button>
+                  <button type="button" onClick={() => navigate('/plugins')}>
+                    <Puzzle size={15} aria-hidden="true" />
+                    <span>{t('home.quick.plugins')}</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>

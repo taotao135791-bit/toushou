@@ -229,7 +229,7 @@ export function SaveMessageToBoardDialog({
             <button
               onClick={() => void createBoardAndSave()}
               disabled={!newBoardName.trim() || busy || creatingBoard}
-              className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+              className="flex items-center gap-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
             >
               {creatingBoard ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
               {creatingBoard ? t('boards.chat.saving') : t('boards.chat.createAndSave')}
@@ -238,7 +238,7 @@ export function SaveMessageToBoardDialog({
             <button
               onClick={() => void save()}
               disabled={!boardId || busy}
-              className="flex items-center gap-1 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+              className="flex items-center gap-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
             >
               {busy ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
               {busy ? t('boards.chat.saving') : t('boards.chat.save')}

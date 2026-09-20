@@ -205,7 +205,7 @@ export function PluginStudioDialog({
             <button
               onClick={() => void save(true)}
               disabled={busy !== null}
-              className="flex items-center gap-1.5 rounded-full bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-lg bg-cream px-4 py-2 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
             >
               {busy === 'sync' ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
               {busy === 'sync' ? t('plugins.write.syncing') : t('plugins.write.saveSync')}

@@ -11,6 +11,7 @@ import { initUpdater } from './updater'
 import { installNavigationGuards } from './navigation'
 import { initFeishuBridge } from './integrations/feishu/feishuBridge'
 import { initTasksBridge } from './tasksBridge'
+import { ensureKernelSkill } from './kernelSkill'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 import { installFileLogging } from './lib/logger'
 
@@ -152,6 +153,10 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('[tasks] tool bridge unavailable', error)
   }
+  // The viral-competitive-analysis chain is product kernel: its playbook
+  // skill must exist in every install (idempotent, version-upgrading).
+  const kernelSkill = ensureKernelSkill()
+  if (!kernelSkill.ok) console.warn('[kernel-skill] install failed:', kernelSkill.error)
   createWindow()
   initUpdater()
   // Fire-and-forget: links bundled packages (e.g. the ads toolkit) into the

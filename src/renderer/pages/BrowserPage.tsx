@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, ExternalLink, Loader2, MessageSquareText, RotateCw, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ExternalLink, Globe2, Loader2, MessageSquareText, RotateCw, X } from 'lucide-react'
 import { BrowserPanelState } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
@@ -14,11 +14,12 @@ import { useT } from '../i18n'
  */
 interface BrowserPageProps {
   embedded?: boolean
+  active?: boolean
   initialUrl?: string
   onClose?: () => void
 }
 
-export default function BrowserPage({ embedded = false, initialUrl: requestedInitialUrl, onClose }: BrowserPageProps) {
+export default function BrowserPage({ embedded = false, active = true, initialUrl: requestedInitialUrl, onClose }: BrowserPageProps) {
   const t = useT()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -53,6 +54,10 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
   // once from ?url= so re-renders never retrigger a load.
   const initialUrl = requestedInitialUrl ?? searchParams.get('url')
   useLayoutEffect(() => {
+    if (!active) {
+      void window.electronAPI.browserHide()
+      return
+    }
     const el = placeholderRef.current
     if (!el) return
     const readBounds = () => {
@@ -77,7 +82,7 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
       void window.electronAPI.browserHide()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [active])
 
   // An extension open (or a fresh /browser?url=… navigation) while the page
   // is already mounted must drive the panel — the mount effect alone would
@@ -188,12 +193,23 @@ export default function BrowserPage({ embedded = false, initialUrl: requestedIni
         >
           <ExternalLink size={15} />
         </button>
-        <button className={iconButton} onClick={closePanel} title={t('browser.close')}>
-          <X size={15} />
-        </button>
+        {/* Embedded: the workspace panel's tab row owns the close control. */}
+        {!embedded && (
+          <button className={iconButton} onClick={closePanel} title={t('browser.close')}>
+            <X size={15} />
+          </button>
+        )}
       </div>
       {/* The native WebContentsView renders exactly over this placeholder. */}
-      <div ref={placeholderRef} className="min-h-0 flex-1 bg-ink-950" />
+      <div ref={placeholderRef} className="relative min-h-0 flex-1 bg-ink-950">
+        {/* Honest empty state until a page is loaded (design.md 2.1). */}
+        {!panelState.url && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2.5 px-8 text-center">
+            <Globe2 size={26} className="text-cream-faint" aria-hidden="true" />
+            <p className="text-[13px] text-cream-faint">{t('browser.emptyState')}</p>
+          </div>
+        )}
+      </div>
       {/* Anchored to the toolbar strip: everything below it is covered by the
           native WebContentsView, which would hide a lower toast. */}
       {toast && (

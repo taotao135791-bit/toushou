@@ -1,6 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { FeishuToolRequest } from '../../../shared/connections'
+import { serializeBoundedJson } from '../../../shared/boundedJson'
 
 const MAX_BODY_BYTES = 64 * 1024
 export const FEISHU_TOOLS_ENV_KEY = 'TOUSHOU_FEISHU'
@@ -86,10 +87,5 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-  // A hard 30k cut used to drop rows silently; the marker lets the runtime
-  // tell the user the data was trimmed.
-  const text = JSON.stringify(body)
-  response.end(
-    text.length > 30_000 ? `${text.slice(0, 30_000 - 20)}…","truncated":true}` : text
-  )
+  response.end(serializeBoundedJson(body, 30_000))
 }

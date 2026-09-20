@@ -73,7 +73,7 @@ app.whenReady().then(async () => {
     // 4. A types into the search box and submits; the GET form navigates.
     const input = (snap.elements || []).find((e) => e.tag === 'input')
     if (!input) throw new Error('snapshot did not expose the input element')
-    record('A type+submit', await post(envA, { action: 'type', ref: input.ref, text: '投手', submit: true }))
+    record('A type+submit', await post(envA, { action: 'type', ref: input.ref, text: '投手', submit: true, snapshotId: snap.snapshotId }))
     const afterSearch = await post(envA, { action: 'snapshot' })
     record('A snapshot after search', afterSearch)
 
@@ -81,7 +81,7 @@ app.whenReady().then(async () => {
     await post(envA, { action: 'navigate', url: `${base}/` })
     const snap2 = await post(envA, { action: 'snapshot' })
     const link = (snap2.elements || []).find((e) => e.tag === 'a')
-    record('A click link', await post(envA, { action: 'click', ref: link.ref }))
+    record('A click link', await post(envA, { action: 'click', ref: link.ref, snapshotId: snap2.snapshotId }))
     record('A snapshot after click', await post(envA, { action: 'snapshot' }))
 
     // 5.5 Structured report on a non-Ads-Manager page: fails closed with
@@ -96,7 +96,8 @@ app.whenReady().then(async () => {
     //    window actually painted, so surface the hidden window for this step
     //    (in the real app the window is visible by definition).
     win.show()
-    await new Promise((r) => setTimeout(r, 250))
+    win.focus()
+    await new Promise((r) => setTimeout(r, 1_000))
     record('A screenshot', await post(envA, { action: 'screenshot' }))
     win.hide()
 
@@ -111,7 +112,7 @@ app.whenReady().then(async () => {
     record('A navigate while hidden (reopens)', nav)
 
     // 9. B takes ownership by navigating; A now loses acting rights.
-    record('B navigate (takeover)', await post(envB, { action: 'navigate', url: `${base}/` }))
+    record('B navigate (takeover)', await post(envB, { action: 'navigate', url: `${base}/`, takeover: true }))
     record('A snapshot after takeover (expect denial)', await post(envA, { action: 'snapshot' }))
 
     // 10. Unknown token is rejected outright.
