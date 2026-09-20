@@ -13,6 +13,7 @@ import { initFeishuBridge } from './integrations/feishu/feishuBridge'
 import { initTasksBridge } from './tasksBridge'
 import { ensureKernelSkill } from './kernelSkill'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
+import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { installFileLogging } from './lib/logger'
 
 // File logging must be the first thing main does: it captures the console
@@ -165,6 +166,8 @@ app.whenReady().then(async () => {
   // Background-only recovery: GUI creation is never held up by Feishu DNS or
   // WebSocket handshake latency.
   void feishuConnectionManager.initialize()
+  // TikTok 报表自动刷新：仅在持久化开关为开时启动 30 分钟定时器。
+  tiktokReportService.restoreFromSettings()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

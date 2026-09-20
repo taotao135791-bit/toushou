@@ -38,6 +38,8 @@ export type DatasetImportError =
   | 'dataset-limit'
   | 'dataset-store-unreadable'
   | 'write-failed'
+  /** createOrUpdateDataset: the replacement name failed isValidDatasetName. */
+  | 'invalid-name'
 
 export type DatasetImportResult =
   | { ok: true; dataset: BoardDataset; truncated: boolean }

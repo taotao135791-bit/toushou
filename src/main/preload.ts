@@ -21,6 +21,13 @@ import {
   TikTokAdsConnectionSnapshot,
   FigmaConnectionSnapshot
 } from '../shared/connections'
+import type {
+  TikTokCredentialInput,
+  TikTokCredentialInfo,
+  TikTokCredentialsSetResult,
+  TikTokRefreshOutcome,
+  TikTokReportStatus
+} from '../shared/tiktokReport'
 import {
   CliCapabilities,
   CliInfo,
@@ -482,6 +489,13 @@ export interface ElectronAPI {
   tiktokDisconnect: () => Promise<TikTokAdsConnectionSnapshot>
   tiktokOpenUrl: (url: string) => Promise<boolean>
   onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => () => void
+  /** TikTok 报表接入（Open API v1.3）：凭据 Main 侧 0600 JSON，渲染层只见脱敏投影。 */
+  tiktokReportSetCredentials: (input: TikTokCredentialInput) => Promise<TikTokCredentialsSetResult>
+  tiktokReportListCredentials: () => Promise<TikTokCredentialInfo>
+  tiktokReportRefreshNow: () => Promise<TikTokRefreshOutcome>
+  tiktokReportSetAutoRefresh: (enabled: boolean) => Promise<TikTokReportStatus>
+  tiktokReportStatus: () => Promise<TikTokReportStatus>
+  onTiktokReportStatus: (callback: (status: TikTokReportStatus) => void) => () => void
   /** Figma Dev Mode MCP connector (local endpoint, no credentials). */
   figmaStatus: () => Promise<FigmaConnectionSnapshot>
   figmaConnect: () => Promise<FigmaConnectionSnapshot>
@@ -510,6 +524,31 @@ export interface ElectronAPI {
   onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => () => void
   readKnowledge: (cwd: string) => Promise<string | null>
   writeKnowledge: (cwd: string, content: string) => Promise<boolean>
+}
+
+/** Bounded projection of the TikTok credential form — drops unknown fields,
+ * enforces the same length caps as Main, never forwards a path-shaped value. */
+function sanitizeTikTokCredentialInput(input: TikTokCredentialInput): TikTokCredentialInput {
+  const bounded = (value: unknown, max: number): string | undefined =>
+    typeof value === 'string' && value.length > 0 && value.length <= max ? value : undefined
+  const out: TikTokCredentialInput = {
+    accessToken: bounded(input?.accessToken, 4096) ?? ''
+  }
+  const appId = bounded(input?.appId, 64)
+  if (appId) out.appId = appId
+  const appSecret = bounded(input?.appSecret, 256)
+  if (appSecret) out.appSecret = appSecret
+  const refreshToken = bounded(input?.refreshToken, 4096)
+  if (refreshToken) out.refreshToken = refreshToken
+  if (Array.isArray(input?.advertiserIds)) {
+    const ids: Array<number | string> = []
+    for (const entry of input.advertiserIds.slice(0, 50)) {
+      if (typeof entry === 'number' && Number.isInteger(entry) && entry > 0) ids.push(entry)
+      else if (typeof entry === 'string' && /^\d{1,20}$/.test(entry.trim())) ids.push(entry.trim())
+    }
+    if (ids.length > 0) out.advertiserIds = ids
+  }
+  return out
 }
 
 const api: ElectronAPI = {
@@ -878,6 +917,28 @@ const api: ElectronAPI = {
     ipcRenderer.on(IPC_CHANNELS.TIKTOK_STATUS, handler)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.TIKTOK_STATUS, handler)
+    }
+  },
+  // TikTok 报表接入 — preload 侧先做一层形状/长度约束（真正校验在 Main），
+  // 只放行有界字符串与数字 id，永不接受文件路径。
+  tiktokReportSetCredentials: (input: TikTokCredentialInput) =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.TIKTOK_CREDENTIALS_SET,
+      sanitizeTikTokCredentialInput(input)
+    ) as Promise<TikTokCredentialsSetResult>,
+  tiktokReportListCredentials: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_CREDENTIALS_LIST) as Promise<TikTokCredentialInfo>,
+  tiktokReportRefreshNow: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_REFRESH_NOW) as Promise<TikTokRefreshOutcome>,
+  tiktokReportSetAutoRefresh: (enabled: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_AUTOREFRESH_SET, Boolean(enabled)) as Promise<TikTokReportStatus>,
+  tiktokReportStatus: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_REPORT_STATUS) as Promise<TikTokReportStatus>,
+  onTiktokReportStatus: (callback: (status: TikTokReportStatus) => void) => {
+    const handler = (_event: IpcRendererEvent, status: TikTokReportStatus) => callback(status)
+    ipcRenderer.on(IPC_CHANNELS.TIKTOK_REPORT_STATUS, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.TIKTOK_REPORT_STATUS, handler)
     }
   },
   figmaStatus: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_STATUS),

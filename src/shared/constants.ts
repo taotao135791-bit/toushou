@@ -167,6 +167,14 @@ export const IPC_CHANNELS = {
   TIKTOK_CANCEL: 'tiktok:cancel',
   TIKTOK_DISCONNECT: 'tiktok:disconnect',
   TIKTOK_OPEN_URL: 'tiktok:open-url',
+  /** TikTok Ads 后台报表接入（Open API v1.3 → "TikTok 报表" 看板数据集）。
+   *  TIKTOK_STATUS 已被上方 MCP 连接快照占用，报表接入单独使用
+   *  tiktok-report: 命名空间，两条通路互不干扰。 */
+  TIKTOK_CREDENTIALS_SET: 'tiktok-report:credentials-set',
+  TIKTOK_CREDENTIALS_LIST: 'tiktok-report:credentials-list',
+  TIKTOK_REFRESH_NOW: 'tiktok-report:refresh-now',
+  TIKTOK_AUTOREFRESH_SET: 'tiktok-report:autorefresh-set',
+  TIKTOK_REPORT_STATUS: 'tiktok-report:status',
   FIGMA_STATUS: 'figma:status',
   FIGMA_CONNECT: 'figma:connect',
   FIGMA_DISCONNECT: 'figma:disconnect',

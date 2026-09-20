@@ -163,7 +163,7 @@ export function createWidget(
 /** Translator shape the presets need; the renderer passes its i18n `t`. */
 export type BoardText = (key: string) => string
 
-export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily'
+export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'tiktok'
 
 export interface ComposedBoard {
   name: string
@@ -320,6 +320,76 @@ export function fbDailyPreset(t: BoardText): BoardWidget[] {
 }
 
 /**
+ * TikTok Ads panorama board: a KPI row of dataset-bound counters (spend,
+ * clicks, avg CTR, conversions), daily spend and conversion trends, a
+ * per-campaign spend comparison and a data-source note. Widgets bind the
+ * "TikTok 报表" dataset by NAME (stored in the `datasetId` binding field —
+ * the dataset importer coins ids, the template pins the human-readable name
+ * the dataset is imported under). Until that dataset exists the widgets show
+ * their binding placeholder / seed demo series.
+ */
+export function tiktokAdsPreset(t: BoardText): BoardWidget[] {
+  const dataset = 'TikTok 报表'
+  const kpi = (titleKey: string, metric: string, op: DatasetOp, x: number): BoardWidget =>
+    presetWidget('counter', t(titleKey), { x, y: 0, w: 3, h: 3 }, {
+      value: 0,
+      source: 'dataset',
+      datasetId: dataset,
+      metric,
+      op
+    })
+  const trend = (metric: string): Record<string, unknown> => ({
+    points: [320, 410, 380, 460, 520, 490, 560],
+    labels: [],
+    source: 'dataset',
+    datasetId: dataset,
+    metric,
+    op: 'sum',
+    dimension: '日期'
+  })
+  return [
+    kpi('boards.preset.tiktok.kpiSpend', '消耗', 'sum', 0),
+    kpi('boards.preset.tiktok.kpiClicks', '点击', 'sum', 3),
+    kpi('boards.preset.tiktok.kpiCtr', '点击率', 'avg', 6),
+    kpi('boards.preset.tiktok.kpiConversions', '转化', 'sum', 9),
+    presetWidget(
+      'chart-line',
+      t('boards.preset.tiktok.spendTrend'),
+      { x: 0, y: 3, w: 6, h: 6 },
+      trend('消耗')
+    ),
+    presetWidget(
+      'chart-bar',
+      t('boards.preset.tiktok.campaignSpend'),
+      { x: 6, y: 3, w: 6, h: 6 },
+      {
+        // Grouping (top N) is the dataset layer's job once the binding
+        // resolves; these are the pre-bind demo points.
+        points: [1240, 980, 640],
+        labels: ['Campaign A', 'Campaign B', 'Campaign C'],
+        source: 'dataset',
+        datasetId: dataset,
+        metric: '消耗',
+        op: 'sum',
+        dimension: '活动名称'
+      }
+    ),
+    presetWidget(
+      'chart-line',
+      t('boards.preset.tiktok.conversionTrend'),
+      { x: 0, y: 9, w: 6, h: 6 },
+      trend('转化')
+    ),
+    presetWidget(
+      'note',
+      t('boards.preset.tiktok.note'),
+      { x: 6, y: 9, w: 6, h: 6 },
+      { text: t('boards.preset.tiktok.noteBody') }
+    )
+  ]
+}
+
+/**
  * Deterministically compose a new board from a free-form description. A
  * chip-selected `preset` skips keyword detection entirely. The caller turns
  * the result into a real board via `createBoard` and switches to it.
@@ -337,6 +407,8 @@ export function composeBoard(
       return { name: t('boards.preset.finance'), widgets: financePreset(t) }
     case 'fb-daily':
       return { name: t('boards.preset.fbDaily'), widgets: fbDailyPreset(t) }
+    case 'tiktok':
+      return { name: t('boards.preset.tiktok'), widgets: tiktokAdsPreset(t) }
     case 'blank':
       return { name: t('boards.preset.blank'), widgets: [] }
     default:
@@ -688,13 +760,34 @@ function validateWidgetConfig(
         if (!Array.isArray(raw.points) || raw.points.length > BOARD_LIMITS.maxChartPoints) {
           return null
         }
-        const points: number[] = []
+        // Plain numbers OR forecast objects { value, forecast?, lo?, hi? } —
+        // the forecast renderer extends series with these shapes.
+        const points: Array<number | { value: number; forecast?: boolean; lo?: number; hi?: number }> = []
         for (const p of raw.points) {
+          if (typeof p === 'object' && p !== null) {
+            const obj = p as Record<string, unknown>
+            const value = cleanNumber(obj.value)
+            if (value === null) return null
+            const point: { value: number; forecast?: boolean; lo?: number; hi?: number } = { value }
+            if (typeof obj.forecast === 'boolean') point.forecast = obj.forecast
+            const lo = obj.lo === undefined ? null : cleanNumber(obj.lo)
+            const hi = obj.hi === undefined ? null : cleanNumber(obj.hi)
+            if (obj.lo !== undefined && lo === null) return null
+            if (obj.hi !== undefined && hi === null) return null
+            if (lo !== null) point.lo = lo
+            if (hi !== null) point.hi = hi
+            points.push(point)
+            continue
+          }
           const value = cleanNumber(p)
           if (value === null) return null
           points.push(value)
         }
         config.points = points
+      }
+      if (raw.showValues !== undefined) {
+        if (typeof raw.showValues !== 'boolean') return null
+        config.showValues = raw.showValues
       }
       if (raw.labels !== undefined) {
         if (!Array.isArray(raw.labels) || raw.labels.length > BOARD_LIMITS.maxChartPoints) {

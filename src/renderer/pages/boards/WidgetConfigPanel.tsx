@@ -62,6 +62,17 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
   const [labelsText, setLabelsText] = useState(() =>
     Array.isArray(widget.config.labels) ? (widget.config.labels as string[]).join(', ') : ''
   )
+  // "Show values" per chart widget. Unset config falls back to the same
+  // effective default the body renders: always on for bars (thin bars
+  // degrade to hover-only), on for lines with at most 12 points.
+  const [showValues, setShowValues] = useState(() => {
+    const raw = widget.config.showValues
+    if (typeof raw === 'boolean') return raw
+    if (widget.type === 'chart-line') {
+      return Array.isArray(widget.config.points) ? widget.config.points.length <= 12 : true
+    }
+    return true
+  })
   const [url, setUrl] = useState(configString(widget, 'url'))
   const [urlInvalid, setUrlInvalid] = useState(false)
   const [labelsInvalid, setLabelsInvalid] = useState(false)
@@ -234,7 +245,7 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
           setLabelsInvalid(true)
           return
         }
-        config = { points, labels, ...bindingConfig() }
+        config = { points, labels, showValues, ...bindingConfig() }
         break
       }
       case 'todo':
@@ -523,6 +534,17 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
               className={inputClass}
             />
           </Field>
+        )}
+        {isChart && (
+          <label className="flex cursor-pointer items-center gap-2 text-[12px] text-cream-dim">
+            <input
+              type="checkbox"
+              checked={showValues}
+              onChange={(e) => setShowValues(e.target.checked)}
+              className="accent-[rgb(var(--accent))]"
+            />
+            {t('boards.config.showValues')}
+          </label>
         )}
         {isChart && source === 'manual' && (
           <>
