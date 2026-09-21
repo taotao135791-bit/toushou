@@ -31,6 +31,17 @@ const cleanupWired = new Set<number>()
 /** Both renderer attachment and the tool bridge join the same navigation. */
 const pendingNavigations = new WeakMap<Electron.WebContents, { key: string; done: Promise<void> }>()
 
+const readingStretchedViews = new WeakSet<WebContentsView>()
+const lastVisibleBounds = new WeakMap<WebContentsView, BrowserPanelBounds>()
+
+function parkBrowserPanelOffscreen(win: BrowserWindow, view: WebContentsView): void {
+  const [width, height] = win.getContentSize()
+  const parkWidth = Math.max(width, 1200)
+  const parkHeight = Math.max(height, 3600)
+  win.contentView.addChildView(view)
+  view.setBounds({ x: width + 100, y: 0, width: parkWidth, height: parkHeight })
+}
+
 function navigationKey(raw: string): string {
   const url = new URL(raw)
   url.searchParams.sort()
@@ -81,33 +92,42 @@ export async function withBrowserReadingViewport<T>(view: WebContentsView, read:
   if (readingStretchedViews.has(view)) return read()
   readingStretchedViews.add(view)
   const wc = view.webContents
-  const previous = view.getBounds()
   const owner = BrowserWindow.fromWebContents(wc)
-  const size = owner && !wc.isDestroyed() ? owner.getContentSize() : null
-  if (size && size.length === 2 && (size[0] !== previous.width || size[1] !== previous.height)) {
-    const insideWindow =
-      previous.x >= 0 &&
-      previous.y >= 0 &&
-      previous.x < size[0] &&
-      previous.y < size[1]
-    view.setBounds(
-      insideWindow
-        ? { x: 0, y: 0, width: size[0], height: size[1] }
-        // Background reads still need a full-size layout for Ads Manager's
-        // virtualized table. Keep the attached view clipped outside the window
-        // so it never covers the user's board.
-        : { x: size[0] + 100, y: 0, width: size[0], height: size[1] }
-    )
-  }
+  const windowAlive = Boolean(owner && (typeof owner.isDestroyed !== 'function' || owner.isDestroyed() === false))
+  // A visible (attached) panel must keep its placeholder bounds. Moving it
+  // off-screen made the workspace go blank AND Ads Manager unmounted every
+  // virtualized campaign row — both iOS and AND then failed as unparseable.
+  // Hidden background reads still get a tall off-screen layout. Restore
+  // using the latest show/hide intent, not the state captured at start.
+  let stretched = false
   try {
+    if (windowAlive && owner && !attachedPanels.has(owner.id)) {
+      const before = view.getBounds()
+      parkBrowserPanelOffscreen(owner, view)
+      const after = view.getBounds()
+      stretched = before.width < 200 || before.height < 200 || before.width !== after.width || before.height !== after.height
+    }
+    if (stretched) await new Promise((resolve) => setTimeout(resolve, 250))
     return await read()
   } finally {
-    readingStretchedViews.delete(view)
-    if (!wc.isDestroyed()) view.setBounds(previous)
+    try {
+      if (!wc.isDestroyed() && windowAlive && owner && (typeof owner.isDestroyed !== 'function' || owner.isDestroyed() === false)) {
+        if (attachedPanels.has(owner.id)) {
+          const latest = lastVisibleBounds.get(view)
+          if (latest) view.setBounds(latest)
+        } else {
+          try {
+            parkBrowserPanelOffscreen(owner, view)
+          } catch {
+            // Restore must not leak the stretch flag if parking fails.
+          }
+        }
+      }
+    } finally {
+      readingStretchedViews.delete(view)
+    }
   }
 }
-
-const readingStretchedViews = new WeakSet<WebContentsView>()
 
 /** In-app popup windows opened by each panel, closed with their owner. */
 const panelChildren = new Map<number, Set<BrowserWindow>>()
@@ -180,10 +200,8 @@ export function getActiveBrowserPanel(): WebContentsView | null {
 export function ensureBrowserPanel(win: BrowserWindow): WebContentsView | null {
   if (win.isDestroyed()) return null
   const view = panels.get(win.id) ?? createPanel(win)
-  if (!attachedPanels.has(win.id)) {
-    const [width, height] = win.getContentSize()
-    win.contentView.addChildView(view)
-    view.setBounds({ x: width + 100, y: 0, width, height })
+  if (!attachedPanels.has(win.id) && !readingStretchedViews.has(view)) {
+    parkBrowserPanelOffscreen(win, view)
   }
   return view
 }
@@ -312,7 +330,9 @@ export function showBrowserPanel(
   // panel aligned with the renderer placeholder.
   win.contentView.addChildView(view)
   attachedPanels.add(win.id)
-  view.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) })
+  const next = { x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) }
+  lastVisibleBounds.set(view, next)
+  if (!readingStretchedViews.has(view)) view.setBounds(next)
   sendState(win, view)
   return { ok: true }
 }
@@ -321,7 +341,7 @@ export function showBrowserPanel(
 export function hideBrowserPanel(win: BrowserWindow): { ok: boolean } {
   if (win.isDestroyed()) return { ok: false }
   const view = panels.get(win.id)
-  if (view) win.contentView.removeChildView(view)
+  if (view) parkBrowserPanelOffscreen(win, view)
   attachedPanels.delete(win.id)
   return { ok: true }
 }
@@ -331,7 +351,14 @@ export function setBrowserPanelBounds(win: BrowserWindow, bounds: BrowserPanelBo
   if (win.isDestroyed()) return { ok: false }
   const view = panels.get(win.id)
   if (!view) return { ok: false }
-  view.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) })
+  // Renderer ResizeObserver must not yank the view back onto the
+  // placeholder while a board read has it stretched off-screen.
+  // A hidden panel stays parked off-screen; late placeholder updates
+  // (including 0×0 unmount rects) must not collapse Ads Manager.
+  const next = { x: Math.round(bounds.x), y: Math.round(bounds.y), width: Math.round(bounds.width), height: Math.round(bounds.height) }
+  lastVisibleBounds.set(view, next)
+  if (readingStretchedViews.has(view) || !attachedPanels.has(win.id)) return { ok: true }
+  view.setBounds(next)
   return { ok: true }
 }
 
