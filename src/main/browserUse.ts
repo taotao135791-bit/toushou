@@ -1004,11 +1004,16 @@ export async function discoverFbReadingAccounts(query = ''): Promise<
     await waitForLoad(20_000, false)
     const panel = getActiveBrowserPanel()
     if (!panel || panel.webContents.isDestroyed()) return { ok: false, error: 'panel-not-open' }
+    // The Ads Manager chrome (combobox included) can take 10s+ to appear
+    // on a slow load; retry instead of bailing after one attempt.
     let opened = false
-    try {
-      opened = await panel.webContents.executeJavaScript(OPEN_ACCOUNT_SWITCHER_SCRIPT, true) as boolean
-    } catch {
-      opened = false
+    for (let attempt = 0; attempt < 6 && !opened; attempt += 1) {
+      try {
+        opened = await panel.webContents.executeJavaScript(OPEN_ACCOUNT_SWITCHER_SCRIPT, true) as boolean
+      } catch {
+        opened = false
+      }
+      if (!opened) await new Promise((resolve) => setTimeout(resolve, 2_500))
     }
     if (!opened) return { ok: false, error: 'switcher-not-found' }
     await new Promise((resolve) => setTimeout(resolve, 1_500))
