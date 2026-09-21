@@ -16,13 +16,15 @@
 
 安装包由 GitHub Actions 在推送 `v1.1.0` 标签后自动构建，并附带更新清单与 SHA-256 校验文件。
 
-当前版本 v1.3.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.3.0) 下载：
+当前版本 v1.3.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.3.1) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.0/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.0/TouShou-arm64.zip) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.0/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.0/TouShou-x64.zip) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.0/TouShou-x64.exe) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.0/TouShou-x64.zip) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-x64.exe) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-x64.zip) | 见 Release | 见 Release |
+
+v1.3.1：**对话触发 TikTok 看板更新**（补全联动闭环）。对话里直接说"更新 TikTok 看板"或"拉一下最近的 TikTok 数据"——agent 通过新的 TikTok 工具拉取近 7 天分活动报表并更新 "TikTok 报表" 数据集，看板图表即反映最新数据；**定时任务联动**：定时任务会话携带同一工具，对话里说"每天早上 9 点更新 TikTok 看板并推送飞书"即可建好循环任务；斜杠面板新增 /tiktok 一键预填更新请求。安全边界不变：工具经会话令牌绑定的 loopback 桥调用 Main，凭据与文件系统对工具进程不可见。
 
 v1.3.0：「TikTok Ads ↔ 看板联动 + AI 预测」。**TikTok 报表接入**——连接页配置 TikTok 凭据（粘贴开发者控制台的 Access Token，或走 OAuth 换取与自动刷新），一键拉取近 7 天分活动报表，写入 "TikTok 报表" 数据集（走与 CSV 导入同一管线，保留数据集身份，看板绑定不失效）。**自动刷新**——可取消的定时服务（默认 30 分钟，最短 5 分钟）持续同步，也可随时手动"立即更新"；token 到期前自动轮换，到期则明确报 `token-expired` 引导重贴。**TikTok 投放全景模板**——总消耗/总点击/平均点击率/总转化 4 指标卡 + 近 30 天消耗趋势 + 分 campaign 消耗对比 + 转化趋势 + 数据来源说明，绑定数据集一键生成。**AI 预测**——进程内趋势模型（14 点窗口线性回归 + p10/p90 离群阻尼 + 80% 置信带），图表以虚线预测段 + 置信区间可视化。**图表终于"有数了"**——柱状图数值标签、悬停 tooltip（维度/指标/数值）、坐标轴标签跳排不再挤压、预测段虚线半透明渲染。数据集绑定支持按名称解析，预设模板无需知道生成的数据集 id。
 
