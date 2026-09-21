@@ -108,19 +108,32 @@ export async function configPath(run: CliRunner): Promise<string | null> {
   return res.ok ? parseConfigPath(res.stdout) : null
 }
 
-/** `omp config get <key> --json` → entry. Null on failure/unknown key. */
+/**
+ * `omp config get <key> --json` → entry. Null on failure/unknown key.
+ *
+ * A failed CLI run (spawn contention, AV lock — observed on loaded CI
+ * runners) is transient and gets ONE bounded retry: callers treat null as
+ * authoritative "unset", so a flaky read must not masquerade as state.
+ * A genuinely unset key returns an entry without a value and is not retried.
+ */
 export async function configGet(run: CliRunner, key: string): Promise<OmpConfigEntry | null> {
-  const res = await run(['config', 'get', key, '--json'])
-  if (!res.ok) return null
-  const parsed = parseJson(res.stdout)
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-  const e = parsed as Record<string, unknown>
-  return {
-    key: typeof e.key === 'string' ? e.key : key,
-    value: 'value' in e ? e.value : undefined,
-    type: typeof e.type === 'string' ? e.type : undefined,
-    description: typeof e.description === 'string' ? e.description : undefined
+  const once = async (): Promise<OmpConfigEntry | null> => {
+    const res = await run(['config', 'get', key, '--json'])
+    if (!res.ok) return null
+    const parsed = parseJson(res.stdout)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const e = parsed as Record<string, unknown>
+    return {
+      key: typeof e.key === 'string' ? e.key : key,
+      value: 'value' in e ? e.value : undefined,
+      type: typeof e.type === 'string' ? e.type : undefined,
+      description: typeof e.description === 'string' ? e.description : undefined
+    }
   }
+  const first = await once()
+  if (first !== null) return first
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  return once()
 }
 
 /**
