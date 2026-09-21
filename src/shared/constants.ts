@@ -70,6 +70,8 @@ export const IPC_CHANNELS = {
   FB_READING_ACCOUNTS_REMOVE: 'fb-reading:accounts:remove',
   FB_READING_ACCOUNTS_DISCOVER: 'fb-reading:accounts:discover',
   FB_READING_ACCOUNTS_CAPTURE: 'fb-reading:accounts:capture',
+  /** TT 读数 board module: Main resolves the TikTok token + aggregates the report. */
+  TT_READING_SUMMARY: 'tt-reading:summary',
   BOARDS_DELETE: 'boards:delete',
   BOARDS_APPEND_NOTE: 'boards:append-note',
   BOARDS_DATASETS_LIST: 'boards:datasets-list',

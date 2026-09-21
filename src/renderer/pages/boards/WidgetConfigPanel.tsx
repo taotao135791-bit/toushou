@@ -107,6 +107,14 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
   )
   const [readingMetricEmpty, setReadingMetricEmpty] = useState(false)
 
+  // TT 读数 module: optional advertiser-id list + day-window enum.
+  const [ttAdvertiserIds, setTtAdvertiserIds] = useState(configString(widget, 'advertiserIds'))
+  const [ttRange, setTtRange] = useState<'1' | '7' | '28'>(
+    widget.config.range === '1' || widget.config.range === '28'
+      ? (widget.config.range as '1' | '28')
+      : '7'
+  )
+
   const summaryAccountOptions = useMemo(() => {
     const merged = new Map<string, FbReadingAccountEntry>()
     for (const account of resolveFbReadingSummaryAccounts(widget.config)) {
@@ -296,6 +304,10 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
         }
         break
       }
+      case 'tt-reading':
+        // Empty advertiserIds is valid: the token's own grant covers all.
+        config = { advertiserIds: ttAdvertiserIds.slice(0, 400), range: ttRange }
+        break
     }
     onSave({
       title: title.trim() || widget.title,
@@ -461,6 +473,36 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
                       </button>
                     )
                 })}
+              </div>
+            </Field>
+          </>
+        )}
+        {widget.type === 'tt-reading' && (
+          <>
+            <Field label={t('boards.tt.config.advertiserIds')}>
+              <input
+                value={ttAdvertiserIds}
+                onChange={(e) => setTtAdvertiserIds(e.target.value)}
+                placeholder="7300000000000000000, 7311111111111111111"
+                className={`${inputClass} font-mono`}
+              />
+            </Field>
+            <p className="text-[10.5px] leading-4 text-cream-faint">{t('boards.tt.config.advertiserIdsHint')}</p>
+            <Field label={t('boards.reading.config.range')}>
+              <div className="flex flex-wrap gap-1">
+                {([['1', '今天'], ['7', '近7天'], ['28', '近28天']] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    onClick={() => setTtRange(value)}
+                    className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                      ttRange === value
+                        ? 'border-accent/60 bg-accent-soft text-accent'
+                        : 'border-line text-cream-dim hover:text-cream'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
             </Field>
           </>

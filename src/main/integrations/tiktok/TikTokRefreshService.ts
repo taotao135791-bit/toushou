@@ -12,6 +12,7 @@ import {
   mergeTikTokTokens,
   TikTokReportCredentials
 } from './TikTokConnectionStore'
+import { resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokToken'
 import { fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch } from './tiktokClient'
 import { writeReportToDataset } from './tiktokReportDataset'
 
@@ -50,6 +51,11 @@ export interface TikTokRefreshServiceOptions {
   settings?: TikTokRefreshSettings
   credentialsFile?: string
   datasetsFile?: string
+  /**
+   * Token source override (tests inject fakes). Defaults to the shared
+   * resolver: OAuth connector first, this service's paste store as fallback.
+   */
+  resolveToken?: () => Promise<ResolvedTikTokToken>
   /** Test seam: where status pushes go (defaults to every app window). */
   broadcast?: (status: TikTokReportStatus) => void
 }
@@ -69,6 +75,7 @@ export class TikTokRefreshService {
   private readonly credentialsFile: string | undefined
   private readonly datasetsFile: string | undefined
   private readonly broadcastImpl: (status: TikTokReportStatus) => void
+  private readonly resolveTokenImpl: () => Promise<ResolvedTikTokToken>
   private timer: ReturnType<typeof setInterval> | null = null
   private refreshing = false
   private lastRefreshAt: number | undefined
@@ -92,6 +99,11 @@ export class TikTokRefreshService {
           if (!win.isDestroyed()) win.webContents.send(IPC_CHANNELS.TIKTOK_REPORT_STATUS, status)
         }
       })
+    // Default token source: the shared resolver with THIS service's paste
+    // store (an injected credentialsFile must keep working in tests).
+    this.resolveTokenImpl =
+      options.resolveToken ??
+      (() => resolveTikTokToken({ loadPastedCredentials: () => loadTikTokCredentials(this.credentialsFile) }))
   }
 
   // ------------------------------------------------------------------ state
@@ -157,24 +169,34 @@ export class TikTokRefreshService {
 
   /**
    * Pull the last-7-days integrated report and overwrite "TikTok 报表".
-   * Manual calls and timer ticks share one no-overlap guard.
+   * Manual calls and timer ticks share one no-overlap guard. The guard is
+   * latched synchronously BEFORE the token resolver runs — resolving is
+   * async, and a check-then-await gap would let two concurrent calls both
+   * through. The token comes from the shared resolver (OAuth connector
+   * first — it refreshes itself — paste store as fallback, keeping the
+   * rotate-before-read branch alive).
    */
   async refreshNow(): Promise<TikTokRefreshOutcome> {
     if (this.refreshing) {
       return { ok: false, error: 'refresh-in-progress', status: this.getStatus() }
     }
-    const credentials = loadTikTokCredentials(this.credentialsFile)
-    if (!credentials) {
-      const error = 'not-configured'
-      this.lastError = error
-      this.emit()
-      return { ok: false, error, status: this.getStatus() }
-    }
     this.refreshing = true
     this.emit()
     try {
-      const token = await this.ensureFreshAccessToken(credentials)
-      const rows = await this.fetchRows(token)
+      let resolved: ResolvedTikTokToken
+      try {
+        resolved = await this.resolveTokenImpl()
+      } catch {
+        resolved = { token: null, source: 'none' }
+      }
+      if (!resolved.token) {
+        const error = 'not-configured'
+        this.lastError = error
+        this.emit()
+        return { ok: false, error, status: this.getStatus() }
+      }
+      const token = await this.accessTokenForReport(resolved)
+      const rows = await this.fetchRows(token, resolved.advertiserIds)
       const written = writeReportToDataset(rows, this.datasetsFile)
       if (!written.ok) throw new Error(`dataset-${written.error}`)
       this.lastRefreshAt = this.now()
@@ -195,6 +217,18 @@ export class TikTokRefreshService {
       this.refreshing = false
       this.emit()
     }
+  }
+
+  /**
+   * The access token for this pull. OAuth-sourced tokens are managed (and
+   * refreshed) by the connector itself — used as-is; a pasted token still
+   * goes through the rotate logic below when it nears expiry.
+   */
+  private async accessTokenForReport(resolved: ResolvedTikTokToken): Promise<string> {
+    if (resolved.source === 'oauth' && resolved.token) return resolved.token
+    const credentials = loadTikTokCredentials(this.credentialsFile)
+    if (!credentials) throw new Error('not-configured')
+    return this.ensureFreshAccessToken(credentials)
   }
 
   /**
@@ -229,15 +263,14 @@ export class TikTokRefreshService {
     return stored.accessToken
   }
 
-  /** One query per configured advertiser (or one token-scoped query), merged. */
-  private async fetchRows(accessToken: string) {
+  /** One query per granted advertiser (or one token-scoped query), merged. */
+  private async fetchRows(accessToken: string, grantedAdvertiserIds: number[]) {
     const nowDate = new Date(this.now())
     const end = formatLocalDate(nowDate)
     const startDate = new Date(nowDate)
     startDate.setDate(startDate.getDate() - (REPORT_RANGE_DAYS - 1))
     const start = formatLocalDate(startDate)
-    const credentials = loadTikTokCredentials(this.credentialsFile)
-    const advertiserIds = (credentials?.advertisers ?? []).slice(0, MAX_ADVERTISERS_PER_REFRESH)
+    const advertiserIds = grantedAdvertiserIds.slice(0, MAX_ADVERTISERS_PER_REFRESH)
     const queries = advertiserIds.length > 0 ? advertiserIds : [undefined]
     const rows = []
     for (const advertiserId of queries) {

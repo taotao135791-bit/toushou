@@ -293,8 +293,42 @@ describe('TikTokAdsConnectionManager lifecycle', () => {
     expect(manager.getSnapshot().connected).toBe(true)
   })
 
-  it('a far-from-expiry token schedules instead of fetching', async () => {
-    const { fetch, log } = makeFetch({})
+  it('persists token-response advertiser ids and keeps them across refreshes', async () => {
+    let nowMs = 1_000_000
+    const { fetch } = makeFetch({
+      token: (body) =>
+        body.includes('grant_type=refresh_token')
+          ? // Refresh response carries NO advertiser_ids — the stored grant
+            // must survive the merge.
+            jsonResponse({ access_token: 'at-2', refresh_token: 'rt-2', expires_in: 7200 })
+          : // Exchange response echoes the granted advertisers (mixed shapes,
+            // one junk entry — parse keeps positive integers only). Long
+            // expiry so the first loadFreshCredentials() does NOT refresh.
+            jsonResponse({
+              access_token: 'at-1',
+              refresh_token: 'rt-1',
+              expires_in: 7200,
+              advertiser_ids: ['7300001', 7300002, 'bad']
+            })
+    })
+    const { manager, openedUrls } = makeManager({ fetch, now: () => nowMs })
+    await manager.begin()
+    await driveCallback(openedUrls[0])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const afterExchange = await manager.loadFreshCredentials()
+    expect(afterExchange?.accessToken).toBe('at-1')
+    expect(afterExchange?.advertiserIds).toEqual([7300001, 7300002])
+
+    // Advance past the 10-minute refresh margin.
+    nowMs += 7_000_000
+    expect(await manager.ensureFreshToken()).toBe(true)
+    const afterRefresh = await manager.loadFreshCredentials()
+    expect(afterRefresh?.accessToken).toBe('at-2')
+    expect(afterRefresh?.advertiserIds).toEqual([7300001, 7300002])
+  })
+
+  it('a far-from-expiry token schedules instead of fetching', async () => {    const { fetch, log } = makeFetch({})
     const { manager, openedUrls } = makeManager({ fetch })
     await manager.begin()
     await driveCallback(openedUrls[0])

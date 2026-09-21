@@ -373,6 +373,27 @@ describe('factories', () => {
     ).toHaveLength(0)
     expect(withWidget(widgetOf('fb-reading-summary', { ...config, metrics: [] }))?.widgets).toHaveLength(0)
   })
+
+  it('validates the tt-reading config (advertiser id string + day-window enum)', () => {
+    // The factory default passes and survives unchanged.
+    const config = { advertiserIds: '7300001, 7300002', range: '7' as const }
+    const board = withWidget(widgetOf('tt-reading', config, { x: 0, y: 0, w: 6, h: 5 }))
+    expect(board?.widgets[0].config).toEqual(config)
+    // Empty advertiserIds is meaningful (use the connected token's grant).
+    expect(withWidget(widgetOf('tt-reading', { advertiserIds: '' }))?.widgets).toHaveLength(1)
+    // Range enum is strict.
+    expect(withWidget(widgetOf('tt-reading', { range: '3' }))?.widgets).toHaveLength(0)
+    expect(withWidget(widgetOf('tt-reading', { range: 7 }))?.widgets).toHaveLength(0)
+    // Advertiser id string is length-bounded and digit/punctuation only.
+    expect(withWidget(widgetOf('tt-reading', { advertiserIds: '7'.repeat(401) }))?.widgets).toHaveLength(0)
+    expect(withWidget(widgetOf('tt-reading', { advertiserIds: '7300001; drop table' }))?.widgets).toHaveLength(0)
+    expect(withWidget(widgetOf('tt-reading', { advertiserIds: '7300001\n7300002' }))?.widgets).toHaveLength(0)
+    // Unknown keys are stripped.
+    expect(withWidget(widgetOf('tt-reading', { advertiserIds: '', range: '28', stray: 1 }))?.widgets[0].config).toEqual({
+      advertiserIds: '',
+      range: '28'
+    })
+  })
 })
 
 describe('composeBoard + presets', () => {

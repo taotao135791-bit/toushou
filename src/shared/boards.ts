@@ -60,6 +60,7 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'counter',
   'fb-reading',
   'fb-reading-summary',
+  'tt-reading',
   'gauge',
   'chart-line',
   'chart-bar',
@@ -86,6 +87,7 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   counter: { w: 3, h: 2 },
   'fb-reading': { w: 6, h: 5 },
   'fb-reading-summary': { w: 6, h: 6 },
+  'tt-reading': { w: 6, h: 5 },
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
   'chart-bar': { w: 6, h: 4 },
@@ -114,6 +116,10 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
         range: 'last7',
         metrics: ['spend', 'balance', 'cpi', 'cpm']
       }
+    case 'tt-reading':
+      // advertiserIds: comma-separated string (empty = use every advertiser
+      // the connected TikTok token's grant covers); range in days.
+      return { advertiserIds: '', range: '7' }
     case 'note':
       return { text: '' }
     case 'counter':
@@ -893,6 +899,29 @@ function validateWidgetConfig(
         accounts.push({ alias, act: candidate.act, businessId })
       }
       return { accounts, range, metrics }
+    }
+    case 'tt-reading': {
+      // TT 读数 config: optional comma-separated advertiser id string plus a
+      // day-window enum. Empty advertiserIds is meaningful (use the
+      // connected token's own grant), so the widget is never dropped for it.
+      const config: Record<string, unknown> = {}
+      if (raw.advertiserIds !== undefined) {
+        const ids = raw.advertiserIds
+        if (
+          typeof ids !== 'string' ||
+          ids.length > 400 ||
+          CONTROL_RE.test(ids) ||
+          !/^[0-9,，;；\s]*$/.test(ids)
+        ) {
+          return null
+        }
+        config.advertiserIds = ids
+      }
+      if (raw.range !== undefined) {
+        if (raw.range !== '1' && raw.range !== '7' && raw.range !== '28') return null
+        config.range = raw.range
+      }
+      return config
     }
   }
 }

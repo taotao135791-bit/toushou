@@ -197,6 +197,8 @@ import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionM
 import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
 import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
+import { buildTikTokReadingSummary } from './integrations/tiktok/tiktokReading'
+import { setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
@@ -214,6 +216,9 @@ const historySessionGrantOwnerCleanupHooks = new Set<number>()
 const sessionOriginIndex = new SessionOriginIndex()
 /** TikTok Ads official MCP connector — Main-owned OAuth, one instance per app. */
 const tiktokAdsConnectionManager = new TikTokAdsConnectionManager()
+// Reading paths (TT 读数 widget, report auto-refresh) pull their token from
+// this connector through the shared resolver — registered once, lazily used.
+setTikTokOAuthCredentialLoader(() => tiktokAdsConnectionManager.loadFreshCredentials())
 /** Figma Dev Mode MCP connector — local loopback endpoint, zero credentials. */
 const figmaConnectionManager = new FigmaConnectionManager()
 const packageActionGrantManager = new PackageActionGrantManager()
@@ -788,6 +793,17 @@ export function registerIpc() {
     return tiktokReportService.setAutoRefresh(enabled)
   })
   ipcMain.handle(IPC_CHANNELS.TIKTOK_REPORT_STATUS, () => tiktokReportService.getStatus())
+
+  // --- TT 读数 board module ----------------------------------------------
+  // Reads TikTok Ads straight onto the board: the token comes from the shared
+  // resolver (OAuth connector's auto-refreshed token first, paste store as
+  // fallback) and the aggregation happens in Main. Input is bounded strings
+  // only; failures return stable error codes ('no-credentials' = not
+  // connected).
+  ipcMain.handle(IPC_CHANNELS.TT_READING_SUMMARY, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { advertiserIds?: unknown; range?: unknown }
+    return buildTikTokReadingSummary(input)
+  })
 
   // --- Figma Dev Mode MCP connector (local, code-token-only flavor) ------
   ipcMain.handle(IPC_CHANNELS.FIGMA_STATUS, async () => figmaConnectionManager.refreshStatus())

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout'
 import {
   Activity,
+  BarChart3,
   ChartBar,
   ChartLine,
   Check,
@@ -93,7 +94,7 @@ const WIDGET_GALLERY: { type: WidgetType; Icon: LucideIcon }[] = [
 ]
 
 /** Types that get their config panel opened right after being added. */
-const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'link', 'file']
+const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'link', 'file', 'tt-reading']
 
 /** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
@@ -1315,6 +1316,13 @@ export default function BoardsPage() {
                 >
                   <Activity size={12} />
                   {t('boards.widget.fb-reading')}
+                </button>
+                <button
+                  onClick={() => addWidget('tt-reading')}
+                  className={`${menuItemClass} text-cream hover:bg-overlay`}
+                >
+                  <BarChart3 size={12} />
+                  {t('boards.reading.ttModuleName')}
                 </button>
                 <div className="mx-1.5 mb-1 border-t border-line" />
                 <div className="grid grid-cols-2 gap-0.5">

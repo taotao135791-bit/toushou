@@ -25,6 +25,7 @@ import type {
   TikTokCredentialInput,
   TikTokCredentialInfo,
   TikTokCredentialsSetResult,
+  TikTokReadingResult,
   TikTokRefreshOutcome,
   TikTokReportStatus
 } from '../shared/tiktokReport'
@@ -496,6 +497,8 @@ export interface ElectronAPI {
   tiktokReportSetAutoRefresh: (enabled: boolean) => Promise<TikTokReportStatus>
   tiktokReportStatus: () => Promise<TikTokReportStatus>
   onTiktokReportStatus: (callback: (status: TikTokReportStatus) => void) => () => void
+  /** TT 读数 board module: Main resolves the token + aggregates the report. */
+  ttReadingSummary: (input: { advertiserIds?: string; range?: string }) => Promise<TikTokReadingResult>
   /** Figma Dev Mode MCP connector (local endpoint, no credentials). */
   figmaStatus: () => Promise<FigmaConnectionSnapshot>
   figmaConnect: () => Promise<FigmaConnectionSnapshot>
@@ -940,6 +943,15 @@ const api: ElectronAPI = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.TIKTOK_REPORT_STATUS, handler)
     }
+  },
+  // TT 读数 — same preload posture: bounded strings only, real validation in Main.
+  ttReadingSummary: (input: { advertiserIds?: string; range?: string }) => {
+    const bounded = (value: unknown, max: number): string | undefined =>
+      typeof value === 'string' && value.length <= max ? value : undefined
+    return ipcRenderer.invoke(IPC_CHANNELS.TT_READING_SUMMARY, {
+      ...(input?.advertiserIds !== undefined ? { advertiserIds: bounded(input.advertiserIds, 400) ?? '' } : {}),
+      ...(input?.range !== undefined ? { range: bounded(input.range, 3) ?? '' } : {})
+    }) as Promise<TikTokReadingResult>
   },
   figmaStatus: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_STATUS),
   figmaConnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_CONNECT),

@@ -15,6 +15,12 @@ export interface TikTokStoredCredentials {
   /** Epoch ms when the access token expires. */
   expiresAt?: number
   scope?: string
+  /**
+   * Advertiser ids the authorization granted (the token endpoint echoes them
+   * back). Optional: some authorization servers omit the claim, and the
+   * reading modules then fall back to token-scoped queries.
+   */
+  advertiserIds?: number[]
   savedAt: number
 }
 
@@ -63,6 +69,13 @@ export class TikTokCredentialStore {
         refreshToken: typeof raw.refreshToken === 'string' ? raw.refreshToken : undefined,
         expiresAt: typeof raw.expiresAt === 'number' ? raw.expiresAt : undefined,
         scope: typeof raw.scope === 'string' ? raw.scope : undefined,
+        // Tolerate absence AND a corrupt claim: drop non-positive/duplicate
+        // entries instead of failing the whole load. An empty result is
+        // omitted entirely so `advertiserIds` stays a real "grant present"
+        // signal for the token resolver.
+        ...(Array.isArray(raw.advertiserIds) && parseAdvertiserIds(raw.advertiserIds).length > 0
+          ? { advertiserIds: parseAdvertiserIds(raw.advertiserIds) }
+          : {}),
         savedAt: typeof raw.savedAt === 'number' ? raw.savedAt : 0
       }
     } catch {
@@ -77,4 +90,14 @@ export class TikTokCredentialStore {
       // Already absent is the desired outcome.
     }
   }
+}
+
+/** Keeps positive integer ids, de-duplicated, order-stable (same rule as the report client). */
+function parseAdvertiserIds(value: unknown[]): number[] {
+  const ids: number[] = []
+  for (const entry of value) {
+    const id = typeof entry === 'number' ? entry : typeof entry === 'string' ? Number.parseInt(entry, 10) : Number.NaN
+    if (Number.isInteger(id) && id > 0 && !ids.includes(id)) ids.push(id)
+  }
+  return ids
 }

@@ -71,3 +71,48 @@ export type TikTokCredentialErrorCode =
   | 'invalid-secret'
   | 'invalid-refresh-token'
   | 'invalid-advertisers'
+
+// ---------------------------------------------------------------------------
+// TT 读数 board module — direct report read onto the board (tt-reading
+// widget). Main resolves the token (OAuth connector first, paste store as
+// fallback), pulls the integrated report and aggregates it; the renderer
+// only ever sees this bounded projection.
+// ---------------------------------------------------------------------------
+
+/** 报表天数口径：昨天只看今天 / 近 7 天 / 近 28 天（均含今天，今天为半日）。 */
+export type TikTokReadingRange = '1' | '7' | '28'
+
+export interface TikTokReadingTopCampaign {
+  name: string
+  spend: number
+}
+
+export interface TikTokReadingTotals {
+  spend: number
+  impressions: number
+  clicks: number
+  /** 点击率，小数（0.0123 = 1.23%），由点击/展示重新计算而非逐行求平均。 */
+  ctr: number
+  conversions: number
+  /** 转化成本 = 消耗 / 转化；无转化时为 0。 */
+  costPerConversion: number
+}
+
+export interface TikTokReadingSummary {
+  range: TikTokReadingRange
+  startDate: string
+  endDate: string
+  totals: TikTokReadingTotals
+  /** 按消耗降序，最多 5 条。 */
+  topCampaigns: TikTokReadingTopCampaign[]
+  /** token 来源：OAuth 连接器（自动续期）优先，粘贴 token 兜底。 */
+  source: 'oauth' | 'pasted'
+  generatedAt: number
+}
+
+/** 成功返回汇总本身；失败时 error 含稳定的 'no-credentials'（未连接）。 */
+export type TikTokReadingResult = TikTokReadingSummary | { ok: false; error: string }
+
+export function isTikTokReadingRange(value: unknown): value is TikTokReadingRange {
+  return value === '1' || value === '7' || value === '28'
+}

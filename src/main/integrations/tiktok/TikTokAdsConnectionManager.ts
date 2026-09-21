@@ -239,7 +239,14 @@ export class TikTokAdsConnectionManager {
       })
       if (credentials.clientSecret) body.set('client_secret', credentials.clientSecret)
       const tokens = await this.tokenRequest(this.refreshTokenEndpoint(credentials), body)
-      this.credentials = { ...credentials, ...tokens, savedAt: 0 }
+      // A refresh response without advertiser ids keeps the stored ones —
+      // an absent claim must never wipe the persisted grant.
+      this.credentials = {
+        ...credentials,
+        ...tokens,
+        ...(tokens.advertiserIds ? {} : { advertiserIds: credentials.advertiserIds }),
+        savedAt: 0
+      }
       await this.credentialStore.save(this.credentials)
       await this.applyMcpEntry()
       this.state = 'connected'
@@ -255,9 +262,24 @@ export class TikTokAdsConnectionManager {
     }
   }
 
+  /**
+   * Reading-path credential access (TT 读数 board module, the report
+   * auto-refresh service): ensure the stored access token is refreshed when
+   * it is inside the margin, then hand back a copy of the stored material —
+   * including the advertiser ids the grant covers. Returns null when no
+   * OAuth connection has ever completed. Never throws into the caller: a
+   * failed refresh keeps the last stored token (the API call will surface
+   * the auth error) and the connection state reports `degraded`.
+   */
+  async loadFreshCredentials(): Promise<TikTokStoredCredentials | null> {
+    if (!this.credentials) this.credentials = await this.credentialStore.load()
+    if (!this.credentials?.accessToken) return null
+    if (this.credentials.refreshToken) await this.ensureFreshToken()
+    return this.credentials ? { ...this.credentials } : null
+  }
+
   /** Install the bundled skill into the flat library folder (idempotent). */
-  installSkill(): { ok: boolean; error?: string } {
-    try {
+  installSkill(): { ok: boolean; error?: string } {    try {
       const dir = path.join(app.getPath('userData'), 'skills')
       mkdirSync(dir, { recursive: true })
       const file = path.join(dir, TIKTOK_ADS_SKILL_FILE_NAME)
@@ -401,6 +423,7 @@ export class TikTokAdsConnectionManager {
         refreshToken: tokens.refreshToken,
         expiresAt: tokens.expiresAt,
         scope: tokens.scope,
+        ...(tokens.advertiserIds ? { advertiserIds: tokens.advertiserIds } : {}),
         savedAt: 0
       }
       await this.credentialStore.save(this.credentials)
@@ -419,7 +442,13 @@ export class TikTokAdsConnectionManager {
   private async tokenRequest(
     tokenEndpoint: string,
     body: URLSearchParams
-  ): Promise<{ accessToken?: string; refreshToken?: string; expiresAt?: number; scope?: string }> {
+  ): Promise<{
+    accessToken?: string
+    refreshToken?: string
+    expiresAt?: number
+    scope?: string
+    advertiserIds?: number[]
+  }> {
     const response = await this.fetchImpl(tokenEndpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
@@ -434,11 +463,15 @@ export class TikTokAdsConnectionManager {
       throw new Error(detail)
     }
     const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : undefined
+    // TikTok echoes the granted advertiser ids back on the token response;
+    // keep them when present so the reading modules can scope their queries.
+    const advertiserIds = parseAdvertiserIds(payload.advertiser_ids)
     return {
       accessToken: payload.access_token,
       refreshToken: typeof payload.refresh_token === 'string' ? payload.refresh_token : undefined,
       expiresAt: expiresIn ? this.now() + expiresIn * 1000 : undefined,
-      scope: typeof payload.scope === 'string' ? payload.scope : undefined
+      scope: typeof payload.scope === 'string' ? payload.scope : undefined,
+      ...(advertiserIds.length > 0 ? { advertiserIds } : {})
     }
   }
 
@@ -519,6 +552,17 @@ function pkcePair(): { verifier: string; challenge: string } {
   const verifier = base64url(randomBytes(32))
   const challenge = base64url(createHash('sha256').update(verifier).digest())
   return { verifier, challenge }
+}
+
+/** Keeps positive integer advertiser ids, de-duplicated, order-stable. */
+function parseAdvertiserIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  const ids: number[] = []
+  for (const entry of value) {
+    const id = typeof entry === 'number' ? entry : typeof entry === 'string' ? Number.parseInt(entry, 10) : Number.NaN
+    if (Number.isInteger(id) && id > 0 && !ids.includes(id)) ids.push(id)
+  }
+  return ids
 }
 
 function base64url(buffer: Buffer): string {

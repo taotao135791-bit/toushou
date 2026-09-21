@@ -252,6 +252,32 @@ describe('refreshNow', () => {
     expect(service.getStatus().refreshing).toBe(false)
   })
 
+  it('uses the OAuth connector token from the resolver (oauth source, granted advertisers)', async () => {
+    // No paste credentials on disk — the resolver's OAuth answer must be
+    // enough, proving the service now follows the shared token source.
+    const headers: Array<string | undefined> = []
+    const requests: Array<Record<string, unknown>> = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (url.includes('/oauth2/refresh_token/')) throw new Error('must not rotate an oauth token')
+      headers.push((init?.headers as Record<string, string>)['Access-Token'])
+      requests.push(JSON.parse(String(init?.body)))
+      return reportResponse([['2026-01-02', 'C1', '10.5']])
+    }) as unknown as (url: string, init?: RequestInit) => Promise<Response>
+    const service = new TikTokRefreshService({
+      fetchImpl,
+      settings: { getAutoRefresh: () => false, setAutoRefresh: () => {} },
+      credentialsFile: path.join(dir, 'absent-credentials.json'),
+      datasetsFile,
+      resolveToken: async () => ({ token: 'oauth-token', source: 'oauth', advertiserIds: [7300042] }),
+      now: () => 1767000000000,
+      broadcast: () => {}
+    })
+    const outcome = await service.refreshNow()
+    expect(outcome.ok).toBe(true)
+    expect(headers).toEqual(['oauth-token'])
+    expect(requests[0].advertiser_id).toBe(7300042)
+  })
+
   it('rotates an expired token before pulling the report', async () => {
     setTikTokCredentials(
       {
