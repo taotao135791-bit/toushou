@@ -16,13 +16,15 @@
 
 安装包由 GitHub Actions 在推送 `v1.1.0` 标签后自动构建，并附带更新清单与 SHA-256 校验文件。
 
-当前版本 v1.3.1，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.3.1) 下载：
+当前版本 v1.4.0，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.0) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-arm64.zip) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-x64.zip) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-x64.exe) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.3.1/TouShou-x64.zip) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.0/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.0/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.0/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.0/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.0/TouShou-x64.exe) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.0/TouShou-x64.zip) | 见 Release | 见 Release |
+
+v1.4.0：**TT 读数看板模块**（与 FB 读数并列，添加模块菜单即可加）——直接在看板上显示 TikTok 广告汇总：消耗/展示/点击/点击率/转化/转化成本六格 + 花费 Top5 活动，支持广告主与时间范围（1/7/28 天）配置、一键刷新；数据源走 v0.18.0 的 TikTok 官方 OAuth 连接（令牌自动刷新），未连接时显示去连接引导。同时移除连接页的 "TikTok 报表" 凭据表单（连接一次后，自然语言、/tiktok 与看板模块即是全部入口）。
 
 v1.3.1：**对话触发 TikTok 看板更新**（补全联动闭环）。对话里直接说"更新 TikTok 看板"或"拉一下最近的 TikTok 数据"——agent 通过新的 TikTok 工具拉取近 7 天分活动报表并更新 "TikTok 报表" 数据集，看板图表即反映最新数据；**定时任务联动**：定时任务会话携带同一工具，对话里说"每天早上 9 点更新 TikTok 看板并推送飞书"即可建好循环任务；斜杠面板新增 /tiktok 一键预填更新请求。安全边界不变：工具经会话令牌绑定的 loopback 桥调用 Main，凭据与文件系统对工具进程不可见。
 
