@@ -851,11 +851,12 @@ const SWITCHER_MENU_JS = `(() => {
 const SWITCHER_MENU_PRESENT_SCRIPT = `(() => ${SWITCHER_MENU_JS} !== null)()`
 
 /**
- * Lists the business-portfolio group rows in the open switcher. A row is
- * "name + count" when the portfolio name and its account count share one
- * text node (zh and en UI both do this, often without whitespace between
- * name and number), and a bare count when FB renders them as siblings.
- * Bilingual: "X 个广告账户" and "N ad account(s)".
+ * Lists the business-portfolio group rows in the open switcher. Rows are
+ * parsed from innerText (layout text keeps name and count separated, while
+ * textContent concatenates them — "Adtiger-C130 ad accounts" — which makes
+ * digit-suffixed portfolio names ambiguous). A row is "name + count", or a
+ * bare count when FB renders them as separate elements. Bilingual:
+ * "X 个广告账户" and "N ad account(s)".
  */
 const FIND_GROUP_ROWS_SCRIPT = `(() => {
   const menu = ${SWITCHER_MENU_JS}
@@ -864,7 +865,7 @@ const FIND_GROUP_ROWS_SCRIPT = `(() => {
   const named = []
   const counts = []
   for (const el of menu.querySelectorAll('div,span,a,[role=row],[role=button]')) {
-    const text = (el.textContent || '').replace(/\\s+/g, ' ').trim()
+    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()
     if (!text || text.length > 70) continue
     const m = text.match(/^(.{1,50}?)\\s*(\\d+)\\s*(?:个广告账户|ad\\saccounts?)(?:\\s*·.*)?$/)
     if (!m) continue
@@ -885,7 +886,7 @@ const CLICK_GROUP_ROW_SCRIPT = (label: string, named: boolean): string => `(() =
   const excluded = /business portfolio|业务资产组合|other assets|其他资产/i
   const matches = []
   for (const el of menu.querySelectorAll('div,span,a,[role=row],[role=button]')) {
-    const text = (el.textContent || '').replace(/\\s+/g, ' ').trim()
+    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()
     if (!text || text.length > 70) continue
     const m = text.match(/^(.{1,50}?)\\s*(\\d+)\\s*(?:个广告账户|ad\\saccounts?)(?:\\s*·.*)?$/)
     if (!m) continue
