@@ -35,6 +35,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { BoardDataset, BoardDesignSpec, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
+import { FB_READING_SUMMARY_ACCOUNT_LIMIT } from '@shared/fbReading'
 import type { FbReadingAccountEntry } from '@shared/fbReading'
 import {
   BOARD_LIMITS,
@@ -600,6 +601,10 @@ export default function BoardsPage() {
     if (!current) return
     const picked = readingAccounts.filter((entry) => readingPicked.has(entry.act))
     if (picked.length === 0) return
+    if (picked.length > FB_READING_SUMMARY_ACCOUNT_LIMIT) {
+      flashToast(t('boards.reading.accounts.tooMany').replace('{max}', String(FB_READING_SUMMARY_ACCOUNT_LIMIT)), false)
+      return
+    }
     const size = WIDGET_DEFAULT_SIZES['fb-reading-summary']
     if (current.widgets.length >= BOARD_LIMITS.maxWidgets) {
       setReadingPickerOpen(false)

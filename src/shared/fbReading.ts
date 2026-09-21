@@ -199,7 +199,9 @@ export type FbReadingRefreshResult =
 /** History list for the reading module (latest verified entries first). */
 export type FbReadingHistoryListResult = FbReadingHistoryEntry[]
 
-export const FB_READING_SUMMARY_ACCOUNT_LIMIT = 10
+/** Summary accounts refresh serially; each extra account adds one full
+ * pipeline pass per refresh, so the cap keeps board refreshes bounded. */
+export const FB_READING_SUMMARY_ACCOUNT_LIMIT = 30
 export const FB_READING_SUMMARY_METRICS = ['spend', 'cpi', 'cpm', 'ctr', 'cpa', 'balance'] as const
 export type FbReadingSummaryMetric = (typeof FB_READING_SUMMARY_METRICS)[number]
 
