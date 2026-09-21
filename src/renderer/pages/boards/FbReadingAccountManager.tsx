@@ -39,6 +39,7 @@ export function FbReadingAccountManager({
   const [accountBusy, setAccountBusy] = useState(false)
   const [discoverQuery, setDiscoverQuery] = useState('')
   const [accountQuery, setAccountQuery] = useState('')
+  const [removePicked, setRemovePicked] = useState<Set<string>>(new Set())
   const [discoverBusy, setDiscoverBusy] = useState(false)
   const [discovered, setDiscovered] = useState<Array<{ name: string; act: string }> | null>(null)
   const [discoveredRanked, setDiscoveredRanked] = useState(false)
@@ -157,6 +158,34 @@ export function FbReadingAccountManager({
     }
   }
 
+  /** App-local registry removal only — FB itself is never modified. */
+  const removeSelected = async () => {
+    const ids = Array.from(removePicked).filter((id) => accounts.some((account) => account.id === id))
+    if (ids.length === 0) return
+    setAccountBusy(true)
+    try {
+      let latest: FbReadingAccountEntry[] | null = null
+      const removedActs: string[] = []
+      for (const id of ids) {
+        const acts = accounts.filter((account) => account.id === id).map((account) => account.act)
+        const result = await window.electronAPI.removeFbReadingAccount({ id })
+        if (result.ok && result.accounts) {
+          latest = result.accounts
+          removedActs.push(...acts)
+        }
+      }
+      if (latest) {
+        onAccountsChange(latest)
+        onAccountsRemoved?.(removedActs)
+      }
+      setRemovePicked(new Set())
+    } catch {
+      // Partial removals are fine; the registry is re-read on next mount.
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
   const discover = async () => {
     setDiscoverBusy(true)
     setDiscovered(null)
@@ -208,12 +237,24 @@ export function FbReadingAccountManager({
             <div className="text-[11px] text-cream-faint">{t('boards.reading.picker.noneDirect')}</div>
           )}
           {!loading && accounts.length > 0 && (
-            <input
-              value={accountQuery}
-              onChange={(e) => setAccountQuery(e.target.value)}
-              placeholder={t('boards.reading.accounts.searchAccounts')}
-              className={inputClass}
-            />
+            <div className="flex items-center gap-1.5">
+              <input
+                value={accountQuery}
+                onChange={(e) => setAccountQuery(e.target.value)}
+                placeholder={t('boards.reading.accounts.searchAccounts')}
+                className={inputClass}
+              />
+              {removePicked.size > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void removeSelected()}
+                  disabled={accountBusy}
+                  className="shrink-0 whitespace-nowrap text-[11px] text-red-400 transition hover:opacity-80 disabled:opacity-40"
+                >
+                  {t('boards.reading.accounts.removeSelected')} ({removePicked.size})
+                </button>
+              )}
+            </div>
           )}
           {(() => {
             const query = accountQuery.trim().toLowerCase()
@@ -226,7 +267,22 @@ export function FbReadingAccountManager({
             }
             return visible.map((entry) => (
             <div key={entry.id} className="flex items-center justify-between gap-2 text-[11px] text-cream-dim">
-              <span className="truncate">{entry.alias} · {entry.act}</span>
+              <label className="flex min-w-0 cursor-pointer items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={removePicked.has(entry.id)}
+                  onChange={() =>
+                    setRemovePicked((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(entry.id)) next.delete(entry.id)
+                      else next.add(entry.id)
+                      return next
+                    })
+                  }
+                  className="h-3 w-3 shrink-0 accent-accent"
+                />
+                <span className="truncate">{entry.alias} · {entry.act}</span>
+              </label>
               <button
                 type="button"
                 onClick={() => void removeAccount(entry.id)}

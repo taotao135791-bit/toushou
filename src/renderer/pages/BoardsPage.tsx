@@ -240,6 +240,13 @@ export default function BoardsPage() {
   const [readingPickerOpen, setReadingPickerOpen] = useState(false)
   const [readingPicked, setReadingPicked] = useState<Set<string>>(new Set())
   const [readingManagerOpen, setReadingManagerOpen] = useState(false)
+  const [readingFilter, setReadingFilter] = useState('')
+  const readingFilterQuery = readingFilter.trim().toLowerCase()
+  const visibleReadingAccounts = readingFilterQuery === ''
+    ? readingAccounts
+    : readingAccounts.filter(
+        (entry) => entry.alias.toLowerCase().includes(readingFilterQuery) || entry.act.includes(readingFilterQuery)
+      )
   const [boardRefreshBusy, setBoardRefreshBusy] = useState(false)
   const [boardRefreshProgress, setBoardRefreshProgress] = useState({ done: 0, total: 0 })
   const [detailOpen, setDetailOpen] = useState(false)
@@ -1352,7 +1359,50 @@ export default function BoardsPage() {
                   {readingAccounts.length === 0 && (
                     <div className="px-1.5 py-2 text-[11px] text-cream-faint">{t('boards.reading.picker.none')}</div>
                   )}
-                  {readingAccounts.map((entry) => {
+                  {readingAccounts.length > 0 && (
+                    <input
+                      value={readingFilter}
+                      onChange={(e) => setReadingFilter(e.target.value)}
+                      placeholder={t('boards.reading.accounts.searchAccounts')}
+                      className="mb-1 w-full rounded-lg border border-line bg-ink-850 px-2 py-1 text-[12px] text-cream outline-none transition placeholder:text-cream-faint focus:border-accent/50"
+                    />
+                  )}
+                  {readingAccounts.length > 0 && (
+                    <div className="mb-1 flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setReadingPicked((prev) => {
+                            const next = new Set(prev)
+                            for (const entry of visibleReadingAccounts) next.add(entry.act)
+                            return next
+                          })
+                        }
+                        disabled={visibleReadingAccounts.length === 0}
+                        className="flex-1 rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+                      >
+                        {t('boards.reading.picker.selectAll')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setReadingPicked((prev) => {
+                            const next = new Set(prev)
+                            for (const entry of visibleReadingAccounts) next.delete(entry.act)
+                            return next
+                          })
+                        }
+                        disabled={readingPicked.size === 0}
+                        className="flex-1 rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+                      >
+                        {t('boards.reading.picker.selectNone')}
+                      </button>
+                    </div>
+                  )}
+                  {readingFilterQuery !== '' && visibleReadingAccounts.length === 0 && (
+                    <div className="px-1.5 py-2 text-[11px] text-cream-faint">{t('boards.reading.accounts.searchNone')}</div>
+                  )}
+                  {visibleReadingAccounts.map((entry) => {
                     const checked = readingPicked.has(entry.act)
                     return (
                       <button
