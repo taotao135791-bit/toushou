@@ -11,6 +11,7 @@ import {
   refreshFbAccountBalance
 } from './browserUse'
 import { listFbReadings } from './fbReadings'
+import { rankFbReadingAccountsByUsage } from './typesafeRank'
 import { listFbAccountBalances } from './fbBalances'
 import { appendFbReadingAccounts, listFbReadingAccounts, removeFbReadingAccount } from './fbReadingAccounts'
 import {
@@ -2386,12 +2387,17 @@ export function registerIpc() {
     return { ok: true, accounts: removeFbReadingAccount(input.id) }
   })
 
-  // Enumerates accessible ad accounts from the logged-in browser panel.
-  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_DISCOVER, (_event, raw: unknown) => {
+  // Enumerates accessible ad accounts from the logged-in browser panel,
+  // then best-effort ranks them by likely usage (Jev) — order falls back
+  // to discovery order when ranking is unavailable.
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_DISCOVER, async (_event, raw: unknown) => {
     const input = (raw ?? {}) as { query?: unknown }
     const query = typeof input.query === 'string' ? input.query.trim() : ''
     if (query !== '' && query.length > 30) return { ok: false, error: 'invalid-input' }
-    return discoverFbReadingAccounts(query)
+    const result = await discoverFbReadingAccounts(query)
+    if (!result.ok) return result
+    const ranked = await rankFbReadingAccountsByUsage(result.accounts)
+    return { ok: true, accounts: ranked.accounts, ranked: ranked.ranked }
   })
 
   ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_CAPTURE, () => captureFbReadingAccountFromPanel())

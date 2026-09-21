@@ -266,7 +266,7 @@ export interface ElectronAPI {
   addFbReadingAccounts: (request: { accounts: FbReadingAccountRef[] }) => Promise<{ ok: boolean; accounts?: FbReadingAccountEntry[]; error?: string }>
   removeFbReadingAccount: (request: { id: string }) => Promise<{ ok: boolean; accounts?: FbReadingAccountEntry[]; error?: string }>
   /** Enumerate ad accounts reachable from the logged-in browser panel. */
-  discoverFbReadingAccounts: (request: { query?: string }) => Promise<{ ok: boolean; accounts?: Array<{ name: string; act: string }>; error?: string }>
+  discoverFbReadingAccounts: (request: { query?: string }) => Promise<{ ok: boolean; accounts?: Array<{ name: string; act: string }>; ranked?: boolean; error?: string }>
   /** Capture act/businessId from the panel's current Ads Manager page. */
   captureFbReadingAccount: () => Promise<{ ok: boolean; account?: { act: string; businessId: string | null }; error?: string }>
   deleteBoard: (id: string) => Promise<KanbanSaveResult>

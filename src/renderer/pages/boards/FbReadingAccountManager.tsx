@@ -40,6 +40,7 @@ export function FbReadingAccountManager({
   const [discoverQuery, setDiscoverQuery] = useState('')
   const [discoverBusy, setDiscoverBusy] = useState(false)
   const [discovered, setDiscovered] = useState<Array<{ name: string; act: string }> | null>(null)
+  const [discoveredRanked, setDiscoveredRanked] = useState(false)
   const [discoverFailed, setDiscoverFailed] = useState(false)
   const [discoverError, setDiscoverError] = useState<string | null>(null)
 
@@ -134,6 +135,7 @@ export function FbReadingAccountManager({
       const result = await window.electronAPI.discoverFbReadingAccounts({ query: discoverQuery.trim() })
       if (result.ok) {
         setDiscovered(result.accounts ?? [])
+        setDiscoveredRanked(result.ranked === true)
       } else {
         setDiscoverFailed(true)
         setDiscoverError(result.error ?? 'unknown')
@@ -224,6 +226,9 @@ export function FbReadingAccountManager({
         )}
         {discovered && discovered.length === 0 && (
           <div className="text-[11px] text-cream-faint">{t('boards.reading.accounts.discoveredNone')}</div>
+        )}
+        {discovered && discovered.length > 0 && discoveredRanked && (
+          <div className="text-[11px] text-cream-faint">{t('boards.reading.accounts.ranked')}</div>
         )}
         {discovered && discovered.length > 0 && (
           <div className="max-h-[120px] space-y-0.5 overflow-y-auto">
