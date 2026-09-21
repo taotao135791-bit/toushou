@@ -38,6 +38,7 @@ export function FbReadingAccountManager({
   const [accountError, setAccountError] = useState<'invalid' | null>(null)
   const [accountBusy, setAccountBusy] = useState(false)
   const [discoverQuery, setDiscoverQuery] = useState('')
+  const [accountQuery, setAccountQuery] = useState('')
   const [discoverBusy, setDiscoverBusy] = useState(false)
   const [discovered, setDiscovered] = useState<Array<{ name: string; act: string }> | null>(null)
   const [discoveredRanked, setDiscoveredRanked] = useState(false)
@@ -100,7 +101,7 @@ export function FbReadingAccountManager({
     setAccountBusy(true)
     try {
       const result = await window.electronAPI.addFbReadingAccounts({
-        accounts: [{ alias: entry.name, act: entry.act, businessId: null }]
+        accounts: [{ alias: entry.name.slice(0, 40), act: entry.act, businessId: null }]
       })
       if (result.ok && result.accounts) {
         onAccountsChange(result.accounts)
@@ -108,6 +109,36 @@ export function FbReadingAccountManager({
       }
     } catch {
       // Keep the discovered list; the user can retry or add manually.
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  const addAllDiscovered = async () => {
+    const pending = (discovered ?? []).filter((entry) => !accounts.some((account) => account.act === entry.act))
+    if (pending.length === 0) return
+    setAccountBusy(true)
+    try {
+      // The add IPC accepts at most 20 accounts per call; registry name
+      // validation caps aliases at 40 chars.
+      let latest: FbReadingAccountEntry[] | null = null
+      for (let offset = 0; offset < pending.length; offset += 20) {
+        const result = await window.electronAPI.addFbReadingAccounts({
+          accounts: pending.slice(offset, offset + 20).map((entry) => ({
+            alias: entry.name.slice(0, 40),
+            act: entry.act,
+            businessId: null
+          }))
+        })
+        if (!result.ok || !result.accounts) break
+        latest = result.accounts
+      }
+      if (latest) {
+        onAccountsChange(latest)
+        onAccountsAdded?.(latest.filter((entry) => pending.some((p) => p.act === entry.act)))
+      }
+    } catch {
+      // Partial adds are fine; the registry is re-read on next mount.
     } finally {
       setAccountBusy(false)
     }
@@ -176,7 +207,24 @@ export function FbReadingAccountManager({
           {!loading && accounts.length === 0 && (
             <div className="text-[11px] text-cream-faint">{t('boards.reading.picker.noneDirect')}</div>
           )}
-          {accounts.map((entry) => (
+          {!loading && accounts.length > 0 && (
+            <input
+              value={accountQuery}
+              onChange={(e) => setAccountQuery(e.target.value)}
+              placeholder={t('boards.reading.accounts.searchAccounts')}
+              className={inputClass}
+            />
+          )}
+          {(() => {
+            const query = accountQuery.trim().toLowerCase()
+            const visible = query === ''
+              ? accounts
+              : accounts.filter((entry) =>
+                  entry.alias.toLowerCase().includes(query) || entry.act.includes(query))
+            if (query !== '' && visible.length === 0) {
+              return <div className="text-[11px] text-cream-faint">{t('boards.reading.accounts.searchNone')}</div>
+            }
+            return visible.map((entry) => (
             <div key={entry.id} className="flex items-center justify-between gap-2 text-[11px] text-cream-dim">
               <span className="truncate">{entry.alias} · {entry.act}</span>
               <button
@@ -187,7 +235,8 @@ export function FbReadingAccountManager({
                 {t('boards.reading.accounts.remove')}
               </button>
             </div>
-          ))}
+            ))
+          })()}
         </div>
       )}
 
@@ -227,8 +276,20 @@ export function FbReadingAccountManager({
         {discovered && discovered.length === 0 && (
           <div className="text-[11px] text-cream-faint">{t('boards.reading.accounts.discoveredNone')}</div>
         )}
-        {discovered && discovered.length > 0 && discoveredRanked && (
-          <div className="text-[11px] text-cream-faint">{t('boards.reading.accounts.ranked')}</div>
+        {discovered && discovered.length > 0 && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-cream-faint">
+              {discoveredRanked ? t('boards.reading.accounts.ranked') : ''}
+            </span>
+            <button
+              type="button"
+              onClick={() => void addAllDiscovered()}
+              disabled={accountBusy || discovered.every((entry) => accounts.some((a) => a.act === entry.act))}
+              className="shrink-0 text-accent transition hover:opacity-80 disabled:opacity-40"
+            >
+              {t('boards.reading.accounts.addAll')}
+            </button>
+          </div>
         )}
         {discovered && discovered.length > 0 && (
           <div className="max-h-[120px] space-y-0.5 overflow-y-auto">
