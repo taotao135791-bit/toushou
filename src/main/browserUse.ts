@@ -310,9 +310,11 @@ export async function readStableFbReading<R>(
   | { ok: false; error: string; last: FbReadOnce<R> }
 > {
   // Cold loads of Ads Manager (fresh panel after an app restart) can take
-  // 30s+ past domcontentloaded before the SPA mounts table rows; 20 × 1.5s
-  // covers that without hanging the bridge on a dead page.
-  const { delayMs = 1_500, firstAttempts = 20, secondAttempts = 3, settleDelayMs = 700 } = opts
+  // 30s+ past domcontentloaded before the SPA mounts table rows — and
+  // proxied/slow networks push row mounting past 30s (measured ~33s behind
+  // a local proxy); 40 × 1.5s covers that without hanging the bridge on a
+  // dead page.
+  const { delayMs = 1_500, firstAttempts = 40, secondAttempts = 3, settleDelayMs = 700 } = opts
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
   const stableRead = async (attempts: number): Promise<FbReadOnce<R>> => {
     let last: FbReadOnce<R> | null = null

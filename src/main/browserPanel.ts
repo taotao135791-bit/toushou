@@ -85,6 +85,13 @@ export async function withBrowserReadingViewport<T>(view: WebContentsView, read:
   const owner = BrowserWindow.fromWebContents(wc)
   const size = owner && !wc.isDestroyed() ? owner.getContentSize() : null
   if (size && size.length === 2 && (size[0] !== previous.width || size[1] !== previous.height)) {
+    // Tried clipping the stretch outside the window (2026-09-22): views
+    // moved offscreen mid-session get their compositing suspended, and
+    // Ads Manager stops mounting table rows — refresh reads went empty.
+    // Keep the original inside-window stretch, but make it TALL (3× the
+    // content height, extending below the window): Ads Manager mounts
+    // virtualized rows by viewport height, and a one-screen stretch can
+    // leave the last campaign rows unmounted, failing the rows=count gate.
     const insideWindow =
       previous.x >= 0 &&
       previous.y >= 0 &&
@@ -92,11 +99,11 @@ export async function withBrowserReadingViewport<T>(view: WebContentsView, read:
       previous.y < size[1]
     view.setBounds(
       insideWindow
-        ? { x: 0, y: 0, width: size[0], height: size[1] }
+        ? { x: 0, y: 0, width: size[0], height: size[1] * 3 }
         // Background reads still need a full-size layout for Ads Manager's
         // virtualized table. Keep the attached view clipped outside the window
         // so it never covers the user's board.
-        : { x: size[0] + 100, y: 0, width: size[0], height: size[1] }
+        : { x: size[0] + 100, y: 0, width: size[0], height: size[1] * 3 }
     )
   }
   try {

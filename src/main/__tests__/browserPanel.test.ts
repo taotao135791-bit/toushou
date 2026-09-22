@@ -72,7 +72,7 @@ describe('panel navigation and report layout', () => {
       webContents: { isDestroyed: () => false }
     } as unknown as WebContentsView
     const result = withBrowserReadingViewport(view, async () => {
-      expect(setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 1440, height: 900 })
+      expect(setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 1440, height: 2700 })
       if (fail) throw new Error('page-load-failed')
       return 'verified'
     })
@@ -94,7 +94,7 @@ describe('panel navigation and report layout', () => {
       webContents: { isDestroyed: () => false }
     } as unknown as WebContentsView
     await withBrowserReadingViewport(view, async () => {
-      expect(setBounds).toHaveBeenCalledWith({ x: 1540, y: 0, width: 1440, height: 900 })
+      expect(setBounds).toHaveBeenCalledWith({ x: 1540, y: 0, width: 1440, height: 2700 })
       return 'verified'
     })
     expect(setBounds).toHaveBeenLastCalledWith({ x: 1540, y: 0, width: 720, height: 700 })

@@ -200,13 +200,21 @@ const HEADER_OPS: Record<string, HeaderOp> = {
 }
 
 const SUMMARY_MARKER = /^(\d+)个(广告系列|广告组|广告)的成效$/
-const SUMMARY_MARKER_EN = /^Performance for (\d+) campaigns?$/
+/** En summary marker; FB renamed "Performance for" to "Results from"
+ * (observed live 2026-09-22), so accept both. */
+const SUMMARY_MARKER_EN = /^(?:Performance for|Results from) (\d+) campaigns?$/
 const ACCOUNT_LINE = /^(.{1,120}?) \((\d{8,})\)$/
 /** A metric value line: money, em/en dash, percentage, or plain number. */
 const VALUE_LINE = /^(—|–|-|\$[\d,]+(?:\.\d+)?|[\d,]+(?:\.\d+)?%|[\d,]+(?:\.\d+)?)$/
 /** The result-type label under the 成效 column (e.g. 应用内购买). */
 const RESULT_TYPE_LABEL = /^[\u4e00-\u9fff][\u4e00-\u9fff（）()/A-Za-z0-9 ]{0,19}$/
-const RESULT_TYPE_LABEL_EN = /^(?:Purchases|Website purchases|App installs|Mobile app installs|Link clicks|Landing page views|Video plays|Adds to cart|Initiated checkout|Added payment info|Post engagement|Comments|Shares|Reactions|Messages|Conversations|Conversions|Leads|Registrations)$/
+/**
+ * English result-type labels are advertiser-defined app-event names
+ * ("In-app achievement", "Mobile App Install", …) — an enumerated list can
+ * never cover them. Accept any short capitalized phrase that cannot be a
+ * metric value; the row-width/count/consistency gates refuse bad fits.
+ */
+const RESULT_TYPE_LABEL_EN = /^[A-Z][A-Za-z0-9+'&/. -]{2,39}$/
 
 /** "$3,146.47" → 3146.47; "2.61%" → 2.61; "1,110" → 1110; else null. */
 export function parseFbMetricNumber(line: string): number | null {
@@ -264,8 +272,12 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
     }
   }
 
-  // Column headers: between the 关/开 marker and 定制列...
-  const headerStart = lines.findIndex((l) => l === '关/开' || l === 'On/Off')
+  // Column headers: between the 关/开 marker and 定制列... The toggle
+  // header renders as "On/Off" or "Off / On" (observed live 2026-09-22;
+  // order and spacing vary by UI build), so match it loosely in both
+  // languages.
+  const TOGGLE_HEADER = /^(?:on\s*\/\s*off|off\s*\/\s*on|关\s*\/\s*开|开\s*\/\s*关)$/i
+  const headerStart = lines.findIndex((l) => TOGGLE_HEADER.test(l))
   const headerEnd = lines.findIndex((l, idx) => idx > headerStart && (l === '定制列...' || l === '定制列…' || /^Customize columns/i.test(l)))
   if (headerStart < 0 || headerEnd <= headerStart + 1) return null
   const columns = lines.slice(headerStart + 1, headerEnd)

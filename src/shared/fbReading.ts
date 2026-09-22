@@ -125,12 +125,14 @@ const FB_EN_MONTHS: Record<string, number> = {
   Aug: 8, Sep: 9, Sept: 9, Oct: 10, Nov: 11, Dec: 12
 }
 
-/** English-UI labels: "Sep 15 – Sep 17, 2026" / "Today: Sep 18, 2026". */
+/** English-UI labels: "Sep 15 – Sep 17, 2026" / "Sep 15, 2026 – Sep 21, 2026"
+ * (FB added the year to the start date too, observed live 2026-09-22) /
+ * "Today: Sep 18, 2026". */
 export function parseFbReadingDateRangeEn(label: string | null): { start: string; end: string } | null {
   const text = label?.trim() ?? ''
   const stripped = text.replace(/^(?:Today|Yesterday|Last \d+ days?|This month|This year|Last year)[：:]?\s*/, '')
   const single = stripped.match(/^([A-Z][a-z]{2,8})\.? (\d{1,2}), (\d{4})$/)
-  const range = stripped.match(/^([A-Z][a-z]{2,8})\.? (\d{1,2}) – ([A-Z][a-z]{2,8})\.? (\d{1,2}), (\d{4})$/)
+  const range = stripped.match(/^([A-Z][a-z]{2,8})\.? (\d{1,2})(?:, (\d{4}))? – ([A-Z][a-z]{2,8})\.? (\d{1,2}), (\d{4})$/)
   const month = (name: string): number | null => FB_EN_MONTHS[name] ?? null
   const build = (y: number, m: number, d: number): string | null => {
     const value = new Date(y, m - 1, d)
@@ -140,10 +142,11 @@ export function parseFbReadingDateRangeEn(label: string | null): { start: string
   }
   if (range) {
     const m1 = month(range[1])
-    const m2 = month(range[3])
+    const m2 = month(range[4])
     if (!m1 || !m2) return null
-    const start = build(Number(range[5]), m1, Number(range[2]))
-    const end = build(Number(range[5]), m2, Number(range[4]))
+    const startYear = range[3] ? Number(range[3]) : Number(range[6])
+    const start = build(startYear, m1, Number(range[2]))
+    const end = build(Number(range[6]), m2, Number(range[5]))
     return start && end && start <= end ? { start, end } : null
   }
   if (single) {
