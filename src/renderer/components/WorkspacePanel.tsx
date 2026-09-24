@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Blocks, ChevronsLeft, Globe2, Table2, X } from 'lucide-react'
-import BrowserPage from '../pages/BrowserPage'
-import OfficePage from '../pages/OfficePage'
 import ToolsPanel from './ToolsPanel'
 import { useT } from '../i18n'
 import { WorkspacePanel as WorkspacePanelState, useAppStore } from '../store'
+
+const BrowserPage = lazy(() => import('../pages/BrowserPage'))
+const OfficePage = lazy(() => import('../pages/OfficePage'))
 
 interface WorkspacePanelProps {
   panel: WorkspacePanelState
@@ -120,16 +121,20 @@ export default function WorkspacePanel({ panel }: WorkspacePanelProps) {
           <X size={14} />
         </button>
       </div>
-      {kind === 'browser' ? (
-        <BrowserPage embedded initialUrl={panel.kind === 'browser' ? panel.url : undefined} onClose={close} />
-      ) : kind === 'office' ? (
-        <OfficePage
-          embedded
-          initialGrant={panel.kind === 'office' ? panel.grant : undefined}
-          initialName={panel.kind === 'office' ? panel.name : undefined}
-          onClose={close}
-        />
-      ) : <ToolsPanel />}
+      {kind === 'plugins' ? <ToolsPanel /> : (
+        <Suspense fallback={<div className="flex min-h-0 flex-1 items-center justify-center text-xs text-cream-faint">{t('panel.loading')}</div>}>
+          {kind === 'browser' ? (
+            <BrowserPage embedded initialUrl={panel.kind === 'browser' ? panel.url : undefined} onClose={close} />
+          ) : (
+            <OfficePage
+              embedded
+              initialGrant={panel.kind === 'office' ? panel.grant : undefined}
+              initialName={panel.kind === 'office' ? panel.name : undefined}
+              onClose={close}
+            />
+          )}
+        </Suspense>
+      )}
     </aside>
   )
 }

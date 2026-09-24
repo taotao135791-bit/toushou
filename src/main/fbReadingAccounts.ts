@@ -4,6 +4,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import {
   FB_READING_BUILTIN_ACCOUNTS,
+  FB_READING_ACCOUNT_MAX,
   FbReadingAccountEntry,
   FbReadingAccountRef,
   isValidFbReadingAct,
@@ -18,7 +19,7 @@ import {
 export type { FbReadingAccountEntry }
 
 export const FB_READING_ACCOUNT_LIMITS = {
-  maxAccounts: 50,
+  maxAccounts: FB_READING_ACCOUNT_MAX,
   maxAliasLength: 40
 } as const
 

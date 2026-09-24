@@ -2388,11 +2388,12 @@ export function registerIpc() {
   })
 
   // Enumerates accessible ad accounts from the logged-in browser panel.
-  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_DISCOVER, (_event, raw: unknown) => {
+  // Account names and IDs remain on-device and are never sent to a ranker.
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_DISCOVER, async (_event, raw: unknown) => {
     const input = (raw ?? {}) as { query?: unknown }
     const query = typeof input.query === 'string' ? input.query.trim() : ''
     if (query !== '' && query.length > 30) return { ok: false, error: 'invalid-input' }
-    return discoverFbReadingAccounts(query)
+    return await discoverFbReadingAccounts(query)
   })
 
   ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_CAPTURE, () => captureFbReadingAccountFromPanel())

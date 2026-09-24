@@ -12,6 +12,7 @@ import type { FbAccountBalance } from './fbBillingParser'
  */
 
 export type FbReadingRange = 'today' | 'last3' | 'last7' | 'last30'
+export const FB_READING_ACCOUNT_MAX = 50
 
 /**
  * Account reference used by the local registry and snapshotted into widget
@@ -29,6 +30,20 @@ export interface FbReadingAccountEntry extends FbReadingAccountRef {
   id: string
   createdAt: number
 }
+
+export interface FbReadingDiscoveredAccount {
+  name: string
+  act: string
+}
+
+/** A successful scan may be explicitly partial when a defensive scan limit is hit. */
+export type FbReadingAccountDiscoveryResult =
+  | { ok: true; accounts: FbReadingDiscoveredAccount[]; complete: boolean }
+  | { ok: false; error: string }
+
+export type FbReadingAccountsAddResult =
+  | { ok: true; accounts: FbReadingAccountEntry[]; added: FbReadingAccountRef[] }
+  | { ok: false; accounts?: FbReadingAccountEntry[]; error: string }
 
 /** Accounts seeded on first run so legacy 三国IOS boards keep working. */
 export const FB_READING_BUILTIN_ACCOUNTS: FbReadingAccountRef[] = [
@@ -125,12 +140,14 @@ const FB_EN_MONTHS: Record<string, number> = {
   Aug: 8, Sep: 9, Sept: 9, Oct: 10, Nov: 11, Dec: 12
 }
 
-/** English-UI labels: "Sep 15 – Sep 17, 2026" / "Today: Sep 18, 2026". */
+/** English-UI labels: "Sep 15 – Sep 17, 2026" / "Sep 15, 2026 – Sep 21, 2026"
+ * (FB added the year to the start date too, observed live 2026-09-22) /
+ * "Today: Sep 18, 2026". */
 export function parseFbReadingDateRangeEn(label: string | null): { start: string; end: string } | null {
   const text = label?.trim() ?? ''
   const stripped = text.replace(/^(?:Today|Yesterday|Last \d+ days?|This month|This year|Last year)[：:]?\s*/, '')
   const single = stripped.match(/^([A-Z][a-z]{2,8})\.? (\d{1,2}), (\d{4})$/)
-  const range = stripped.match(/^([A-Z][a-z]{2,8})\.? (\d{1,2}) – ([A-Z][a-z]{2,8})\.? (\d{1,2}), (\d{4})$/)
+  const range = stripped.match(/^([A-Z][a-z]{2,8})\.? (\d{1,2})(?:, (\d{4}))? – ([A-Z][a-z]{2,8})\.? (\d{1,2}), (\d{4})$/)
   const month = (name: string): number | null => FB_EN_MONTHS[name] ?? null
   const build = (y: number, m: number, d: number): string | null => {
     const value = new Date(y, m - 1, d)
@@ -140,10 +157,11 @@ export function parseFbReadingDateRangeEn(label: string | null): { start: string
   }
   if (range) {
     const m1 = month(range[1])
-    const m2 = month(range[3])
+    const m2 = month(range[4])
     if (!m1 || !m2) return null
-    const start = build(Number(range[5]), m1, Number(range[2]))
-    const end = build(Number(range[5]), m2, Number(range[4]))
+    const startYear = range[3] ? Number(range[3]) : Number(range[6])
+    const start = build(startYear, m1, Number(range[2]))
+    const end = build(Number(range[6]), m2, Number(range[5]))
     return start && end && start <= end ? { start, end } : null
   }
   if (single) {
@@ -199,7 +217,9 @@ export type FbReadingRefreshResult =
 /** History list for the reading module (latest verified entries first). */
 export type FbReadingHistoryListResult = FbReadingHistoryEntry[]
 
-export const FB_READING_SUMMARY_ACCOUNT_LIMIT = 10
+/** Summary accounts refresh serially; each extra account adds one full
+ * pipeline pass per refresh, so the cap keeps board refreshes bounded. */
+export const FB_READING_SUMMARY_ACCOUNT_LIMIT = 30
 export const FB_READING_SUMMARY_METRICS = ['spend', 'cpi', 'cpm', 'ctr', 'cpa', 'balance'] as const
 export type FbReadingSummaryMetric = (typeof FB_READING_SUMMARY_METRICS)[number]
 

@@ -57,13 +57,19 @@ function MessageList({ messages, sessionId = null }: MessageListProps) {
 
   // Turn boundary marker: groups after the last user message belong to the
   // current (or just-finished) turn and get the live row / frozen summary.
-  const lastUserIdx = messages.reduce((acc, m, i) => (m.role === 'user' ? i : acc), -1)
   // The frozen summary (with elapsed time) pins to the LAST tool group of the
   // turn — earlier groups in the same turn show derived counts only.
-  const lastToolIdx = messages.reduce(
-    (acc, m, i) => (m.toolCall && i > lastUserIdx ? i : acc),
-    -1
-  )
+  let lastUserIdx = -1
+  let lastToolIdx = -1
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    if (message.role === 'user') {
+      lastUserIdx = index
+      lastToolIdx = -1
+    } else if (message.toolCall) {
+      lastToolIdx = index
+    }
+  }
 
   // Map "last node index of a turn" -> the user message that owns it, so the
   // change chip renders after the turn's final node. Turns with no content

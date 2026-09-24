@@ -13,9 +13,9 @@ import ChatPage from './pages/ChatPage'
 import SetupWizard from './pages/SetupWizard'
 
 // Route-level code splitting: ChatPage stays in the initial chunk (first
-// screen); every secondary page loads on first navigation. WorkspacePanel
-// still imports OfficePage/BrowserPage synchronously, so those two chunks
-// mainly dedupe — the heavy Office deps load on demand inside OfficePage.
+// screen); every secondary page loads on first navigation. Browser and Office
+// workspace embeds are lazy too, keeping the large spreadsheet engine off the
+// initial chat bundle until the user opens that surface.
 const PackagesPage = lazy(() => import('./pages/PackagesPage'))
 const PluginAuthorPage = lazy(() => import('./pages/PluginAuthorPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))

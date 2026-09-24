@@ -3,7 +3,7 @@ import { Check, FilePlus2, X } from 'lucide-react'
 import { BoardDataset, BoardWidget, BoardWidgetStyle } from '@shared/types'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
-import { resolveFbReadingSummaryAccounts, resolveFbReadingWidgetAccount } from '@shared/fbReading'
+import { FB_READING_SUMMARY_ACCOUNT_LIMIT, resolveFbReadingSummaryAccounts, resolveFbReadingWidgetAccount } from '@shared/fbReading'
 import type { FbReadingAccountEntry } from '@shared/fbReading'
 import { useAppStore } from '../../store'
 import { useT, I18nKey } from '../../i18n'
@@ -101,11 +101,12 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
     () => resolveFbReadingWidgetAccount(widget.config)?.act ?? ''
   )
   const [manageOpen, setManageOpen] = useState(false)
-  const [accountError, setAccountError] = useState<'none' | null>(null)
+  const [accountError, setAccountError] = useState<'none' | 'limit' | null>(null)
   const [summarySelectedActs, setSummarySelectedActs] = useState<Set<string>>(
     () => new Set(resolveFbReadingSummaryAccounts(widget.config).map((account) => account.act))
   )
   const [readingMetricEmpty, setReadingMetricEmpty] = useState(false)
+  const [summaryFilter, setSummaryFilter] = useState('')
 
   // TT 读数 module: optional advertiser-id list + day-window enum.
   const [ttAdvertiserIds, setTtAdvertiserIds] = useState(configString(widget, 'advertiserIds'))
@@ -123,6 +124,13 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
     for (const account of accounts) merged.set(account.act, account)
     return Array.from(merged.values())
   }, [accounts, widget.config])
+
+  const summaryFilterQuery = summaryFilter.trim().toLowerCase()
+  const visibleSummaryAccounts = summaryFilterQuery === ''
+    ? summaryAccountOptions
+    : summaryAccountOptions.filter(
+        (entry) => entry.alias.toLowerCase().includes(summaryFilterQuery) || entry.act.includes(summaryFilterQuery)
+      )
 
   const selectedAccount = accounts.find((entry) => entry.act === selectedAct) ?? null
   const handleReadingAccountsChange = (entries: FbReadingAccountEntry[]) => {
@@ -293,6 +301,10 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
           setAccountError('none')
           return
         }
+        if (selected.length > FB_READING_SUMMARY_ACCOUNT_LIMIT) {
+          setAccountError('limit')
+          return
+        }
         if (readingMetrics.length === 0) {
           setReadingMetricEmpty(true)
           return
@@ -384,8 +396,62 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
               </Field>
             ) : (
               <Field label={t('boards.reading.summary.configAccounts')}>
+                {summaryAccountOptions.length > 0 && (
+                  <div className="space-y-1.5">
+                    <input
+                      value={summaryFilter}
+                      onChange={(e) => setSummaryFilter(e.target.value)}
+                      placeholder={t('boards.reading.accounts.searchAccounts')}
+                      className={inputClass}
+                    />
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSummarySelectedActs((prev) => {
+                            const next = new Set(prev)
+                            for (const entry of visibleSummaryAccounts) next.add(entry.act)
+                            return next
+                          })
+                          setAccountError(null)
+                        }}
+                        disabled={visibleSummaryAccounts.length === 0}
+                        className="flex-1 rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+                      >
+                        {t('boards.reading.picker.selectAll')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSummarySelectedActs((prev) => {
+                            const next = new Set(prev)
+                            for (const entry of visibleSummaryAccounts) next.delete(entry.act)
+                            return next
+                          })
+                          setAccountError(null)
+                        }}
+                        disabled={summarySelectedActs.size === 0}
+                        className="flex-1 rounded-lg border border-line px-2 py-1 text-[11px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+                      >
+                        {t('boards.reading.picker.selectNone')}
+                      </button>
+                    </div>
+                    <div
+                      className={`text-right text-[11px] ${
+                        summarySelectedActs.size > FB_READING_SUMMARY_ACCOUNT_LIMIT ? 'text-red-400' : 'text-cream-faint'
+                      }`}
+                    >
+                      {t('boards.reading.accounts.selectedCount')
+                        .replace('{n}', String(summarySelectedActs.size))
+                        .replace('{max}', String(FB_READING_SUMMARY_ACCOUNT_LIMIT))}
+                    </div>
+                  </div>
+                )}
                 <div className="max-h-[132px] space-y-1 overflow-y-auto rounded-lg border border-line bg-ink-850/60 p-1.5">
-                  {summaryAccountOptions.map((entry) => {
+                  {summaryFilterQuery !== '' && visibleSummaryAccounts.length === 0 && (
+                    <div className="px-1.5 py-2 text-[11px] text-cream-faint">{t('boards.reading.accounts.searchNone')}</div>
+                  )}
+                  {visibleSummaryAccounts.map((entry) => {
                     const checked = summarySelectedActs.has(entry.act)
                     return (
                       <label key={entry.act} className="flex cursor-pointer items-center gap-2 text-[11px] text-cream-dim">
@@ -420,6 +486,11 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
             )}
             {accountError === 'none' && (
               <div className="text-[11px] text-red-400">{t('boards.reading.accounts.noneSelected')}</div>
+            )}
+            {accountError === 'limit' && (
+              <div className="text-[11px] text-red-400">
+                {t('boards.reading.accounts.tooMany').replace('{max}', String(FB_READING_SUMMARY_ACCOUNT_LIMIT))}
+              </div>
             )}
             {readingMetricEmpty && (
               <div className="text-[11px] text-red-400">{t('boards.reading.needMetric')}</div>

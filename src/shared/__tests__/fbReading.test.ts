@@ -61,6 +61,14 @@ describe('FB reading date window', () => {
     }
   })
 
+  it('recognizes both en range label shapes, with and without the start year', () => {
+    expect(parseFbReadingDateRange('Sep 15 – Sep 17, 2026')).toEqual({ start: '2026-09-15', end: '2026-09-17' })
+    expect(parseFbReadingDateRange('Last 3 days: Sep 15 – Sep 17, 2026')).toEqual({ start: '2026-09-15', end: '2026-09-17' })
+    expect(parseFbReadingDateRange('Sep 15, 2026 – Sep 21, 2026')).toEqual({ start: '2026-09-15', end: '2026-09-21' })
+    expect(parseFbReadingDateRange('Dec 30, 2025 – Jan 2, 2026')).toEqual({ start: '2025-12-30', end: '2026-01-02' })
+    expect(parseFbReadingDateRange('Sep 15, 2026 – Sep 14, 2026')).toBeNull()
+  })
+
   it('refuses another account, an off-by-one date, and mismatched history', () => {
     const expected = boardReadingRangeDates('last3', today)
     expect(fbReadingMatchesWindow({ accountId: '123456', dateRangeLabel: '2026年9月14日 – 2026年9月16日' }, '123456', expected)).toBe(true)
