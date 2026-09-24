@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { Activity, RefreshCw } from 'lucide-react'
 import { BoardWidget } from '@shared/types'
 import { boardReadingRangeDates, fbReadingMatchesWindow, resolveFbReadingWidgetAccount } from '@shared/fbReading'
+import type { FbReadingHistoryEntry } from '@shared/fbReading'
 import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
+import { refreshAccountWithRetry } from './fbReadingRefresh'
 
 interface FbReadingDisplayRow {
   name: string
@@ -68,9 +70,28 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   const [balance, setBalance] = useState<FbAccountBalance | null>(null)
   const [balanceFailure, setBalanceFailure] = useState<string | null>(null)
   const [balanceBusy, setBalanceBusy] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const submitting = useRef(false)
   const balanceSubmitting = useRef(false)
   const requestVersion = useRef(0)
+
+  const toDisplayEntry = (hit: FbReadingHistoryEntry) => ({
+    capturedAt: hit.capturedAt,
+    totalSpend: hit.totalSpend,
+    campaignCount: hit.campaignCount,
+    rows: (hit.rows ?? []).map((r) => ({
+      name: r.name,
+      spend: r.spend,
+      costPerResult: r.costPerResult,
+      cpm: r.cpm,
+      ctr: r.ctr,
+      impressions: r.impressions,
+      clicks: r.clicks,
+      installs: r.installs,
+      results: r.results,
+      resultType: r.resultType
+    }))
+  })
 
   const load = async () => {
     const version = requestVersion.current
@@ -83,27 +104,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     const hit = listEntries.find(
       (e) => fbReadingMatchesWindow(e, accountId, dateWindow)
     )
-    if (hit) {
-      setEntry({
-        capturedAt: hit.capturedAt,
-        totalSpend: hit.totalSpend,
-        campaignCount: hit.campaignCount,
-        rows: (hit.rows ?? []).map((r) => ({
-          name: r.name,
-          spend: r.spend,
-          costPerResult: r.costPerResult,
-          cpm: r.cpm,
-          ctr: r.ctr,
-          impressions: r.impressions,
-          clicks: r.clicks,
-          installs: r.installs,
-          results: r.results,
-          resultType: r.resultType
-        }))
-      })
-    } else {
-      setEntry(null)
-    }
+    setEntry(hit ? toDisplayEntry(hit) : null)
   }
 
   const loadBalance = async () => {
@@ -123,6 +124,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     setBalanceFailure(null)
     setBusy(false)
     setBalanceBusy(false)
+    setAttempt(0)
     submitting.current = false
     balanceSubmitting.current = false
     const version = requestVersion.current
@@ -138,37 +140,38 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
       window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
       return
     }
-    if (submitting.current) {
-      window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
-      return
-    }
+    // A running refresh owns this module; duplicate clicks/events rejoin it
+    // and must not emit an early module-done (board queue safety).
+    if (submitting.current || balanceSubmitting.current) return
     submitting.current = true
     const version = requestVersion.current
     setBusy(true)
     setFailure(null)
     setFailureDetail(null)
     try {
-      const result = await window.electronAPI.refreshFbReading({
-        alias: accountRef.alias,
-        act: accountRef.act,
-        businessId: accountRef.businessId,
-        range
-      })
+      const outcome = await refreshAccountWithRetry(
+        { alias: accountRef.alias, act: accountRef.act, businessId: accountRef.businessId, range },
+        {
+          isCurrent: () => version === requestVersion.current,
+          onProgress: (next) => {
+            if (version !== requestVersion.current) return
+            setAttempt(next.attempt)
+          }
+        }
+      )
       if (version !== requestVersion.current) return
-      if (result.ok) {
-        await load()
-      } else {
-        setFailure(result.error)
-        setFailureDetail(result.error)
+      if (outcome.kind === 'ok') {
+        setEntry(toDisplayEntry(outcome.entry))
+      } else if (outcome.kind === 'failed') {
+        setFailure(outcome.error)
+        setFailureDetail(outcome.error)
       }
-    } catch {
-      if (version === requestVersion.current) setFailure('refresh-failed')
-      setFailureDetail('invoke-failed')
     } finally {
       window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
       if (version === requestVersion.current) {
         submitting.current = false
         setBusy(false)
+        setAttempt(0)
       }
     }
   }
@@ -266,7 +269,11 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
             className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
           >
             {busy ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
-            {busy ? t('boards.reading.refreshing') : t('boards.reading.refresh')}
+            {busy
+              ? attempt >= 2
+                ? t('boards.reading.status.retrying')
+                : t('boards.reading.refreshing')
+              : t('boards.reading.refresh')}
           </button>
         </div>
       </div>

@@ -6,8 +6,23 @@ import { BrowserWindow, type WebContents, type WebContentsView } from 'electron'
 vi.mock('electron', () => ({
   BrowserWindow: class {
     static fromWebContents = vi.fn(() => null)
+    static getAllWindows = vi.fn(() => [])
   },
-  WebContentsView: class {},
+  WebContentsView: class {
+    webContents = {
+      isDestroyed: () => false,
+      getURL: () => 'https://adsmanager.facebook.com/',
+      getTitle: () => 'Ads Manager',
+      isLoading: () => false,
+      navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+      setWindowOpenHandler: vi.fn(),
+      on: vi.fn(),
+      close: vi.fn()
+    }
+    getBounds = vi.fn(() => ({ x: 900, y: 120, width: 720, height: 700 }))
+    setBounds = vi.fn()
+  },
+  session: { fromPartition: () => ({ setUserAgent: vi.fn() }) },
   shell: { openExternal: vi.fn() }
 }))
 
@@ -17,7 +32,10 @@ import {
   plainChromeUserAgent,
   sanitizeBrowserPanelBounds,
   loadBrowserPanelUrl,
-  withBrowserReadingViewport
+  withBrowserReadingViewport,
+  showBrowserPanel,
+  hideBrowserPanel,
+  setBrowserPanelBounds
 } from '../browserPanel'
 
 describe('panel navigation and report layout', () => {
@@ -65,20 +83,22 @@ describe('panel navigation and report layout', () => {
     const setBounds = vi.fn()
     vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({
       getContentSize: () => [1440, 900]
-    } as never)
+    , contentView: { addChildView: vi.fn() } } as never)
     const view = {
       getBounds: () => ({ x: 900, y: 120, width: 720, height: 700 }),
       setBounds,
       webContents: { isDestroyed: () => false }
     } as unknown as WebContentsView
     const result = withBrowserReadingViewport(view, async () => {
-      expect(setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 1440, height: 900 })
+      // Tests do not mark the view as attached, so a hidden/background
+      // stretch still parks off-screen at full window width.
+      expect(setBounds).toHaveBeenCalledWith({ x: 1540, y: 0, width: 1440, height: 3600 })
       if (fail) throw new Error('page-load-failed')
       return 'verified'
     })
     if (fail) await expect(result).rejects.toThrow('page-load-failed')
     else expect(await result).toBe('verified')
-    expect(setBounds).toHaveBeenLastCalledWith({ x: 900, y: 120, width: 720, height: 700 })
+    expect(setBounds).toHaveBeenLastCalledWith({ x: 1540, y: 0, width: 1440, height: 3600 })
     vi.mocked(BrowserWindow.fromWebContents).mockReset()
     vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(null)
   })
@@ -87,17 +107,69 @@ describe('panel navigation and report layout', () => {
     const setBounds = vi.fn()
     vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({
       getContentSize: () => [1440, 900]
-    } as never)
+    , contentView: { addChildView: vi.fn() } } as never)
     const view = {
       getBounds: () => ({ x: 1540, y: 0, width: 720, height: 700 }),
       setBounds,
       webContents: { isDestroyed: () => false }
     } as unknown as WebContentsView
     await withBrowserReadingViewport(view, async () => {
-      expect(setBounds).toHaveBeenCalledWith({ x: 1540, y: 0, width: 1440, height: 900 })
+      expect(setBounds).toHaveBeenCalledWith({ x: 1540, y: 0, width: 1440, height: 3600 })
       return 'verified'
     })
-    expect(setBounds).toHaveBeenLastCalledWith({ x: 1540, y: 0, width: 720, height: 700 })
+    expect(setBounds).toHaveBeenLastCalledWith({ x: 1540, y: 0, width: 1440, height: 3600 })
+    vi.mocked(BrowserWindow.fromWebContents).mockReset()
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(null)
+  })
+
+  it('parks immediately on hide during a read and restores the latest visible bounds after show', async () => {
+    const addChildView = vi.fn()
+    const win = {
+      id: 7,
+      isDestroyed: () => false,
+      getContentSize: () => [1440, 900],
+      contentView: { addChildView },
+      once: vi.fn(),
+      webContents: { send: vi.fn() }
+    }
+    showBrowserPanel(win as never, { x: 900, y: 120, width: 720, height: 700 })
+    const view = (win as { contentView: { addChildView: ReturnType<typeof vi.fn> } }).contentView.addChildView.mock.calls[0][0] as WebContentsView
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(win as never)
+    const setBounds = vi.spyOn(view, 'setBounds')
+    const reading = withBrowserReadingViewport(view, async () => {
+      hideBrowserPanel(win as never)
+      expect(setBounds).toHaveBeenCalledWith({ x: 1540, y: 0, width: 1440, height: 3600 })
+      showBrowserPanel(win as never, { x: 40, y: 80, width: 800, height: 640 })
+      expect(setBounds).not.toHaveBeenCalledWith({ x: 40, y: 80, width: 800, height: 640 })
+      setBrowserPanelBounds(win as never, { x: 50, y: 90, width: 810, height: 650 })
+      return 'verified'
+    })
+    expect(await reading).toBe('verified')
+    expect(setBounds).toHaveBeenLastCalledWith({ x: 50, y: 90, width: 810, height: 650 })
+    vi.mocked(BrowserWindow.fromWebContents).mockReset()
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(null)
+  })
+
+  it('clears the stretch flag even when restore throws', async () => {
+    let failRestore = false
+    const setBounds = vi.fn(() => {
+      if (failRestore) throw new Error('restore-failed')
+    })
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({
+      getContentSize: () => [1440, 900],
+      contentView: { addChildView: vi.fn() }
+    } as never)
+    const view = {
+      getBounds: () => ({ x: 1540, y: 0, width: 720, height: 700 }),
+      setBounds,
+      webContents: { isDestroyed: () => false }
+    } as unknown as WebContentsView
+    await expect(withBrowserReadingViewport(view, async () => {
+      failRestore = true
+      return 'verified'
+    })).resolves.toBe('verified')
+    failRestore = false
+    await expect(withBrowserReadingViewport(view, async () => 'again')).resolves.toBe('again')
     vi.mocked(BrowserWindow.fromWebContents).mockReset()
     vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(null)
   })
