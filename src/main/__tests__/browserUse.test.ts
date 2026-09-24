@@ -18,10 +18,42 @@ import {
   SNAPSHOT_SCRIPT,
   FB_ADS_TABLE_SNAPSHOT_SCRIPT,
   collectVirtualizedFbPages,
+  CLICK_GROUP_ROW_SCRIPT,
+  FIND_GROUP_ROWS_SCRIPT,
   type FbReadOnce
 } from '../browserUse'
 import { parseFbAdsCampaignsSnapshot } from '../../shared/fbAdsParser'
 import { REAL_CAMPAIGNS_TEXT, REAL_URL } from '../../shared/fbAdsParser.test'
+
+describe('account switcher portfolio row scripts', () => {
+  it('keeps repeated numeric portfolio counts distinct and clicks the matching occurrence', () => {
+    const makeRow = (text: string) => ({
+      innerText: text,
+      textContent: text,
+      childElementCount: 0,
+      contains: () => false,
+      click: vi.fn()
+    })
+    const rows = [makeRow('10 ad accounts'), makeRow('10 ad accounts')]
+    const menu = {
+      innerText: 'Business portfolios · 10 ad accounts · 10 ad accounts',
+      childElementCount: rows.length,
+      contains: (node: unknown) => rows.includes(node as typeof rows[number]),
+      querySelectorAll: () => rows
+    }
+    const document = { querySelectorAll: () => [menu] }
+    const found = new Function('document', 'return ' + FIND_GROUP_ROWS_SCRIPT)(document) as {
+      named: string[]
+      counts: string[]
+      truncated: boolean
+    }
+
+    expect(found).toEqual({ named: [], counts: ['10#0', '10#1'], truncated: false })
+    expect(new Function('document', 'return ' + CLICK_GROUP_ROW_SCRIPT('10#1', false))(document)).toBe(true)
+    expect(rows[0].click).not.toHaveBeenCalled()
+    expect(rows[1].click).toHaveBeenCalledOnce()
+  })
+})
 
 describe('board refresh admission and failures', () => {
   afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { FB_READING_ACCOUNT_MAX } from '@shared/fbReading'
 import type { FbReadingAccountEntry } from '@shared/fbReading'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
@@ -38,8 +39,12 @@ export function FbReadingAccountManager({
   const [accountError, setAccountError] = useState<'invalid' | null>(null)
   const [accountBusy, setAccountBusy] = useState(false)
   const [discoverQuery, setDiscoverQuery] = useState('')
+  const [accountQuery, setAccountQuery] = useState('')
+  const [removePicked, setRemovePicked] = useState<Set<string>>(new Set())
   const [discoverBusy, setDiscoverBusy] = useState(false)
   const [discovered, setDiscovered] = useState<Array<{ name: string; act: string }> | null>(null)
+  const [discoveryIncomplete, setDiscoveryIncomplete] = useState(false)
+  const [addAllResult, setAddAllResult] = useState<{ added: number; total: number } | null>(null)
   const [discoverFailed, setDiscoverFailed] = useState(false)
   const [discoverError, setDiscoverError] = useState<string | null>(null)
 
@@ -99,15 +104,56 @@ export function FbReadingAccountManager({
     setAccountBusy(true)
     try {
       const result = await window.electronAPI.addFbReadingAccounts({
-        accounts: [{ alias: entry.name, act: entry.act, businessId: null }]
+        accounts: [{ alias: entry.name.slice(0, 40), act: entry.act, businessId: null }]
       })
       if (result.ok && result.accounts) {
         onAccountsChange(result.accounts)
         onAccountsAdded?.(result.accounts.filter((account) => account.act === entry.act))
+        setAddAllResult({ added: result.added.length, total: 1 })
       }
     } catch {
       // Keep the discovered list; the user can retry or add manually.
     } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  const addAllDiscovered = async () => {
+    const pending = (discovered ?? []).filter((entry) => !accounts.some((account) => account.act === entry.act))
+    if (pending.length === 0) return
+    setAccountBusy(true)
+    setAddAllResult(null)
+    let latest: FbReadingAccountEntry[] | null = null
+    let added = 0
+    const addedActs = new Set<string>()
+    try {
+      // The add IPC accepts at most 20 accounts per call; registry name
+      // validation caps aliases at 40 chars.
+      for (let offset = 0; offset < pending.length; offset += 20) {
+        const chunk = pending.slice(offset, offset + 20)
+        const result = await window.electronAPI.addFbReadingAccounts({
+          accounts: chunk.map((entry) => ({
+            alias: entry.name.slice(0, 40),
+            act: entry.act,
+            businessId: null
+          }))
+        })
+        if (!result.ok || !result.accounts) break
+        latest = result.accounts
+        added += result.added.length
+        result.added.forEach((entry) => addedActs.add(entry.act))
+        // A partially accepted batch can contain stale duplicates. Continue
+        // while the registry still has room; stop only at its real cap.
+        if (latest.length >= FB_READING_ACCOUNT_MAX) break
+      }
+    } catch {
+      // Keep successful earlier chunks visible if a later IPC call fails.
+    } finally {
+      if (latest) {
+        onAccountsChange(latest)
+        onAccountsAdded?.(latest.filter((entry) => addedActs.has(entry.act)))
+      }
+      setAddAllResult({ added, total: pending.length })
       setAccountBusy(false)
     }
   }
@@ -125,15 +171,46 @@ export function FbReadingAccountManager({
     }
   }
 
+  /** App-local registry removal only — FB itself is never modified. */
+  const removeSelected = async () => {
+    const ids = Array.from(removePicked).filter((id) => accounts.some((account) => account.id === id))
+    if (ids.length === 0) return
+    setAccountBusy(true)
+    try {
+      let latest: FbReadingAccountEntry[] | null = null
+      const removedActs: string[] = []
+      for (const id of ids) {
+        const acts = accounts.filter((account) => account.id === id).map((account) => account.act)
+        const result = await window.electronAPI.removeFbReadingAccount({ id })
+        if (result.ok && result.accounts) {
+          latest = result.accounts
+          removedActs.push(...acts)
+        }
+      }
+      if (latest) {
+        onAccountsChange(latest)
+        onAccountsRemoved?.(removedActs)
+      }
+      setRemovePicked(new Set())
+    } catch {
+      // Partial removals are fine; the registry is re-read on next mount.
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
   const discover = async () => {
     setDiscoverBusy(true)
     setDiscovered(null)
+    setDiscoveryIncomplete(false)
+    setAddAllResult(null)
     setDiscoverFailed(false)
     setDiscoverError(null)
     try {
       const result = await window.electronAPI.discoverFbReadingAccounts({ query: discoverQuery.trim() })
       if (result.ok) {
         setDiscovered(result.accounts ?? [])
+        setDiscoveryIncomplete(!result.complete)
       } else {
         setDiscoverFailed(true)
         setDiscoverError(result.error ?? 'unknown')
@@ -174,9 +251,53 @@ export function FbReadingAccountManager({
           {!loading && accounts.length === 0 && (
             <div className="text-[11px] text-cream-faint">{t('boards.reading.picker.noneDirect')}</div>
           )}
-          {accounts.map((entry) => (
+          {!loading && accounts.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <input
+                value={accountQuery}
+                onChange={(e) => setAccountQuery(e.target.value)}
+                placeholder={t('boards.reading.accounts.searchAccounts')}
+                className={inputClass}
+              />
+              {removePicked.size > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void removeSelected()}
+                  disabled={accountBusy}
+                  className="shrink-0 whitespace-nowrap text-[11px] text-red-400 transition hover:opacity-80 disabled:opacity-40"
+                >
+                  {t('boards.reading.accounts.removeSelected')} ({removePicked.size})
+                </button>
+              )}
+            </div>
+          )}
+          {(() => {
+            const query = accountQuery.trim().toLowerCase()
+            const visible = query === ''
+              ? accounts
+              : accounts.filter((entry) =>
+                  entry.alias.toLowerCase().includes(query) || entry.act.includes(query))
+            if (query !== '' && visible.length === 0) {
+              return <div className="text-[11px] text-cream-faint">{t('boards.reading.accounts.searchNone')}</div>
+            }
+            return visible.map((entry) => (
             <div key={entry.id} className="flex items-center justify-between gap-2 text-[11px] text-cream-dim">
-              <span className="truncate">{entry.alias} · {entry.act}</span>
+              <label className="flex min-w-0 cursor-pointer items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={removePicked.has(entry.id)}
+                  onChange={() =>
+                    setRemovePicked((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(entry.id)) next.delete(entry.id)
+                      else next.add(entry.id)
+                      return next
+                    })
+                  }
+                  className="h-3 w-3 shrink-0 accent-accent"
+                />
+                <span className="truncate">{entry.alias} · {entry.act}</span>
+              </label>
               <button
                 type="button"
                 onClick={() => void removeAccount(entry.id)}
@@ -185,7 +306,8 @@ export function FbReadingAccountManager({
                 {t('boards.reading.accounts.remove')}
               </button>
             </div>
-          ))}
+            ))
+          })()}
         </div>
       )}
 
@@ -224,6 +346,28 @@ export function FbReadingAccountManager({
         )}
         {discovered && discovered.length === 0 && (
           <div className="text-[11px] text-cream-faint">{t('boards.reading.accounts.discoveredNone')}</div>
+        )}
+        {discoveryIncomplete && (
+          <div role="status" className="text-[11px] text-amber-300">
+            {t('boards.reading.accounts.discoveryIncomplete')}
+          </div>
+        )}
+        {addAllResult && (
+          <div role="status" className="text-[11px] text-cream-faint">
+            {t('boards.reading.accounts.addAllResult', { added: addAllResult.added, total: addAllResult.total })}
+          </div>
+        )}
+        {discovered && discovered.length > 0 && (
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => void addAllDiscovered()}
+              disabled={accountBusy || discovered.every((entry) => accounts.some((a) => a.act === entry.act))}
+              className="shrink-0 text-accent transition hover:opacity-80 disabled:opacity-40"
+            >
+              {t('boards.reading.accounts.addAll')}
+            </button>
+          </div>
         )}
         {discovered && discovered.length > 0 && (
           <div className="max-h-[120px] space-y-0.5 overflow-y-auto">

@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron
 import { IPC_CHANNELS } from '../shared/constants'
 import type {
   FbAccountBalanceRefreshResult,
+  FbReadingAccountDiscoveryResult,
+  FbReadingAccountsAddResult,
   FbReadingAccountEntry,
   FbReadingAccountRef,
   FbReadingHistoryListResult,
@@ -264,10 +266,10 @@ export interface ElectronAPI {
   listFbReadings: (request: { accountId?: string }) => Promise<FbReadingHistoryListResult>
   /** Local FB account registry (IDs only; nothing leaves the machine). */
   listFbReadingAccounts: () => Promise<FbReadingAccountEntry[]>
-  addFbReadingAccounts: (request: { accounts: FbReadingAccountRef[] }) => Promise<{ ok: boolean; accounts?: FbReadingAccountEntry[]; error?: string }>
+  addFbReadingAccounts: (request: { accounts: FbReadingAccountRef[] }) => Promise<FbReadingAccountsAddResult>
   removeFbReadingAccount: (request: { id: string }) => Promise<{ ok: boolean; accounts?: FbReadingAccountEntry[]; error?: string }>
   /** Enumerate ad accounts reachable from the logged-in browser panel. */
-  discoverFbReadingAccounts: (request: { query?: string }) => Promise<{ ok: boolean; accounts?: Array<{ name: string; act: string }>; error?: string }>
+  discoverFbReadingAccounts: (request: { query?: string }) => Promise<FbReadingAccountDiscoveryResult>
   /** Capture act/businessId from the panel's current Ads Manager page. */
   captureFbReadingAccount: () => Promise<{ ok: boolean; account?: { act: string; businessId: string | null }; error?: string }>
   deleteBoard: (id: string) => Promise<KanbanSaveResult>

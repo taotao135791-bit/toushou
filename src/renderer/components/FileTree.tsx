@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 
-interface TreeNode {
+export interface TreeNode {
   name: string
   path: string
   isDirectory: boolean
@@ -32,7 +32,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 /** Build a complete, expandable tree from the trusted flat project manifest. */
-function buildProjectTree(files: string[], rootName: string): TreeNode {
+export function buildProjectTree(files: string[], rootName: string): TreeNode {
   const root: TreeNode = {
     name: rootName,
     path: '',
@@ -40,6 +40,9 @@ function buildProjectTree(files: string[], rootName: string): TreeNode {
     children: [],
     expanded: true
   }
+
+  const rootIndex = new Map<string, TreeNode>()
+  const childIndexes = new Map<TreeNode, Map<string, TreeNode>>()
 
   for (const rawPath of files) {
     const parts = rawPath.replace(/\\/g, '/').split('/').filter(Boolean)
@@ -51,10 +54,11 @@ function buildProjectTree(files: string[], rootName: string): TreeNode {
     }
 
     let children = root.children!
-    let parentPath = ''
+    let siblingIndex = rootIndex
+    let parentNode = root
     parts.forEach((part, index) => {
-      const nodePath = parentPath ? `${parentPath}/${part}` : part
-      let node = children.find((candidate) => candidate.path === nodePath)
+      const nodePath = parentNode.path ? `${parentNode.path}/${part}` : part
+      let node = siblingIndex.get(part)
       if (!node) {
         const isDirectory = index < parts.length - 1
         node = {
@@ -65,9 +69,18 @@ function buildProjectTree(files: string[], rootName: string): TreeNode {
           expanded: false
         }
         children.push(node)
+        siblingIndex.set(part, node)
       }
-      if (node.isDirectory) children = node.children!
-      parentPath = nodePath
+      if (node.isDirectory) {
+        parentNode = node
+        children = node.children!
+        let nestedIndex = childIndexes.get(node)
+        if (!nestedIndex) {
+          nestedIndex = new Map<string, TreeNode>()
+          childIndexes.set(node, nestedIndex)
+        }
+        siblingIndex = nestedIndex
+      }
     })
   }
 

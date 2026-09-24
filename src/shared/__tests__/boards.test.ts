@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { BoardWidget, KanbanBoard } from '../types'
+import { FB_READING_SUMMARY_ACCOUNT_LIMIT } from '../fbReading'
 import {
   BOARD_LIMITS,
   GRID_COLS,
@@ -372,6 +373,15 @@ describe('factories', () => {
         ?.widgets
     ).toHaveLength(0)
     expect(withWidget(widgetOf('fb-reading-summary', { ...config, metrics: [] }))?.widgets).toHaveLength(0)
+    const many = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({ alias: `acct${i}`, act: String(1000000 + i), businessId: null }))
+    expect(
+      withWidget(widgetOf('fb-reading-summary', { ...config, accounts: many(FB_READING_SUMMARY_ACCOUNT_LIMIT) }))?.widgets
+    ).toHaveLength(1)
+    expect(
+      withWidget(widgetOf('fb-reading-summary', { ...config, accounts: many(FB_READING_SUMMARY_ACCOUNT_LIMIT + 1) }))
+        ?.widgets
+    ).toHaveLength(0)
   })
 
   it('validates the tt-reading config (advertiser id string + day-window enum)', () => {

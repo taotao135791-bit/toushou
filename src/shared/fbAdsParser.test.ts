@@ -654,7 +654,7 @@ $98.07
       'Ads Manager',
       'COOPLAY-ADT-AND-03 (27893958520273993)',
       'Last 3 days: Sep 15 – Sep 17, 2026',
-      'On/Off',
+      'Off / On',
       'Campaigns',
       'Amount spent',
       'Cost per app install',
@@ -704,7 +704,7 @@ $98.07
       '0.00%',
       '—',
       '—',
-      'Performance for 3 campaigns',
+      'Results from 3 campaigns',
       '$560.33',
       'Amount spent'
     ].join('\n')

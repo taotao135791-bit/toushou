@@ -30,6 +30,7 @@ import {
   isValidFbReadingBusinessId
 } from '../shared/fbReading'
 import type {
+  FbReadingAccountDiscoveryResult,
   FbAccountBalanceRefreshResult,
   FbReadingAccountRef,
   FbReadingRange,
@@ -447,9 +448,11 @@ export async function readStableFbReading<R>(
   | { ok: false; error: string; last: FbReadOnce<R> }
 > {
   // Cold loads of Ads Manager (fresh panel after an app restart) can take
-  // 30s+ past domcontentloaded before the SPA mounts table rows; 20 × 1.5s
-  // covers that without hanging the bridge on a dead page.
-  const { delayMs = 1_500, firstAttempts = 20, secondAttempts = 3, settleDelayMs = 700 } = opts
+  // 30s+ past domcontentloaded before the SPA mounts table rows — and
+  // proxied/slow networks push row mounting past 30s (measured ~33s behind
+  // a local proxy); 40 × 1.5s covers that without hanging the bridge on a
+  // dead page.
+  const { delayMs = 1_500, firstAttempts = 40, secondAttempts = 3, settleDelayMs = 700 } = opts
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
   const stableRead = async (attempts: number): Promise<FbReadOnce<R>> => {
     let last: FbReadOnce<R> | null = null
@@ -458,7 +461,7 @@ export async function readStableFbReading<R>(
       if (attempt > 0) await sleep(delayMs)
       opts.assertActive?.()
       last = await readOnce()
-      if (fbPageLoadFailure(last) || (last.reading && !rejectionOf(last.reading))) return last
+      if (fbPageLoadFailure(last) || fbLoginWall(last) || (last.reading && !rejectionOf(last.reading))) return last
     }
     return last as FbReadOnce<R>
   }
@@ -777,7 +780,15 @@ export async function runAction(
         })
         // Wait for the campaigns table to parse at all (cold Ads Manager can
         // take 30s). A headers-only snapshot is unparseable, not incomplete.
-        const warmed = await readStableFbReading(readOnce, () => null, { ...controlOpts, secondAttempts: 1 })
+        // Board refresh has one total deadline and may need a single wide-view
+        // reload afterward. Keep its warm-up bounded so the fallback still has
+        // time to take one verified read; interactive browser reports retain
+        // the longer cold-load budget above.
+        const warmed = await readStableFbReading(readOnce, () => null, {
+          ...controlOpts,
+          ...(readControl ? { firstAttempts: 24, delayMs: 1_000 } : {}),
+          secondAttempts: 1
+        })
         if (!warmed.ok && warmed.error !== 'unparseable-page') {
           return failFrom(warmed.last, warmed.error)
         }
@@ -1029,7 +1040,8 @@ function assertBoardReadActive(control: BoardReadControl): void {
 
 /** Opens the Ads Manager account switcher unless its menu is already open. */
 const OPEN_ACCOUNT_SWITCHER_SCRIPT = `(() => {
-  const menuOpen = (document.body.innerText || '').includes('业务资产组合') ||
+  const bodyText = document.body.innerText || ''
+  const menuOpen = bodyText.includes('业务资产组合') || bodyText.includes('Business portfolios') ||
     Array.from(document.querySelectorAll('input')).some(i => (i.placeholder || '').includes('搜索广告账户'))
   if (menuOpen) return true
   const combobox = document.querySelector('[role=combobox]')
@@ -1064,17 +1076,130 @@ const SCROLL_ACCOUNT_MENU_SCRIPT = `(() => {
   return best.scrollTop > before
 })()`
 
-/** Expands every collapsed business-portfolio group; clicks innermost nodes only. */
-const EXPAND_PORTFOLIO_GROUPS_SCRIPT = `(() => {
-  const pattern = /^(.{1,50}?)\\s*\\d+\\s*个广告账户/
-  const matches = []
-  for (const el of document.querySelectorAll('div,span,[role=row]')) {
-    const text = (el.textContent || '').replace(/\\s+/g, ' ').trim()
-    if (text.length <= 90 && pattern.test(text)) matches.push(el)
+/** Finds the open switcher menu root via its bilingual section header, or null. */
+const SWITCHER_MENU_JS = `(() => {
+  const holders = []
+  for (const el of document.querySelectorAll('div,section')) {
+    if (!el.childElementCount) continue
+    const text = (el.innerText || '').replace(/\\s+/g, ' ').trim()
+    if ((text.includes('Business portfolios') || text.includes('业务资产组合')) &&
+        /(ad accounts?|个广告账户)/.test(text) && text.length > 40 && text.length < 6000) holders.push(el)
   }
-  const targets = matches.filter(el => !matches.some(other => other !== el && el.contains(other)))
-  for (const target of targets) target.click()
-  return targets.length
+  const outer = holders.filter(el => !holders.some(o => o !== el && o.contains(el)))
+  return outer.length ? outer[outer.length - 1] : null
+})()`
+
+/** Reports whether the switcher menu is currently open. */
+const SWITCHER_MENU_PRESENT_SCRIPT = `(() => ${SWITCHER_MENU_JS} !== null)()`
+
+/**
+ * Lists the business-portfolio group rows in the open switcher. Rows are
+ * parsed from innerText (layout text keeps name and count separated, while
+ * textContent concatenates them — "Adtiger-C130 ad accounts" — which makes
+ * digit-suffixed portfolio names ambiguous). A row is "name + count", or a
+ * bare count when FB renders them as separate elements. Bilingual:
+ * "X 个广告账户" and "N ad account(s)".
+ */
+export const FIND_GROUP_ROWS_SCRIPT = `(() => {
+  const menu = ${SWITCHER_MENU_JS}
+  if (!menu) return null
+  const excluded = /business portfolio|业务资产组合|other assets|其他资产/i
+  const named = []
+  const counts = []
+  for (const el of menu.querySelectorAll('div,span,a,[role=row],[role=button]')) {
+    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()
+    if (!text || text.length > 70) continue
+    const m = text.match(/^(.{1,50}?)\\s*(\\d+)\\s*(?:个广告账户|ad\\saccounts?)(?:\\s*·.*)?$/)
+    if (!m) continue
+    let name = m[1].trim()
+    let count = m[2]
+    // For a bare row like "10 ad accounts", the lazy name capture can eat
+    // the first digit and leave only "0" as the account count.
+    if (name && /^\\d+$/.test(name)) {
+      count = name + count
+      name = ''
+    }
+    if (name && /[\\u4e00-\\u9fa5a-z]/i.test(name)) {
+      if (!excluded.test(name)) named.push({ el, name })
+    } else counts.push({ el, count })
+  }
+  const uniqueNamed = named.filter(row => !named.some(other => other.el !== row.el && row.el.contains(other.el)))
+  const uniqueCounts = counts.filter(row => !counts.some(other => other.el !== row.el && row.el.contains(other.el)))
+  const nameOccurrences = new Map()
+  const nameLabels = uniqueNamed.map(row => {
+    const occurrence = nameOccurrences.get(row.name) || 0
+    nameOccurrences.set(row.name, occurrence + 1)
+    return encodeURIComponent(row.name) + '#' + occurrence
+  })
+  const countOccurrences = new Map()
+  const countLabels = uniqueCounts.map(row => {
+    const occurrence = countOccurrences.get(row.count) || 0
+    countOccurrences.set(row.count, occurrence + 1)
+    return row.count + '#' + occurrence
+  })
+  return {
+    named: nameLabels.slice(0, 12),
+    counts: countLabels.slice(0, 12),
+    truncated: uniqueNamed.length > 12 || uniqueCounts.length > 12
+  }
+})()`
+
+/** Clicks one business-portfolio group row (by name, or by bare count). */
+export const CLICK_GROUP_ROW_SCRIPT = (label: string, named: boolean): string => `(() => {
+  const menu = ${SWITCHER_MENU_JS}
+  if (!menu) return false
+  const wanted = ${JSON.stringify(label)}
+  const wantNamed = ${named ? 'true' : 'false'}
+  const [wantedValue, wantedOccurrenceText] = wanted.split('#')
+  const wantedOccurrence = Number(wantedOccurrenceText || 0)
+  const wantedName = wantNamed ? decodeURIComponent(wantedValue) : ''
+  const wantedCount = wantNamed ? '' : wantedValue
+  const excluded = /business portfolio|业务资产组合|other assets|其他资产/i
+  const matches = []
+  for (const el of menu.querySelectorAll('div,span,a,[role=row],[role=button]')) {
+    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()
+    if (!text || text.length > 70) continue
+    const m = text.match(/^(.{1,50}?)\\s*(\\d+)\\s*(?:个广告账户|ad\\saccounts?)(?:\\s*·.*)?$/)
+    if (!m) continue
+    let name = m[1].trim()
+    let count = m[2]
+    if (name && /^\\d+$/.test(name)) {
+      count = name + count
+      name = ''
+    }
+    const isNamed = !!name && /[\\u4e00-\\u9fa5a-z]/i.test(name) && !excluded.test(name)
+    if (isNamed !== wantNamed) continue
+    if ((isNamed ? name : count) !== (isNamed ? wantedName : wantedCount)) continue
+    matches.push({ el, label: isNamed ? name : count })
+  }
+  const targets = matches.filter(row => !matches.some(other => other.el !== row.el && row.el.contains(other.el)))
+  const target = targets[wantedOccurrence]
+  if (!target) return false
+  target.el.click()
+  return true
+})()`
+
+/** Clicks the switcher menu's "View more" / "查看更多" pagination once. */
+const CLICK_VIEW_MORE_SCRIPT = `(() => {
+  const menu = ${SWITCHER_MENU_JS}
+  if (!menu) return false
+  const matches = []
+  for (const el of menu.querySelectorAll('div,span,a,button,[role=button]')) {
+    const text = (el.textContent || '').replace(/\\s+/g, ' ').trim()
+    if (/^(View more|查看更多|显示更多)$/i.test(text)) matches.push(el)
+  }
+  const targets = matches.filter(el => !matches.some(o => o !== el && el.contains(o)))
+  if (!targets.length) return false
+  targets[targets.length - 1].click()
+  return true
+})()`
+
+/** Whether pagination remains after the defensive View more click cap. */
+const VIEW_MORE_PRESENT_SCRIPT = `(() => {
+  const menu = ${SWITCHER_MENU_JS}
+  if (!menu) return false
+  return Array.from(menu.querySelectorAll('div,span,a,button,[role=button]'))
+    .some(el => /^(View more|查看更多|显示更多)$/i.test((el.textContent || '').replace(/\\s+/g, ' ').trim()))
 })()`
 
 /** Structured account harvest from the open switcher menu (DOM, not text lines). */
@@ -1084,7 +1209,13 @@ const HARVEST_ACCOUNTS_SCRIPT = `(() => {
     if (!act || !/^\\d{6,20}$/.test(act)) return
     const label = (name || '').trim().slice(0, 60) || act
     const prev = found.get(act)
-    if (!prev || label.length < prev.length) found.set(act, label)
+    if (!prev) { found.set(act, label); return }
+    // A real name always beats the bare-ID fallback; among equals, keep the
+    // shortest (trims wrapper text from nested nodes).
+    const prevFallback = prev === act
+    const labelFallback = label === act
+    if (prevFallback && !labelFallback) found.set(act, label)
+    else if (prevFallback === labelFallback && label.length < prev.length) found.set(act, label)
   }
   for (const el of document.querySelectorAll('div,span,a,button,li,[role=row],[role=option],[role=menuitem]')) {
     const text = (el.textContent || '').replace(/\\s+/g, ' ').trim()
@@ -1094,6 +1225,10 @@ const HARVEST_ACCOUNTS_SCRIPT = `(() => {
     m = text.match(/^(.{1,60}?)\\s*广告账户编号[：:]\\s*(\\d{6,20})/)
     if (m) { consider(m[1], m[2]); continue }
     m = text.match(/^广告账户编号[：:]\\s*(\\d{6,20})$/)
+    if (m) { consider(m[1], m[1]); continue }
+    m = text.match(/^(.{1,60}?)\\s*Ad account ID[：:]\\s*(\\d{6,20})/)
+    if (m) { consider(m[1], m[2]); continue }
+    m = text.match(/^Ad account ID[：:]\\s*(\\d{6,20})$/)
     if (m) consider(m[1], m[1])
   }
   return Array.from(found.entries()).map(([act, name]) => ({ name, act }))
@@ -1101,7 +1236,10 @@ const HARVEST_ACCOUNTS_SCRIPT = `(() => {
 
 /** Types a keyword into the switcher search box; matched accounts render flat. */
 const TYPE_ACCOUNT_SEARCH_SCRIPT = (query: string): string => `(() => {
-  const input = Array.from(document.querySelectorAll('input')).find(i => (i.placeholder || '').includes('搜索广告账户'))
+  const input = Array.from(document.querySelectorAll('input')).find(i => {
+    const placeholder = i.placeholder || ''
+    return placeholder.includes('搜索广告账户') || /^search/i.test(placeholder)
+  })
   if (!input) return false
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
   setter.call(input, ${JSON.stringify(query)})
@@ -1111,15 +1249,13 @@ const TYPE_ACCOUNT_SEARCH_SCRIPT = (query: string): string => `(() => {
 
 /**
  * Enumerate the ad accounts the logged-in FB identity can access. The
- * switcher groups accounts under collapsed business portfolios, so expand
- * every group, harvest structured rows while scrolling, then navigate back
- * so no menu stays open. Read-only; failures are precise.
+ * switcher groups accounts under collapsed business portfolios and paginates
+ * each expanded group behind "View more", so sweep every group (bilingual
+ * zh/en selectors), harvesting structured rows after every step, then
+ * navigate back so no menu stays open. Read-only; failures are precise.
  */
-export async function discoverFbReadingAccounts(query = ''): Promise<
-  { ok: true; accounts: Array<{ name: string; act: string }> } | { ok: false; error: string }
-> {
-  type DiscoverResult = { ok: true; accounts: Array<{ name: string; act: string }> } | { ok: false; error: string }
-  return withBrowserActionLock<DiscoverResult>(async () => {
+export async function discoverFbReadingAccounts(query = ''): Promise<FbReadingAccountDiscoveryResult> {
+  return withBrowserActionLock<FbReadingAccountDiscoveryResult>(async () => {
     // A bare campaigns URL makes FB run its global-scope redirect chain,
     // which can abort the initial load (ERR_ABORTED, errno -3). Stay on the
     // current campaigns page when we are already on one; otherwise pin the
@@ -1158,16 +1294,23 @@ export async function discoverFbReadingAccounts(query = ''): Promise<
     await waitForLoad(20_000, false)
     const panel = getActiveBrowserPanel()
     if (!panel || panel.webContents.isDestroyed()) return { ok: false, error: 'panel-not-open' }
+    // The Ads Manager chrome (combobox included) can take 10s+ to appear
+    // on a slow load; retry instead of bailing after one attempt.
     let opened = false
-    try {
-      opened = await panel.webContents.executeJavaScript(OPEN_ACCOUNT_SWITCHER_SCRIPT, true) as boolean
-    } catch {
-      opened = false
+    for (let attempt = 0; attempt < 6 && !opened; attempt += 1) {
+      try {
+        opened = await panel.webContents.executeJavaScript(OPEN_ACCOUNT_SWITCHER_SCRIPT, true) as boolean
+      } catch {
+        opened = false
+      }
+      if (!opened) await new Promise((resolve) => setTimeout(resolve, 2_500))
     }
     if (!opened) return { ok: false, error: 'switcher-not-found' }
     await new Promise((resolve) => setTimeout(resolve, 1_500))
     const seen = new Set<string>()
     const byAct = new Map<string, string>()
+    const deadline = Date.now() + 150_000
+    let complete = true
     const harvest = async () => {
       const found = await panel.webContents.executeJavaScript(HARVEST_ACCOUNTS_SCRIPT, true) as Array<{ name?: unknown; act?: unknown }>
       for (const item of Array.isArray(found) ? found : []) {
@@ -1177,29 +1320,169 @@ export async function discoverFbReadingAccounts(query = ''): Promise<
       }
     }
     try {
+      const menuLive = async (): Promise<boolean> =>
+        (await panel.webContents.executeJavaScript(SWITCHER_MENU_PRESENT_SCRIPT, true)
+          .catch(() => false)) === true
+      const ensureMenu = async (): Promise<boolean> => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (await menuLive()) return true
+          try {
+            await panel.webContents.executeJavaScript(OPEN_ACCOUNT_SWITCHER_SCRIPT, true)
+          } catch {
+            return false
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2_000))
+        }
+        return await menuLive()
+      }
+      const sweepMorePages = async (limit: number): Promise<void> => {
+        let reachedPaginationEnd = false
+        for (let more = 0; more < limit; more += 1) {
+          if (Date.now() >= deadline) {
+            complete = false
+            break
+          }
+          const clicked = await panel.webContents
+            .executeJavaScript(CLICK_VIEW_MORE_SCRIPT, true).catch(() => null) as boolean | null
+          if (clicked === null) {
+            complete = false
+            break
+          }
+          if (!clicked) {
+            reachedPaginationEnd = await menuLive()
+            if (!reachedPaginationEnd) complete = false
+            break
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1_100))
+          await harvest()
+        }
+        if (!reachedPaginationEnd && Date.now() < deadline) {
+          const hasMore = await panel.webContents
+            .executeJavaScript(VIEW_MORE_PRESENT_SCRIPT, true).catch(() => null) as boolean | null
+          if (hasMore !== false) complete = false
+        }
+      }
+      // Harvest one expanded group completely: click "View more" until the
+      // button is gone (each click appends another page of accounts), then
+      // page through the scroll container.
+      const sweepGroup = async (deadline: number): Promise<void> => {
+        await harvest()
+        await sweepMorePages(10)
+        let reachedScrollEnd = false
+        for (let page = 0; page < 12; page += 1) {
+          if (Date.now() >= deadline) {
+            complete = false
+            break
+          }
+          await harvest()
+          const moved = await panel.webContents
+            .executeJavaScript(SCROLL_ACCOUNT_MENU_SCRIPT, true).catch(() => null) as boolean | null
+          if (moved === null) {
+            complete = false
+            reachedScrollEnd = true
+            break
+          }
+          if (!moved) {
+            if (!await menuLive()) complete = false
+            reachedScrollEnd = true
+            break
+          }
+          await new Promise((resolve) => setTimeout(resolve, 550))
+        }
+        if (!reachedScrollEnd && Date.now() < deadline) {
+          const moved = await panel.webContents
+            .executeJavaScript(SCROLL_ACCOUNT_MENU_SCRIPT, true).catch(() => null) as boolean | null
+          if (moved !== false) complete = false
+        }
+        await harvest()
+      }
       if (query !== '') {
         const typed = await panel.webContents.executeJavaScript(TYPE_ACCOUNT_SEARCH_SCRIPT(query), true) as boolean
         if (!typed) return { ok: false, error: 'search-not-found' }
         await new Promise((resolve) => setTimeout(resolve, 1_200))
-      } else {
-        const expanded = await panel.webContents.executeJavaScript(EXPAND_PORTFOLIO_GROUPS_SCRIPT, true) as number
-        if (expanded > 0) await new Promise((resolve) => setTimeout(resolve, 900))
-      }
-      await harvest()
-      for (let page = 0; page < 24; page += 1) {
         await harvest()
-        const moved = await panel.webContents.executeJavaScript(SCROLL_ACCOUNT_MENU_SCRIPT, true) as boolean
-        if (!moved) break
-        await new Promise((resolve) => setTimeout(resolve, 550))
+        await sweepMorePages(10)
+        let reachedScrollEnd = false
+        for (let page = 0; page < 24; page += 1) {
+          if (Date.now() >= deadline) {
+            complete = false
+            break
+          }
+          await harvest()
+          const moved = await panel.webContents.executeJavaScript(SCROLL_ACCOUNT_MENU_SCRIPT, true).catch(() => null) as boolean | null
+          if (moved === null) {
+            complete = false
+            reachedScrollEnd = true
+            break
+          }
+          if (!moved) {
+            if (!await menuLive()) complete = false
+            reachedScrollEnd = true
+            break
+          }
+          await new Promise((resolve) => setTimeout(resolve, 550))
+        }
+        if (!reachedScrollEnd && Date.now() < deadline) {
+          const moved = await panel.webContents
+            .executeJavaScript(SCROLL_ACCOUNT_MENU_SCRIPT, true).catch(() => null) as boolean | null
+          if (moved !== false) complete = false
+        }
+        await harvest()
+      } else {
+        // Full-portfolio sweep: the switcher collapses every business
+        // portfolio into one row and paginates expanded groups behind a
+        // "View more" button. Harvest the group FB auto-expands (the one
+        // holding the current account), then walk every other group row.
+        if (!await ensureMenu()) return { ok: false, error: 'switcher-not-found' }
+        await sweepGroup(deadline)
+        const groups = await panel.webContents
+          .executeJavaScript(FIND_GROUP_ROWS_SCRIPT, true).catch(() => null) as
+          { named: string[]; counts: string[]; truncated?: boolean } | null
+        if (groups) {
+          if (groups.truncated) complete = false
+          const rows: Array<{ label: string; named: boolean }> = [
+            ...groups.named.map((label) => ({ label, named: true })),
+            ...groups.counts.map((label) => ({ label, named: false }))
+          ]
+          for (const row of rows) {
+            if (Date.now() >= deadline) {
+              complete = false
+              break
+            }
+            const clicked = await panel.webContents
+              .executeJavaScript(CLICK_GROUP_ROW_SCRIPT(row.label, row.named), true).catch(() => false) as boolean
+            if (!clicked) {
+              complete = false
+              continue
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1_600))
+            if (!await ensureMenu()) {
+              complete = false
+              break
+            }
+            await sweepGroup(deadline)
+          }
+        } else {
+          complete = false
+        }
+        await harvest()
       }
-      await harvest()
     } catch {
       return { ok: false, error: 'unparseable-page' }
+    } finally {
+      // Always close the account switcher and restore the campaigns route,
+      // including early returns when the query field/menu disappears.
+      await runAction({
+        action: 'navigate',
+        url: targetUrl,
+        keepRoute: true,
+        background: true,
+        navTimeoutMs: 45_000
+      }).catch(() => undefined)
     }
-    await runAction({ action: 'navigate', url: targetUrl, keepRoute: true, background: true, navTimeoutMs: 45_000 }).catch(() => undefined)
     const accounts = Array.from(byAct.entries()).map(([act, name]) => ({ name, act }))
     return accounts.length > 0
-      ? { ok: true as const, accounts }
+      ? { ok: true as const, accounts, complete }
       : { ok: false as const, error: 'accounts-not-found' }
   }).catch((error: unknown) => {
     // Never let a bare panel throw escape as an unhandled rejection.
