@@ -16,8 +16,12 @@ import {
   refreshBoardFbReading,
   SCROLL_SCRIPT,
   SNAPSHOT_SCRIPT,
+  FB_ADS_TABLE_SNAPSHOT_SCRIPT,
+  collectVirtualizedFbPages,
   type FbReadOnce
 } from '../browserUse'
+import { parseFbAdsCampaignsSnapshot } from '../../shared/fbAdsParser'
+import { REAL_CAMPAIGNS_TEXT, REAL_URL } from '../../shared/fbAdsParser.test'
 
 describe('board refresh admission and failures', () => {
   afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })
@@ -68,6 +72,62 @@ describe('board refresh admission and failures', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(1)
     expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('reports login-required when the mid-read page bounces to a login wall and does not reload-retry', async () => {
+    vi.useFakeTimers()
+    const execute = vi.fn(async () => ({
+      url: 'https://business.facebook.com/business/loginpage',
+      title: 'Log in to Facebook',
+      text: 'Meta Business Suite'
+    }))
+    const reload = vi.fn()
+    vi.mocked(getActiveBrowserPanel).mockReturnValue({ webContents: {
+      isDestroyed: () => false,
+      isLoading: () => false,
+      getURL: () => 'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
+      getTitle: () => 'Ads Manager',
+      reload,
+      executeJavaScript: execute
+    } } as unknown as NonNullable<ReturnType<typeof getActiveBrowserPanel>>)
+    const result = refreshBoardFbReading(
+      { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' },
+      'last3'
+    )
+    await vi.advanceTimersByTimeAsync(35_000)
+    expect(await result).toEqual({ ok: false, error: 'login-required' })
+    expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(1)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('fails fast on the first unverified read instead of reload-retrying inside Main', async () => {
+    vi.useFakeTimers()
+    // Parses to nothing on the first pass. iOS-style virtualized tables
+    // need one stretch+reload inside Main; a second unparseable-page still
+    // fails without a third round.
+    const execute = vi.fn(async () => ({
+      url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
+      title: 'Ads Manager',
+      text: 'Some unrelated page body without a campaign table'
+    }))
+    const reload = vi.fn()
+    vi.mocked(getActiveBrowserPanel).mockReturnValue({ webContents: {
+      isDestroyed: () => false,
+      isLoading: () => false,
+      getURL: () => 'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
+      getTitle: () => 'Ads Manager',
+      reload,
+      executeJavaScript: execute
+    } } as unknown as NonNullable<ReturnType<typeof getActiveBrowserPanel>>)
+    const result = refreshBoardFbReading(
+      { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' },
+      'last3'
+    )
+    await vi.advanceTimersByTimeAsync(70_000)
+    expect(await result).toEqual({ ok: false, error: 'unparseable-page' })
+    expect(execute.mock.calls.length).toBeGreaterThan(0)
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -222,12 +282,114 @@ describe('parseBrowserUseRequest', () => {
 describe('SCROLL_SCRIPT', () => {
   it('scrolls the main frame and the roomiest inner scrollable container', () => {
     const script = SCROLL_SCRIPT(-800)
-    expect(script).toContain('window.scrollBy({ top: delta })')
+    expect(script).toContain("window.scrollBy({ top: delta })")
     expect(script).toContain("-800")
     // The inner-container scan is what rescues Ads Manager tables: their rows
     // virtualize inside a nested scroller the window never moves.
     expect(script).toContain("overflowY === 'auto' || style.overflowY === 'scroll'")
     expect(script).toContain('best.scrollBy({ top: delta })')
+    expect(script).toContain('after !== before')
+    expect(script).toContain('el.clientHeight < 80 || room <= 4')
+  })
+})
+
+describe('FB_ADS_TABLE_SNAPSHOT_SCRIPT', () => {
+  const runSnapshot = (doc: unknown, url = REAL_URL) => {
+    const source = FB_ADS_TABLE_SNAPSHOT_SCRIPT.replace(/${MAX_TEXT_CHARS}/g, '20000')
+    return new Function('document', 'location', 'return ' + source)(doc, { href: url }) as { text: string }
+  }
+
+  it('rebuilds one table when frozen campaign names have no innerText', () => {
+    const names = REAL_CAMPAIGNS_TEXT.split('\n').filter((line) => line.startsWith('adtiger_'))
+    const namelessPage = names.reduce((text, name) => text.replace(name + '\n', ''), REAL_CAMPAIGNS_TEXT)
+    const headerCells = ['关/开', '广告系列', '已花费金额', '单次应用安装费用', 'CPM（千次展示费用）', '成效', '点击量（全部）', '点击率（全部）', '单次点击费用（全部）', '应用安装量', '移动应用安装量', '投放', '操作', '归因设置', '单次成效费用', '预算', '定制列...']
+    const rows = [
+      { cells: headerCells.map((text) => ({ innerText: text, textContent: text })) },
+      ...names.map((name) => {
+        const start = REAL_CAMPAIGNS_TEXT.indexOf(name)
+        const later = names.map((other) => REAL_CAMPAIGNS_TEXT.indexOf(other)).filter((idx) => idx > start)
+        const next = later.length > 0 ? Math.min(...later) : REAL_CAMPAIGNS_TEXT.indexOf('8个广告系列的成效')
+        const values = REAL_CAMPAIGNS_TEXT.slice(start, next).split('\n').slice(1).filter(Boolean)
+        return {
+          cells: [
+            { innerText: '', textContent: name },
+            ...values.map((value) => ({ innerText: value, textContent: value }))
+          ]
+        }
+      }),
+      { cells: [{ innerText: '8个广告系列的成效', textContent: '8个广告系列的成效' }, { innerText: '$3,146.47', textContent: '$3,146.47' }, { innerText: '总花费', textContent: '总花费' }] }
+    ]
+    const snapshot = runSnapshot({
+      querySelector: () => ({ innerText: namelessPage }),
+      querySelectorAll: (selector: string) => {
+        if (selector === '[role="row"]') {
+          return rows.map((row) => ({
+            querySelectorAll: () => row.cells,
+            innerText: row.cells.map((cell) => cell.innerText).filter(Boolean).join('\n'),
+            textContent: row.cells.map((cell) => cell.textContent).join('\n')
+          }))
+        }
+        return []
+      },
+      title: 'Ads Manager'
+    })
+    const parsed = parseFbAdsCampaignsSnapshot({ url: REAL_URL, text: snapshot.text })
+    expect(parsed?.rows).toHaveLength(8)
+    expect(parsed?.rows.map((row) => row.name)).toEqual(names)
+  })
+})
+
+describe('collectVirtualizedFbPages', () => {
+  const page = (names: string[], count = 13): FbReadOnce<{ campaignCount: number | null; rows: Array<{ name: string }> }> => ({
+    url: REAL_URL,
+    title: 'Ads Manager',
+    text: names.join('\n'),
+    reading: { campaignCount: count, rows: names.map((name) => ({ name })) }
+  })
+
+  it('starts from the provided top seed and uses the first real clientHeight as the step', async () => {
+    const deltas: number[] = []
+    const result = await collectVirtualizedFbPages(page(['camp_01', 'camp_02', 'camp_03']), {
+      readOnce: async () => page(['camp_04', 'camp_05', 'camp_06', 'camp_07', 'camp_08', 'camp_09', 'camp_10', 'camp_11', 'camp_12', 'camp_13']),
+      scroll: async (delta) => {
+        deltas.push(delta)
+        return { moved: delta !== 0, client: 500, room: 1800 }
+      },
+      sleep: async () => undefined
+    })
+    expect(deltas[0]).toBe(0)
+    expect(deltas.slice(1).every((delta) => delta === 400)).toBe(true)
+    expect(new Set(result.parts.flatMap((part) => part.rows.map((row) => row.name))).size).toBe(13)
+  })
+
+  it('does not scroll when no container reports usable room', async () => {
+    let reads = 0
+    const result = await collectVirtualizedFbPages(page(['camp_01']), {
+      readOnce: async () => {
+        reads += 1
+        return page(['camp_02'])
+      },
+      scroll: async () => ({ moved: false, client: 0, room: 0 }),
+      sleep: async () => undefined
+    })
+    expect(reads).toBe(0)
+    expect(result.parts).toHaveLength(1)
+  })
+
+  it('stops the current pass on a mid-scan login wall', async () => {
+    const result = await collectVirtualizedFbPages(page(['camp_01']), {
+      readOnce: async () => ({
+        url: 'https://business.facebook.com/business/loginpage',
+        title: 'Log in',
+        text: 'Meta Business Suite',
+        reading: null
+      }),
+      scroll: async () => ({ moved: true, client: 400, room: 1200 }),
+      sleep: async () => undefined,
+      isTerminal: (snap) => snap.url.includes('loginpage')
+    })
+    expect(result.stop?.url).toContain('loginpage')
+    expect(result.parts).toHaveLength(1)
   })
 })
 

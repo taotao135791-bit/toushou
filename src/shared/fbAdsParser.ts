@@ -372,8 +372,12 @@ export function parseFbAdsCampaignsSnapshot(input: FbAdsSnapshotInput): FbAdsCam
       j += 1
     }
     if (values.length < 3) return null
+    // Ads Manager omits the result-type label on some rows ("—" results)
+    // and keeps it on others ("应用内购买"). Row token counts therefore
+    // differ by at most 1; a hard equal-width gate used to fail the whole
+    // iOS table even when every campaign name was already in the DOM.
     if (rowWidth === null) rowWidth = values.length
-    else if (rowWidth !== values.length) return null
+    else if (Math.abs(rowWidth - values.length) > 1) return null
     collected.push({ name, values })
     i = j
   }
@@ -498,4 +502,52 @@ export function fbAdsReadingsConsistent(
   if (structureOf(first) !== structureOf(second)) return false
   if (JSON.stringify(first) === JSON.stringify(second)) return true
   return fbAdsReadingRejection(first) === null && fbAdsReadingRejection(second) === null
+}
+
+function populatedMetricCount(row: FbAdsCampaignRow): number {
+  return [row.spend, row.impressions, row.clicks, row.installs, row.results, row.ctr, row.cpm].filter((value) => value !== null).length
+}
+
+/**
+ * Merge campaign rows collected across virtualized table scrolls. Ads Manager
+ * keeps ~10 rows in the DOM; the page footer still reports the full count
+ * (iOS currently 13). Later callers must still pass fbAdsReadingRejection.
+ */
+export function mergeFbAdsCampaignReadings(parts: FbAdsCampaignReading[]): FbAdsCampaignReading | null {
+  if (parts.length === 0) return null
+  const accountId = parts.find((part) => part.accountId)?.accountId ?? null
+  const dateRangeLabel = parts.find((part) => part.dateRangeLabel)?.dateRangeLabel ?? null
+  if (parts.some((part) => part.accountId && accountId && part.accountId !== accountId)) return null
+  if (parts.some((part) => part.dateRangeLabel && dateRangeLabel && part.dateRangeLabel !== dateRangeLabel)) return null
+  const counts = parts.map((part) => part.campaignCount).filter((count): count is number => count !== null)
+  if (counts.length > 0 && counts.some((count) => count !== counts[0])) return null
+  const byName = new Map<string, FbAdsCampaignRow>()
+  for (const part of parts) {
+    for (const row of part.rows) {
+      const previous = byName.get(row.name)
+      if (!previous || populatedMetricCount(row) >= populatedMetricCount(previous)) byName.set(row.name, row)
+    }
+  }
+  const base = parts[parts.length - 1]
+  const rows = Array.from(byName.values())
+  const campaignCount = counts[0] ?? base.campaignCount
+  const complete = campaignCount !== null && rows.length === campaignCount
+  return {
+    ...base,
+    accountId: accountId ?? base.accountId,
+    dateRangeLabel: dateRangeLabel ?? base.dateRangeLabel,
+    campaignCount,
+    rows,
+    observation: base.observation
+      ? {
+          ...base.observation,
+          visibleRows: rows.length,
+          readRows: rows.length,
+          totalRows: campaignCount,
+          coverage: complete
+            ? (rows.some((row) => row.ctr !== null || row.impressions !== null) ? 'complete' : 'partial')
+            : 'partial'
+        }
+      : undefined
+  }
 }

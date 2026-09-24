@@ -13,6 +13,7 @@ import {
 import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
+import { readingBlockKind, refreshAccountWithRetry, type ReadingAttemptProgress } from './fbReadingRefresh'
 
 interface AccountRecord {
   alias: string
@@ -22,6 +23,14 @@ interface AccountRecord {
   error: string | null
   balance: FbAccountBalance | null
   balanceError: string | null
+}
+
+/** One account's state in the CURRENT refresh round (kept apart from data). */
+interface AccountProgress {
+  status: 'idle' | 'queued' | 'reading' | 'retrying' | 'success' | 'failed' | 'skipped'
+  attempt: number
+  error?: string
+  retryAt?: number
 }
 
 const SUMMARY_METRICS: FbReadingSummaryMetric[] = ['spend', 'balance', 'cpi', 'cpm', 'ctr', 'cpa']
@@ -43,7 +52,9 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
   const [records, setRecords] = useState<AccountRecord[]>(() =>
     accounts.map((account) => ({ ...account, entry: null, error: null, balance: null, balanceError: null }))
   )
-  const [busyIndex, setBusyIndex] = useState<number | null>(null)
+  const [progress, setProgress] = useState<Record<string, AccountProgress>>({})
+  const [hasRefreshRun, setHasRefreshRun] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [balanceBusyIndex, setBalanceBusyIndex] = useState<number | null>(null)
   const submitting = useRef(false)
   const balanceSubmitting = useRef(false)
@@ -69,7 +80,9 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
     requestVersion.current += 1
     const version = requestVersion.current
     setRecords(accounts.map((account) => ({ ...account, entry: null, error: null, balance: null, balanceError: null })))
-    setBusyIndex(null)
+    setProgress({})
+    setHasRefreshRun(false)
+    setRefreshing(false)
     setBalanceBusyIndex(null)
     submitting.current = false
     balanceSubmitting.current = false
@@ -88,53 +101,86 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
   }, [accounts, range, metrics])
 
   const refresh = async () => {
-    if (accounts.length === 0 || submitting.current) {
+    if (accounts.length === 0) {
       window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
       return
     }
+    // A running batch owns this module: duplicate clicks/events rejoin it and
+    // must NOT emit an early module-done (that used to advance the board
+    // queue while accounts were still reading).
+    if (submitting.current || balanceSubmitting.current) return
     submitting.current = true
+    setRefreshing(true)
     const version = requestVersion.current
-    let current = recordsRef.current
-    if (current.length !== accounts.length) {
-      current = accounts.map((account) => ({ ...account, entry: null, error: null, balance: null, balanceError: null }))
-      if (version === requestVersion.current) setRecords(current)
+    setHasRefreshRun(true)
+    // Key records by act+businessId from the CURRENT list: an equal-length
+    // replacement used to be refreshed against stale records.
+    const batchAccounts = [...accounts]
+    const current: AccountRecord[] = batchAccounts.map((account) => {
+      const existing = recordsRef.current.find(
+        (record) => record.act === account.act && record.businessId === account.businessId
+      )
+      return existing
+        ? { ...existing, ...account, error: null }
+        : { ...account, entry: null, error: null, balance: null, balanceError: null }
+    })
+    if (version === requestVersion.current) {
+      setRecords(current)
+      setProgress(Object.fromEntries(batchAccounts.map((account) => [account.act, { status: 'queued' as const, attempt: 0 }])))
     }
+    // login/browser blocks stop the batch: remaining accounts are skipped,
+    // not failed — they never ran.
+    let block: 'login' | 'browser' | null = null
     try {
-      for (let index = 0; index < accounts.length; index += 1) {
-        const account = accounts[index]
-        if (version !== requestVersion.current) return
-        setBusyIndex(index)
-        setRecords((prev) =>
-          prev.map((record) => (record.act === account.act ? { ...record, error: null } : record))
+      for (const account of batchAccounts) {
+      if (version !== requestVersion.current) return
+        const applyProgress = (next: ReadingAttemptProgress) => {
+          if (version !== requestVersion.current) return
+          setProgress((prev) => ({
+            ...prev,
+            [account.act]: {
+              status: next.status,
+              attempt: next.attempt,
+              error: next.lastError,
+              retryAt: next.retryAt
+            }
+          }))
+        }
+        if (block) {
+          setProgress((prev) => ({
+            ...prev,
+            [account.act]: { status: 'skipped', attempt: 0, error: block === 'login' ? 'login-required' : 'browser-busy' }
+          }))
+          continue
+        }
+        applyProgress({ status: 'reading', attempt: 1 })
+        const outcome = await refreshAccountWithRetry(
+          { alias: account.alias, act: account.act, businessId: account.businessId, range },
+          { isCurrent: () => version === requestVersion.current, onProgress: applyProgress }
         )
-        const result = await window.electronAPI.refreshFbReading({
-          alias: account.alias,
-          act: account.act,
-          businessId: account.businessId,
-          range
-        })
-        if (version !== requestVersion.current) return
-        setRecords((prev) =>
-          prev.map((record) =>
-            record.act === account.act
-              ? {
-                  ...record,
-                  entry: result.ok ? result.entry : record.entry,
-                  error: result.ok ? null : result.error
-                }
-              : record
+      if (version !== requestVersion.current) return
+        if (outcome.kind === 'cancelled') return
+        if (outcome.kind === 'ok') {
+          setRecords((prev) =>
+            prev.map((record) => (record.act === account.act ? { ...record, entry: outcome.entry, error: null } : record))
           )
+          setProgress((prev) => ({ ...prev, [account.act]: { status: 'success', attempt: 0 } }))
+          continue
+        }
+        // One account failing must not poison the batch: keep prior entries,
+        // record the precise error, and keep going unless the block is fatal.
+        setRecords((prev) =>
+          prev.map((record) => (record.act === account.act ? { ...record, error: outcome.error } : record))
         )
-      }
-    } catch {
-      if (version === requestVersion.current) {
-        setRecords((prev) => prev.map((record) => ({ ...record, error: record.error ?? 'invoke-failed' })))
+        setProgress((prev) => ({ ...prev, [account.act]: { status: 'failed', attempt: 0, error: outcome.error } }))
+        block = readingBlockKind(outcome.error)
       }
     } finally {
+      // Emitted exactly once, after the whole batch settles (or is cancelled).
       window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
       if (version === requestVersion.current) {
         submitting.current = false
-        setBusyIndex(null)
+        setRefreshing(false)
       }
     }
   }
@@ -204,8 +250,19 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
   )
   const rangeLabel = range === 'today' ? '今天' : range === 'last3' ? '近3天' : range === 'last7' ? '近7天' : '近30天'
   const updated = summary.capturedAt ? new Date(summary.capturedAt).toLocaleString() : ''
-  const completeForDisplay = summary.complete && records.every((record) => record.error === null)
-  const verifiedForDisplay = records.filter((record) => record.error === null && record.entry !== null).length
+  // This-round success is tracked separately from stored history: an old
+  // verified entry must never be counted as a fresh success mid-refresh.
+  const progressOf = (act: string) => progress[act]?.status ?? 'idle'
+  const statuses = accounts.map((account) => progressOf(account.act))
+  const successCount = statuses.filter((status) => status === 'success').length
+  const failedCount = statuses.filter((status) => status === 'failed' || status === 'skipped').length
+  const finishedCount = successCount + failedCount
+  const refreshSucceeded = !hasRefreshRun || accounts.every((account) => progressOf(account.act) === 'success')
+  const completeForDisplay =
+    summary.complete && records.every((record) => record.error === null) && refreshSucceeded
+  const verifiedForDisplay = hasRefreshRun
+    ? successCount
+    : records.filter((record) => record.error === null && record.entry !== null).length
   const cell = (value: number | null, kind: 'usd' | 'pct') =>
     value === null ? '—' : kind === 'usd' ? '$' + value.toFixed(2) : value.toFixed(2) + '%'
   const metricLabel = (metric: FbReadingSummaryMetric) => {
@@ -241,6 +298,46 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
   }
   const formatMoney = (value: number, currency: string | null): string =>
     currency === 'USD' ? '$' + value.toFixed(2) : `${value.toFixed(2)} ${currency ?? ''}`.trim()
+  const statusCell = (record: AccountRecord) => {
+    const state = progress[record.act]
+    if (state) {
+      if (state.status === 'queued') {
+        return <span className="text-cream-faint">{t('boards.reading.status.queued')}</span>
+      }
+      if (state.status === 'reading') {
+        return <span className="text-cream-dim">{t('boards.reading.status.reading')}</span>
+      }
+      if (state.status === 'retrying') {
+        const seconds = state.retryAt ? Math.max(1, Math.ceil((state.retryAt - Date.now()) / 1000)) : null
+        return (
+          <span className="text-cream-dim">
+            {seconds
+              ? t('boards.reading.status.retryWait', { s: String(seconds) })
+              : t('boards.reading.status.retrying')}
+          </span>
+        )
+      }
+      if (state.status === 'success') {
+        return <span className="text-emerald-400">{t('boards.reading.status.success')}</span>
+      }
+      if (state.status === 'failed') {
+        const stale = record.entry ? ' · ' + t('boards.reading.stale') : ''
+        return (
+          <span className="text-red-500" title={errorText(state.error ?? record.error ?? null) ?? ''}>
+            {t('boards.reading.status.accountFailed')}{stale}
+          </span>
+        )
+      }
+      if (state.status === 'skipped') {
+        return (
+          <span className="text-cream-faint" title={errorText(state.error ?? null) ?? ''}>
+            {t('boards.reading.status.skipped')}
+          </span>
+        )
+      }
+    }
+    return record.error ? '!' : summary.accounts.find((item) => item.act === record.act)?.capturedAt ? '✓' : '—'
+  }
 
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
@@ -252,7 +349,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
           {metrics.includes('balance') && (
             <button
               onClick={() => void refreshBalances()}
-              disabled={busyIndex !== null || balanceBusyIndex !== null || inChat}
+              disabled={refreshing || balanceBusyIndex !== null || inChat}
               title={inChat ? t('boards.reading.inChat') : undefined}
               className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
             >
@@ -267,13 +364,13 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
           )}
           <button
             onClick={() => void refresh()}
-            disabled={busyIndex !== null || balanceBusyIndex !== null || inChat}
+            disabled={refreshing || balanceBusyIndex !== null || inChat}
             title={inChat ? t('boards.reading.inChat') : undefined}
             className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
           >
-            {busyIndex !== null ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
-            {busyIndex !== null
-              ? t('boards.reading.summary.refreshing', { done: String(busyIndex + 1), total: String(accounts.length) })
+            {refreshing ? <Activity size={10} className="animate-pulse" /> : <RefreshCw size={10} />}
+            {refreshing
+              ? t('boards.reading.summary.refreshing', { done: String(finishedCount), total: String(accounts.length) })
               : t('boards.reading.refresh')}
           </button>
         </div>
@@ -293,6 +390,16 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
                   .replace('{verified}', String(verifiedForDisplay))
                   .replace('{total}', String(summary.accountCount))}
               </span>
+            </div>
+          )}
+          {refreshing && (
+            <div className="text-[10px] text-cream-faint">
+              {t('boards.reading.summary.progress', {
+                done: String(finishedCount),
+                total: String(accounts.length),
+                ok: String(successCount),
+                failed: String(failedCount)
+              })}
             </div>
           )}
           <div className="grid grid-cols-3 gap-1">
@@ -350,8 +457,8 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
                       {metrics.includes('cpa') && (
                         <td className="px-1 py-0.5 font-mono tabular-nums">{cell(account?.cpa ?? null, 'usd')}</td>
                       )}
-                      <td className="py-0.5 text-right text-[9.5px] text-red-500" title={error ?? ''}>
-                        {error ? '!' : account?.capturedAt ? '✓' : '—'}
+                      <td className="py-0.5 text-right text-[9.5px]" title={error ?? ''}>
+                        {statusCell(record)}
                       </td>
                     </tr>
                   )

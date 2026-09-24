@@ -4,6 +4,7 @@ import {
   fbAdsReadingRowsMatchCount,
   fbAdsReadingTotalsMatch,
   fbAdsReadingsConsistent,
+  mergeFbAdsCampaignReadings,
   parseFbAdsCampaignsSnapshot,
   parseFbMetricNumber
 } from './fbAdsParser'
@@ -495,6 +496,52 @@ $98.07
     expect(fbAdsReadingRejection(reading as never)).toBe('incomplete-view')
   })
 
+  it('parses iOS rows whose result-type label is missing on some campaigns', () => {
+    const text = [
+      '广告管理工具',
+      '8',
+      'COOPLAY-ADT-IOS-03 (2131017261144314)',
+      '2026年9月13日 – 2026年9月19日',
+      '关/开',
+      '广告系列',
+      '成效',
+      '已花费金额',
+      '展示次数',
+      '移动应用安装量',
+      '点击量（全部）',
+      '定制列...',
+      'adtiger_三國點將令_IOS_aem_HK/TW/SG/MY_aeo_leo_0920_013',
+      '—',
+      '$0.00',
+      '—',
+      'adtiger_三國點將令_IOS_aem_HK/TW/SG/MY_aeo_leo_0911_008',
+      '15',
+      '应用内购买',
+      '$1,145.80',
+      '72,394',
+      'adtiger_三國點將令_IOS_aem_HK_aeo_leo_0904_004',
+      '—',
+      '$0.00',
+      '—',
+      '13个广告系列的成效',
+      '—',
+      '多次转化',
+      '$1,368.75',
+      '总花费'
+    ].join('\n')
+    const reading = parseFbAdsCampaignsSnapshot({
+      url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=2131017261144314',
+      text
+    })
+    expect(reading).not.toBeNull()
+    expect(reading?.rows).toHaveLength(3)
+    expect(reading?.rows[0].spend).toBe(0)
+    expect(reading?.rows[1].spend).toBe(1145.8)
+    expect(reading?.rows[1].resultType).toBe('应用内购买')
+    expect(reading?.campaignCount).toBe(13)
+    expect(fbAdsReadingRejection(reading as never)).toBe('incomplete-view')
+  })
+
   it('maps metrics by header labels when the preset is reordered', () => {
     const reordered = REAL_CAMPAIGNS_TEXT.replace(
       '单次应用安装费用\nCPM（千次展示费用）',
@@ -701,5 +748,77 @@ $98.07
     expect(reading).not.toBeNull()
     const row = reading?.rows.find((r) => r.name.includes('0908_007'))
     expect(row).toMatchObject({ spend: 529.08, clicks: 788, ctr: 2.61 })
+  })
+
+  it('merges virtualized iOS pages until the footer campaign count is complete', () => {
+    const header = [
+      '广告管理工具',
+      '8',
+      'COOPLAY-ADT-IOS-03 (2131017261144314)',
+      '2026年9月20日',
+      '关/开',
+      '广告系列',
+      '成效',
+      '已花费金额',
+      '展示次数',
+      '移动应用安装量',
+      '点击量（全部）',
+      '定制列...'
+    ]
+    const footer = ['13个广告系列的成效', '$120.63', '总花费']
+    const page = (rows: string[]) => parseFbAdsCampaignsSnapshot({
+      url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=2131017261144314',
+      text: [...header, ...rows, ...footer].join('\n')
+    })
+    const first = page([
+      'camp_01', '—', '$10.00', '100',
+      'camp_02', '—', '$20.00', '200',
+      'camp_03', '—', '$30.00', '300'
+    ])
+    const second = page([
+      'camp_04', '—', '$5.00', '50',
+      'camp_05', '—', '$6.00', '60',
+      'camp_06', '—', '$7.00', '70',
+      'camp_07', '—', '$8.00', '80',
+      'camp_08', '—', '$9.00', '90',
+      'camp_09', '—', '$1.00', '10',
+      'camp_10', '—', '$2.00', '20',
+      'camp_11', '—', '$3.00', '30',
+      'camp_12', '—', '$4.00', '40',
+      'camp_13', '—', '$15.63', '163'
+    ])
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(fbAdsReadingRejection(first as never)).toBe('incomplete-view')
+    const merged = mergeFbAdsCampaignReadings([first!, second!])
+    expect(merged?.rows).toHaveLength(13)
+    expect(merged?.totalSpend).toBe(120.63)
+    expect(fbAdsReadingRejection(merged as never)).toBe(null)
+  })
+
+  it('refuses to merge pages whose footer campaign counts disagree', () => {
+    const header = [
+      '广告管理工具',
+      '8',
+      'COOPLAY-ADT-IOS-03 (2131017261144314)',
+      '2026年9月20日',
+      '关/开',
+      '广告系列',
+      '成效',
+      '已花费金额',
+      '展示次数',
+      '移动应用安装量',
+      '点击量（全部）',
+      '定制列...'
+    ]
+    const page = (rows: string[], footer: string) => parseFbAdsCampaignsSnapshot({
+      url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=2131017261144314',
+      text: [...header, ...rows, footer, '$10.00', '总花费'].join('\n')
+    })
+    const first = page(['camp_01', '—', '$10.00', '100'], '10个广告系列的成效')
+    const second = page(['camp_01', '—', '$10.00', '100'], '9个广告系列的成效')
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(mergeFbAdsCampaignReadings([first!, second!])).toBeNull()
   })
 })
