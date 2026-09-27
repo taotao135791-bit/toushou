@@ -71,6 +71,20 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
     }
   }, [load])
 
+  // Board-level refresh queue: BoardsPage dispatches a board-refresh event per
+  // reading module and serially waits for each module-done before advancing.
+  useEffect(() => {
+    const onBoardRefresh = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { widgetId?: string }
+      if (detail?.widgetId !== widget.id) return
+      void load().finally(() => {
+        window.dispatchEvent(new CustomEvent('tt-reading:module-done', { detail: { widgetId: widget.id } }))
+      })
+    }
+    window.addEventListener('tt-reading:board-refresh', onBoardRefresh)
+    return () => window.removeEventListener('tt-reading:board-refresh', onBoardRefresh)
+  }, [load, widget.id])
+
   const totals = summary?.totals
   const cells: Array<{ label: string; value: string }> = [
     { label: t('boards.tt.metric.spend'), value: totals ? fmtUsd(totals.spend) : '—' },

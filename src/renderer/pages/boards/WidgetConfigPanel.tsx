@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Check, FilePlus2, X } from 'lucide-react'
-import { BoardDataset, BoardWidget, BoardWidgetStyle } from '@shared/types'
+import { BoardDataset, BoardMasterScope, BoardWidget, BoardWidgetStyle } from '@shared/types'
+import { MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRange } from '@shared/boards'
+import { fbReadingMetricLabel } from './metricLabel'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
 import { FB_READING_SUMMARY_ACCOUNT_LIMIT, resolveFbReadingSummaryAccounts, resolveFbReadingWidgetAccount } from '@shared/fbReading'
@@ -25,6 +27,8 @@ import { FbReadingAccountManager } from './FbReadingAccountManager'
 interface WidgetConfigPanelProps {
   widget: BoardWidget
   datasets: BoardDataset[]
+  /** Board master scope, when set — divergent saves become "independent". */
+  masterScope?: BoardMasterScope | null
   onClose: () => void
   onSave: (patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle }) => void
 }
@@ -41,12 +45,27 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
+/**
+ * Field variant for pill-button groups: a plain div, NOT a <label>. A
+ * label click on its own whitespace synthetic-clicks its first button
+ * child, silently toggling a pill — "clicked beside 余额, spend turned
+ * off" is that bug, not intended behavior.
+ */
+function PillField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="block">
+      <span className="mb-0.5 block text-[10.5px] text-cream-faint">{label}</span>
+      {children}
+    </div>
+  )
+}
+
 function configString(widget: BoardWidget, key: string): string {
   const value = widget.config[key]
   return typeof value === 'string' ? value : ''
 }
 
-export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetConfigPanelProps) {
+export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClose, onSave }: WidgetConfigPanelProps) {
   const t = useT()
   const [title, setTitle] = useState(widget.title)
   const [showSeconds, setShowSeconds] = useState(widget.config.showSeconds !== false)
@@ -151,14 +170,7 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
     setAccountError(null)
   }
 
-  const readingMetricLabel = (value: string): string => {
-    if (value === 'spend') return t('boards.reading.summary.metric.spend')
-    if (value === 'balance') return t('boards.reading.balance.label')
-    if (value === 'cpi') return t('boards.reading.summary.metric.cpi')
-    if (value === 'cpm') return t('boards.reading.summary.metric.cpm')
-    if (value === 'cpa') return t('boards.reading.summary.metric.cpa')
-    return t('boards.reading.summary.metric.ctr')
-  }
+  const readingMetricLabel = (value: string): string => fbReadingMetricLabel(t, value)
 
   const pickFile = async () => {
     if (!currentWorkspace || pickBusy) return
@@ -320,6 +332,29 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
         // Empty advertiserIds is valid: the token's own grant covers all.
         config = { advertiserIds: ttAdvertiserIds.slice(0, 400), range: ttRange }
         break
+    }
+    // Master scope: a reading module saved with a scope that diverges from
+    // the board's master becomes independent — gated by a confirmation,
+    // because it opts the module out until the next master adjustment
+    // re-unifies every module. Converging back onto the master clears it.
+    if (masterScope) {
+      if (MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)) {
+        const metrics = (config.metrics ?? []) as string[]
+        const diverges =
+          widget.type === 'tt-reading'
+            ? config.range !== ttWindowForMasterRange(masterScope.range)
+            : config.range !== masterScope.range ||
+              metrics.length !== masterScope.metrics.length ||
+              metrics.some((metric) => !masterScope.metrics.includes(metric))
+        if (diverges) {
+          if (widget.config.independent !== true) {
+            if (!window.confirm(t('boards.master.independentConfirm'))) return
+          }
+          config.independent = true
+        } else {
+          delete config.independent
+        }
+      }
     }
     onSave({
       title: title.trim() || widget.title,
@@ -502,7 +537,7 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
               onAccountsAdded={handleReadingAccountsAdded}
               onAccountsRemoved={handleReadingAccountsRemoved}
             />
-            <Field label={t('boards.reading.config.range')}>
+            <PillField label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
                 {([['today', '今天'], ['last3', '近3天'], ['last7', '近7天'], ['last30', '近30天']] as const).map(
                   ([value, label]) => (
@@ -520,8 +555,8 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
                   )
                 )}
               </div>
-            </Field>
-            <Field label={t('boards.reading.config.metrics')}>
+            </PillField>
+            <PillField label={t('boards.reading.config.metrics')}>
               <div className="flex flex-wrap gap-1">
                 {(['spend', 'balance', 'cpi', 'cpm', 'cpa', 'ctr'] as const).map((value) => {
                     const active = readingMetrics.includes(value)
@@ -545,7 +580,7 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
                     )
                 })}
               </div>
-            </Field>
+            </PillField>
           </>
         )}
         {widget.type === 'tt-reading' && (
@@ -559,7 +594,7 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
               />
             </Field>
             <p className="text-[10.5px] leading-4 text-cream-faint">{t('boards.tt.config.advertiserIdsHint')}</p>
-            <Field label={t('boards.reading.config.range')}>
+            <PillField label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
                 {([['1', '今天'], ['7', '近7天'], ['28', '近28天']] as const).map(([value, label]) => (
                   <button
@@ -575,7 +610,7 @@ export function WidgetConfigPanel({ widget, datasets, onClose, onSave }: WidgetC
                   </button>
                 ))}
               </div>
-            </Field>
+            </PillField>
           </>
         )}
         {widget.type === 'note' && (
