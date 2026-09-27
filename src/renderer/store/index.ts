@@ -431,7 +431,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   executions: {},
   uiRequests: {},
   packages: [],
-  workspacePanel: null,
+  // Launch straight into the Work view: board readings and ad workflows
+  // all depend on the side panel being open.
+  workspacePanel: { kind: 'browser' },
   activeRightTab: 'files',
   officeEditHandoff: null,
   officeWorkbookOpen: false,
