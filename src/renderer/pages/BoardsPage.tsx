@@ -1483,7 +1483,7 @@ export default function BoardsPage() {
           <span>{t('boards.reading.inChatBanner')}</span>
           <button
             type="button"
-            onClick={() => setWorkspacePanel({ kind: 'plugins' })}
+            onClick={() => setWorkspacePanel({ kind: 'browser' })}
             className="focus-ring shrink-0 rounded-full border border-[#866021]/30 px-2.5 py-1 text-[12px] leading-[18px] text-[#866021] transition hover:bg-white/60 dark:border-[#DAC393]/30 dark:text-[#DAC393] dark:hover:bg-white/5"
           >
             {t('boards.reading.switchToWork')}

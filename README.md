@@ -6,15 +6,17 @@
 
 ## 下载安装
 
-当前版本 v1.4.2，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.2) 下载：
+当前版本 v1.4.3，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.3) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.2/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.2/TouShou-arm64.zip) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.2/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.2/TouShou-x64.zip) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.2/TouShou-x64.exe) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.2/TouShou-x64.zip) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.3/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.3/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.3/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.3/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.3/TouShou-x64.exe) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.3/TouShou-x64.zip) | 见 Release | 见 Release |
 
 安装包由 GitHub Actions 在推送版本标签后自动构建，并附带更新清单与 SHA-256 校验文件。
+
+v1.4.3：侧栏改为「投放 / Agent」。投放进入看板读数，Agent 回到对话首页。启动不再自动打开空白浏览器。看板今日读数把 Facebook 与 TikTok 放在同一日期上对照上一窗口。
 
 v1.4.2：Facebook 读数稳住虚拟化表格和英文广告管理界面，并支持从商务管理平台发现全部广告账户。
 

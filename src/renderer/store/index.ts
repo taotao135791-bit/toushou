@@ -431,9 +431,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   executions: {},
   uiRequests: {},
   packages: [],
-  // Launch straight into the Work view: board readings and ad workflows
-  // all depend on the side panel being open.
-  workspacePanel: { kind: 'browser' },
+  // Home stays the full conversation column. 投放 opens the board;
+  // the browser panel opens only when a Facebook reading needs it.
+  workspacePanel: null,
   activeRightTab: 'files',
   officeEditHandoff: null,
   officeWorkbookOpen: false,

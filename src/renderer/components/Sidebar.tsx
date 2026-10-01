@@ -88,7 +88,6 @@ export default function Sidebar() {
   const selectWorkspace = useAppStore((s) => s.selectWorkspace)
   const activateRecentWorkspace = useAppStore((s) => s.activateRecentWorkspace)
   const setCurrentSessionId = useAppStore((s) => s.setCurrentSessionId)
-  const workspacePanel = useAppStore((s) => s.workspacePanel)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const setSessions = useAppStore((s) => s.setSessions)
   const setLanguage = useAppStore((s) => s.setLanguage)
@@ -1116,31 +1115,31 @@ export default function Sidebar() {
       </div>
 
       <div className="px-3 pb-3">
-        <div className="app-view-segment" role="tablist" aria-label="工作视图">
+        <div className="app-view-segment" role="tablist" aria-label={t('sidebar.mode.label')}>
           <button
             type="button"
             role="tab"
-            aria-selected={Boolean(workspacePanel)}
-            aria-pressed={Boolean(workspacePanel)}
-            onClick={() => {
-              if (workspacePanel) return
-              setWorkspacePanel({ kind: 'plugins' })
-            }}
+            aria-selected={location.pathname === '/boards'}
+            aria-pressed={location.pathname === '/boards'}
+            onClick={() => navigate('/boards')}
             className="focus-ring flex items-center justify-center gap-1.5 px-2 text-[12px] font-medium"
           >
             <BriefcaseBusiness size={14} aria-hidden="true" />
-            <span>Work</span>
+            <span>{t('sidebar.mode.buying')}</span>
           </button>
           <button
             type="button"
             role="tab"
-            aria-selected={!workspacePanel}
-            aria-pressed={!workspacePanel}
-            onClick={() => setWorkspacePanel(null)}
+            aria-selected={location.pathname === '/'}
+            aria-pressed={location.pathname === '/'}
+            onClick={() => {
+              setWorkspacePanel(null)
+              navigate('/')
+            }}
             className="focus-ring flex items-center justify-center gap-1.5 px-2 text-[12px] font-medium"
           >
             <MessageSquare size={14} aria-hidden="true" />
-            <span>Chat</span>
+            <span>{t('sidebar.mode.agent')}</span>
           </button>
         </div>
       </div>
@@ -1152,7 +1151,7 @@ export default function Sidebar() {
             setCurrentSessionId(null)
             navigate('/')
           }}
-          className={`${navRow(location.pathname === '/' && !currentSessionId)} bg-selected`}
+          className={navRow(location.pathname === '/' && !currentSessionId)}
         >
           <MessageSquare size={14} className="shrink-0" />
           {t('sidebar.newChat')}
