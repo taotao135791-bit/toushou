@@ -725,6 +725,9 @@ export default function BoardsPage() {
   const readingModuleCount = current
     ? current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)).length
     : 0
+  const browserReadingCount = current
+    ? current.widgets.filter((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary').length
+    : 0
   const independentCount = current
     ? current.widgets.filter((widget) => widget.config.independent === true).length
     : 0
@@ -1335,8 +1338,8 @@ export default function BoardsPage() {
         )}
       </header>
       {current && (
-        <div className="app-no-drag relative z-20 flex h-9 shrink-0 items-center gap-2 border-b border-line bg-ink-900/60 px-4">
-          <span className="shrink-0 text-[11px] text-cream-faint">{t('boards.master.label')}</span>
+        <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 items-center gap-2 border-b border-line bg-ink-900/60 px-4">
+          <span className="shrink-0 text-[12px] leading-[18px] text-cream-faint">{t('boards.master.label')}</span>
           <div className="flex items-center gap-1">
             {(
               [
@@ -1349,7 +1352,7 @@ export default function BoardsPage() {
               <button
                 key={value}
                 onClick={() => saveMasterScope({ range: value, metrics: master?.metrics ?? seedMasterMetrics() })}
-                className={`rounded-full border px-2.5 py-0.5 text-[11px] transition ${
+                className={`focus-ring rounded-full border px-2.5 py-1 text-[12px] leading-[18px] transition ${
                   master?.range === value
                     ? 'border-accent/60 bg-accent-soft text-accent'
                     : 'border-line text-cream-dim hover:text-cream'
@@ -1366,7 +1369,7 @@ export default function BoardsPage() {
                 setMasterMetricsDraft(master?.metrics ?? seedMasterMetrics())
                 setMasterMetricsOpen(!masterMetricsOpen)
               }}
-              className="flex items-center gap-1 rounded-full border border-line px-2.5 py-0.5 text-[11px] text-cream-dim transition hover:text-cream"
+              className="focus-ring flex items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[12px] leading-[18px] text-cream-dim transition hover:text-cream"
             >
               <SlidersHorizontal size={11} />
               {t('boards.master.metrics')}
@@ -1421,18 +1424,18 @@ export default function BoardsPage() {
           {master ? (
             independentCount > 0 ? (
               <span
-                className="shrink-0 rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-[10.5px] text-amber-300"
+                className="shrink-0 rounded-full bg-[#F8F2E7] px-2 py-0.5 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]"
                 title={t('boards.master.independentHint')}
               >
                 {t('boards.master.independentBadge').replace('{n}', String(independentCount))}
               </span>
             ) : (
-              <span className="shrink-0 text-[10.5px] text-cream-faint">{t('boards.master.unified')}</span>
+              <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint">{t('boards.master.unified')}</span>
             )
           ) : readingModuleCount > 0 ? (
-            <span className="shrink-0 text-[10.5px] text-cream-faint">{t('boards.master.unsetHint')}</span>
+            <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint" title={t('boards.master.unsetHint')}>{t('boards.master.unsetHint')}</span>
           ) : (
-            <span className="shrink-0 text-[10.5px] text-cream-faint">{t('boards.master.noModulesHint')}</span>
+            <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint" title={t('boards.master.noModulesHint')}>{t('boards.master.noModulesHint')}</span>
           )}
           <div className="min-w-0 flex-1" />
           {readingModuleCount > 0 && (
@@ -1446,7 +1449,7 @@ export default function BoardsPage() {
                     .replace('{total}', String(boardRefreshProgress.total))
                 : t('boards.master.refresh')
             }
-            className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-0.5 text-[11px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
+            className="focus-ring flex shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[12px] leading-[18px] text-cream-dim transition hover:bg-ink-850 hover:text-cream disabled:opacity-40"
           >
             <RefreshCw size={11} className={boardRefreshBusy ? 'animate-spin' : ''} />
             {boardRefreshBusy
@@ -1458,12 +1461,13 @@ export default function BoardsPage() {
           )}
         </div>
       )}
-      {inChatView && (
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line bg-amber-500/10 px-4 py-1.5 text-[11.5px] text-amber-300">
+      {inChatView && browserReadingCount > 0 && (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-[#F8F2E7] px-4 py-2 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]">
           <span>{t('boards.reading.inChatBanner')}</span>
           <button
+            type="button"
             onClick={() => setWorkspacePanel({ kind: 'plugins' })}
-            className="shrink-0 rounded-full border border-amber-400/40 px-2.5 py-0.5 text-[11px] text-amber-200 transition hover:border-amber-300 hover:text-amber-100"
+            className="focus-ring shrink-0 rounded-full border border-[#866021]/30 px-2.5 py-1 text-[12px] leading-[18px] text-[#866021] transition hover:bg-white/60 dark:border-[#DAC393]/30 dark:text-[#DAC393] dark:hover:bg-white/5"
           >
             {t('boards.reading.switchToWork')}
           </button>

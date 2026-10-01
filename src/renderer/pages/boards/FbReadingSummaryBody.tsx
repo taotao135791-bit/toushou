@@ -14,6 +14,7 @@ import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
 import { readingBlockKind, refreshAccountWithRetry, type ReadingAttemptProgress } from './fbReadingRefresh'
+import { fbReadingRangeLabel } from './metricLabel'
 
 interface AccountRecord {
   alias: string
@@ -248,7 +249,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
       ),
     [accounts, records]
   )
-  const rangeLabel = range === 'today' ? '今天' : range === 'last3' ? '近3天' : range === 'last7' ? '近7天' : '近30天'
+  const rangeLabel = fbReadingRangeLabel(t, range)
   const updated = summary.capturedAt ? new Date(summary.capturedAt).toLocaleString() : ''
   // This-round success is tracked separately from stored history: an old
   // verified entry must never be counted as a fresh success mid-refresh.
@@ -342,7 +343,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-[10.5px] text-cream-faint">
+        <span className="truncate text-[12px] leading-[18px] text-cream-faint">
           {accounts.map((account) => account.alias).join(' + ') || t('boards.reading.summary.noAccounts')} · {rangeLabel}
         </span>
         <div className="flex shrink-0 items-center gap-1">
@@ -383,8 +384,8 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
       ) : (
         <>
           {!completeForDisplay && (
-            <div className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] leading-4 text-amber-300">
-              <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+            <div role="status" className="flex items-start gap-1.5 rounded-lg bg-[#F8F2E7] px-2.5 py-1.5 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
               <span>
                 {t('boards.reading.summary.partial')
                   .replace('{verified}', String(verifiedForDisplay))

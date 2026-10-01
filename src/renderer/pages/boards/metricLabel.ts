@@ -13,3 +13,16 @@ export function fbReadingMetricLabel(t: (key: I18nKey) => string, value: string)
   if (value === 'cpa') return t('boards.reading.summary.metric.cpa')
   return t('boards.reading.summary.metric.ctr')
 }
+
+export function fbReadingRangeLabel(t: (key: I18nKey) => string, range: string): string {
+  if (range === 'today') return t('boards.master.range.today')
+  if (range === 'last3') return t('boards.master.range.last3')
+  if (range === 'last30') return t('boards.master.range.last30')
+  return t('boards.master.range.last7')
+}
+
+export function ttReadingRangeLabel(t: (key: I18nKey) => string, range: string): string {
+  if (range === '1') return t('boards.tt.range.1')
+  if (range === '28') return t('boards.tt.range.28')
+  return t('boards.tt.range.7')
+}

@@ -7,6 +7,7 @@ import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
 import { refreshAccountWithRetry } from './fbReadingRefresh'
+import { fbReadingMetricLabel, fbReadingRangeLabel } from './metricLabel'
 
 interface FbReadingDisplayRow {
   name: string
@@ -245,8 +246,8 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-[10.5px] text-cream-faint">
-          {account} · {range === 'today' ? '今天' : range === 'last3' ? '近3天' : range === 'last7' ? '近7天' : '近30天'}
+        <span className="truncate text-[12px] leading-[18px] text-cream-faint">
+          {account} · {fbReadingRangeLabel(t, range)}
         </span>
         <div className="flex shrink-0 items-center gap-1">
           {includeBalance && (
@@ -277,9 +278,9 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           </button>
         </div>
       </div>
-      {failure && <div role="alert" className="text-[10.5px] text-red-500">{failureNode}</div>}
+      {failure && <div role="alert" className="text-[12px] leading-[18px] text-red-600 dark:text-red-400">{failureNode}</div>}
       {balanceFailure && (
-        <div role="alert" className="text-[10.5px] text-amber-400">{balanceFailureMessage}</div>
+        <div role="alert" className="text-[12px] leading-[18px] text-amber-800 dark:text-amber-200">{balanceFailureMessage}</div>
       )}
       {!entry ? (
         <>
@@ -298,8 +299,8 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
       ) : (
         <>
           <div className={`rounded-lg bg-ink-850 px-2 py-1.5 ${includeBalance ? 'grid grid-cols-2 gap-2' : ''}`}>
-            <div className="text-[10.5px] text-cream-faint">
-              {entry.campaignCount ?? '—'} 系列 · {t('boards.reading.updatedAt', { time: updated })}
+            <div className="text-[12px] leading-[18px] text-cream-faint">
+              {entry.campaignCount ?? '—'} {t('boards.reading.campaigns')} · {t('boards.reading.updatedAt', { time: updated })}
             </div>
             <div className="font-mono text-[16px] font-semibold text-cream tabular-nums">
               ${entry.totalSpend?.toFixed(2) ?? '—'}
@@ -317,12 +318,12 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
             <table className="w-full border-collapse text-left text-[10.5px]">
               <thead>
                 <tr className="text-cream-faint">
-                  <th className="px-1 py-0.5 font-normal">系列</th>
-                  {metrics.includes('spend') && <th className="px-1 py-0.5 font-normal">消耗</th>}
-                  {metrics.includes('cpi') && <th className="px-1 py-0.5 font-normal">CPI</th>}
-                  {metrics.includes('cpm') && <th className="px-1 py-0.5 font-normal">CPM</th>}
-                  {metrics.includes('ctr') && <th className="px-1 py-0.5 font-normal">CTR</th>}
-                  {metrics.includes('cpa') && <th className="px-1 py-0.5 font-normal">CPA</th>}
+                  <th className="px-1 py-0.5 font-normal">{t('boards.reading.campaigns')}</th>
+                  {metrics.includes('spend') && <th className="px-1 py-0.5 font-normal">{fbReadingMetricLabel(t, 'spend')}</th>}
+                  {metrics.includes('cpi') && <th className="px-1 py-0.5 font-normal">{fbReadingMetricLabel(t, 'cpi')}</th>}
+                  {metrics.includes('cpm') && <th className="px-1 py-0.5 font-normal">{fbReadingMetricLabel(t, 'cpm')}</th>}
+                  {metrics.includes('ctr') && <th className="px-1 py-0.5 font-normal">{fbReadingMetricLabel(t, 'ctr')}</th>}
+                  {metrics.includes('cpa') && <th className="px-1 py-0.5 font-normal">{fbReadingMetricLabel(t, 'cpa')}</th>}
                 </tr>
               </thead>
               <tbody>

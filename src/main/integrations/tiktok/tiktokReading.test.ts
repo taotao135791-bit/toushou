@@ -87,7 +87,13 @@ describe('summarizeTikTokReportRows', () => {
     ]
     const { topCampaigns } = summarizeTikTokReportRows(rows)
     expect(topCampaigns).toHaveLength(5)
-    expect(topCampaigns[0]).toEqual({ name: 'A', spend: 75 })
+    expect(topCampaigns[0]).toEqual({
+      name: 'A',
+      spend: 75,
+      impressions: 2000,
+      clicks: 100,
+      conversions: 4
+    })
     expect(topCampaigns.map((campaign) => campaign.name)).toEqual(['A', 'B', 'C', 'D', 'E'])
   })
 })

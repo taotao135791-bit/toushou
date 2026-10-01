@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Check, FilePlus2, X } from 'lucide-react'
 import { BoardDataset, BoardMasterScope, BoardWidget, BoardWidgetStyle } from '@shared/types'
 import { MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRange } from '@shared/boards'
-import { fbReadingMetricLabel } from './metricLabel'
+import { fbReadingMetricLabel, fbReadingRangeLabel, ttReadingRangeLabel } from './metricLabel'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
 import { FB_READING_SUMMARY_ACCOUNT_LIMIT, resolveFbReadingSummaryAccounts, resolveFbReadingWidgetAccount } from '@shared/fbReading'
@@ -539,21 +539,20 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
             />
             <PillField label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
-                {([['today', '今天'], ['last3', '近3天'], ['last7', '近7天'], ['last30', '近30天']] as const).map(
-                  ([value, label]) => (
+                {(['today', 'last3', 'last7', 'last30'] as const).map((value) => (
                     <button
                       key={value}
+                      type="button"
                       onClick={() => setReadingRange(value)}
-                      className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                      className={`focus-ring rounded-full border px-2.5 py-1 text-[12px] leading-[18px] transition ${
                         readingRange === value
                           ? 'border-accent/60 bg-accent-soft text-accent'
                           : 'border-line text-cream-dim hover:text-cream'
                       }`}
                     >
-                      {label}
+                      {fbReadingRangeLabel(t, value)}
                     </button>
-                  )
-                )}
+                  ))}
               </div>
             </PillField>
             <PillField label={t('boards.reading.config.metrics')}>
@@ -593,20 +592,21 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
                 className={`${inputClass} font-mono`}
               />
             </Field>
-            <p className="text-[10.5px] leading-4 text-cream-faint">{t('boards.tt.config.advertiserIdsHint')}</p>
+            <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.tt.config.advertiserIdsHint')}</p>
             <PillField label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
-                {([['1', '今天'], ['7', '近7天'], ['28', '近28天']] as const).map(([value, label]) => (
+                {(['1', '7', '28'] as const).map((value) => (
                   <button
                     key={value}
+                    type="button"
                     onClick={() => setTtRange(value)}
-                    className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                    className={`focus-ring rounded-full border px-2.5 py-1 text-[12px] leading-[18px] transition ${
                       ttRange === value
                         ? 'border-accent/60 bg-accent-soft text-accent'
                         : 'border-line text-cream-dim hover:text-cream'
                     }`}
                   >
-                    {label}
+                    {ttReadingRangeLabel(t, value)}
                   </button>
                 ))}
               </div>

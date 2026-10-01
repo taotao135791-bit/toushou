@@ -97,7 +97,9 @@ export interface TikTokReadingAggregate {
  * Aggregate report rows into totals + top campaigns. Sums are additive over
  * every row; CTR and cost-per-conversion are RECOMPUTED from the summed
  * denominators (never averaged from per-row ratios); the campaign list is
- * grouped by name, summed by spend and cut to the top 5.
+ * grouped by name, summed on spend / impressions / clicks / conversions,
+ * and cut to the top 5 by spend. Rates stay out of this list so the
+ * renderer can recompute them from the summed counts.
  */
 export function summarizeTikTokReportRows(rows: TikTokReportRow[]): TikTokReadingAggregate {
   const spend = sumField(rows, 'spend')
@@ -112,14 +114,20 @@ export function summarizeTikTokReportRows(rows: TikTokReportRow[]): TikTokReadin
     conversions,
     costPerConversion: conversions > 0 ? spend / conversions : 0
   }
-  const byCampaign = new Map<string, number>()
+  const byCampaign = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number }>()
+  const add = (value: number | null): number =>
+    typeof value === 'number' && Number.isFinite(value) ? value : 0
   for (const row of rows) {
     const name = row.campaignName || '—'
-    const value = typeof row.spend === 'number' && Number.isFinite(row.spend) ? row.spend : 0
-    byCampaign.set(name, (byCampaign.get(name) ?? 0) + value)
+    const current = byCampaign.get(name) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0 }
+    current.spend += add(row.spend)
+    current.impressions += add(row.impressions)
+    current.clicks += add(row.clicks)
+    current.conversions += add(row.conversion)
+    byCampaign.set(name, current)
   }
   const topCampaigns = [...byCampaign.entries()]
-    .map(([name, campaignSpend]) => ({ name, spend: campaignSpend }))
+    .map(([name, stats]) => ({ name, ...stats }))
     .sort((a, b) => b.spend - a.spend || a.name.localeCompare(b.name))
     .slice(0, 5)
   return { totals, topCampaigns }
