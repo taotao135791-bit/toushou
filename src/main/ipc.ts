@@ -198,7 +198,7 @@ import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionM
 import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
 import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
-import { buildTikTokReadingSummary } from './integrations/tiktok/tiktokReading'
+import { buildTikTokReadingSummary, buildTikTokTodayReading } from './integrations/tiktok/tiktokReading'
 import { setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
@@ -804,6 +804,11 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.TT_READING_SUMMARY, (_event, raw: unknown) => {
     const input = (raw ?? {}) as { advertiserIds?: unknown; range?: unknown }
     return buildTikTokReadingSummary(input)
+  })
+  ipcMain.handle(IPC_CHANNELS.TT_READING_TODAY, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { range?: unknown }
+    const range = typeof input.range === 'string' ? input.range.slice(0, 8) : undefined
+    return buildTikTokTodayReading({ range })
   })
 
   // --- Figma Dev Mode MCP connector (local, code-token-only flavor) ------

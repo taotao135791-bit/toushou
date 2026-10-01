@@ -75,6 +75,7 @@ import { WidgetBody } from './boards/WidgetBody'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
 import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
+import { TodayReading } from './boards/TodayReading'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 
@@ -233,6 +234,7 @@ export default function BoardsPage() {
   const [boardsLoadFailed, setBoardsLoadFailed] = useState(false)
   const [boardsLoadGeneration, setBoardsLoadGeneration] = useState(0)
   const [currentId, setCurrentId] = useState<string | null>(null)
+  const [surface, setSurface] = useState<'today' | 'board'>('today')
   const [creating, setCreating] = useState(false)
   const [newBoardName, setNewBoardName] = useState('')
   const [createMenuOpen, setCreateMenuOpen] = useState(false)
@@ -443,6 +445,7 @@ export default function BoardsPage() {
     closeMenus()
     deleteWidgetConfirm.reset()
     setConfigWidgetId(null)
+    setSurface('board')
     setCurrentId(id)
   }
 
@@ -1145,8 +1148,22 @@ export default function BoardsPage() {
         <SquareKanban size={15} className="shrink-0 text-accent" />
         <span className="shrink-0 text-[13px] font-medium text-cream">{t('boards.title')}</span>
         <div className="app-no-drag ml-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+          <button
+            type="button"
+            onClick={() => {
+              closeMenus()
+              setSurface('today')
+            }}
+            className={`focus-ring shrink-0 rounded-full border px-3 py-1 text-[12px] leading-[18px] transition ${
+              surface === 'today'
+                ? 'border-line bg-ink-850 text-cream shadow-card'
+                : 'border-transparent text-cream-faint hover:bg-overlay hover:text-cream-dim'
+            }`}
+          >
+            {t('boards.today.tab')}
+          </button>
           {(boards ?? []).map((b) => {
-            const active = b.id === currentId
+            const active = surface === 'board' && b.id === currentId
             const locked = b.locked === true
             return (
               <div
@@ -1337,7 +1354,7 @@ export default function BoardsPage() {
           </div>
         )}
       </header>
-      {current && (
+      {surface === 'board' && current && (
         <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 items-center gap-2 border-b border-line bg-ink-900/60 px-4">
           <span className="shrink-0 text-[12px] leading-[18px] text-cream-faint">{t('boards.master.label')}</span>
           <div className="flex items-center gap-1">
@@ -1461,7 +1478,7 @@ export default function BoardsPage() {
           )}
         </div>
       )}
-      {inChatView && browserReadingCount > 0 && (
+      {surface === 'board' && inChatView && browserReadingCount > 0 && (
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-[#F8F2E7] px-4 py-2 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]">
           <span>{t('boards.reading.inChatBanner')}</span>
           <button
@@ -1480,7 +1497,9 @@ export default function BoardsPage() {
         className="relative flex-1 overflow-hidden bg-ink-950"
       >
         <div className="h-full overflow-y-auto">
-          {boards === null ? (
+          {surface === 'today' ? (
+            <TodayReading />
+          ) : boards === null ? (
             <div className="flex h-full items-center justify-center text-sm text-cream-faint">
               {t('app.loading')}
             </div>
