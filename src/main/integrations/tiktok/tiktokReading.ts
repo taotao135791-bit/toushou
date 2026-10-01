@@ -6,6 +6,14 @@ import {
   type TikTokReadingTopCampaign,
   type TikTokReadingTotals
 } from '../../../shared/tiktokReport'
+import {
+  isTodayRange,
+  previousEqualWindow,
+  todayWindow,
+  topSpendMoves,
+  type TikTokTodayAccount,
+  type TikTokTodayReadingResult
+} from '../../../shared/todayReading'
 import { resolveTikTokToken } from './resolveTikTokToken'
 import { fetchIntegratedReport, type TikTokApiFetch, type TikTokReportRow } from './tiktokClient'
 
@@ -17,6 +25,81 @@ import { fetchIntegratedReport, type TikTokApiFetch, type TikTokReportRow } from
  * store as fallback. Everything crossing IPC is bounded and validated here;
  * the aggregation itself is a pure function for tests.
  */
+
+/** Morning page queries at most this many granted advertisers. */
+export const TODAY_ADVERTISER_CAP = 8
+
+function campaignSpends(rows: TikTokReportRow[]): Array<{ name: string; spend: number }> {
+  const byName = new Map<string, number>()
+  for (const row of rows) {
+    const name = row.campaignName || '—'
+    const spend = typeof row.spend === 'number' && Number.isFinite(row.spend) ? row.spend : 0
+    byName.set(name, (byName.get(name) ?? 0) + spend)
+  }
+  return [...byName.entries()].map(([name, spend]) => ({ name, spend }))
+}
+
+function rowsInWindow(rows: TikTokReportRow[], window: { start: string; end: string }): TikTokReportRow[] {
+  return rows.filter((row) => row.date >= window.start && row.date <= window.end)
+}
+
+/**
+ * Today-page TikTok read. One report pull covers the current window and the
+ * previous equal window, then the rows are split by date. This does not
+ * change the board widget's own 1/7/28 summary.
+ */
+export async function buildTikTokTodayReading(
+  input: { range?: unknown } = {},
+  deps: TikTokReadingDeps = {}
+): Promise<TikTokTodayReadingResult> {
+  const range = isTodayRange(input.range) ? input.range : 'last7'
+  const window = todayWindow(range, new Date(deps.now?.() ?? Date.now()))
+  const previous = previousEqualWindow(window)
+  if (!previous) return { ok: false, error: 'invalid-input' }
+  const resolve = deps.resolveToken ?? resolveTikTokToken
+  const resolved = await resolve()
+  if (!resolved.token) return { ok: false, error: 'no-credentials' }
+  const granted = resolved.advertiserIds
+  const capped = granted.slice(0, TODAY_ADVERTISER_CAP)
+  const queries: Array<number | undefined> = capped.length > 0 ? capped : [undefined]
+  const fetchImpl = deps.fetchImpl ?? ((url, init) => fetch(url, init))
+  try {
+    const accounts: TikTokTodayAccount[] = []
+    for (const advertiserId of queries) {
+      const rows = await fetchIntegratedReport(fetchImpl, {
+        accessToken: resolved.token,
+        startDate: previous.start,
+        endDate: window.end,
+        ...(advertiserId !== undefined ? { advertiserId } : {})
+      })
+      const currentRows = rowsInWindow(rows, window)
+      const previousRows = rowsInWindow(rows, previous)
+      const currentTotals = summarizeTikTokReportRows(currentRows).totals
+      const previousTotals = summarizeTikTokReportRows(previousRows).totals
+      accounts.push({
+        advertiserId: advertiserId ?? null,
+        spend: currentTotals.spend,
+        previousSpend: previousTotals.spend,
+        impressions: currentTotals.impressions,
+        clicks: currentTotals.clicks,
+        conversions: currentTotals.conversions,
+        campaigns: topSpendMoves(campaignSpends(currentRows), campaignSpends(previousRows), 3)
+      })
+    }
+    return {
+      range,
+      window,
+      previousWindow: previous,
+      source: resolved.source,
+      generatedAt: deps.now?.() ?? Date.now(),
+      truncated: granted.length > TODAY_ADVERTISER_CAP,
+      accounts
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, error: message.slice(0, 300) }
+  }
+}
 
 /** Upper bound on advertiser fan-out per summary request (mirrors the refresh service). */
 export const MAX_ADVERTISERS_PER_SUMMARY = 20
@@ -97,7 +180,9 @@ export interface TikTokReadingAggregate {
  * Aggregate report rows into totals + top campaigns. Sums are additive over
  * every row; CTR and cost-per-conversion are RECOMPUTED from the summed
  * denominators (never averaged from per-row ratios); the campaign list is
- * grouped by name, summed by spend and cut to the top 5.
+ * grouped by name, summed on spend / impressions / clicks / conversions,
+ * and cut to the top 5 by spend. Rates stay out of this list so the
+ * renderer can recompute them from the summed counts.
  */
 export function summarizeTikTokReportRows(rows: TikTokReportRow[]): TikTokReadingAggregate {
   const spend = sumField(rows, 'spend')
@@ -112,14 +197,20 @@ export function summarizeTikTokReportRows(rows: TikTokReportRow[]): TikTokReadin
     conversions,
     costPerConversion: conversions > 0 ? spend / conversions : 0
   }
-  const byCampaign = new Map<string, number>()
+  const byCampaign = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number }>()
+  const add = (value: number | null): number =>
+    typeof value === 'number' && Number.isFinite(value) ? value : 0
   for (const row of rows) {
     const name = row.campaignName || '—'
-    const value = typeof row.spend === 'number' && Number.isFinite(row.spend) ? row.spend : 0
-    byCampaign.set(name, (byCampaign.get(name) ?? 0) + value)
+    const current = byCampaign.get(name) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0 }
+    current.spend += add(row.spend)
+    current.impressions += add(row.impressions)
+    current.clicks += add(row.clicks)
+    current.conversions += add(row.conversion)
+    byCampaign.set(name, current)
   }
   const topCampaigns = [...byCampaign.entries()]
-    .map(([name, campaignSpend]) => ({ name, spend: campaignSpend }))
+    .map(([name, stats]) => ({ name, ...stats }))
     .sort((a, b) => b.spend - a.spend || a.name.localeCompare(b.name))
     .slice(0, 5)
   return { totals, topCampaigns }

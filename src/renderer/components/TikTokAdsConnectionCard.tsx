@@ -66,6 +66,10 @@ export default function TikTokAdsConnectionCard() {
   const tokenExpiry = snapshot.tokenExpiresAt
     ? new Date(snapshot.tokenExpiresAt).toLocaleString()
     : null
+  const tokenExpired = typeof snapshot.tokenExpiresAt === 'number' && snapshot.tokenExpiresAt <= Date.now()
+  const lastConnected = snapshot.lastConnectedAt
+    ? new Date(snapshot.lastConnectedAt).toLocaleString()
+    : null
 
   return (
     <section className="rounded-2xl border border-line bg-ink-850 p-5 shadow-card">
@@ -90,7 +94,7 @@ export default function TikTokAdsConnectionCard() {
           <button
             onClick={() => void begin()}
             disabled={busy}
-            className="flex shrink-0 items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-[12px] font-medium text-white transition hover:bg-accent-bright disabled:opacity-50"
+            className="focus-ring flex shrink-0 items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] transition hover:bg-accent-bright disabled:opacity-50"
           >
             {t('connections.tiktokConnect')}
           </button>
@@ -130,36 +134,51 @@ export default function TikTokAdsConnectionCard() {
 
       {isConnected && (
         <div className="mt-4">
-          <div className="mb-3 flex items-center gap-2 text-[13px] font-medium text-emerald-600 dark:text-emerald-400">
+          <div className="mb-3 flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400">
             <CheckCircle2 size={16} /> {t('connections.tiktokConnected')}
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
-            <div className="flex items-center justify-between rounded-xl bg-overlay px-3 py-2.5 text-[12px]">
+            <div className="flex items-center justify-between gap-3 rounded-xl bg-overlay px-3 py-2.5 text-[12px] leading-[18px]">
               <span className="text-cream-faint">{t('connections.tiktokServer')}</span>
-              <span className="font-mono text-cream-dim">tiktok-ads</span>
+              <span className="text-right text-cream-dim">{t('connections.tiktokOfficial')}</span>
             </div>
-            <div className="flex items-center justify-between rounded-xl bg-overlay px-3 py-2.5 text-[12px]">
+            <div className="flex items-center justify-between gap-3 rounded-xl bg-overlay px-3 py-2.5 text-[12px] leading-[18px]">
               <span className="text-cream-faint">{t('connections.tiktokTokenExpires')}</span>
-              <span className="text-cream-dim">{tokenExpiry ?? '—'}</span>
+              <span className={`text-right tabular-nums ${tokenExpired ? 'text-amber-800 dark:text-amber-200' : 'text-cream-dim'}`}>
+                {tokenExpired ? t('connections.tiktokTokenExpired') : tokenExpiry ?? '—'}
+              </span>
             </div>
+            {lastConnected && (
+              <div className="flex items-center justify-between gap-3 rounded-xl bg-overlay px-3 py-2.5 text-[12px] leading-[18px] sm:col-span-2">
+                <span className="text-cream-faint">{t('connections.tiktokLastConnected')}</span>
+                <span className="text-right tabular-nums text-cream-dim">{lastConnected}</span>
+              </div>
+            )}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <button
+              type="button"
               onClick={() => void begin()}
               disabled={busy}
-              className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream disabled:opacity-50"
+              className="focus-ring flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] leading-[18px] text-cream-dim hover:bg-overlay hover:text-cream disabled:opacity-50"
             >
               <RefreshCw size={12} /> {t('connections.tiktokReauthorize')}
             </button>
             <button
+              type="button"
               onClick={() => void disconnect()}
               disabled={busy}
-              className="flex items-center gap-1.5 rounded-full border border-red-500/20 px-3 py-1.5 text-[12px] text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+              className="focus-ring flex items-center gap-1.5 rounded-full border border-red-500/20 px-3 py-1.5 text-[12px] leading-[18px] text-red-600 hover:bg-red-500/10 disabled:opacity-50 dark:text-red-400"
             >
               <Unplug size={12} /> {t('connections.disconnect')}
             </button>
           </div>
-          <p className="mt-3 text-[11px] leading-4 text-cream-faint">{t('connections.tiktokNote')}</p>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-[12px] leading-[18px] text-cream-faint">
+              {t('connections.tiktokDetails')}
+            </summary>
+            <p className="mt-1 text-[12px] leading-[18px] text-cream-faint">{t('connections.tiktokNote')}</p>
+          </details>
         </div>
       )}
 
@@ -169,13 +188,13 @@ export default function TikTokAdsConnectionCard() {
             <AlertTriangle size={15} /> {t('connections.tiktokFailed')}
           </div>
           {snapshot.lastError && (
-            <p className="mt-1 break-all text-[12px] leading-5 text-cream-faint">{snapshot.lastError}</p>
+            <p className="mt-1 break-words text-[12px] leading-[18px] text-cream-dim">{snapshot.lastError}</p>
           )}
           <div className="mt-3 flex gap-2">
             <button
               onClick={() => void begin()}
               disabled={busy}
-              className="flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-[12px] font-medium text-white hover:bg-accent-bright disabled:opacity-50"
+              className="focus-ring flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-[12px] font-medium text-[rgb(var(--bg-app))] hover:bg-accent-bright disabled:opacity-50"
             >
               <RefreshCw size={12} /> {t('connections.retry')}
             </button>

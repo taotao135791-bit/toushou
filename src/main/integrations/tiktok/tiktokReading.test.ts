@@ -7,6 +7,7 @@ vi.mock('electron', () => ({ app: { getPath: () => '/tmp/toushou-unused' } }))
 import type { TikTokReportRow } from './tiktokClient'
 import {
   buildTikTokReadingSummary,
+  buildTikTokTodayReading,
   parseTikTokReadingAdvertiserIds,
   summarizeTikTokReportRows,
   tiktokReadingRangeWindow
@@ -87,7 +88,13 @@ describe('summarizeTikTokReportRows', () => {
     ]
     const { topCampaigns } = summarizeTikTokReportRows(rows)
     expect(topCampaigns).toHaveLength(5)
-    expect(topCampaigns[0]).toEqual({ name: 'A', spend: 75 })
+    expect(topCampaigns[0]).toEqual({
+      name: 'A',
+      spend: 75,
+      impressions: 2000,
+      clicks: 100,
+      conversions: 4
+    })
     expect(topCampaigns.map((campaign) => campaign.name)).toEqual(['A', 'B', 'C', 'D', 'E'])
   })
 })
@@ -209,5 +216,35 @@ describe('buildTikTokReadingSummary', () => {
     )
     if (!('ok' in result)) throw new Error('expected an error result')
     expect(result.error).toContain('40100')
+  })
+})
+
+describe('buildTikTokTodayReading', () => {
+  it('splits one report pull into the current window and the previous one', async () => {
+    const requests: Array<Record<string, unknown>> = []
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      requests.push(body)
+      return reportResponse([
+        row({ date: '2026-09-30', campaignName: 'A', spend: 10, impressions: 100, clicks: 5, conversion: 1 }),
+        row({ date: '2026-09-20', campaignName: 'A', spend: 4, impressions: 40, clicks: 2, conversion: 0 }),
+        row({ date: '2026-09-20', campaignName: 'B', spend: 30, impressions: 10, clicks: 1, conversion: 0 })
+      ])
+    }) as unknown as (url: string, init?: RequestInit) => Promise<Response>
+    const result = await buildTikTokTodayReading(
+      { range: 'last7' },
+      {
+        resolveToken: async () => ({ token: 'oauth-token', source: 'oauth', advertiserIds: [7300001] }),
+        fetchImpl,
+        now: () => new Date(2026, 9, 1, 12).getTime()
+      }
+    )
+    if ('ok' in result) throw new Error(result.error)
+    expect(requests[0].start_date).toBe('2026-09-17')
+    expect(requests[0].end_date).toBe('2026-09-30')
+    expect(result.accounts).toHaveLength(1)
+    expect(result.accounts[0].spend).toBe(10)
+    expect(result.accounts[0].previousSpend).toBe(34)
+    expect(result.accounts[0].campaigns.map((campaign) => campaign.name)).toEqual(['B', 'A'])
   })
 })

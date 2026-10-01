@@ -18,7 +18,8 @@ import {
   overseasAdsPreset,
   reflowWidgets,
   tiktokAdsPreset,
-  validateBoard
+  validateBoard,
+  applyMasterScope
 } from '../boards'
 
 function validBoard(): KanbanBoard {
@@ -837,5 +838,80 @@ describe('migrateBoard', () => {
     })
     const ids = migrated?.widgets.map((w) => w.id) ?? []
     expect(new Set(ids).size).toBe(2)
+  })
+})
+
+describe('master scope', () => {
+  const fbReading = (config: Record<string, unknown> = {}) =>
+    widgetOf('fb-reading', { account: '三国IOS', range: 'last7', metrics: ['spend', 'cpi'], ...config })
+
+  it('validateBoard keeps a valid masterScope and drops invalid ones', () => {
+    const good = validateBoard({ ...validBoard(), masterScope: { range: 'last3', metrics: ['spend'] } })
+    expect(good?.masterScope).toEqual({ range: 'last3', metrics: ['spend'] })
+
+    expect(validateBoard({ ...validBoard(), masterScope: { range: 'yesterday', metrics: ['spend'] } })?.masterScope).toBeUndefined()
+    expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: [] } })?.masterScope).toBeUndefined()
+    expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: ['not-a-metric'] } })?.masterScope).toBeUndefined()
+    expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: ['spend', 'spend'] } })?.masterScope).toBeUndefined()
+  })
+
+  it('strict validation rejects a corrupt masterScope instead of silently dropping it', () => {
+    expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: [] } }, true)).toBeNull()
+    expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: ['spend'] } }, true)?.masterScope).toBeDefined()
+  })
+
+  it('legacy boards without masterScope validate unchanged', () => {
+    const board = validateBoard(validBoard())
+    expect(board).toEqual(validBoard())
+    expect(board?.masterScope).toBeUndefined()
+  })
+
+  it('validateBoard keeps locked only when explicitly true', () => {
+    expect(validateBoard({ ...validBoard(), locked: true })?.locked).toBe(true)
+    expect(validateBoard({ ...validBoard(), locked: false })?.locked).toBeUndefined()
+    expect(validateBoard({ ...validBoard(), locked: 'yes' })?.locked).toBeUndefined()
+    expect(validateBoard(validBoard())?.locked).toBeUndefined()
+  })
+
+  it('reading configs carry independent only when explicitly true', () => {
+    expect(withWidget(fbReading({ independent: true }))?.widgets[0].config.independent).toBe(true)
+    expect(withWidget(fbReading({ independent: false }))?.widgets[0].config.independent).toBeUndefined()
+    expect(withWidget(fbReading())?.widgets[0].config.independent).toBeUndefined()
+    expect(
+      withWidget(widgetOf('tt-reading', { range: '7', independent: true }))?.widgets[0].config.independent
+    ).toBe(true)
+  })
+
+  it('applyMasterScope re-unifies FB reading modules and clears independence', () => {
+    const master = { range: 'last30' as const, metrics: ['cpm', 'ctr'] }
+    const unified = applyMasterScope(
+      {
+        id: 'w',
+        type: 'fb-reading' as const,
+        title: 'w',
+        layout: { x: 0, y: 0, w: 2, h: 2 },
+        config: fbReading({ independent: true }).config as Record<string, unknown>
+      },
+      master
+    )
+    expect(unified.config.range).toBe('last30')
+    expect(unified.config.metrics).toEqual(['cpm', 'ctr'])
+    expect(unified.config.independent).toBeUndefined()
+    expect(unified.config.account).toBe('三国IOS')
+  })
+
+  it('applyMasterScope maps TikTok windows and keeps last3 honest', () => {
+    const base = { id: 't', type: 'tt-reading' as const, title: 't', layout: { x: 0, y: 0, w: 2, h: 2 } }
+    expect(applyMasterScope({ ...base, config: { range: '1' } }, { range: 'last7', metrics: ['spend'] }).config.range).toBe('7')
+    expect(applyMasterScope({ ...base, config: { range: '1' } }, { range: 'today', metrics: ['spend'] }).config.range).toBe('1')
+    const kept = applyMasterScope({ ...base, config: { range: '28' } }, { range: 'last3', metrics: ['spend'] })
+    expect(kept.config.range).toBe('28')
+    expect(kept.config.independent).toBe(true)
+  })
+
+  it('applyMasterScope leaves non-reading widgets untouched', () => {
+    const widget = widgetOf('counter', { value: 3 })
+    const out = applyMasterScope(widget as never, { range: 'today', metrics: ['spend'] })
+    expect(out).toEqual(widget)
   })
 })

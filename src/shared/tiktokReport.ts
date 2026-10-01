@@ -85,6 +85,9 @@ export type TikTokReadingRange = '1' | '7' | '28'
 export interface TikTokReadingTopCampaign {
   name: string
   spend: number
+  impressions: number
+  clicks: number
+  conversions: number
 }
 
 export interface TikTokReadingTotals {
@@ -112,6 +115,37 @@ export interface TikTokReadingSummary {
 
 /** 成功返回汇总本身；失败时 error 含稳定的 'no-credentials'（未连接）。 */
 export type TikTokReadingResult = TikTokReadingSummary | { ok: false; error: string }
+
+function formatGrouped(value: number, digits: number): string {
+  const negative = value < 0
+  const [whole, fraction] = Math.abs(value).toFixed(digits).split('.')
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  const body = fraction !== undefined ? `${grouped}.${fraction}` : grouped
+  return negative ? `-${body}` : body
+}
+
+/** Account-currency amount. No currency symbol — the report does not carry one. */
+export function formatTikTokAmount(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  return formatGrouped(value, 2)
+}
+
+export function formatTikTokCount(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  return formatGrouped(Math.round(value), 0)
+}
+
+/** Click rate from summed counts. Zero impressions is missing, not 0%. */
+export function formatTikTokRate(clicks: number, impressions: number): string {
+  if (!(impressions > 0) || !Number.isFinite(clicks)) return '—'
+  return `${((clicks / impressions) * 100).toFixed(2)}%`
+}
+
+/** Cost per conversion. Zero conversions is missing, not a $0 result. */
+export function formatTikTokCostPerConversion(spend: number, conversions: number): string {
+  if (!(conversions > 0) || !Number.isFinite(spend)) return '—'
+  return formatTikTokAmount(spend / conversions)
+}
 
 export function isTikTokReadingRange(value: unknown): value is TikTokReadingRange {
   return value === '1' || value === '7' || value === '28'

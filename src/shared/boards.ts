@@ -11,6 +11,7 @@ import {
   BoardWidget,
   BoardWidgetLayout,
   BoardWidgetStyle,
+  BoardMasterScope,
   KanbanBoard,
   WidgetType
 } from './types'
@@ -861,11 +862,19 @@ function validateWidgetConfig(
       const alias = typeof raw.account === 'string' ? raw.account.trim() : ''
       if (!alias || alias.length > BOARD_LIMITS.maxWidgetTitleLength) return null
       if (isValidFbReadingAct(raw.act) && isValidFbReadingBusinessId(raw.businessId ?? null)) {
-        return { account: alias, act: raw.act, businessId: raw.businessId ?? null, range, metrics }
+        const config: Record<string, unknown> = {
+          account: alias, act: raw.act, businessId: raw.businessId ?? null, range, metrics
+        }
+        if (raw.independent === true) config.independent = true
+        return config
       }
       const builtin = FB_READING_ACCOUNT_TARGETS[alias]
       if (builtin) {
-        return { account: alias, act: builtin.act, businessId: builtin.businessId, range, metrics }
+        const config: Record<string, unknown> = {
+          account: alias, act: builtin.act, businessId: builtin.businessId, range, metrics
+        }
+        if (raw.independent === true) config.independent = true
+        return config
       }
       return null
     }
@@ -898,7 +907,9 @@ function validateWidgetConfig(
         seen.add(candidate.act)
         accounts.push({ alias, act: candidate.act, businessId })
       }
-      return { accounts, range, metrics }
+      const config: Record<string, unknown> = { accounts, range, metrics }
+      if (raw.independent === true) config.independent = true
+      return config
     }
     case 'tt-reading': {
       // TT 读数 config: optional comma-separated advertiser id string plus a
@@ -921,6 +932,7 @@ function validateWidgetConfig(
         if (raw.range !== '1' && raw.range !== '7' && raw.range !== '28') return null
         config.range = raw.range
       }
+      if (raw.independent === true) config.independent = true
       return config
     }
   }
@@ -950,6 +962,72 @@ function validateWidget(raw: unknown): BoardWidget | null {
  * can never silently truncate widgets or discard a widget after the UI has
  * reported a successful save.
  */
+/**
+ * Master scope: the union date window + metric domain of the reading modules.
+ * Invalid shapes are dropped (non-strict callers keep the board).
+ */
+function validateMasterScope(raw: unknown): BoardMasterScope | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const m = raw as Record<string, unknown>
+  if (m.range !== 'today' && m.range !== 'last3' && m.range !== 'last7' && m.range !== 'last30') {
+    return null
+  }
+  if (!Array.isArray(m.metrics) || m.metrics.length === 0) return null
+  const allowedMetrics: readonly string[] = FB_READING_SUMMARY_METRICS
+  const metrics: string[] = []
+  for (const metric of m.metrics) {
+    if (typeof metric !== 'string' || !allowedMetrics.includes(metric) || metrics.includes(metric)) {
+      return null
+    }
+    metrics.push(metric)
+  }
+  return { range: m.range, metrics }
+}
+
+/** Widget types whose date/metric scope a master scope governs — the single
+ * list behind unification, refresh-all and the independence check. */
+export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading']
+
+/** TikTok day windows are a separate enum; last3 has no TikTok equivalent. */
+const TT_RANGE_BY_MASTER: Record<string, string> = {
+  today: '1',
+  last7: '7',
+  last30: '28'
+}
+
+/** TikTok day window for a master range, or null when unrepresentable (last3). */
+export function ttWindowForMasterRange(range: BoardMasterScope['range']): string | null {
+  return TT_RANGE_BY_MASTER[range] ?? null
+}
+
+/**
+ * Re-unify one reading module onto the master scope: date window and (for FB
+ * modules) metric set are overwritten and any `independent` flag cleared.
+ * TikTok modules keep their own window — flagged independent — when the
+ * master window is FB-only `last3`, because silently mapping it to a 7-day
+ * window would misreport the data's date scope. Non-reading widgets pass
+ * through untouched.
+ */
+export function applyMasterScope(widget: BoardWidget, master: BoardMasterScope): BoardWidget {
+  if (!MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)) return widget
+  const config: Record<string, unknown> = { ...widget.config }
+  delete config.independent
+  if (widget.type === 'tt-reading') {
+    const range = ttWindowForMasterRange(master.range)
+    if (range) {
+      config.range = range
+    } else {
+      // last3 cannot be expressed on TikTok — keep the current window and
+      // surface the divergence instead of silently nearest-mapping it.
+      config.independent = true
+    }
+    return { ...widget, config }
+  }
+  config.range = master.range
+  config.metrics = [...master.metrics]
+  return { ...widget, config }
+}
+
 export function validateBoard(raw: unknown, strict = false): KanbanBoard | null {
   if (!raw || typeof raw !== 'object') return null
   const b = raw as Record<string, unknown>
@@ -994,6 +1072,15 @@ export function validateBoard(raw: unknown, strict = false): KanbanBoard | null 
   }
   const style = validateBoardStyle(b.style)
   if (style) board.style = style
+  const masterScope = validateMasterScope(b.masterScope)
+  if (masterScope) {
+    board.masterScope = masterScope
+  } else if (strict && b.masterScope !== undefined) {
+    // Strict saves must not silently drop a corrupt master scope: the UI
+    // would keep it in state while disk loses it.
+    return null
+  }
+  if (b.locked === true) board.locked = true
   return board
 }
 

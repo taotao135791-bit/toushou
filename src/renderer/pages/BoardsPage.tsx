@@ -18,6 +18,8 @@ import {
   LayoutGrid,
   Link2,
   ListTodo,
+  Lock,
+  LockOpen,
   MessageSquareText,
   Maximize,
   Minimize,
@@ -27,6 +29,7 @@ import {
   Plus,
   RefreshCw,
   Settings2,
+  SlidersHorizontal,
   Sparkles,
   SquareKanban,
   StickyNote,
@@ -34,15 +37,18 @@ import {
   X,
   type LucideIcon
 } from 'lucide-react'
-import { BoardDataset, BoardDesignSpec, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
-import { FB_READING_SUMMARY_ACCOUNT_LIMIT } from '@shared/fbReading'
+import { BoardDataset, BoardDesignSpec, BoardMasterScope, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
+import { FB_READING_SUMMARY_ACCOUNT_LIMIT, FB_READING_SUMMARY_METRICS } from '@shared/fbReading'
+import { fbReadingMetricLabel } from './boards/metricLabel'
 import type { FbReadingAccountEntry } from '@shared/fbReading'
 import {
   BOARD_LIMITS,
   GRID_COLS,
   GRID_MAX_H,
   WIDGET_DEFAULT_SIZES,
+  applyMasterScope,
   compactWidgets,
+  MASTER_SCOPED_WIDGET_TYPES,
   composeBoard,
   createBoard,
   createWidget,
@@ -69,6 +75,7 @@ import { WidgetBody } from './boards/WidgetBody'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
 import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
+import { TodayReading } from './boards/TodayReading'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 
@@ -96,6 +103,10 @@ const WIDGET_GALLERY: { type: WidgetType; Icon: LucideIcon }[] = [
 
 /** Types that get their config panel opened right after being added. */
 const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'link', 'file', 'tt-reading']
+
+/** Metric set a master scope starts from — range pills seed it, and the
+ * metrics popover previews it before any master scope exists. */
+const DEFAULT_MASTER_METRICS: readonly string[] = ['spend', 'cpi', 'cpm']
 
 /** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
@@ -223,6 +234,7 @@ export default function BoardsPage() {
   const [boardsLoadFailed, setBoardsLoadFailed] = useState(false)
   const [boardsLoadGeneration, setBoardsLoadGeneration] = useState(0)
   const [currentId, setCurrentId] = useState<string | null>(null)
+  const [surface, setSurface] = useState<'today' | 'board'>('today')
   const [creating, setCreating] = useState(false)
   const [newBoardName, setNewBoardName] = useState('')
   const [createMenuOpen, setCreateMenuOpen] = useState(false)
@@ -237,6 +249,8 @@ export default function BoardsPage() {
   const [boardMenuOpen, setBoardMenuOpen] = useState(false)
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
   const [galleryOpen, setGalleryOpen] = useState(false)
+  const [masterMetricsOpen, setMasterMetricsOpen] = useState(false)
+  const [masterMetricsDraft, setMasterMetricsDraft] = useState<string[]>([])
   const [readingAccounts, setReadingAccounts] = useState<FbReadingAccountEntry[]>([])
   const [readingPickerOpen, setReadingPickerOpen] = useState(false)
   const [readingPicked, setReadingPicked] = useState<Set<string>>(new Set())
@@ -389,15 +403,24 @@ export default function BoardsPage() {
     setBoardMenuOpen(false)
     setToolsMenuOpen(false)
     setGalleryOpen(false)
+    setMasterMetricsOpen(false)
     setReadingPickerOpen(false)
-    deleteBoardConfirm.reset()
     clearConfirm.reset()
   }
 
   // The toolbar menus are transient controls, so keyboard users need the
   // same predictable dismissal path as pointer users clicking the backdrop.
   useEffect(() => {
-    if (!createMenuOpen && !boardMenuOpen && !toolsMenuOpen && !galleryOpen && !readingPickerOpen) return
+    if (
+      !createMenuOpen &&
+      !boardMenuOpen &&
+      !toolsMenuOpen &&
+      !galleryOpen &&
+      !readingPickerOpen &&
+      !masterMetricsOpen
+    ) {
+      return
+    }
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
@@ -407,21 +430,22 @@ export default function BoardsPage() {
       setToolsMenuOpen(false)
       setGalleryOpen(false)
       setReadingPickerOpen(false)
+      setMasterMetricsOpen(false)
       setDatasetsOpen(false)
       setDetailOpen(false)
       setComposeOpen(false)
-      deleteBoardConfirm.reset()
       clearConfirm.reset()
     }
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, readingPickerOpen, datasetsOpen, detailOpen, composeOpen])
+  }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, readingPickerOpen, masterMetricsOpen, datasetsOpen, detailOpen, composeOpen])
 
   const switchBoard = (id: string) => {
     closeMenus()
     deleteWidgetConfirm.reset()
     setConfigWidgetId(null)
+    setSurface('board')
     setCurrentId(id)
   }
 
@@ -521,7 +545,10 @@ export default function BoardsPage() {
     try {
       const result = await window.electronAPI.deleteBoard(id)
       if (!result.ok) {
-        flashSaveFailed()
+        // The lock race (locked between the renderer check and the IPC)
+        // deserves its own hint, not a generic save failure.
+        if (result.error === 'board-locked') flashToast(t('boards.lockedNoDelete'), false)
+        else flashSaveFailed()
         return
       }
     } catch {
@@ -532,7 +559,23 @@ export default function BoardsPage() {
     setBoards(next)
     setCurrentId(next[0]?.id ?? null)
   }
-  const deleteBoardConfirm = useConfirm(() => void performDeleteBoard())
+  const toggleBoardLock = () => {
+    if (!currentId) return
+    mutateBoard(currentId, (b) => ({ ...b, locked: b.locked !== true }))
+  }
+
+  // Board deletion goes through a blocking dialog (and never fires for a
+  // locked board) — one stray click on a tab's × must not lose the board.
+  const requestDeleteBoard = () => {
+    if (!current) return
+    if (current.locked === true) {
+      flashToast(t('boards.lockedNoDelete'), false)
+      return
+    }
+    setBoardMenuOpen(false)
+    if (!window.confirm(t('boards.deleteBoardDialog').replace('{name}', current.name))) return
+    void performDeleteBoard()
+  }
 
   // ----------------------------------------------------------------- widgets
 
@@ -546,7 +589,10 @@ export default function BoardsPage() {
     const size = WIDGET_DEFAULT_SIZES[type]
     const widget = createWidget(type, t(widgetNameKey(type)), findFreeSlot(current.widgets, size.w, size.h))
     setGalleryOpen(false)
-    mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, widget] }))
+    mutateBoard(current.id, (b) => {
+      const ms = b.masterScope
+      return { ...b, widgets: [...b.widgets, ms ? applyMasterScope(widget, ms) : widget] }
+    })
     if (CONFIG_ON_ADD.includes(type)) setConfigWidgetId(widget.id)
   }
 
@@ -591,7 +637,10 @@ export default function BoardsPage() {
         })
       )
     }
-    mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, ...created] }))
+    mutateBoard(current.id, (b) => {
+      const ms = b.masterScope
+      return { ...b, widgets: [...b.widgets, ...(ms ? created.map((w) => applyMasterScope(w, ms)) : created)] }
+    })
     setReadingPickerOpen(false)
     setReadingPicked(new Set())
     if (created.length < picked.length) flashToast(t('boards.widgetLimit'), false)
@@ -617,7 +666,10 @@ export default function BoardsPage() {
       range: 'last7',
       metrics: ['spend', 'balance', 'cpi', 'cpm']
     })
-    mutateBoard(current.id, (b) => ({ ...b, widgets: [...b.widgets, widget] }))
+    mutateBoard(current.id, (b) => {
+      const ms = b.masterScope
+      return { ...b, widgets: [...b.widgets, ms ? applyMasterScope(widget, ms) : widget] }
+    })
     setReadingPickerOpen(false)
     setReadingPicked(new Set())
   }
@@ -627,20 +679,21 @@ export default function BoardsPage() {
   // freezing the whole queue.
   const refreshReadingModules = async () => {
     if (!current || boardRefreshBusy) return
-    const widgets = current.widgets.filter(
-      (widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary'
-    )
+    const widgets = current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type))
     if (widgets.length === 0) return
     setBoardRefreshBusy(true)
     setBoardRefreshProgress({ done: 0, total: widgets.length })
     for (let index = 0; index < widgets.length; index += 1) {
       const widget = widgets[index]
+      const isTt = widget.type === 'tt-reading'
+      const doneEvent = isTt ? 'tt-reading:module-done' : 'fb-reading:module-done'
+      const refreshEvent = isTt ? 'tt-reading:board-refresh' : 'fb-reading:board-refresh'
       await new Promise<void>((resolve) => {
         let settled = false
         const finish = () => {
           if (settled) return
           settled = true
-          window.removeEventListener('fb-reading:module-done', onDone)
+          window.removeEventListener(doneEvent, onDone)
           clearTimeout(cap)
           resolve()
         }
@@ -652,13 +705,45 @@ export default function BoardsPage() {
           widget.type === 'fb-reading-summary' && Array.isArray(widget.config.accounts)
             ? Math.max(1, widget.config.accounts.length)
             : 1
-        const cap = setTimeout(finish, 180_000 * accountCount)
-        window.addEventListener('fb-reading:module-done', onDone)
-        window.dispatchEvent(new CustomEvent('fb-reading:board-refresh', { detail: { widgetId: widget.id } }))
+        const cap = setTimeout(finish, isTt ? 60_000 : 180_000 * accountCount)
+        window.addEventListener(doneEvent, onDone)
+        window.dispatchEvent(new CustomEvent(refreshEvent, { detail: { widgetId: widget.id } }))
       })
       setBoardRefreshProgress({ done: index + 1, total: widgets.length })
     }
     setBoardRefreshBusy(false)
+  }
+
+  // Master scope: writing it re-unifies every reading module onto it and
+  // clears all independence flags (see applyMasterScope in shared/boards).
+  const saveMasterScope = (next: BoardMasterScope) => {
+    if (!currentId) return
+    mutateBoard(currentId, (b) => ({
+      ...b,
+      masterScope: next,
+      widgets: b.widgets.map((widget) => applyMasterScope(widget, next))
+    }))
+  }
+  const master = current?.masterScope ?? null
+  const readingModuleCount = current
+    ? current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)).length
+    : 0
+  const browserReadingCount = current
+    ? current.widgets.filter((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary').length
+    : 0
+  const independentCount = current
+    ? current.widgets.filter((widget) => widget.config.independent === true).length
+    : 0
+  /** First-time master metrics: keep what the board's reading modules already
+   * show instead of silently replacing their columns with the default —
+   * picking a date range must not rewrite metrics the user never saw. */
+  const seedMasterMetrics = (): string[] => {
+    const first = current?.widgets.find(
+      (widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary'
+    )
+    const raw = first?.config.metrics
+    const metrics = Array.isArray(raw) ? (raw as string[]) : []
+    return metrics.length > 0 ? [...metrics] : [...DEFAULT_MASTER_METRICS]
   }
 
   const removeWidget = (widgetId: string) => {
@@ -1045,6 +1130,7 @@ export default function BoardsPage() {
           key={widget.id}
           widget={widget}
           datasets={datasets}
+          masterScope={master}
           onClose={() => setConfigWidgetId(null)}
           onSave={(patch) => saveWidgetConfig(widget.id, patch)}
         />
@@ -1062,43 +1148,112 @@ export default function BoardsPage() {
         <SquareKanban size={15} className="shrink-0 text-accent" />
         <span className="shrink-0 text-[13px] font-medium text-cream">{t('boards.title')}</span>
         <div className="app-no-drag ml-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          {(boards ?? []).map((b) => (
-            <button
-              key={b.id}
-              onClick={() => switchBoard(b.id)}
-              className={`flex max-w-[160px] shrink-0 items-center rounded-full border px-3 py-1 text-[12px] transition ${
-                b.id === currentId
-                  ? 'border-line bg-ink-850 text-cream shadow-card'
-                  : 'border-transparent text-cream-faint hover:bg-overlay hover:text-cream-dim'
-              }`}
-            >
-              <span className="truncate">{b.name}</span>
-            </button>
-          ))}
+          <button
+            type="button"
+            onClick={() => {
+              closeMenus()
+              setSurface('today')
+            }}
+            className={`focus-ring shrink-0 rounded-full border px-3 py-1 text-[12px] leading-[18px] transition ${
+              surface === 'today'
+                ? 'border-line bg-ink-850 text-cream shadow-card'
+                : 'border-transparent text-cream-faint hover:bg-overlay hover:text-cream-dim'
+            }`}
+          >
+            {t('boards.today.tab')}
+          </button>
+          {(boards ?? []).map((b) => {
+            const active = surface === 'board' && b.id === currentId
+            const locked = b.locked === true
+            return (
+              <div
+                key={b.id}
+                onClick={() => switchBoard(b.id)}
+                className={`flex max-w-[200px] shrink-0 cursor-pointer items-center gap-1 rounded-full border px-3 py-1 text-[12px] transition ${
+                  active
+                    ? 'border-line bg-ink-850 text-cream shadow-card'
+                    : 'border-transparent text-cream-faint hover:bg-overlay hover:text-cream-dim'
+                }`}
+              >
+                {locked && !active && <Lock size={10} className="shrink-0 text-cream-faint" aria-hidden="true" />}
+                <span className="truncate">{b.name}</span>
+                {active && (
+                  <>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleBoardLock()
+                      }}
+                      title={locked ? t('boards.unlock') : t('boards.lock')}
+                      className={`shrink-0 rounded-full p-0.5 transition hover:bg-overlay ${
+                        locked ? 'text-accent' : 'text-cream-faint hover:text-cream'
+                      }`}
+                    >
+                      {locked ? <Lock size={10} /> : <LockOpen size={10} />}
+                    </button>
+                    {!locked && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          requestDeleteBoard()
+                        }}
+                        title={t('boards.deleteBoard')}
+                        className="shrink-0 rounded-full p-0.5 text-cream-faint transition hover:bg-red-500/15 hover:text-red-500"
+                      >
+                        <X size={10} />
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          })}
         </div>
         {creating ? (
-          <input
-            autoFocus
-            value={newBoardName}
-            onChange={(e) => setNewBoardName(e.target.value)}
-            onBlur={() => {
-              // Clicking anywhere else used to CREATE a board from whatever
-              // half-typed draft was in the box. Blur now cancels; Enter or
-              // the confirm button commits.
-              setCreating(false)
-              setNewBoardName('')
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitCreate()
-              if (e.key === 'Escape') {
+          <div className="app-no-drag flex shrink-0 items-center gap-1">
+            <input
+              autoFocus
+              value={newBoardName}
+              onChange={(e) => setNewBoardName(e.target.value)}
+              onBlur={() => {
+                // Clicking anywhere else used to CREATE a board from whatever
+                // half-typed draft was in the box. Blur now cancels; Enter or
+                // the confirm button commits.
                 setCreating(false)
                 setNewBoardName('')
-              }
-            }}
-            maxLength={BOARD_LIMITS.maxNameLength}
-            placeholder={t('boards.newBoardPlaceholder')}
-            className="app-no-drag w-32 shrink-0 rounded-full border border-line bg-ink-850 px-3 py-1 text-[12px] text-cream outline-none transition placeholder:text-cream-faint focus:border-accent/50"
-          />
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitCreate()
+                if (e.key === 'Escape') {
+                  setCreating(false)
+                  setNewBoardName('')
+                }
+              }}
+              maxLength={BOARD_LIMITS.maxNameLength}
+              placeholder={t('boards.newBoardPlaceholder')}
+              className="w-32 rounded-full border border-line bg-ink-850 px-3 py-1 text-[12px] text-cream outline-none transition placeholder:text-cream-faint focus:border-accent/50"
+            />
+            <button
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={commitCreate}
+              disabled={!newBoardName.trim()}
+              title={t('boards.save')}
+              className="rounded-full p-1.5 text-cream-dim transition hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Check size={13} />
+            </button>
+            <button
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setCreating(false)
+                setNewBoardName('')
+              }}
+              title={t('boards.cancel')}
+              className="rounded-full p-1.5 text-cream-faint transition hover:bg-overlay hover:text-cream"
+            >
+              <X size={13} />
+            </button>
+          </div>
         ) : (
           <div className="app-no-drag relative shrink-0">
             <button
@@ -1188,27 +1343,148 @@ export default function BoardsPage() {
                   {t('boards.cards.propose')}
                 </button>
                 <button
-                  onClick={deleteBoardConfirm.click}
-                  className={`${menuItemClass} ${
-                    deleteBoardConfirm.confirming
-                      ? 'bg-red-500/15 text-red-500'
-                      : 'text-red-500/80 hover:bg-red-500/10 hover:text-red-500'
-                  }`}
+                  onClick={requestDeleteBoard}
+                  className={`${menuItemClass} text-red-500/80 hover:bg-red-500/10 hover:text-red-500`}
                 >
                   <Trash2 size={12} />
-                  {deleteBoardConfirm.confirming ? t('boards.deleteBoardConfirm') : t('boards.deleteBoard')}
+                  {t('boards.deleteBoard')}
                 </button>
               </div>
             )}
           </div>
         )}
       </header>
-      {inChatView && (
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line bg-amber-500/10 px-4 py-1.5 text-[11.5px] text-amber-300">
+      {surface === 'board' && current && (
+        <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 items-center gap-2 border-b border-line bg-ink-900/60 px-4">
+          <span className="shrink-0 text-[12px] leading-[18px] text-cream-faint">{t('boards.master.label')}</span>
+          <div className="flex items-center gap-1">
+            {(
+              [
+                ['today', t('boards.master.range.today')],
+                ['last3', t('boards.master.range.last3')],
+                ['last7', t('boards.master.range.last7')],
+                ['last30', t('boards.master.range.last30')]
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => saveMasterScope({ range: value, metrics: master?.metrics ?? seedMasterMetrics() })}
+                className={`focus-ring rounded-full border px-2.5 py-1 text-[12px] leading-[18px] transition ${
+                  master?.range === value
+                    ? 'border-accent/60 bg-accent-soft text-accent'
+                    : 'border-line text-cream-dim hover:text-cream'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="relative">
+            <button
+              onClick={() => {
+                closeMenus()
+                setMasterMetricsDraft(master?.metrics ?? seedMasterMetrics())
+                setMasterMetricsOpen(!masterMetricsOpen)
+              }}
+              className="focus-ring flex items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[12px] leading-[18px] text-cream-dim transition hover:text-cream"
+            >
+              <SlidersHorizontal size={11} />
+              {t('boards.master.metrics')}
+              {master ? ` · ${master.metrics.length}` : ''}
+            </button>
+            {masterMetricsOpen && (
+              <div className="absolute left-0 top-8 z-40 w-60 rounded-xl border border-line bg-ink-900 p-2 shadow-pop">
+                <div className="flex flex-wrap gap-1">
+                  {FB_READING_SUMMARY_METRICS.map((value) => {
+                    const active = masterMetricsDraft.includes(value)
+                    return (
+                      <button
+                        key={value}
+                        onClick={() =>
+                          setMasterMetricsDraft((prev) =>
+                            prev.includes(value) ? prev.filter((metric) => metric !== value) : [...prev, value]
+                          )
+                        }
+                        className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                          active
+                            ? 'border-accent/60 bg-accent-soft text-accent'
+                            : 'border-line text-cream-dim hover:text-cream'
+                        }`}
+                      >
+                        {fbReadingMetricLabel(t, value)}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="mt-2 flex justify-end gap-1.5 border-t border-line pt-2">
+                  <button
+                    onClick={() => setMasterMetricsOpen(false)}
+                    className="rounded-full border border-line px-2.5 py-1 text-[11px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
+                  >
+                    {t('boards.cancel')}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (masterMetricsDraft.length === 0) return
+                      saveMasterScope({ range: master?.range ?? 'last7', metrics: masterMetricsDraft })
+                      setMasterMetricsOpen(false)
+                    }}
+                    disabled={masterMetricsDraft.length === 0}
+                    className="rounded-full bg-cream px-2.5 py-1 text-[11px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+                  >
+                    {t('boards.save')}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          {master ? (
+            independentCount > 0 ? (
+              <span
+                className="shrink-0 rounded-full bg-[#F8F2E7] px-2 py-0.5 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]"
+                title={t('boards.master.independentHint')}
+              >
+                {t('boards.master.independentBadge').replace('{n}', String(independentCount))}
+              </span>
+            ) : (
+              <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint">{t('boards.master.unified')}</span>
+            )
+          ) : readingModuleCount > 0 ? (
+            <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint" title={t('boards.master.unsetHint')}>{t('boards.master.unsetHint')}</span>
+          ) : (
+            <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint" title={t('boards.master.noModulesHint')}>{t('boards.master.noModulesHint')}</span>
+          )}
+          <div className="min-w-0 flex-1" />
+          {readingModuleCount > 0 && (
+          <button
+            onClick={() => void refreshReadingModules()}
+            disabled={boardRefreshBusy}
+            title={
+              boardRefreshBusy
+                ? t('boards.master.refreshBusy')
+                    .replace('{done}', String(boardRefreshProgress.done))
+                    .replace('{total}', String(boardRefreshProgress.total))
+                : t('boards.master.refresh')
+            }
+            className="focus-ring flex shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[12px] leading-[18px] text-cream-dim transition hover:bg-ink-850 hover:text-cream disabled:opacity-40"
+          >
+            <RefreshCw size={11} className={boardRefreshBusy ? 'animate-spin' : ''} />
+            {boardRefreshBusy
+              ? t('boards.master.refreshBusy')
+                  .replace('{done}', String(boardRefreshProgress.done))
+                  .replace('{total}', String(boardRefreshProgress.total))
+              : t('boards.master.refresh')}
+          </button>
+          )}
+        </div>
+      )}
+      {surface === 'board' && inChatView && browserReadingCount > 0 && (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-[#F8F2E7] px-4 py-2 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]">
           <span>{t('boards.reading.inChatBanner')}</span>
           <button
+            type="button"
             onClick={() => setWorkspacePanel({ kind: 'plugins' })}
-            className="shrink-0 rounded-full border border-amber-400/40 px-2.5 py-0.5 text-[11px] text-amber-200 transition hover:border-amber-300 hover:text-amber-100"
+            className="focus-ring shrink-0 rounded-full border border-[#866021]/30 px-2.5 py-1 text-[12px] leading-[18px] text-[#866021] transition hover:bg-white/60 dark:border-[#DAC393]/30 dark:text-[#DAC393] dark:hover:bg-white/5"
           >
             {t('boards.reading.switchToWork')}
           </button>
@@ -1221,7 +1497,9 @@ export default function BoardsPage() {
         className="relative flex-1 overflow-hidden bg-ink-950"
       >
         <div className="h-full overflow-y-auto">
-          {boards === null ? (
+          {surface === 'today' ? (
+            <TodayReading />
+          ) : boards === null ? (
             <div className="flex h-full items-center justify-center text-sm text-cream-faint">
               {t('app.loading')}
             </div>
@@ -1529,26 +1807,6 @@ export default function BoardsPage() {
               <ToolButton title={t('boards.tidy')} onClick={handleTidy}>
                 <LayoutGrid size={14} />
               </ToolButton>
-              {current.widgets.some((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary') && (
-                <ToolButton
-                  title={
-                    boardRefreshBusy
-                      ? t('boards.reading.refreshAllBusy')
-                          .replace('{done}', String(boardRefreshProgress.done))
-                          .replace('{total}', String(boardRefreshProgress.total))
-                      : t('boards.reading.refreshAll')
-                  }
-                  onClick={() => void refreshReadingModules()}
-                >
-                  {boardRefreshBusy ? (
-                    <span className="min-w-[20px] text-center text-[10px] tabular-nums">
-                      {boardRefreshProgress.done}/{boardRefreshProgress.total}
-                    </span>
-                  ) : (
-                    <Activity size={14} />
-                  )}
-                </ToolButton>
-              )}
               <ToolButton title={t('boards.refresh')} onClick={handleRefresh}>
                 <RefreshCw size={14} />
               </ToolButton>
@@ -1573,9 +1831,12 @@ export default function BoardsPage() {
         )}
       </div>
 
-      {(createMenuOpen || boardMenuOpen || toolsMenuOpen || galleryOpen || readingPickerOpen) && (
-        <div className="fixed inset-0 z-20" onClick={closeMenus} />
-      )}
+      {(createMenuOpen ||
+        boardMenuOpen ||
+        toolsMenuOpen ||
+        galleryOpen ||
+        readingPickerOpen ||
+        masterMetricsOpen) && <div className="fixed inset-0 z-20" onClick={closeMenus} />}
 
       {datasetsOpen && (
         <div

@@ -31,6 +31,7 @@ import type {
   TikTokRefreshOutcome,
   TikTokReportStatus
 } from '../shared/tiktokReport'
+import type { TikTokTodayReadingResult } from '../shared/todayReading'
 import {
   CliCapabilities,
   CliInfo,
@@ -503,6 +504,8 @@ export interface ElectronAPI {
   onTiktokReportStatus: (callback: (status: TikTokReportStatus) => void) => () => void
   /** TT 读数 board module: Main resolves the token + aggregates the report. */
   ttReadingSummary: (input: { advertiserIds?: string; range?: string }) => Promise<TikTokReadingResult>
+  /** Today page TikTok read: current window and the previous equal window. */
+  ttReadingToday: (input: { range?: string }) => Promise<TikTokTodayReadingResult>
   /** Figma Dev Mode MCP connector (local endpoint, no credentials). */
   figmaStatus: () => Promise<FigmaConnectionSnapshot>
   figmaConnect: () => Promise<FigmaConnectionSnapshot>
@@ -959,6 +962,10 @@ const api: ElectronAPI = {
       ...(input?.range !== undefined ? { range: bounded(input.range, 3) ?? '' } : {})
     }) as Promise<TikTokReadingResult>
   },
+  ttReadingToday: (input: { range?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TT_READING_TODAY, {
+      range: typeof input?.range === 'string' ? input.range.slice(0, 8) : ''
+    }) as Promise<TikTokTodayReadingResult>,
   figmaStatus: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_STATUS),
   figmaConnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_CONNECT),
   figmaDisconnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_DISCONNECT),

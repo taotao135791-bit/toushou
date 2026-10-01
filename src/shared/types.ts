@@ -1137,6 +1137,18 @@ export interface BoardWidget {
   style?: BoardWidgetStyle
 }
 
+/**
+ * Board-level master scope for reading modules: a shared date window and
+ * metric set. Absent on legacy boards — it only materializes when the user
+ * first sets it from the board toolbar, which is also what unifies every
+ * reading module onto it. Modules that diverge carry `independent` in their
+ * own config until the next master adjustment re-unifies them.
+ */
+export interface BoardMasterScope {
+  range: 'today' | 'last3' | 'last7' | 'last30'
+  metrics: string[]
+}
+
 export interface KanbanBoard {
   id: string
   name: string
@@ -1144,6 +1156,10 @@ export interface KanbanBoard {
   widgets: BoardWidget[]
   /** Optional canvas appearance, stored separately from widget data. */
   style?: BoardStyle
+  /** Optional master date+metric scope governing the reading modules. */
+  masterScope?: BoardMasterScope
+  /** Locked boards refuse deletion until unlocked from the board tab. */
+  locked?: boolean
   createdAt: number
   updatedAt: number
 }

@@ -104,6 +104,11 @@ export function deleteBoard(id: unknown, file: string = defaultBoardsFile()): Ka
   } catch {
     return { ok: false, error: 'board-store-unreadable' }
   }
+  // Locked boards refuse deletion here too — the tab lock must hold even
+  // for callers that skip the renderer's confirm dialog.
+  if (boards.some((b) => b.id === id && b.locked === true)) {
+    return { ok: false, error: 'board-locked' }
+  }
   const next = boards.filter((b) => b.id !== id)
   // Deleting an absent board is an idempotent no-op — skip the write.
   if (next.length === boards.length) return { ok: true }
