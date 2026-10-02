@@ -8,6 +8,17 @@ vi.mock('../browserPanel', () => ({
   loadBrowserPanelUrl: vi.fn(async () => {}),
   withBrowserReadingViewport: (_view: unknown, read: () => Promise<unknown>) => read()
 }))
+vi.mock('../fbReadingAccounts', () => ({
+  listFbReadingAccounts: () => [
+    {
+      id: 'a1',
+      alias: '三国IOS',
+      act: '2131017261144314',
+      businessId: '1734414010144999',
+      createdAt: 1
+    }
+  ]
+}))
 import {
   gateBrowserUseRequest,
   isFacebookReadOnlyAction,

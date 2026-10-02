@@ -263,23 +263,22 @@ export class TikTokRefreshService {
     return stored.accessToken
   }
 
-  /** One query per granted advertiser (or one token-scoped query), merged. */
-  private async fetchRows(accessToken: string, grantedAdvertiserIds: number[]) {
+  /** One query per advertiser, merged. The report API has no token-wide query. */
+  private async fetchRows(accessToken: string, advertiserIds: string[]) {
+    if (advertiserIds.length === 0) throw new Error('no-advertiser')
     const nowDate = new Date(this.now())
     const end = formatLocalDate(nowDate)
     const startDate = new Date(nowDate)
     startDate.setDate(startDate.getDate() - (REPORT_RANGE_DAYS - 1))
     const start = formatLocalDate(startDate)
-    const advertiserIds = grantedAdvertiserIds.slice(0, MAX_ADVERTISERS_PER_REFRESH)
-    const queries = advertiserIds.length > 0 ? advertiserIds : [undefined]
     const rows = []
-    for (const advertiserId of queries) {
+    for (const advertiserId of advertiserIds.slice(0, MAX_ADVERTISERS_PER_REFRESH)) {
       rows.push(
         ...(await fetchIntegratedReport(this.fetchImpl, {
           accessToken,
+          advertiserId,
           startDate: start,
-          endDate: end,
-          ...(advertiserId !== undefined ? { advertiserId } : {})
+          endDate: end
         }))
       )
     }

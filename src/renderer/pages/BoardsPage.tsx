@@ -38,7 +38,8 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { BoardDataset, BoardDesignSpec, BoardMasterScope, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
-import { FB_READING_SUMMARY_ACCOUNT_LIMIT, FB_READING_SUMMARY_METRICS } from '@shared/fbReading'
+import { FB_READING_SUMMARY_ACCOUNT_LIMIT, FB_READING_SUMMARY_METRICS, boardReadingRangeDates } from '@shared/fbReading'
+import { formatReadingWindow } from '@shared/todayReading'
 import { fbReadingMetricLabel } from './boards/metricLabel'
 import type { FbReadingAccountEntry } from '@shared/fbReading'
 import {
@@ -52,6 +53,7 @@ import {
   composeBoard,
   createBoard,
   createWidget,
+  detectPreset,
   findFreeSlot,
   reflowWidgets,
   type BoardPresetId
@@ -479,27 +481,41 @@ export default function BoardsPage() {
     persist(board)
   }
 
+  /**
+   * FB 日报 is laid out from the user's own account registry. With no
+   * accounts yet the board starts empty and the account picker opens on it.
+   */
+  const composeForUser = async (description: string, preset?: BoardPresetId) => {
+    const id = preset ?? detectPreset(description)
+    const accounts = id === 'fb-daily'
+      ? await window.electronAPI.listFbReadingAccounts().catch(() => [])
+      : []
+    const composed = composeBoard(description, (key) => t(key as I18nKey), id, Array.isArray(accounts) ? accounts : [])
+    return { composed, needsAccounts: id === 'fb-daily' && composed.widgets.length === 0 }
+  }
+
   /** Template menu pick: blank keeps the inline name flow, presets pre-lay-out widgets. */
-  const createFromPreset = (preset: BoardPresetId) => {
+  const createFromPreset = async (preset: BoardPresetId) => {
     if (boardsLoadFailed || boards === null || boards.length >= BOARD_LIMITS.maxBoards) {
       flashToast(t('boards.boardLimit'), false)
       return
     }
-    const composed = composeBoard('', (key) => t(key as I18nKey), preset)
+    const { composed, needsAccounts } = await composeForUser('', preset)
     const board = { ...createBoard(composed.name), widgets: composed.widgets }
     setBoards((prev) => [...(prev ?? []), board])
     setCurrentId(board.id)
     persist(board)
+    if (needsAccounts) openReadingPicker()
   }
 
   /** Describe-a-board submit: deterministic local preset, added as a new board. */
-  const handleCompose = (preset?: BoardPresetId) => {
+  const handleCompose = async (preset?: BoardPresetId) => {
     if (boardsLoadFailed || boards === null || boards.length >= BOARD_LIMITS.maxBoards) {
       flashToast(t('boards.boardLimit'), false)
       return
     }
     const description = composeText.trim()
-    const composed = composeBoard(description, (key) => t(key as I18nKey), preset)
+    const { composed, needsAccounts } = await composeForUser(description, preset)
     const board = {
       ...createBoard(composed.name),
       ...(description ? { description } : {}),
@@ -510,6 +526,7 @@ export default function BoardsPage() {
     setBoards((prev) => [...(prev ?? []), board])
     setCurrentId(board.id)
     persist(board)
+    if (needsAccounts) openReadingPicker()
   }
 
   const openDetail = () => {
@@ -745,6 +762,16 @@ export default function BoardsPage() {
     const metrics = Array.isArray(raw) ? (raw as string[]) : []
     return metrics.length > 0 ? [...metrics] : [...DEFAULT_MASTER_METRICS]
   }
+
+  // A reading body's "edit module" next step opens its own config panel.
+  useEffect(() => {
+    const onConfigure = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { widgetId?: string }
+      if (typeof detail?.widgetId === 'string') setConfigWidgetId(detail.widgetId)
+    }
+    window.addEventListener('board-widget:configure', onConfigure)
+    return () => window.removeEventListener('board-widget:configure', onConfigure)
+  }, [])
 
   const removeWidget = (widgetId: string) => {
     if (!currentId) return
@@ -1278,7 +1305,7 @@ export default function BoardsPage() {
                     onClick={() => {
                       setCreateMenuOpen(false)
                       if (preset === 'blank') openCreate()
-                      else createFromPreset(preset)
+                      else void createFromPreset(preset)
                     }}
                     className={`${menuItemClass} text-cream-dim hover:bg-overlay hover:text-cream`}
                   >
@@ -1369,6 +1396,7 @@ export default function BoardsPage() {
               <button
                 key={value}
                 onClick={() => saveMasterScope({ range: value, metrics: master?.metrics ?? seedMasterMetrics() })}
+                title={formatReadingWindow(boardReadingRangeDates(value))}
                 className={`focus-ring rounded-full border px-2.5 py-1 text-[12px] leading-[18px] transition ${
                   master?.range === value
                     ? 'border-accent/60 bg-accent-soft text-accent'
@@ -1379,6 +1407,11 @@ export default function BoardsPage() {
               </button>
             ))}
           </div>
+          {master && (
+            <span className="shrink-0 text-[12px] leading-[18px] tabular-nums text-cream-faint">
+              {formatReadingWindow(boardReadingRangeDates(master.range))}
+            </span>
+          )}
           <div className="relative">
             <button
               onClick={() => {
@@ -2088,7 +2121,7 @@ export default function BoardsPage() {
               ).map((chip) => (
                 <button
                   key={chip.preset}
-                  onClick={() => handleCompose(chip.preset)}
+                  onClick={() => void handleCompose(chip.preset)}
                   className="rounded-full border border-line px-3 py-1 text-[12px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
                 >
                   {chip.label}
@@ -2103,7 +2136,7 @@ export default function BoardsPage() {
                 {t('boards.cancel')}
               </button>
               <button
-                onClick={() => handleCompose()}
+                onClick={() => void handleCompose()}
                 className="flex items-center gap-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90"
               >
                 <Sparkles size={11} />

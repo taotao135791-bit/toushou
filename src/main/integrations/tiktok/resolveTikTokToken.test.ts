@@ -22,12 +22,15 @@ const pastedCredentials = (overrides: Partial<TikTokReportCredentials> = {}): Ti
   ...overrides
 })
 
+const noSelection = () => [] as string[]
+
 describe('resolveTikTokToken', () => {
   it('prefers the OAuth connector token when both sources hold one', async () => {
     const loadPastedCredentials = vi.fn(() => pastedCredentials())
     const resolved = await resolveTikTokToken({
       loadOAuthCredentials: async () => oauthCredentials(),
-      loadPastedCredentials
+      loadPastedCredentials,
+      loadSelectedAdvertisers: noSelection
     })
     expect(resolved).toEqual({
       token: 'oauth-token',
@@ -38,24 +41,26 @@ describe('resolveTikTokToken', () => {
     expect(loadPastedCredentials).not.toHaveBeenCalled()
   })
 
-  it('carries the persisted OAuth advertiser ids', async () => {
+  it('carries the persisted OAuth advertiser ids as exact strings', async () => {
     const resolved = await resolveTikTokToken({
-      loadOAuthCredentials: async () => oauthCredentials({ advertiserIds: [7300001, 7300002] })
+      loadOAuthCredentials: async () => oauthCredentials({ advertiserIds: ['7300000000000000001', '7300002'] }),
+      loadSelectedAdvertisers: noSelection
     })
     expect(resolved.source).toBe('oauth')
     if (resolved.source !== 'oauth') return
-    expect(resolved.advertiserIds).toEqual([7300001, 7300002])
+    expect(resolved.advertiserIds).toEqual(['7300000000000000001', '7300002'])
   })
 
   it('falls back to the paste store when OAuth has no token', async () => {
     const resolved = await resolveTikTokToken({
       loadOAuthCredentials: async () => oauthCredentials({ accessToken: undefined }),
-      loadPastedCredentials: () => pastedCredentials({ advertisers: [7300009] })
+      loadPastedCredentials: () => pastedCredentials({ advertisers: ['7300009'] }),
+      loadSelectedAdvertisers: noSelection
     })
     expect(resolved).toEqual({
       token: 'pasted-token',
       source: 'pasted',
-      advertiserIds: [7300009]
+      advertiserIds: ['7300009']
     })
   })
 
@@ -64,7 +69,8 @@ describe('resolveTikTokToken', () => {
       loadOAuthCredentials: async () => {
         throw new Error('safeStorage unavailable')
       },
-      loadPastedCredentials: () => pastedCredentials()
+      loadPastedCredentials: () => pastedCredentials(),
+      loadSelectedAdvertisers: noSelection
     })
     expect(resolved.source).toBe('pasted')
     expect(resolved.token).toBe('pasted-token')
@@ -73,8 +79,37 @@ describe('resolveTikTokToken', () => {
   it('reports none when neither source holds a token', async () => {
     const resolved = await resolveTikTokToken({
       loadOAuthCredentials: async () => null,
-      loadPastedCredentials: () => null
+      loadPastedCredentials: () => null,
+      loadSelectedAdvertisers: () => ['7300001']
     })
     expect(resolved).toEqual({ token: null, source: 'none' })
+  })
+
+  it('reads the advertisers chosen on the Connections page instead of the grant', async () => {
+    const resolved = await resolveTikTokToken({
+      loadOAuthCredentials: async () => oauthCredentials({ advertiserIds: ['7300001'] }),
+      loadSelectedAdvertisers: () => ['7311111111111111111', '7322222222222222222']
+    })
+    expect(resolved).toEqual({
+      token: 'oauth-token',
+      source: 'oauth',
+      advertiserIds: ['7311111111111111111', '7322222222222222222']
+    })
+  })
+
+  it('keeps the grant when the chosen list is empty or unreadable', async () => {
+    const empty = await resolveTikTokToken({
+      loadOAuthCredentials: async () => oauthCredentials({ advertiserIds: ['7300001'] }),
+      loadSelectedAdvertisers: noSelection
+    })
+    expect(empty.token ? empty.advertiserIds : null).toEqual(['7300001'])
+
+    const broken = await resolveTikTokToken({
+      loadOAuthCredentials: async () => oauthCredentials({ advertiserIds: ['7300001'] }),
+      loadSelectedAdvertisers: () => {
+        throw new Error('EACCES')
+      }
+    })
+    expect(broken.token ? broken.advertiserIds : null).toEqual(['7300001'])
   })
 })

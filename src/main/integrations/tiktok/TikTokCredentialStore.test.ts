@@ -41,13 +41,13 @@ describe('TikTokCredentialStore advertiserIds persistence', () => {
       refreshToken: 'rt-1',
       expiresAt: 1234567890,
       scope: 'mcp:tt4b',
-      advertiserIds: [7300001, 7300002]
+      advertiserIds: ['7300000000000000001', '7300002']
     })
     const loaded = await store.load()
     expect(loaded).not.toBeNull()
     expect(loaded?.clientId).toBe('client-1')
     expect(loaded?.accessToken).toBe('at-1')
-    expect(loaded?.advertiserIds).toEqual([7300001, 7300002])
+    expect(loaded?.advertiserIds).toEqual(['7300000000000000001', '7300002'])
   })
 
   it('tolerates a stored record without advertiser ids (older envelopes)', async () => {
@@ -66,14 +66,14 @@ describe('TikTokCredentialStore advertiserIds persistence', () => {
       JSON.stringify({
         clientId: 'client-1',
         accessToken: 'at-1',
-        advertiserIds: [7300001, 'junk', -5, 0, 1.5, '7300002', 7300001]
+        advertiserIds: [7300001, 'junk', -5, 0, 1.5, '7300002', 7300001, Number('7300000000000000001'), '7300000000000000003']
       })
     ).toString('base64')
     await writeFileP(file, Buffer.from(envelope, 'utf8'))
     const store = new TikTokCredentialStore({ filePath: file, backend: passthroughBackend() })
     const loaded = await store.load()
-    // Only positive integer ids survive, de-duplicated; the numeric-string
-    // form is coerced (same tolerance as the report client's parser).
-    expect(loaded?.advertiserIds).toEqual([7300001, 7300002])
+    // Only positive integer ids survive, de-duplicated, as decimal strings.
+    // A number past MAX_SAFE_INTEGER has already lost digits and is dropped.
+    expect(loaded?.advertiserIds).toEqual(['7300001', '7300002', '7300000000000000003'])
   })
 })

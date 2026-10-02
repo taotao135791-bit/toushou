@@ -5,8 +5,14 @@ import { MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRange } from '@shared/boar
 import { fbReadingMetricLabel, fbReadingRangeLabel, ttReadingRangeLabel } from './metricLabel'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
-import { FB_READING_SUMMARY_ACCOUNT_LIMIT, resolveFbReadingSummaryAccounts, resolveFbReadingWidgetAccount } from '@shared/fbReading'
-import type { FbReadingAccountEntry } from '@shared/fbReading'
+import {
+  FB_READING_SUMMARY_ACCOUNT_LIMIT,
+  boardReadingRangeDates,
+  resolveFbReadingSummaryAccounts,
+  resolveFbReadingWidgetAccount
+} from '@shared/fbReading'
+import type { FbReadingAccountEntry, FbReadingRange } from '@shared/fbReading'
+import { formatReadingWindow, tiktokReadingRangeWindow } from '@shared/todayReading'
 import { useAppStore } from '../../store'
 import { useT, I18nKey } from '../../i18n'
 import { FbReadingAccountManager } from './FbReadingAccountManager'
@@ -554,6 +560,9 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
                     </button>
                   ))}
               </div>
+              <p className="mt-1 text-[12px] leading-[18px] tabular-nums text-cream-faint">
+                {formatReadingWindow(boardReadingRangeDates(readingRange as FbReadingRange))}
+              </p>
             </PillField>
             <PillField label={t('boards.reading.config.metrics')}>
               <div className="flex flex-wrap gap-1">
@@ -610,6 +619,9 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
                   </button>
                 ))}
               </div>
+              <p className="mt-1 text-[12px] leading-[18px] tabular-nums text-cream-faint">
+                {formatReadingWindow(tiktokReadingRangeWindow(ttRange))}
+              </p>
             </PillField>
           </>
         )}

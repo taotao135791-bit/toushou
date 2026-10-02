@@ -58,7 +58,7 @@ describe('parseTikTokCredentialInput', () => {
     })
     expect(parsed.ok).toBe(true)
     if (!parsed.ok) return
-    expect(parsed.credentials.advertisers).toEqual([7300001, 42])
+    expect(parsed.credentials.advertisers).toEqual(['7300001', '42'])
   })
 })
 
@@ -78,7 +78,7 @@ describe('credentials round-trip + masking', () => {
 
     const onDisk = JSON.parse(readFileSync(file, 'utf-8'))
     expect(onDisk.accessToken).toBe('access-token-abcdef123456')
-    expect(onDisk.advertisers).toEqual([7300001])
+    expect(onDisk.advertisers).toEqual(['7300001'])
 
     const loaded = loadTikTokCredentials(file)
     expect(loaded?.appSecret).toBe('super-secret')
@@ -151,7 +151,7 @@ describe('credentials round-trip + masking', () => {
       file
     )
     expect(merged.accessToken).toBe('new-token-654321')
-    expect(merged.advertisers).toEqual([7300001])
+    expect(merged.advertisers).toEqual(['7300001'])
     const info = listTikTokCredentials(file)
     expect(info.tokenMasked).toBe('new…321')
     expect(info.expiresAt).toBe(1893456000000)

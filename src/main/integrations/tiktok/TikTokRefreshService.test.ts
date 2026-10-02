@@ -80,8 +80,8 @@ function makeService(options: {
     }
   }
   const requests: Array<Record<string, unknown>> = []
-  const fetchImpl = (async (_url: string, init?: RequestInit) => {
-    requests.push(JSON.parse(String(init?.body)))
+  const fetchImpl = (async (url: string) => {
+    requests.push(Object.fromEntries(new URL(url).searchParams.entries()))
     return options.reportPlan ? options.reportPlan() : reportResponse([['2026-01-02', 'C1', '10.5']])
   }) as unknown as (url: string, init?: RequestInit) => Promise<Response>
   const service = new TikTokRefreshService({
@@ -175,6 +175,16 @@ describe('refreshNow', () => {
     expect(statuses.length).toBeGreaterThan(0)
   })
 
+  it('sends nothing when a token exists but no advertiser id is known', async () => {
+    setTikTokCredentials({ accessToken: 'tok-1' }, credentialsFile)
+    const { service, requests } = makeService()
+    const outcome = await service.refreshNow()
+    expect(outcome.ok).toBe(false)
+    if (outcome.ok) return
+    expect(outcome.error).toBe('no-advertiser')
+    expect(requests).toHaveLength(0)
+  })
+
   it('pulls the report and overwrites the "TikTok 报表" dataset', async () => {
     setTikTokCredentials(
       { accessToken: 'tok-1', advertiserIds: [7300001] },
@@ -200,7 +210,7 @@ describe('refreshNow', () => {
 
     // One report call scoped to the configured advertiser, last-7-days window
     // (timezone-independent: expected dates are computed in the local zone).
-    expect(requests[0].advertiser_id).toBe(7300001)
+    expect(requests[0].advertiser_id).toBe('7300001')
     expect(requests[0].start_date).toBe(startExpectedStr)
     expect(requests[0].end_date).toBe(endExpected)
 
@@ -211,7 +221,7 @@ describe('refreshNow', () => {
   })
 
   it('surfaces API failures through lastError without clobbering the dataset', async () => {
-    setTikTokCredentials({ accessToken: 'tok-1' }, credentialsFile)
+    setTikTokCredentials({ accessToken: 'tok-1', advertiserIds: [7300001] }, credentialsFile)
     writeFileSync(datasetsFile, '[]')
     const { service } = makeService({
       reportPlan: () => jsonResponse({ code: 40100, message: 'Invalid access token', data: {} })
@@ -226,7 +236,7 @@ describe('refreshNow', () => {
   })
 
   it('guards against overlapping refreshes', async () => {
-    setTikTokCredentials({ accessToken: 'tok-1' }, credentialsFile)
+    setTikTokCredentials({ accessToken: 'tok-1', advertiserIds: [7300001] }, credentialsFile)
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
       release = resolve
@@ -260,7 +270,7 @@ describe('refreshNow', () => {
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       if (url.includes('/oauth2/refresh_token/')) throw new Error('must not rotate an oauth token')
       headers.push((init?.headers as Record<string, string>)['Access-Token'])
-      requests.push(JSON.parse(String(init?.body)))
+      requests.push(Object.fromEntries(new URL(url).searchParams.entries()))
       return reportResponse([['2026-01-02', 'C1', '10.5']])
     }) as unknown as (url: string, init?: RequestInit) => Promise<Response>
     const service = new TikTokRefreshService({
@@ -268,14 +278,14 @@ describe('refreshNow', () => {
       settings: { getAutoRefresh: () => false, setAutoRefresh: () => {} },
       credentialsFile: path.join(dir, 'absent-credentials.json'),
       datasetsFile,
-      resolveToken: async () => ({ token: 'oauth-token', source: 'oauth', advertiserIds: [7300042] }),
+      resolveToken: async () => ({ token: 'oauth-token', source: 'oauth', advertiserIds: ['7300042'] }),
       now: () => 1767000000000,
       broadcast: () => {}
     })
     const outcome = await service.refreshNow()
     expect(outcome.ok).toBe(true)
     expect(headers).toEqual(['oauth-token'])
-    expect(requests[0].advertiser_id).toBe(7300042)
+    expect(requests[0].advertiser_id).toBe('7300042')
   })
 
   it('rotates an expired token before pulling the report', async () => {
@@ -285,7 +295,8 @@ describe('refreshNow', () => {
         appSecret: 'sec',
         accessToken: 'expired-token',
         refreshToken: 'rt-1',
-        expiresAt: 1000 // long past the service's fixed "now"
+        expiresAt: 1000, // long past the service's fixed "now"
+        advertiserIds: [7300001]
       },
       credentialsFile
     )

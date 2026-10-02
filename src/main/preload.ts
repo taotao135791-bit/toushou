@@ -27,6 +27,8 @@ import type {
   TikTokCredentialInput,
   TikTokCredentialInfo,
   TikTokCredentialsSetResult,
+  TikTokReadingAdvertisers,
+  TikTokReadingAdvertisersSetResult,
   TikTokReadingResult,
   TikTokRefreshOutcome,
   TikTokReportStatus
@@ -506,6 +508,9 @@ export interface ElectronAPI {
   ttReadingSummary: (input: { advertiserIds?: string; range?: string }) => Promise<TikTokReadingResult>
   /** Today page TikTok read: current window and the previous equal window. */
   ttReadingToday: (input: { range?: string }) => Promise<TikTokTodayReadingResult>
+  /** Advertisers the readings use: the user's own list wins over the authorization's. */
+  ttReadingAdvertisers: () => Promise<TikTokReadingAdvertisers>
+  ttReadingSetAdvertisers: (input: { advertiserIds: string }) => Promise<TikTokReadingAdvertisersSetResult>
   /** Figma Dev Mode MCP connector (local endpoint, no credentials). */
   figmaStatus: () => Promise<FigmaConnectionSnapshot>
   figmaConnect: () => Promise<FigmaConnectionSnapshot>
@@ -553,8 +558,8 @@ function sanitizeTikTokCredentialInput(input: TikTokCredentialInput): TikTokCred
   if (Array.isArray(input?.advertiserIds)) {
     const ids: Array<number | string> = []
     for (const entry of input.advertiserIds.slice(0, 50)) {
-      if (typeof entry === 'number' && Number.isInteger(entry) && entry > 0) ids.push(entry)
-      else if (typeof entry === 'string' && /^\d{1,20}$/.test(entry.trim())) ids.push(entry.trim())
+      if (typeof entry === 'number' && Number.isSafeInteger(entry) && entry > 0) ids.push(entry)
+      else if (typeof entry === 'string' && /^\d{1,25}$/.test(entry.trim())) ids.push(entry.trim())
     }
     if (ids.length > 0) out.advertiserIds = ids
   }
@@ -966,6 +971,13 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.TT_READING_TODAY, {
       range: typeof input?.range === 'string' ? input.range.slice(0, 8) : ''
     }) as Promise<TikTokTodayReadingResult>,
+  ttReadingAdvertisers: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.TT_READING_ADVERTISERS_LIST) as Promise<TikTokReadingAdvertisers>,
+  // Too-long text goes through as null so Main rejects it; cutting it could save a wrong id.
+  ttReadingSetAdvertisers: (input: { advertiserIds: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TT_READING_ADVERTISERS_SET, {
+      advertiserIds: typeof input?.advertiserIds === 'string' && input.advertiserIds.length <= 400 ? input.advertiserIds : null
+    }) as Promise<TikTokReadingAdvertisersSetResult>,
   figmaStatus: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_STATUS),
   figmaConnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_CONNECT),
   figmaDisconnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_DISCONNECT),

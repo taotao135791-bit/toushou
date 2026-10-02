@@ -17,7 +17,6 @@ import {
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
 import {
-  FB_READING_BUILTIN_ACCOUNTS,
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   FB_READING_SUMMARY_METRICS,
   FB_READING_ACCOUNT_TARGETS,
@@ -292,36 +291,50 @@ export function dailyPreset(t: BoardText): BoardWidget[] {
   ]
 }
 
+/** Detail cards the FB daily preset lays out under its summary. */
+const FB_DAILY_DETAIL_CARDS = 4
+
 /**
  * FB daily board: the optimiser's whole workflow in one view — the
  * cross-account summary (totals + per-account rows) on top, then one
- * campaign-level detail card per account, seeded with the builtin account
- * (colleagues add their own detail cards via 添加模块).
+ * campaign-level detail card per account (the first four), all from the
+ * user's own account registry. No accounts → no widgets; the caller opens
+ * the account picker instead.
  */
-export function fbDailyPreset(t: BoardText): BoardWidget[] {
-  const builtin = FB_READING_ACCOUNT_TARGETS['三国IOS']
+export function fbDailyPreset(t: BoardText, accounts: readonly FbReadingAccountRef[] = []): BoardWidget[] {
+  const picked = accounts
+    .filter((account) => isValidFbReadingAct(account.act) && account.alias.trim())
+    .slice(0, FB_READING_SUMMARY_ACCOUNT_LIMIT)
+    .map((account) => ({
+      alias: account.alias.trim(),
+      act: account.act,
+      businessId: isValidFbReadingBusinessId(account.businessId) ? account.businessId : null
+    }))
+  if (picked.length === 0) return []
   return [
     presetWidget(
       'fb-reading-summary',
       t('boards.widget.fb-reading-summary'),
       { x: 0, y: 0, w: 8, h: 7 },
       {
-        accounts: FB_READING_BUILTIN_ACCOUNTS.map((a) => ({ ...a })),
+        accounts: picked.map((account) => ({ ...account })),
         range: 'last7',
         metrics: [...FB_READING_SUMMARY_METRICS]
       }
     ),
-    presetWidget(
-      'fb-reading',
-      t('boards.widget.fb-reading'),
-      { x: 0, y: 7, w: 6, h: 5 },
-      {
-        account: '三国IOS',
-        act: builtin.act,
-        businessId: builtin.businessId,
-        range: 'last3',
-        metrics: ['spend', 'cpi', 'cpm', 'ctr']
-      }
+    ...picked.slice(0, FB_DAILY_DETAIL_CARDS).map((account, index) =>
+      presetWidget(
+        'fb-reading',
+        t('boards.widget.fb-reading'),
+        { x: (index % 2) * 6, y: 7 + Math.floor(index / 2) * 5, w: 6, h: 5 },
+        {
+          account: account.alias,
+          act: account.act,
+          businessId: account.businessId,
+          range: 'last3',
+          metrics: ['spend', 'cpi', 'cpm', 'ctr']
+        }
+      )
     )
   ]
 }
@@ -400,11 +413,13 @@ export function tiktokAdsPreset(t: BoardText): BoardWidget[] {
  * Deterministically compose a new board from a free-form description. A
  * chip-selected `preset` skips keyword detection entirely. The caller turns
  * the result into a real board via `createBoard` and switches to it.
+ * `fbAccounts` is the user's registry, used by the FB daily preset only.
  */
 export function composeBoard(
   description: string,
   t: BoardText,
-  preset?: BoardPresetId
+  preset?: BoardPresetId,
+  fbAccounts: readonly FbReadingAccountRef[] = []
 ): ComposedBoard {
   const id = preset ?? detectPreset(description)
   switch (id) {
@@ -413,7 +428,7 @@ export function composeBoard(
     case 'finance':
       return { name: t('boards.preset.finance'), widgets: financePreset(t) }
     case 'fb-daily':
-      return { name: t('boards.preset.fbDaily'), widgets: fbDailyPreset(t) }
+      return { name: t('boards.preset.fbDaily'), widgets: fbDailyPreset(t, fbAccounts) }
     case 'tiktok':
       return { name: t('boards.preset.tiktok'), widgets: tiktokAdsPreset(t) }
     case 'blank':

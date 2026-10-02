@@ -1,5 +1,6 @@
 import type { TikTokStoredCredentials } from './TikTokCredentialStore'
 import { loadTikTokCredentials, type TikTokReportCredentials } from './TikTokConnectionStore'
+import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
 
 /**
  * Single token source for every TikTok 报表 reader (TT 读数 board module,
@@ -8,13 +9,16 @@ import { loadTikTokCredentials, type TikTokReportCredentials } from './TikTokCon
  * and fall back to the paste-token quick path only when no OAuth grant
  * exists or the connector fails to load.
  *
+ * The advertisers to read are the user's own list when they wrote one on the
+ * Connections page, otherwise whatever the authorization carried.
+ *
  * The OAuth credential loader is injected by ipc.ts (the app-wide
  * TikTokAdsConnectionManager lives there); until it is registered — and in
  * every test — the OAuth path reports "absent" instead of touching electron.
  */
 
 export type ResolvedTikTokToken =
-  | { token: string; source: 'oauth' | 'pasted'; advertiserIds: number[] }
+  | { token: string; source: 'oauth' | 'pasted'; advertiserIds: string[] }
   | { token: null; source: 'none' }
 
 export interface ResolveTikTokTokenDeps {
@@ -22,6 +26,8 @@ export interface ResolveTikTokTokenDeps {
   loadOAuthCredentials?: () => Promise<TikTokStoredCredentials | null>
   /** Paste-token store fallback. Defaults to loadTikTokCredentials() on the default file. */
   loadPastedCredentials?: () => TikTokReportCredentials | null
+  /** The user's own advertiser list. Defaults to the Connections page store. */
+  loadSelectedAdvertisers?: () => string[]
 }
 
 // Registered from ipc.ts; a lazy indirection so importing this module never
@@ -49,12 +55,14 @@ async function defaultOAuthLoader(): Promise<TikTokStoredCredentials | null> {
   }
 }
 
-function fromOAuth(credentials: TikTokStoredCredentials | null): ResolvedTikTokToken | null {
+type ResolvedWithToken = Extract<ResolvedTikTokToken, { source: 'oauth' | 'pasted' }>
+
+function fromOAuth(credentials: TikTokStoredCredentials | null): ResolvedWithToken | null {
   if (!credentials?.accessToken) return null
   return { token: credentials.accessToken, source: 'oauth', advertiserIds: credentials.advertiserIds ?? [] }
 }
 
-function fromPasted(credentials: TikTokReportCredentials | null): ResolvedTikTokToken | null {
+function fromPasted(credentials: TikTokReportCredentials | null): ResolvedWithToken | null {
   if (!credentials?.accessToken) return null
   return { token: credentials.accessToken, source: 'pasted', advertiserIds: credentials.advertisers ?? [] }
 }
@@ -72,10 +80,14 @@ export async function resolveTikTokToken(
   // Any OAuth-side failure (loader throw, unreadable envelope) degrades to
   // "no OAuth token" so the paste fallback stays reachable.
   const credentials = await loadOAuth().catch(() => null)
-  const oauth = fromOAuth(credentials)
-  if (oauth) return oauth
   const loadPasted = deps.loadPastedCredentials ?? (() => loadTikTokCredentials())
-  const pasted = fromPasted(loadPasted())
-  if (pasted) return pasted
-  return { token: null, source: 'none' }
+  const resolved = fromOAuth(credentials) ?? fromPasted(loadPasted())
+  if (!resolved) return { token: null, source: 'none' }
+  let selected: string[] = []
+  try {
+    selected = (deps.loadSelectedAdvertisers ?? (() => listTikTokReadingAdvertisers()))()
+  } catch {
+    selected = []
+  }
+  return selected.length > 0 ? { ...resolved, advertiserIds: selected } : resolved
 }

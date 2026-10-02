@@ -4,10 +4,12 @@ import { BoardWidget } from '@shared/types'
 import { boardReadingRangeDates, fbReadingMatchesWindow, resolveFbReadingWidgetAccount } from '@shared/fbReading'
 import type { FbReadingHistoryEntry } from '@shared/fbReading'
 import type { FbAccountBalance } from '@shared/fbBillingParser'
+import { formatReadingWindow } from '@shared/todayReading'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
 import { refreshAccountWithRetry } from './fbReadingRefresh'
 import { fbReadingMetricLabel, fbReadingRangeLabel } from './metricLabel'
+import { ReadingErrorNotice, fbReadingNotice, type ReadingNextStep, type ReadingNotice } from './ReadingErrorNotice'
 
 interface FbReadingDisplayRow {
   name: string
@@ -48,6 +50,7 @@ const ctrOf = (row: FbReadingDisplayRow): number | null =>
 export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   const t = useT()
   const inChat = useAppStore((s) => s.workspacePanel) === null
+  const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const accountRef = resolveFbReadingWidgetAccount(widget.config)
   const account = accountRef?.alias ?? (typeof widget.config.account === 'string' ? widget.config.account : '')
   const range = (typeof widget.config.range === 'string' ? widget.config.range : 'last7') as
@@ -67,7 +70,6 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   } | null>(null)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
-  const [failureDetail, setFailureDetail] = useState<string | null>(null)
   const [balance, setBalance] = useState<FbAccountBalance | null>(null)
   const [balanceFailure, setBalanceFailure] = useState<string | null>(null)
   const [balanceBusy, setBalanceBusy] = useState(false)
@@ -148,7 +150,6 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     const version = requestVersion.current
     setBusy(true)
     setFailure(null)
-    setFailureDetail(null)
     try {
       const outcome = await refreshAccountWithRetry(
         { alias: accountRef.alias, act: accountRef.act, businessId: accountRef.businessId, range },
@@ -165,7 +166,6 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
         setEntry(toDisplayEntry(outcome.entry))
       } else if (outcome.kind === 'failed') {
         setFailure(outcome.error)
-        setFailureDetail(outcome.error)
       }
     } finally {
       window.dispatchEvent(new CustomEvent('fb-reading:module-done', { detail: { widgetId: widget.id } }))
@@ -220,35 +220,25 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     v === null ? '—' : kind === 'usd' ? '$' + v.toFixed(2) : v.toFixed(2) + '%'
 
   const updated = entry ? new Date(entry.capturedAt).toLocaleString() : ''
-  const failureMessage = failure === 'page-load-failed' ? t('boards.reading.error.page')
-    : failure === 'login-required' ? t('boards.reading.error.login')
-    : failure?.startsWith('ERR_') || failure === 'navigation-timeout' ? t('boards.reading.error.network')
-      : failure === 'date-mismatch' ? t('boards.reading.error.date')
-        : failure === 'browser-busy' ? t('boards.reading.error.busy')
-          : failure === 'panel-hidden' ? t('boards.reading.error.closed')
-            : t('boards.reading.refreshFailed')
-
-  const failureNode = (
-    <>
-      {failureMessage}
-      {failureDetail ? ' (' + failureDetail + ')' : ''}
-    </>
-  )
-
-  const balanceFailureMessage = balanceFailure === '2fa-required'
-    ? t('boards.reading.balance.error.2fa')
-    : balanceFailure === 'login-required'
-      ? t('boards.reading.error.login')
-      : balanceFailure?.startsWith('ERR_') || balanceFailure === 'navigation-timeout'
-        ? t('boards.reading.error.network')
-        : t('boards.reading.balance.error.failed')
+  // Chat view cannot refresh Facebook, so "retry" becomes "open the browser" there.
+  const inChatNotice = (notice: ReadingNotice): ReadingNotice =>
+    inChat && notice.step === 'retry' ? { ...notice, step: 'open-browser' } : notice
+  const runStep = (step: ReadingNextStep, retry: () => void) => {
+    if (step === 'open-browser') setWorkspacePanel({ kind: 'browser' })
+    else if (step === 'pick-account') {
+      window.dispatchEvent(new CustomEvent('board-widget:configure', { detail: { widgetId: widget.id } }))
+    } else retry()
+  }
 
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-[12px] leading-[18px] text-cream-faint">
-          {account} · {fbReadingRangeLabel(t, range)}
-        </span>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-[12px] leading-[18px] text-cream-dim">{account}</p>
+          <p className="truncate text-[12px] leading-[18px] tabular-nums text-cream-faint">
+            {fbReadingRangeLabel(t, range)} · {formatReadingWindow(boardReadingRangeDates(range))}
+          </p>
+        </div>
         <div className="flex shrink-0 items-center gap-1">
           {includeBalance && (
             <button
@@ -278,9 +268,21 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           </button>
         </div>
       </div>
-      {failure && <div role="alert" className="text-[12px] leading-[18px] text-red-600 dark:text-red-400">{failureNode}</div>}
+      {failure && (
+        <ReadingErrorNotice
+          notice={inChatNotice(fbReadingNotice(failure, t))}
+          detail={failure}
+          onAction={(step) => runStep(step, () => void refresh())}
+          busy={busy || balanceBusy}
+        />
+      )}
       {balanceFailure && (
-        <div role="alert" className="text-[12px] leading-[18px] text-amber-800 dark:text-amber-200">{balanceFailureMessage}</div>
+        <ReadingErrorNotice
+          notice={inChatNotice(fbReadingNotice(balanceFailure, t, 'boards.reading.balance.error.failed'))}
+          detail={balanceFailure}
+          onAction={(step) => runStep(step, () => void refreshBalance())}
+          busy={busy || balanceBusy}
+        />
       )}
       {!entry ? (
         <>

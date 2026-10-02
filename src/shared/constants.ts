@@ -74,6 +74,9 @@ export const IPC_CHANNELS = {
   TT_READING_SUMMARY: 'tt-reading:summary',
   /** Today page: current window plus the previous equal window, split in Main. */
   TT_READING_TODAY: 'tt-reading:today',
+  /** Advertisers the readings use: the user's own list and what the authorization carried. */
+  TT_READING_ADVERTISERS_LIST: 'tt-reading:advertisers:list',
+  TT_READING_ADVERTISERS_SET: 'tt-reading:advertisers:set',
   BOARDS_DELETE: 'boards:delete',
   BOARDS_APPEND_NOTE: 'boards:append-note',
   BOARDS_DATASETS_LIST: 'boards:datasets-list',

@@ -154,6 +154,7 @@ describe('client → dataset integration shape', () => {
       )) as unknown as (url: string, init?: RequestInit) => Promise<Response>
     const rows = await fetchIntegratedReport(fetchImpl, {
       accessToken: 'tok',
+      advertiserId: '7300001',
       startDate: '2026-01-01',
       endDate: '2026-01-07'
     })

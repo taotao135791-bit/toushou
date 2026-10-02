@@ -1,21 +1,32 @@
+import { readingFailure, type ReadingErrorCode } from '../../../shared/readingError'
 import {
   isTikTokReadingRange,
-  type TikTokReadingRange,
+  parseTikTokAdvertiserIdList,
+  type TikTokReadingAdvertiser,
+  type TikTokReadingAdvertiserFailure,
   type TikTokReadingResult,
   type TikTokReadingSummary,
   type TikTokReadingTopCampaign,
   type TikTokReadingTotals
 } from '../../../shared/tiktokReport'
 import {
+  isTikTokTodayFailure,
   isTodayRange,
   previousEqualWindow,
+  tiktokReadingRangeWindow,
   todayWindow,
   topSpendMoves,
   type TikTokTodayAccount,
   type TikTokTodayReadingResult
 } from '../../../shared/todayReading'
 import { resolveTikTokToken } from './resolveTikTokToken'
-import { fetchIntegratedReport, type TikTokApiFetch, type TikTokReportRow } from './tiktokClient'
+import {
+  classifyTikTokError,
+  fetchAdvertiserInfo,
+  fetchIntegratedReport,
+  type TikTokApiFetch,
+  type TikTokReportRow
+} from './tiktokClient'
 
 /**
  * TT 读数 board module (tt-reading widget) — Main-side data path. Unlike FB
@@ -26,8 +37,59 @@ import { fetchIntegratedReport, type TikTokApiFetch, type TikTokReportRow } from
  * the aggregation itself is a pure function for tests.
  */
 
-/** Morning page queries at most this many granted advertisers. */
+/** Morning page queries at most this many advertisers. */
 export const TODAY_ADVERTISER_CAP = 8
+
+/** Upper bound on advertiser fan-out per summary request (mirrors the refresh service). */
+export const MAX_ADVERTISERS_PER_SUMMARY = 20
+
+/** These failures hit every advertiser alike, so the read stops at the first one. */
+const WHOLE_READ_FAILURES: ReadonlySet<ReadingErrorCode> = new Set(['auth', 'network', 'rate-limit'])
+
+const ADVERTISER_INFO_TTL_MS = 6 * 60 * 60 * 1000
+const ADVERTISER_INFO_MISS_TTL_MS = 30 * 60 * 1000
+
+const advertiserInfoCache = new Map<string, { advertiser: TikTokReadingAdvertiser; found: boolean; fetchedAt: number }>()
+
+export function resetTikTokAdvertiserInfoCacheForTest(): void {
+  advertiserInfoCache.clear()
+}
+
+/**
+ * Names and currencies for display. A failed lookup leaves the bare id on
+ * screen; the report call is what reports real failures.
+ */
+async function lookupAdvertisers(
+  fetchImpl: TikTokApiFetch,
+  accessToken: string,
+  advertiserIds: string[],
+  now: number
+): Promise<Map<string, TikTokReadingAdvertiser>> {
+  const stale = advertiserIds.filter((id) => {
+    const cached = advertiserInfoCache.get(id)
+    if (!cached) return true
+    return now - cached.fetchedAt > (cached.found ? ADVERTISER_INFO_TTL_MS : ADVERTISER_INFO_MISS_TTL_MS)
+  })
+  if (stale.length > 0) {
+    let found: TikTokReadingAdvertiser[] = []
+    try {
+      found = await fetchAdvertiserInfo(fetchImpl, { accessToken, advertiserIds: stale })
+    } catch {
+      found = []
+    }
+    for (const id of stale) {
+      const advertiser = found.find((info) => info.advertiserId === id)
+      advertiserInfoCache.set(id, {
+        advertiser: advertiser ?? { advertiserId: id, name: null, currency: null },
+        found: Boolean(advertiser),
+        fetchedAt: now
+      })
+    }
+  }
+  return new Map(
+    advertiserIds.map((id) => [id, advertiserInfoCache.get(id)?.advertiser ?? { advertiserId: id, name: null, currency: null }])
+  )
+}
 
 function campaignSpends(rows: TikTokReportRow[]): Array<{ name: string; spend: number }> {
   const byName = new Map<string, number>()
@@ -44,121 +106,69 @@ function rowsInWindow(rows: TikTokReportRow[], window: { start: string; end: str
 }
 
 /**
- * Today-page TikTok read. One report pull covers the current window and the
- * previous equal window, then the rows are split by date. This does not
- * change the board widget's own 1/7/28 summary.
+ * Today-page TikTok read. One report pull per advertiser covers the current
+ * window and the previous equal window, then the rows are split by date.
+ * This does not change the board widget's own 1/7/28 summary.
  */
 export async function buildTikTokTodayReading(
   input: { range?: unknown } = {},
   deps: TikTokReadingDeps = {}
 ): Promise<TikTokTodayReadingResult> {
+  const now = deps.now?.() ?? Date.now()
   const range = isTodayRange(input.range) ? input.range : 'last7'
-  const window = todayWindow(range, new Date(deps.now?.() ?? Date.now()))
+  const window = todayWindow(range, new Date(now))
   const previous = previousEqualWindow(window)
-  if (!previous) return { ok: false, error: 'invalid-input' }
-  const resolve = deps.resolveToken ?? resolveTikTokToken
-  const resolved = await resolve()
-  if (!resolved.token) return { ok: false, error: 'no-credentials' }
-  const granted = resolved.advertiserIds
-  const capped = granted.slice(0, TODAY_ADVERTISER_CAP)
-  const queries: Array<number | undefined> = capped.length > 0 ? capped : [undefined]
+  if (!previous) return readingFailure('invalid-input')
+  const resolved = await (deps.resolveToken ?? resolveTikTokToken)()
+  if (!resolved.token) return readingFailure('no-credentials')
+  if (resolved.advertiserIds.length === 0) return readingFailure('no-advertiser')
+  const advertiserIds = resolved.advertiserIds.slice(0, TODAY_ADVERTISER_CAP)
   const fetchImpl = deps.fetchImpl ?? ((url, init) => fetch(url, init))
-  try {
-    const accounts: TikTokTodayAccount[] = []
-    for (const advertiserId of queries) {
-      const rows = await fetchIntegratedReport(fetchImpl, {
+  const advertisers = await lookupAdvertisers(fetchImpl, resolved.token, advertiserIds, now)
+  const accounts: TikTokTodayAccount[] = []
+  for (const advertiserId of advertiserIds) {
+    const advertiser = advertisers.get(advertiserId) ?? { advertiserId, name: null, currency: null }
+    let rows: TikTokReportRow[]
+    try {
+      rows = await fetchIntegratedReport(fetchImpl, {
         accessToken: resolved.token,
+        advertiserId,
         startDate: previous.start,
-        endDate: window.end,
-        ...(advertiserId !== undefined ? { advertiserId } : {})
+        endDate: window.end
       })
-      const currentRows = rowsInWindow(rows, window)
-      const previousRows = rowsInWindow(rows, previous)
-      const currentTotals = summarizeTikTokReportRows(currentRows).totals
-      const previousTotals = summarizeTikTokReportRows(previousRows).totals
-      accounts.push({
-        advertiserId: advertiserId ?? null,
-        spend: currentTotals.spend,
-        previousSpend: previousTotals.spend,
-        impressions: currentTotals.impressions,
-        clicks: currentTotals.clicks,
-        conversions: currentTotals.conversions,
-        campaigns: topSpendMoves(campaignSpends(currentRows), campaignSpends(previousRows), 3)
-      })
+    } catch (error) {
+      const failure = classifyTikTokError(error)
+      if (WHOLE_READ_FAILURES.has(failure.code)) return readingFailure(failure.code, failure.detail)
+      accounts.push({ ...advertiser, error: failure.code, detail: failure.detail })
+      continue
     }
-    return {
-      range,
-      window,
-      previousWindow: previous,
-      source: resolved.source,
-      generatedAt: deps.now?.() ?? Date.now(),
-      truncated: granted.length > TODAY_ADVERTISER_CAP,
-      accounts
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: message.slice(0, 300) }
+    const currentRows = rowsInWindow(rows, window)
+    const previousRows = rowsInWindow(rows, previous)
+    const currentTotals = summarizeTikTokReportRows(currentRows).totals
+    const previousTotals = summarizeTikTokReportRows(previousRows).totals
+    accounts.push({
+      ...advertiser,
+      spend: currentTotals.spend,
+      previousSpend: previousTotals.spend,
+      impressions: currentTotals.impressions,
+      clicks: currentTotals.clicks,
+      conversions: currentTotals.conversions,
+      campaigns: topSpendMoves(campaignSpends(currentRows), campaignSpends(previousRows), 3)
+    })
   }
-}
-
-/** Upper bound on advertiser fan-out per summary request (mirrors the refresh service). */
-export const MAX_ADVERTISERS_PER_SUMMARY = 20
-
-/** Longest accepted advertiserIds config string ("7300…, 7311…"). */
-export const MAX_ADVERTISER_IDS_LENGTH = 400
-
-// eslint-disable-next-line no-control-regex
-const CONTROL_RE = /[\x00-\x1f\x7f]/
-
-/** Same shape rules as the shared tt-reading widget validator: bounded, digits/separator punctuation only, no control chars. */
-export function isValidTikTokReadingAdvertiserIds(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    value.length <= MAX_ADVERTISER_IDS_LENGTH &&
-    !CONTROL_RE.test(value) &&
-    /^[\d,，;；\s]*$/.test(value)
-  )
-}
-
-/**
- * Parse the widget's comma-separated advertiser list into query ids. Absent,
- * empty or all-blank input returns null (= "ask the token's own grant" — the
- * widget's default config carries ''); malformed segments are skipped,
- * mirroring the TikTok client's tolerance.
- */
-export function parseTikTokReadingAdvertiserIds(raw: unknown): number[] | null {
-  if (raw === undefined) return null
-  if (!isValidTikTokReadingAdvertiserIds(raw)) return null
-  const ids: number[] = []
-  for (const piece of raw.split(/[,，;；\s]+/)) {
-    if (!piece) continue
-    const id = Number.parseInt(piece, 10)
-    if (Number.isInteger(id) && id > 0 && !ids.includes(id)) ids.push(id)
+  const firstFailure = accounts.find(isTikTokTodayFailure)
+  if (firstFailure && accounts.every(isTikTokTodayFailure)) {
+    return readingFailure(firstFailure.error, firstFailure.detail)
   }
-  return ids.length > 0 ? ids : null
-}
-
-function formatLocalDate(date: Date): string {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
-
-/**
- * Inclusive local-date window for a range: '1' is today only, '7'/'28'
- * include today (whose row is partial — same convention as the refresh
- * service's 7-day window).
- */
-export function tiktokReadingRangeWindow(
-  range: TikTokReadingRange,
-  today: Date = new Date()
-): { startDate: string; endDate: string } {
-  const endDate = formatLocalDate(today)
-  if (range === '1') return { startDate: endDate, endDate }
-  const start = new Date(today)
-  start.setDate(start.getDate() - (range === '7' ? 6 : 27))
-  return { startDate: formatLocalDate(start), endDate }
+  return {
+    range,
+    window,
+    previousWindow: previous,
+    source: resolved.source,
+    generatedAt: now,
+    truncated: resolved.advertiserIds.length > TODAY_ADVERTISER_CAP,
+    accounts
+  }
 }
 
 function sumField(rows: TikTokReportRow[], key: 'spend' | 'impressions' | 'clicks' | 'conversion'): number {
@@ -225,53 +235,56 @@ export interface TikTokReadingDeps {
 
 /**
  * IPC-facing builder for TT 读数: resolve credentials → pull the integrated
- * report per advertiser (or token-scoped when the grant list is empty) →
- * aggregate. Errors surface as `{ ok: false, error }` with the stable
- * 'no-credentials' code when neither token source holds a token.
+ * report per advertiser → aggregate. The widget's own advertiser list wins
+ * over the resolved one. Errors surface as stable reading error codes; an
+ * advertiser that fails on its own is listed in `failed` while the rest
+ * still add up.
  */
 export async function buildTikTokReadingSummary(
   input: { advertiserIds?: unknown; range?: unknown } = {},
   deps: TikTokReadingDeps = {}
 ): Promise<TikTokReadingResult> {
+  const now = deps.now?.() ?? Date.now()
   const range = isTikTokReadingRange(input.range) ? input.range : '7'
-  const overrideIds = parseTikTokReadingAdvertiserIds(input.advertiserIds)
-  if (input.advertiserIds !== undefined && overrideIds === null) {
-    return { ok: false, error: 'invalid-input' }
-  }
-  const resolve = deps.resolveToken ?? resolveTikTokToken
-  const resolved = await resolve()
-  if (!resolved.token) {
-    return { ok: false, error: 'no-credentials' }
-  }
-  const { startDate, endDate } = tiktokReadingRangeWindow(range, new Date(deps.now?.() ?? Date.now()))
-  const grantedIds = overrideIds ?? resolved.advertiserIds
-  const queries = grantedIds.length > 0 ? grantedIds.slice(0, MAX_ADVERTISERS_PER_SUMMARY) : [undefined]
+  const override = input.advertiserIds === undefined ? [] : parseTikTokAdvertiserIdList(input.advertiserIds)
+  if (override === null) return readingFailure('invalid-input')
+  const resolved = await (deps.resolveToken ?? resolveTikTokToken)()
+  if (!resolved.token) return readingFailure('no-credentials')
+  const advertiserIds = (override.length > 0 ? override : resolved.advertiserIds).slice(0, MAX_ADVERTISERS_PER_SUMMARY)
+  if (advertiserIds.length === 0) return readingFailure('no-advertiser')
+  const { start: startDate, end: endDate } = tiktokReadingRangeWindow(range, new Date(now))
   const fetchImpl = deps.fetchImpl ?? ((url, init) => fetch(url, init))
-  try {
-    const rows: TikTokReportRow[] = []
-    for (const advertiserId of queries) {
-      rows.push(
-        ...(await fetchIntegratedReport(fetchImpl, {
-          accessToken: resolved.token,
-          startDate,
-          endDate,
-          ...(advertiserId !== undefined ? { advertiserId } : {})
-        }))
-      )
+  const info = await lookupAdvertisers(fetchImpl, resolved.token, advertiserIds, now)
+  const rows: TikTokReportRow[] = []
+  const advertisers: TikTokReadingAdvertiser[] = []
+  const failed: TikTokReadingAdvertiserFailure[] = []
+  for (const advertiserId of advertiserIds) {
+    const advertiser = info.get(advertiserId) ?? { advertiserId, name: null, currency: null }
+    try {
+      rows.push(...(await fetchIntegratedReport(fetchImpl, { accessToken: resolved.token, advertiserId, startDate, endDate })))
+      advertisers.push(advertiser)
+    } catch (error) {
+      const failure = classifyTikTokError(error)
+      if (WHOLE_READ_FAILURES.has(failure.code)) return readingFailure(failure.code, failure.detail)
+      failed.push({ ...advertiser, error: failure.code, detail: failure.detail })
     }
-    const { totals, topCampaigns } = summarizeTikTokReportRows(rows)
-    const summary: TikTokReadingSummary = {
-      range,
-      startDate,
-      endDate,
-      totals,
-      topCampaigns,
-      source: resolved.source,
-      generatedAt: deps.now?.() ?? Date.now()
-    }
-    return summary
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: message.slice(0, 300) }
   }
+  if (advertisers.length === 0 && failed.length > 0) return readingFailure(failed[0].error, failed[0].detail)
+  const { totals, topCampaigns } = summarizeTikTokReportRows(rows)
+  const known = [...new Set(advertisers.map((advertiser) => advertiser.currency).filter((code): code is string => !!code))]
+  const everyKnown = advertisers.every((advertiser) => advertiser.currency !== null)
+  const summary: TikTokReadingSummary = {
+    range,
+    startDate,
+    endDate,
+    totals,
+    topCampaigns,
+    source: resolved.source,
+    generatedAt: now,
+    advertisers,
+    failed,
+    currency: known.length === 1 && everyKnown ? known[0] : null,
+    mixedCurrency: known.length > 1
+  }
+  return summary
 }

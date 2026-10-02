@@ -2,6 +2,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import path from 'node:path'
 import { app } from 'electron'
 import {
+  normalizeTikTokAdvertiserId,
+  normalizeTikTokAdvertiserIds,
   TikTokCredentialErrorCode,
   TikTokCredentialInfo,
   TikTokCredentialInput,
@@ -31,8 +33,8 @@ export interface TikTokReportCredentials {
   appSecret?: string
   accessToken: string
   refreshToken?: string
-  /** 授权返回（或用户手填）的广告主 ID 列表。 */
-  advertisers?: number[]
+  /** 授权返回（或用户手填）的广告主 ID 列表（十进制字符串）。 */
+  advertisers?: string[]
   /** access token 到期时间（epoch ms）。 */
   expiresAt?: number
   /** 粘贴路径的 token 签发时间（epoch ms）。 */
@@ -95,10 +97,10 @@ export function parseTikTokCredentialInput(raw: unknown): TikTokCredentialParseR
     if (!Array.isArray(input.advertiserIds) || input.advertiserIds.length > TIKTOK_CREDENTIAL_LIMITS.maxAdvertisers) {
       return { ok: false, error: 'invalid-advertisers' }
     }
-    const ids: number[] = []
+    const ids: string[] = []
     for (const entry of input.advertiserIds) {
-      const id = typeof entry === 'number' ? entry : typeof entry === 'string' ? Number.parseInt(entry.trim(), 10) : Number.NaN
-      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'invalid-advertisers' }
+      const id = normalizeTikTokAdvertiserId(entry)
+      if (!id) return { ok: false, error: 'invalid-advertisers' }
       if (!ids.includes(id)) ids.push(id)
     }
     if (ids.length > 0) credentials.advertisers = ids
@@ -130,10 +132,8 @@ function readCredentialsFile(file: string): TikTokReportCredentials | null {
   if (isBoundedString(entry.appId, TIKTOK_CREDENTIAL_LIMITS.maxIdLength)) credentials.appId = entry.appId
   if (isBoundedString(entry.appSecret, TIKTOK_CREDENTIAL_LIMITS.maxSecretLength)) credentials.appSecret = entry.appSecret
   if (isBoundedString(entry.refreshToken, TIKTOK_CREDENTIAL_LIMITS.maxTokenLength)) credentials.refreshToken = entry.refreshToken
-  if (Array.isArray(entry.advertisers)) {
-    const ids = entry.advertisers.filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0)
-    if (ids.length > 0) credentials.advertisers = ids
-  }
+  const advertisers = normalizeTikTokAdvertiserIds(entry.advertisers, TIKTOK_CREDENTIAL_LIMITS.maxAdvertisers)
+  if (advertisers.length > 0) credentials.advertisers = advertisers
   if (typeof entry.expiresAt === 'number' && Number.isFinite(entry.expiresAt) && entry.expiresAt >= 0) {
     credentials.expiresAt = entry.expiresAt
   }
@@ -205,7 +205,7 @@ export function setTikTokCredentials(
 
 /** Merge token-exchange / refresh output into the stored record (keeps ids). */
 export function mergeTikTokTokens(
-  tokens: { accessToken: string; expiresAt?: number; refreshToken?: string; advertisers?: number[] },
+  tokens: { accessToken: string; expiresAt?: number; refreshToken?: string; advertisers?: string[] },
   file: string = defaultCredentialsFile()
 ): TikTokReportCredentials {
   const current = readCredentialsFile(file) ?? { accessToken: tokens.accessToken, savedAt: 0 }

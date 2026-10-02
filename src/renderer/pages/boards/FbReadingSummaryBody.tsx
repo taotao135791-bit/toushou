@@ -11,10 +11,12 @@ import {
   type FbReadingSummaryMetric
 } from '@shared/fbReading'
 import type { FbAccountBalance } from '@shared/fbBillingParser'
+import { formatReadingWindow } from '@shared/todayReading'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
 import { readingBlockKind, refreshAccountWithRetry, type ReadingAttemptProgress } from './fbReadingRefresh'
 import { fbReadingRangeLabel } from './metricLabel'
+import { ReadingErrorNotice, fbReadingNotice, type ReadingNextStep } from './ReadingErrorNotice'
 
 interface AccountRecord {
   alias: string
@@ -44,6 +46,7 @@ const SUMMARY_METRICS: FbReadingSummaryMetric[] = ['spend', 'balance', 'cpi', 'c
 export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
   const t = useT()
   const inChat = useAppStore((s) => s.workspacePanel) === null
+  const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const accounts = useMemo(() => resolveFbReadingSummaryAccounts(widget.config), [widget.config])
   const range = (typeof widget.config.range === 'string' ? widget.config.range : 'last7') as FbReadingRange
   const metrics = useMemo(() => {
@@ -286,16 +289,21 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
     if (metric === 'ctr') return cell(summary.ctr, 'pct')
     return cell(summary.cpa, 'usd')
   }
-  const errorText = (code: string | null) => {
-    if (!code) return null
-    if (code === 'login-required') return t('boards.reading.error.login')
-    if (code === 'page-load-failed') return t('boards.reading.error.page')
-    if (code.startsWith('ERR_') || code === 'navigation-timeout') return t('boards.reading.error.network')
-    if (code === 'date-mismatch') return t('boards.reading.error.date')
-    if (code === 'browser-busy') return t('boards.reading.error.busy')
-    if (code === 'panel-hidden') return t('boards.reading.error.closed')
-    if (code === '2fa-required') return t('boards.reading.balance.error.2fa')
-    return t('boards.reading.refreshFailed')
+  const errorText = (code: string | null) => (code ? fbReadingNotice(code, t).message : null)
+  // The round's first failure decides the one next step shown above the table.
+  const roundFailure = refreshing
+    ? null
+    : accounts.map((account) => progress[account.act]).find((state) => state?.status === 'failed')?.error ?? null
+  const failedNotice = roundFailure ? fbReadingNotice(roundFailure, t) : null
+  // Chat view cannot refresh Facebook, so "retry" becomes "open the browser" there.
+  const roundNotice = failedNotice && inChat && failedNotice.step === 'retry'
+    ? { ...failedNotice, step: 'open-browser' as const }
+    : failedNotice
+  const runStep = (step: ReadingNextStep) => {
+    if (step === 'open-browser') setWorkspacePanel({ kind: 'browser' })
+    else if (step === 'pick-account') {
+      window.dispatchEvent(new CustomEvent('board-widget:configure', { detail: { widgetId: widget.id } }))
+    } else void refresh()
   }
   const formatMoney = (value: number, currency: string | null): string =>
     currency === 'USD' ? '$' + value.toFixed(2) : `${value.toFixed(2)} ${currency ?? ''}`.trim()
@@ -342,10 +350,15 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
 
   return (
     <div className="flex h-full flex-col gap-1.5 overflow-hidden">
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-[12px] leading-[18px] text-cream-faint">
-          {accounts.map((account) => account.alias).join(' + ') || t('boards.reading.summary.noAccounts')} · {rangeLabel}
-        </span>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-[12px] leading-[18px] text-cream-dim">
+            {accounts.map((account) => account.alias).join(' + ') || t('boards.reading.summary.noAccounts')}
+          </p>
+          <p className="truncate text-[12px] leading-[18px] tabular-nums text-cream-faint">
+            {rangeLabel} · {formatReadingWindow(boardReadingRangeDates(range))}
+          </p>
+        </div>
         <div className="flex shrink-0 items-center gap-1">
           {metrics.includes('balance') && (
             <button
@@ -383,6 +396,14 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
         </div>
       ) : (
         <>
+          {roundNotice && roundFailure && (
+            <ReadingErrorNotice
+              notice={roundNotice}
+              detail={roundFailure}
+              onAction={runStep}
+              busy={refreshing || balanceBusyIndex !== null}
+            />
+          )}
           {!completeForDisplay && (
             <div role="status" className="flex items-start gap-1.5 rounded-lg bg-[#F8F2E7] px-2.5 py-1.5 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]">
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />

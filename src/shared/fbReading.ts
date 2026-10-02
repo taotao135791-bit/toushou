@@ -45,11 +45,6 @@ export type FbReadingAccountsAddResult =
   | { ok: true; accounts: FbReadingAccountEntry[]; added: FbReadingAccountRef[] }
   | { ok: false; accounts?: FbReadingAccountEntry[]; error: string }
 
-/** Accounts seeded on first run so legacy 三国IOS boards keep working. */
-export const FB_READING_BUILTIN_ACCOUNTS: FbReadingAccountRef[] = [
-  { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' }
-]
-
 export function isValidFbReadingAct(value: unknown): value is string {
   return typeof value === 'string' && /^\d{6,20}$/.test(value)
 }

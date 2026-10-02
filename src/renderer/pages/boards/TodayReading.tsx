@@ -6,25 +6,37 @@ import {
   type FbReadingAccountEntry,
   type FbReadingHistoryEntry
 } from '@shared/fbReading'
+import type { ReadingErrorCode } from '@shared/readingError'
 import {
   buildTodayChatPrompt,
   fbPresetForTodayRange,
+  formatReadingWindow,
   formatSpendDelta,
+  isTikTokTodayFailure,
   previousEqualWindow,
   sumFinite,
   todayWindow,
   topSpendMoves,
+  type TikTokTodayAccount,
   type TodayCampaignMove,
   type TodayRange,
   type TikTokTodayReading
 } from '@shared/todayReading'
 import { formatTikTokAmount, formatTikTokCostPerConversion, formatTikTokCount, formatTikTokRate } from '@shared/tiktokReport'
 import { useT, type I18nKey } from '../../i18n'
-import { createSessionForCurrentProject } from '../../lib/session'
 import { useAppStore } from '../../store'
 import { refreshAccountWithRetry } from './fbReadingRefresh'
+import {
+  ReadingErrorNotice,
+  fbReadingNotice,
+  tiktokReadingNotice,
+  type ReadingNextStep,
+  type ReadingNotice
+} from './ReadingErrorNotice'
 
 const RANGES: TodayRange[] = ['today', 'last7', 'last28']
+
+type Translate = (key: I18nKey, vars?: Record<string, string | number>) => string
 
 interface FacebookRow {
   account: FbReadingAccountEntry
@@ -38,13 +50,9 @@ interface FacebookRow {
   movers: TodayCampaignMove[]
 }
 
-function readingFailure(error: string, t: (key: I18nKey) => string): string {
-  if (error === 'login-required') return t('boards.reading.error.login')
-  if (error === 'panel-hidden' || error === 'panel-not-open') return t('boards.today.openBrowserFirst')
-  if (error === 'page-load-failed' || error === 'navigation-timeout' || error.startsWith('ERR_')) {
-    return t('boards.reading.error.network')
-  }
-  return t('boards.today.refreshFailed')
+interface TikTokFailure {
+  code: ReadingErrorCode | 'invoke-failed'
+  detail?: string
 }
 
 function captureFailure(error: string | undefined, t: (key: I18nKey) => string): string {
@@ -71,16 +79,14 @@ export function TodayReading() {
   const [range, setRange] = useState<TodayRange>('last7')
   const [facebook, setFacebook] = useState<FacebookRow[] | null>(null)
   const [tiktok, setTiktok] = useState<TikTokTodayReading | null>(null)
-  const [tiktokError, setTiktokError] = useState<string | null>(null)
+  const [tiktokFailure, setTiktokFailure] = useState<TikTokFailure | null>(null)
   const [tiktokBusy, setTiktokBusy] = useState(false)
   const [refreshingAct, setRefreshingAct] = useState<string | null>(null)
-  const [rowError, setRowError] = useState<string | null>(null)
+  const [rowFailure, setRowFailure] = useState<{ act: string; code: string } | null>(null)
   const [captureError, setCaptureError] = useState<string | null>(null)
   const [captureBusy, setCaptureBusy] = useState(false)
   const [openAct, setOpenAct] = useState<string | null>(null)
-  const [openTikTok, setOpenTikTok] = useState<number | 'all' | null>(null)
-  const [askError, setAskError] = useState<string | null>(null)
-  const [asking, setAsking] = useState(false)
+  const [openTikTok, setOpenTikTok] = useState<string | null>(null)
   const facebookLoad = useRef(0)
   const tiktokLoad = useRef(0)
   const alive = useRef(true)
@@ -124,21 +130,20 @@ export function TodayReading() {
   const loadTikTok = useCallback(async () => {
     const id = ++tiktokLoad.current
     setTiktokBusy(true)
-    setTiktokError(null)
+    setTiktokFailure(null)
     try {
       const result = await window.electronAPI.ttReadingToday({ range })
       if (id !== tiktokLoad.current) return
       if ('ok' in result) {
         setTiktok(null)
-        setTiktokError(result.error)
+        setTiktokFailure({ code: result.error, detail: result.detail })
       } else {
         setTiktok(result)
-        setTiktokError(null)
       }
     } catch {
       if (id !== tiktokLoad.current) return
       setTiktok(null)
-      setTiktokError('invoke-failed')
+      setTiktokFailure({ code: 'invoke-failed' })
     } finally {
       if (id === tiktokLoad.current) setTiktokBusy(false)
     }
@@ -169,7 +174,7 @@ export function TodayReading() {
       return
     }
     setRefreshingAct(row.account.act)
-    setRowError(null)
+    setRowFailure(null)
     try {
       const outcome = await refreshAccountWithRetry({
         alias: row.account.alias,
@@ -179,7 +184,7 @@ export function TodayReading() {
       }, {
         isCurrent: () => alive.current
       })
-      if (outcome.kind === 'failed') setRowError(readingFailure(outcome.error, t))
+      if (outcome.kind === 'failed') setRowFailure({ act: row.account.act, code: outcome.error })
       await loadFacebook()
     } finally {
       setRefreshingAct(null)
@@ -212,30 +217,32 @@ export function TodayReading() {
     }
   }
 
-  const ask = async () => {
-    setAsking(true)
-    setAskError(null)
-    try {
-      const sessionId = await createSessionForCurrentProject()
-      if (!sessionId) {
-        setAskError(t('boards.today.askFailed'))
-        return
-      }
-      const store = useAppStore.getState()
-      store.setCurrentSessionId(sessionId)
-      store.setComposerPrefill(buildTodayChatPrompt(
-        language === 'zh' ? 'zh' : 'en',
-        t(rangeKey(range)),
-        `${dateWindow.start} – ${dateWindow.end}`,
-        chatRows(facebook, tiktok, tiktokError, preset !== null, t)
-      ))
-      store.setComposerAutosend(true)
-      navigate('/')
-    } catch {
-      setAskError(t('boards.today.askFailed'))
-    } finally {
-      setAsking(false)
-    }
+  const tiktokStep = (step: ReadingNextStep) => {
+    if (step === 'connect' || step === 'reconnect' || step === 'pick-advertiser') navigate('/connections')
+    else void loadTikTok()
+  }
+
+  const facebookStep = (step: ReadingNextStep, row: FacebookRow) => {
+    if (step === 'open-browser') setWorkspacePanel({ kind: 'browser' })
+    else void refreshFacebook(row)
+  }
+
+  const hasFigures =
+    (facebook ?? []).some((row) => row.spend !== null) ||
+    (tiktok?.accounts ?? []).some((account) => !isTikTokTodayFailure(account))
+
+  // Fills a new chat's draft only; the user reads it and presses send.
+  const ask = () => {
+    if (!hasFigures) return
+    const store = useAppStore.getState()
+    store.setCurrentSessionId(null)
+    store.setComposerPrefill(buildTodayChatPrompt(
+      language === 'zh' ? 'zh' : 'en',
+      t(rangeKey(range)),
+      formatReadingWindow(dateWindow),
+      chatRows(facebook, tiktok, tiktokFailure, preset !== null, t)
+    ))
+    navigate('/')
   }
 
   const rangeLabel = t(rangeKey(range))
@@ -245,9 +252,9 @@ export function TodayReading() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[24px] font-semibold leading-[34px] text-cream">{t('boards.today.title')}</h1>
-          <p className="mt-1 text-[12px] leading-[18px] text-cream-faint">
-            {rangeLabel} · {dateWindow.start} – {dateWindow.end}
-            {previous ? ` · ${t('boards.today.compare').replace('{window}', `${previous.start} – ${previous.end}`)}` : ''}
+          <p className="mt-1 text-[12px] leading-[18px] tabular-nums text-cream-faint">
+            {rangeLabel} · {formatReadingWindow(dateWindow)}
+            {previous ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(previous))}` : ''}
           </p>
         </div>
         <div className="flex gap-1" role="tablist" aria-label={t('boards.today.title')}>
@@ -305,94 +312,43 @@ export function TodayReading() {
               open={openAct === row.account.act}
               busy={refreshingAct === row.account.act}
               needsBrowser={inChat}
+              failure={rowFailure?.act === row.account.act ? rowFailure.code : null}
               onToggle={() => setOpenAct((current) => current === row.account.act ? null : row.account.act)}
               onRefresh={() => void refreshFacebook(row)}
+              onStep={(step) => facebookStep(step, row)}
               t={t}
             />
           ))
         )}
-        {rowError && <p role="alert" className="text-[12px] leading-[18px] text-red-600 dark:text-red-400">{rowError}</p>}
       </section>
 
       <section className="flex flex-col gap-2">
         <h2 className="text-[16px] font-semibold leading-[26px] text-cream">{t('boards.today.tiktok')}</h2>
-        {tiktokError === 'no-credentials' ? (
+        {tiktokFailure ? (
           <div className="rounded-2xl border border-line bg-ink-850 px-4 py-4">
-            <p className="text-[14px] leading-[22px] text-cream">{t('boards.today.connectTikTok')}</p>
-            <button
-              type="button"
-              onClick={() => navigate('/connections')}
-              className="focus-ring mt-3 rounded-full bg-accent px-3 py-1.5 text-[12px] leading-[18px] font-medium text-[rgb(var(--bg-app))]"
-            >
-              {t('boards.tt.goConnect')}
-            </button>
+            <ReadingErrorNotice
+              notice={tiktokReadingNotice(tiktokFailure.code, t)}
+              detail={tiktokFailure.detail}
+              onAction={tiktokStep}
+              busy={tiktokBusy}
+            />
           </div>
         ) : tiktokBusy && !tiktok ? (
           <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.loading')}</p>
-        ) : tiktokError ? (
-          <div>
-            <p role="alert" className="text-[12px] leading-[18px] text-red-600 dark:text-red-400">
-              {tiktokError === 'invoke-failed' || /^[a-z0-9-]+$/.test(tiktokError)
-                ? t('boards.reading.refreshFailed')
-                : tiktokError}
-            </p>
-            <button
-              type="button"
-              onClick={() => void loadTikTok()}
-              className="focus-ring mt-2 rounded-full border border-line px-3 py-1 text-[12px] leading-[18px] text-cream-dim"
-            >
-              {t('boards.today.refresh')}
-            </button>
-          </div>
         ) : tiktok ? (
           <>
-            {tiktok.accounts.map((account) => {
-              const key = account.advertiserId ?? 'all'
-              const delta = formatSpendDelta(account.spend, account.previousSpend)
-              return (
-                <article key={String(key)} className="rounded-2xl border border-line bg-ink-850 px-4 py-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-[14px] leading-[22px] text-cream">
-                        {account.advertiserId === null ? t('boards.tt.allAdvertisers') : String(account.advertiserId)}
-                      </p>
-                      <p className="text-[12px] leading-[18px] text-cream-faint">
-                        {t('boards.today.official')}
-                        {' · '}
-                        {t('boards.reading.updatedAt', { time: new Date(tiktok.generatedAt).toLocaleString() })}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[20px] font-semibold leading-7 tabular-nums text-cream">{formatTikTokAmount(account.spend)}</p>
-                      <p className="text-[12px] leading-[18px] tabular-nums text-cream-dim">
-                        {delta ?? t('boards.today.noPrevious')}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setOpenTikTok((current) => current === key ? null : key)}
-                    className="focus-ring mt-2 flex items-center gap-1 text-[12px] leading-[18px] text-cream-faint"
-                  >
-                    <ChevronDown size={12} className={openTikTok === key ? 'rotate-180' : ''} />
-                    {openTikTok === key ? t('boards.today.collapse') : t('boards.today.expand')}
-                  </button>
-                  {openTikTok === key && (
-                    <div className="mt-2 grid grid-cols-2 gap-3 border-t border-line pt-2 sm:grid-cols-4">
-                      <Metric label={t('boards.tt.metric.impressions')} value={formatTikTokCount(account.impressions)} />
-                      <Metric label={t('boards.tt.metric.clicks')} value={formatTikTokCount(account.clicks)} />
-                      <Metric label={t('boards.tt.metric.ctr')} value={formatTikTokRate(account.clicks, account.impressions)} />
-                      <Metric label={t('boards.tt.metric.conversions')} value={formatTikTokCount(account.conversions)} />
-                      <Metric
-                        label={t('boards.tt.metric.costPerConversion')}
-                        value={formatTikTokCostPerConversion(account.spend, account.conversions)}
-                      />
-                    </div>
-                  )}
-                  <Movers movers={account.campaigns} t={t} />
-                </article>
-              )
-            })}
+            {tiktok.accounts.map((account) => (
+              <TikTokAccount
+                key={account.advertiserId}
+                account={account}
+                generatedAt={tiktok.generatedAt}
+                open={openTikTok === account.advertiserId}
+                busy={tiktokBusy}
+                onToggle={() => setOpenTikTok((current) => current === account.advertiserId ? null : account.advertiserId)}
+                onStep={tiktokStep}
+                t={t}
+              />
+            ))}
             {tiktok.truncated && (
               <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.truncated')}</p>
             )}
@@ -403,13 +359,15 @@ export function TodayReading() {
       <div className="flex flex-col items-start gap-2 pb-8">
         <button
           type="button"
-          onClick={() => void ask()}
-          disabled={asking}
+          onClick={ask}
+          disabled={!hasFigures}
           className="focus-ring rounded-full bg-accent px-4 py-2 text-[13px] font-medium leading-5 text-[rgb(var(--bg-app))] disabled:opacity-40"
         >
-          {asking ? t('boards.today.asking') : t('boards.today.ask')}
+          {t('boards.today.ask')}
         </button>
-        {askError && <p role="alert" className="text-[12px] leading-[18px] text-red-600 dark:text-red-400">{askError}</p>}
+        <p className="text-[12px] leading-[18px] text-cream-faint">
+          {hasFigures ? t('boards.today.askHint') : t('boards.today.askDisabled')}
+        </p>
         <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.currencyNote')}</p>
       </div>
     </div>
@@ -448,12 +406,16 @@ function rangeKey(range: TodayRange): I18nKey {
   return 'boards.today.range.last7'
 }
 
+function withCurrency(amount: string, currency: string | null): string {
+  return currency ? `${amount} ${currency}` : amount
+}
+
 function chatRows(
   facebook: FacebookRow[] | null,
   tiktok: TikTokTodayReading | null,
-  tiktokError: string | null,
+  tiktokFailure: TikTokFailure | null,
   facebookCovered: boolean,
-  t: (key: I18nKey, vars?: Record<string, string | number>) => string
+  t: Translate
 ) {
   const rows = []
   for (const row of facebook ?? []) {
@@ -470,22 +432,34 @@ function chatRows(
       movers: row.movers.map((move) => `${move.name} ${formatSpendDelta(move.spend, move.previousSpend) ?? ''}`)
     })
   }
-  if (tiktokError === 'no-credentials') {
+  if (tiktokFailure) {
     rows.push({
       platform: 'TikTok',
       name: t('boards.tt.allAdvertisers'),
-      status: t('boards.today.connectTikTok'),
+      status: tiktokReadingNotice(tiktokFailure.code, t).message,
       spend: null,
       delta: null,
       movers: []
     })
   }
   for (const account of tiktok?.accounts ?? []) {
+    const name = account.name ?? account.advertiserId
+    if (isTikTokTodayFailure(account)) {
+      rows.push({
+        platform: 'TikTok',
+        name,
+        status: tiktokReadingNotice(account.error, t).message,
+        spend: null,
+        delta: null,
+        movers: []
+      })
+      continue
+    }
     rows.push({
       platform: 'TikTok',
-      name: account.advertiserId === null ? t('boards.tt.allAdvertisers') : String(account.advertiserId),
+      name,
       status: t('boards.today.official'),
-      spend: formatTikTokAmount(account.spend),
+      spend: withCurrency(formatTikTokAmount(account.spend), account.currency),
       delta: formatSpendDelta(account.spend, account.previousSpend),
       movers: account.campaigns.map((move) => `${move.name} ${formatSpendDelta(move.spend, move.previousSpend) ?? ''}`)
     })
@@ -519,24 +493,113 @@ function Movers({
   )
 }
 
+function TikTokAccount({
+  account,
+  generatedAt,
+  open,
+  busy,
+  onToggle,
+  onStep,
+  t
+}: {
+  account: TikTokTodayAccount
+  generatedAt: number
+  open: boolean
+  busy: boolean
+  onToggle: () => void
+  onStep: (step: ReadingNextStep) => void
+  t: Translate
+}) {
+  const title = (
+    <div className="min-w-0">
+      <p className="truncate text-[14px] leading-[22px] text-cream" title={account.advertiserId}>
+        {account.name ?? account.advertiserId}
+      </p>
+      <p className="truncate text-[12px] leading-[18px] tabular-nums text-cream-faint">
+        {account.name ? `ID ${account.advertiserId} · ` : ''}
+        {t('boards.today.official')}
+        {' · '}
+        {t('boards.reading.updatedAt', { time: new Date(generatedAt).toLocaleString() })}
+      </p>
+    </div>
+  )
+  if (isTikTokTodayFailure(account)) {
+    return (
+      <article className="rounded-2xl border border-line bg-ink-850 px-4 py-3">
+        {title}
+        <ReadingErrorNotice
+          className="mt-2"
+          notice={tiktokReadingNotice(account.error, t)}
+          detail={account.detail}
+          onAction={onStep}
+          busy={busy}
+        />
+      </article>
+    )
+  }
+  const delta = formatSpendDelta(account.spend, account.previousSpend)
+  return (
+    <article className="rounded-2xl border border-line bg-ink-850 px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        {title}
+        <div className="text-right">
+          <p className="text-[20px] font-semibold leading-7 tabular-nums text-cream">
+            {formatTikTokAmount(account.spend)}
+            {account.currency && <span className="ml-1 text-[12px] font-normal text-cream-faint">{account.currency}</span>}
+          </p>
+          <p className="text-[12px] leading-[18px] tabular-nums text-cream-dim">
+            {delta ?? t('boards.today.noPrevious')}
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="focus-ring mt-2 flex items-center gap-1 text-[12px] leading-[18px] text-cream-faint"
+      >
+        <ChevronDown size={12} className={open ? 'rotate-180' : ''} />
+        {open ? t('boards.today.collapse') : t('boards.today.expand')}
+      </button>
+      {open && (
+        <div className="mt-2 grid grid-cols-2 gap-3 border-t border-line pt-2 sm:grid-cols-4">
+          <Metric label={t('boards.tt.metric.impressions')} value={formatTikTokCount(account.impressions)} />
+          <Metric label={t('boards.tt.metric.clicks')} value={formatTikTokCount(account.clicks)} />
+          <Metric label={t('boards.tt.metric.ctr')} value={formatTikTokRate(account.clicks, account.impressions)} />
+          <Metric label={t('boards.tt.metric.conversions')} value={formatTikTokCount(account.conversions)} />
+          <Metric
+            label={t('boards.tt.metric.costPerConversion')}
+            value={formatTikTokCostPerConversion(account.spend, account.conversions)}
+          />
+        </div>
+      )}
+      <Movers movers={account.campaigns} t={t} />
+    </article>
+  )
+}
+
 function FacebookAccount({
   row,
   open,
   busy,
   needsBrowser,
+  failure,
   onToggle,
   onRefresh,
+  onStep,
   t
 }: {
   row: FacebookRow
   open: boolean
   busy: boolean
   needsBrowser: boolean
+  failure: string | null
   onToggle: () => void
   onRefresh: () => void
-  t: (key: I18nKey, vars?: Record<string, string | number>) => string
+  onStep: (step: ReadingNextStep) => void
+  t: Translate
 }) {
   const delta = formatSpendDelta(row.spend, row.previousSpend)
+  const notice: ReadingNotice | null = failure ? fbReadingNotice(failure, t, 'boards.today.refreshFailed') : null
   return (
     <article className="rounded-2xl border border-line bg-ink-850 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -559,6 +622,9 @@ function FacebookAccount({
           </p>
         </div>
       </div>
+      {notice && failure && (
+        <ReadingErrorNotice className="mt-2" notice={notice} detail={failure} onAction={onStep} busy={busy} />
+      )}
       {row.covered && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button

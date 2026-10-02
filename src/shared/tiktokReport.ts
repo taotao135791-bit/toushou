@@ -7,8 +7,71 @@
  * 看板数据集。
  */
 
+import type { ReadingErrorCode, ReadingFailure } from './readingError'
+
 /** 连接模式：未配置 / OAuth 换取（长期）/ 开发者控制台直接粘贴 token。 */
 export type TikTokCredentialMode = 'none' | 'oauth' | 'pasted-token'
+
+/**
+ * TikTok advertiser ids are 19-digit decimals, past Number.MAX_SAFE_INTEGER:
+ * parsing one into a JS number rounds its last digits into a different
+ * account. They stay decimal strings from the token response to the URL.
+ */
+const ADVERTISER_ID_RE = /^[1-9]\d{0,24}$/
+
+export const TIKTOK_ADVERTISER_ID_LIMIT = 50
+
+/** Longest accepted comma-separated advertiser list ("7300…, 7311…"). */
+export const TIKTOK_ADVERTISER_LIST_MAX_LENGTH = 400
+
+export function normalizeTikTokAdvertiserId(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return ADVERTISER_ID_RE.test(trimmed) ? trimmed : null
+  }
+  // A JSON number this large has already lost digits; only exact ones survive.
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return String(value)
+  return null
+}
+
+/** Keeps valid ids, de-duplicated and order-stable; anything else is dropped. */
+export function normalizeTikTokAdvertiserIds(values: unknown, limit: number = TIKTOK_ADVERTISER_ID_LIMIT): string[] {
+  if (!Array.isArray(values)) return []
+  const ids: string[] = []
+  for (const value of values) {
+    if (ids.length >= limit) break
+    const id = normalizeTikTokAdvertiserId(value)
+    if (id && !ids.includes(id)) ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * Form text → advertiser ids. Separators are commas (ASCII or CJK),
+ * semicolons and whitespace. Returns null when the text is too long or holds
+ * anything that is not an id; blank text is an empty list.
+ */
+export function parseTikTokAdvertiserIdList(raw: unknown): string[] | null {
+  if (typeof raw !== 'string' || raw.length > TIKTOK_ADVERTISER_LIST_MAX_LENGTH) return null
+  const ids: string[] = []
+  for (const piece of raw.split(/[,，;；\s]+/)) {
+    if (!piece) continue
+    const id = normalizeTikTokAdvertiserId(piece)
+    if (!id) return null
+    if (!ids.includes(id)) ids.push(id)
+  }
+  return ids.length > TIKTOK_ADVERTISER_ID_LIMIT ? null : ids
+}
+
+/** Advertisers the board reads: the user's own pick, and what the authorization carried. */
+export interface TikTokReadingAdvertisers {
+  selected: string[]
+  granted: string[]
+}
+
+export type TikTokReadingAdvertisersSetResult =
+  | { ok: true; selected: string[] }
+  | { ok: false; error: 'invalid-input' | 'write-failed' }
 
 /** 渲染层可见的凭据投影 — 全部脱敏，绝无 secret 明文。 */
 export interface TikTokCredentialInfo {
@@ -19,8 +82,8 @@ export interface TikTokCredentialInfo {
   /** 脱敏后的 access token，如 "abc…xyz"（首尾各 3 位）。 */
   tokenMasked: string
   hasRefreshToken: boolean
-  /** 已保存的广告主 ID（数字，非机密）。 */
-  advertiserIds: number[]
+  /** 已保存的广告主 ID（十进制字符串，非机密）。 */
+  advertiserIds: string[]
   /** access token 到期时间（epoch ms；粘贴路径可能缺失）。 */
   expiresAt?: number
   /** 粘贴路径记录的 token 签发时间（epoch ms）。 */
@@ -79,8 +142,20 @@ export type TikTokCredentialErrorCode =
 // only ever sees this bounded projection.
 // ---------------------------------------------------------------------------
 
-/** 报表天数口径：昨天只看今天 / 近 7 天 / 近 28 天（均含今天，今天为半日）。 */
+/** 报表天数口径：今天（未收完）/ 近 7 天 / 近 28 天（都截止到昨天，整天）。 */
 export type TikTokReadingRange = '1' | '7' | '28'
+
+export interface TikTokReadingAdvertiser {
+  advertiserId: string
+  /** From the advertiser info call; null when TikTok did not return it. */
+  name: string | null
+  currency: string | null
+}
+
+export interface TikTokReadingAdvertiserFailure extends TikTokReadingAdvertiser {
+  error: ReadingErrorCode
+  detail?: string
+}
 
 export interface TikTokReadingTopCampaign {
   name: string
@@ -111,10 +186,18 @@ export interface TikTokReadingSummary {
   /** token 来源：OAuth 连接器（自动续期）优先，粘贴 token 兜底。 */
   source: 'oauth' | 'pasted'
   generatedAt: number
+  /** Accounts whose report is inside the totals. */
+  advertisers: TikTokReadingAdvertiser[]
+  /** Accounts that failed on their own; their numbers are NOT in the totals. */
+  failed: TikTokReadingAdvertiserFailure[]
+  /** The one currency every read account reports; null when unknown or mixed. */
+  currency: string | null
+  /** Accounts report different currencies, so money totals are not added up. */
+  mixedCurrency: boolean
 }
 
-/** 成功返回汇总本身；失败时 error 含稳定的 'no-credentials'（未连接）。 */
-export type TikTokReadingResult = TikTokReadingSummary | { ok: false; error: string }
+/** 成功返回汇总本身；失败时 error 是稳定的错误码，detail 是原始信息。 */
+export type TikTokReadingResult = TikTokReadingSummary | ReadingFailure
 
 function formatGrouped(value: number, digits: number): string {
   const negative = value < 0

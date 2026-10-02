@@ -1,11 +1,14 @@
 import { cleanNumberString, parseDateString } from '../../../shared/datasets'
+import { READING_ERROR_DETAIL_LIMIT, type ReadingErrorCode } from '../../../shared/readingError'
+import { normalizeTikTokAdvertiserId, normalizeTikTokAdvertiserIds } from '../../../shared/tiktokReport'
 
 /**
- * TikTok Business API (Open API v1.3) 客户端 — OAuth 换取/刷新 + 集成报表。
+ * TikTok Business API (Open API v1.3) 客户端 — OAuth 换取/刷新、集成报表、
+ * 广告主信息。
  *
  * 全部网络细节收敛在这里：Main 的其它模块只面对 fetchAccessToken /
- * refreshAccessToken / fetchIntegratedReport 三个入口。fetch 可注入，
- * 测试不需要真实网络。
+ * refreshAccessToken / fetchIntegratedReport / fetchAdvertiserInfo 几个入口。
+ * fetch 可注入，测试不需要真实网络。
  */
 
 export type TikTokApiFetch = (url: string, init?: RequestInit) => Promise<Response>
@@ -15,9 +18,16 @@ export const TIKTOK_AUTHORIZE_URL = 'https://business-api.tiktok.com/open_api/v1
 const ACCESS_TOKEN_URL = `${API_BASE}/oauth2/access_token/`
 const REFRESH_TOKEN_URL = `${API_BASE}/oauth2/refresh_token/`
 const INTEGRATED_REPORT_URL = `${API_BASE}/report/integrated/get/`
+const ADVERTISER_INFO_URL = `${API_BASE}/advertiser/info/`
 
-/** Report request contract (v1.3 integrated, BASIC). */
+/**
+ * Report request contract (v1.3 integrated, BASIC). The endpoint is GET with
+ * JSON-encoded arrays in the query string; a POST gets an HTML 405.
+ * campaign_name is an attribute metric, not a dimension, so rows are keyed by
+ * campaign_id × stat_time_day.
+ */
 export const TIKTOK_REPORT_METRICS = [
+  'campaign_name',
   'spend',
   'impressions',
   'clicks',
@@ -27,14 +37,15 @@ export const TIKTOK_REPORT_METRICS = [
   'cost_per_conversion'
 ] as const
 
-export const TIKTOK_REPORT_DIMENSIONS = ['stat_time_day', 'campaign_name'] as const
+export const TIKTOK_REPORT_DIMENSIONS = ['campaign_id', 'stat_time_day'] as const
 
-export type TikTokReportDataLevel = 'AUCTION_CAMPAIGN' | 'AUCTION_ADGROUP' | 'AUCTION_AD'
-const DEFAULT_DATA_LEVEL: TikTokReportDataLevel = 'AUCTION_CAMPAIGN'
+const DATA_LEVEL = 'AUCTION_CAMPAIGN'
 const PAGE_SIZE = 200
 /** Hard cap so a hostile/misread page_info can never loop forever. */
 const MAX_PAGES = 100
 const REQUEST_TIMEOUT_MS = 20_000
+/** advertiser/info/ accepts at most 100 ids per call. */
+const ADVERTISER_INFO_BATCH = 100
 
 /** TikTok envelope: code === 0 means success; anything else carries message. */
 export class TikTokApiError extends Error {
@@ -52,7 +63,7 @@ export interface TikTokTokenResult {
   expiresIn?: number
   refreshToken?: string
   refreshTokenExpiresIn?: number
-  advertiserIds: number[]
+  advertiserIds: string[]
   scope?: string
 }
 
@@ -89,14 +100,22 @@ async function postJson(
   return payload
 }
 
-function parseAdvertiserIds(value: unknown): number[] {
-  if (!Array.isArray(value)) return []
-  const ids: number[] = []
-  for (const entry of value) {
-    const id = typeof entry === 'number' ? entry : typeof entry === 'string' ? Number.parseInt(entry, 10) : Number.NaN
-    if (Number.isInteger(id) && id > 0 && !ids.includes(id)) ids.push(id)
+async function getJson(
+  fetchImpl: TikTokApiFetch,
+  url: URL,
+  accessToken: string,
+  what: string
+): Promise<Record<string, unknown>> {
+  const response = await fetchImpl(url.toString(), {
+    method: 'GET',
+    headers: { accept: 'application/json', 'Access-Token': accessToken },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  })
+  try {
+    return (await response.json()) as Record<string, unknown>
+  } catch {
+    throw new TikTokApiError(-1, `${what}返回的不是 JSON（HTTP ${response.status}）`)
   }
-  return ids
 }
 
 function tokenFromData(data: Record<string, unknown>): TikTokTokenResult {
@@ -107,7 +126,7 @@ function tokenFromData(data: Record<string, unknown>): TikTokTokenResult {
     expiresIn: typeof data.expires_in === 'number' ? data.expires_in : undefined,
     refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
     refreshTokenExpiresIn: typeof data.refresh_token_expires_in === 'number' ? data.refresh_token_expires_in : undefined,
-    advertiserIds: parseAdvertiserIds(data.advertiser_ids),
+    advertiserIds: normalizeTikTokAdvertiserIds(data.advertiser_ids),
     scope: typeof data.scope === 'string' ? data.scope : undefined
   }
 }
@@ -156,7 +175,7 @@ export function buildAuthorizeUrl(appId: string, redirectUri: string, state: str
 }
 
 // ---------------------------------------------------------------------------
-// Integrated report — BASIC / stat_time_day × campaign_name, paged.
+// Integrated report — BASIC / campaign_id × stat_time_day, paged.
 // ---------------------------------------------------------------------------
 
 export interface TikTokReportRow {
@@ -166,7 +185,7 @@ export interface TikTokReportRow {
   spend: number | null
   impressions: number | null
   clicks: number | null
-  /** Click-through rate, decimal (0.0123 = 1.23%). */
+  /** Click-through rate as TikTok reports it. */
   ctr: number | null
   /** Cost per click. */
   cpc: number | null
@@ -176,17 +195,28 @@ export interface TikTokReportRow {
 
 export interface TikTokReportQuery {
   accessToken: string
+  /** BASIC reports require it. A decimal string, never a JS number. */
+  advertiserId: string
   startDate: string
   endDate: string
-  dataLevel?: TikTokReportDataLevel
-  /** Optional advertiser scope; omitted when absent (token-level scope). */
-  advertiserId?: number
 }
 
 function toNumberCell(value: unknown): number | null {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null
   if (typeof value !== 'string') return null
   return cleanNumberString(value)
+}
+
+function textCell(value: unknown): string {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return ''
+}
+
+/** stat_time_day arrives as "2026-01-02 00:00:00"; the day is the part before the time. */
+function reportDay(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  return parseDateString(value.trim().replace(/[ T]\d{2}:\d{2}(:\d{2})?$/, ''))
 }
 
 /**
@@ -201,9 +231,10 @@ export function normalizeReportList(data: Record<string, unknown>): TikTokReport
     const item = entry as Record<string, unknown>
     const dimensions = (item.dimensions && typeof item.dimensions === 'object' ? item.dimensions : {}) as Record<string, unknown>
     const metrics = (item.metrics && typeof item.metrics === 'object' ? item.metrics : {}) as Record<string, unknown>
-    const date = parseDateString(typeof dimensions.stat_time_day === 'string' ? dimensions.stat_time_day : '')
+    const date = reportDay(dimensions.stat_time_day)
     if (!date) continue
-    const campaignName = String(dimensions.campaign_name ?? '').trim()
+    const campaignName =
+      textCell(metrics.campaign_name) || textCell(dimensions.campaign_name) || textCell(dimensions.campaign_id)
     rows.push({
       date,
       campaignName,
@@ -225,43 +256,29 @@ export function sortRowsByDateDesc(rows: TikTokReportRow[]): TikTokReportRow[] {
 }
 
 /**
- * Fetch the integrated report across ALL pages and return normalized rows
- * sorted by date desc. Throws TikTokApiError when the envelope code !== 0.
+ * Fetch one advertiser's integrated report across ALL pages and return
+ * normalized rows sorted by date desc. Throws TikTokApiError when the
+ * envelope code !== 0.
  */
 export async function fetchIntegratedReport(
   fetchImpl: TikTokApiFetch,
   query: TikTokReportQuery
 ): Promise<TikTokReportRow[]> {
+  const advertiserId = normalizeTikTokAdvertiserId(query.advertiserId)
+  if (!advertiserId) throw new TikTokApiError(-1, '报表接口需要广告主 ID（advertiser_id）')
   const rows: TikTokReportRow[] = []
-  const dataLevel = query.dataLevel ?? DEFAULT_DATA_LEVEL
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const body: Record<string, unknown> = {
-      report_type: 'BASIC',
-      data_level: dataLevel,
-      dimensions: TIKTOK_REPORT_DIMENSIONS,
-      metrics: TIKTOK_REPORT_METRICS,
-      start_date: query.startDate,
-      end_date: query.endDate,
-      page,
-      page_size: PAGE_SIZE
-    }
-    if (query.advertiserId !== undefined) body.advertiser_id = query.advertiserId
-    const response = await fetchImpl(INTEGRATED_REPORT_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json',
-        'Access-Token': query.accessToken
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-    })
-    let payload: Record<string, unknown>
-    try {
-      payload = (await response.json()) as Record<string, unknown>
-    } catch {
-      throw new TikTokApiError(-1, `报表接口返回的不是 JSON（HTTP ${response.status}）`)
-    }
+    const url = new URL(INTEGRATED_REPORT_URL)
+    url.searchParams.set('advertiser_id', advertiserId)
+    url.searchParams.set('report_type', 'BASIC')
+    url.searchParams.set('data_level', DATA_LEVEL)
+    url.searchParams.set('dimensions', JSON.stringify(TIKTOK_REPORT_DIMENSIONS))
+    url.searchParams.set('metrics', JSON.stringify(TIKTOK_REPORT_METRICS))
+    url.searchParams.set('start_date', query.startDate)
+    url.searchParams.set('end_date', query.endDate)
+    url.searchParams.set('page', String(page))
+    url.searchParams.set('page_size', String(PAGE_SIZE))
+    const payload = await getJson(fetchImpl, url, query.accessToken, '报表接口')
     const data = assertEnvelope(payload, '拉取报表')
     rows.push(...normalizeReportList(data))
     const pageInfo = (data.page_info && typeof data.page_info === 'object' ? data.page_info : {}) as Record<string, unknown>
@@ -269,4 +286,90 @@ export async function fetchIntegratedReport(
     if (page >= Math.max(1, Math.min(totalPages, MAX_PAGES))) break
   }
   return sortRowsByDateDesc(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Advertiser info — names and currencies for display.
+// ---------------------------------------------------------------------------
+
+export interface TikTokAdvertiserInfo {
+  advertiserId: string
+  name: string | null
+  currency: string | null
+}
+
+/** A numeric advertiser_id in JSON has already lost digits; match it the same lossy way. */
+function matchRequestedId(value: unknown, requested: string[]): string | null {
+  if (typeof value === 'string') {
+    const id = value.trim()
+    return requested.includes(id) ? id : null
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return requested.find((id) => Number(id) === value) ?? null
+  }
+  return null
+}
+
+/**
+ * GET /advertiser/info/ for the given ids. Ids TikTok does not return are
+ * absent from the result; the caller keeps showing the bare id for those.
+ */
+export async function fetchAdvertiserInfo(
+  fetchImpl: TikTokApiFetch,
+  query: { accessToken: string; advertiserIds: string[] }
+): Promise<TikTokAdvertiserInfo[]> {
+  const requested = normalizeTikTokAdvertiserIds(query.advertiserIds, Number.POSITIVE_INFINITY)
+  const result: TikTokAdvertiserInfo[] = []
+  for (let index = 0; index < requested.length; index += ADVERTISER_INFO_BATCH) {
+    const batch = requested.slice(index, index + ADVERTISER_INFO_BATCH)
+    const url = new URL(ADVERTISER_INFO_URL)
+    url.searchParams.set('advertiser_ids', JSON.stringify(batch))
+    url.searchParams.set('fields', JSON.stringify(['advertiser_id', 'name', 'currency']))
+    const payload = await getJson(fetchImpl, url, query.accessToken, '广告主信息接口')
+    const data = assertEnvelope(payload, '读取广告主信息')
+    const list = Array.isArray(data.list) ? data.list : []
+    for (const entry of list) {
+      if (!entry || typeof entry !== 'object') continue
+      const item = entry as Record<string, unknown>
+      const advertiserId = matchRequestedId(item.advertiser_id, batch)
+      if (!advertiserId || result.some((info) => info.advertiserId === advertiserId)) continue
+      const name = typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 120) : null
+      const currency =
+        typeof item.currency === 'string' && /^[A-Z]{3}$/.test(item.currency.trim()) ? item.currency.trim() : null
+      result.push({ advertiserId, name, currency })
+    }
+  }
+  return result
+}
+
+// ---------------------------------------------------------------------------
+// Failure classification — one stable code per failure for the renderer.
+// ---------------------------------------------------------------------------
+
+/** Return codes TikTok documents for token, permission and frequency failures. */
+const AUTH_CODES = new Set([40100, 40104, 40105])
+const PERMISSION_CODES = new Set([40001])
+const RATE_LIMIT_CODES = new Set([40131])
+
+export function classifyTikTokError(error: unknown): { code: ReadingErrorCode; detail: string } {
+  const message = error instanceof Error ? error.message : String(error)
+  const detail = message.slice(0, READING_ERROR_DETAIL_LIMIT)
+  if (error instanceof TikTokApiError) {
+    if (AUTH_CODES.has(error.code)) return { code: 'auth', detail }
+    if (PERMISSION_CODES.has(error.code)) return { code: 'permission', detail }
+    if (RATE_LIMIT_CODES.has(error.code)) return { code: 'rate-limit', detail }
+    if (/permission|not authori[sz]ed/i.test(message)) return { code: 'permission', detail }
+    if (/access.?token/i.test(message)) return { code: 'auth', detail }
+    if (/too many|too frequent|rate limit/i.test(message)) return { code: 'rate-limit', detail }
+    return { code: 'api', detail }
+  }
+  const name = error instanceof Error ? error.name : ''
+  if (
+    name === 'TimeoutError' ||
+    name === 'AbortError' ||
+    /fetch failed|network|ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT/i.test(message)
+  ) {
+    return { code: 'network', detail }
+  }
+  return { code: 'api', detail }
 }

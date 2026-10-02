@@ -199,7 +199,8 @@ import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConne
 import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { buildTikTokReadingSummary, buildTikTokTodayReading } from './integrations/tiktok/tiktokReading'
-import { setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
+import { listTikTokReadingAdvertisers, setTikTokReadingAdvertisers } from './integrations/tiktok/tiktokReadingAdvertisers'
+import { resolveTikTokToken, setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
@@ -799,8 +800,7 @@ export function registerIpc() {
   // Reads TikTok Ads straight onto the board: the token comes from the shared
   // resolver (OAuth connector's auto-refreshed token first, paste store as
   // fallback) and the aggregation happens in Main. Input is bounded strings
-  // only; failures return stable error codes ('no-credentials' = not
-  // connected).
+  // only; failures return stable reading error codes (shared/readingError).
   ipcMain.handle(IPC_CHANNELS.TT_READING_SUMMARY, (_event, raw: unknown) => {
     const input = (raw ?? {}) as { advertiserIds?: unknown; range?: unknown }
     return buildTikTokReadingSummary(input)
@@ -810,6 +810,14 @@ export function registerIpc() {
     const range = typeof input.range === 'string' ? input.range.slice(0, 8) : undefined
     return buildTikTokTodayReading({ range })
   })
+  ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_LIST, async () => {
+    const resolved = await resolveTikTokToken({ loadSelectedAdvertisers: () => [] }).catch(() => null)
+    return {
+      selected: listTikTokReadingAdvertisers(),
+      granted: resolved?.token ? resolved.advertiserIds : []
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_SET, (_event, raw: unknown) => setTikTokReadingAdvertisers(raw))
 
   // --- Figma Dev Mode MCP connector (local, code-token-only flavor) ------
   ipcMain.handle(IPC_CHANNELS.FIGMA_STATUS, async () => figmaConnectionManager.refreshStatus())

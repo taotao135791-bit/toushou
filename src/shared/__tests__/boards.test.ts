@@ -484,8 +484,12 @@ describe('composeBoard + presets', () => {
     expect(detectPreset('fb 广告')).toBe('ads')
   })
 
-  it('fb daily preset layers summary over account detail', () => {
-    const composed = composeBoard('读数', t, 'fb-daily')
+  it('fb daily preset layers summary over the caller\'s accounts, and stays empty without them', () => {
+    expect(composeBoard('读数', t, 'fb-daily').widgets).toEqual([])
+
+    const composed = composeBoard('读数', t, 'fb-daily', [
+      { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' }
+    ])
     expect(composed.widgets).toHaveLength(2)
     expect(composed.widgets[0].type).toBe('fb-reading-summary')
     expect(composed.widgets[1].type).toBe('fb-reading')

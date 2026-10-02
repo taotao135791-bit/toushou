@@ -3,8 +3,10 @@ import { boardReadingRangeDates } from '../fbReading'
 import {
   buildTodayChatPrompt,
   fbPresetForTodayRange,
+  formatReadingWindow,
   formatSpendDelta,
   previousEqualWindow,
+  tiktokReadingRangeWindow,
   todayWindow,
   todayWindowMatchesFbPreset,
   topSpendMoves
@@ -30,6 +32,22 @@ describe('today windows', () => {
       start: '2026-09-30',
       end: '2026-09-30'
     })
+  })
+
+  it('gives the TikTok board ranges the same complete-day windows', () => {
+    expect(tiktokReadingRangeWindow('1', today)).toEqual({ start: '2026-10-01', end: '2026-10-01' })
+    expect(tiktokReadingRangeWindow('7', today)).toEqual(todayWindow('last7', today))
+    expect(tiktokReadingRangeWindow('7', today)).toEqual(boardReadingRangeDates('last7', today))
+    expect(tiktokReadingRangeWindow('28', today)).toEqual({ start: '2026-09-03', end: '2026-09-30' })
+  })
+
+  it('crosses month and year boundaries', () => {
+    expect(tiktokReadingRangeWindow('7', new Date(2027, 0, 3))).toEqual({ start: '2026-12-27', end: '2027-01-02' })
+  })
+
+  it('writes a window as one date or a dated span', () => {
+    expect(formatReadingWindow({ start: '2026-10-01', end: '2026-10-01' })).toBe('2026-10-01')
+    expect(formatReadingWindow({ start: '2026-09-24', end: '2026-09-30' })).toBe('2026-09-24 – 2026-09-30')
   })
 })
 

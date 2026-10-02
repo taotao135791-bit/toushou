@@ -16,6 +16,112 @@ const emptySnapshot: TikTokAdsConnectionSnapshot = {
 }
 
 /**
+ * Which advertisers the readings use. TikTok's report API needs an
+ * advertiser id per call and the authorization does not always say which
+ * ones it covers, so the user can list them here (ids only, stored by Main).
+ */
+function ReadingAdvertisers() {
+  const t = useT()
+  const [saved, setSaved] = useState<string[] | null>(null)
+  const [granted, setGranted] = useState<string[]>([])
+  const [draft, setDraft] = useState('')
+  const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'invalid-input' | 'write-failed'>('idle')
+
+  useEffect(() => {
+    let active = true
+    void window.electronAPI
+      .ttReadingAdvertisers()
+      .then((value) => {
+        if (!active) return
+        setSaved(value.selected)
+        setGranted(value.granted)
+        setDraft(value.selected.join(', '))
+      })
+      .catch(() => {
+        if (active) setSaved([])
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const save = async () => {
+    setState('saving')
+    try {
+      const result = await window.electronAPI.ttReadingSetAdvertisers({ advertiserIds: draft })
+      if (result.ok) {
+        setSaved(result.selected)
+        setDraft(result.selected.join(', '))
+        setState('saved')
+      } else {
+        setState(result.error)
+      }
+    } catch {
+      setState('write-failed')
+    }
+  }
+
+  const dirty = saved !== null && draft.trim() !== saved.join(', ')
+  const empty = saved !== null && saved.length === 0 && draft.trim() === ''
+  const shownGranted = granted.slice(0, 3).join(', ') + (granted.length > 3 ? '…' : '')
+  const hint =
+    state === 'invalid-input'
+      ? { text: t('boards.tt.invalidAdvertisers'), tone: 'error' as const }
+      : state === 'write-failed'
+        ? { text: t('connections.tiktokAdvertisersFailed'), tone: 'error' as const }
+        : state === 'saved'
+          ? { text: t('connections.tiktokAdvertisersSaved'), tone: 'plain' as const }
+          : empty && granted.length > 0
+            ? { text: t('connections.tiktokAdvertisersGranted', { n: granted.length, ids: shownGranted }), tone: 'plain' as const }
+            : empty
+              ? { text: t('connections.tiktokAdvertisersNone'), tone: 'warning' as const }
+              : { text: t('connections.tiktokAdvertisersHint'), tone: 'plain' as const }
+
+  return (
+    <div className="mt-2 rounded-xl bg-overlay px-3 py-2.5">
+      <label htmlFor="tiktok-reading-advertisers" className="text-[12px] leading-[18px] text-cream-faint">
+        {t('connections.tiktokAdvertisers')}
+      </label>
+      <div className="mt-1.5 flex gap-2">
+        <input
+          id="tiktok-reading-advertisers"
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value)
+            setState('idle')
+          }}
+          disabled={saved === null}
+          inputMode="numeric"
+          spellCheck={false}
+          placeholder="7300000000000000000, 7311111111111111111"
+          className="min-w-0 flex-1 rounded-lg border border-line bg-ink-850 px-2 py-1 font-mono text-[12px] leading-[18px] text-cream outline-none transition placeholder:text-cream-faint focus:border-accent/50 disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={!dirty || state === 'saving'}
+          className="focus-ring shrink-0 rounded-full border border-line px-3 py-1 text-[12px] leading-[18px] text-cream-dim hover:bg-overlay hover:text-cream disabled:opacity-40"
+        >
+          {t('connections.tiktokAdvertisersSave')}
+        </button>
+      </div>
+      <p
+        role={hint.tone === 'error' ? 'alert' : undefined}
+        className={`mt-1.5 text-[12px] leading-[18px] ${
+          hint.tone === 'error'
+            ? 'text-red-600 dark:text-red-400'
+            : hint.tone === 'warning'
+              ? 'text-[#866021] dark:text-[#DAC393]'
+              : 'text-cream-faint'
+        }`}
+      >
+        {hint.text}
+      </p>
+    </div>
+  )
+}
+
+/**
  * TikTok Ads official MCP connector card. The whole OAuth exchange lives in
  * Main (discovery → dynamic client registration → PKCE loopback → browser
  * authorize → token): this card only renders secret-free snapshots and
@@ -155,6 +261,7 @@ export default function TikTokAdsConnectionCard() {
               </div>
             )}
           </div>
+          <ReadingAdvertisers />
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               type="button"

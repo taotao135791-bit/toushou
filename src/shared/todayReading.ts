@@ -1,5 +1,6 @@
 import { boardReadingRangeDates, fbDateString, type FbReadingRange } from './fbReading'
-import { formatTikTokAmount } from './tiktokReport'
+import type { ReadingErrorCode, ReadingFailure } from './readingError'
+import { formatTikTokAmount, type TikTokReadingAdvertiser, type TikTokReadingRange } from './tiktokReport'
 
 /** Morning page windows. last3 is intentionally absent: TikTok has no 3-day preset. */
 export type TodayRange = 'today' | 'last7' | 'last28'
@@ -26,14 +27,25 @@ export interface TodayChatRow {
 }
 
 /** Morning TikTok row. previousSpend is 0 when the earlier window had no spend. */
-export interface TikTokTodayAccount {
-  advertiserId: number | null
+export interface TikTokTodayAccountReading extends TikTokReadingAdvertiser {
   spend: number
   previousSpend: number
   impressions: number
   clicks: number
   conversions: number
   campaigns: TodayCampaignMove[]
+}
+
+/** One account failed on its own; the other rows still show. */
+export interface TikTokTodayAccountFailure extends TikTokReadingAdvertiser {
+  error: ReadingErrorCode
+  detail?: string
+}
+
+export type TikTokTodayAccount = TikTokTodayAccountReading | TikTokTodayAccountFailure
+
+export function isTikTokTodayFailure(account: TikTokTodayAccount): account is TikTokTodayAccountFailure {
+  return 'error' in account
 }
 
 export interface TikTokTodayReading {
@@ -47,7 +59,7 @@ export interface TikTokTodayReading {
   accounts: TikTokTodayAccount[]
 }
 
-export type TikTokTodayReadingResult = TikTokTodayReading | { ok: false; error: string }
+export type TikTokTodayReadingResult = TikTokTodayReading | ReadingFailure
 
 const RANGE_DAYS: Record<Exclude<TodayRange, 'today'>, number> = {
   last7: 7,
@@ -85,6 +97,15 @@ export function todayWindow(range: TodayRange, today: Date = new Date()): TodayW
   const start = new Date(end)
   start.setDate(start.getDate() - (days - 1))
   return { start: fbDateString(start), end: fbDateString(end) }
+}
+
+/** Board TT module window, on the today page's terms: '7' and '28' end yesterday. */
+export function tiktokReadingRangeWindow(range: TikTokReadingRange, today: Date = new Date()): TodayWindow {
+  return todayWindow(range === '1' ? 'today' : range === '28' ? 'last28' : 'last7', today)
+}
+
+export function formatReadingWindow(window: TodayWindow): string {
+  return window.start === window.end ? window.start : `${window.start} – ${window.end}`
 }
 
 export function previousEqualWindow(window: TodayWindow): TodayWindow | null {

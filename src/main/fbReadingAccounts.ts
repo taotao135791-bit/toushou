@@ -3,7 +3,6 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 import {
-  FB_READING_BUILTIN_ACCOUNTS,
   FB_READING_ACCOUNT_MAX,
   FbReadingAccountEntry,
   FbReadingAccountRef,
@@ -14,7 +13,8 @@ import {
 /**
  * Local FB-reading account registry (userData/fb-reading-accounts.json).
  * Colleagues manage their own ad accounts here; nothing leaves the machine.
- * Builtin accounts are seeded on first run so legacy boards keep working.
+ * It starts empty and holds only what the user added: an emptied list stays
+ * empty.
  */
 export type { FbReadingAccountEntry }
 
@@ -22,10 +22,6 @@ export const FB_READING_ACCOUNT_LIMITS = {
   maxAccounts: FB_READING_ACCOUNT_MAX,
   maxAliasLength: 40
 } as const
-
-function builtinEntries(now: number): FbReadingAccountEntry[] {
-  return FB_READING_BUILTIN_ACCOUNTS.map((ref) => ({ ...ref, id: randomUUID(), createdAt: now }))
-}
 
 /** Pure parse+validate for the persisted document (test-friendly). */
 export function parseFbReadingAccounts(json: string): FbReadingAccountEntry[] {
@@ -94,21 +90,10 @@ function writeAccounts(entries: FbReadingAccountEntry[]): void {
 
 export function listFbReadingAccounts(): FbReadingAccountEntry[] {
   try {
-    const entries = parseFbReadingAccounts(readFileSync(accountsPath(), 'utf-8'))
-    if (entries.length > 0 || FB_READING_BUILTIN_ACCOUNTS.length === 0) return entries
-    // First run with an empty document: seed builtins once.
-    const seeded = builtinEntries(Date.now())
-    writeAccounts(seeded)
-    return seeded
+    return parseFbReadingAccounts(readFileSync(accountsPath(), 'utf-8'))
   } catch {
-    // Missing or unreadable file → seed builtins.
-    const seeded = builtinEntries(Date.now())
-    try {
-      writeAccounts(seeded)
-    } catch {
-      // Read-only environment: return the seed without persisting.
-    }
-    return seeded
+    // Missing or unreadable file: no accounts yet.
+    return []
   }
 }
 

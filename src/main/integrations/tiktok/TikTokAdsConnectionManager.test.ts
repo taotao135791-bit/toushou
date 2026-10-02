@@ -318,14 +318,14 @@ describe('TikTokAdsConnectionManager lifecycle', () => {
 
     const afterExchange = await manager.loadFreshCredentials()
     expect(afterExchange?.accessToken).toBe('at-1')
-    expect(afterExchange?.advertiserIds).toEqual([7300001, 7300002])
+    expect(afterExchange?.advertiserIds).toEqual(['7300001', '7300002'])
 
     // Advance past the 10-minute refresh margin.
     nowMs += 7_000_000
     expect(await manager.ensureFreshToken()).toBe(true)
     const afterRefresh = await manager.loadFreshCredentials()
     expect(afterRefresh?.accessToken).toBe('at-2')
-    expect(afterRefresh?.advertiserIds).toEqual([7300001, 7300002])
+    expect(afterRefresh?.advertiserIds).toEqual(['7300001', '7300002'])
   })
 
   it('a far-from-expiry token schedules instead of fetching', async () => {    const { fetch, log } = makeFetch({})

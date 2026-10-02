@@ -5,6 +5,7 @@ import path from 'node:path'
 import { BrowserWindow, app, shell } from 'electron'
 import { IPC_CHANNELS } from '../../../shared/constants'
 import { ConnectionDefinition, ConnectionStatus, TikTokAdsConnectionSnapshot } from '../../../shared/connections'
+import { normalizeTikTokAdvertiserIds } from '../../../shared/tiktokReport'
 import { McpStorePaths, defaultMcpStorePaths, removeMcpConnection, upsertManagedServer } from '../mcp/McpConnectionStore'
 import { TikTokCredentialStore, TikTokStoredCredentials } from './TikTokCredentialStore'
 import { TIKTOK_ADS_SKILL_FILE_NAME, TIKTOK_ADS_SKILL_MARKDOWN } from './tiktokAdsSkill'
@@ -447,7 +448,7 @@ export class TikTokAdsConnectionManager {
     refreshToken?: string
     expiresAt?: number
     scope?: string
-    advertiserIds?: number[]
+    advertiserIds?: string[]
   }> {
     const response = await this.fetchImpl(tokenEndpoint, {
       method: 'POST',
@@ -465,7 +466,7 @@ export class TikTokAdsConnectionManager {
     const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : undefined
     // TikTok echoes the granted advertiser ids back on the token response;
     // keep them when present so the reading modules can scope their queries.
-    const advertiserIds = parseAdvertiserIds(payload.advertiser_ids)
+    const advertiserIds = normalizeTikTokAdvertiserIds(payload.advertiser_ids)
     return {
       accessToken: payload.access_token,
       refreshToken: typeof payload.refresh_token === 'string' ? payload.refresh_token : undefined,
@@ -552,17 +553,6 @@ function pkcePair(): { verifier: string; challenge: string } {
   const verifier = base64url(randomBytes(32))
   const challenge = base64url(createHash('sha256').update(verifier).digest())
   return { verifier, challenge }
-}
-
-/** Keeps positive integer advertiser ids, de-duplicated, order-stable. */
-function parseAdvertiserIds(value: unknown): number[] {
-  if (!Array.isArray(value)) return []
-  const ids: number[] = []
-  for (const entry of value) {
-    const id = typeof entry === 'number' ? entry : typeof entry === 'string' ? Number.parseInt(entry, 10) : Number.NaN
-    if (Number.isInteger(id) && id > 0 && !ids.includes(id)) ids.push(id)
-  }
-  return ids
 }
 
 function base64url(buffer: Buffer): string {
