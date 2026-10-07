@@ -95,6 +95,7 @@ const WIDGET_GALLERY: { type: WidgetType; Icon: LucideIcon }[] = [
   { type: 'clock', Icon: Clock },
   { type: 'note', Icon: StickyNote },
   { type: 'counter', Icon: Hash },
+  { type: 'fb-report-reading', Icon: FileSpreadsheet },
   { type: 'gauge', Icon: Gauge },
   { type: 'chart-line', Icon: ChartLine },
   { type: 'chart-bar', Icon: ChartBar },
@@ -113,6 +114,7 @@ const DEFAULT_MASTER_METRICS: readonly string[] = ['spend', 'cpi', 'cpm']
 /** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
   { preset: 'fb-daily', labelKey: 'boards.template.fbDaily' },
+  { preset: 'fb-daily-v2', labelKey: 'boards.template.fbDaily2' },
   { preset: 'tiktok', labelKey: 'boards.template.tiktok' },
   { preset: 'blank', labelKey: 'boards.template.blank' },
   { preset: 'ads', labelKey: 'boards.template.ads' },

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ExternalLink, FileWarning, X } from 'lucide-react'
 import { FbReadingBody } from './FbReadingBody'
+import { FbReportReadingBody } from './FbReportReadingBody'
 import { FbReadingSummaryBody } from './FbReadingSummaryBody'
 import { TTReadingBody } from './TTReadingBody'
 import { BoardDataset, BoardWidget } from '@shared/types'
@@ -900,6 +901,8 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange }: Widget
       return <FbReadingBody widget={widget} />
     case 'fb-reading-summary':
       return <FbReadingSummaryBody widget={widget} />
+    case 'fb-report-reading':
+      return <FbReportReadingBody widget={widget} />
     case 'tt-reading':
       return <TTReadingBody widget={widget} />
     case 'note':
