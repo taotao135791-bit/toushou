@@ -765,6 +765,13 @@ function validateWidgetConfig(
         if (!/^\d{1,32}$/.test(reportId)) return null
         config.reportId = reportId
       }
+      // Master-scope range (today / last7 / last30) — drives the FB date
+      // picker during auto-fetch. last3 has no FB quick option and is skipped.
+      if (raw.range !== undefined) {
+        const range = cleanString(raw.range, 8)
+        if (range === null) return null
+        if (range === 'today' || range === 'last7' || range === 'last30') config.range = range
+      }
       return config
       }
     case 'clock': {
@@ -1039,7 +1046,7 @@ function validateMasterScope(raw: unknown): BoardMasterScope | null {
 
 /** Widget types whose date/metric scope a master scope governs — the single
  * list behind unification, refresh-all and the independence check. */
-export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading']
+export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading', 'fb-report-reading']
 
 /** TikTok day windows are a separate enum; last3 has no TikTok equivalent. */
 const TT_RANGE_BY_MASTER: Record<string, string> = {

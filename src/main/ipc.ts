@@ -202,7 +202,7 @@ import { buildTikTokReadingSummary, buildTikTokTodayReading } from './integratio
 import { listTikTokReadingAdvertisers, setTikTokReadingAdvertisers } from './integrations/tiktok/tiktokReadingAdvertisers'
 import { resolveTikTokToken, setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
 import { importFbReportFile, readFbReportReadings } from './fbReportReadings'
-import { autoFetchFbReportCsv } from './fbReportAutoFetch'
+import { autoFetchFbReportCsv, FbReportFetchRange } from './fbReportAutoFetch'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
@@ -848,7 +848,7 @@ export function registerIpc() {
   // the CSV (read-only — never clicks 保存, never touches report settings).
   // The downloaded file flows through the same verified import as a manual one.
   ipcMain.handle(IPC_CHANNELS.FB_REPORT_AUTO_FETCH, async (_event, raw: unknown) => {
-    const input = (raw ?? {}) as { widgetId?: unknown; reportName?: unknown; reportId?: unknown }
+    const input = (raw ?? {}) as { widgetId?: unknown; reportName?: unknown; reportId?: unknown; range?: unknown }
     const widgetId =
       typeof input.widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(input.widgetId) ? input.widgetId : null
     const reportName =
@@ -857,8 +857,12 @@ export function registerIpc() {
       typeof input.reportId === 'string' && /^\d{1,32}$/.test(input.reportId.trim())
         ? input.reportId.trim()
         : undefined
+    const range =
+      input.range === 'today' || input.range === 'last7' || input.range === 'last30'
+        ? (input.range as FbReportFetchRange)
+        : undefined
     if (!widgetId || !reportName) return { ok: false, error: 'invalid-widget' }
-    const fetch = await autoFetchFbReportCsv(reportName, reportId)
+    const fetch = await autoFetchFbReportCsv(reportName, reportId, range)
     if (!fetch.ok || !fetch.filePath) {
       return { ok: false, fetchError: fetch.error ?? 'fetch-failed', detail: fetch.detail }
     }

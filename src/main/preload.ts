@@ -516,7 +516,7 @@ export interface ElectronAPI {
   fbReportImport: (widgetId: string) => Promise<FbReportImportResult>
   fbReportReadingGet: (widgetId: string) => Promise<FbReportStoredReading | null>
   /** Automated export: Main opens the named report and downloads the CSV. */
-  fbReportAutoFetch: (widgetId: string, reportName: string, reportId?: string) => Promise<FbReportAutoFetchResult>
+  fbReportAutoFetch: (widgetId: string, reportName: string, reportId?: string, range?: string) => Promise<FbReportAutoFetchResult>
   /** Figma Dev Mode MCP connector (local endpoint, no credentials). */
   figmaStatus: () => Promise<FigmaConnectionSnapshot>
   figmaConnect: () => Promise<FigmaConnectionSnapshot>
@@ -993,11 +993,12 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.FB_REPORT_READING_GET, {
       widgetId: typeof widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(widgetId) ? widgetId : null
     }) as Promise<FbReportStoredReading | null>,
-  fbReportAutoFetch: (widgetId: string, reportName: string, reportId?: string) =>
+  fbReportAutoFetch: (widgetId: string, reportName: string, reportId?: string, range?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_REPORT_AUTO_FETCH, {
       widgetId: typeof widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(widgetId) ? widgetId : null,
       reportName: typeof reportName === 'string' ? reportName.slice(0, 80) : null,
-      reportId: typeof reportId === 'string' && reportId.length <= 32 ? reportId : null
+      reportId: typeof reportId === 'string' && reportId.length <= 32 ? reportId : null,
+      range: typeof range === 'string' && range.length <= 8 ? range : null
     }) as Promise<FbReportAutoFetchResult>,
   figmaStatus: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_STATUS),
   figmaConnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_CONNECT),

@@ -454,6 +454,72 @@ const NO_VISIBLE_DIALOG_SCRIPT = pageCall(
     '.some((d) => { const r = d.getBoundingClientRect(); return r.width >= 50 && r.height >= 50; });'
 )
 
+// --- Date range selection -------------------------------------------------
+
+/** FB quick-range labels per fetch range. 近3天 has no FB quick option. */
+const RANGE_LABELS: Record<string, string[]> = {
+  today: ['今天', 'Today'],
+  last7: ['过去 7 天', '过去7天', 'Past 7 days', 'Last 7 days'],
+  last30: ['过去 30 天', '过去30天', 'Past 30 days', 'Last 30 days']
+}
+
+/** Locates the date-range picker button on the report toolbar (shows the
+ *  current range like "过去 14 天：…"). */
+const LOCATE_DATE_PICKER: Locator = {
+  script: pageCall(
+    'const cands = collect(document, [], true).filter((c) =>' +
+    '  /天|day/i.test(c.name) && /:|：/.test(c.name) && c.name.length > 8 && c.name.length < 120);' +
+    'const c = cands.filter((c) => usable(c, false)).sort(rank)[0];' +
+    'if (!c) return null;' +
+    'const r = rectOf(c.target);' +
+    'return { x: r.left, y: r.top, w: r.width, h: r.height, text: cut(c.name, 40) };'
+  ),
+  diag: pageCall(
+    'const cands = collect(document, [], true).filter((c) => /天|day/i.test(c.name) && /:|：/.test(c.name));' +
+    'return { count: cands.length, first: cands[0] ? cut(cands[0].name, 40) : null };'
+  )
+}
+
+/** Locates a quick-range option inside the open date popover. */
+const locateQuickRange = (labels: readonly string[]): Locator => locator(labels, { scope: 'overlay' })
+
+/** Locates the 更新/Update button inside the date popover. */
+const LOCATE_DATE_UPDATE = locator(['更新', 'Update', 'Apply', '确定', 'OK'], {
+  scope: 'overlay', buttonOnly: true
+})
+
+/** Sets the report's date range before export: click the picker → click the
+ *  quick option → click 更新. Falls through silently when no range was
+ *  requested or the picker isn't found (export uses the report's saved range). */
+async function setReportDateRange(range: FbReportFetchRange | undefined): Promise<void> {
+  if (!range) return
+  const labels = RANGE_LABELS[range]
+  if (!labels) return
+  log('set-date-range', { range })
+  // Open the date picker.
+  if (!(await realClick(LOCATE_DATE_PICKER, 6_000, 'date-picker'))) {
+    log('date-picker not found — exporting with the saved range')
+    return
+  }
+  await sleep(1_000)
+  // Click the quick option (today / 过去7天 / 过去30天).
+  if (!(await realClick(locateQuickRange(labels), 6_000, 'quick-range'))) {
+    log('quick-range not found — closing picker')
+    await pressEscape()
+    return
+  }
+  await sleep(600)
+  // Click 更新 to apply and close.
+  if (!(await realClick(LOCATE_DATE_UPDATE, 4_000, 'date-update'))) {
+    log('date-update not found — closing picker')
+    await pressEscape()
+    return
+  }
+  // Wait for the report data to refresh with the new range.
+  await sleep(3_000)
+  log('date-range set', { range })
+}
+
 const SNIPPET_SCRIPT = '((document.body.innerText || "").replace(/\\s+/g, " ")).slice(0, 300)'
 
 // ---------------------------------------------------------------------------
@@ -701,7 +767,9 @@ const LOGIN_URL = /login\.(facebook|business\.facebook)\.com|\/login/i
 // Flow
 // ---------------------------------------------------------------------------
 
-export function autoFetchFbReportCsv(reportName: string, reportId?: string): Promise<FbReportFetchResult> {
+export type FbReportFetchRange = 'today' | 'last7' | 'last30'
+
+export function autoFetchFbReportCsv(reportName: string, reportId?: string, range?: FbReportFetchRange): Promise<FbReportFetchResult> {
   return withBrowserActionLock<FbReportFetchResult>(async () => {
     const dir = downloadsDir()
     const navigate = async (url: string): Promise<void> => {
@@ -832,6 +900,10 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string): Pro
         return { ok: false, error: 'navigation-failed', detail: landing.snippet }
       }
       log('landed')
+
+      // 2b) Set the date range BEFORE exporting (master-scope driven).
+      // Falls through silently when the picker isn't found.
+      await setReportDateRange(range)
 
       // 3) FAST PATH: the deep-link view usually IS the target report — its
       //    export dialog's 导出内容名称 names it. Probe once: click 导出,

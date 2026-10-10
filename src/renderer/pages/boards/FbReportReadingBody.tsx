@@ -83,6 +83,7 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
   const [fetchError, setFetchError] = useState<string | null>(null)
   const reportName = typeof widget.config.reportName === 'string' ? widget.config.reportName.trim() : ''
   const reportId = typeof widget.config.reportId === 'string' ? widget.config.reportId.trim() : ''
+  const range = typeof widget.config.range === 'string' ? widget.config.range : ''
 
   const load = useCallback(async () => {
     const stored = await window.electronAPI.fbReportReadingGet(widget.id).catch(() => null)
@@ -96,7 +97,7 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
       if (detail?.widgetId !== widget.id) return
       void (async () => {
         try {
-          if (reportName) await window.electronAPI.fbReportAutoFetch(widget.id, reportName, reportId || undefined)
+      if (reportName) await window.electronAPI.fbReportAutoFetch(widget.id, reportName, reportId || undefined, range || undefined)
         } catch {
           // fail-closed: the reading store keeps the last verified data
         } finally {
@@ -148,7 +149,7 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
     setFetchError(null)
     let result: FbReportAutoFetchResult | null = null
     try {
-      result = await window.electronAPI.fbReportAutoFetch(widget.id, reportName, reportId || undefined)
+      result = await window.electronAPI.fbReportAutoFetch(widget.id, reportName, reportId || undefined, range || undefined)
     } catch {
       result = null
     }
@@ -231,6 +232,9 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
       {canceled && <p className="text-neutral-500">{t('boards.fbReport.canceled')}</p>}
       {unavailable && <p className="text-red-600">{t('boards.fbReport.unavailable')}</p>}
       {fetchError && <p className="text-red-600">{fetchError}</p>}
+      {range === 'last3' && reading && (
+        <p className="text-neutral-400">{t('boards.fbReport.rangeHint')}</p>
+      )}
       {rejected && (
         <div className="rounded-md border border-red-200 bg-red-50 p-2 text-red-700">
           <p className="font-medium">{t('boards.fbReport.rejected')}</p>
