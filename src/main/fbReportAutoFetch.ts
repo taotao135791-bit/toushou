@@ -491,12 +491,13 @@ const LOCATE_DATE_PICKER: Locator = {
   diag: DATE_PICKER_JS
 }
 
-/** Locates a quick-range option inside the open date popover. */
-const locateQuickRange = (labels: readonly string[]): Locator => locator(labels, { scope: 'overlay' })
+/** Locates a quick-range option — the FB date popover is a plain positioned
+ *  div (NOT [role=dialog/menu]), so search the whole document. */
+const locateQuickRange = (labels: readonly string[]): Locator => locator(labels, {})
 
 /** Locates the 更新/Update button inside the date popover. */
 const LOCATE_DATE_UPDATE = locator(['更新', 'Update', 'Apply', '确定', 'OK'], {
-  scope: 'overlay', buttonOnly: true
+  buttonOnly: true
 })
 
 /** Sets the report's date range before export: click the picker → click the
