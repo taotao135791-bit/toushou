@@ -175,4 +175,34 @@ describe('parseFbReportCsv', () => {
     expect(outcome.summary?.windowEnd).toBe('2026-10-09')
     expect(outcome.summary?.days).toEqual(['2026-09-26', '2026-10-09'])
   })
+
+  it('aggregates unknown metric columns — finance report without installs', () => {
+    const header = ['账户名称', '单日', '广告名称', '货币', '花费金额 (USD)', '展示次数', '首次充值金额', '购买次数', '报告开始日期', '报告结束日期']
+    const detail = (account: string, ad: string, spend: number, imp: number, firstDeposit: number, purchases: number): Array<string | number> =>
+      [account, '2026-10-07', ad, 'USD', spend, imp, firstDeposit, purchases, '2026-10-07', '2026-10-07']
+    const csv = toCsv([
+      header,
+      ['', '', '', 'USD', 224.86, 24571, 96.50, 42, '2026-10-07', '2026-10-07'],
+      detail('金融账户A', 'ad-a', 100.86, 6000, 46.50, 21),
+      detail('金融账户B', 'ad-b', 124.00, 18571, 50.00, 21)
+    ])
+    const outcome = parseFbReportCsv(csv)
+    expect(outcome.verification.verified).toBe(true)
+    // Open metric model: every numeric column is present, in file order.
+    const headers = outcome.summary?.metrics.map((m) => m.header)
+    expect(headers).toEqual(['花费金额 (USD)', '展示次数', '首次充值金额', '购买次数'])
+    const kinds = outcome.summary?.metrics.map((m) => m.kind)
+    expect(kinds).toEqual(['money', 'count', 'money', 'count'])
+    // Unknown money column reconciled against the totals row.
+    expect(outcome.verification.fatal).toEqual([])
+    // Per-account open metrics: sums for money/count columns.
+    const a = outcome.summary?.accounts.find((row) => row.account === '金融账户A')
+    expect(a?.metrics['首次充值金额']).toBe(46.5)
+    expect(a?.metrics['购买次数']).toBe(21)
+    expect(a?.metrics['花费金额 (USD)']).toBe(100.86)
+    // FB totals per header.
+    expect(outcome.summary?.totalsByHeader['首次充值金额']).toBe(96.5)
+    // No installs column in this file — canonical installs is null.
+    expect(a?.installs).toBeNull()
+  })
 })

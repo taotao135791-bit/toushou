@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { FileSpreadsheet, RefreshCw } from 'lucide-react'
+import { FileSpreadsheet, RefreshCw, Sparkles } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { BoardWidget } from '@shared/types'
 import type {
   FbReportAutoFetchResult,
@@ -7,11 +8,22 @@ import type {
   FbReportIssue,
   FbReportStoredReading
 } from '@shared/fbReportCsv'
+import { buildFbReportAnalysisPrompt } from '@shared/fbReportChat'
 import { useT } from '../../i18n'
+import { useAppStore } from '../../store'
+import { createSessionForCurrentProject } from '../../lib/session'
 
 const fmtMoney = (value: number | null): string => (value === null ? '—' : value.toFixed(2))
 const fmtCount = (value: number | null): string => (value === null ? '—' : String(Math.round(value)))
 const fmtRate = (value: number | null): string => (value === null ? '—' : value.toFixed(2))
+
+const CANONICAL_LABELS: Record<string, string> = {
+  spend: 'boards.fbReport.colSpend',
+  impressions: 'boards.fbReport.colImpressions',
+  clicks: 'boards.fbReport.colClicks',
+  installs: 'boards.fbReport.colInstalls',
+  purchases: 'boards.fbReport.colPurchases'
+}
 
 function fatalText(t: ReturnType<typeof useT>, issue: FbReportIssue): string {
   switch (issue.code) {
@@ -62,6 +74,7 @@ function fetchErrorText(t: ReturnType<typeof useT>, code: string, detail?: strin
  */
 export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
   const t = useT()
+  const navigate = useNavigate()
   const [reading, setReading] = useState<FbReportStoredReading | null>(null)
   const [busy, setBusy] = useState(false)
   const [rejected, setRejected] = useState<FbReportIssue[] | null>(null)
@@ -75,6 +88,26 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
     const stored = await window.electronAPI.fbReportReadingGet(widget.id).catch(() => null)
     setReading(stored ?? null)
   }, [widget.id])
+
+  // Board-level refresh: run auto-fetch when this module's turn comes.
+  useEffect(() => {
+    const onRefresh = (event: Event): void => {
+      const detail = (event as CustomEvent).detail as { widgetId?: string }
+      if (detail?.widgetId !== widget.id) return
+      void (async () => {
+        try {
+          if (reportName) await window.electronAPI.fbReportAutoFetch(widget.id, reportName, reportId || undefined)
+        } catch {
+          // fail-closed: the reading store keeps the last verified data
+        } finally {
+          await load()
+          window.dispatchEvent(new CustomEvent('fb-report-reading:module-done', { detail: { widgetId: widget.id } }))
+        }
+      })()
+    }
+    window.addEventListener('fb-report-reading:board-refresh', onRefresh)
+    return () => window.removeEventListener('fb-report-reading:board-refresh', onRefresh)
+  }, [widget.id, reportName, reportId, load])
 
   useEffect(() => {
     void load()
@@ -133,8 +166,26 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
   }
 
   const summary = reading?.summary ?? null
+  // Dynamic columns: every metric the file actually had, in file order.
+  const metricCols = summary?.metrics ?? []
   const th = 'px-2 py-1 text-left font-medium text-neutral-500'
   const td = 'px-2 py-1 tabular-nums'
+
+  const sendToAi = async () => {
+    if (!reading || !summary) return
+    const prompt = buildFbReportAnalysisPrompt(reading.fileName, summary, reading.warnings)
+    try {
+      const sessionId = await createSessionForCurrentProject()
+      if (!sessionId) return
+      const store = useAppStore.getState()
+      store.setComposerPrefill(prompt)
+      store.setComposerAutosend(true)
+      store.setCurrentSessionId(sessionId)
+      navigate('/')
+    } catch {
+      setUnavailable(true)
+    }
+  }
 
   return (
     <div className="flex h-full flex-col gap-2 overflow-auto p-3 text-xs">
@@ -148,6 +199,16 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
           <FileSpreadsheet size={13} aria-hidden="true" />
           {busy ? t('boards.fbReport.importing') : t('boards.fbReport.import')}
         </button>
+        {summary && (
+          <button
+            type="button"
+            onClick={sendToAi}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-neutral-300 px-2.5 py-1 hover:bg-neutral-50"
+          >
+            <Sparkles size={13} aria-hidden="true" />
+            {t('boards.fbReport.analyze')}
+          </button>
+        )}
         <button
           type="button"
           onClick={runAutoFetch}
@@ -187,40 +248,39 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
             <thead>
               <tr className="border-b border-neutral-200">
                 <th className={th}>{t('boards.fbReport.colAccount')}</th>
-                <th className={th}>{t('boards.fbReport.colSpend')}</th>
-                <th className={th}>{t('boards.fbReport.colImpressions')}</th>
-                <th className={th}>{t('boards.fbReport.colClicks')}</th>
-                <th className={th}>{t('boards.fbReport.colInstalls')}</th>
-                <th className={th}>{t('boards.fbReport.colPurchases')}</th>
-                <th className={th}>CPM</th>
-                <th className={th}>CPI</th>
-                <th className={th}>CTR(%)</th>
+                {metricCols.map((col) => (
+                  <th key={col.header} className={th}>
+                    {col.semantic && CANONICAL_LABELS[col.semantic]
+                      ? t(CANONICAL_LABELS[col.semantic] as Parameters<typeof t>[0])
+                      : col.header}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {summary.accounts.map((row) => (
                 <tr key={row.account} className="border-b border-neutral-100">
                   <td className={td}>{row.account}</td>
-                  <td className={td}>{fmtMoney(row.spend)}</td>
-                  <td className={td}>{fmtCount(row.impressions)}</td>
-                  <td className={td}>{fmtCount(row.clicks)}</td>
-                  <td className={td}>{fmtCount(row.installs)}</td>
-                  <td className={td}>{fmtCount(row.purchases)}</td>
-                  <td className={td}>{fmtMoney(row.cpm)}</td>
-                  <td className={td}>{fmtMoney(row.cpi)}</td>
-                  <td className={td}>{fmtRate(row.ctr)}</td>
+                  {metricCols.map((col) => {
+                    const value = row.metrics?.[col.header] ?? null
+                    return (
+                      <td key={col.header} className={td}>
+                        {col.kind === 'money' ? fmtMoney(value) : col.kind === 'rate' ? fmtRate(value) : fmtCount(value)}
+                      </td>
+                    )
+                  })}
                 </tr>
               ))}
               <tr className="border-t border-neutral-300 font-medium">
                 <td className={td}>FB</td>
-                <td className={td}>{fmtMoney(summary.totals.spend ?? null)}</td>
-                <td className={td}>{fmtCount(summary.totals.impressions ?? null)}</td>
-                <td className={td}>{fmtCount(summary.totals.clicks ?? null)}</td>
-                <td className={td}>{fmtCount(summary.totals.installs ?? null)}</td>
-                <td className={td}>{fmtCount(summary.totals.purchases ?? null)}</td>
-                <td className={td}>—</td>
-                <td className={td}>—</td>
-                <td className={td}>—</td>
+                {metricCols.map((col) => {
+                  const value = summary.totalsByHeader?.[col.header] ?? null
+                  return (
+                    <td key={col.header} className={td}>
+                      {col.kind === 'money' ? fmtMoney(value) : col.kind === 'rate' ? fmtRate(value) : fmtCount(value)}
+                    </td>
+                  )
+                })}
               </tr>
             </tbody>
           </table>

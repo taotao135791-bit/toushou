@@ -698,15 +698,18 @@ export default function BoardsPage() {
   // freezing the whole queue.
   const refreshReadingModules = async () => {
     if (!current || boardRefreshBusy) return
-    const widgets = current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type))
+    const widgets = current.widgets.filter(
+      (widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type) || widget.type === 'fb-report-reading'
+    )
     if (widgets.length === 0) return
     setBoardRefreshBusy(true)
     setBoardRefreshProgress({ done: 0, total: widgets.length })
     for (let index = 0; index < widgets.length; index += 1) {
       const widget = widgets[index]
       const isTt = widget.type === 'tt-reading'
-      const doneEvent = isTt ? 'tt-reading:module-done' : 'fb-reading:module-done'
-      const refreshEvent = isTt ? 'tt-reading:board-refresh' : 'fb-reading:board-refresh'
+      const isReport = widget.type === 'fb-report-reading'
+      const doneEvent = isTt ? 'tt-reading:module-done' : isReport ? 'fb-report-reading:module-done' : 'fb-reading:module-done'
+      const refreshEvent = isTt ? 'tt-reading:board-refresh' : isReport ? 'fb-report-reading:board-refresh' : 'fb-reading:board-refresh'
       await new Promise<void>((resolve) => {
         let settled = false
         const finish = () => {
@@ -724,7 +727,7 @@ export default function BoardsPage() {
           widget.type === 'fb-reading-summary' && Array.isArray(widget.config.accounts)
             ? Math.max(1, widget.config.accounts.length)
             : 1
-        const cap = setTimeout(finish, isTt ? 60_000 : 180_000 * accountCount)
+        const cap = setTimeout(finish, isTt ? 60_000 : isReport ? 180_000 : 180_000 * accountCount)
         window.addEventListener(doneEvent, onDone)
         window.dispatchEvent(new CustomEvent(refreshEvent, { detail: { widgetId: widget.id } }))
       })

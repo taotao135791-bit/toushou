@@ -58,6 +58,10 @@ export interface FbReportAccountRow {
   cpm: number | null
   cpi: number | null
   ctr: number | null
+  /** Open metric model: sums for EVERY numeric column in the file, keyed by
+   *  its header (canonical five included; rate columns carry derived values
+   *  for cpm/cpi/ctr and null otherwise — rates never sum). */
+  metrics: Record<string, number | null>
 }
 
 export interface FbReportSummary {
@@ -69,6 +73,10 @@ export interface FbReportSummary {
   accounts: FbReportAccountRow[]
   /** Facebook's own totals-row values by canonical semantic. */
   totals: Record<string, number | null>
+  /** Every metric column the file actually had, in file order. */
+  metrics: FbReportMetricColumn[]
+  /** Facebook's totals-row value per metric HEADER (open model). */
+  totalsByHeader: Record<string, number | null>
 }
 
 export interface FbReportParseOutcome {
@@ -132,7 +140,7 @@ const DIMENSION_ALIASES: Readonly<Record<string, readonly string[]>> = {
 }
 
 const METRIC_ALIASES: Readonly<Record<string, readonly string[]>> = {
-  spend: ['已花费金额 (usd)', '已花费金额', 'amount spent (usd)', 'amount spent'],
+  spend: ['已花费金额 (usd)', '已花费金额', '花费金额 (usd)', '花费金额', 'amount spent (usd)', 'amount spent'],
   impressions: ['展示次数', 'impressions'],
   clicks: ['点击次数（全部）', '点击次数(全部)', 'clicks (all)', 'link clicks'],
   installs: ['应用安装量', 'app installs'],
@@ -314,7 +322,7 @@ export function parseFbReportCsv(text: string): FbReportParseOutcome {
     const numeric = nonEmpty.filter((value) => parseFbReportNumber(value) !== null)
     if (nonEmpty.length >= 3 && numeric.length / nonEmpty.length >= 0.9) {
       const h = headerNorm[i]
-      const kind: FbReportMetricKind = /(花费|spend|cost|费用)/.test(h)
+      const kind: FbReportMetricKind = /(花费|spend|cost|费用|金额|amount)/.test(h)
         ? 'money'
         : /(率|rate|cpm|cpi|cpa|roas)/.test(h)
           ? 'rate'
@@ -415,6 +423,20 @@ export function parseFbReportCsv(text: string): FbReportParseOutcome {
         warnings.push({ code: 'sum-diff', column: header[idx], expected, actual })
       }
     }
+    // Open-model discipline: ANY money-kind column with a parseable totals
+    // value must reconcile — finance reports' 首充金额 etc. are money too.
+    for (const col of metricCols) {
+      if (col.semantic !== null) continue
+      if (col.kind !== 'money') continue
+      const idx = header.indexOf(col.header)
+      if (idx < 0) continue
+      const expected = parseFbReportNumber(cell(totalsRow, idx))
+      if (expected === null) continue
+      const actual = sumOf(detail, idx) ?? 0
+      if (Math.abs(actual - expected) > 0.01) {
+        fatal.push({ code: 'sum-mismatch', column: col.header, expected, actual })
+      }
+    }
   }
 
   // Metadata + per-account aggregation over detail rows.
@@ -439,6 +461,12 @@ export function parseFbReportCsv(text: string): FbReportParseOutcome {
   const installsIdx = idxOf('installs')
   const purchasesIdx = idxOf('purchases')
   const dayIdx = idxOf('day')
+  // Open metric model: header → column index for every numeric column.
+  const metricIndexByHeader = new Map<string, number>()
+  for (const col of metricCols) {
+    const idx = header.indexOf(col.header)
+    if (idx >= 0) metricIndexByHeader.set(col.header, idx)
+  }
 
   const groups = new Map<string, string[][]>()
   const daySet = new Set<string>()
@@ -459,6 +487,25 @@ export function parseFbReportCsv(text: string): FbReportParseOutcome {
       const clicks = sumOf(rowsList, clicksIdx)
       const installs = sumOf(rowsList, installsIdx)
       const purchases = sumOf(rowsList, purchasesIdx)
+      const metrics: Record<string, number | null> = {}
+      for (const col of metricCols) {
+        const idx = metricIndexByHeader.get(col.header)
+        if (idx === undefined) {
+          metrics[col.header] = null
+          continue
+        }
+        if (col.kind === 'rate') {
+          // Rates never sum: carry the canonical derived value when the
+          // semantic is known, otherwise null (shown as —).
+          metrics[col.header] =
+            col.semantic === 'cpm' ? (spend !== null && impressions !== null && impressions > 0 ? round6((spend / impressions) * 1000) : null)
+            : col.semantic === 'cpi' ? (spend !== null && installs !== null && installs > 0 ? round6(spend / installs) : null)
+            : col.semantic === 'ctr' ? (clicks !== null && impressions !== null && impressions > 0 ? round6((clicks / impressions) * 100) : null)
+            : null
+        } else {
+          metrics[col.header] = sumOf(rowsList, idx)
+        }
+      }
       return {
         account,
         spend,
@@ -469,15 +516,22 @@ export function parseFbReportCsv(text: string): FbReportParseOutcome {
         cpm: spend !== null && impressions !== null && impressions > 0 ? round6((spend / impressions) * 1000) : null,
         cpi: spend !== null && installs !== null && installs > 0 ? round6(spend / installs) : null,
         ctr: clicks !== null && impressions !== null && impressions > 0 ? round6((clicks / impressions) * 100) : null
+        ,
+        metrics
       }
     })
     .sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0))
 
   const totals: Record<string, number | null> = {}
+  const totalsByHeader: Record<string, number | null> = {}
   if (totalsRow !== null) {
     for (const semantic of ['spend', 'impressions', 'clicks', 'installs', 'purchases']) {
       const idx = idxOf(semantic)
       totals[semantic] = idx === undefined ? null : parseFbReportNumber(cell(totalsRow, idx))
+    }
+    for (const col of metricCols) {
+      const idx = metricIndexByHeader.get(col.header)
+      totalsByHeader[col.header] = idx === undefined ? null : parseFbReportNumber(cell(totalsRow, idx))
     }
   }
 
@@ -500,7 +554,9 @@ export function parseFbReportCsv(text: string): FbReportParseOutcome {
       currency,
       attribution,
       accounts,
-      totals
+      totals,
+      metrics: metricCols,
+      totalsByHeader
     },
     detailRows: detail.length,
     subtotalRows
