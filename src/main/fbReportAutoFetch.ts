@@ -546,6 +546,27 @@ function downloadsDir(): string {
   return dir
 }
 
+// ---------------------------------------------------------------------------
+// Permanent download interception on the panel session — a manual click in
+// the visible browser panel must never pop a native save dialog either.
+// ---------------------------------------------------------------------------
+
+let panelSessionWired = false
+
+/** Wires a persistent will-download handler on the panel session: every
+ *  download (manual or automated) lands in userData/fb-report-downloads
+ *  with a deduplicated name — no save dialog, no replace prompt. */
+function wirePanelDownloadInterception(session: Electron.Session): void {
+  if (panelSessionWired) return
+  panelSessionWired = true
+  const dir = downloadsDir()
+  session.setDownloadPath(dir)
+  session.on('will-download', (_event, item) => {
+    const safeName = Date.now() + '-' + item.getFilename().replace(/[^\\w.-]+/g, '_').slice(-80)
+    item.setSavePath(path.join(dir, safeName))
+  })
+}
+
 /** Completes an export whose format dialog is ALREADY open: pick CSV,
  *  confirm, await the armed download. Shared by the fast path (probe dialog
  *  stays open) and step 4 (dialog opened by its own click). */
@@ -772,6 +793,10 @@ export type FbReportFetchRange = 'today' | 'last7' | 'last30'
 export function autoFetchFbReportCsv(reportName: string, reportId?: string, range?: FbReportFetchRange): Promise<FbReportFetchResult> {
   return withBrowserActionLock<FbReportFetchResult>(async () => {
     const dir = downloadsDir()
+    const initialPanel = getActiveBrowserPanel()
+    if (initialPanel && !initialPanel.webContents.isDestroyed()) {
+      wirePanelDownloadInterception(initialPanel.webContents.session)
+    }
     const navigate = async (url: string): Promise<void> => {
       try {
         await runAction({
