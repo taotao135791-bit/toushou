@@ -507,6 +507,7 @@ async function setReportDateRange(range: FbReportFetchRange | undefined): Promis
   if (!range) return
   const labels = RANGE_LABELS[range]
   if (!labels) return
+  dateRangeFailed = false
   log('set-date-range', { range })
   // Open the date picker.
   if (!(await realClick(LOCATE_DATE_PICKER, 6_000, 'date-picker'))) {
@@ -518,6 +519,7 @@ async function setReportDateRange(range: FbReportFetchRange | undefined): Promis
   if (!(await realClick(locateQuickRange(labels), 6_000, 'quick-range'))) {
     log('quick-range not found — closing picker')
     await pressEscape()
+    dateRangeFailed = true
     return
   }
   await sleep(600)
@@ -531,6 +533,9 @@ async function setReportDateRange(range: FbReportFetchRange | undefined): Promis
   await sleep(3_000)
   log('date-range set', { range })
 }
+
+/** Whether the last date-range attempt failed and the page needs a reset. */
+let dateRangeFailed = false
 
 const SNIPPET_SCRIPT = '((document.body.innerText || "").replace(/\\s+/g, " ")).slice(0, 300)'
 
@@ -941,6 +946,15 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string, rang
       // 2b) Set the date range BEFORE exporting (master-scope driven).
       // Falls through silently when the picker isn't found.
       await setReportDateRange(range)
+      // A failed date pick can leave the page export-broken — re-navigate.
+      if (dateRangeFailed) {
+        log('re-navigating after failed date pick')
+        const resetPanel = getActiveBrowserPanel()
+        if (resetPanel && !resetPanel.webContents.isDestroyed()) {
+          await resetPanel.webContents.loadURL(REPORTING_BUSINESS_VIEW_URL + query).catch(() => {})
+          await sleep(5_000)
+        }
+      }
 
       // 3) FAST PATH: the deep-link view usually IS the target report — its
       //    export dialog's 导出内容名称 names it. Probe once: click 导出,
