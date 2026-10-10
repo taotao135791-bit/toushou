@@ -159,4 +159,20 @@ describe('parseFbReportCsv', () => {
     expect(outcome.verification.verified).toBe(false)
     expect(outcome.verification.fatal.map((f) => f.code)).toContain('window-inconsistent')
   })
+
+  it('accepts multi-day exports where detail rows carry per-day windows', () => {
+    const rows = [
+      ZH_HEADER,
+      // Totals: the 14-day export window.
+      ['', '', '', 15389, 24571, 1.5967, 'USD', 224.86, '', 9.15, 1.38, 16, 14.05, 2, '2026-09-26', '2026-10-09'],
+      // Detail rows: each carries its OWN day in the window columns.
+      ['测试账户A', '2026-09-26', 'ad-a', 4000, 6000, 1.5, 'USD', 100.43, '点击后 7 天内', 9.15, 1.38, 5, 20.086, 1, '2026-09-26', '2026-09-26'],
+      ['测试账户B', '2026-10-09', 'ad-b', 11389, 18571, 1.5, 'USD', 124.43, '点击后 7 天内', 9.15, 1.38, 11, 11.312, 1, '2026-10-09', '2026-10-09']
+    ]
+    const outcome = parseFbReportCsv(toCsv(rows))
+    expect(outcome.verification.verified).toBe(true)
+    expect(outcome.summary?.windowStart).toBe('2026-09-26')
+    expect(outcome.summary?.windowEnd).toBe('2026-10-09')
+    expect(outcome.summary?.days).toEqual(['2026-09-26', '2026-10-09'])
+  })
 })

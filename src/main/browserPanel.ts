@@ -101,8 +101,12 @@ export async function withBrowserReadingViewport<T>(view: WebContentsView, read:
   // using the latest show/hide intent, not the state captured at start.
   let stretched = false
   try {
-    if (windowAlive && owner && !attachedPanels.has(owner.id)) {
-      const before = view.getBounds()
+    const before = view.getBounds()
+    // Attached-but-hidden panels sit at a 0x0 layout — every coordinate
+    // click lands on nothing. Stretch those too; the finally-branch restores
+    // the renderer-owned bounds for visible panels as before.
+    const degenerate = before.width < 200 || before.height < 200
+    if (windowAlive && owner && (!attachedPanels.has(owner.id) || degenerate)) {
       parkBrowserPanelOffscreen(owner, view)
       const after = view.getBounds()
       stretched = before.width < 200 || before.height < 200 || before.width !== after.width || before.height !== after.height

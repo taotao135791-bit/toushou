@@ -345,24 +345,42 @@ export function parseFbReportCsv(text: string): FbReportParseOutcome {
   if (totalsCount === 0) fatal.push({ code: 'missing-totals-row' })
   if (totalsCount > 1) fatal.push({ code: 'ambiguous-totals' })
 
-  // Report window consistency (every row carries it in FB exports).
   const idxOf = (semantic: string): number | undefined => indexBySemantic[semantic]
   const windowStartIdx = idxOf('windowStart')
   const windowEndIdx = idxOf('windowEnd')
   let windowStart: string | null = null
   let windowEnd: string | null = null
+  // The TOTALS row carries the export window. Multi-day exports put each
+  // detail row's OWN day in its window columns — that is legitimate, so the
+  // detail windows only need to fall inside the totals window. Single-day
+  // exports have one window everywhere and pass the same check.
+  const within = (value: string, start: string | null, end: string | null): boolean =>
+    (!start || value >= start) && (!end || value <= end)
   if (windowStartIdx !== undefined || windowEndIdx !== undefined) {
-    const starts = new Set<string>()
-    const ends = new Set<string>()
-    for (const row of records) {
-      const s = windowStartIdx !== undefined ? (row[windowStartIdx] ?? '').trim() : ''
-      const e = windowEndIdx !== undefined ? (row[windowEndIdx] ?? '').trim() : ''
-      if (s) starts.add(s)
-      if (e) ends.add(e)
+    if (totalsRow !== null) {
+      windowStart = windowStartIdx !== undefined ? (totalsRow[windowStartIdx] ?? '').trim() || null : null
+      windowEnd = windowEndIdx !== undefined ? (totalsRow[windowEndIdx] ?? '').trim() || null : null
+      for (const row of detail) {
+        const s = windowStartIdx !== undefined ? (row[windowStartIdx] ?? '').trim() : ''
+        const e = windowEndIdx !== undefined ? (row[windowEndIdx] ?? '').trim() : ''
+        if ((s && !within(s, windowStart, windowEnd)) || (e && !within(e, windowStart, windowEnd))) {
+          fatal.push({ code: 'window-inconsistent' })
+          break
+        }
+      }
+    } else {
+      const starts = new Set<string>()
+      const ends = new Set<string>()
+      for (const row of records) {
+        const s = windowStartIdx !== undefined ? (row[windowStartIdx] ?? '').trim() : ''
+        const e = windowEndIdx !== undefined ? (row[windowEndIdx] ?? '').trim() : ''
+        if (s) starts.add(s)
+        if (e) ends.add(e)
+      }
+      if (starts.size > 1 || ends.size > 1) fatal.push({ code: 'window-inconsistent' })
+      windowStart = [...starts][0] ?? null
+      windowEnd = [...ends][0] ?? null
     }
-    if (starts.size > 1 || ends.size > 1) fatal.push({ code: 'window-inconsistent' })
-    windowStart = [...starts][0] ?? null
-    windowEnd = [...ends][0] ?? null
   }
   if (windowStartIdx === undefined && windowEndIdx === undefined && idxOf('day') === undefined) {
     fatal.push({ code: 'missing-date-columns' })
