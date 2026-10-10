@@ -467,16 +467,34 @@ const RANGE_LABELS: Record<string, string[]> = {
  *  current range like "过去 14 天：…"). */
 const LOCATE_DATE_PICKER: Locator = {
   script: pageCall(
-    'const cands = collect(document, [], true).filter((c) =>' +
-    '  /天|day/i.test(c.name) && /:|：/.test(c.name) && c.name.length > 8 && c.name.length < 120);' +
-    'const c = cands.filter((c) => usable(c, false)).sort(rank)[0];' +
-    'if (!c) return null;' +
-    'const r = rectOf(c.target);' +
-    'return { x: r.left, y: r.top, w: r.width, h: r.height, text: cut(c.name, 40) };'
+    'let best = null; let bestArea = Infinity; let bestText = "";' +
+    'const hasDigit = (s) => { for (const c of s) { if (c >= "0" && c <= "9") return true; } return false; };' +
+    'for (const el of document.querySelectorAll("button, [role=button], [role=combobox]")) {' +
+    '  const text = (el.innerText || "").split(" ").filter(Boolean).join(" ").trim();' +
+    '  if (!text || text.length < 8 || text.length > 120) continue;' +
+    '  if (!text.includes("天") && !text.toLowerCase().includes("day")) continue;' +
+    '  if (!text.includes(":") && !text.includes("：")) continue;' +
+    '  if (!hasDigit(text)) continue;' +
+    '  const r = el.getBoundingClientRect();' +
+    '  if (r.width < 40 || r.height < 16) continue;' +
+    '  const area = r.width * r.height;' +
+    '  if (area < bestArea) { best = r; bestArea = area; bestText = text; }' +
+    '}' +
+    'if (!best) return null;' +
+    'return { x: best.x, y: best.y, w: best.width, h: best.height, text: cut(bestText, 40) };'
   ),
   diag: pageCall(
-    'const cands = collect(document, [], true).filter((c) => /天|day/i.test(c.name) && /:|：/.test(c.name));' +
-    'return { count: cands.length, first: cands[0] ? cut(cands[0].name, 40) : null };'
+    'const hits = [];' +
+    'for (const el of document.querySelectorAll("button, [role=button], [role=combobox]")) {' +
+    '  const text = (el.innerText || "").split(" ").filter(Boolean).join(" ").trim();' +
+    '  if (!text || text.length < 6 || text.length > 120) continue;' +
+    '  if (!text.includes("天") && !text.toLowerCase().includes("day")) continue;' +
+    '  const r = el.getBoundingClientRect();' +
+    '  if (r.width < 10) continue;' +
+    '  hits.push({ text: text.slice(0, 50), w: Math.round(r.width) });' +
+    '  if (hits.length >= 5) break;' +
+    '}' +
+    'return { hits };'
   )
 }
 
