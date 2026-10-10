@@ -463,39 +463,32 @@ const RANGE_LABELS: Record<string, string[]> = {
   last30: ['过去 30 天', '过去30天', 'Past 30 days', 'Last 30 days']
 }
 
+/** Date-picker script: finds a button whose text contains 天, a colon,
+ *  and a digit (e.g. "过去 14 天：9月26日 – 10月9日") — pure string test,
+ *  no regex (the TS → page-script escaping chain eats backslashes). */
+const DATE_PICKER_JS =
+  '(() => {' +
+  'let best=null;let bestArea=Infinity;let bestText="";' +
+  'for(const el of document.querySelectorAll("button,[role=button],[role=combobox]")){' +
+  'const t=(el.innerText||"").split(" ").filter(Boolean).join(" ").trim();' +
+  'if(!t||t.length<8||t.length>120)continue;' +
+  'if(!t.includes("\u5929")&&!t.toLowerCase().includes("day"))continue;' +
+  'if(!t.includes(":")&&!t.includes("\uFF1A"))continue;' +
+  'let hasNum=false;for(const c of t){if(c>="0"&&c<="9"){hasNum=true;break;}}' +
+  'if(!hasNum)continue;' +
+  'const r=el.getBoundingClientRect();' +
+  'if(r.width<40||r.height<16)continue;' +
+  'const a=r.width*r.height;' +
+  'if(a<bestArea){best=r;bestArea=a;bestText=t;}}' +
+  'if(!best)return null;' +
+  'return{x:best.x,y:best.y,w:best.width,h:best.height,text:bestText.slice(0,40)};' +
+  '})()'
+
 /** Locates the date-range picker button on the report toolbar (shows the
  *  current range like "过去 14 天：…"). */
 const LOCATE_DATE_PICKER: Locator = {
-  script: pageCall(
-    'let best = null; let bestArea = Infinity; let bestText = "";' +
-    'const hasDigit = (s) => { for (const c of s) { if (c >= "0" && c <= "9") return true; } return false; };' +
-    'for (const el of document.querySelectorAll("button, [role=button], [role=combobox]")) {' +
-    '  const text = (el.innerText || "").split(" ").filter(Boolean).join(" ").trim();' +
-    '  if (!text || text.length < 8 || text.length > 120) continue;' +
-    '  if (!text.includes("天") && !text.toLowerCase().includes("day")) continue;' +
-    '  if (!text.includes(":") && !text.includes("：")) continue;' +
-    '  if (!hasDigit(text)) continue;' +
-    '  const r = el.getBoundingClientRect();' +
-    '  if (r.width < 40 || r.height < 16) continue;' +
-    '  const area = r.width * r.height;' +
-    '  if (area < bestArea) { best = r; bestArea = area; bestText = text; }' +
-    '}' +
-    'if (!best) return null;' +
-    'return { x: best.x, y: best.y, w: best.width, h: best.height, text: cut(bestText, 40) };'
-  ),
-  diag: pageCall(
-    'const hits = [];' +
-    'for (const el of document.querySelectorAll("button, [role=button], [role=combobox]")) {' +
-    '  const text = (el.innerText || "").split(" ").filter(Boolean).join(" ").trim();' +
-    '  if (!text || text.length < 6 || text.length > 120) continue;' +
-    '  if (!text.includes("天") && !text.toLowerCase().includes("day")) continue;' +
-    '  const r = el.getBoundingClientRect();' +
-    '  if (r.width < 10) continue;' +
-    '  hits.push({ text: text.slice(0, 50), w: Math.round(r.width) });' +
-    '  if (hits.length >= 5) break;' +
-    '}' +
-    'return { hits };'
-  )
+  script: DATE_PICKER_JS,
+  diag: DATE_PICKER_JS
 }
 
 /** Locates a quick-range option inside the open date popover. */
