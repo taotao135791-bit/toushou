@@ -3,23 +3,23 @@
 // 器动作共用一把串行锁；每一步 fail-closed，返回稳定错误码和有界现场文
 // 本。页面交互全部走「脚本定位 + sendInputEvent 真实点击」——FB 关键控
 // 件会过滤合成 el.click()，只有可信输入事件有效。
-import { mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { app, BrowserWindow } from 'electron'
 import { runAction, withBrowserActionLock } from './browserUse'
-import { getActiveBrowserPanel, hideBrowserPanel, withBrowserReadingViewport } from './browserPanel'
+import { getActiveBrowserPanel, withBrowserReadingViewport } from './browserPanel'
 import { listFbReadingAccounts } from './fbReadingAccounts'
-import { FbReportFetchErrorCode } from '../shared/fbReportCsv'
+import { FB_REPORT_FILE_LIMIT_BYTES } from './fbReportReadings'
+import { FbReportFetchErrorCode, parseFbReportCsv } from '../shared/fbReportCsv'
+import { boardReadingRangeDates, parseFbReadingDateRange } from '../shared/fbReading'
 
 /** Primary entry: the business-scoped Ads Reporting view. */
 const REPORTING_BUSINESS_VIEW_URL = 'https://adsmanager.facebook.com/adsmanager/reporting/business_view'
 /** Fallback entries, tried in order when the primary one fails to land. */
-const ADS_REPORTING_URL = 'https://adsmanager.facebook.com/adsreporting/'
 const DOWNLOAD_DIR_FILES_LIMIT = 20
 const NAV_TIMEOUT_MS = 45_000
 const PAGE_READY_TIMEOUT_MS = 25_000
 const CLICK_TIMEOUT_MS = 12_000
-const REPORT_OPEN_TIMEOUT_MS = 30_000
 const DIALOG_TIMEOUT_MS = 8_000
 /** Counted from arming (before the 导出 click), so it also covers the dialog steps. */
 const DOWNLOAD_TIMEOUT_MS = 180_000
@@ -272,8 +272,6 @@ const locator = (labels: readonly string[], options: LocateOptions = {}): Locato
   return { script: pageCall('return locate(' + args + ');'), diag: pageCall('return diagnose(' + args + ');') }
 }
 
-// 所有报告 breadcrumb intentionally unused: it lands on an account-scoped
-// manage list that does not contain the business's saved reports.
 // Toolbar 导出 ONLY: the closed export dialog leaves a shadow node whose own
 // 导出 confirm button (28x20) is smaller than the toolbar button and would
 // win the smallest-rect ranking. Dialog-internal candidates are excluded —
@@ -284,7 +282,7 @@ const LOCATE_EXPORT: Locator = {
     // title (hover tooltip). Try text first, then labelled buttons.
     'let cands = collect(document, ["导出", "Export"], false)' +
     '  .filter((c) => !c.el.closest("[role=dialog], [role=alertdialog]"));' +
-    'let usableCands = cands.filter((c) => usable(c, false)).sort(rank);' +
+    'let usableCands = cands.filter((c) => usable(c, true)).sort(rank);' +
     'if (!usableCands.length) {' +
     '  const labelled = [];' +
     '  for (const el of document.querySelectorAll("[aria-label], [title]")) {' +
@@ -295,7 +293,7 @@ const LOCATE_EXPORT: Locator = {
     '    if (r.width < 4 || r.height < 4) continue;' +
     '    labelled.push({ el, target: el, name: label, r, vis: true, save: false, pr: probe(el, el) });' +
     '  }' +
-    '  usableCands = labelled.filter((c) => usable(c, false)).sort(rank);' +
+    '  usableCands = labelled.filter((c) => usable(c, true)).sort(rank);' +
     '}' +
     'const c = usableCands[0];' +
     'if (!c) return null;' +
@@ -313,7 +311,7 @@ const LOCATE_EXPORT: Locator = {
 const FOCUS_EXPORT_SCRIPT = pageCall(
   'let cands = collect(document, ["导出", "Export"], false)' +
     '  .filter((c) => !c.el.closest("[role=dialog], [role=alertdialog]"));' +
-  'let usableCands = cands.filter((c) => usable(c, false)).sort(rank);' +
+  'let usableCands = cands.filter((c) => usable(c, true)).sort(rank);' +
   'if (!usableCands.length) {' +
   '  const labelled = [];' +
   '  for (const el of document.querySelectorAll("[aria-label], [title]")) {' +
@@ -324,7 +322,7 @@ const FOCUS_EXPORT_SCRIPT = pageCall(
   '    if (r.width < 4 || r.height < 4) continue;' +
   '    labelled.push({ el, target: el, name: label, r, vis: true, save: false, pr: probe(el, el) });' +
   '  }' +
-  '  usableCands = labelled.filter((c) => usable(c, false)).sort(rank);' +
+  '  usableCands = labelled.filter((c) => usable(c, true)).sort(rank);' +
   '}' +
   'const c = usableCands[0];' +
   'if (!c) return null;' +
@@ -349,22 +347,6 @@ const LOCATE_CONFIRM = locator(['导出', '下载', 'Export', 'Download', '确�
 })
 const locateReportByName = (name: string): Locator => locator([name], { prefix: true })
 
-/** The surface's own report search (按名称、编号或指标等筛选条件搜索). */
-const LOCATE_REPORT_SEARCH: Locator = {
-  script: pageCall(
-    'const input = Array.from(document.querySelectorAll("input")).find((i) =>' +
-    '  /按名称、编号或指标|filter by name|name, number/i.test(i.placeholder || "") && i.offsetParent !== null);' +
-    'if (!input) return null;' +
-    'const r = input.getBoundingClientRect();' +
-    'if (r.width < 4 || r.height < 4) return null;' +
-    'return { x: r.x, y: r.y, w: r.width, h: r.height, text: cut(input.placeholder || "search", 30) };'
-  ),
-  diag: pageCall(
-    'const inputs = Array.from(document.querySelectorAll("input")).filter((i) => i.offsetParent !== null);' +
-    'return { count: inputs.length, placeholders: inputs.slice(0, 8).map((i) => cut(i.placeholder || "", 30)) };'
-  )
-}
-
 /** Navigation guard: leaving the scratch 无标题报告 pops 要保存…更改吗？ —
  *  discard it (不保存). We NEVER click 保存; the scratch state is residue
  *  of automated visits, saved reports are not touched. */
@@ -379,46 +361,22 @@ const LOCATE_DONT_SAVE = locator(
 async function exportDialogNames(reportName: string): Promise<boolean> {
   const panel = getActiveBrowserPanel()
   if (!panel || panel.webContents.isDestroyed()) return false
-  const script =
-    '(() => {' +
-    'const dlg = document.querySelector("[role=dialog]");' +
-    'if (!dlg) return false;' +
-    'const flat = (s) => (s || "").replace(/[\\u200b-\\u200f\\u202a-\\u202e\\ufeff]/g, "").replace(/\\s+/g, "");' +
+  const script = pageCall(
+    'const exportDialogs = Array.from(document.querySelectorAll("[role=dialog], [role=alertdialog]"))' +
+    '.filter(visible).filter((el) => /csv|xlsx|逗号分隔|comma/i.test(el.innerText || ""));' +
     'const want = flat(' + JSON.stringify(reportName) + ');' +
-    'if (!want) return false;' +
-    'for (const i of dlg.querySelectorAll("input, [contenteditable]")) {' +
-    '  const f = flat(String(i.value ?? i.textContent ?? ""));' +
-    '  if (f && (f === want || f.startsWith(want) || want.startsWith(f))) return true;' +
-    '}' +
-    'return false;' +
-    '})()'
+    'return exportDialogs.some((dlg) => Array.from(dlg.querySelectorAll("input, [contenteditable]"))' +
+    '.some((input) => {' +
+    '  let name = flat(String(input.value ?? input.textContent ?? ""));' +
+    '  if (name.toLowerCase().endsWith(".csv")) name = name.slice(0, -4);' +
+    '  return name === want;' +
+    '}));'
+  )
   try {
     return (await panel.webContents.executeJavaScript(script, true)) === true
   } catch {
     return false
   }
-}
-
-/** The report switcher: the 「打开下拉菜单」 button immediately right of 保存
- *  (same row, gap ≤ 24px) — never 保存 itself, and never the second
- *  「打开下拉菜单」 that belongs to 导出 (it is not adjacent to 保存). */
-const LOCATE_SAVE_CARET: Locator = {
-  script: pageCall(
-    'const p = caretCands().pairs.find((x) => x.c.vis && !x.c.save && x.c.pr.ok);' +
-    'if (!p) return null;' +
-    'const r = rectOf(p.c.target);' +
-    'const at = p.c.pr.at || [r.left + r.width / 2, r.top + r.height / 2];' +
-    'return { x: at[0] - 0.5, y: at[1] - 0.5, w: 1, h: 1, text: cut(p.c.name, 30) + " gap=" + Math.round(p.gap) + " at=" + Math.round(at[0]) + "," + Math.round(at[1]) };'
-  ),
-  diag: pageCall(
-    'const d = (c) => ({ el: describe(c.el), target: describe(c.target), name: cut(c.name, 20),' +
-      ' rect: [Math.round(c.r.left), Math.round(c.r.top), Math.round(c.r.width), Math.round(c.r.height)],' +
-      ' visible: c.vis, occludedBy: c.pr.by, save: c.save });' +
-      'const x = caretCands();' +
-      'const uniq = (list) => list.filter((c, i) => list.findIndex((o) => o.target === c.target) === i);' +
-      'return { view: [innerWidth, innerHeight], saves: uniq(x.saves).slice(0, 4).map(d), carets: uniq(x.carets).slice(0, 4).map(d),' +
-      ' pairs: x.pairs.slice(0, 4).map((p) => ({ gap: Math.round(p.gap), caret: describe(p.c.target), ok: p.c.pr.ok, occludedBy: p.c.pr.by })) };'
-  )
 }
 
 const LIST_READY_SCRIPT = `(() => {
@@ -427,7 +385,7 @@ const LIST_READY_SCRIPT = `(() => {
   const create = /创建报告|Create report/.test(text)
   const visited = /上次访问|Last accessed|编辑时间|Edited/.test(text)
   const header = /所有报告|All reports|报告名称|Report name/.test(text)
-  return { ready: !bad && (create || visited || header), url: location.href, snippet: text.replace(/\\s+/g, ' ').slice(0, 300) }
+  return !bad && (create || visited || header) ? true : null
 })()`
 
 /** An export menu/dialog is open — content-checked so a non-modal banner
@@ -440,18 +398,6 @@ const OVERLAY_PRESENT_SCRIPT = pageCall(
 const DIALOG_PRESENT_SCRIPT = pageCall(
   'return Array.from(document.querySelectorAll("[role=dialog], [role=alertdialog]")).filter(visible)' +
     '.some((d) => /csv|xlsx|逗号分隔|comma/i.test(flat(d.innerText)));'
-)
-
-/** True once every dialog is invisible — after Escape the closed export
- *  dialog keeps a shadow node whose own 导出 button (a small 28x20 node)
- *  misleads the toolbar locator in step 4. */
-
-/** True once every dialog is invisible — after Escape the closed export
- *  dialog keeps a shadow node whose own 导出 button (a small 28x20 node)
- *  misleads the toolbar locator in step 4. */
-const NO_VISIBLE_DIALOG_SCRIPT = pageCall(
-  'return !Array.from(document.querySelectorAll("[role=dialog], [role=alertdialog]"))' +
-    '.some((d) => { const r = d.getBoundingClientRect(); return r.width >= 50 && r.height >= 50; });'
 )
 
 // --- Date range selection -------------------------------------------------
@@ -500,42 +446,67 @@ const LOCATE_DATE_UPDATE = locator(['更新', 'Update', 'Apply', '确定', 'OK']
   buttonOnly: true
 })
 
-/** Sets the report's date range before export: click the picker → click the
- *  quick option → click 更新. Falls through silently when no range was
- *  requested or the picker isn't found (export uses the report's saved range). */
-async function setReportDateRange(range: FbReportFetchRange | undefined): Promise<void> {
-  if (!range) return
-  const labels = RANGE_LABELS[range]
-  if (!labels) return
-  dateRangeFailed = false
-  log('set-date-range', { range })
-  // Open the date picker.
-  if (!(await realClick(LOCATE_DATE_PICKER, 6_000, 'date-picker'))) {
-    log('date-picker not found — exporting with the saved range')
-    return
-  }
-  await sleep(1_000)
-  // Click the quick option (today / 过去7天 / 过去30天).
-  if (!(await realClick(locateQuickRange(labels), 6_000, 'quick-range'))) {
-    log('quick-range not found — closing picker')
-    await pressEscape()
-    dateRangeFailed = true
-    return
-  }
-  await sleep(600)
-  // Click 更新 to apply and close.
-  if (!(await realClick(LOCATE_DATE_UPDATE, 4_000, 'date-update'))) {
-    log('date-update not found — closing picker')
-    await pressEscape()
-    return
-  }
-  // Wait for the report data to refresh with the new range.
-  await sleep(3_000)
-  log('date-range set', { range })
+type ReportWindow = { start: string; end: string }
+
+const DATE_LABELS_SCRIPT = pageCall(
+  'return Array.from(document.querySelectorAll("button, [role=button], [role=combobox]"))' +
+  '.filter(visible).map((el) => clean(el.innerText || el.getAttribute("aria-label") || ""));'
+)
+
+async function reportDateMatches(expected: ReportWindow): Promise<boolean> {
+  const panel = getActiveBrowserPanel()
+  if (!panel || panel.webContents.isDestroyed()) return false
+  const labels: unknown = await panel.webContents.executeJavaScript(DATE_LABELS_SCRIPT, true).catch(() => null)
+  return Array.isArray(labels) && labels.some((label: unknown) => {
+    if (typeof label !== 'string') return false
+    const actual = parseFbReadingDateRange(label)
+    return actual?.start === expected.start && actual.end === expected.end
+  })
 }
 
-/** Whether the last date-range attempt failed and the page needs a reset. */
-let dateRangeFailed = false
+/** Quick presets may apply immediately, without an Update button. Never
+ * export the saved window when the requested window could not be applied. */
+async function setReportDateRange(range: FbReportFetchRange, expected: ReportWindow): Promise<void> {
+  log('set-date-range', { range, ...expected })
+  await sleep(1_000)
+  if (!(await realClick(LOCATE_DATE_PICKER, 6_000, 'date-picker'))) {
+    throw new Error('未找到报表日期选择器，本次获取已停止。')
+  }
+  if (!(await realClick(locateQuickRange(RANGE_LABELS[range]), 6_000, 'quick-range'))) {
+    await pressEscape()
+    throw new Error('未找到所选日期范围，本次获取已停止。')
+  }
+  await sleep(700)
+  if (!(await reportDateMatches(expected))) {
+    await realClick(LOCATE_DATE_UPDATE, 2_000, 'date-update')
+  }
+  const deadline = Date.now() + PAGE_READY_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    if (await reportDateMatches(expected)) {
+      // Give the data refresh time to start before inspecting loading state.
+      await sleep(1_000)
+      const ready = await poll(pageCall(
+        'return !Array.from(document.querySelectorAll("[role=progressbar], [aria-busy=true]"))' +
+        '.some(visible);'
+      ), PAGE_READY_TIMEOUT_MS, 500)
+      if (ready === true) {
+        log('date-range verified', expected)
+        return
+      }
+      break
+    }
+    await sleep(500)
+  }
+  throw new Error('报表未切换到所选日期范围，本次获取已停止。')
+}
+
+function targetReportScript(reportName: string): string {
+  return pageCall(
+    'const want = flat(' + JSON.stringify(reportName) + ');' +
+    'return Array.from(document.querySelectorAll("h1, [role=heading]"))' +
+    '.filter(visible).some((el) => flat(el.textContent) === want);'
+  )
+}
 
 const SNIPPET_SCRIPT = '((document.body.innerText || "").replace(/\\s+/g, " ")).slice(0, 300)'
 
@@ -579,7 +550,7 @@ function wirePanelDownloadInterception(session: Electron.Session): void {
   const dir = downloadsDir()
   session.setDownloadPath(dir)
   session.on('will-download', (_event, item) => {
-    const safeName = Date.now() + '-' + item.getFilename().replace(/[^\\w.-]+/g, '_').slice(-80)
+    const safeName = Date.now() + '-' + item.getFilename().replace(/[^\w.-]+/g, '_').slice(-80)
     item.setSavePath(path.join(dir, safeName))
   })
 }
@@ -608,7 +579,15 @@ async function finishExport(download: ReturnType<typeof armDownload>): Promise<F
   } catch (error) {
     const message = error instanceof Error ? error.message : 'download-failed'
     log(message)
-    if (message === 'download-timeout') return { ok: false, error: 'download-timeout' }
+    if (message === 'download-timeout') {
+      const processing = await poll(pageCall(
+        'return Array.from(document.querySelectorAll("[role=heading], h1, h2, h3, h4"))' +
+        '.filter(visible).some((el) => /正在创建导出|正在处理|creating.*export|processing/i.test(el.textContent || ""));'
+      ), 500, 250)
+      return { ok: false, error: 'download-timeout', detail: processing === true
+        ? 'FB 仍在生成本次 CSV，等待期间尚未就绪，旧数据已保留。'
+        : '等待本次 CSV 下载超时，旧数据已保留。' }
+    }
     return { ok: false, error: 'download-failed', detail: bounded(message) }
   }
 }
@@ -629,7 +608,9 @@ interface DownloadWaiter {
  * path pops a native Save-As dialog. Does NOT change the session's default
  * download path (the user's own panel downloads keep their location).
  */
-function armDownload(session: Electron.Session, dir: string): DownloadWaiter {
+function armDownload(session: Electron.Session, dir: string, reportName: string): DownloadWaiter {
+  const normalizeName = (name: string): string => name.replace(/[\u200b-\u200f\u202a-\u202e\ufeff]/g, '').replace(/\s+/g, '')
+  const expectedName = normalizeName(reportName)
   let settled = false
   let started = false
   let cancel: () => void = () => undefined
@@ -643,9 +624,9 @@ function armDownload(session: Electron.Session, dir: string): DownloadWaiter {
     }
     const timer = setTimeout(() => finish(() => reject(new Error('download-timeout'))), DOWNLOAD_TIMEOUT_MS)
     const onWillDownload = (_event: unknown, item: Electron.DownloadItem): void => {
-      if (started) return
-      started = true
       const original = item.getFilename()
+      if (started || !/\.csv$/i.test(original) || normalizeName(original.slice(0, -4)) !== expectedName) return
+      started = true
       const safeName = 'fb-report-' + Date.now() + '-' + original.replace(/[^\w.-]+/g, '_').replace(/^\.+/, '_').slice(-80)
       const target = path.join(dir, safeName)
       item.setSavePath(target)
@@ -720,11 +701,18 @@ async function realClick(target: Locator, timeoutMs: number, label: string, inte
         if (panel.webContents.isDestroyed()) return false
         panel.webContents.sendInputEvent({ type: 'mouseMove', x, y })
         await sleep(200)
-        // FB surfaces occasionally drop the first click — re-assert hover
-        // before pressing so the widget is fully primed.
-        if (!panel.webContents.isDestroyed()) panel.webContents.sendInputEvent({ type: 'mouseMove', x, y })
-        await sleep(120)
+        // The reporting banner mounts asynchronously and moves the toolbar.
+        // Re-locate after hover; stale coordinates can open the business
+        // selector instead of the date picker. Never press at a moved rect.
         if (panel.webContents.isDestroyed()) return false
+        const current: unknown = await panel.webContents.executeJavaScript(locateScript, true).catch(() => null)
+        const latest = current as typeof box | null
+        if (!latest || Math.abs(latest.x - box.x) > 1 || Math.abs(latest.y - box.y) > 1 ||
+            Math.abs(latest.w - box.w) > 1 || Math.abs(latest.h - box.h) > 1) {
+          log('layout changed before click ' + label)
+          continue
+        }
+        panel.webContents.sendInputEvent({ type: 'mouseMove', x, y })
         panel.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 })
         await sleep(60)
         if (panel.webContents.isDestroyed()) return false
@@ -745,14 +733,6 @@ async function pressEscape(): Promise<void> {
   panel.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
   panel.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
   await sleep(400)
-}
-
-/** Types into the focused element (insertText — native CJK safe). */
-async function realType(text: string): Promise<void> {
-  const panel = getActiveBrowserPanel()
-  if (!panel || panel.webContents.isDestroyed()) return
-  panel.webContents.insertText(text)
-  await sleep(300)
 }
 
 async function pressReturn(): Promise<void> {
@@ -873,18 +853,6 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string, rang
     if (!activePanel || activePanel.webContents.isDestroyed()) {
       return { ok: false, error: 'panel-not-open' }
     }
-    // Attached-visible panels swallow injected clicks intermittently (the
-    // proven-reliable layout is the parked, stretched one the reading
-    // pipeline uses). Hide the panel for the interaction; the viewport wrap
-    // below then parks+stretches it, and the user can reopen it afterwards.
-    const ownerWindow = BrowserWindow.fromWebContents(activePanel.webContents)
-    if (ownerWindow && !ownerWindow.isDestroyed()) {
-      try {
-        hideBrowserPanel(ownerWindow)
-      } catch {
-        // hide is best-effort; the wrap below still guarantees a layout
-      }
-    }
     // FB's export popover gates on document focus: when the OS window is in
     // the background every activation (mouse AND keyboard) is silently
     // ignored. Focus the window and the panel contents before interacting.
@@ -906,175 +874,85 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string, rang
       const vb = activePanel.getBounds()
       log('viewport', { w: vb.width, h: vb.height, zoom: activePanel.webContents.getZoomFactor() })
 
-      // 2) Land on the reporting surface (fall back through known entries).
-      const listReady = async (): Promise<{ ready: boolean; snippet: string }> => {
-        const polled = await poll(LIST_READY_SCRIPT, PAGE_READY_TIMEOUT_MS)
-        if (polled && typeof polled === 'object') {
-          const info = polled as { ready?: boolean; snippet?: string; url?: string }
-          return { ready: info.ready === true, snippet: (info.url ?? '') + ' | ' + (info.snippet ?? '') }
+      // Verify the saved report first. A deep link can land on an untitled
+      // scratch report; that surface must never be exported as the target.
+      if ((await poll(LIST_READY_SCRIPT, PAGE_READY_TIMEOUT_MS, 500)) !== true) {
+        return { ok: false, error: 'navigation-failed', detail: await pageSnippet() }
+      }
+      const target = targetReportScript(reportName)
+      if ((await poll(target, 2_000, 500)) !== true) {
+        const allReports = locator(['所有报告', 'All reports'], { buttonOnly: true })
+        if (!(await realClick(allReports, 6_000, 'all-reports'))) {
+          return { ok: false, error: 'report-not-found', detail: '未能打开已保存报表列表。' }
         }
-        return { ready: false, snippet: await pageSnippet() }
-      }
-      let landing = await listReady()
-      if (!landing.ready) {
-        // Alternate surfaces, each carrying the same scope params — the
-        // classic adsreporting home only lists saved reports when scoped.
-        const fallbacks = [
-          ADS_REPORTING_URL + query,
-          REPORTING_BUSINESS_VIEW_URL,
-          ADS_REPORTING_URL,
-          'https://business.facebook.com/reports/'
-        ]
-        for (const fallback of fallbacks) {
-          log('fallback', { url: fallback.split('?')[0] })
-          await navigate(fallback)
-          const fallbackUrl = await panelUrl()
-          if (LOGIN_URL.test(fallbackUrl)) {
-            log('login-required')
-            return { ok: false, error: 'login-required', detail: bounded(fallbackUrl) }
-          }
-          landing = await listReady()
-          if (landing.ready) break
+        // Only discard the current unsaved reporting view; never save it.
+        await realClick(LOCATE_DONT_SAVE, DIALOG_TIMEOUT_MS, 'discard-report-view')
+        const savedList = locator(['创建报告', 'Create report'], { buttonOnly: true })
+        if (!(await poll(savedList.script, PAGE_READY_TIMEOUT_MS, 500))) {
+          return { ok: false, error: 'report-not-found', detail: '已保存报表列表尚未加载完成。' }
         }
-      }
-      if (!landing.ready) {
-        log('navigation-failed')
-        return { ok: false, error: 'navigation-failed', detail: landing.snippet }
-      }
-      log('landed')
-
-      // 2b) Set the date range BEFORE exporting (master-scope driven).
-      // Falls through silently when the picker isn't found.
-      await setReportDateRange(range)
-      // A failed date pick can leave the page export-broken — re-navigate.
-      if (dateRangeFailed) {
-        log('re-navigating after failed date pick')
-        const resetPanel = getActiveBrowserPanel()
-        if (resetPanel && !resetPanel.webContents.isDestroyed()) {
-          await resetPanel.webContents.loadURL(REPORTING_BUSINESS_VIEW_URL + query).catch(() => {})
-          await sleep(5_000)
-        }
-      }
-
-      // 3) FAST PATH: the deep-link view usually IS the target report — its
-      //    export dialog's 导出内容名称 names it. Probe once: click 导出,
-      //    verify the name inside the dialog, close it, and skip the whole
-      //    report-opening dance. On mismatch fall through to opening below.
-      let viewIsTarget = false
-      // The toolbar click is intermittently swallowed on this surface (works
-      // via OS-level events, flaky via injected input) — retry a few times,
-      // stopping as soon as a dialog or menu appears.
-      // Let the freshly landed page settle before the first toolbar click.
-      await sleep(2_000)
-      for (let probeAttempt = 1; probeAttempt <= 4 && !viewIsTarget; probeAttempt += 1) {
-        const activated =
-          (probeAttempt % 2 === 1
-            ? await activateByKeyboard(4_000, 'export')
-            : await realClick(LOCATE_EXPORT, 4_000, 'export(probe)'))
-        if (activated) {
-          // 导出 opens a dialog on the report view but a MENU on other
-          // surfaces — either means the export path is live (step 4 handles
-          // both shapes).
-          const overlayLive =
-            (await poll(OVERLAY_PRESENT_SCRIPT, DIALOG_TIMEOUT_MS, 700)) === true ||
-            (await poll(DIALOG_PRESENT_SCRIPT, 2_000, 700)) === true
-          if (overlayLive) {
-            // Format dialog already open? Finish the export IN it — closing
-            // and reopening only drifts the page state (the toolbar moves
-            // and stray 导出 nodes win the locator).
-            if ((await poll(DIALOG_PRESENT_SCRIPT, 1_500, 500)) === true) {
-              const dlgPanel = getActiveBrowserPanel()
-              if (!dlgPanel || dlgPanel.webContents.isDestroyed()) {
-                return { ok: false, error: 'panel-not-open' }
-              }
-              const download = armDownload(dlgPanel.webContents.session, dir)
-              try {
-                log('fast-path probe', { attempt: probeAttempt, namesTarget: await exportDialogNames(reportName), finish: 'in-dialog' })
-                return await finishExport(download)
-              } finally {
-                download.cancel()
-              }
+        // The template sidebar can cover the report list in a narrow panel.
+        await realClick(locator(['关闭侧边面板', 'Close side panel']), 1_000, 'close-template-sidebar')
+        // Identify the actual saved-report anchor. FB's click handler
+        // loads saved configuration; loading its URL alone can open an
+        // untitled scratch report. Keyboard activation also avoids row
+        // selection when the anchor is clipped in a narrow list.
+        const link: unknown = await activePanel.webContents.executeJavaScript(pageCall(
+          'const want = flat(' + JSON.stringify(reportName) + ');' +
+          'const matches = Array.from(document.querySelectorAll("a[href]"))' +
+          '.filter((el) => nameList(el).some((name) => name === want));' +
+          'const urls = [...new Set(matches.map((el) => el.href))];' +
+          'return urls.length === 1 ? urls[0] : null;'
+        ), true).catch(() => null)
+        let opened = false
+        if (typeof link === 'string') {
+          const saved = new URL(link)
+          if (saved.protocol === 'https:' && saved.hostname === 'adsmanager.facebook.com' &&
+              saved.pathname === '/adsmanager/reporting/business_view' &&
+              /^\d{1,32}$/.test(saved.searchParams.get('selected_report_id') || '')) {
+            activePanel.webContents.focus()
+            const focused: unknown = await activePanel.webContents.executeJavaScript(pageCall(
+              'const href = ' + JSON.stringify(saved.href) + ';' +
+              'const anchor = Array.from(document.querySelectorAll("a[href]"))' +
+              '.find((el) => el.href === href);' +
+              'if (!anchor) return false;' +
+              'anchor.scrollIntoView({ block: "nearest", inline: "nearest" });' +
+              'anchor.focus(); return document.activeElement === anchor;'
+            ), true).catch(() => false)
+            if (focused === true) {
+              log('activate saved-report link')
+              await pressReturn()
+              opened = true
             }
-            // The name field is the export FILENAME, not a data oracle — the
-            // deep-link view always carries the business scope and the target
-            // report's structure. Log the name match, never gate on it: the
-            // date window is whatever the view holds and is shown as-is.
-            viewIsTarget = true
-            log('fast-path probe', { attempt: probeAttempt, namesTarget: await exportDialogNames(reportName) })
-            // Close the probe dialog either way; the real export below reopens it.
-            await pressEscape()
-            // The closed dialog's DOM lingers briefly and its own 导出 button
-            // (a small 28x20 node) shadows the toolbar one in the locator —
-            // wait until no VISIBLE dialog remains before clicking again.
-            for (let gone = 0; gone < 10; gone += 1) {
-              const visibleDialog = await poll(NO_VISIBLE_DIALOG_SCRIPT, 400, 300)
-              if (visibleDialog === true) break
-              await sleep(300)
-            }
-            await sleep(600)
-          } else {
-            log('probe click swallowed', { attempt: probeAttempt })
-            await sleep(3_000)
           }
         }
+        if (!opened) opened = await realClick(locateReportByName(reportName), 6_000, 'saved-report')
+        if (!opened || (await poll(target, PAGE_READY_TIMEOUT_MS, 500)) !== true) {
+          return { ok: false, error: 'report-not-found', detail: '未能确认已打开指定的已保存报表。' }
+        }
+      }
+      log('target-report verified')
+      const expected = range ? boardReadingRangeDates(range) : undefined
+      if (range && expected) await setReportDateRange(range, expected)
+      // The report heading must still match after the date update.
+      if ((await poll(target, 1_000, 500)) !== true) {
+        return { ok: false, error: 'report-not-found', detail: '日期切换后报表身份发生变化。' }
       }
 
-      // 3b) Open the target report when the fast path didn't match. The
-      //    surface's own search box and the 保存 ▾ switcher menu both list
-      //    saved reports; the 所有报告 breadcrumb leads to an account-scoped
-      //    list and is deliberately NOT used.
-      let opened = false
-      for (let attempt = 0; attempt < 3 && !opened && !viewIsTarget; attempt += 1) {
-        // FB blocks navigation with the unsaved-changes guard; discard and
-        // let the pending navigation continue.
-        if (await realClick(LOCATE_DONT_SAVE, 2_000, 'discard-guard')) {
-          await sleep(1_200)
-        }
-        opened = await realClick(locateReportByName(reportName), 8_000, 'report-name')
-        if (opened) break
-        // Human path: the surface's own search box — type the name, Enter.
-        if (await realClick(LOCATE_REPORT_SEARCH, 3_000, 'report-search')) {
-          await sleep(300)
-          await realType(reportName)
-          await sleep(200)
-          await pressReturn()
-          await sleep(2_000)
-          // The search may jump straight to the report or show result rows.
-          if (await realClick(locateReportByName(reportName), 8_000, 'report-name(search)')) {
-            opened = true
-            break
-          }
-        }
-        // The switcher menu (打开下拉菜单 caret next to 保存) lists every
-        // saved report ON THIS business-scoped surface. NOTE: the 所有报告
-        // breadcrumb navigates to an account-scoped manage list with no
-        // saved reports — it is deliberately NOT used.
-        if (await realClick(LOCATE_SAVE_CARET, 4_000, 'switcher-caret')) {
-          await sleep(1_200)
-          opened = await realClick(locateReportByName(reportName), 6_000, 'report-name(menu)')
-          // Close whatever the caret opened (Escape is not an edit).
-          if (!opened) await pressEscape()
-        }
-      }
-      if (!opened && !viewIsTarget) {
-        log('report-not-found')
-        return { ok: false, error: 'report-not-found', detail: await pageSnippet() }
-      }
-
-      // 4) Export: toolbar 导出 → (menu 导出表格数据) → dialog → CSV → confirm.
-      //    The one-shot download waiter is armed before the first export
-      //    click and always disarmed on the way out.
-      await sleep(2_000)
       const panel = getActiveBrowserPanel()
       if (!panel || panel.webContents.isDestroyed()) return { ok: false, error: 'panel-not-open' }
-      const download = armDownload(panel.webContents.session, dir)
+      const download = armDownload(panel.webContents.session, dir, reportName)
       try {
-        const exportClicked = await realClick(LOCATE_EXPORT, REPORT_OPEN_TIMEOUT_MS, 'export')
+        const exportClicked = await realClick(LOCATE_EXPORT, 6_000, 'export')
         if (!exportClicked) {
           log('export-button-not-found')
           return { ok: false, error: 'export-button-not-found', detail: await pageSnippet() }
         }
-        const overlay = await poll(OVERLAY_PRESENT_SCRIPT, DIALOG_TIMEOUT_MS, 700)
+        let overlay = await poll(OVERLAY_PRESENT_SCRIPT, DIALOG_TIMEOUT_MS, 700)
+        if (overlay !== true && !download.started()) {
+          await activateByKeyboard(2_000, 'export-keyboard')
+          overlay = await poll(OVERLAY_PRESENT_SCRIPT, DIALOG_TIMEOUT_MS, 700)
+        }
         if (overlay !== true && !download.started()) {
           log('export-button-not-found (no dialog/menu after click)')
           return { ok: false, error: 'export-button-not-found', detail: await pageSnippet() }
@@ -1086,7 +964,23 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string, rang
             await poll(DIALOG_PRESENT_SCRIPT, DIALOG_TIMEOUT_MS, 700)
           }
         }
-        return await finishExport(download)
+        if (!download.started() && !(await exportDialogNames(reportName))) {
+          await pressEscape()
+          return { ok: false, error: 'report-not-found', detail: '导出对话框中的报表名称与目标不一致。' }
+        }
+        const result = await finishExport(download)
+        if (result.ok && result.filePath && expected) {
+          if (statSync(result.filePath).size > FB_REPORT_FILE_LIMIT_BYTES) {
+            return { ok: false, error: 'fetch-failed', detail: '下载文件超过大小限制，旧数据已保留。' }
+          }
+          const outcome = parseFbReportCsv(readFileSync(result.filePath, 'utf8'))
+          const actual = outcome.summary
+          if (!outcome.verification.verified || actual?.windowStart !== expected.start || actual.windowEnd !== expected.end) {
+            log('download verification failed', { expected, start: actual?.windowStart, end: actual?.windowEnd })
+            return { ok: false, error: 'fetch-failed', detail: '下载文件未通过数据或日期校验，旧数据已保留。' }
+          }
+        }
+        return result
       } finally {
         download.cancel()
       }
