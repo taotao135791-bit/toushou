@@ -100,6 +100,8 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
   })
   const [url, setUrl] = useState(configString(widget, 'url'))
   const [urlInvalid, setUrlInvalid] = useState(false)
+  const [reportName, setReportName] = useState(configString(widget, 'reportName'))
+  const [reportId, setReportId] = useState(configString(widget, 'reportId'))
   const [labelsInvalid, setLabelsInvalid] = useState(false)
   const [style, setStyle] = useState<BoardWidgetStyle>(widget.style ?? {})
 
@@ -298,6 +300,12 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
       case 'file':
         // Keep the previously bound path when no new file was picked.
         config = { filePath: boundPath }
+        break
+      case 'fb-report-reading':
+        config = {
+          ...(reportName.trim() ? { reportName: reportName.trim().slice(0, 80) } : {}),
+          ...(reportId.trim() && /^\d{1,32}$/.test(reportId.trim()) ? { reportId: reportId.trim() } : {})
+        }
         break
       case 'fb-reading':
         {
@@ -821,6 +829,28 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
               className={`${inputClass} font-mono`}
             />
           </Field>
+        )}
+        {widget.type === 'fb-report-reading' && (
+          <>
+            <Field label={t('boards.fbReport.config.reportName')}>
+              <input
+                value={reportName}
+                onChange={(e) => setReportName(e.target.value)}
+                placeholder={t('boards.fbReport.config.reportNamePlaceholder')}
+                className={inputClass}
+              />
+            </Field>
+            <p className="text-[11px] leading-4 text-cream-faint">{t('boards.fbReport.config.reportNameHint')}</p>
+            <Field label={t('boards.fbReport.config.reportId')}>
+              <input
+                value={reportId}
+                onChange={(e) => setReportId(e.target.value)}
+                placeholder="selected_report_id"
+                className={inputClass}
+              />
+            </Field>
+            <p className="text-[11px] leading-4 text-cream-faint">{t('boards.fbReport.config.reportIdHint')}</p>
+          </>
         )}
         {widget.type === 'file' && (
           <>

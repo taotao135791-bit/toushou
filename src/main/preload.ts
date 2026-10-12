@@ -34,6 +34,7 @@ import type {
   TikTokReportStatus
 } from '../shared/tiktokReport'
 import type { TikTokTodayReadingResult } from '../shared/todayReading'
+import type { FbReportAutoFetchResult, FbReportImportResult, FbReportStoredReading } from '../shared/fbReportCsv'
 import {
   CliCapabilities,
   CliInfo,
@@ -511,6 +512,11 @@ export interface ElectronAPI {
   /** Advertisers the readings use: the user's own list wins over the authorization's. */
   ttReadingAdvertisers: () => Promise<TikTokReadingAdvertisers>
   ttReadingSetAdvertisers: (input: { advertiserIds: string }) => Promise<TikTokReadingAdvertisersSetResult>
+  /** FB 报表读数 board module: Main owns the file dialog, parse and store. */
+  fbReportImport: (widgetId: string) => Promise<FbReportImportResult>
+  fbReportReadingGet: (widgetId: string) => Promise<FbReportStoredReading | null>
+  /** Automated export: Main opens the named report and downloads the CSV. */
+  fbReportAutoFetch: (widgetId: string, reportName: string, reportId?: string, range?: string) => Promise<FbReportAutoFetchResult>
   /** Figma Dev Mode MCP connector (local endpoint, no credentials). */
   figmaStatus: () => Promise<FigmaConnectionSnapshot>
   figmaConnect: () => Promise<FigmaConnectionSnapshot>
@@ -978,6 +984,22 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.TT_READING_ADVERTISERS_SET, {
       advertiserIds: typeof input?.advertiserIds === 'string' && input.advertiserIds.length <= 400 ? input.advertiserIds : null
     }) as Promise<TikTokReadingAdvertisersSetResult>,
+  // Invalid ids go through as null so Main rejects them; never a guess.
+  fbReportImport: (widgetId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FB_REPORT_IMPORT, {
+      widgetId: typeof widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(widgetId) ? widgetId : null
+    }) as Promise<FbReportImportResult>,
+  fbReportReadingGet: (widgetId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FB_REPORT_READING_GET, {
+      widgetId: typeof widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(widgetId) ? widgetId : null
+    }) as Promise<FbReportStoredReading | null>,
+  fbReportAutoFetch: (widgetId: string, reportName: string, reportId?: string, range?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FB_REPORT_AUTO_FETCH, {
+      widgetId: typeof widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(widgetId) ? widgetId : null,
+      reportName: typeof reportName === 'string' ? reportName.slice(0, 80) : null,
+      reportId: typeof reportId === 'string' && reportId.length <= 32 ? reportId : null,
+      range: typeof range === 'string' && range.length <= 8 ? range : null
+    }) as Promise<FbReportAutoFetchResult>,
   figmaStatus: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_STATUS),
   figmaConnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_CONNECT),
   figmaDisconnect: (): Promise<FigmaConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.FIGMA_DISCONNECT),

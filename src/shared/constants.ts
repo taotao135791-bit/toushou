@@ -70,6 +70,11 @@ export const IPC_CHANNELS = {
   FB_READING_ACCOUNTS_REMOVE: 'fb-reading:accounts:remove',
   FB_READING_ACCOUNTS_DISCOVER: 'fb-reading:accounts:discover',
   FB_READING_ACCOUNTS_CAPTURE: 'fb-reading:accounts:capture',
+  /** FB 报表读数 board module: Main owns dialog, parse, verify, persist. */
+  FB_REPORT_IMPORT: 'fb-report:import',
+  FB_REPORT_READING_GET: 'fb-report:get',
+  /** Automated export: hidden panel opens the saved report and downloads CSV. */
+  FB_REPORT_AUTO_FETCH: 'fb-report:auto-fetch',
   /** TT 读数 board module: Main resolves the TikTok token + aggregates the report. */
   TT_READING_SUMMARY: 'tt-reading:summary',
   /** Today page: current window plus the previous equal window, split in Main. */

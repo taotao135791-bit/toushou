@@ -465,6 +465,14 @@ describe('composeBoard + presets', () => {
     expect(blank.widgets).toEqual([])
   })
 
+  it('composes the fb-daily-v2 report-import board without fb-reading widgets', () => {
+    const composed = composeBoard('', t, 'fb-daily-v2')
+    expect(composed.name).toBe('boards.preset.fbDaily2')
+    expect(composed.widgets).toHaveLength(1)
+    expect(composed.widgets[0]?.type).toBe('fb-report-reading')
+    expect(composed.widgets[0]?.config).toEqual({})
+  })
+
   it('composes boards that survive validateBoard intact', () => {
     for (const description of ['广告投放', '股票', 'anything else', '']) {
       const composed = composeBoard(description, t)

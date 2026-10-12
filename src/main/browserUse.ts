@@ -1007,7 +1007,7 @@ const latestSnapshotBySession = new Map<string, string>()
 /** Browser actions must be serialized so ownership cannot change mid-action. */
 let browserActionQueue = Promise.resolve()
 
-function withBrowserActionLock<T>(task: () => Promise<T>): Promise<T> {
+export function withBrowserActionLock<T>(task: () => Promise<T>): Promise<T> {
   const run = browserActionQueue.then(task, task)
   browserActionQueue = run.then(
     () => undefined,

@@ -201,6 +201,8 @@ import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { buildTikTokReadingSummary, buildTikTokTodayReading } from './integrations/tiktok/tiktokReading'
 import { listTikTokReadingAdvertisers, setTikTokReadingAdvertisers } from './integrations/tiktok/tiktokReadingAdvertisers'
 import { resolveTikTokToken, setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
+import { importFbReportFile, readFbReportReadings } from './fbReportReadings'
+import { autoFetchFbReportCsv, FbReportFetchRange } from './fbReportAutoFetch'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
@@ -818,6 +820,54 @@ export function registerIpc() {
     }
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_SET, (_event, raw: unknown) => setTikTokReadingAdvertisers(raw))
+
+  // --- FB 报表导入读数（fb-report-reading 模块）---------------------------
+  // The renderer sends only a widget id. Main owns the file dialog, size
+  // caps, parsing and persistence; an unverified import never overwrites
+  // the stored reading (fail closed, keep old data).
+  ipcMain.handle(IPC_CHANNELS.FB_REPORT_IMPORT, async (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { widgetId?: unknown }
+    const widgetId =
+      typeof input.widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(input.widgetId) ? input.widgetId : null
+    if (!widgetId) return { ok: false, error: 'invalid-widget' }
+    const picked = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }]
+    })
+    if (picked.canceled || picked.filePaths.length === 0) return { ok: false, canceled: true }
+    return importFbReportFile(widgetId, picked.filePaths[0])
+  })
+  ipcMain.handle(IPC_CHANNELS.FB_REPORT_READING_GET, (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { widgetId?: unknown }
+    const widgetId =
+      typeof input.widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(input.widgetId) ? input.widgetId : null
+    if (!widgetId) return null
+    return readFbReportReadings()[widgetId] ?? null
+  })
+  // Automated export: hidden panel opens the named saved report and downloads
+  // the CSV (read-only — never clicks 保存, never touches report settings).
+  // The downloaded file flows through the same verified import as a manual one.
+  ipcMain.handle(IPC_CHANNELS.FB_REPORT_AUTO_FETCH, async (_event, raw: unknown) => {
+    const input = (raw ?? {}) as { widgetId?: unknown; reportName?: unknown; reportId?: unknown; range?: unknown }
+    const widgetId =
+      typeof input.widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(input.widgetId) ? input.widgetId : null
+    const reportName =
+      typeof input.reportName === 'string' ? input.reportName.trim().slice(0, 80) : ''
+    const reportId =
+      typeof input.reportId === 'string' && /^\d{1,32}$/.test(input.reportId.trim())
+        ? input.reportId.trim()
+        : undefined
+    const range =
+      input.range === 'today' || input.range === 'last7' || input.range === 'last30'
+        ? (input.range as FbReportFetchRange)
+        : undefined
+    if (!widgetId || !reportName) return { ok: false, error: 'invalid-widget' }
+    const fetch = await autoFetchFbReportCsv(reportName, reportId, range)
+    if (!fetch.ok || !fetch.filePath) {
+      return { ok: false, fetchError: fetch.error ?? 'fetch-failed', detail: fetch.detail }
+    }
+    return importFbReportFile(widgetId, fetch.filePath)
+  })
 
   // --- Figma Dev Mode MCP connector (local, code-token-only flavor) ------
   ipcMain.handle(IPC_CHANNELS.FIGMA_STATUS, async () => figmaConnectionManager.refreshStatus())

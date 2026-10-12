@@ -60,6 +60,7 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'counter',
   'fb-reading',
   'fb-reading-summary',
+  'fb-report-reading',
   'tt-reading',
   'gauge',
   'chart-line',
@@ -87,6 +88,7 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   counter: { w: 3, h: 2 },
   'fb-reading': { w: 6, h: 5 },
   'fb-reading-summary': { w: 6, h: 6 },
+  'fb-report-reading': { w: 8, h: 8 },
   'tt-reading': { w: 6, h: 5 },
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
@@ -120,6 +122,10 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
       // advertiserIds: comma-separated string (empty = use every advertiser
       // the connected TikTok token's grant covers); range in days.
       return { advertiserIds: '', range: '7' }
+    case 'fb-report-reading':
+      // Config lives in Main's per-widget reading store; the board file
+      // keeps nothing but the module itself.
+      return {}
     case 'note':
       return { text: '' }
     case 'counter':
@@ -169,7 +175,7 @@ export function createWidget(
 /** Translator shape the presets need; the renderer passes its i18n `t`. */
 export type BoardText = (key: string) => string
 
-export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'tiktok'
+export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'fb-daily-v2' | 'tiktok'
 
 export interface ComposedBoard {
   name: string
@@ -340,6 +346,17 @@ export function fbDailyPreset(t: BoardText, accounts: readonly FbReadingAccountR
 }
 
 /**
+ * 「Facebook 投放日报（2）」— the report-import path. One module imports a
+ * Facebook Ads Reporting CSV (any structure the shared contract accepts),
+ * verifies it against Facebook's own totals row in Main, and renders the
+ * per-account rows plus the FB totals. Deliberately separate from fb-daily:
+ * the browser-reading board stays untouched.
+ */
+export function fbDailyV2Preset(t: BoardText): BoardWidget[] {
+  return [presetWidget('fb-report-reading', t('boards.widget.fb-report-reading'), { x: 0, y: 0, w: 12, h: 9 }, {})]
+}
+
+/**
  * TikTok Ads panorama board: a KPI row of dataset-bound counters (spend,
  * clicks, avg CTR, conversions), daily spend and conversion trends, a
  * per-campaign spend comparison and a data-source note. Widgets bind the
@@ -429,6 +446,8 @@ export function composeBoard(
       return { name: t('boards.preset.finance'), widgets: financePreset(t) }
     case 'fb-daily':
       return { name: t('boards.preset.fbDaily'), widgets: fbDailyPreset(t, fbAccounts) }
+    case 'fb-daily-v2':
+      return { name: t('boards.preset.fbDaily2'), widgets: fbDailyV2Preset(t) }
     case 'tiktok':
       return { name: t('boards.preset.tiktok'), widgets: tiktokAdsPreset(t) }
     case 'blank':
@@ -729,6 +748,32 @@ function validateWidgetConfig(
   raw: Record<string, unknown>
 ): Record<string, unknown> | null {
   switch (type) {
+    case 'fb-report-reading':
+      // v2: one bounded string — the saved report to open for auto export.
+      // Everything else lives in Main's per-widget reading store.
+      {
+        const config: Record<string, unknown> = {}
+      if (raw.reportName !== undefined) {
+        const reportName = cleanString(raw.reportName, 80)
+        if (reportName === null) return null
+        if (reportName) config.reportName = reportName
+      }
+      // Optional deep-link id (selected_report_id in the report URL) — digits only.
+      if (raw.reportId !== undefined) {
+        const reportId = cleanString(raw.reportId, 32)
+        if (reportId === null || reportId === '') return config
+        if (!/^\d{1,32}$/.test(reportId)) return null
+        config.reportId = reportId
+      }
+      // Master-scope range (today / last7 / last30) — drives the FB date
+      // picker during auto-fetch. last3 has no FB quick option and is skipped.
+      if (raw.range !== undefined) {
+        const range = cleanString(raw.range, 8)
+        if (range === null) return null
+        if (range === 'today' || range === 'last7' || range === 'last30') config.range = range
+      }
+      return config
+      }
     case 'clock': {
       const config: Record<string, unknown> = {}
       if (raw.showSeconds !== undefined) {
@@ -1001,7 +1046,7 @@ function validateMasterScope(raw: unknown): BoardMasterScope | null {
 
 /** Widget types whose date/metric scope a master scope governs — the single
  * list behind unification, refresh-all and the independence check. */
-export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading']
+export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading', 'fb-report-reading']
 
 /** TikTok day windows are a separate enum; last3 has no TikTok equivalent. */
 const TT_RANGE_BY_MASTER: Record<string, string> = {

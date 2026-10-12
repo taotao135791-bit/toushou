@@ -1086,6 +1086,7 @@ export type WidgetType =
   | 'counter'
   | 'fb-reading'
   | 'fb-reading-summary'
+  | 'fb-report-reading'
   | 'tt-reading'
   | 'gauge'
   | 'chart-line'
