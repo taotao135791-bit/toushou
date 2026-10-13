@@ -8,14 +8,11 @@ import path from 'node:path'
 import { app, BrowserWindow } from 'electron'
 import { runAction, withBrowserActionLock } from './browserUse'
 import { getActiveBrowserPanel, withBrowserReadingViewport } from './browserPanel'
-import { listFbReadingAccounts } from './fbReadingAccounts'
 import { FB_REPORT_FILE_LIMIT_BYTES } from './fbReportReadings'
 import { FbReportFetchErrorCode, parseFbReportCsv } from '../shared/fbReportCsv'
 import { boardReadingRangeDates, parseFbReadingDateRange } from '../shared/fbReading'
+import { fbReportEntryUrl, parseFbReportReference } from '../shared/fbReportReference'
 
-/** Primary entry: the business-scoped Ads Reporting view. */
-const REPORTING_BUSINESS_VIEW_URL = 'https://adsmanager.facebook.com/adsmanager/reporting/business_view'
-/** Fallback entries, tried in order when the primary one fails to land. */
 const DOWNLOAD_DIR_FILES_LIMIT = 20
 const NAV_TIMEOUT_MS = 45_000
 const PAGE_READY_TIMEOUT_MS = 25_000
@@ -500,11 +497,13 @@ async function setReportDateRange(range: FbReportFetchRange, expected: ReportWin
   throw new Error('报表未切换到所选日期范围，本次获取已停止。')
 }
 
-function targetReportScript(reportName: string): string {
+function targetReportScript(reportName: string, reportId?: string): string {
   return pageCall(
     'const want = flat(' + JSON.stringify(reportName) + ');' +
+    'const expectedId = ' + JSON.stringify(reportId ?? '') + ';' +
+    'if (expectedId && new URL(location.href).searchParams.get("selected_report_id") !== expectedId) return false;' +
     'return Array.from(document.querySelectorAll("h1, [role=heading]"))' +
-    '.filter(visible).some((el) => flat(el.textContent) === want);'
+    '.filter(visible).filter((el) => flat(el.textContent) === want).length === 1;'
   )
 }
 
@@ -789,6 +788,10 @@ export type FbReportFetchRange = 'today' | 'last7' | 'last30'
 
 export function autoFetchFbReportCsv(reportName: string, reportId?: string, range?: FbReportFetchRange): Promise<FbReportFetchResult> {
   return withBrowserActionLock<FbReportFetchResult>(async () => {
+    const reference = reportId === undefined ? null : parseFbReportReference(reportId)
+    if (reportId !== undefined && !reference) {
+      return { ok: false, error: 'fetch-failed', detail: '报表 ID 或链接无效，请复制 FB 已保存报表的完整链接。' }
+    }
     const dir = downloadsDir()
     const initialPanel = getActiveBrowserPanel()
     if (initialPanel && !initialPanel.webContents.isDestroyed()) {
@@ -811,24 +814,13 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string, rang
       }
     }
 
-    // 1) Open Ads Reporting under the registry's business scope.
-    const accounts = listFbReadingAccounts()
-    const businessId = accounts
-      .map((account) => account.businessId)
-      .find((id): id is string => typeof id === 'string' && /^\d{1,32}$/.test(id))
-    const act = accounts
-      .map((account) => account.act)
-      .find((id) => typeof id === 'string' && /^\d{6,20}$/.test(id))
-    const deepLink = reportId !== undefined && /^\d{1,32}$/.test(reportId)
-    // Mirror the working URL shape: selected_report_id is ignored by FB
-    // today, so the report is still opened through the UI below.
-    const params: string[] = []
-    if (act) params.push('act=' + act, 'ads_manager_write_regions=true')
-    if (businessId) params.push('business_id=' + businessId)
-    if (deepLink) params.push('event_source=CLICK_REPORTS_FROM_SIDE_NAV', 'selected_report_id=' + reportId)
-    const query = params.length > 0 ? '?' + params.join('&') : ''
-    log('start', { report: bounded(reportName), act: Boolean(act), business: Boolean(businessId), deepLink })
-    await navigate(REPORTING_BUSINESS_VIEW_URL + query)
+    // Explicit report link wins. Legacy numeric/name references use the
+    // current FB context, never another module's first registered account.
+    const entryUrl = fbReportEntryUrl(reference, await panelUrl())
+    const entry = new URL(entryUrl)
+    log('start', { report: bounded(reportName), act: entry.searchParams.has('act'),
+      business: entry.searchParams.has('business_id'), explicitLink: Boolean(reference?.url) })
+    await navigate(entryUrl)
     const url = await panelUrl()
     if (!url) return { ok: false, error: 'panel-not-open' }
     if (LOGIN_URL.test(url)) {
@@ -879,15 +871,19 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string, rang
       if ((await poll(LIST_READY_SCRIPT, PAGE_READY_TIMEOUT_MS, 500)) !== true) {
         return { ok: false, error: 'navigation-failed', detail: await pageSnippet() }
       }
-      const target = targetReportScript(reportName)
+      const target = targetReportScript(reportName, reference?.reportId)
       if ((await poll(target, 2_000, 500)) !== true) {
-        const allReports = locator(['所有报告', 'All reports'], { buttonOnly: true })
-        if (!(await realClick(allReports, 6_000, 'all-reports'))) {
-          return { ok: false, error: 'report-not-found', detail: '未能打开已保存报表列表。' }
-        }
-        // Only discard the current unsaved reporting view; never save it.
-        await realClick(LOCATE_DONT_SAVE, DIALOG_TIMEOUT_MS, 'discard-report-view')
         const savedList = locator(['创建报告', 'Create report'], { buttonOnly: true })
+        // An unscoped entry can already be the list, where All reports
+        // does not exist. Do not require a navigation control in that case.
+        if (!(await poll(savedList.script, 700, 350))) {
+          const allReports = locator(['所有报告', 'All reports'], { buttonOnly: true })
+          if (!(await realClick(allReports, 6_000, 'all-reports'))) {
+            return { ok: false, error: 'report-not-found', detail: '未能打开已保存报表列表。' }
+          }
+          // Only discard the current unsaved reporting view; never save it.
+          await realClick(LOCATE_DONT_SAVE, DIALOG_TIMEOUT_MS, 'discard-report-view')
+        }
         if (!(await poll(savedList.script, PAGE_READY_TIMEOUT_MS, 500))) {
           return { ok: false, error: 'report-not-found', detail: '已保存报表列表尚未加载完成。' }
         }
@@ -899,17 +895,24 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string, rang
         // selection when the anchor is clipped in a narrow list.
         const link: unknown = await activePanel.webContents.executeJavaScript(pageCall(
           'const want = flat(' + JSON.stringify(reportName) + ');' +
+          'const expectedId = ' + JSON.stringify(reference?.reportId ?? '') + ';' +
           'const matches = Array.from(document.querySelectorAll("a[href]"))' +
-          '.filter((el) => nameList(el).some((name) => name === want));' +
+          '.filter((el) => nameList(el).some((name) => name === want))' +
+          '.filter((el) => { try { return !expectedId || new URL(el.href).searchParams.get("selected_report_id") === expectedId; } catch { return false; } });' +
           'const urls = [...new Set(matches.map((el) => el.href))];' +
-          'return urls.length === 1 ? urls[0] : null;'
+          'return urls.length === 1 ? urls[0] : urls.length > 1 ? "ambiguous-report" : null;'
         ), true).catch(() => null)
+        if (link === 'ambiguous-report' || (reference && typeof link !== 'string')) {
+          return { ok: false, error: 'report-not-found', detail: '未找到唯一匹配的报表，请检查完整报表链接及访问权限。' }
+        }
         let opened = false
         if (typeof link === 'string') {
           const saved = new URL(link)
           if (saved.protocol === 'https:' && saved.hostname === 'adsmanager.facebook.com' &&
               saved.pathname === '/adsmanager/reporting/business_view' &&
-              /^\d{1,32}$/.test(saved.searchParams.get('selected_report_id') || '')) {
+              !saved.username && !saved.password && !saved.port &&
+              /^\d{1,32}$/.test(saved.searchParams.get('selected_report_id') || '') &&
+              (!reference || saved.searchParams.get('selected_report_id') === reference.reportId)) {
             activePanel.webContents.focus()
             const focused: unknown = await activePanel.webContents.executeJavaScript(pageCall(
               'const href = ' + JSON.stringify(saved.href) + ';' +
@@ -924,6 +927,8 @@ export function autoFetchFbReportCsv(reportName: string, reportId?: string, rang
               await pressReturn()
               opened = true
             }
+          } else {
+            return { ok: false, error: 'report-not-found', detail: '报表列表中的链接不属于有效的 FB 已保存报表。' }
           }
         }
         if (!opened) opened = await realClick(locateReportByName(reportName), 6_000, 'saved-report')
