@@ -5,6 +5,7 @@ import { MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRange } from '@shared/boar
 import { fbReadingMetricLabel, fbReadingRangeLabel, ttReadingRangeLabel } from './metricLabel'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
+import { parseFbReportReference } from '@shared/fbReportReference'
 import {
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   boardReadingRangeDates,
@@ -102,6 +103,7 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
   const [urlInvalid, setUrlInvalid] = useState(false)
   const [reportName, setReportName] = useState(configString(widget, 'reportName'))
   const [reportId, setReportId] = useState(configString(widget, 'reportId'))
+  const [reportReferenceInvalid, setReportReferenceInvalid] = useState(false)
   const [labelsInvalid, setLabelsInvalid] = useState(false)
   const [style, setStyle] = useState<BoardWidgetStyle>(widget.style ?? {})
 
@@ -301,12 +303,19 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
         // Keep the previously bound path when no new file was picked.
         config = { filePath: boundPath }
         break
-      case 'fb-report-reading':
+      case 'fb-report-reading': {
+        const reference = reportId.trim() ? parseFbReportReference(reportId) : null
+        if (reportId.trim() && !reference) {
+          setReportReferenceInvalid(true)
+          return
+        }
         config = {
           ...(reportName.trim() ? { reportName: reportName.trim().slice(0, 80) } : {}),
-          ...(reportId.trim() && /^\d{1,32}$/.test(reportId.trim()) ? { reportId: reportId.trim() } : {})
+          ...(reference ? { reportId: reference.url ?? reference.reportId } : {}),
+          ...(typeof widget.config.range === 'string' ? { range: widget.config.range } : {})
         }
         break
+      }
       case 'fb-reading':
         {
           const ref = selectedAccount ?? resolveFbReadingWidgetAccount(widget.config)
@@ -844,12 +853,13 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
             <Field label={t('boards.fbReport.config.reportId')}>
               <input
                 value={reportId}
-                onChange={(e) => setReportId(e.target.value)}
+                onChange={(e) => { setReportId(e.target.value); setReportReferenceInvalid(false) }}
                 placeholder="selected_report_id"
                 className={inputClass}
               />
             </Field>
             <p className="text-[11px] leading-4 text-cream-faint">{t('boards.fbReport.config.reportIdHint')}</p>
+            {reportReferenceInvalid && <p className="text-[11px] text-red-500">{t('boards.fbReport.config.invalidReference')}</p>}
           </>
         )}
         {widget.type === 'file' && (

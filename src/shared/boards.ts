@@ -16,6 +16,7 @@ import {
   WidgetType
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
+import { parseFbReportReference } from './fbReportReference'
 import {
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   FB_READING_SUMMARY_METRICS,
@@ -758,12 +759,14 @@ function validateWidgetConfig(
         if (reportName === null) return null
         if (reportName) config.reportName = reportName
       }
-      // Optional deep-link id (selected_report_id in the report URL) — digits only.
+      // Optional numeric ID or allowlisted saved-report link with business scope.
       if (raw.reportId !== undefined) {
-        const reportId = cleanString(raw.reportId, 32)
-        if (reportId === null || reportId === '') return config
-        if (!/^\d{1,32}$/.test(reportId)) return null
-        config.reportId = reportId
+        if (typeof raw.reportId !== 'string') return null
+        if (raw.reportId.trim()) {
+          const reference = parseFbReportReference(raw.reportId)
+          if (!reference) return null
+          config.reportId = reference.url ?? reference.reportId
+        }
       }
       // Master-scope range (today / last7 / last30) — drives the FB date
       // picker during auto-fetch. last3 has no FB quick option and is skipped.

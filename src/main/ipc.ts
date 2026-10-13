@@ -2,6 +2,7 @@ import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from '
 import fs from 'node:fs'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
+import { parseFbReportReference } from '../shared/fbReportReference'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
 import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
 import {
@@ -853,10 +854,12 @@ export function registerIpc() {
       typeof input.widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(input.widgetId) ? input.widgetId : null
     const reportName =
       typeof input.reportName === 'string' ? input.reportName.trim().slice(0, 80) : ''
-    const reportId =
-      typeof input.reportId === 'string' && /^\d{1,32}$/.test(input.reportId.trim())
-        ? input.reportId.trim()
-        : undefined
+    const hasReference = input.reportId !== undefined && input.reportId !== null && input.reportId !== ''
+    const reference = hasReference ? parseFbReportReference(input.reportId) : null
+    if (hasReference && !reference) {
+      return { ok: false, fetchError: 'fetch-failed', detail: '报表 ID 或链接无效，请复制 FB 已保存报表的完整链接。' }
+    }
+    const reportId = reference ? reference.url ?? reference.reportId : undefined
     const range =
       input.range === 'today' || input.range === 'last7' || input.range === 'last30'
         ? (input.range as FbReportFetchRange)
