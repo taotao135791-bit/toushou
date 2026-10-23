@@ -4,6 +4,7 @@ import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
 import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHistoryUuid, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
+import { summarizePromptTitle } from '@shared/promptTitle'
 import { mergeTranscriptBackfill } from '../lib/transcriptMerge'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
 import type { BoardReadingLaunch } from '../lib/boardReading'
@@ -358,11 +359,12 @@ interface AppState {
   setSessionTitle: (sessionId: string, title: string) => void
   setSessionFile: (sessionId: string, sessionFile: string) => void
   /**
-   * Auto-name a session from its first user message when it still carries the
-   * default title (project dir basename). No-op once the session has a real
-   * name or more than one user message.
+   * Auto-name a session from its FIRST user message whenever its title is
+   * still the default (project-dir basename or 'Untitled') — including
+   * resumed multi-message sessions the old code never named. No-op once the
+   * session has a real name.
    */
-  maybeNameSession: (sessionId: string, text: string) => Promise<void>
+  maybeNameSession: (sessionId: string) => Promise<void>
   setSetupComplete: (complete: boolean) => void
   setInstallStatus: (status: InstallStatus) => void
   /** (Re)load model config + available models from the main process. */
@@ -1047,7 +1049,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           get().clearSessionErrorIf(sessionId, 'chat.steerQueueFailed')
           const list = get().messages[sessionId] || []
           void get().createCheckpointForMessage(sessionId, list.length - 1, next.text)
-          void get().maybeNameSession(sessionId, next.text)
+          void get().maybeNameSession(sessionId)
         } else {
           // The session died underneath the queue: stop draining into
           // the void — drop the rest, release busy, flag the failure.
@@ -1179,15 +1181,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         sessionRecords: updateSessionRecordTitle(state.sessionRecords, sessionId, title)
       }
     }),
-  maybeNameSession: async (sessionId, text) => {
+  maybeNameSession: async (sessionId) => {
     const state = get()
     const session = state.sessions.find((s) => s.id === sessionId)
     if (!session) return
     const projectName = basename(session.cwd)
-    if (session.title.trim() && session.title !== projectName) return
-    const list = state.messages[sessionId] || []
-    if (list.filter((m) => m.role === 'user').length !== 1) return
-    const name = text.replace(/\s+/g, ' ').trim().slice(0, 24)
+    const title = session.title
+    if (title.trim() && title !== projectName && title !== 'Untitled') return
+    // The FIRST user message names the session; later messages never retitle.
+    const firstUser = (state.messages[sessionId] || []).find((m) => m.role === 'user')
+    const source = typeof firstUser?.content === 'string' ? firstUser.content : ''
+    const name = summarizePromptTitle(source, state.language === 'zh' ? '链接' : 'link')
     if (!name) return
     const ok = await window.electronAPI.setSessionName(sessionId, name)
     if (ok) get().setSessionTitle(sessionId, name)
@@ -1378,6 +1382,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         // summary is derived from the execution projection — never a second copy.
         get().finalizeThinking(event.sessionId)
         get().setBusy(event.sessionId, false)
+        // A first-message naming fired right after the send times out — the
+        // runtime drops control queries mid-turn. The idle event itself
+        // fires while omp is still finalizing (same drop, observed live), so
+        // wait for the runtime to settle before retrying; already-named
+        // sessions self-guard inside.
+        setTimeout(() => void get().maybeNameSession(event.sessionId), 2000)
       }
       // Statuses outside STATUS_BUSY leave busy/turn state untouched.
       // working→idle with a non-empty queue: send the next queued message.

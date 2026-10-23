@@ -1545,6 +1545,12 @@ export interface AppSettings {
    * "TikTok 报表" 数据集）。与 prompt 式定时任务无关，只是这一个轻量开关。
    */
   tiktokAutoRefresh: boolean
+  /**
+   * Durable session titles keyed by omp session-file path. omp flushes its
+   * own title line late (if at all), so renames and first-message auto
+   * names are persisted here and overlaid onto history scans.
+   */
+  sessionTitles: Record<string, string>
 }
 
 // --- Scheduled tasks --------------------------------------------------------
@@ -1669,7 +1675,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   feishuExperimentalPersonalAgentRegistration: true,
   showDevChrome: false,
   scheduledTasks: [],
-  tiktokAutoRefresh: false
+  tiktokAutoRefresh: false,
+  sessionTitles: {}
 }
 
 /** Snapshot of a live session, from the RPC get_state command. */
