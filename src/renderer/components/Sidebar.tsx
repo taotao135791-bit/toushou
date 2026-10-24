@@ -15,6 +15,7 @@ import {
   X,
   Pin,
   PinOff,
+  Pencil,
   Archive,
   ArchiveRestore,
   ArrowUpDown,
@@ -30,6 +31,7 @@ import { HistorySessionDescriptor, HistorySessionRow, SessionSortOrder } from '@
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
+import { cleanSessionName } from '@shared/promptTitle'
 import {
   recordDurableUuid,
   recordsForWorkspace,
@@ -107,6 +109,9 @@ export default function Sidebar() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [archiveOpen, setArchiveOpen] = useState(false)
+  // Inline rename of a live session row (pencil in the hover actions).
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
   const [projectsExpanded, setProjectsExpanded] = useState(false)
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null)
   const [resumingGlobalUuid, setResumingGlobalUuid] = useState<string | null>(null)
@@ -717,6 +722,32 @@ export default function Sidebar() {
     )
   }
 
+  const commitRename = () => {
+    const id = renamingId
+    const name = cleanSessionName(renameDraft)
+    if (!id || !name) return
+    const session = sessions.find((s) => s.id === id)
+    if (!session || session.title === name) {
+      setRenamingId(null)
+      return
+    }
+    // Main persists the name durably. On failure (typically the runtime is
+    // mid-turn and the control query times out) keep the dialog open with
+    // the draft intact — the user retries after the turn instead of losing
+    // the edit.
+    void window.electronAPI
+      .setSessionName(id, name)
+      .then((ok) => {
+        if (ok) {
+          setRenamingId(null)
+          useAppStore.getState().setSessionTitle(id, name)
+        } else {
+          showNotice('sidebar.renameFailed')
+        }
+      })
+      .catch(() => showNotice('sidebar.renameFailed'))
+  }
+
   const renderSessionRow = (session: (typeof sessions)[number]) => {
     const active = currentSessionId === session.id
     const running = Boolean(busy[session.id])
@@ -836,6 +867,17 @@ export default function Sidebar() {
               <Pin size={12} />
             </button>
           )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              setRenamingId(session.id)
+              setRenameDraft(session.title)
+            }}
+            title={t('sidebar.rename')}
+            className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay-strong hover:text-cream-dim"
+          >
+            <Pencil size={12} />
+          </button>
           <button
             onClick={(e) => {
               e.stopPropagation()
@@ -1482,6 +1524,48 @@ export default function Sidebar() {
           className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full border border-line bg-ink-850 px-3.5 py-1.5 text-xs text-cream shadow-pop"
         >
           {t(notice.key)}
+        </div>
+      )}
+      {renamingId && (
+        // Modal rename: the sidebar column is too narrow to edit a 60-char
+        // title inline — a centered dialog gives the input real width.
+        // The backdrop deliberately does NOT cancel: a stray click outside
+        // must not eat a half-edited title. Explicit ✕ / Escape cancels;
+        // ✓ / Enter commits.
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            className="w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 text-[12px] font-medium text-cream">{t('sidebar.rename')}</div>
+            <input
+              autoFocus
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitRename()
+                if (e.key === 'Escape') setRenamingId(null)
+              }}
+              maxLength={60}
+              aria-label={t('sidebar.rename')}
+              className="w-full rounded-lg border border-line bg-ink-850 px-2.5 py-1.5 text-[13px] text-cream outline-none transition focus:border-accent/50"
+            />
+            <div className="mt-3 flex justify-end gap-1.5">
+              <button
+                onClick={() => setRenamingId(null)}
+                className="rounded-full border border-line px-3 py-1 text-[11.5px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
+              >
+                {t('sidebar.renameCancel')}
+              </button>
+              <button
+                onClick={commitRename}
+                disabled={!renameDraft.trim()}
+                className="rounded-full bg-cream px-3 py-1 text-[11.5px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+              >
+                {t('sidebar.renameSave')}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </aside>
