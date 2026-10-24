@@ -267,7 +267,7 @@ export default function ChatPanel() {
         })
       })
       // First user message of an untitled session becomes its name
-      void store.maybeNameSession(sessionId, trimmed)
+      void store.maybeNameSession(sessionId)
       return true
     },
     [currentSessionId, cliAvailable]

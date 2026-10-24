@@ -2,6 +2,7 @@ import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { app, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../shared/constants'
+import { cleanSessionName } from '../../shared/promptTitle'
 import {
   ChatMessage,
   ExtensionUiAnswer,
@@ -484,10 +485,36 @@ export async function getSessionMessages(sessionId: string): Promise<ChatMessage
 
 /** Set the session display name (single line, truncated to 60 chars). */
 export async function setSessionName(sessionId: string, name: string): Promise<boolean> {
-  const clean = name.replace(/[\r\n]+/g, ' ').trim().slice(0, 60)
+  const clean = cleanSessionName(name)
   if (!clean) return false
   const res = await querySession(sessionId, { type: 'set_session_name', name: clean })
   return Boolean(res && res.success === true)
+}
+
+/**
+ * Record the runtime-reported durable file on Main's session record. Main
+ * never learned this on its own (only the renderer backfilled its own copy
+ * via get_state); the durable title overlay keys on it, so every get_state
+ * consumer funnels through here.
+ */
+export function markSessionFile(sessionId: string, sessionFile: string): void {
+  const entry = sessions.get(sessionId)
+  if (entry && !entry.session.sessionFile) entry.session.sessionFile = sessionFile
+}
+
+/**
+ * Sync Main's in-memory session record with a name set through the runtime,
+ * and return the session's durable file so callers can persist the title
+ * against it. Prefers sessionFile — a resumed session FORKS a new file that
+ * the conversation now lives in, so the overlay must ride the fork, not the
+ * superseded original (resumeFrom is only a fallback). Without the record
+ * sync, registry pushes downgrade a renamed row back to the spawn default.
+ */
+export function markSessionTitle(sessionId: string, title: string): string | null {
+  const entry = sessions.get(sessionId)
+  if (!entry) return null
+  entry.session.title = title
+  return entry.session.sessionFile ?? entry.session.resumeFrom ?? null
 }
 
 /**

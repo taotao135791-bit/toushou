@@ -1,7 +1,9 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
+import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
+import { cleanSessionName } from '../shared/promptTitle'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
 import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
 import {
@@ -71,6 +73,8 @@ import {
   exportHtml,
   getSessionState,
   setSessionName,
+  markSessionFile,
+  markSessionTitle,
   resumeSession,
   getSubagents,
   getSubagentMessages
@@ -341,6 +345,64 @@ function broadcastExternalSession(descriptor: ExternalSessionDescriptor): void {
       win.webContents.send(IPC_CHANNELS.SESSION_EXTERNAL, descriptor)
     }
   }
+}
+
+/**
+ * setSessionName + registry sync + durable persistence. omp may never flush
+ * its own title line to the session file, which is how renames and
+ * first-message auto names used to vanish on restart; the settings-store
+ * overlay (keyed by durable file path, same cap as setSessionName) is what
+ * survives.
+ */
+async function nameSessionDurally(sessionId: string, name: string): Promise<boolean> {
+  const clean = cleanSessionName(name)
+  if (!clean) return false
+  const ok = await setSessionName(sessionId, clean)
+  if (!ok) return false
+  const file = markSessionTitle(sessionId, clean)
+  if (file) {
+    const titles = { ...(getStore('sessionTitles') ?? {}) }
+    titles[file] = clean
+    setStore('sessionTitles', titles)
+  }
+  return true
+}
+
+/** Drop one overlay entry (session file deleted — keep the map orphan-free). */
+function forgetSessionTitle(filePath: string): void {
+  const titles = getStore('sessionTitles') ?? {}
+  if (!(filePath in titles)) return
+  const next = { ...titles }
+  delete next[filePath]
+  setStore('sessionTitles', next)
+}
+
+/**
+ * Opportunistic overlay hygiene: once the map grows past the threshold,
+ * sweep entries whose session file is verifiably gone (deleted/uuid-swept
+ * sessions leave orphans). Only a clean ENOENT counts as "gone" — other
+ * stat failures (EPERM, long paths, unavailable drives) must NOT delete a
+ * still-valid entry. Runs at most once per app run.
+ */
+let titlesPrunedThisRun = false
+async function pruneSessionTitles(): Promise<void> {
+  if (titlesPrunedThisRun) return
+  const titles = getStore('sessionTitles') ?? {}
+  const keys = Object.keys(titles)
+  if (keys.length <= 200) return
+  titlesPrunedThisRun = true
+  const alive: Record<string, string> = {}
+  await Promise.all(
+    keys.map(async (file) => {
+      try {
+        await stat(file)
+        alive[file] = titles[file]
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') alive[file] = titles[file]
+      }
+    })
+  )
+  setStore('sessionTitles', alive)
 }
 
 function sanitizeStreamingBehavior(value: unknown): StreamingBehavior | undefined {
@@ -647,6 +709,7 @@ export function registerIpc() {
             setTimeout(() => {
               void getSessionState(event.sessionId).then((state) => {
                 if (state?.sessionFile) {
+                  markSessionFile(event.sessionId, state.sessionFile)
                   sessionOriginIndex.record(state.sessionFile, 'task')
                   const historyUuid = path.basename(state.sessionFile).match(/_([^_]+)\.jsonl$/)?.[1]
                   if (opts?.runId && historyUuid) noteTaskSessionFile(event.sessionId, opts.runId, historyUuid)
@@ -677,7 +740,7 @@ export function registerIpc() {
     // Human-readable identity beats "project-dir title" for recurring runs:
     // name the runtime session AND announce the row with that title so the
     // sidebar shows "每日报告" instead of the bare folder name.
-    void setSessionName(session.id, title)
+    void nameSessionDurally(session.id, title)
     broadcastExternalSession({
       sessionId: session.id,
       workspacePath: cwd,
@@ -1078,7 +1141,12 @@ export function registerIpc() {
     IPC_CHANNELS.OMP_SESSION_STATE,
     async (_event: IpcMainInvokeEvent, sessionId: string) => {
       if (typeof sessionId !== 'string' || !sessionId) return null
-      return getSessionState(sessionId)
+      const state = await getSessionState(sessionId)
+      // Every fresh session funnels through here right after creation (the
+      // renderer backfills its own copy) — tap it so Main's record also
+      // learns the durable file the title overlay keys on.
+      if (state?.sessionFile) markSessionFile(sessionId, state.sessionFile)
+      return state
     }
   )
 
@@ -1096,11 +1164,14 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY, async () => {
     await sessionOriginIndex.ready()
     const all = await listAllSessions()
+    const titles = getStore('sessionTitles') ?? {}
     return all.map((entry) => {
       const origin = sessionOriginIndex.lookup(entry.filePath)
       return {
         uuid: entry.uuid,
-        title: entry.title,
+        // Same overlay as the workspace list — the cross-project rows must
+        // not show a stale title next to their renamed workspace twin.
+        title: titles[entry.filePath] ?? entry.title,
         timestamp: entry.timestamp,
         cwd: entry.cwd,
         // Same provenance annotation as the per-workspace listing: cross-project
@@ -1118,9 +1189,15 @@ export function registerIpc() {
       bindHistorySessionGrantOwnerCleanup(event)
       await sessionOriginIndex.ready()
       const history = await listSessionHistory(resolved.realPath)
+      await pruneSessionTitles()
+      const titles = getStore('sessionTitles') ?? {}
       const annotated = history.map((entry) => {
         const origin = sessionOriginIndex.lookup(entry.filePath)
-        return origin ? { ...entry, origin } : entry
+        // Renames/auto-names live in the settings overlay — omp's own title
+        // line is stale until (unless) it flushes.
+        const title = titles[entry.filePath]
+        const withTitle = title ? { ...entry, title } : entry
+        return origin ? { ...withTitle, origin } : withTitle
       })
       return historySessionGrantManager.mintForWorkspace(annotated, {
         workspaceGrantId: resolved.grant.id,
@@ -1191,7 +1268,10 @@ export function registerIpc() {
         // Copy-proof: sweep same-uuid copies in every layout, or the scanner
         // resurrects the session from its legacy/sanitized duplicate.
         const result = await deleteSessionFileEverywhere(filePath)
-        if (result) historySessionGrantManager.revoke(historyId)
+        if (result) {
+          historySessionGrantManager.revoke(historyId)
+          forgetSessionTitle(filePath)
+        }
         return result
       })
       if (deleted === true) return true
@@ -1221,7 +1301,7 @@ export function registerIpc() {
     IPC_CHANNELS.OMP_SET_SESSION_NAME,
     async (_event: IpcMainInvokeEvent, sessionId: string, name: string) => {
       if (typeof sessionId !== 'string' || !sessionId || typeof name !== 'string') return false
-      return setSessionName(sessionId, name)
+      return nameSessionDurally(sessionId, name)
     }
   )
 
