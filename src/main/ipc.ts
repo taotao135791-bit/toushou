@@ -1273,10 +1273,16 @@ export function registerIpc() {
           // and refresh the recording (the file may have been re-created).
           const origin = sessionOriginIndex.lookup(filePath)
           if (origin) sessionOriginIndex.record(filePath, origin)
+          // The session must be BORN with its durable overlay title: the
+          // renderer pulls the live registry on the 'connected' event, seconds
+          // before this handler's response arrives — a title patched after
+          // the fact still flashes the project-dir default for that window.
+          const overlayTitle = (getStore('sessionTitles') ?? {})[filePath]
           let resumed: Awaited<ReturnType<typeof resumeSession>>
           try {
             resumed = await resumeSession(resolved.realPath, broadcastSessionEvent, filePath, {
-              ...(origin ? { origin } : {})
+              ...(origin ? { origin } : {}),
+              ...(overlayTitle ? { initialTitle: overlayTitle } : {})
             })
           } catch (error) {
             // The session spawned but its transcript could not be fetched.
@@ -1286,11 +1292,6 @@ export function registerIpc() {
             throw error
           }
           if (!resumed) return null
-          // The live row must never flash the spawn default (project dir name):
-          // the durable overlay already knows this file's name — apply it
-          // before the renderer ever sees the session.
-          const overlayTitle = (getStore('sessionTitles') ?? {})[filePath]
-          if (overlayTitle) resumed.session.title = overlayTitle
           // The runtime keeps the file path in Main for --session and durable
           // metadata reconstruction. The renderer needs only the opaque
           // history capability to merge the resulting live row.
