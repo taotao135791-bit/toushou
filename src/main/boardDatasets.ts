@@ -150,7 +150,8 @@ function parseXlsxGrid(buffer: Buffer): string[][] {
 
 export function importDataset(
   filePath: unknown,
-  file: string = defaultDatasetsFile()
+  file: string = defaultDatasetsFile(),
+  asName?: string
 ): DatasetImportResult {
   // eslint-disable-next-line no-control-regex
   if (typeof filePath !== 'string' || !filePath || /[\x00-\x1f\x7f]/.test(filePath)) {
@@ -196,15 +197,26 @@ export function importDataset(
     return { ok: false, error: 'dataset-store-unreadable' }
   }
   if (datasets.length >= DATASET_LIMITS.maxDatasets) return { ok: false, error: 'dataset-limit' }
+  // An explicit name (agent imports for a template binding) REPLACES the
+  // same-named dataset — refresh semantics, so the "TikTok 报表" binding
+  // target stays single and up to date instead of accumulating copies.
+  // eslint-disable-next-line no-control-regex
+  const explicitName =
+    typeof asName === 'string' && asName.trim() && !/[\x00-\x1f\x7f]/.test(asName)
+      ? asName.trim().slice(0, DATASET_LIMITS.maxNameLength)
+      : null
   const dataset: BoardDataset = {
     id: crypto.randomUUID(),
-    name: datasetNameFromPath(filePath),
+    name: explicitName ?? datasetNameFromPath(filePath),
     columns: built.columns,
     rows: built.rows,
     createdAt: Date.now()
   }
+  const next = explicitName
+    ? datasets.filter((existing) => existing.name !== dataset.name)
+    : datasets
   try {
-    writeDatasets(file, [...datasets, dataset])
+    writeDatasets(file, [...next, dataset])
   } catch (err) {
     return {
       ok: false,

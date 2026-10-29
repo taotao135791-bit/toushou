@@ -115,6 +115,7 @@ export type BoardsBridgeRequest =
   | { action: 'board_remove_widget'; boardId?: unknown; name?: unknown; widgetId?: unknown }
   | { action: 'board_update_widget'; boardId?: unknown; name?: unknown; widgetId?: unknown; title?: unknown; config?: unknown }
   | { action: 'board_rename'; boardId?: unknown; name?: unknown; newName?: unknown }
+  | { action: 'dataset_import'; filePath?: unknown; name?: unknown }
 
 function boundedString(value: unknown, max: number): string | null {
   if (value === undefined || value === null) return null
@@ -161,6 +162,8 @@ export function parseBoardsBridgeRequest(raw: unknown): BoardsBridgeRequest | nu
       }
     case 'board_rename':
       return { action: 'board_rename', boardId: value.boardId, name: value.name, newName: value.newName }
+    case 'dataset_import':
+      return { action: 'dataset_import', filePath: value.filePath, name: value.name }
     default:
       return null
   }
@@ -330,7 +333,22 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
           : '已附 TT 读数模块（读取当前授权下的全部广告主）。') +
         (datasetReady
           ? '数据集「TikTok 报表」已有数据。'
-          : '数据集「TikTok 报表」还没有数据：立即调用 touhou_tiktok_update 拉取（需要已连接 TikTok），看板会自动填充。')
+          : '数据集「TikTok 报表」还没有数据：先调用 touhou_tiktok_update 拉取；若报凭据类错误，则自己拉取近 7 天分日报表存为 CSV，再用 toushou_dataset_import（name=「TikTok 报表」）导入替换，看板即自动填充。')
+    }
+  }
+
+  // dataset_import — the agent's hand for the last mile: it can already fetch a
+  // TikTok report CSV, and template widgets bind「TikTok 报表」BY NAME, so an
+  // explicit-name import REPLACES that dataset and every bound widget fills.
+  if (tool.action === 'dataset_import') {
+    const { importDataset } = await import('./boardDatasets')
+    const targetName = boundedString(tool.name, 200)
+    const result = importDataset(tool.filePath, undefined, targetName ?? undefined)
+    if (!result.ok) return { ...result, hint: 'CSV/XLSX，先由你自己下载/生成；路径写绝对路径。name 传「TikTok 报表」可直接点亮模板看板。' }
+    return {
+      ok: true,
+      dataset: { name: result.dataset.name, rowCount: result.dataset.rows.length, columns: result.dataset.columns.map((c) => c.name) },
+      truncated: result.truncated === true
     }
   }
 

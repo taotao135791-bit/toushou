@@ -171,4 +171,23 @@ export default function boardsTools(api: ToolHostApi): void {
     approval: 'write',
     execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ action: 'board_rename', ...params }) }] })
   })
+
+  api.registerTool({
+    name: 'toushou_dataset_import',
+    label: '导入看板数据集',
+    description:
+      '把一个 CSV/XLSX 文件导入为看板数据集（文件须已存在于本机，路径写绝对路径；列结构自动识别）。\n' +
+      '关键用法：name 传「TikTok 报表」时为替换式导入——模板看板的指标卡/趋势图都按这个名字绑定，导入完成后整块看板立即点亮。' +
+      '拉取 TikTok 报表的常规链路：touhou_tiktok_update；它报凭据错误时，你自己拉取分日报表存成 CSV 再走本工具。',
+    parameters: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string', description: '本机 CSV/XLSX 文件的绝对路径' },
+        name: { type: 'string', description: '目标数据集名称；传「TikTok 报表」为替换式导入' }
+      },
+      required: ['filePath']
+    },
+    approval: 'write',
+    execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ action: 'dataset_import', ...params }) }] })
+  })
 }

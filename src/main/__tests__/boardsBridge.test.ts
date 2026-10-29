@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -114,6 +114,27 @@ describe('boards bridge dispatch', () => {
     expect(renamed.ok).toBe(true)
     const collision = await dispatch({ action: 'board_rename', name: '新名', newName: '已有' })
     expect(collision.error).toBe('name-exists')
+  })
+
+  it('imports a CSV as a replace-by-name dataset that template bindings resolve', async () => {
+    const csv = path.join(dir, 'TikTok报表_miclip_近7天.csv')
+    writeFileSync(csv, '日期,活动名称,消耗,点击\n2026-10-28,Camp A,120.5,34\n2026-10-29,Camp A,98.2,29\n', 'utf8')
+    const imported = await dispatch({ action: 'dataset_import', filePath: csv, name: 'TikTok 报表' })
+    expect(imported.ok).toBe(true)
+    expect((imported.dataset as { name: string; rowCount: number }).name).toBe('TikTok 报表')
+    expect((imported.dataset as { rowCount: number }).rowCount).toBe(2)
+
+    // Replace-by-name: a second import keeps ONE dataset with the new rows.
+    const csv2 = path.join(dir, 'refresh.csv')
+    writeFileSync(csv2, '日期,活动名称,消耗,点击\n2026-10-30,Camp B,10.0,3\n', 'utf8')
+    await dispatch({ action: 'dataset_import', filePath: csv2, name: 'TikTok 报表' })
+    const list = await dispatch({ action: 'boards_list' })
+    const datasets = list.datasets as Array<{ name: string; rowCount: number }>
+    expect(datasets.filter((d) => d.name === 'TikTok 报表')).toHaveLength(1)
+    expect(datasets.find((d) => d.name === 'TikTok 报表')?.rowCount).toBe(1)
+
+    const bad = await dispatch({ action: 'dataset_import', filePath: 'C:\\nope\\missing.csv', name: 'x' })
+    expect(bad.ok).toBe(false)
   })
 })
 
