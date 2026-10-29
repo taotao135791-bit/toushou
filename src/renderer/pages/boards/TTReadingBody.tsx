@@ -22,8 +22,7 @@ import { ReadingErrorNotice, tiktokReadingNotice, type ReadingNextStep } from '.
 /**
  * TT 读数 board module body. Unlike FB 读数 (its own verified browser
  * pipeline), every read goes straight through Main's TT_READING_SUMMARY IPC:
- * Main resolves the token (official OAuth connector's auto-refreshed token
- * first, paste store as fallback), pulls the integrated report and returns
+ * Main uses the official OAuth MCP connection, calls read-only report tools and returns
  * the aggregated projection rendered here. Failures arrive as reading error
  * codes and render as one plain sentence plus the next step. Chat view can
  * refresh this module — the read does not use the browser panel.
@@ -135,7 +134,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
   const pending = busy && !totals
   const placeholder = pending ? t('boards.tt.loading') : '—'
   const mixed = summary?.mixedCurrency === true
-  const money = (value: string) => (mixed ? '—' : value)
+  const money = (value: string) => (!summary?.currency ? '—' : value)
   const currencies = summary
     ? [...new Set(summary.advertisers.map((advertiser) => advertiser.currency).filter((code): code is string => !!code))]
     : []
@@ -151,6 +150,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
           </p>
           <p className="truncate text-[12px] leading-[18px] tabular-nums text-cream-faint">
             {ttReadingRangeLabel(t, range)} · {windowLabel}
+            {' · '}{t('boards.tt.localDate')}
           </p>
         </div>
         <button
@@ -206,6 +206,9 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
             </div>
           )}
 
+          {summary && !summary.currency && !mixed && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.unknownCurrency')}</p>}
+          {summary?.truncated && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.truncated')}</p>}
+
           {mixed && (
             <p role="status" className="rounded-lg bg-[#F8F2E7] px-2.5 py-1.5 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]">
               {t('boards.tt.mixedCurrency', { currencies: currencies.join(', ') })}
@@ -253,7 +256,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
                 </thead>
                 <tbody>
                   {summary.topCampaigns.map((campaign) => (
-                    <tr key={campaign.name} className="border-t border-line/60">
+                    <tr key={campaign.key ?? campaign.name} className="border-t border-line/60">
                       <td className="max-w-[8rem] truncate px-1 py-1 text-cream-dim" title={campaign.name}>
                         {campaign.name}
                       </td>

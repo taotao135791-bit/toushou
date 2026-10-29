@@ -1087,6 +1087,7 @@ export type WidgetType =
   | 'fb-reading'
   | 'fb-reading-summary'
   | 'fb-report-reading'
+  | 'google-report-reading'
   | 'tt-reading'
   | 'gauge'
   | 'chart-line'

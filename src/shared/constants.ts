@@ -75,6 +75,9 @@ export const IPC_CHANNELS = {
   FB_REPORT_READING_GET: 'fb-report:get',
   /** Automated export: hidden panel opens the saved report and downloads CSV. */
   FB_REPORT_AUTO_FETCH: 'fb-report:auto-fetch',
+  GOOGLE_REPORT_IMPORT: 'google-report:import',
+  GOOGLE_REPORT_READING_GET: 'google-report:get',
+  GOOGLE_REPORT_AUTO_FETCH: 'google-report:auto-fetch',
   /** TT 读数 board module: Main resolves the TikTok token + aggregates the report. */
   TT_READING_SUMMARY: 'tt-reading:summary',
   /** Today page: current window plus the previous equal window, split in Main. */

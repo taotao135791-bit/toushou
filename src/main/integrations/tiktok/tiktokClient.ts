@@ -182,6 +182,9 @@ export interface TikTokReportRow {
   /** YYYY-MM-DD (already normalized). */
   date: string
   campaignName: string
+  /** String IDs preserve account and campaign identity in aggregated readings. */
+  campaignId?: string
+  advertiserId?: string
   spend: number | null
   impressions: number | null
   clicks: number | null

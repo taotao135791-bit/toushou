@@ -9,6 +9,7 @@ import type { TikTokReportRow } from './tiktokClient'
 import {
   buildTikTokReadingSummary,
   buildTikTokTodayReading,
+  listTikTokMcpReadingAdvertisers,
   resetTikTokAdvertiserInfoCacheForTest,
   summarizeTikTokReportRows,
   TODAY_ADVERTISER_CAP
@@ -42,8 +43,8 @@ function reportResponse(rows: TikTokReportRow[]): Response {
     code: 0,
     message: 'OK',
     data: {
-      list: rows.map((row, index) => ({
-        dimensions: { campaign_id: String(1800 + index), stat_time_day: `${row.date} 00:00:00` },
+      list: rows.map((row) => ({
+        dimensions: { campaign_id: String(1800 + Math.max(0, rows.findIndex((other) => other.campaignName === row.campaignName))), stat_time_day: `${row.date} 00:00:00` },
         metrics: {
           campaign_name: row.campaignName,
           spend: String(row.spend ?? 0),
@@ -77,30 +78,38 @@ function tiktokApi(options: {
   report: (advertiserId: string, params: URLSearchParams) => Response
   advertisers?: Record<string, Advertiser>
   infoFails?: boolean
+  granted?: string[]
 }) {
   const reports: URLSearchParams[] = []
   const infoCalls: string[][] = []
   const methods: Array<string | undefined> = []
   const fetchImpl = async (url: string, init?: RequestInit) => {
     methods.push(init?.method)
-    const parsed = new URL(url)
-    if (parsed.pathname.endsWith('/advertiser/info/')) {
-      const ids = JSON.parse(parsed.searchParams.get('advertiser_ids') ?? '[]') as string[]
+    if (url !== 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer') throw new Error('non-MCP request')
+    const request = JSON.parse(String(init?.body)) as { id?: number; method: string; params: { name?: string; arguments?: Record<string, unknown> } }
+    const response = (result: unknown) => jsonResponse({ jsonrpc: '2.0', id: request.id, result })
+    if (request.method === 'initialize') return response({ protocolVersion: '2025-03-26' })
+    if (request.method === 'notifications/initialized') return new Response(null, { status: 202 })
+    if (request.method === 'tools/list') return response({ tools: ['auth_advertiser_get', 'advertiser_info_get', 'report_integrated_get'].map((name) => ({ name })) })
+    const args = request.params.arguments ?? {}
+    if (request.params.name === 'auth_advertiser_get') return response({ structuredContent: { code: 0, data: { list: (options.granted ?? []).map((advertiser_id) => ({ advertiser_id })) } } })
+    if (request.params.name === 'advertiser_info_get') {
+      const ids = args.advertiser_ids as string[]
       infoCalls.push(ids)
-      if (options.infoFails) return apiError(50000, 'System error')
       const known = options.advertisers ?? {}
-      return jsonResponse({
-        code: 0,
-        message: 'OK',
-        data: {
-          list: ids
-            .filter((id) => known[id])
-            .map((id) => ({ advertiser_id: id, name: known[id].name ?? '', currency: known[id].currency ?? '' }))
-        }
-      })
+      const body = options.infoFails ? { code: 50000 } : { code: 0, data: { list: ids.filter((id) => known[id]).map((id) => ({ advertiser_id: id, name: known[id].name ?? '', currency: known[id].currency ?? '' })) } }
+      return response({ structuredContent: body })
     }
-    reports.push(parsed.searchParams)
-    return options.report(parsed.searchParams.get('advertiser_id') ?? '', parsed.searchParams)
+    if (request.params.name !== 'report_integrated_get') throw new Error('unexpected tool')
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(args)) params.set(key, String(value))
+    reports.push(params)
+    const body = await options.report(String(args.advertiser_id ?? ''), params).json() as { data?: { list?: Array<{ dimensions: { stat_time_day: string } }> } }
+    // Fixtures without a window-specific day use the beginning of the queried window.
+    for (const item of body.data?.list ?? []) {
+      if (item.dimensions.stat_time_day.startsWith('2026-01-02')) item.dimensions.stat_time_day = `${args.start_date} 00:00:00`
+    }
+    return response({ structuredContent: body })
   }
   return { fetchImpl, reports, infoCalls, methods }
 }
@@ -132,6 +141,16 @@ describe('summarizeTikTokReportRows', () => {
     expect(totals.costPerConversion).toBeCloseTo(20, 10) // 40 / 2
   })
 
+  it('keeps same-named campaigns distinct by account and campaign IDs', () => {
+    const { topCampaigns } = summarizeTikTokReportRows([
+      row({ advertiserId: ID_A, campaignId: '100', campaignName: 'Same', spend: 10 }),
+      row({ advertiserId: ID_B, campaignId: '100', campaignName: 'Same', spend: 30 }),
+      row({ advertiserId: ID_A, campaignId: '101', campaignName: 'Same', spend: 20 })
+    ])
+    expect(topCampaigns).toHaveLength(3)
+    expect(topCampaigns.map((campaign) => campaign.spend)).toEqual([30, 20, 10])
+  })
+
   it('returns zero totals and no campaigns for an empty row set', () => {
     const { totals, topCampaigns } = summarizeTikTokReportRows([])
     expect(totals).toEqual({ spend: 0, impressions: 0, clicks: 0, ctr: 0, conversions: 0, costPerConversion: 0 })
@@ -159,6 +178,17 @@ describe('summarizeTikTokReportRows', () => {
   })
 })
 
+describe('listTikTokMcpReadingAdvertisers', () => {
+  it('discovers the current grant via MCP rather than returning pasted credentials', async () => {
+    const api = tiktokApi({ report: () => reportResponse([]), granted: [ID_A, ID_B] })
+    const result = await listTikTokMcpReadingAdvertisers({ resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    expect(result.granted).toEqual([ID_A, ID_B])
+    const rejected = tiktokApi({ report: () => reportResponse([]), granted: [ID_A] })
+    expect((await listTikTokMcpReadingAdvertisers({ resolveToken: token([ID_A], 'pasted'), fetchImpl: rejected.fetchImpl })).granted).toEqual([])
+    expect(rejected.methods).toHaveLength(0)
+  })
+})
+
 describe('buildTikTokReadingSummary', () => {
   it('returns the stable no-credentials error when no token source answers', async () => {
     const api = tiktokApi({ report: () => reportResponse([]) })
@@ -170,14 +200,14 @@ describe('buildTikTokReadingSummary', () => {
     expect(api.methods).toHaveLength(0)
   })
 
-  it('sends nothing and asks for an advertiser when none is known', async () => {
+  it('rejects a pasted API token before any request', async () => {
     const api = tiktokApi({ report: () => reportResponse([]) })
     const result = await buildTikTokReadingSummary({}, { resolveToken: token([], 'pasted'), fetchImpl: api.fetchImpl })
-    expect(result).toEqual({ ok: false, error: 'no-advertiser' })
+    expect(result).toEqual({ ok: false, error: 'no-credentials' })
     expect(api.methods).toHaveLength(0)
   })
 
-  it('reads each advertiser over GET for complete days ending yesterday', async () => {
+  it('reads each advertiser through MCP for complete days ending yesterday', async () => {
     const api = tiktokApi({
       report: (id) => reportResponse([row({ campaignName: id === ID_A ? 'A' : 'B', spend: 12.5 })]),
       advertisers: { [ID_A]: { name: '三国 iOS', currency: 'USD' }, [ID_B]: { name: 'Global', currency: 'USD' } }
@@ -201,10 +231,20 @@ describe('buildTikTokReadingSummary', () => {
     expect(result.currency).toBe('USD')
     expect(result.mixedCurrency).toBe(false)
 
-    expect(api.methods.every((method) => method === 'GET')).toBe(true)
+    expect(api.methods.every((method) => method === 'POST')).toBe(true)
     expect(api.reports.map((params) => params.get('advertiser_id'))).toEqual([ID_A, ID_B])
     expect(api.reports.every((params) => params.get('start_date') === '2026-09-13')).toBe(true)
     expect(api.reports.every((params) => params.get('end_date') === '2026-09-19')).toBe(true)
+  })
+
+  it('marks the MCP transport and makes an account cap visible', async () => {
+    const ids = Array.from({ length: 21 }, (_, index) => String(7300000000 + index))
+    const api = tiktokApi({ report: () => reportResponse([]) })
+    const result = await buildTikTokReadingSummary({}, { resolveToken: token(ids), fetchImpl: api.fetchImpl })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.transport).toBe('mcp')
+    expect(result.truncated).toBe(true)
+    expect(api.reports).toHaveLength(20)
   })
 
   it('reads only today for the 1-day range', async () => {
@@ -310,11 +350,11 @@ describe('buildTikTokReadingSummary', () => {
     expect(result.advertisers).toEqual([{ advertiserId: ID_A, name: null, currency: null }])
   })
 
-  it('caches advertiser names between reads', async () => {
+  it('refreshes advertiser information between reads', async () => {
     const api = tiktokApi({ report: () => reportResponse([]), advertisers: { [ID_A]: { name: 'Main', currency: 'USD' } } })
     await buildTikTokReadingSummary({}, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20 })
     await buildTikTokReadingSummary({}, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20 })
-    expect(api.infoCalls).toEqual([[ID_A]])
+    expect(api.infoCalls).toEqual([[ID_A], [ID_A]])
   })
 })
 
@@ -351,7 +391,7 @@ describe('buildTikTokTodayReading', () => {
     const api = tiktokApi({ report: () => reportResponse([]) })
     const result = await buildTikTokTodayReading({}, { resolveToken: token([]), fetchImpl: api.fetchImpl })
     expect(result).toEqual({ ok: false, error: 'no-advertiser' })
-    expect(api.methods).toHaveLength(0)
+    expect(api.reports).toHaveLength(0)
   })
 
   it('keeps a failed advertiser as its own row', async () => {

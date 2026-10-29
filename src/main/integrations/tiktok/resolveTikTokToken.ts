@@ -91,3 +91,13 @@ export async function resolveTikTokToken(
   }
   return selected.length > 0 ? { ...resolved, advertiserIds: selected } : resolved
 }
+
+/** OAuth credentials for the MCP connection only; pasted Open API tokens are never used. */
+export async function resolveTikTokMcpToken(options: { ignoreSelected?: boolean } = {}): Promise<ResolvedTikTokToken> {
+  const credentials = await defaultOAuthLoader()
+  const resolved = fromOAuth(credentials)
+  if (!resolved) return { token: null, source: 'none' }
+  let selected: string[] = []
+  try { if (!options.ignoreSelected) selected = listTikTokReadingAdvertisers() } catch { /* use grant scope */ }
+  return selected.length ? { ...resolved, advertiserIds: selected } : resolved
+}

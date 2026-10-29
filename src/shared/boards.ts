@@ -17,6 +17,7 @@ import {
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
 import { parseFbReportReference } from './fbReportReference'
+import { validGoogleReportUrl } from './googleReport'
 import {
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   FB_READING_SUMMARY_METRICS,
@@ -62,6 +63,7 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'fb-reading',
   'fb-reading-summary',
   'fb-report-reading',
+  'google-report-reading',
   'tt-reading',
   'gauge',
   'chart-line',
@@ -90,6 +92,7 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   'fb-reading': { w: 6, h: 5 },
   'fb-reading-summary': { w: 6, h: 6 },
   'fb-report-reading': { w: 8, h: 8 },
+  'google-report-reading': { w: 8, h: 8 },
   'tt-reading': { w: 6, h: 5 },
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
@@ -123,6 +126,8 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
       // advertiserIds: comma-separated string (empty = use every advertiser
       // the connected TikTok token's grant covers); range in days.
       return { advertiserIds: '', range: '7' }
+    case 'google-report-reading':
+      return { reportUrl: '' }
     case 'fb-report-reading':
       // Config lives in Main's per-widget reading store; the board file
       // keeps nothing but the module itself.
@@ -749,6 +754,13 @@ function validateWidgetConfig(
   raw: Record<string, unknown>
 ): Record<string, unknown> | null {
   switch (type) {
+    case 'google-report-reading': {
+      if (raw.reportUrl !== undefined && typeof raw.reportUrl !== 'string') return null
+      const reportUrl = typeof raw.reportUrl === 'string' ? raw.reportUrl.trim() : ''
+      if (reportUrl && !validGoogleReportUrl(reportUrl)) return null
+      // Google exports use their page's actual window, never the board's preset.
+      return { reportUrl }
+    }
     case 'fb-report-reading':
       // v2: one bounded string — the saved report to open for auto export.
       // Everything else lives in Main's per-widget reading store.
@@ -1051,14 +1063,13 @@ function validateMasterScope(raw: unknown): BoardMasterScope | null {
  * list behind unification, refresh-all and the independence check. */
 export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading', 'fb-report-reading']
 
-/** TikTok day windows are a separate enum; last3 has no TikTok equivalent. */
+/** TikTok day windows are a separate enum; last3 and last30 have no exact equivalent. */
 const TT_RANGE_BY_MASTER: Record<string, string> = {
   today: '1',
-  last7: '7',
-  last30: '28'
+  last7: '7'
 }
 
-/** TikTok day window for a master range, or null when unrepresentable (last3). */
+/** TikTok day window for a master range, or null when unrepresentable (last3 / last30). */
 export function ttWindowForMasterRange(range: BoardMasterScope['range']): string | null {
   return TT_RANGE_BY_MASTER[range] ?? null
 }
@@ -1067,7 +1078,7 @@ export function ttWindowForMasterRange(range: BoardMasterScope['range']): string
  * Re-unify one reading module onto the master scope: date window and (for FB
  * modules) metric set are overwritten and any `independent` flag cleared.
  * TikTok modules keep their own window — flagged independent — when the
- * master window is FB-only `last3`, because silently mapping it to a 7-day
+ * master window is FB-only `last3` or `last30`, because nearest-mapping
  * window would misreport the data's date scope. Non-reading widgets pass
  * through untouched.
  */
@@ -1080,7 +1091,7 @@ export function applyMasterScope(widget: BoardWidget, master: BoardMasterScope):
     if (range) {
       config.range = range
     } else {
-      // last3 cannot be expressed on TikTok — keep the current window and
+      // An unmatched preset cannot be expressed on TikTok — keep the current window and
       // surface the divergence instead of silently nearest-mapping it.
       config.independent = true
     }

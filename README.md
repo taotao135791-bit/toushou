@@ -4,17 +4,21 @@
 
 投手把一位资深投放优化师装进原生桌面应用：规划投放、分析数据、诊断漏斗、迭代素材、输出报告，每一步都基于你的真实数据给出具体、可执行的下一步动作，而不是泛泛的建议。
 
+[多平台读数](docs/multi-platform-readings.md)：TT 看板与今日页使用应用内官方 MCP；Google 读数支持链接读取和 CSV 导入。Google 自动读取目前仅支持能够核实账户、日期、费用列 USD 和 GMT 时区的广告系列表格；尚未完成真实 Google 账户验收。
+
 ## 下载安装
 
-当前版本 v1.4.5，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.5) 下载：
+当前版本 v1.4.6，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.6) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.5/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.5/TouShou-arm64.zip) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.5/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.5/TouShou-x64.zip) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.5/TouShou-x64.exe) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.5/TouShou-x64.zip) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-x64.exe) | 见 Release | 见 Release |
 
 安装包由 GitHub Actions 在推送版本标签后自动构建，并附带更新清单与 SHA-256 校验文件。
+
+v1.4.6：TT 读数通过官方 MCP 获取账户和报表；新增 Google 读数模块，支持来源链接及 CSV 导入。Google 自动读取只查看和下载，无法核实范围时保留旧数据；验证材料使用虚构数据或脱敏汇总。详细使用方式、口径及 Google 真实账户验收限制见[多平台读数](docs/multi-platform-readings.md)。
 
 v1.4.5：修复了一些已知问题。
 

@@ -6,6 +6,7 @@ import { fbReadingMetricLabel, fbReadingRangeLabel, ttReadingRangeLabel } from '
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
 import { parseFbReportReference } from '@shared/fbReportReference'
+import { validGoogleReportUrl } from '@shared/googleReport'
 import {
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   boardReadingRangeDates,
@@ -101,6 +102,8 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
   })
   const [url, setUrl] = useState(configString(widget, 'url'))
   const [urlInvalid, setUrlInvalid] = useState(false)
+  const [googleReportUrl, setGoogleReportUrl] = useState(configString(widget, 'reportUrl'))
+  const [googleUrlInvalid, setGoogleUrlInvalid] = useState(false)
   const [reportName, setReportName] = useState(configString(widget, 'reportName'))
   const [reportId, setReportId] = useState(configString(widget, 'reportId'))
   const [reportReferenceInvalid, setReportReferenceInvalid] = useState(false)
@@ -303,6 +306,12 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
         // Keep the previously bound path when no new file was picked.
         config = { filePath: boundPath }
         break
+      case 'google-report-reading': {
+        const reportUrl = googleReportUrl.trim()
+        if (reportUrl && !validGoogleReportUrl(reportUrl)) { setGoogleUrlInvalid(true); return }
+        config = { reportUrl }
+        break
+      }
       case 'fb-report-reading': {
         const reference = reportId.trim() ? parseFbReportReference(reportId) : null
         if (reportId.trim() && !reference) {
@@ -838,6 +847,21 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
               className={`${inputClass} font-mono`}
             />
           </Field>
+        )}
+        {widget.type === 'google-report-reading' && (
+          <>
+            <Field label={t('boards.googleReport.config.url')}>
+              <textarea
+                value={googleReportUrl}
+                onChange={(event) => { setGoogleReportUrl(event.target.value); setGoogleUrlInvalid(false) }}
+                placeholder="https://ads.google.com/aw/campaigns?…"
+                rows={3}
+                className={`${inputClass} resize-y break-all`}
+              />
+            </Field>
+            <p className="text-[11px] leading-4 text-cream-faint">{t('boards.googleReport.config.hint')}</p>
+            {googleUrlInvalid && <p role="alert" className="text-[11px] text-red-500">{t('boards.googleReport.invalidUrl')}</p>}
+          </>
         )}
         {widget.type === 'fb-report-reading' && (
           <>

@@ -15,25 +15,21 @@ import {
   previousEqualWindow,
   tiktokReadingRangeWindow,
   todayWindow,
-  topSpendMoves,
   type TikTokTodayAccount,
   type TikTokTodayReadingResult
 } from '../../../shared/todayReading'
-import { resolveTikTokToken } from './resolveTikTokToken'
+import { resolveTikTokMcpToken, type ResolvedTikTokToken } from './resolveTikTokToken'
+import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
+import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
 import {
   classifyTikTokError,
-  fetchAdvertiserInfo,
-  fetchIntegratedReport,
   type TikTokApiFetch,
   type TikTokReportRow
 } from './tiktokClient'
 
 /**
- * TT 读数 board module (tt-reading widget) — Main-side data path. Unlike FB
- * 读数 (its own browser-pipeline), this reads TikTok Ads directly through
- * the report Open API using the token resolved by resolveTikTokToken: the
- * official OAuth connector's auto-refreshed token first, the paste-token
- * store as fallback. Everything crossing IPC is bounded and validated here;
+ * TT 读数 uses only the app-owned official TikTok MCP OAuth connection.
+ * Everything crossing IPC is bounded and validated here;
  * the aggregation itself is a pure function for tests.
  */
 
@@ -46,59 +42,41 @@ export const MAX_ADVERTISERS_PER_SUMMARY = 20
 /** These failures hit every advertiser alike, so the read stops at the first one. */
 const WHOLE_READ_FAILURES: ReadonlySet<ReadingErrorCode> = new Set(['auth', 'network', 'rate-limit'])
 
-const ADVERTISER_INFO_TTL_MS = 6 * 60 * 60 * 1000
-const ADVERTISER_INFO_MISS_TTL_MS = 30 * 60 * 1000
+/** Compatibility hook for existing tests; info is fetched per read to avoid stale account data. */
+export function resetTikTokAdvertiserInfoCacheForTest(): void {}
 
-const advertiserInfoCache = new Map<string, { advertiser: TikTokReadingAdvertiser; found: boolean; fetchedAt: number }>()
-
-export function resetTikTokAdvertiserInfoCacheForTest(): void {
-  advertiserInfoCache.clear()
-}
-
-/**
- * Names and currencies for display. A failed lookup leaves the bare id on
- * screen; the report call is what reports real failures.
- */
+/** Names and currencies are optional; report errors are handled separately. */
 async function lookupAdvertisers(
-  fetchImpl: TikTokApiFetch,
-  accessToken: string,
-  advertiserIds: string[],
-  now: number
+  client: TikTokMcpReadingClient,
+  advertiserIds: string[]
 ): Promise<Map<string, TikTokReadingAdvertiser>> {
-  const stale = advertiserIds.filter((id) => {
-    const cached = advertiserInfoCache.get(id)
-    if (!cached) return true
-    return now - cached.fetchedAt > (cached.found ? ADVERTISER_INFO_TTL_MS : ADVERTISER_INFO_MISS_TTL_MS)
-  })
-  if (stale.length > 0) {
-    let found: TikTokReadingAdvertiser[] = []
-    try {
-      found = await fetchAdvertiserInfo(fetchImpl, { accessToken, advertiserIds: stale })
-    } catch {
-      found = []
-    }
-    for (const id of stale) {
-      const advertiser = found.find((info) => info.advertiserId === id)
-      advertiserInfoCache.set(id, {
-        advertiser: advertiser ?? { advertiserId: id, name: null, currency: null },
-        found: Boolean(advertiser),
-        fetchedAt: now
-      })
-    }
-  }
-  return new Map(
-    advertiserIds.map((id) => [id, advertiserInfoCache.get(id)?.advertiser ?? { advertiserId: id, name: null, currency: null }])
-  )
+  let found: TikTokReadingAdvertiser[] = []
+  try { found = await client.info(advertiserIds) } catch { /* keep unknown metadata */ }
+  const byId = new Map(found.map((advertiser) => [advertiser.advertiserId, advertiser]))
+  return new Map(advertiserIds.map((id) => [id, byId.get(id) ?? { advertiserId: id, name: null, currency: null }]))
 }
 
-function campaignSpends(rows: TikTokReportRow[]): Array<{ name: string; spend: number }> {
-  const byName = new Map<string, number>()
+function campaignSpends(rows: TikTokReportRow[]): Array<{ key: string; name: string; spend: number }> {
+  const grouped = new Map<string, { key: string; name: string; spend: number }>()
   for (const row of rows) {
     const name = row.campaignName || '—'
-    const spend = typeof row.spend === 'number' && Number.isFinite(row.spend) ? row.spend : 0
-    byName.set(name, (byName.get(name) ?? 0) + spend)
+    const key = row.advertiserId && row.campaignId ? `${row.advertiserId}:${row.campaignId}` : name
+    const current = grouped.get(key) ?? { key, name, spend: 0 }
+    current.spend += typeof row.spend === 'number' && Number.isFinite(row.spend) ? row.spend : 0
+    grouped.set(key, current)
   }
-  return [...byName.entries()].map(([name, spend]) => ({ name, spend }))
+  return [...grouped.values()]
+}
+
+function campaignMoves(current: TikTokReportRow[], previous: TikTokReportRow[]) {
+  const before = new Map(campaignSpends(previous).map((row) => [row.key, row]))
+  const after = new Map(campaignSpends(current).map((row) => [row.key, row]))
+  return [...new Set([...after.keys(), ...before.keys()])].map((key) => {
+    const spend = after.get(key)?.spend ?? 0
+    const previousSpend = before.get(key)?.spend ?? 0
+    return { key, name: after.get(key)?.name ?? before.get(key)!.name, spend, previousSpend, delta: spend - previousSpend }
+  }).filter((row) => row.spend !== 0 || row.previousSpend !== 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || b.spend - a.spend || a.name.localeCompare(b.name)).slice(0, 3)
 }
 
 function rowsInWindow(rows: TikTokReportRow[], window: { start: string; end: string }): TikTokReportRow[] {
@@ -119,23 +97,17 @@ export async function buildTikTokTodayReading(
   const window = todayWindow(range, new Date(now))
   const previous = previousEqualWindow(window)
   if (!previous) return readingFailure('invalid-input')
-  const resolved = await (deps.resolveToken ?? resolveTikTokToken)()
-  if (!resolved.token) return readingFailure('no-credentials')
-  if (resolved.advertiserIds.length === 0) return readingFailure('no-advertiser')
-  const advertiserIds = resolved.advertiserIds.slice(0, TODAY_ADVERTISER_CAP)
-  const fetchImpl = deps.fetchImpl ?? ((url, init) => fetch(url, init))
-  const advertisers = await lookupAdvertisers(fetchImpl, resolved.token, advertiserIds, now)
+  const prepared = await prepareMcp(deps)
+  if ('ok' in prepared) return prepared
+  const { resolved, client, allAdvertisers } = prepared
+  const advertiserIds = allAdvertisers.slice(0, TODAY_ADVERTISER_CAP)
+  const advertisers = await lookupAdvertisers(client, advertiserIds)
   const accounts: TikTokTodayAccount[] = []
   for (const advertiserId of advertiserIds) {
     const advertiser = advertisers.get(advertiserId) ?? { advertiserId, name: null, currency: null }
     let rows: TikTokReportRow[]
     try {
-      rows = await fetchIntegratedReport(fetchImpl, {
-        accessToken: resolved.token,
-        advertiserId,
-        startDate: previous.start,
-        endDate: window.end
-      })
+      rows = await client.report(advertiserId, previous.start, window.end)
     } catch (error) {
       const failure = classifyTikTokError(error)
       if (WHOLE_READ_FAILURES.has(failure.code)) return readingFailure(failure.code, failure.detail)
@@ -153,7 +125,7 @@ export async function buildTikTokTodayReading(
       impressions: currentTotals.impressions,
       clicks: currentTotals.clicks,
       conversions: currentTotals.conversions,
-      campaigns: topSpendMoves(campaignSpends(currentRows), campaignSpends(previousRows), 3)
+      campaigns: campaignMoves(currentRows, previousRows)
     })
   }
   const firstFailure = accounts.find(isTikTokTodayFailure)
@@ -166,7 +138,7 @@ export async function buildTikTokTodayReading(
     previousWindow: previous,
     source: resolved.source,
     generatedAt: now,
-    truncated: resolved.advertiserIds.length > TODAY_ADVERTISER_CAP,
+    truncated: allAdvertisers.length > TODAY_ADVERTISER_CAP,
     accounts
   }
 }
@@ -190,7 +162,7 @@ export interface TikTokReadingAggregate {
  * Aggregate report rows into totals + top campaigns. Sums are additive over
  * every row; CTR and cost-per-conversion are RECOMPUTED from the summed
  * denominators (never averaged from per-row ratios); the campaign list is
- * grouped by name, summed on spend / impressions / clicks / conversions,
+ * grouped by account and campaign IDs, summed on spend / impressions / clicks / conversions,
  * and cut to the top 5 by spend. Rates stay out of this list so the
  * renderer can recompute them from the summed counts.
  */
@@ -207,35 +179,61 @@ export function summarizeTikTokReportRows(rows: TikTokReportRow[]): TikTokReadin
     conversions,
     costPerConversion: conversions > 0 ? spend / conversions : 0
   }
-  const byCampaign = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number }>()
+  const byCampaign = new Map<string, { name: string; key?: string; spend: number; impressions: number; clicks: number; conversions: number }>()
   const add = (value: number | null): number =>
     typeof value === 'number' && Number.isFinite(value) ? value : 0
   for (const row of rows) {
     const name = row.campaignName || '—'
-    const current = byCampaign.get(name) ?? { spend: 0, impressions: 0, clicks: 0, conversions: 0 }
+    const key = row.advertiserId && row.campaignId ? `${row.advertiserId}:${row.campaignId}` : name
+    const current = byCampaign.get(key) ?? { name, ...(row.advertiserId && row.campaignId ? { key } : {}), spend: 0, impressions: 0, clicks: 0, conversions: 0 }
     current.spend += add(row.spend)
     current.impressions += add(row.impressions)
     current.clicks += add(row.clicks)
     current.conversions += add(row.conversion)
-    byCampaign.set(name, current)
+    byCampaign.set(key, current)
   }
-  const topCampaigns = [...byCampaign.entries()]
-    .map(([name, stats]) => ({ name, ...stats }))
+  const topCampaigns = [...byCampaign.values()]
     .sort((a, b) => b.spend - a.spend || a.name.localeCompare(b.name))
     .slice(0, 5)
   return { totals, topCampaigns }
 }
 
 export interface TikTokReadingDeps {
-  /** Token source; defaults to the shared resolver (OAuth first, paste fallback). */
-  resolveToken?: () => Promise<Awaited<ReturnType<typeof resolveTikTokToken>>>
+  /** App-managed MCP OAuth credentials; pasted API tokens are rejected. */
+  resolveToken?: () => Promise<ResolvedTikTokToken>
   fetchImpl?: TikTokApiFetch
   now?: () => number
 }
 
+/** Discover authorized accounts through MCP, independent of the user's selection. */
+export async function listTikTokMcpReadingAdvertisers(deps: TikTokReadingDeps = {}) {
+  const selected = listTikTokReadingAdvertisers()
+  const resolved = await (deps.resolveToken ? deps.resolveToken() : resolveTikTokMcpToken({ ignoreSelected: true }))
+  if (!resolved.token || resolved.source !== 'oauth') return { selected, granted: [] as string[] }
+  const client = new TikTokMcpReadingClient(resolved.token, deps.fetchImpl)
+  await client.initialize()
+  const granted = await client.advertisers()
+  return { selected, granted }
+}
+
+/** Only a managed OAuth grant can authenticate the app-owned MCP server. */
+async function prepareMcp(deps: TikTokReadingDeps, override: string[] = []) {
+  try {
+    const resolved = await (deps.resolveToken ?? resolveTikTokMcpToken)()
+    if (!resolved.token || resolved.source !== 'oauth') return readingFailure('no-credentials')
+    const client = new TikTokMcpReadingClient(resolved.token, deps.fetchImpl)
+    await client.initialize()
+    const allAdvertisers = override.length ? override : resolved.advertiserIds.length ? resolved.advertiserIds : await client.advertisers()
+    if (!allAdvertisers.length) return readingFailure('no-advertiser')
+    return { resolved, client, allAdvertisers }
+  } catch (error) {
+    const failure = classifyTikTokError(error)
+    return readingFailure(failure.code, failure.detail)
+  }
+}
+
 /**
- * IPC-facing builder for TT 读数: resolve credentials → pull the integrated
- * report per advertiser → aggregate. The widget's own advertiser list wins
+ * IPC-facing builder for TT 读数: discover MCP tools → read reports → aggregate. The widget's own advertiser list wins
  * over the resolved one. Errors surface as stable reading error codes; an
  * advertiser that fails on its own is listed in `failed` while the rest
  * still add up.
@@ -248,20 +246,19 @@ export async function buildTikTokReadingSummary(
   const range = isTikTokReadingRange(input.range) ? input.range : '7'
   const override = input.advertiserIds === undefined ? [] : parseTikTokAdvertiserIdList(input.advertiserIds)
   if (override === null) return readingFailure('invalid-input')
-  const resolved = await (deps.resolveToken ?? resolveTikTokToken)()
-  if (!resolved.token) return readingFailure('no-credentials')
-  const advertiserIds = (override.length > 0 ? override : resolved.advertiserIds).slice(0, MAX_ADVERTISERS_PER_SUMMARY)
-  if (advertiserIds.length === 0) return readingFailure('no-advertiser')
+  const prepared = await prepareMcp(deps, override)
+  if ('ok' in prepared) return prepared
+  const { resolved, client, allAdvertisers } = prepared
+  const advertiserIds = allAdvertisers.slice(0, MAX_ADVERTISERS_PER_SUMMARY)
   const { start: startDate, end: endDate } = tiktokReadingRangeWindow(range, new Date(now))
-  const fetchImpl = deps.fetchImpl ?? ((url, init) => fetch(url, init))
-  const info = await lookupAdvertisers(fetchImpl, resolved.token, advertiserIds, now)
+  const info = await lookupAdvertisers(client, advertiserIds)
   const rows: TikTokReportRow[] = []
   const advertisers: TikTokReadingAdvertiser[] = []
   const failed: TikTokReadingAdvertiserFailure[] = []
   for (const advertiserId of advertiserIds) {
     const advertiser = info.get(advertiserId) ?? { advertiserId, name: null, currency: null }
     try {
-      rows.push(...(await fetchIntegratedReport(fetchImpl, { accessToken: resolved.token, advertiserId, startDate, endDate })))
+      rows.push(...(await client.report(advertiserId, startDate, endDate)))
       advertisers.push(advertiser)
     } catch (error) {
       const failure = classifyTikTokError(error)
@@ -274,6 +271,8 @@ export async function buildTikTokReadingSummary(
   const known = [...new Set(advertisers.map((advertiser) => advertiser.currency).filter((code): code is string => !!code))]
   const everyKnown = advertisers.every((advertiser) => advertiser.currency !== null)
   const summary: TikTokReadingSummary = {
+    transport: 'mcp',
+    truncated: allAdvertisers.length > MAX_ADVERTISERS_PER_SUMMARY,
     range,
     startDate,
     endDate,

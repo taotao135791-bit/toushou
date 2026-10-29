@@ -11,6 +11,7 @@ export interface TodayWindow {
 }
 
 export interface TodayCampaignMove {
+  key?: string
   name: string
   spend: number
   previousSpend: number | null

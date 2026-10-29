@@ -4,6 +4,7 @@ import { FbReadingBody } from './FbReadingBody'
 import { FbReportReadingBody } from './FbReportReadingBody'
 import { FbReadingSummaryBody } from './FbReadingSummaryBody'
 import { TTReadingBody } from './TTReadingBody'
+import { GoogleReportReadingBody } from './GoogleReportReadingBody'
 import { BoardDataset, BoardWidget } from '@shared/types'
 import { BOARD_LIMITS, TodoItem, isValidLinkUrl } from '@shared/boards'
 import {
@@ -903,6 +904,8 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange }: Widget
       return <FbReadingSummaryBody widget={widget} />
     case 'fb-report-reading':
       return <FbReportReadingBody widget={widget} />
+    case 'google-report-reading':
+      return <GoogleReportReadingBody widget={widget} />
     case 'tt-reading':
       return <TTReadingBody widget={widget} />
     case 'note':
