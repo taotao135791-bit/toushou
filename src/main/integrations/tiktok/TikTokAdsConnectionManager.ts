@@ -2,12 +2,13 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { BrowserWindow, app, shell } from 'electron'
+import { BrowserWindow, app, session, shell, type Session } from 'electron'
 import { IPC_CHANNELS } from '../../../shared/constants'
 import { ConnectionDefinition, ConnectionStatus, TikTokAdsConnectionSnapshot } from '../../../shared/connections'
 import { normalizeTikTokAdvertiserIds } from '../../../shared/tiktokReport'
 import { McpStorePaths, defaultMcpStorePaths, removeMcpConnection, upsertManagedServer } from '../mcp/McpConnectionStore'
 import { TikTokCredentialStore, TikTokStoredCredentials } from './TikTokCredentialStore'
+import { resolveEnvProxyRules } from './envProxy'
 import { TIKTOK_ADS_SKILL_FILE_NAME, TIKTOK_ADS_SKILL_MARKDOWN } from './tiktokAdsSkill'
 
 /**
@@ -82,6 +83,9 @@ export class TikTokAdsConnectionManager {
   private lastConnectedAt: number | undefined
   /** Authorize URL while waiting for the browser round-trip (renderer shows a manual-open link). */
   private authorizationUrl: string | undefined
+  /** Lazily-created fetch session; rebuilt when the resolved proxy rules change. */
+  private fetchSession: Promise<Session> | null = null
+  private fetchSessionRules: string | null | undefined = undefined
 
   constructor(options: {
     credentialStore?: TikTokCredentialStore
@@ -92,9 +96,28 @@ export class TikTokAdsConnectionManager {
   } = {}) {
     this.credentialStore = options.credentialStore ?? new TikTokCredentialStore()
     this.mcpPaths = options.mcpPaths ?? defaultMcpStorePaths()
-    this.fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init))
+    this.fetchImpl = options.fetchImpl ?? ((url, init) => this.fetchViaProxySession(url, init))
     this.openExternal = options.openExternal ?? ((url) => shell.openExternal(url))
     this.now = options.now ?? Date.now
+  }
+
+  /**
+   * Default fetch path for TikTok endpoints. The embedded Node 20 runtime
+   * ignores NODE_USE_ENV_PROXY (a Node 24 feature), so a plain fetch goes
+   * direct and dies wherever business-api.tiktok.com is unreachable without
+   * a proxy. Route through a dedicated Chromium session honoring the standard
+   * HTTPS_PROXY/HTTP_PROXY/NO_PROXY environment variables instead.
+   */
+  private fetchViaProxySession(url: string, init?: RequestInit): Promise<Response> {
+    const rules = resolveEnvProxyRules(url)
+    if (this.fetchSessionRules !== rules) {
+      this.fetchSessionRules = rules
+      const ses = session.fromPartition('tiktok-connect')
+      this.fetchSession = ses
+        .setProxy(rules ? { proxyRules: rules } : { mode: 'direct' })
+        .then(() => ses)
+    }
+    return this.fetchSession!.then((ses) => ses.fetch(url, init))
   }
 
   /** App-start hook: restore a stored connection (self-healing the mcp entry). */
