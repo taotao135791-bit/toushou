@@ -14,6 +14,7 @@ import { feishuBridgeEnv } from '../integrations/feishu/feishuBridge'
 import { tasksBridgeEnv } from '../tasksBridge'
 import { tiktokBridgeEnv } from '../tiktokBridge'
 import { boardsBridgeEnv } from '../boardsBridge'
+import { adsCopyBridgeEnv } from '../adsCopyBridge'
 
 /**
  * Process assembly for `pi --mode rpc` sessions: CLI argument construction
@@ -212,7 +213,8 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       ...feishuBridgeEnv(sessionId),
       ...tasksBridgeEnv(sessionId),
       ...tiktokBridgeEnv(sessionId),
-      ...boardsBridgeEnv(sessionId)
+      ...boardsBridgeEnv(sessionId),
+      ...adsCopyBridgeEnv(sessionId)
     }),
     approvalConfigFile
   }

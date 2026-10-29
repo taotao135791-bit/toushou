@@ -13,6 +13,7 @@ import { initFeishuBridge } from './integrations/feishu/feishuBridge'
 import { initTasksBridge } from './tasksBridge'
 import { initTiktokBridge } from './tiktokBridge'
 import { initBoardsBridge } from './boardsBridge'
+import { initAdsCopyBridge } from './adsCopyBridge'
 import { ensureKernelSkill } from './kernelSkill'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
@@ -155,6 +156,7 @@ app.whenReady().then(async () => {
     await initTasksBridge()
     await initTiktokBridge()
     await initBoardsBridge()
+    await initAdsCopyBridge()
   } catch (error) {
     console.warn('[tasks] tool bridge unavailable', error)
   }

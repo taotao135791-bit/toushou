@@ -6,6 +6,7 @@ import { FeishuCapability, FeishuConnectionSnapshot, FeishuOAuthAuthorizationVie
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import McpConnectionsSection from '../components/McpConnectionsSection'
+import AdsCopyModelsSection from '../components/AdsCopyModelsSection'
 import TikTokAdsConnectionCard from '../components/TikTokAdsConnectionCard'
 import FigmaConnectionCard from '../components/FigmaConnectionCard'
 
@@ -427,6 +428,7 @@ export default function ConnectionsPage() {
           <TikTokAdsConnectionCard />
           <FigmaConnectionCard />
           <McpConnectionsSection />
+          <AdsCopyModelsSection />
         </div>
       </div>
     </div>

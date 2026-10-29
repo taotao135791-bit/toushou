@@ -109,6 +109,12 @@ export const IPC_CHANNELS = {
   BOARDS_WIDGET_FILE_SELECT: 'boards:widget-file-select',
   /** Main → renderer push when a bound file-widget file changes on disk. */
   BOARDS_FILE_CHANGED: 'boards:file-changed',
+  /** Ads-copy model pool (Connections page section; keys stay in Main). */
+  ADS_COPY_MODELS_LIST: 'ads-copy-models:list',
+  ADS_COPY_MODELS_UPSERT: 'ads-copy-models:upsert',
+  ADS_COPY_MODELS_REMOVE: 'ads-copy-models:remove',
+  ADS_COPY_MODELS_SET_POOL: 'ads-copy-models:set-pool',
+  ADS_COPY_MODELS_TEST: 'ads-copy-models:test',
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
   DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_SELECT_IMAGE: 'dialog:select-image',

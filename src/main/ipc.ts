@@ -141,6 +141,8 @@ import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, saveBoard } from './boards'
+import { AdsCopyModelStore, validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
+import { adsCopyModelStore, testAdsCopyProviderById } from './adsCopyBridge'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
 import { readBoardWidgetFile, registerBoardFileBinding } from './boardFiles'
@@ -2448,6 +2450,39 @@ export function registerIpc() {
   // (shapes, length/count limits) happens inside boards.ts via validateBoard.
   ipcMain.handle(IPC_CHANNELS.BOARDS_LIST, async () => {
     return listBoards()
+  })
+
+  // Ads-copy model pool (Connections page section). Keys are validated,
+  // stored encrypted and NEVER returned to the renderer — only the masked
+  // projection crosses the boundary. Test runs a tiny real completion.
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_LIST, async () => {
+    return AdsCopyModelStore.mask(await adsCopyModelStore.load())
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_UPSERT, async (_event, raw: unknown) => {
+    const input = validateAdsCopyModelInput((raw ?? {}) as Record<string, unknown>)
+    if ('error' in input) return { ok: false, error: input.error }
+    try {
+      await adsCopyModelStore.upsert(input)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message.slice(0, 80) : 'save-failed' }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_REMOVE, async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return { ok: false }
+    await adsCopyModelStore.remove(id)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_SET_POOL, async (_event, raw: unknown) => {
+    if (!Array.isArray(raw) || raw.length > 20 || !raw.every((id): id is string => typeof id === 'string')) {
+      return { ok: false }
+    }
+    await adsCopyModelStore.setPool(raw)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_TEST, async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return { ok: false, error: 'not-found' }
+    return testAdsCopyProviderById(id)
   })
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown) => {
