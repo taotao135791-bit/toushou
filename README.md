@@ -8,17 +8,17 @@
 
 ## 下载安装
 
-当前版本 v1.4.6，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.6) 下载：
+当前版本 v1.4.7，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.7) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-arm64.zip) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-x64.zip) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.6/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.7/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.7/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.7/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.7/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.7/TouShou-x64.exe) | 见 Release | 见 Release |
 
 安装包由 GitHub Actions 在推送版本标签后自动构建，并附带更新清单与 SHA-256 校验文件。
 
-v1.4.6：TT 读数通过官方 MCP 获取账户和报表；新增 Google 读数模块，支持来源链接及 CSV 导入。Google 自动读取只查看和下载，无法核实范围时保留旧数据；验证材料使用虚构数据或脱敏汇总。详细使用方式、口径及 Google 真实账户验收限制见[多平台读数](docs/multi-platform-readings.md)。
+v1.4.7：TT 读数通过官方 MCP 获取账户和报表；新增 Google 读数模块，支持来源链接及 CSV 导入。Google 自动读取只查看和下载，无法核实范围时保留旧数据；验证材料使用虚构数据或脱敏汇总。详细使用方式、口径及 Google 真实账户验收限制见[多平台读数](docs/multi-platform-readings.md)。
 
 v1.4.5：修复了一些已知问题。
 
