@@ -3,6 +3,8 @@ import { ExternalLink, FileSpreadsheet, RefreshCw } from 'lucide-react'
 import type { BoardWidget } from '@shared/types'
 import type { GoogleReportImportResult, GoogleReportReadingResult, GoogleReportStoredReading } from '@shared/googleReport'
 import { useT, type I18nKey } from '../../i18n'
+import { googleReportReadingEvidence } from '@shared/readingEvidence'
+import { ReadingEvidenceLine } from './ReadingEvidenceLine'
 import { useAppStore } from '../../store'
 
 const fmt = (value: number | null, digits = 0): string => value === null ? '—' : value.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })
@@ -127,7 +129,7 @@ export function GoogleReportReadingBody({ widget }: { widget: BoardWidget }) {
               ))}</tbody>
             </table>
           </div>
-          <p className="text-cream-faint">{t('boards.reading.updatedAt', { time: new Date(reading.importedAt).toLocaleString() })} · {t(reading.sourceUrl ? 'boards.googleReport.source' : 'boards.googleReport.importedSource')}</p>
+          <ReadingEvidenceLine evidence={googleReportReadingEvidence(reading)} />
           <p className="text-cream-faint">{t('boards.googleReport.scopeNote')}</p>
           {reading.warnings.some((warning) => warning !== 'report-scope-only') && <p className="text-amber-700 dark:text-amber-300">{t('boards.googleReport.warnings')}</p>}
         </>

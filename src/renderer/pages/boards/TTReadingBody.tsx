@@ -14,6 +14,8 @@ import {
   type TikTokReadingSummary
 } from '@shared/tiktokReport'
 import { formatReadingWindow, tiktokReadingRangeWindow } from '@shared/todayReading'
+import { ttMcpReadingEvidence } from '@shared/readingEvidence'
+import { ReadingEvidenceLine } from './ReadingEvidenceLine'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
 import { ttReadingRangeLabel } from './metricLabel'
@@ -138,7 +140,6 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
   const currencies = summary
     ? [...new Set(summary.advertisers.map((advertiser) => advertiser.currency).filter((code): code is string => !!code))]
     : []
-  const updated = summary ? new Date(summary.generatedAt).toLocaleString() : ''
   const failedStep: ReadingNextStep = advertiserIds.trim() ? 'edit-module' : 'pick-advertiser'
 
   return (
@@ -274,15 +275,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
             )}
           </div>
 
-          {summary && (
-            <p className="text-[12px] leading-[18px] text-cream-faint">
-              {t('boards.reading.updatedAt', { time: updated })}
-              {' · '}
-              {summary.source === 'oauth' ? t('boards.tt.source.oauth') : t('boards.tt.source.pasted')}
-              {' · '}
-              {summary.currency ?? t('boards.tt.currencyNote')}
-            </p>
-          )}
+          {summary && <ReadingEvidenceLine evidence={ttMcpReadingEvidence(summary)} />}
         </>
       )}
     </div>

@@ -8,6 +8,8 @@ import type {
   FbReportIssue,
   FbReportStoredReading
 } from '@shared/fbReportCsv'
+import { fbReportReadingEvidence } from '@shared/readingEvidence'
+import { ReadingEvidenceLine } from './ReadingEvidenceLine'
 import { buildFbReportAnalysisPrompt } from '@shared/fbReportChat'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
@@ -288,6 +290,7 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
               </tr>
             </tbody>
           </table>
+          {reading && <ReadingEvidenceLine evidence={fbReportReadingEvidence(reading)} />}
           {reading?.warnings.map((warning, index) => (
             <p key={index} className="text-neutral-500">
               {warning.column ?? ''} {t('boards.fbReport.warningSumDiff')}
