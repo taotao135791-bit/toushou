@@ -105,8 +105,10 @@ export class TikTokAdsConnectionManager {
    * Default fetch path for TikTok endpoints. The embedded Node 20 runtime
    * ignores NODE_USE_ENV_PROXY (a Node 24 feature), so a plain fetch goes
    * direct and dies wherever business-api.tiktok.com is unreachable without
-   * a proxy. Route through a dedicated Chromium session honoring the standard
-   * HTTPS_PROXY/HTTP_PROXY/NO_PROXY environment variables instead.
+   * a proxy. Route through a dedicated Chromium session instead: explicit
+   * HTTPS_PROXY/HTTP_PROXY/NO_PROXY environment variables win when set;
+   * otherwise fall back to the OS proxy settings (any client's system-proxy
+   * toggle or PAC) — never forcing a direct connection.
    */
   private fetchViaProxySession(url: string, init?: RequestInit): Promise<Response> {
     const rules = resolveEnvProxyRules(url)
@@ -114,7 +116,7 @@ export class TikTokAdsConnectionManager {
       this.fetchSessionRules = rules
       const ses = session.fromPartition('tiktok-connect')
       this.fetchSession = ses
-        .setProxy(rules ? { proxyRules: rules } : { mode: 'direct' })
+        .setProxy(rules ? { proxyRules: rules } : { mode: 'system' })
         .then(() => ses)
     }
     return this.fetchSession!.then((ses) => ses.fetch(url, init))
