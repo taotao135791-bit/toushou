@@ -262,16 +262,41 @@ describe('refreshNow', () => {
     expect(service.getStatus().refreshing).toBe(false)
   })
 
-  it('uses the OAuth connector token from the resolver (oauth source, granted advertisers)', async () => {
-    // No paste credentials on disk — the resolver's OAuth answer must be
-    // enough, proving the service now follows the shared token source.
-    const headers: Array<string | undefined> = []
-    const requests: Array<Record<string, unknown>> = []
+  it('uses the OAuth connector token through the MCP report tool (oauth source, granted advertisers)', async () => {
+    // No paste credentials on disk — the resolver's OAuth answer drives the
+    // official MCP report path: initialize → tools/list → report_integrated_get
+    // per granted advertiser, Bearer = the connector token, never Open API.
+    const calls: Array<{ method: string; params: Record<string, unknown>; bearer?: string }> = []
     const fetchImpl = (async (url: string, init?: RequestInit) => {
-      if (url.includes('/oauth2/refresh_token/')) throw new Error('must not rotate an oauth token')
-      headers.push((init?.headers as Record<string, string>)['Access-Token'])
-      requests.push(Object.fromEntries(new URL(url).searchParams.entries()))
-      return reportResponse([['2026-01-02', 'C1', '10.5']])
+      expect(url).toBe('https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer')
+      const request = JSON.parse(String(init?.body)) as { id?: number; method: string; params: Record<string, unknown> }
+      calls.push({
+        method: request.method,
+        params: request.params,
+        bearer: new Headers(init?.headers).get('authorization') ?? undefined
+      })
+      if (request.method === 'notifications/initialized') return new Response(null, { status: 202 })
+      let result: unknown
+      if (request.method === 'initialize') result = { protocolVersion: '2025-03-26' }
+      else if (request.method === 'tools/list') {
+        result = { tools: ['auth_advertiser_get', 'advertiser_info_get', 'report_integrated_get'].map((name) => ({ name })) }
+      } else {
+        const args = request.params.arguments as Record<string, unknown>
+        result = {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                code: 0,
+                data: { list: [{ dimensions: { campaign_id: '11', stat_time_day: args.start_date }, metrics: { campaign_name: 'C1', spend: '10.5', impressions: '100', clicks: '2', conversion: '1' } }], page_info: { total_page: 1 } }
+              })
+            }
+          ]
+        }
+      }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }), {
+        headers: { 'content-type': 'application/json', 'mcp-session-id': 'session' }
+      })
     }) as unknown as (url: string, init?: RequestInit) => Promise<Response>
     const service = new TikTokRefreshService({
       fetchImpl,
@@ -284,8 +309,11 @@ describe('refreshNow', () => {
     })
     const outcome = await service.refreshNow()
     expect(outcome.ok).toBe(true)
-    expect(headers).toEqual(['oauth-token'])
-    expect(requests[0].advertiser_id).toBe('7300042')
+    expect(calls.filter((call) => call.method === 'tools/call').map((call) => call.params.name)).toEqual(['report_integrated_get'])
+    const reportArgs = calls.find((call) => call.method === 'tools/call')!.params.arguments as Record<string, unknown>
+    expect(reportArgs.advertiser_id).toBe('7300042')
+    expect(calls.every((call) => call.bearer === 'Bearer oauth-token' || call.method === 'notifications/initialized')).toBe(true)
+    expect((outcome as { rowCount?: number }).rowCount).toBeGreaterThanOrEqual(1)
   })
 
   it('rotates an expired token before pulling the report', async () => {

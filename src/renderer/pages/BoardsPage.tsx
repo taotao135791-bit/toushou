@@ -744,6 +744,13 @@ export default function BoardsPage() {
 
   // Master scope: writing it re-unifies every reading module onto it and
   // clears all independence flags (see applyMasterScope in shared/boards).
+  /** 昨日窗口（总控"昨日"档的悬浮提示）：start=end=昨天，本机日期。 */
+  const yesterdayWindow = () => {
+    const d = new Date()
+    d.setDate(d.getDate() - 1)
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return { start: iso, end: iso }
+  }
   const saveMasterScope = (next: BoardMasterScope) => {
     if (!currentId) return
     mutateBoard(currentId, (b) => ({
@@ -1401,6 +1408,7 @@ export default function BoardsPage() {
           <div className="flex items-center gap-1">
             {(
               [
+                ['yesterday', t('boards.master.range.yesterday')],
                 ['today', t('boards.master.range.today')],
                 ['last3', t('boards.master.range.last3')],
                 ['last7', t('boards.master.range.last7')],
@@ -1410,7 +1418,11 @@ export default function BoardsPage() {
               <button
                 key={value}
                 onClick={() => saveMasterScope({ range: value, metrics: master?.metrics ?? seedMasterMetrics() })}
-                title={formatReadingWindow(boardReadingRangeDates(value))}
+                title={
+                  value === 'yesterday'
+                    ? formatReadingWindow(yesterdayWindow())
+                    : formatReadingWindow(boardReadingRangeDates(value))
+                }
                 className={`focus-ring rounded-full border px-2.5 py-1 text-[12px] leading-[18px] transition ${
                   master?.range === value
                     ? 'border-accent/60 bg-accent-soft text-accent'
@@ -1423,7 +1435,9 @@ export default function BoardsPage() {
           </div>
           {master && (
             <span className="shrink-0 text-[12px] leading-[18px] tabular-nums text-cream-faint">
-              {formatReadingWindow(boardReadingRangeDates(master.range))}
+              {formatReadingWindow(
+                master.range === 'yesterday' ? yesterdayWindow() : boardReadingRangeDates(master.range)
+              )}
             </span>
           )}
           <div className="relative">

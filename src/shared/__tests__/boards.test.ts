@@ -861,7 +861,7 @@ describe('master scope', () => {
     const good = validateBoard({ ...validBoard(), masterScope: { range: 'last3', metrics: ['spend'] } })
     expect(good?.masterScope).toEqual({ range: 'last3', metrics: ['spend'] })
 
-    expect(validateBoard({ ...validBoard(), masterScope: { range: 'yesterday', metrics: ['spend'] } })?.masterScope).toBeUndefined()
+    expect(validateBoard({ ...validBoard(), masterScope: { range: 'lastQuarter', metrics: ['spend'] } })?.masterScope).toBeUndefined()
     expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: [] } })?.masterScope).toBeUndefined()
     expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: ['not-a-metric'] } })?.masterScope).toBeUndefined()
     expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: ['spend', 'spend'] } })?.masterScope).toBeUndefined()
@@ -919,6 +919,27 @@ describe('master scope', () => {
     const kept = applyMasterScope({ ...base, config: { range: '28' } }, { range: 'last3', metrics: ['spend'] })
     expect(kept.config.range).toBe('28')
     expect(kept.config.independent).toBe(true)
+  })
+
+  it('yesterday master scope drives TikTok and leaves FB honest', () => {
+    const tt = applyMasterScope(
+      { id: 't', type: 'tt-reading' as const, title: 't', layout: { x: 0, y: 0, w: 2, h: 2 }, config: { range: '7' } },
+      { range: 'yesterday', metrics: ['spend'] }
+    )
+    expect(tt.config.range).toBe('1')
+    expect(tt.config.independent).toBeUndefined()
+    const fb = applyMasterScope(
+      {
+        id: 'f',
+        type: 'fb-reading' as const,
+        title: 'f',
+        layout: { x: 0, y: 0, w: 2, h: 2 },
+        config: fbReading({ range: 'last7' }).config as Record<string, unknown>
+      },
+      { range: 'yesterday', metrics: ['spend'] }
+    )
+    expect(fb.config.range).toBe('last7')
+    expect(fb.config.independent).toBe(true)
   })
 
   it('applyMasterScope leaves non-reading widgets untouched', () => {

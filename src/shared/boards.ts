@@ -1044,7 +1044,13 @@ function validateWidget(raw: unknown): BoardWidget | null {
 function validateMasterScope(raw: unknown): BoardMasterScope | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const m = raw as Record<string, unknown>
-  if (m.range !== 'today' && m.range !== 'last3' && m.range !== 'last7' && m.range !== 'last30') {
+  if (
+    m.range !== 'yesterday' &&
+    m.range !== 'today' &&
+    m.range !== 'last3' &&
+    m.range !== 'last7' &&
+    m.range !== 'last30'
+  ) {
     return null
   }
   if (!Array.isArray(m.metrics) || m.metrics.length === 0) return null
@@ -1065,6 +1071,7 @@ export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 
 
 /** TikTok day windows are a separate enum; last3 and last30 have no exact equivalent. */
 const TT_RANGE_BY_MASTER: Record<string, string> = {
+  yesterday: '1',
   today: '1',
   last7: '7'
 }
@@ -1095,6 +1102,12 @@ export function applyMasterScope(widget: BoardWidget, master: BoardMasterScope):
       // surface the divergence instead of silently nearest-mapping it.
       config.independent = true
     }
+    return { ...widget, config }
+  }
+  // FB modules have no "yesterday" reading window: keep their current window
+  // and flag the divergence (same honest-divergence rule as TikTok above).
+  if (master.range === 'yesterday') {
+    config.independent = true
     return { ...widget, config }
   }
   config.range = master.range

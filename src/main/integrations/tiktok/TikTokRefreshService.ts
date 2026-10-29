@@ -14,6 +14,8 @@ import {
 } from './TikTokConnectionStore'
 import { resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokToken'
 import { fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch } from './tiktokClient'
+import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
+import { proxySessionFetch } from './proxyFetch'
 import { writeReportToDataset } from './tiktokReportDataset'
 
 /**
@@ -83,7 +85,11 @@ export class TikTokRefreshService {
   private lastRowCount: number | undefined
 
   constructor(options: TikTokRefreshServiceOptions = {}) {
-    this.fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init))
+    // Default fetch is proxy-aware (env vars → OS proxy, never forced direct):
+    // business-api.tiktok.com is unreachable without a proxy on many networks.
+    this.fetchImpl =
+      options.fetchImpl ??
+      (async (url: string, init?: RequestInit) => (await proxySessionFetch())(url, init))
     this.now = options.now ?? Date.now
     this.intervalMs = Math.max(
       MIN_REFRESH_INTERVAL_MS,
@@ -195,8 +201,14 @@ export class TikTokRefreshService {
         this.emit()
         return { ok: false, error, status: this.getStatus() }
       }
-      const token = await this.accessTokenForReport(resolved)
-      const rows = await this.fetchRows(token, resolved.advertiserIds)
+      // OAuth (the official MCP connection) pulls through the MCP report
+      // tool — same grant the reading cards use, no Open API credentials
+      // needed — and discovers the granted advertisers when the token
+      // response omitted them (the paste-store path keeps Open API below).
+      const rows =
+        resolved.source === 'oauth'
+          ? await this.fetchRowsViaMcp(resolved.token, resolved.advertiserIds)
+          : await this.fetchRows(await this.accessTokenForReport(resolved), resolved.advertiserIds)
       const written = writeReportToDataset(rows, this.datasetsFile)
       if (!written.ok) throw new Error(`dataset-${written.error}`)
       this.lastRefreshAt = this.now()
@@ -281,6 +293,28 @@ export class TikTokRefreshService {
           endDate: end
         }))
       )
+    }
+    return sortRowsByDateDesc(rows)
+  }
+
+  /**
+   * OAuth grant → the official MCP report tool (report_integrated_get,
+   * daily campaign rows). Advertiser discovery rides the same MCP connection
+   * when neither the grant nor the Connections-page list names any.
+   */
+  private async fetchRowsViaMcp(token: string, advertiserIds: string[]) {
+    const client = new TikTokMcpReadingClient(token, this.fetchImpl)
+    await client.initialize()
+    const ids = advertiserIds.length > 0 ? advertiserIds : await client.advertisers()
+    if (ids.length === 0) throw new Error('no-advertiser')
+    const nowDate = new Date(this.now())
+    const end = formatLocalDate(nowDate)
+    const startDate = new Date(nowDate)
+    startDate.setDate(startDate.getDate() - (REPORT_RANGE_DAYS - 1))
+    const start = formatLocalDate(startDate)
+    const rows = []
+    for (const advertiserId of ids.slice(0, MAX_ADVERTISERS_PER_REFRESH)) {
+      rows.push(...(await client.report(advertiserId, start, end)))
     }
     return sortRowsByDateDesc(rows)
   }
