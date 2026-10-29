@@ -76,11 +76,14 @@ function resolveBinding(widget: BoardWidget, datasets: BoardDataset[], needsDim:
   return { kind: 'ok', dataset, metricIndex, dimIndex }
 }
 
-function BindingPlaceholder({ binding }: { binding: Binding }) {
+function BindingPlaceholder({ binding, widget }: { binding: Binding; widget: BoardWidget }) {
   const t = useT()
   const text =
     binding.kind === 'missing-dataset'
-      ? t('boards.datasets.datasetMissing')
+      ? // Template widgets bind by dataset NAME and may legitimately point at a
+        // dataset that does not exist YET (e.g. a fresh TikTok board before the
+        // first report pull) — guide the user instead of crying "deleted".
+        t('boards.datasets.datasetMissing', { name: configStr(widget.config.datasetId) })
       : binding.kind === 'missing-column'
         ? t('boards.datasets.columnMissing')
         : t('boards.datasets.incomplete')
@@ -139,7 +142,7 @@ function CounterBody({ widget, datasets }: { widget: BoardWidget; datasets: Boar
   let value: number
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, false)
-    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} />
+    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
     value = aggregate(
       binding.dataset.rows.map((r) => r[binding.metricIndex] ?? ''),
       configOp(widget.config.op)
@@ -307,7 +310,7 @@ function ChartBody({
   let metricName = ''
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, true)
-    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} />
+    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
     const grouped = groupAggregate(
       binding.dataset,
       binding.dimIndex,

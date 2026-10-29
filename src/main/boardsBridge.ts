@@ -315,12 +315,22 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
     }
     const result = saveBoard(board)
     if (!result.ok) return { ok: false, error: 'save-failed' }
+    // The TikTok template binds its KPIs/charts to the "TikTok 报表" dataset.
+    // Tell the agent whether that data exists yet so it can pull the report
+    // right away (the toolkit has touhou_tiktok_update) instead of leaving a
+    // board full of waiting placeholders.
+    const datasetReady = listDatasets().some((dataset) => dataset.name === 'TikTok 报表' && dataset.rows.length > 0)
     return {
       ok: true,
       board: boardSummary({ ...board }),
-      note: advertiserIds
-        ? '已绑定指定广告主的 TT 读数模块；读数需要已连接的 TikTok 授权。'
-        : '已附 TT 读数模块（读取当前授权下的全部广告主）。'
+      datasetReady,
+      note:
+        (advertiserIds
+          ? '已绑定指定广告主的 TT 读数模块；读数需要已连接的 TikTok 授权。'
+          : '已附 TT 读数模块（读取当前授权下的全部广告主）。') +
+        (datasetReady
+          ? '数据集「TikTok 报表」已有数据。'
+          : '数据集「TikTok 报表」还没有数据：立即调用 touhou_tiktok_update 拉取（需要已连接 TikTok），看板会自动填充。')
     }
   }
 

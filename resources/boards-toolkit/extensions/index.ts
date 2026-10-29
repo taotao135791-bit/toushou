@@ -84,7 +84,8 @@ export default function boardsTools(api: ToolHostApi): void {
       '直接新建一块看板并回报结果（本机画布操作，无需用户确认；但绝不触碰广告平台）。\n' +
       '用户没提具体要求时按模板标配建：\n' +
       Object.entries(TEMPLATE_HELP).map(([id, help]) => `- ${id}：${help}`).join('\n') +
-      '\n用户提到 TikTok 广告主（如"看 miclip 数据"）时传 advertiserIds（逗号分隔；不知道 ID 就先用 toushou_boards_list 或连接信息查询，或留空让模块读取全部授权广告主）。',
+      '\n用户提到 TikTok 广告主（如"看 miclip 数据"）时传 advertiserIds（逗号分隔；不知道 ID 就先用 toushou_boards_list 或连接信息查询，或留空让模块读取全部授权广告主）。' +
+      '\n建板返回 datasetReady=false 时，立即调用 touhou_tiktok_update 拉取报表（需要已连接 TikTok），指标卡和趋势图会自动填充，然后如实向用户汇报。',
     parameters: {
       type: 'object',
       properties: {
