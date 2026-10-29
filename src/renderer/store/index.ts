@@ -357,6 +357,8 @@ interface AppState {
   purgeDeletedSession: (uuid: string) => void
   /** Update one session's display title in place. */
   setSessionTitle: (sessionId: string, title: string) => void
+  /** Mark real user activity (a sent message) — bumps sidebar recency. */
+  touchSession: (sessionId: string) => void
   setSessionFile: (sessionId: string, sessionFile: string) => void
   /**
    * Auto-name a session from its FIRST user message whenever its title is
@@ -609,7 +611,13 @@ export const useAppStore = create<AppState>((set, get) => ({
               (!merged.title.trim() || merged.title === defaultTitle)
             ? previous.title
             : merged.title
-      const guarded = { ...merged, title }
+      // Main's registry re-reports don't carry renderer-owned fields — keep
+      // the activity time or every push would reset recency to createdAt.
+      const guarded = {
+        ...merged,
+        title,
+        lastActivityAt: previous?.lastActivityAt ?? merged.lastActivityAt
+      }
       const same =
         previous &&
         previous.cwd === guarded.cwd &&
@@ -1047,6 +1055,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           // A queued item successfully became a normal prompt; clear only
           // the stale recoverable Steer feedback, never fatal session state.
           get().clearSessionErrorIf(sessionId, 'chat.steerQueueFailed')
+          get().touchSession(sessionId)
           const list = get().messages[sessionId] || []
           void get().createCheckpointForMessage(sessionId, list.length - 1, next.text)
           void get().maybeNameSession(sessionId)
@@ -1179,6 +1188,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       return {
         sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, title } : s)),
         sessionRecords: updateSessionRecordTitle(state.sessionRecords, sessionId, title)
+      }
+    }),
+  touchSession: (sessionId) =>
+    set((state) => {
+      const current = state.sessions.find((session) => session.id === sessionId)
+      if (!current) return state
+      return {
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, lastActivityAt: Date.now() } : s
+        )
       }
     }),
   maybeNameSession: async (sessionId) => {

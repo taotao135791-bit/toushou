@@ -78,6 +78,9 @@ const en = {
   'sidebar.status.unread': 'New',
   'sidebar.status.idle': 'Idle',
   'sidebar.feishuSession': 'Feishu channel session',
+  'sidebar.badge.feishu': 'Feishu',
+  'sidebar.badge.task': 'Task',
+  'sidebar.primaryNav': 'Primary navigation',
   'sidebar.taskSession': 'Scheduled-task session',
 
   // Compact relative timestamps (session/history rows)
@@ -230,6 +233,7 @@ const en = {
   'composer.feishuSync': 'Replies are also sent to Feishu',
   'composer.slashTitle': 'Commands',
   'composer.slashBuiltin': 'built-in',
+  'composer.slashApp': 'app',
   'composer.slashCompact': 'Compact the conversation context now',
   'composer.shortcuts': 'Enter to send · Shift+Enter for newline',
   'composer.placeholderBusy': 'Keep typing — queued messages send after the current reply finishes…',
@@ -249,6 +253,8 @@ const en = {
   'msg.steer': 'Adjust current turn',
   'msg.thinking': 'Thinking',
   'msg.sendFailed': 'Not delivered',
+  'msg.retry': 'Retry',
+  'chat.feishuChip': 'Feishu',
 
   // Agent Hub / execution projection
   'agents.title': 'Agent activity',
@@ -1824,6 +1830,9 @@ const zh: Record<I18nKey, string> = {
   'sidebar.status.unread': '新消息',
   'sidebar.status.idle': '空闲',
   'sidebar.feishuSession': '飞书渠道会话',
+  'sidebar.badge.feishu': '飞书',
+  'sidebar.badge.task': '任务',
+  'sidebar.primaryNav': '主要导航',
   'sidebar.taskSession': '定时任务会话',
 
   'sidebar.time.secondsAgo': '{count}秒钟',
@@ -1972,6 +1981,7 @@ const zh: Record<I18nKey, string> = {
   'composer.feishuSync': '回复将同步发送到飞书',
   'composer.slashTitle': '命令',
   'composer.slashBuiltin': '内置',
+  'composer.slashApp': '应用',
   'composer.slashCompact': '立即压缩当前会话的上下文',
   'composer.shortcuts': 'Enter 发送 · Shift+Enter 换行',
   'composer.placeholderBusy': '继续输入，发送后会在当前回复结束后依次发送…',
@@ -1991,6 +2001,8 @@ const zh: Record<I18nKey, string> = {
   'msg.steer': '调整当前任务',
   'msg.thinking': '思考',
   'msg.sendFailed': '未送达',
+  'msg.retry': '重试',
+  'chat.feishuChip': '飞书',
 
   // Agent Hub / execution projection
   'agents.title': '子代理动态',
@@ -3475,6 +3487,16 @@ export function translate(
 }
 
 /** React hook: const t = useT(); t('sidebar.newChat') */
+/** Platform-correct modifier label for shortcut hints (⌘ on macOS, Ctrl elsewhere). */
+export function modKeyLabel(): string {
+  return /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl'
+}
+
+/** Full shortcut hint, e.g. modShortcut('N') → "⌘N" / "Ctrl+N". */
+export function modShortcut(key: string): string {
+  return `${modKeyLabel()}${modKeyLabel() === '⌘' ? '' : '+'}${key}`
+}
+
 export function useT() {
   const language = useAppStore((s) => s.language)
   return useCallback(
