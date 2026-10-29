@@ -136,10 +136,9 @@ export type TikTokCredentialErrorCode =
   | 'invalid-advertisers'
 
 // ---------------------------------------------------------------------------
-// TT 读数 board module — direct report read onto the board (tt-reading
-// widget). Main resolves the token (OAuth connector first, paste store as
-// fallback), pulls the integrated report and aggregates it; the renderer
-// only ever sees this bounded projection.
+// TT 读数 board module. Main uses the application-managed OAuth MCP
+// connection to read and aggregate reports; the renderer only receives
+// this bounded projection.
 // ---------------------------------------------------------------------------
 
 /** 报表天数口径：今天（未收完）/ 近 7 天 / 近 28 天（都截止到昨天，整天）。 */
@@ -158,6 +157,7 @@ export interface TikTokReadingAdvertiserFailure extends TikTokReadingAdvertiser 
 }
 
 export interface TikTokReadingTopCampaign {
+  key?: string
   name: string
   spend: number
   impressions: number
@@ -177,13 +177,17 @@ export interface TikTokReadingTotals {
 }
 
 export interface TikTokReadingSummary {
+  /** The application-owned official connector serving this reading. */
+  transport?: 'mcp'
+  /** The selected account scope exceeded this widget's read cap. */
+  truncated?: boolean
   range: TikTokReadingRange
   startDate: string
   endDate: string
   totals: TikTokReadingTotals
   /** 按消耗降序，最多 5 条。 */
   topCampaigns: TikTokReadingTopCampaign[]
-  /** token 来源：OAuth 连接器（自动续期）优先，粘贴 token 兜底。 */
+  /** Credential origin; new MCP readings use the managed OAuth connection. */
   source: 'oauth' | 'pasted'
   generatedAt: number
   /** Accounts whose report is inside the totals. */

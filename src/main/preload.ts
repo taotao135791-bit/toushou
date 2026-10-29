@@ -35,6 +35,7 @@ import type {
 } from '../shared/tiktokReport'
 import type { TikTokTodayReadingResult } from '../shared/todayReading'
 import type { FbReportAutoFetchResult, FbReportImportResult, FbReportStoredReading } from '../shared/fbReportCsv'
+import type { GoogleReportReadingResult, GoogleReportImportResult, GoogleReportStoredReading } from '../shared/googleReport'
 import {
   CliCapabilities,
   CliInfo,
@@ -513,6 +514,9 @@ export interface ElectronAPI {
   ttReadingAdvertisers: () => Promise<TikTokReadingAdvertisers>
   ttReadingSetAdvertisers: (input: { advertiserIds: string }) => Promise<TikTokReadingAdvertisersSetResult>
   /** FB 报表读数 board module: Main owns the file dialog, parse and store. */
+  googleReportImport: (widgetId: string) => Promise<GoogleReportImportResult>
+  googleReportReadingGet: (widgetId: string) => Promise<GoogleReportStoredReading | null>
+  googleReportAutoFetch: (widgetId: string, reportUrl: string) => Promise<GoogleReportReadingResult>
   fbReportImport: (widgetId: string) => Promise<FbReportImportResult>
   fbReportReadingGet: (widgetId: string) => Promise<FbReportStoredReading | null>
   /** Automated export: Main opens the named report and downloads the CSV. */
@@ -984,6 +988,19 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.TT_READING_ADVERTISERS_SET, {
       advertiserIds: typeof input?.advertiserIds === 'string' && input.advertiserIds.length <= 400 ? input.advertiserIds : null
     }) as Promise<TikTokReadingAdvertisersSetResult>,
+  googleReportImport: (widgetId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GOOGLE_REPORT_IMPORT, {
+      widgetId: typeof widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(widgetId) ? widgetId : null
+    }) as Promise<GoogleReportImportResult>,
+  googleReportReadingGet: (widgetId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GOOGLE_REPORT_READING_GET, {
+      widgetId: typeof widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(widgetId) ? widgetId : null
+    }) as Promise<GoogleReportStoredReading | null>,
+  googleReportAutoFetch: (widgetId: string, reportUrl: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GOOGLE_REPORT_AUTO_FETCH, {
+      widgetId: typeof widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(widgetId) ? widgetId : null,
+      reportUrl: typeof reportUrl === 'string' && reportUrl.length <= 12000 ? reportUrl : null
+    }) as Promise<GoogleReportReadingResult>,
   // Invalid ids go through as null so Main rejects them; never a guess.
   fbReportImport: (widgetId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_REPORT_IMPORT, {

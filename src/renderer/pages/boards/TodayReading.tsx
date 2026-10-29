@@ -253,7 +253,7 @@ export function TodayReading() {
         <div>
           <h1 className="text-[24px] font-semibold leading-[34px] text-cream">{t('boards.today.title')}</h1>
           <p className="mt-1 text-[12px] leading-[18px] tabular-nums text-cream-faint">
-            {rangeLabel} · {formatReadingWindow(dateWindow)}
+            {rangeLabel} · {formatReadingWindow(dateWindow)} · {t('boards.tt.localDate')}
             {previous ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(previous))}` : ''}
           </p>
         </div>
@@ -481,7 +481,7 @@ function Movers({
     <ul className="mt-2 flex flex-col gap-1">
       <li className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.movers')}</li>
       {movers.map((move) => (
-        <li key={move.name} className="flex items-baseline justify-between gap-3 text-[12px] leading-[18px]">
+        <li key={move.key ?? move.name} className="flex items-baseline justify-between gap-3 text-[12px] leading-[18px]">
           <span className="min-w-0 truncate text-cream-dim" title={move.name}>{move.name}</span>
           <span className="shrink-0 tabular-nums text-cream">
             {formatTikTokAmount(move.spend)}

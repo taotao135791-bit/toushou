@@ -4,6 +4,9 @@ import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
 import { parseFbReportReference } from '../shared/fbReportReference'
+import { validGoogleReportUrl } from '../shared/googleReport'
+import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
+import { importGoogleReportFile, readGoogleReportReadings } from './googleReportReadings'
 import { cleanSessionName } from '../shared/promptTitle'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
 import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
@@ -203,9 +206,9 @@ import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionM
 import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
 import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
-import { buildTikTokReadingSummary, buildTikTokTodayReading } from './integrations/tiktok/tiktokReading'
-import { listTikTokReadingAdvertisers, setTikTokReadingAdvertisers } from './integrations/tiktok/tiktokReadingAdvertisers'
-import { resolveTikTokToken, setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
+import { buildTikTokReadingSummary, buildTikTokTodayReading, listTikTokMcpReadingAdvertisers } from './integrations/tiktok/tiktokReading'
+import { setTikTokReadingAdvertisers } from './integrations/tiktok/tiktokReadingAdvertisers'
+import { setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
 import { importFbReportFile, readFbReportReadings } from './fbReportReadings'
 import { autoFetchFbReportCsv, FbReportFetchRange } from './fbReportAutoFetch'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
@@ -877,11 +880,7 @@ export function registerIpc() {
     return buildTikTokTodayReading({ range })
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_LIST, async () => {
-    const resolved = await resolveTikTokToken({ loadSelectedAdvertisers: () => [] }).catch(() => null)
-    return {
-      selected: listTikTokReadingAdvertisers(),
-      granted: resolved?.token ? resolved.advertiserIds : []
-    }
+    return listTikTokMcpReadingAdvertisers()
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_SET, (_event, raw: unknown) => setTikTokReadingAdvertisers(raw))
 
@@ -933,6 +932,38 @@ export function registerIpc() {
       return { ok: false, fetchError: fetch.error ?? 'fetch-failed', detail: fetch.detail }
     }
     return importFbReportFile(widgetId, fetch.filePath)
+  })
+
+  // Google links and file paths remain Main-owned. A failed refresh keeps the last verified reading.
+  const googleWidgetId = (raw: unknown): string | null => {
+    const id = (raw as { widgetId?: unknown } | null)?.widgetId
+    if (typeof id !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(id)) return null
+    return listBoards().some((board) => board.widgets.some((widget) => widget.id === id && widget.type === 'google-report-reading')) ? id : null
+  }
+  ipcMain.handle(IPC_CHANNELS.GOOGLE_REPORT_IMPORT, async (_event, raw: unknown) => {
+    const widgetId = googleWidgetId(raw)
+    if (!widgetId) return { ok: false, error: 'invalid-widget' }
+    const picked = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Google Ads CSV', extensions: ['csv', 'txt'] }] })
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true }
+    return importGoogleReportFile(widgetId, picked.filePaths[0])
+  })
+  ipcMain.handle(IPC_CHANNELS.GOOGLE_REPORT_READING_GET, (_event, raw: unknown) => {
+    const widgetId = googleWidgetId(raw)
+    return widgetId ? readGoogleReportReadings()[widgetId] ?? null : null
+  })
+  ipcMain.handle(IPC_CHANNELS.GOOGLE_REPORT_AUTO_FETCH, async (_event, raw: unknown) => {
+    const widgetId = googleWidgetId(raw)
+    if (!widgetId) return { ok: false, error: 'invalid-widget' }
+    const reportUrl = (raw as { reportUrl?: unknown }).reportUrl
+    if (typeof reportUrl !== 'string' || !validGoogleReportUrl(reportUrl)) return { ok: false, fetchError: 'invalid-url' }
+    const fetched = await autoFetchGoogleReportCsv(reportUrl)
+    if (!fetched.ok || !fetched.filePath) return { ok: false, fetchError: fetched.error ?? 'fetch-failed', detail: fetched.detail }
+    try {
+      return importGoogleReportFile(widgetId, fetched.filePath, undefined, reportUrl, fetched.context)
+    } finally {
+      // This file is minted by Main for this read; never retain a raw account export.
+      try { fs.unlinkSync(fetched.filePath) } catch { /* already removed by download cleanup */ }
+    }
   })
 
   // --- Figma Dev Mode MCP connector (local, code-token-only flavor) ------

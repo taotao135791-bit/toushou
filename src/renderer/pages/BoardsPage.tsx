@@ -96,6 +96,7 @@ const WIDGET_GALLERY: { type: WidgetType; Icon: LucideIcon }[] = [
   { type: 'note', Icon: StickyNote },
   { type: 'counter', Icon: Hash },
   { type: 'fb-report-reading', Icon: FileSpreadsheet },
+  { type: 'google-report-reading', Icon: FileSpreadsheet },
   { type: 'gauge', Icon: Gauge },
   { type: 'chart-line', Icon: ChartLine },
   { type: 'chart-bar', Icon: ChartBar },
@@ -105,7 +106,7 @@ const WIDGET_GALLERY: { type: WidgetType; Icon: LucideIcon }[] = [
 ]
 
 /** Types that get their config panel opened right after being added. */
-const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'link', 'file', 'tt-reading']
+const CONFIG_ON_ADD: readonly WidgetType[] = ['note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'link', 'file', 'tt-reading', 'google-report-reading']
 
 /** Metric set a master scope starts from — range pills seed it, and the
  * metrics popover previews it before any master scope exists. */
@@ -699,7 +700,7 @@ export default function BoardsPage() {
   const refreshReadingModules = async () => {
     if (!current || boardRefreshBusy) return
     const widgets = current.widgets.filter(
-      (widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type) || widget.type === 'fb-report-reading'
+      (widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type) || widget.type === 'fb-report-reading' || widget.type === 'google-report-reading'
     )
     if (widgets.length === 0) return
     setBoardRefreshBusy(true)
@@ -707,9 +708,10 @@ export default function BoardsPage() {
     for (let index = 0; index < widgets.length; index += 1) {
       const widget = widgets[index]
       const isTt = widget.type === 'tt-reading'
-      const isReport = widget.type === 'fb-report-reading'
-      const doneEvent = isTt ? 'tt-reading:module-done' : isReport ? 'fb-report-reading:module-done' : 'fb-reading:module-done'
-      const refreshEvent = isTt ? 'tt-reading:board-refresh' : isReport ? 'fb-report-reading:board-refresh' : 'fb-reading:board-refresh'
+      const isGoogle = widget.type === 'google-report-reading'
+      const isReport = widget.type === 'fb-report-reading' || isGoogle
+      const doneEvent = isGoogle ? 'google-report-reading:module-done' : isTt ? 'tt-reading:module-done' : isReport ? 'fb-report-reading:module-done' : 'fb-reading:module-done'
+      const refreshEvent = isGoogle ? 'google-report-reading:board-refresh' : isTt ? 'tt-reading:board-refresh' : isReport ? 'fb-report-reading:board-refresh' : 'fb-reading:board-refresh'
       await new Promise<void>((resolve) => {
         let settled = false
         const finish = () => {
@@ -750,11 +752,12 @@ export default function BoardsPage() {
   const readingModuleCount = current
     ? current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)).length
     : 0
+  const refreshableReadingCount = readingModuleCount + (current?.widgets.filter((widget) => widget.type === 'google-report-reading').length ?? 0)
   const browserReadingCount = current
     ? current.widgets.filter((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary').length
     : 0
   const independentCount = current
-    ? current.widgets.filter((widget) => widget.config.independent === true).length
+    ? current.widgets.filter((widget) => widget.config.independent === true || widget.type === 'google-report-reading').length
     : 0
   /** First-time master metrics: keep what the board's reading modules already
    * show instead of silently replacing their columns with the default —
@@ -1493,7 +1496,7 @@ export default function BoardsPage() {
             <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint" title={t('boards.master.noModulesHint')}>{t('boards.master.noModulesHint')}</span>
           )}
           <div className="min-w-0 flex-1" />
-          {readingModuleCount > 0 && (
+          {refreshableReadingCount > 0 && (
           <button
             onClick={() => void refreshReadingModules()}
             disabled={boardRefreshBusy}

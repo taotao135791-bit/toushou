@@ -926,4 +926,21 @@ describe('master scope', () => {
     const out = applyMasterScope(widget as never, { range: 'today', metrics: ['spend'] })
     expect(out).toEqual(widget)
   })
+
+  it('does not represent thirty days as TikTok twenty-eight days', () => {
+    const widget = widgetOf('tt-reading', { range: '28' })
+    const scoped = applyMasterScope(widget as never, { range: 'last30', metrics: ['spend'] })
+    expect(scoped.config.range).toBe('28')
+    expect(scoped.config.independent).toBe(true)
+  })
+
+  it('accepts only Google Ads report links and retains their independent export scope', () => {
+    const reportUrl = 'https://ads.google.com/aw/campaigns?ocid=123&tableState=example'
+    const board = withWidget(widgetOf('google-report-reading', { reportUrl, token: 'must-not-persist' }))
+    expect(board?.widgets[0].config).toEqual({ reportUrl })
+    for (const invalid of ['https://ads.google.com.evil.test/aw/campaigns', 'http://ads.google.com/aw/campaigns', 'https://secret@ads.google.com/aw/campaigns', 'https://example.com/aw/campaigns']) {
+      expect(withWidget(widgetOf('google-report-reading', { reportUrl: invalid }))?.widgets).toHaveLength(0)
+    }
+    expect(applyMasterScope(board!.widgets[0], { range: 'today', metrics: ['spend'] }).config).toEqual({ reportUrl })
+  })
 })
