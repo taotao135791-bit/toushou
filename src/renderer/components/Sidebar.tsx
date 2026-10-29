@@ -517,17 +517,28 @@ export default function Sidebar() {
     showNotice('sidebar.projectSwitched')
   }
 
-  const deleteHistoryConfirm = useConfirmId((id: string) => {
-    setDeleteFailedHistoryId(null)
-    const info = visibleHistory.find((entry) => entry.id === id)
-    if (info) void handleDeleteHistory(info)
-  })
-  const deleteGlobalConfirm = useConfirmId((uuid: string) => {
-    setDeleteFailedGlobalUuid(null)
-    const row = globalHistory.find((entry) => entry.uuid === uuid)
-    if (row) void handleDeleteGlobal(row)
-  })
-  const deleteSessionConfirm = useConfirmId((id: string) => handleDeleteSession(id))
+  // Modal delete confirmation (same centered-dialog pattern as rename): the
+  // old two-stage inline confirm could not be cancelled once armed and never
+  // said WHAT gets removed — deleting takes every durable copy of the uuid.
+  const [pendingDelete, setPendingDelete] = useState<
+    { kind: 'live' | 'history' | 'global'; id: string; title: string } | null
+  >(null)
+  const confirmPendingDelete = () => {
+    if (!pendingDelete) return
+    const target = pendingDelete
+    setPendingDelete(null)
+    if (target.kind === 'live') {
+      void handleDeleteSession(target.id)
+    } else if (target.kind === 'history') {
+      setDeleteFailedHistoryId(null)
+      const info = visibleHistory.find((entry) => entry.id === target.id)
+      if (info) void handleDeleteHistory(info)
+    } else {
+      setDeleteFailedGlobalUuid(null)
+      const row = globalHistory.find((entry) => entry.uuid === target.id)
+      if (row) void handleDeleteGlobal(row)
+    }
+  }
 
   const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   const archivedSet = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds])
@@ -763,9 +774,7 @@ export default function Sidebar() {
     const status = getSessionStatus({ busy: running, waiting, error: dead, unread })
     const statusLabel = t(`sidebar.status.${status}`)
     // Armed confirms must stay visible even without hover.
-    const actionsForcedVisible =
-      archiveSessionConfirm.confirmingId === session.id ||
-      deleteSessionConfirm.confirmingId === session.id
+    const actionsForcedVisible = archiveSessionConfirm.confirmingId === session.id
     const pinned = pinnedSet.has(session.id)
     // Externally created (Feishu channel) rows keep a brand badge so users can
     // tell where the conversation lives; foreign-workspace rows carry the
@@ -905,19 +914,12 @@ export default function Sidebar() {
           <button
             onClick={(e) => {
               e.stopPropagation()
-              // Two-stage confirm: deleting kills the live pi process.
-              deleteSessionConfirm.click(session.id)
+              // Modal confirm: deleting kills the live pi process and every
+              // durable copy — always ask, always cancellable.
+              setPendingDelete({ kind: 'live', id: session.id, title: session.title })
             }}
-            title={
-              deleteSessionConfirm.confirmingId === session.id
-                ? t('sidebar.deleteConfirm')
-                : t('sidebar.deleteSession')
-            }
-            className={
-              deleteSessionConfirm.confirmingId === session.id
-                ? 'rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
-                : 'rounded-md p-1 text-cream-faint transition-all hover:bg-red-500/15 hover:text-red-500'
-            }
+            title={t('sidebar.deleteSession')}
+            className="rounded-md p-1 text-cream-faint transition-all hover:bg-red-500/15 hover:text-red-500"
           >
             <Trash2 size={12} />
           </button>
@@ -945,9 +947,9 @@ export default function Sidebar() {
       else void handleOpenGlobal(entry.row)
     }
     const confirmDelete = () => {
-      if (entry.kind === 'live') deleteSessionConfirm.click(entry.session.id)
-      else if (entry.kind === 'history') deleteHistoryConfirm.click(entry.info.id)
-      else deleteGlobalConfirm.click(entry.row.uuid)
+      if (entry.kind === 'live') setPendingDelete({ kind: 'live', id: entry.session.id, title: entry.session.title })
+      else if (entry.kind === 'history') setPendingDelete({ kind: 'history', id: entry.info.id, title: entry.info.title })
+      else setPendingDelete({ kind: 'global', id: entry.row.uuid, title: entry.row.title })
     }
     return (
       <div
@@ -990,7 +992,6 @@ export default function Sidebar() {
 
   const renderHistoryRow = (info: HistorySessionDescriptor) => {
     const resuming = resumingHistoryId === info.id
-    const confirming = deleteHistoryConfirm.confirmingId === info.id
     const failed = restoreFailedHistoryId === info.id
     return (
       <div
@@ -1036,14 +1037,10 @@ export default function Sidebar() {
           <button
             onClick={(e) => {
               e.stopPropagation()
-              deleteHistoryConfirm.click(info.id)
+              setPendingDelete({ kind: 'history', id: info.id, title: info.title })
             }}
-            title={confirming ? t('history.deleteConfirm') : t('history.delete')}
-            className={
-              confirming
-                ? 'shrink-0 rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
-                : `${iconBtn} hover:bg-red-500/15 hover:text-red-500`
-            }
+            title={t('history.delete')}
+            className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
           >
             <Trash2 size={12} />
           </button>
@@ -1061,7 +1058,6 @@ export default function Sidebar() {
     // Only the row being resumed greys and locks — one pending resume must
     // not freeze every cross-project row in the list.
     const resuming = resumingGlobalUuid === row.uuid
-    const confirming = deleteGlobalConfirm.confirmingId === row.uuid
     return (
       <div
         key={`global:${row.uuid}`}
@@ -1099,14 +1095,10 @@ export default function Sidebar() {
         <button
           onClick={(e) => {
             e.stopPropagation()
-            deleteGlobalConfirm.click(row.uuid)
+            setPendingDelete({ kind: 'global', id: row.uuid, title: row.title })
           }}
-          title={confirming ? t('history.deleteConfirm') : t('history.delete')}
-          className={
-            confirming
-              ? 'shrink-0 rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
-              : `${iconBtn} hover:bg-red-500/15 hover:text-red-500`
-          }
+          title={t('history.delete')}
+          className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
         >
           <Trash2 size={12} />
         </button>
@@ -1566,6 +1558,47 @@ export default function Sidebar() {
                 className="rounded-full bg-cream px-3 py-1 text-[11.5px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
               >
                 {t('sidebar.renameSave')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingDelete && (
+        // Same centered-dialog pattern as rename, destructive variant. The
+        // backdrop keeps the dialog open (a stray click must not delete);
+        // explicit 取消 / Escape cancels, 删除 confirms.
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setPendingDelete(null)
+          }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-label={t('sidebar.deleteDialog.title')}
+            className="w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-1 text-[12px] font-medium text-cream">{t('sidebar.deleteDialog.title')}</div>
+            <p className="text-[12px] leading-5 text-cream-dim">
+              {t('sidebar.deleteDialog.body', {
+                title: pendingDelete.title === 'Untitled' ? t('history.untitled') : pendingDelete.title
+              })}
+            </p>
+            <div className="mt-3 flex justify-end gap-1.5">
+              <button
+                autoFocus
+                onClick={() => setPendingDelete(null)}
+                className="rounded-full border border-line px-3 py-1 text-[11.5px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
+              >
+                {t('sidebar.deleteDialog.cancel')}
+              </button>
+              <button
+                onClick={confirmPendingDelete}
+                className="rounded-full bg-red-500 px-3 py-1 text-[11.5px] font-medium text-white transition hover:bg-red-600"
+              >
+                {t('sidebar.deleteDialog.confirm')}
               </button>
             </div>
           </div>

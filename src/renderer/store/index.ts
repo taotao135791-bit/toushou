@@ -616,7 +616,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const guarded = {
         ...merged,
         title,
-        lastActivityAt: previous?.lastActivityAt ?? merged.lastActivityAt
+        lastActivityAt: previous?.lastActivityAt ?? merged.lastActivityAt,
+        // Renderer-owned pending stamp must also survive registry re-reports.
+        pendingActivityAt: previous?.pendingActivityAt
       }
       const same =
         previous &&
@@ -628,7 +630,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous.sessionFile === guarded.sessionFile &&
         previous.resumedHistoryId === guarded.resumedHistoryId &&
         previous.origin === guarded.origin &&
-        previous.remoteReadonly === guarded.remoteReadonly
+        previous.remoteReadonly === guarded.remoteReadonly &&
+        previous.pendingActivityAt === guarded.pendingActivityAt
       const nextCurrentSessionId = select ? guarded.id : state.currentSessionId
       if (same && nextCurrentSessionId === state.currentSessionId) return state
       changed = true
@@ -721,6 +724,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set((state) => ({
       currentSessionId,
+      // Leaving a session commits its pending interaction stamp — the row
+      // re-floats to the top only now, never while the session is open.
+      sessions: state.sessions.map((s) =>
+        s.pendingActivityAt !== undefined && s.id !== currentSessionId
+          ? { ...s, lastActivityAt: s.pendingActivityAt, pendingActivityAt: undefined }
+          : s
+      ),
       // Selecting a session marks it read
       unreadSessionIds:
         currentSessionId && state.unreadSessionIds[currentSessionId]
@@ -1195,8 +1205,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       const current = state.sessions.find((session) => session.id === sessionId)
       if (!current) return state
       return {
+        // Only a PENDING stamp: the sidebar row must not re-float while the
+        // session is still open — setCurrentSessionId commits it on switch-away.
         sessions: state.sessions.map((s) =>
-          s.id === sessionId ? { ...s, lastActivityAt: Date.now() } : s
+          s.id === sessionId ? { ...s, pendingActivityAt: Date.now() } : s
         )
       }
     }),
