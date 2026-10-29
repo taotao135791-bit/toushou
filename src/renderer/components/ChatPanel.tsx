@@ -236,6 +236,8 @@ export default function ChatPanel() {
         content: trimmed,
         images: images?.map(({ data, mimeType }) => ({ data, mimeType }))
       })
+      // Real interaction: refresh sidebar recency. Mere viewing must not.
+      store.touchSession(sessionId)
       // Snapshot the worktree BEFORE the prompt can make its first edit, so the
       // checkpoint really is the "before" state of this turn. A checkpoint
       // failure must never swallow the prompt: send it, but tell the user

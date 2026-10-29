@@ -408,7 +408,9 @@ export default function Sidebar() {
         (!session.title || session.title === projectName) && info.title !== 'Untitled'
           ? info.title
           : session.title
-      addSession({ ...session, title })
+      // Opening is not interacting: the resumed row keeps the ORIGINAL
+      // conversation's recency until the user actually sends something.
+      addSession({ ...session, title, lastActivityAt: info.timestamp })
       setMessages(session.id, restored)
       // A resumed session is now represented by its live row. Its old opaque
       // history capability must not leave a duplicate historical row behind.
@@ -605,7 +607,8 @@ export default function Sidebar() {
       entries.push({
         kind: 'live',
         key: `live:${s.id}`,
-        timestamp: s.createdAt,
+        // Recency = last REAL interaction; viewing alone must not float a row.
+        timestamp: s.lastActivityAt ?? s.createdAt,
         title: s.title,
         pinned: pinnedSet.has(s.id),
         projectName: basename(s.cwd) || s.cwd,
@@ -815,8 +818,8 @@ export default function Sidebar() {
           </div>
           <div className="truncate text-[11px] leading-4 text-cream-faint">
             {foreignWorkspace
-              ? `${basename(session.cwd) || session.cwd} · ${formatRelativeTime(session.createdAt, language)}`
-              : formatRelativeTime(session.createdAt, language)}
+              ? `${basename(session.cwd) || session.cwd} · ${formatRelativeTime(session.lastActivityAt ?? session.createdAt, language)}`
+              : formatRelativeTime(session.lastActivityAt ?? session.createdAt, language)}
           </div>
         </div>
         {/* min-w-0 + shrink: at the sidebar's min width the fixed action
