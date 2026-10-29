@@ -240,10 +240,31 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
             )}
           </div>
           {message.failed && (
-            <div className="mt-1 flex justify-end">
+            <div className="mt-1 flex items-center justify-end gap-1.5">
               <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-px text-[10px] font-medium text-red-500">
                 {t('msg.sendFailed')}
               </span>
+              {message.role === 'user' && (
+                <button
+                  onClick={() => {
+                    // One-click resend through the composer's prefill+autosend
+                    // path — same pipeline as a fresh send (checkpoint, tags,
+                    // queue handling). A half-written draft is kept and the
+                    // retry text lands below it, mirroring edit-and-resend.
+                    const store = useAppStore.getState()
+                    const existing = sessionId ? store.composerDrafts[sessionId]?.text : undefined
+                    const merged =
+                      existing && existing.trim()
+                        ? `${existing}\n\n${message.content}`
+                        : String(message.content ?? '')
+                    store.setComposerAutosend(true)
+                    store.setComposerPrefill(merged)
+                  }}
+                  className="rounded-full border border-line px-2 py-px text-[10px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
+                >
+                  {t('msg.retry')}
+                </button>
+              )}
             </div>
           )}
           {/* hover action bar: per-turn model/thinking tag, rollback, copy, edit-and-resend */}

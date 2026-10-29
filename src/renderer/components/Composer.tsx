@@ -1039,7 +1039,11 @@ export default memo(function Composer({
                           </span>
                         )}
                         <span className="ml-auto shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-cream-faint">
-                          {item.builtin ? t('composer.slashBuiltin') : item.source === 'app' ? '应用' : item.source}
+                          {item.builtin
+                            ? t('composer.slashBuiltin')
+                            : item.source === 'app'
+                              ? t('composer.slashApp')
+                              : item.source}
                         </span>
                       </button>
                     )

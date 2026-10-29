@@ -15,7 +15,6 @@ import {
   Settings2,
   BarChart3,
   Globe2,
-  FileText,
   Table2
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
@@ -404,7 +403,7 @@ export default function ChatPanel() {
             className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[10px] font-medium text-cream-faint"
             title={t('sidebar.feishuSession')}
           >
-            飞书
+            {t('chat.feishuChip')}
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-cream-dim">
@@ -536,10 +535,9 @@ export default function ChatPanel() {
                     <Globe2 size={15} aria-hidden="true" />
                     <span>{t('home.quick.browser')}</span>
                   </button>
-                  <button type="button" onClick={() => void openOfficeFile()}>
-                    <FileText size={15} aria-hidden="true" />
-                    <span>{t('home.quick.files')}</span>
-                  </button>
+                  {/* One office entry: the "files" and "sheets" quick buttons used
+                      to call the same dialog — the office panel is a workbook
+                      editor, so the single button says sheets. */}
                   <button type="button" onClick={() => void openOfficeFile()}>
                     <Table2 size={15} aria-hidden="true" />
                     <span>{t('home.quick.sheets')}</span>

@@ -29,7 +29,7 @@ import {
 } from 'lucide-react'
 import { HistorySessionDescriptor, HistorySessionRow, SessionSortOrder } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
-import { useT } from '../i18n'
+import { useT, modShortcut } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
 import { cleanSessionName } from '@shared/promptTitle'
 import {
@@ -720,7 +720,7 @@ export default function Sidebar() {
         className="shrink-0 rounded border border-line px-1 text-[9px] font-medium leading-[14px] text-cream-faint"
         title={origin === 'feishu' ? t('sidebar.feishuSession') : t('sidebar.taskSession')}
       >
-        {origin === 'feishu' ? '飞书' : '任务'}
+        {origin === 'feishu' ? t('sidebar.badge.feishu') : t('sidebar.badge.task')}
       </span>
     )
   }
@@ -1189,7 +1189,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <nav className="space-y-0.5 px-3" aria-label="主要导航">
+      <nav className="space-y-0.5 px-3" aria-label={t('sidebar.primaryNav')}>
         {/* 新建会话 = 回首页 + 清空选中。会话只在第一条消息发出时创建（⌘N 同效）。 */}
         <button
           onClick={() => {
@@ -1200,7 +1200,7 @@ export default function Sidebar() {
         >
           <MessageSquare size={14} className="shrink-0" />
           {t('sidebar.newChat')}
-          <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">⌘N</span>
+          <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">{modShortcut('N')}</span>
         </button>
         <button
           onClick={() => navigate('/plugins')}
