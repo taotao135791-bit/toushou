@@ -11,6 +11,23 @@ export function cleanSessionName(name: string): string {
 }
 
 /**
+ * Auto-names collide often (same task run twice, same first prompt). Return
+ * the candidate unchanged when free, else append " 2", " 3", … while staying
+ * inside the 60-char cap (the base is shortened, never the number).
+ */
+export function dedupeSessionTitle(candidate: string, taken: Iterable<string>): string {
+  const used = new Set(taken)
+  if (!used.has(candidate)) return candidate
+  for (let n = 2; n < 100; n++) {
+    const suffix = ` ${n}`
+    const base = Array.from(candidate).slice(0, 60 - suffix.length).join('').trimEnd()
+    const next = `${base}${suffix}`
+    if (!used.has(next)) return next
+  }
+  return candidate
+}
+
+/**
  * Heuristic session-title summary of a user's first prompt: strips markdown
  * structure, collapses URLs (they name nothing at sidebar width), prefers
  * the first natural clause and caps the result for the sidebar column.
@@ -30,6 +47,18 @@ export function summarizePromptTitle(text: string, urlLabel = 'link'): string {
     // identifiers are more common in prompts than _emphasis_.
     .replace(/[*~#>]+/g, ' ')
   t = t.replace(/\s+/g, ' ').trim()
+  if (!t) return ''
+  // Leading request filler names nothing: strip stacked openers (请帮我看看 →
+  // the actual topic). Anchored, so 帮我 mid-sentence is never touched.
+  for (let i = 0; i < 3; i++) {
+    const next = t
+      .replace(/^(请你|麻烦你|请|麻烦)[ ,，]*/, '')
+      .replace(/^(帮我|帮忙|help me|please|can you|could you)[ ,，，]*/i, '')
+      .replace(/^(看看|看一下|瞅一下|处理一下|弄一下|搞一下)[ ,，]*/, '')
+      .trim()
+    if (next === t) break
+    t = next
+  }
   if (!t) return ''
   // Prefer the first natural clause (fullwidth ，、 break clauses too);
   // a degenerate split (e.g. "3.5") falls back to the whole text instead

@@ -7,7 +7,7 @@ import { parseFbReportReference } from '../shared/fbReportReference'
 import { validGoogleReportUrl } from '../shared/googleReport'
 import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
 import { importGoogleReportFile, readGoogleReportReadings } from './googleReportReadings'
-import { cleanSessionName } from '../shared/promptTitle'
+import { cleanSessionName, dedupeSessionTitle } from '../shared/promptTitle'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
 import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
 import {
@@ -361,12 +361,24 @@ function broadcastExternalSession(descriptor: ExternalSessionDescriptor): void {
 async function nameSessionDurally(sessionId: string, name: string): Promise<boolean> {
   const clean = cleanSessionName(name)
   if (!clean) return false
-  const ok = await setSessionName(sessionId, clean)
+  // Two sessions must never share a title: the overlay (other files) and the
+  // live registry (rows without a durable file yet) both count as taken.
+  const self = getSession(sessionId)
+  const selfFile = self?.sessionFile ?? self?.resumeFrom ?? null
+  const taken: string[] = []
+  for (const [file, title] of Object.entries(getStore('sessionTitles') ?? {})) {
+    if (file !== selfFile && typeof title === 'string') taken.push(title)
+  }
+  for (const session of listSessions()) {
+    if (session.id !== sessionId) taken.push(session.title)
+  }
+  const unique = dedupeSessionTitle(clean, taken)
+  const ok = await setSessionName(sessionId, unique)
   if (!ok) return false
-  const file = markSessionTitle(sessionId, clean)
+  const file = markSessionTitle(sessionId, unique)
   if (file) {
     const titles = { ...(getStore('sessionTitles') ?? {}) }
-    titles[file] = clean
+    titles[file] = unique
     setStore('sessionTitles', titles)
   }
   return true
@@ -1274,6 +1286,11 @@ export function registerIpc() {
             throw error
           }
           if (!resumed) return null
+          // The live row must never flash the spawn default (project dir name):
+          // the durable overlay already knows this file's name — apply it
+          // before the renderer ever sees the session.
+          const overlayTitle = (getStore('sessionTitles') ?? {})[filePath]
+          if (overlayTitle) resumed.session.title = overlayTitle
           // The runtime keeps the file path in Main for --session and durable
           // metadata reconstruction. The renderer needs only the opaque
           // history capability to merge the resulting live row.
