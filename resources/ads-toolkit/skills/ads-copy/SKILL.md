@@ -35,7 +35,10 @@ description: Google App Campaign 广告文案生成：按产品接入表收集�
 按下方规格与规则产出素材。
 
 **生成引擎（按顺序判断）：**
-1. 投手桌面端内且有 `toushou_copy_generate` 工具 → **用它生成**（文案模型池与对话模型完全独立）：把完整生成指令（产品事实 + 规格 + 语言市场 + 数量）作为 prompt，本技能的角色设定作为 system。默认全池并发生成（一次拿多个模型的候选再统一评分）；用户指定了模型就传 model；同一产品多次生成传 agentId=产品名 保持模型稳定。池为空时提醒用户在「连接 → 文案模型池」添加模型，并先用当前对话模型继续交付。
+1. 先看 `toushou_copy_models_list` 返回的 mode：
+   - mode = chat → **跟随对话模型**：不调用工具，直接由当前对话模型按本流程（含下述评分自检）生成。
+   - mode = pool → **用 `toushou_copy_generate_batch`**：把产品接入表映射为 product（language/benefits/brandTerms/tone…）+ categories（数量）+ 可选 targets（用户提了门槛就传）。引擎自动完成：全池并发出稿 → 确定性五维评分（达标线硬卡，超字节/违禁直接淘汰）→ 不达标自动重试并轮换模型（带定向修复提示）→ Top-N 优选去重。**返回的 items 已是成品**：按"输出格式"表格原样呈现（含分数与字节），不要改写文案；用 score_control/retry_history 向用户说明质量与重试情况；provider_errors 里的失败模型如实转述。同一产品多次生成传 agentId=产品名。池为空时提醒用户在「连接 → 文案模型池」添加模型，并先用当前对话模型继续交付。
+   - 其他技能需要通用池生成时用 `toushou_copy_generate`（任意 prompt 的单次池调用，每次独立）。
 2. 其他环境（无该工具）→ 直接由当前对话模型按本流程生成。
 
 ### 第三步：评分自检

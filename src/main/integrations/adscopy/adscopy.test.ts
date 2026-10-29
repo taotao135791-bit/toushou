@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
 }))
 
 import { AdsCopyModelStore, validateAdsCopyModelInput } from './AdsCopyModelStore'
-import { callCopyModel, pickStablePoolMember } from './copyGenerate'
+import { callCopyModel, discoverModels, pickStablePoolMember } from './copyGenerate'
 
 let dir: string
 
@@ -69,6 +69,19 @@ describe('AdsCopyModelStore', () => {
     const after = await store.remove(saved.providers[0].id)
     expect(after.providers).toHaveLength(0)
     expect(after.pool).toHaveLength(0)
+  })
+
+  it('defaults to chat mode and switches without losing the pool', async () => {
+    const store = new AdsCopyModelStore()
+    expect((await store.load()).mode).toBe('chat')
+    const saved = await store.upsert({ name: 'a', baseUrl: 'https://a.example.com', protocol: 'openai', model: 'm', apiKey: 'k' })
+    await store.setPool([saved.providers[0].id])
+    await store.setMode('pool')
+    const reloaded = await store.load()
+    expect(reloaded.mode).toBe('pool')
+    expect(reloaded.pool).toHaveLength(1)
+    await store.setMode('chat')
+    expect((await store.load()).mode).toBe('chat')
   })
 })
 
@@ -133,5 +146,33 @@ describe('pickStablePoolMember', () => {
     expect(pickStablePoolMember([], 'x')).toBeNull()
     const picks = new Set(['产品一', '产品二', '产品三', '产品四'].map((key) => pickStablePoolMember(pool, key)))
     expect(picks.size).toBeGreaterThan(1)
+  })
+})
+
+describe('discoverModels', () => {
+  const relay = { baseUrl: 'https://relay.example.com/v1', protocol: 'openai' as const, apiKey: 'sk-relay' }
+  const jsonResponse = (body: unknown, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) })
+
+  it('lists model ids from an OpenAI-compatible relay station', async () => {
+    let seen: { url: string; headers: Record<string, string> } | null = null
+    const fetchImpl = async (url: string, init: { headers: Record<string, string>; body: string }) => {
+      seen = { url, headers: init.headers }
+      return jsonResponse({ data: [{ id: 'gpt-4o-mini' }, { id: ' claude-3.5 ' }, { id: '' }, { nope: true }] })
+    }
+    const result = await discoverModels(fetchImpl, relay)
+    expect(result).toEqual({ ok: true, models: ['gpt-4o-mini', 'claude-3.5'] })
+    expect(seen!.url).toBe('https://relay.example.com/v1/models')
+    expect(seen!.headers.authorization).toBe('Bearer sk-relay')
+  })
+
+  it('uses the anthropic models endpoint and surfaces failures', async () => {
+    const anthropic = { ...relay, protocol: 'anthropic' as const, baseUrl: 'https://api.anthropic.com' }
+    const fetchImpl = async (url: string) => {
+      expect(url).toBe('https://api.anthropic.com/v1/models')
+      return jsonResponse({ data: [{ id: 'claude-x' }] })
+    }
+    expect(await discoverModels(fetchImpl, anthropic)).toEqual({ ok: true, models: ['claude-x'] })
+    expect(await discoverModels(async () => jsonResponse({}, 403), anthropic)).toEqual({ ok: false, error: 'http-403' })
+    expect(await discoverModels(async () => jsonResponse({ data: [] }), relay)).toEqual({ ok: false, error: 'empty-list' })
   })
 })

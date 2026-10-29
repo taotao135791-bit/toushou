@@ -26,6 +26,11 @@ export interface AdsCopyModelPool {
   providers: AdsCopyModelProvider[]
   /** Ordered provider ids forming the concurrent pool. */
   pool: string[]
+  /**
+   * 'chat' = follow the conversation model (the tool stays out of the way);
+   * 'pool' = generate on the user-configured pool. Users switch freely.
+   */
+  mode: 'chat' | 'pool'
 }
 
 const MAX_NAME = 60
@@ -63,17 +68,26 @@ export function validateAdsCopyModelInput(raw: {
 }
 
 export class AdsCopyModelStore {
-  private readonly filePath: string
+  private readonly filePathOverride?: string
   private readonly backend: SecretBackend
+  private resolvedPath: string | null = null
 
   constructor(options: { filePath?: string; backend?: SecretBackend } = {}) {
-    this.filePath = options.filePath ?? path.join(app.getPath('userData'), 'ads-copy-models.bin')
+    this.filePathOverride = options.filePath
     this.backend = options.backend ?? electronBackend
+  }
+
+  /** Resolved lazily so module-level construction never races app.getPath. */
+  private get filePath(): string {
+    if (!this.resolvedPath) {
+      this.resolvedPath = this.filePathOverride ?? path.join(app.getPath('userData'), 'ads-copy-models.bin')
+    }
+    return this.resolvedPath
   }
 
   async load(): Promise<AdsCopyModelPool> {
     try {
-      if (!this.backend.isAvailable()) return { providers: [], pool: [] }
+      if (!this.backend.isAvailable()) return { providers: [], pool: [], mode: 'chat' }
       const encoded = await readFile(this.filePath, 'utf8')
       const raw = JSON.parse(this.backend.decrypt(Buffer.from(encoded, 'base64'))) as Record<string, unknown>
       const providers: AdsCopyModelProvider[] = Array.isArray(raw.providers)
@@ -85,9 +99,10 @@ export class AdsCopyModelStore {
       const pool = Array.isArray(raw.pool)
         ? (raw.pool as unknown[]).filter((id): id is string => typeof id === 'string' && known.has(id))
         : []
-      return { providers, pool }
+      const mode = raw.mode === 'pool' ? 'pool' : 'chat'
+      return { providers, pool, mode }
     } catch {
-      return { providers: [], pool: [] }
+      return { providers: [], pool: [], mode: 'chat' }
     }
   }
 
@@ -129,13 +144,14 @@ export class AdsCopyModelStore {
         providers: current.providers.map((provider) =>
           provider.id === id ? { ...provider, ...input, id, createdAt: existing.createdAt } : provider
         ),
-        pool: current.pool
+        pool: current.pool,
+        mode: current.mode
       }
       await this.persist(next)
       return next
     }
     const provider: AdsCopyModelProvider = { id: crypto.randomUUID(), ...input, createdAt: now }
-    const next: AdsCopyModelPool = { providers: [...current.providers, provider], pool: current.pool }
+    const next: AdsCopyModelPool = { providers: [...current.providers, provider], pool: current.pool, mode: current.mode }
     await this.persist(next)
     return next
   }
@@ -144,7 +160,8 @@ export class AdsCopyModelStore {
     const current = await this.load()
     const next: AdsCopyModelPool = {
       providers: current.providers.filter((provider) => provider.id !== id),
-      pool: current.pool.filter((poolId) => poolId !== id)
+      pool: current.pool.filter((poolId) => poolId !== id),
+      mode: current.mode
     }
     await this.persist(next)
     return next
@@ -157,7 +174,14 @@ export class AdsCopyModelStore {
     for (const id of poolIds) {
       if (typeof id === 'string' && known.has(id) && !deduped.includes(id)) deduped.push(id)
     }
-    const next: AdsCopyModelPool = { providers: current.providers, pool: deduped }
+    const next: AdsCopyModelPool = { providers: current.providers, pool: deduped, mode: current.mode }
+    await this.persist(next)
+    return next
+  }
+
+  async setMode(mode: 'chat' | 'pool'): Promise<AdsCopyModelPool> {
+    const current = await this.load()
+    const next: AdsCopyModelPool = { ...current, mode: mode === 'pool' ? 'pool' : 'chat' }
     await this.persist(next)
     return next
   }

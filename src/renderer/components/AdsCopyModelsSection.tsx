@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Loader2, PenLine, Plus, Trash2, Zap } from 'lucide-react'
+import { ClipboardPaste, Loader2, PenLine, Plus, Trash2, Zap } from 'lucide-react'
 import { useT } from '../i18n'
+import { parseRelayBlock } from '../lib/relayBlockParse'
 import { ConfirmDialog, type ConfirmDialogRequest } from './ConfirmDialog'
 
 interface AdsCopyModelRow {
@@ -25,12 +26,16 @@ const actionClass =
  */
 export default function AdsCopyModelsSection() {
   const t = useT()
+  const [mode, setMode] = useState<'chat' | 'pool'>('chat')
   const [rows, setRows] = useState<AdsCopyModelRow[] | null>(null)
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [protocol, setProtocol] = useState<'openai' | 'anthropic'>('openai')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [discovered, setDiscovered] = useState<string[]>([])
+  const [discovering, setDiscovering] = useState(false)
+  const [discoverError, setDiscoverError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [testing, setTesting] = useState<string | null>(null)
@@ -40,9 +45,52 @@ export default function AdsCopyModelsSection() {
   const refresh = useCallback(() => {
     window.electronAPI
       .adsCopyModelsList()
-      .then(setRows)
+      .then((snapshot) => {
+        setMode(snapshot.mode)
+        setRows(snapshot.providers)
+      })
       .catch(() => setRows([]))
   }, [])
+
+  const switchMode = async (next: 'chat' | 'pool') => {
+    if (next === mode) return
+    await window.electronAPI.adsCopyModelsSetMode(next)
+    refresh()
+  }
+
+  const discover = async () => {
+    if (discovering || !baseUrl.trim() || !apiKey.trim()) return
+    setDiscovering(true)
+    setDiscoverError(null)
+    setDiscovered([])
+    try {
+      const result = await window.electronAPI.adsCopyModelsDiscover({ baseUrl, protocol, apiKey })
+      if (result.ok && result.models) setDiscovered(result.models)
+      else setDiscoverError(result.error ?? 'discover-failed')
+    } catch {
+      setDiscoverError('discover-failed')
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const pasteConnectBlock = async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      const parsed = parseRelayBlock(text)
+      if (!parsed) {
+        setDiscoverError('parse-failed')
+        return
+      }
+      if (parsed.baseUrl) setBaseUrl(parsed.baseUrl)
+      if (parsed.apiKey) setApiKey(parsed.apiKey)
+      if (parsed.model) setModel(parsed.model)
+      if (parsed.protocol) setProtocol(parsed.protocol)
+      setDiscoverError(null)
+    } catch {
+      setDiscoverError('parse-failed')
+    }
+  }
 
   useEffect(() => {
     refresh()
@@ -103,6 +151,22 @@ export default function AdsCopyModelsSection() {
       </div>
       <p className="mb-3 text-[12px] leading-5 text-cream-faint">{t('adsCopy.section.subtitle')}</p>
 
+      <div className="mb-3 inline-flex rounded-full border border-line bg-ink-850 p-0.5 text-[12px]">
+        {(['chat', 'pool'] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => void switchMode(option)}
+            className={`rounded-full px-3 py-1 transition ${
+              mode === option ? 'bg-cream font-medium text-ink-950' : 'text-cream-dim hover:text-cream'
+            }`}
+          >
+            {t(option === 'chat' ? 'adsCopy.mode.chat' : 'adsCopy.mode.pool')}
+          </button>
+        ))}
+      </div>
+      {mode === 'chat' && <p className="mb-3 text-[11.5px] text-cream-faint">{t('adsCopy.mode.chatNote')}</p>}
+
       {rows === null ? (
         <Loader2 size={14} className="animate-spin text-cream-faint" />
       ) : (
@@ -160,7 +224,12 @@ export default function AdsCopyModelsSection() {
 
           <div className="mt-3 grid grid-cols-1 gap-2 rounded-xl border border-line bg-ink-850/40 p-3 md:grid-cols-2">
             <input className={inputClass} placeholder={t('adsCopy.form.name')} value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
-            <input className={inputClass} placeholder={t('adsCopy.form.baseUrl')} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} maxLength={300} />
+            <div className="flex gap-1.5">
+              <input className={inputClass} placeholder={t('adsCopy.form.baseUrl')} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} maxLength={300} />
+              <button type="button" className={actionClass} onClick={() => void pasteConnectBlock()} title={t('adsCopy.pasteBlock')}>
+                <ClipboardPaste size={12} />
+              </button>
+            </div>
             <select
               className={inputClass}
               value={protocol}
@@ -170,7 +239,37 @@ export default function AdsCopyModelsSection() {
               <option value="openai">OpenAI 兼容</option>
               <option value="anthropic">Anthropic</option>
             </select>
-            <input className={inputClass} placeholder={t('adsCopy.form.model')} value={model} onChange={(e) => setModel(e.target.value)} maxLength={120} />
+            <div className="flex gap-1.5">
+              <input
+                className={inputClass}
+                placeholder={t('adsCopy.form.model')}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                maxLength={120}
+                list="ads-copy-discovered-models"
+              />
+              <button
+                type="button"
+                className={actionClass}
+                disabled={discovering || !baseUrl.trim() || !apiKey.trim()}
+                onClick={() => void discover()}
+                title={t('adsCopy.discover')}
+              >
+                {discovering ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+                {t('adsCopy.discover')}
+              </button>
+            </div>
+            <datalist id="ads-copy-discovered-models">
+              {discovered.map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+            {discovered.length > 0 && (
+              <p className="text-[11px] text-cream-faint md:col-span-2">{t('adsCopy.discoveredCount', { count: discovered.length })}</p>
+            )}
+            {discoverError && (
+              <p className="text-[11px] text-red-500 md:col-span-2">{t('adsCopy.testFailed', { detail: discoverError })}</p>
+            )}
             <input
               className={inputClass}
               type="password"
