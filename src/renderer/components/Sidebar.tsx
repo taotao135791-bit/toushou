@@ -66,6 +66,15 @@ export default function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const t = useT()
+  /**
+   * omp spawns untitled sessions with the project-dir name as an internal
+   * default. The list must never show that raw name — a fresh chat displays
+   * the localized placeholder until first-turn auto-naming gives it a real
+   * title (same projectName==unnamed convention as maybeNameSession), and
+   * 'Untitled' keeps its existing mapping.
+   */
+  const displayTitle = (title: string, projectName: string): string =>
+    title === projectName ? t('sidebar.newChat') : title === 'Untitled' ? t('history.untitled') : title
   // Atomic slices: streaming message deltas land only while a search is open
   // (the search reads transcript tails), never on the default grouped view.
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
@@ -796,7 +805,7 @@ export default function Sidebar() {
         }}
         role="button"
         tabIndex={0}
-        aria-label={`${session.title}, ${statusLabel}`}
+        aria-label={`${displayTitle(session.title, basename(session.cwd) || session.cwd)}, ${statusLabel}`}
         className={`group flex cursor-pointer items-center gap-2 rounded-lg border border-transparent px-2.5 py-[6px] transition-all duration-150 ease-standard ${
           active ? 'bg-selected' : 'hover:bg-overlay'
         }`}
@@ -822,7 +831,10 @@ export default function Sidebar() {
               dead ? 'text-cream-faint line-through' : 'text-cream'
             }`}
           >
-            <span className="min-w-0 truncate text-[13px] font-medium leading-5">{session.title}</span>
+            {/* Untitled new chats show the placeholder — see displayTitle. */}
+            <span className="min-w-0 truncate text-[13px] font-medium leading-5">
+              {displayTitle(session.title, basename(session.cwd) || session.cwd)}
+            </span>
             {renderOriginBadge(session.origin)}
           </div>
           <div className="truncate text-[11px] leading-4 text-cream-faint">
@@ -960,7 +972,7 @@ export default function Sidebar() {
       >
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] leading-5 text-cream-faint">
-            {entry.title === 'Untitled' ? t('history.untitled') : entry.title}
+            {displayTitle(entry.title, entry.projectName)}
           </div>
           <div className="truncate text-[11px] leading-4 text-cream-faint/70">
             {`${entry.projectName} · ${formatRelativeTime(entry.timestamp, language)}`}
@@ -1013,7 +1025,7 @@ export default function Sidebar() {
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
-              {info.title === 'Untitled' ? t('history.untitled') : info.title}
+              {displayTitle(info.title, basename(currentWorkspace?.realPath ?? ''))}
             </span>
             {renderOriginBadge(info.origin)}
           </div>
@@ -1078,7 +1090,7 @@ export default function Sidebar() {
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
-              {row.title === 'Untitled' ? t('history.untitled') : row.title}
+              {displayTitle(row.title, basename(row.cwd) || row.cwd)}
             </span>
             {renderOriginBadge(row.origin)}
           </div>
