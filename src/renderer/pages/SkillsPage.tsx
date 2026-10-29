@@ -67,17 +67,19 @@ export default function SkillsPage() {
   >(null)
   const [viewerFailed, setViewerFailed] = useState(false)
   const [githubOpen, setGithubOpen] = useState(false)
+  const [deleting, setDeleting] = useState<SkillEntry | null>(null)
   useEffect(() => {
-    if (!githubOpen && !viewer) return
+    if (!githubOpen && !viewer && deleting === null) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.isComposing) return
       event.preventDefault()
       setGithubOpen(false)
       setViewer(null)
+      setDeleting(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [githubOpen, viewer])
+  }, [githubOpen, viewer, deleting])
   const [githubUrl, setGithubUrl] = useState('')
   const [githubBusy, setGithubBusy] = useState(false)
   const [githubError, setGithubError] = useState<string | null>(null)
@@ -89,7 +91,6 @@ export default function SkillsPage() {
   const [githubDone, setGithubDone] = useState<{ imported: number; skipped: number } | null>(null)
   const [launchingId, setLaunchingId] = useState<string | null>(null)
   const [picker, setPicker] = useState<SkillEntry | null>(null)
-  const [deleting, setDeleting] = useState<SkillEntry | null>(null)
   const [deleteFailed, setDeleteFailed] = useState(false)
   const sessions = useAppStore((s) => s.sessions)
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)

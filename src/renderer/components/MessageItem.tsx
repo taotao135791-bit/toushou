@@ -19,7 +19,7 @@ import {
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { formatSeconds } from '../lib/time'
-import { useConfirm } from '../lib/confirmClick'
+import { ConfirmDialog } from './ConfirmDialog'
 import { splitConnectionMarkers } from '../lib/connectionMarkers'
 import ConnectionGuideCard from './ConnectionGuideCard'
 import Markdown from './Markdown'
@@ -186,10 +186,9 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
     }
   }
 
-  // Two-stage confirm, same pattern as the packages page uninstall button.
-  const { confirming: confirmRollback, click: handleRollbackClick } = useConfirm(() => {
-    if (!restoring) void runRollback()
-  })
+  // Rollback restores workspace files to this turn's snapshot — newer edits
+  // are overwritten. Centered dialog with an explicit cancel.
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false)
 
   if (isUser) {
     const isSteer = message.kind === 'steer'
@@ -271,20 +270,10 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
           <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-all group-hover:opacity-100">
             {checkpointAvailable && sessionId && index >= 0 && (
               <button
-                onClick={handleRollbackClick}
+                onClick={() => setRollbackConfirmOpen(true)}
                 disabled={restoring}
-                title={
-                  restoring
-                    ? t('rollback.restoring')
-                    : confirmRollback
-                      ? t('rollback.confirm')
-                      : t('rollback.button')
-                }
-                className={`rounded-md p-1 transition-all disabled:opacity-60 ${
-                  confirmRollback
-                    ? 'bg-red-500/10 text-red-500 opacity-100'
-                    : 'text-cream-faint hover:bg-overlay hover:text-cream'
-                }`}
+                title={restoring ? t('rollback.restoring') : t('rollback.button')}
+                className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay hover:text-cream disabled:opacity-60"
               >
                 {restoring ? (
                   <Loader2 size={12} className="animate-spin" />
@@ -327,6 +316,20 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
             <SaveMessageToTaskDialog
               content={message.content}
               onClose={() => setTaskDialogOpen(false)}
+            />
+          )}
+          {rollbackConfirmOpen && (
+            <ConfirmDialog
+              request={{
+                title: t('rollback.dialog.title'),
+                body: t('rollback.dialog.body'),
+                confirmLabel: t('rollback.button'),
+                danger: true,
+                onConfirm: () => {
+                  if (!restoring) void runRollback()
+                }
+              }}
+              onClose={() => setRollbackConfirmOpen(false)}
             />
           )}
         </div>

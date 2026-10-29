@@ -6,7 +6,7 @@ import { KERNEL_VIRAL_SKILL_ID } from '@shared/skills'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import { showNotice } from '../lib/notice'
-import { useConfirmId } from '../lib/confirmClick'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { basename } from '../lib/path'
 import { formatRelativeTime } from '../lib/time'
 
@@ -277,16 +277,17 @@ export default function TasksPage() {
     })
   }
 
-  // Deleting a task is permanent and cannot be undone — two-stage confirm,
-  // same pattern as deleting sessions and plugins.
-  const deleteTaskConfirm = useConfirmId((id: string) => {
+  // Deleting a task is permanent and cannot be undone — centered dialog with
+  // an explicit cancel, like every other permanent deletion.
+  const [pendingDeleteTask, setPendingDeleteTask] = useState<{ id: string; name: string } | null>(null)
+  const deleteTask = (id: string) => {
     void window.electronAPI
       .deleteTask(id)
       .then((ok) => {
         if (!ok) showNotice('tasks.deleteFailed')
       })
       .catch(() => showNotice('tasks.deleteFailed'))
-  })
+  }
 
   // Esc closes the dialog; clicking the dimmed backdrop does too. Without
   // this, the only way out is the small ✕ in the corner.
@@ -447,13 +448,9 @@ export default function TasksPage() {
                           className={`relative h-5 w-9 rounded-full transition-colors ${task.enabled ? 'bg-emerald-500' : 'bg-line-strong'}`}>
                           <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${task.enabled ? 'left-[18px]' : 'left-0.5'}`} />
                         </button>
-                        <button onClick={() => deleteTaskConfirm.click(task.id)}
-                          title={deleteTaskConfirm.confirmingId === task.id ? t('tasks.deleteConfirm') : t('sidebar.deleteSession')}
-                          className={`rounded-lg p-1.5 transition-colors ${
-                            deleteTaskConfirm.confirmingId === task.id
-                              ? 'bg-red-500/15 text-red-500'
-                              : 'text-cream-faint hover:bg-red-500/10 hover:text-red-500'
-                          }`}>
+                        <button onClick={() => setPendingDeleteTask({ id: task.id, name: task.name })}
+                          title={t('sidebar.deleteSession')}
+                          className="rounded-lg p-1.5 text-cream-faint transition-colors hover:bg-red-500/10 hover:text-red-500">
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -594,6 +591,17 @@ export default function TasksPage() {
             </div>
           </div>
         </div>
+      )}
+      {pendingDeleteTask && (
+        <ConfirmDialog
+          request={{
+            title: t('tasks.deleteDialog.title'),
+            body: t('tasks.deleteDialog.body', { name: pendingDeleteTask.name }),
+            danger: true,
+            onConfirm: () => deleteTask(pendingDeleteTask.id)
+          }}
+          onClose={() => setPendingDeleteTask(null)}
+        />
       )}
     </div>
   )

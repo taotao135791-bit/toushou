@@ -62,7 +62,7 @@ import { buildBoardCardsPrompt, buildBoardChatPrompt } from '@shared/boardChat'
 import { DatasetImportError } from '@shared/datasets'
 import { useT, I18nKey } from '../i18n'
 import { useAppStore } from '../store'
-import { useConfirm, useConfirmId } from '../lib/confirmClick'
+import { ConfirmDialog, type ConfirmDialogRequest } from '../components/ConfirmDialog'
 import { createSessionForCurrentProject } from '../lib/session'
 import {
   BOARD_READING_ACCOUNTS,
@@ -410,7 +410,7 @@ export default function BoardsPage() {
     setGalleryOpen(false)
     setMasterMetricsOpen(false)
     setReadingPickerOpen(false)
-    clearConfirm.reset()
+    setPendingConfirm(null)
   }
 
   // The toolbar menus are transient controls, so keyboard users need the
@@ -439,7 +439,7 @@ export default function BoardsPage() {
       setDatasetsOpen(false)
       setDetailOpen(false)
       setComposeOpen(false)
-      clearConfirm.reset()
+      setPendingConfirm(null)
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -448,7 +448,7 @@ export default function BoardsPage() {
 
   const switchBoard = (id: string) => {
     closeMenus()
-    deleteWidgetConfirm.reset()
+    setPendingConfirm(null)
     setConfigWidgetId(null)
     setSurface('board')
     setCurrentId(id)
@@ -584,7 +584,7 @@ export default function BoardsPage() {
     mutateBoard(currentId, (b) => ({ ...b, locked: b.locked !== true }))
   }
 
-  // Board deletion goes through a blocking dialog (and never fires for a
+  // Board deletion goes through the centered dialog (and never fires for a
   // locked board) — one stray click on a tab's × must not lose the board.
   const requestDeleteBoard = () => {
     if (!current) return
@@ -593,8 +593,12 @@ export default function BoardsPage() {
       return
     }
     setBoardMenuOpen(false)
-    if (!window.confirm(t('boards.deleteBoardDialog').replace('{name}', current.name))) return
-    void performDeleteBoard()
+    setPendingConfirm({
+      title: t('boards.boardDeleteDialog.title'),
+      body: t('boards.deleteBoardDialog', { name: current.name }),
+      danger: true,
+      onConfirm: () => void performDeleteBoard()
+    })
   }
 
   // ----------------------------------------------------------------- widgets
@@ -786,7 +790,10 @@ export default function BoardsPage() {
     setConfigWidgetId((id) => (id === widgetId ? null : id))
     mutateBoard(currentId, (b) => ({ ...b, widgets: b.widgets.filter((w) => w.id !== widgetId) }))
   }
-  const deleteWidgetConfirm = useConfirmId((widgetId: string) => removeWidget(widgetId))
+  // Permanent board-surface deletions share one centered ConfirmDialog
+  // (board / widget / clear-all / dataset) — explicit Cancel or Escape, never
+  // the un-cancellable armed two-click, never a blocking native confirm.
+  const [pendingConfirm, setPendingConfirm] = useState<ConfirmDialogRequest | null>(null)
 
   const updateWidgetConfig = (widgetId: string, config: Record<string, unknown>) => {
     if (!currentId) return
@@ -862,7 +869,6 @@ export default function BoardsPage() {
     setConfigWidgetId(null)
     mutateBoard(current.id, (b) => ({ ...b, widgets: [] }))
   }
-  const clearConfirm = useConfirm(performClearWidgets)
 
   const toggleFullscreen = () => {
     if (document.fullscreenElement) void document.exitFullscreen()
@@ -1044,7 +1050,7 @@ export default function BoardsPage() {
   const openDatasetsPanel = () => {
     setToolsMenuOpen(false)
     setRenamingId(null)
-    deleteDatasetConfirm.reset()
+    setPendingConfirm(null)
     setDatasetsOpen(true)
   }
 
@@ -1065,8 +1071,8 @@ export default function BoardsPage() {
     }
   }
 
-  // Two-stage confirm, same as board/widget deletes.
-  const deleteDatasetConfirm = useConfirmId(async (id: string) => {
+  // Dataset deletion permanently removes the file — dialog confirm (below).
+  const deleteDataset = async (id: string) => {
     try {
       const result = await window.electronAPI.deleteBoardDataset(id)
       if (!result.ok) {
@@ -1077,7 +1083,7 @@ export default function BoardsPage() {
     } catch {
       flashToast(t('boards.datasets.deleteFailed'), false)
     }
-  })
+  }
 
   // ------------------------------------------------------------------ render
 
@@ -1100,7 +1106,6 @@ export default function BoardsPage() {
   const renderWidget = (widget: BoardWidget) => {
     const effectiveStyle = mergeWidgetStyle(design?.widget, widget.style)
     const padding = effectiveStyle?.padding ?? 12
-    const confirmingDelete = deleteWidgetConfirm.confirmingId === widget.id
     const boardId = current?.id ?? ''
     return (
     <div
@@ -1124,9 +1129,7 @@ export default function BoardsPage() {
           {widget.title || t(widgetNameKey(widget.type))}
         </span>
         <div
-          className={`flex shrink-0 items-center gap-0.5 transition ${
-            confirmingDelete ? 'opacity-100' : 'opacity-0 group-hover/widget:opacity-100'
-          }`}
+          className="flex shrink-0 items-center gap-0.5 transition opacity-0 group-hover/widget:opacity-100"
         >
           <button
             onClick={() => setConfigWidgetId(widget.id)}
@@ -1136,15 +1139,18 @@ export default function BoardsPage() {
             <Settings2 size={11} />
           </button>
           <button
-            onClick={() => deleteWidgetConfirm.click(widget.id)}
-            title={confirmingDelete ? t('boards.deleteWidgetConfirm') : t('boards.deleteWidget')}
-            className={`rounded-md p-1 transition ${
-              confirmingDelete
-                ? 'bg-red-500/15 text-red-500'
-                : 'text-cream-faint hover:bg-red-500/15 hover:text-red-500'
-            }`}
+            onClick={() =>
+              setPendingConfirm({
+                title: t('boards.widgetDeleteDialog.title'),
+                body: t('boards.widgetDeleteDialog.body', { name: widget.title || t(widgetNameKey(widget.type)) }),
+                danger: true,
+                onConfirm: () => removeWidget(widget.id)
+              })
+            }
+            title={t('boards.deleteWidget')}
+            className="rounded-md p-1 text-cream-faint transition hover:bg-red-500/15 hover:text-red-500"
           >
-            {confirmingDelete ? <Check size={11} /> : <X size={11} />}
+            <X size={11} />
           </button>
         </div>
       </div>
@@ -1811,15 +1817,19 @@ export default function BoardsPage() {
                   {t('boards.resetLayout')}
                 </button>
                 <button
-                  onClick={clearConfirm.click}
-                  className={`${menuItemClass} ${
-                    clearConfirm.confirming
-                      ? 'bg-red-500/15 text-red-500'
-                      : 'text-red-500/80 hover:bg-red-500/10 hover:text-red-500'
-                  }`}
+                  onClick={() =>
+                    current &&
+                    setPendingConfirm({
+                      title: t('boards.clearWidgetsDialog.title'),
+                      body: t('boards.clearWidgetsDialog.body', { name: current.name }),
+                      danger: true,
+                      onConfirm: performClearWidgets
+                    })
+                  }
+                  className={`${menuItemClass} text-red-500/80 hover:bg-red-500/10 hover:text-red-500`}
                 >
                   <Trash2 size={12} />
-                  {clearConfirm.confirming ? t('boards.clearConfirm') : t('boards.clearWidgets')}
+                  {t('boards.clearWidgets')}
                 </button>
               </div>
             )}
@@ -1861,7 +1871,7 @@ export default function BoardsPage() {
                 title={t('boards.more')}
                 onClick={() => {
                   setGalleryOpen(false)
-                  clearConfirm.reset()
+                  setPendingConfirm(null)
                   setToolsMenuOpen(!toolsMenuOpen)
                 }}
               >
@@ -1947,17 +1957,16 @@ export default function BoardsPage() {
                         <Pencil size={11} />
                       </button>
                       <button
-                        onClick={() => void deleteDatasetConfirm.click(d.id)}
-                        title={
-                          deleteDatasetConfirm.confirmingId === d.id
-                            ? t('boards.datasets.deleteConfirm')
-                            : t('boards.datasets.delete')
+                        onClick={() =>
+                          setPendingConfirm({
+                            title: t('boards.datasetDeleteDialog.title'),
+                            body: t('boards.datasetDeleteDialog.body', { name: d.name }),
+                            danger: true,
+                            onConfirm: () => void deleteDataset(d.id)
+                          })
                         }
-                        className={`rounded-md p-1 transition ${
-                          deleteDatasetConfirm.confirmingId === d.id
-                            ? 'bg-red-500/15 text-red-500'
-                            : 'text-cream-faint hover:bg-red-500/15 hover:text-red-500'
-                        }`}
+                        title={t('boards.datasets.delete')}
+                        className="rounded-md p-1 text-cream-faint transition hover:bg-red-500/15 hover:text-red-500"
                       >
                         <Trash2 size={11} />
                       </button>
@@ -2253,6 +2262,7 @@ export default function BoardsPage() {
           </div>
         </div>
       )}
+      {pendingConfirm && <ConfirmDialog request={pendingConfirm} onClose={() => setPendingConfirm(null)} />}
     </div>
   )
 }
