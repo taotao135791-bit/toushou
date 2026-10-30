@@ -717,12 +717,19 @@ export default function BoardsPage() {
     setBoardRefreshProgress({ done: 0, total: Math.max(widgets.length, 1) })
     // Dataset-bound cards (KPI/trend) read the TikTok 报表 dataset — a whole-
     // board refresh must repull it or "今天" keeps showing the stale slice.
+    // A failed repull is LOUD (toast) and still reloads the local snapshot:
+    // silently swallowing it made users think the refresh did nothing.
     if (hasDatasetBound || widgets.some((widget) => widget.type === 'tt-reading')) {
       try {
-        await window.electronAPI.tiktokReportRefreshNow()
+        const outcome = await window.electronAPI.tiktokReportRefreshNow()
+        if (outcome && outcome.ok === false) flashToast(t('boards.datasetRefreshFailed'), false)
+      } catch {
+        flashToast(t('boards.datasetRefreshFailed'), false)
+      }
+      try {
         await refreshDatasets()
       } catch {
-        // Reading modules below still refresh; dataset cards keep the old data.
+        // Keep going — the reading modules below still refresh.
       }
     }
     if (widgets.length === 0) {
