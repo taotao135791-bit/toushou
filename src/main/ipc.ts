@@ -142,7 +142,8 @@ import { PackageActionGrantManager, matchesPackageActionTarget } from './package
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, saveBoard } from './boards'
 import { AdsCopyModelStore, validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
-import { adsCopyModelStore, testAdsCopyProviderById } from './adsCopyBridge'
+import { adsCopyModelStore, discoverAdsCopyModels, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
+import { getUsdRates } from './integrations/tiktok/fxRates'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
 import { readBoardWidgetFile, registerBoardFileBinding } from './boardFiles'
@@ -2456,7 +2457,8 @@ export function registerIpc() {
   // stored encrypted and NEVER returned to the renderer — only the masked
   // projection crosses the boundary. Test runs a tiny real completion.
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_LIST, async () => {
-    return AdsCopyModelStore.mask(await adsCopyModelStore.load())
+    const pool = await adsCopyModelStore.load()
+    return { mode: pool.mode, providers: AdsCopyModelStore.mask(pool) }
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_UPSERT, async (_event, raw: unknown) => {
     const input = validateAdsCopyModelInput((raw ?? {}) as Record<string, unknown>)
@@ -2484,6 +2486,14 @@ export function registerIpc() {
     if (typeof id !== 'string' || !id) return { ok: false, error: 'not-found' }
     return testAdsCopyProviderById(id)
   })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_SET_MODE, async (_event, mode: unknown) => {
+    await setAdsCopyMode(mode === 'pool' ? 'pool' : 'chat')
+    return { ok: true }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_DISCOVER, async (_event, raw: unknown) => {
+    return discoverAdsCopyModels((raw ?? {}) as Record<string, unknown>)
+  })
+  ipcMain.handle(IPC_CHANNELS.FX_RATES_GET, () => getUsdRates())
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown) => {
     return saveBoard(board)

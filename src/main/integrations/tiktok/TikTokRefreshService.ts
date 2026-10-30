@@ -13,7 +13,7 @@ import {
   TikTokReportCredentials
 } from './TikTokConnectionStore'
 import { resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokToken'
-import { fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch } from './tiktokClient'
+import { fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch, TikTokReportRow } from './tiktokClient'
 import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
 import { proxySessionFetch } from './proxyFetch'
 import { writeReportToDataset } from './tiktokReportDataset'
@@ -205,11 +205,16 @@ export class TikTokRefreshService {
       // tool — same grant the reading cards use, no Open API credentials
       // needed — and discovers the granted advertisers when the token
       // response omitted them (the paste-store path keeps Open API below).
-      const rows =
-        resolved.source === 'oauth'
-          ? await this.fetchRowsViaMcp(resolved.token, resolved.advertiserIds)
-          : await this.fetchRows(await this.accessTokenForReport(resolved), resolved.advertiserIds)
-      const written = writeReportToDataset(rows, this.datasetsFile)
+      let rows: TikTokReportRow[]
+      let currencies: Map<string, string> | undefined
+      if (resolved.source === 'oauth') {
+        const viaMcp = await this.fetchRowsViaMcp(resolved.token, resolved.advertiserIds)
+        rows = viaMcp.rows
+        currencies = viaMcp.currencies
+      } else {
+        rows = await this.fetchRows(await this.accessTokenForReport(resolved), resolved.advertiserIds)
+      }
+      const written = writeReportToDataset(rows, this.datasetsFile, currencies)
       if (!written.ok) throw new Error(`dataset-${written.error}`)
       this.lastRefreshAt = this.now()
       this.lastError = undefined
@@ -302,11 +307,24 @@ export class TikTokRefreshService {
    * daily campaign rows). Advertiser discovery rides the same MCP connection
    * when neither the grant nor the Connections-page list names any.
    */
-  private async fetchRowsViaMcp(token: string, advertiserIds: string[]) {
+  private async fetchRowsViaMcp(
+    token: string,
+    advertiserIds: string[]
+  ): Promise<{ rows: TikTokReportRow[]; currencies: Map<string, string> }> {
     const client = new TikTokMcpReadingClient(token, this.fetchImpl)
     await client.initialize()
     const ids = advertiserIds.length > 0 ? advertiserIds : await client.advertisers()
     if (ids.length === 0) throw new Error('no-advertiser')
+    // Per-advertiser currency for the dataset's 币种 column (money widgets
+    // offer a USD conversion). Best-effort: info failing must not stop the pull.
+    const currencies = new Map<string, string>()
+    try {
+      for (const info of await client.info(ids)) {
+        if (info.currency) currencies.set(info.advertiserId, info.currency)
+      }
+    } catch {
+      // No currency column this round — conversion simply stays hidden.
+    }
     const nowDate = new Date(this.now())
     const end = formatLocalDate(nowDate)
     const startDate = new Date(nowDate)
@@ -316,7 +334,7 @@ export class TikTokRefreshService {
     for (const advertiserId of ids.slice(0, MAX_ADVERTISERS_PER_REFRESH)) {
       rows.push(...(await client.report(advertiserId, start, end)))
     }
-    return sortRowsByDateDesc(rows)
+    return { rows: sortRowsByDateDesc(rows), currencies }
   }
 
   /** Test-only: drop timers and module state so cases start clean. */

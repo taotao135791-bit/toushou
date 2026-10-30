@@ -706,9 +706,27 @@ export default function BoardsPage() {
     const widgets = current.widgets.filter(
       (widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type) || widget.type === 'fb-report-reading' || widget.type === 'google-report-reading'
     )
-    if (widgets.length === 0) return
+    const hasDatasetBound = current.widgets.some(
+      (widget) => typeof widget.config.datasetId === 'string' && widget.config.datasetId !== ''
+    )
+    if (widgets.length === 0 && !hasDatasetBound) return
     setBoardRefreshBusy(true)
-    setBoardRefreshProgress({ done: 0, total: widgets.length })
+    setBoardRefreshProgress({ done: 0, total: Math.max(widgets.length, 1) })
+    // Dataset-bound cards (KPI/trend) read the TikTok 报表 dataset — a whole-
+    // board refresh must repull it or "今天" keeps showing the stale slice.
+    if (hasDatasetBound || widgets.some((widget) => widget.type === 'tt-reading')) {
+      try {
+        await window.electronAPI.tiktokReportRefreshNow()
+        await refreshDatasets()
+      } catch {
+        // Reading modules below still refresh; dataset cards keep the old data.
+      }
+    }
+    if (widgets.length === 0) {
+      setBoardRefreshBusy(false)
+      setBoardRefreshProgress({ done: 1, total: 1 })
+      return
+    }
     for (let index = 0; index < widgets.length; index += 1) {
       const widget = widgets[index]
       const isTt = widget.type === 'tt-reading'

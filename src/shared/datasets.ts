@@ -98,6 +98,32 @@ export function filterDatasetRowsByWindow(
   return rows.length === dataset.rows.length ? dataset : { ...dataset, rows }
 }
 
+/** Money-metric names eligible for a USD conversion subtitle. */
+const MONEY_METRIC_RE = /消耗|花费|成本|花费|金额|spend|cost|cpc|cpa|cpm/i
+
+/**
+ * The single non-USD currency a money metric is denominated in, when the
+ * dataset carries a 币种 column and every filtered row agrees. USD or mixed
+ * or unknown → null (no conversion shown — never guess).
+ */
+export function datasetMoneyCurrency(
+  dataset: BoardDataset,
+  metricName: string
+): string | null {
+  if (!MONEY_METRIC_RE.test(metricName)) return null
+  const currencyIndex = dataset.columns.findIndex((column) => column.name === '币种')
+  if (currencyIndex < 0) return null
+  let currency: string | null = null
+  for (const row of dataset.rows) {
+    const value = row[currencyIndex]
+    if (typeof value !== 'string' || value === '') return null
+    if (currency === null) currency = value
+    else if (currency !== value) return null
+  }
+  if (!currency || currency === 'USD') return null
+  return currency
+}
+
 export function parseDateString(raw: string): string | null {
   const s = raw.trim()
   if (!s) return null

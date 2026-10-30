@@ -115,6 +115,10 @@ export const IPC_CHANNELS = {
   ADS_COPY_MODELS_REMOVE: 'ads-copy-models:remove',
   ADS_COPY_MODELS_SET_POOL: 'ads-copy-models:set-pool',
   ADS_COPY_MODELS_TEST: 'ads-copy-models:test',
+  ADS_COPY_MODELS_SET_MODE: 'ads-copy-models:set-mode',
+  ADS_COPY_MODELS_DISCOVER: 'ads-copy-models:discover',
+  /** Cached USD conversion rates for board money widgets (null when offline). */
+  FX_RATES_GET: 'fx-rates:get',
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
   DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_SELECT_IMAGE: 'dialog:select-image',

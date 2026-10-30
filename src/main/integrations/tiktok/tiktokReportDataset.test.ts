@@ -43,13 +43,24 @@ function row(overrides: Partial<TikTokReportRow> = {}): TikTokReportRow {
 describe('reportRowsToGrid', () => {
   it('emits the documented zh columns in order', () => {
     const grid = reportRowsToGrid([row()])
-    expect(grid.headers).toEqual(['日期', '活动名称', '消耗', '展示', '点击', '点击率', '平均点击成本', '转化', '转化成本'])
-    expect(grid.rawRows[0]).toEqual(['2026-01-02', '夏日促销', '123.45', '1000', '50', '5', '2.47', '3', '41.15'])
+    expect(grid.headers).toEqual(['日期', '活动名称', '消耗', '展示', '点击', '点击率', '平均点击成本', '转化', '转化成本', '币种'])
+    expect(grid.rawRows[0]).toEqual(['2026-01-02', '夏日促销', '123.45', '1000', '50', '5', '2.47', '3', '41.15', ''])
+  })
+
+  it('fills the per-row currency from advertiser info when present', () => {
+    const currencies = new Map([['7300001', 'MXN']])
+    const grid = reportRowsToGrid(
+      [row({ advertiserId: '7300001' }), row({ advertiserId: '7300002' })],
+      currencies
+    )
+    expect(grid.rawRows[0][9]).toBe('MXN')
+    // Unknown advertiser → blank, never a guess.
+    expect(grid.rawRows[1][9]).toBe('')
   })
 
   it('maps null metrics to blank cells like a CSV export would', () => {
     const grid = reportRowsToGrid([row({ conversion: null, costPerConversion: null })])
-    expect(grid.rawRows[0].slice(7)).toEqual(['', ''])
+    expect(grid.rawRows[0].slice(7)).toEqual(['', '', ''])
   })
 })
 
@@ -68,7 +79,7 @@ describe('writeReportToDataset', () => {
     // validateDataset is the same gate the storage layer applies on read.
     expect(validateDataset(dataset)).not.toBeNull()
     expect(dataset.columns.map((c) => c.type)).toEqual([
-      'date', 'text', 'number', 'number', 'number', 'number', 'number', 'number', 'number'
+      'date', 'text', 'number', 'number', 'number', 'number', 'number', 'number', 'number', 'text'
     ])
     // Rows keep the client's date-desc order and number columns hold numbers.
     expect(dataset.rows[0][0]).toBe('2026-01-02')
@@ -161,6 +172,6 @@ describe('client → dataset integration shape', () => {
     const result = writeReportToDataset(rows, file)
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.dataset.rows[0]).toEqual(['2026-01-02', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5])
+    expect(result.dataset.rows[0]).toEqual(['2026-01-02', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5, ''])
   })
 })

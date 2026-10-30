@@ -217,7 +217,7 @@ describe('refreshNow', () => {
     const datasets = listDatasets(datasetsFile)
     expect(datasets).toHaveLength(1)
     expect(datasets[0].name).toBe('TikTok 报表')
-    expect(datasets[0].rows[0]).toEqual(['2026-01-02', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5])
+    expect(datasets[0].rows[0]).toEqual(['2026-01-02', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5, ''])
   })
 
   it('surfaces API failures through lastError without clobbering the dataset', async () => {
@@ -309,8 +309,8 @@ describe('refreshNow', () => {
     })
     const outcome = await service.refreshNow()
     expect(outcome.ok).toBe(true)
-    expect(calls.filter((call) => call.method === 'tools/call').map((call) => call.params.name)).toEqual(['report_integrated_get'])
-    const reportArgs = calls.find((call) => call.method === 'tools/call')!.params.arguments as Record<string, unknown>
+    expect(calls.filter((call) => call.method === 'tools/call').map((call) => call.params.name)).toEqual(['advertiser_info_get', 'report_integrated_get'])
+    const reportArgs = calls.find((call) => call.method === 'tools/call' && call.params.name === 'report_integrated_get')!.params.arguments as Record<string, unknown>
     expect(reportArgs.advertiser_id).toBe('7300042')
     expect(calls.every((call) => call.bearer === 'Bearer oauth-token' || call.method === 'notifications/initialized')).toBe(true)
     expect((outcome as { rowCount?: number }).rowCount).toBeGreaterThanOrEqual(1)
