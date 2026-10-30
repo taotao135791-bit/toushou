@@ -617,3 +617,63 @@ html.vt-retract::view-transition-new(root) { z-index: 0; }
   .icon-pop:hover svg, .icon-pop:active svg { transform: none !important; }
 }
 
+
+/* ------------------------------------------------------------------
+   Icon micro-interactions. Purpose-built per icon family (a gear winds, a
+   refresh arrow spins half a turn, a folder lifts, a plus becomes an x…)
+   so hover reads as "this control understood you", not decoration.
+   Only transform is animated → compositor-only, no layout cost.
+   ------------------------------------------------------------------ */
+button svg.lucide {
+  transition: transform 180ms var(--ease-out);
+  transform-origin: center;
+}
+
+/* Generic lift for any icon without a bespoke rule below. */
+button:not(:disabled):hover > svg.lucide,
+button:not(:disabled):hover > span > svg.lucide {
+  transform: translateY(-0.5px) scale(1.06);
+}
+button:not(:disabled):active > svg.lucide,
+button:not(:disabled):active > span > svg.lucide {
+  transform: scale(0.95);
+}
+
+/* Bespoke moves (declared after the generic so they win on equal specificity). */
+button:not(:disabled):hover svg.lucide-settings { transform: rotate(24deg); }
+button:not(:disabled):hover svg.lucide-rotate-ccw,
+button:not(:disabled):hover svg.lucide-rotate-cw,
+button:not(:disabled):hover svg.lucide-refresh-cw { transform: rotate(-180deg); }
+button:not(:disabled):hover svg.lucide-folder,
+button:not(:disabled):hover svg.lucide-folder-open { transform: translateY(-1px) scale(1.06); }
+button:not(:disabled):hover svg.lucide-file,
+button:not(:disabled):hover svg.lucide-file-text { transform: translateY(-1px) rotate(-3deg); }
+button:not(:disabled):hover svg.lucide-briefcase-business { transform: translateY(-1px) rotate(-4deg); }
+button:not(:disabled):hover svg.lucide-puzzle { transform: rotate(-8deg) scale(1.05); }
+button:not(:disabled):hover svg.lucide-square-kanban { transform: translateY(-1px) scale(1.06); }
+button:not(:disabled):hover svg.lucide-library { transform: rotate(-4deg) scale(1.06); }
+button:not(:disabled):hover svg.lucide-link2 { transform: rotate(12deg) scale(1.06); }
+button:not(:disabled):hover svg.lucide-clock { transform: rotate(14deg); }
+button:not(:disabled):hover svg.lucide-pin { transform: rotate(-14deg); }
+button:not(:disabled):hover svg.lucide-pencil { transform: rotate(-10deg) translateY(-1px); }
+button:not(:disabled):hover svg.lucide-trash2 { transform: rotate(-6deg) scale(1.05); }
+button:not(:disabled):hover svg.lucide-plus { transform: rotate(90deg); }
+button:not(:disabled):hover svg.lucide-search { transform: scale(1.12); }
+button:not(:disabled):hover svg.lucide-sun,
+button:not(:disabled):hover svg.lucide-moon { transform: rotate(12deg) scale(1.12); }
+button:not(:disabled):hover svg.lucide-arrow-up-down { transform: translateY(-1px) scale(1.06); }
+button:not(:disabled):hover svg.lucide-chevron-down { transform: translateY(1px); }
+button:not(:disabled):hover svg.lucide-chevron-right,
+button:not(:disabled):hover svg.lucide-chevron-left { transform: translateX(1px); }
+button:not(:disabled):hover svg.lucide-external-link { transform: translate(1px, -1px); }
+
+/* Icons that are themselves spinning (busy states) must not fight the hover rule. */
+button:hover svg.animate-spin {
+  transform: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button svg.lucide { transition: none !important; }
+  button:hover svg.lucide,
+  button:active svg.lucide { transform: none !important; }
+}
