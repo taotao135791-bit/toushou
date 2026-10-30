@@ -296,9 +296,6 @@ export default function BoardsPage() {
   const boardSaveGeneration = useRef(new Map<string, number>())
 
   const current = boards?.find((b) => b.id === currentId) ?? null
-  // The dataset-repull listener needs the CURRENT board without re-subscribing.
-  const useBoardsPageCurrentBoardRef = useRef(current)
-  useBoardsPageCurrentBoardRef.current = current
 
   useEffect(() => {
     let alive = true
@@ -339,30 +336,17 @@ export default function BoardsPage() {
     return () => document.removeEventListener('fullscreenchange', onChange)
   }, [])
 
-  // TT reading modules ask for a dataset repull after every successful read:
-  // KPI cards and reading cards must derive from the SAME pull, or their
-  // numbers drift apart (two snapshots of one truth). Debounced so a board
-  // with several TT modules triggers ONE shared repull.
+  // TT reading modules write their rows into the shared dataset in Main (one
+  // pipeline), so a successful read only needs the renderer to RELOAD the
+  // snapshot — a second refreshNow here raced the reading's own pull and
+  // surfaced bogus "refresh failed" toasts. Debounced: one reload per burst.
   const datasetRepullTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     const onTtRefreshed = () => {
       if (datasetRepullTimer.current) clearTimeout(datasetRepullTimer.current)
       datasetRepullTimer.current = setTimeout(() => {
         datasetRepullTimer.current = null
-        const board = useBoardsPageCurrentBoardRef.current
-        const hasDatasetCards = board?.widgets.some(
-          (widget) => typeof widget.config.datasetId === 'string' && widget.config.datasetId !== ''
-        )
-        if (!hasDatasetCards) return
-        void window.electronAPI
-          .tiktokReportRefreshNow()
-          .then((outcome) => {
-            if (outcome && outcome.ok === false) flashToast(t('boards.datasetRefreshFailed'), false)
-          })
-          .catch(() => flashToast(t('boards.datasetRefreshFailed'), false))
-          .finally(() => {
-            void refreshDatasets()
-          })
+        void refreshDatasets()
       }, 400)
     }
     window.addEventListener('tt-reading:refreshed', onTtRefreshed)

@@ -10,7 +10,7 @@ import { DATASET_LIMITS, validateDataset } from '../../../shared/datasets'
 import { BoardDataset } from '../../../shared/types'
 import { listDatasets } from '../../boardDatasets'
 import { TikTokReportRow, fetchIntegratedReport } from './tiktokClient'
-import { reportRowsToGrid, TIKTOK_DATASET_NAME, writeReportToDataset } from './tiktokReportDataset'
+import { mergeReportRowsIntoDataset, reportRowsToGrid, TIKTOK_DATASET_NAME, writeReportToDataset } from './tiktokReportDataset'
 
 let dir: string
 let file: string
@@ -175,5 +175,23 @@ describe('client → dataset integration shape', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.dataset.rows[0]).toEqual(['2026-01-02', '', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5, ''])
+  })
+})
+
+describe('mergeReportRowsIntoDataset (single-pipeline upsert)', () => {
+  it('upserts by 广告主+日期 and keeps history outside the incoming window', () => {
+    const file2 = path.join(dir, 'merge-datasets.json')
+    const details = new Map([['7300001', { name: 'miclip', currency: 'MXN' }]])
+    // First pull: two days for miclip.
+    writeReportToDataset([row({ date: '2026-01-01', advertiserId: '7300001' }), row({ date: '2026-01-02', advertiserId: '7300001' })], file2, details)
+    // Reading card for "今天" pulls only the newest day with an updated value.
+    const merged = mergeReportRowsIntoDataset([row({ date: '2026-01-02', advertiserId: '7300001', spend: 99 })], details, file2)
+    expect(merged.ok).toBe(true)
+    const dataset = listDatasets(file2).find((d) => d.name === TIKTOK_DATASET_NAME)!
+    expect(dataset.rows).toHaveLength(2)
+    const newest = dataset.rows.find((r) => r[0] === '2026-01-02')
+    expect(newest?.[3]).toBe(99)
+    // History retained.
+    expect(dataset.rows.some((r) => r[0] === '2026-01-01')).toBe(true)
   })
 })

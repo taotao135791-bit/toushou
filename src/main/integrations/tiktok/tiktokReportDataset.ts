@@ -1,6 +1,6 @@
 import { BoardDataset } from '../../../shared/types'
 import { DatasetImportResult, buildDataset } from '../../../shared/datasets'
-import { createOrUpdateDataset } from '../../boardDatasets'
+import { createOrUpdateDataset, listDatasets, writeDatasets } from '../../boardDatasets'
 import { TikTokReportRow } from './tiktokClient'
 
 /**
@@ -79,6 +79,47 @@ export function writeReportToDataset(
   const grid = reportRowsToGrid(rows, details)
   const built = buildDataset(grid.headers, grid.rawRows)
   return createOrUpdateDataset(TIKTOK_DATASET_NAME, built, file)
+}
+
+/**
+ * Incremental merge for the TT reading pipeline: upsert the rows THIS read
+ * covers (keyed 广告主+日期), keep every other date/advertiser untouched.
+ * The reading card's window is small — REPLACE (writeReportToDataset) would
+ * shrink the dataset to the card's window and destroy trend history; merge
+ * keeps one growing shared dataset. Every TT card read feeds the KPI cards
+ * from the SAME pull: one pipeline, zero drift.
+ */
+export function mergeReportRowsIntoDataset(
+  rows: TikTokReportRow[],
+  details?: ReadonlyMap<string, TikTokAdvertiserDetail>,
+  file?: string
+): DatasetImportResult {
+  if (rows.length === 0) return { ok: false, error: 'empty' }
+  const incoming = reportRowsToGrid(rows, details)
+  const datasets = listDatasets(file)
+  const existing = datasets.find((dataset) => dataset.name === TIKTOK_DATASET_NAME)
+  if (!existing) return writeReportToDataset(rows, file, details)
+  const dateIdx = existing.columns.findIndex((column) => column.name === '日期')
+  const advertiserIdx = existing.columns.findIndex((column) => column.name === '广告主')
+  const mergedBuilt = buildDataset(incoming.headers, incoming.rawRows)
+  const incomingRows = mergedBuilt.rows.map((row, index) => ({ key: `${row[advertiserIdx >= 0 ? advertiserIdx : 1]}|${row[dateIdx >= 0 ? dateIdx : 0]}`, row, raw: incoming.rawRows[index] }))
+  const seen = new Set(incomingRows.map((entry) => entry.key))
+  const kept = existing.rows.filter((row) => {
+    const key = `${row[advertiserIdx]}|${row[dateIdx]}`
+    return advertiserIdx >= 0 && dateIdx >= 0 ? !seen.has(key) : true
+  })
+  const merged: BoardDataset = {
+    ...existing,
+    rows: [...kept, ...incomingRows.map((entry) => entry.row)],
+    createdAt: existing.createdAt
+  }
+  const replaced = datasets.map((dataset) => (dataset.name === TIKTOK_DATASET_NAME ? merged : dataset))
+  try {
+    writeDatasets(file, replaced)
+  } catch {
+    return { ok: false, error: 'write-failed' }
+  }
+  return { ok: true, dataset: merged, truncated: mergedBuilt.truncated }
 }
 
 /** Type guard helpers for tests and callers that only need the written shape. */

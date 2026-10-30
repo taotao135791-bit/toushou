@@ -19,6 +19,7 @@ import {
   type TikTokTodayReadingResult
 } from '../../../shared/todayReading'
 import { resolveTikTokMcpToken, type ResolvedTikTokToken } from './resolveTikTokToken'
+import { mergeReportRowsIntoDataset } from './tiktokReportDataset'
 import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
 import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
 import {
@@ -203,6 +204,11 @@ export interface TikTokReadingDeps {
   resolveToken?: () => Promise<ResolvedTikTokToken>
   fetchImpl?: TikTokApiFetch
   now?: () => number
+  /** Where a successful read lands (defaults to the shared TikTok dataset). */
+  persistRows?: (
+    rows: TikTokReportRow[],
+    details: Map<string, { name: string | null; currency: string | null }>
+  ) => void
 }
 
 /** Discover authorized accounts through MCP, independent of the user's selection. */
@@ -291,6 +297,21 @@ export async function buildTikTokReadingSummary(
     }
   }
   const { totals, topCampaigns } = summarizeTikTokReportRows(shownRows)
+  // ONE pipeline: every successful reading feeds the shared dataset (upsert
+  // by 广告主+日期), so the KPI/trend cards derive from the SAME pull this
+  // card just made — never a second, divergent refresh path. Persisting is
+  // best-effort: a store failure must not fail the reading itself.
+  try {
+    const details = new Map<string, { name: string | null; currency: string | null }>()
+    for (const advertiser of advertisers) {
+      details.set(advertiser.advertiserId, { name: advertiser.name, currency: advertiser.currency })
+    }
+    ;(deps.persistRows ?? ((incoming, detail) => {
+      mergeReportRowsIntoDataset(incoming, detail)
+    }))(rows, details)
+  } catch {
+    // Reading result stays valid; the dataset catches up on the next read.
+  }
   const known = [...new Set(advertisers.map((advertiser) => advertiser.currency).filter((code): code is string => !!code))]
   const everyKnown = advertisers.every((advertiser) => advertiser.currency !== null)
   const summary: TikTokReadingSummary = {

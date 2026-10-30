@@ -58,7 +58,7 @@ function readDatasets(file: string): BoardDataset[] {
   return datasets
 }
 
-function writeDatasets(file: string, datasets: BoardDataset[]): void {
+export function writeDatasets(file: string = defaultDatasetsFile(), datasets: BoardDataset[]): void {
   mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.tmp-${process.pid}`
   writeFileSync(tmp, JSON.stringify(datasets, null, 2) + '\n', 'utf-8')
