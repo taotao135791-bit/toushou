@@ -79,6 +79,25 @@ export function cleanNumberString(raw: string): number | null {
  * 2024年1月1日, 20240101 and US-style 01/02/2024 (when the first number
  * exceeds 12 it is treated as the day). Returns null for anything else.
  */
+/**
+ * Window filter for dataset-bound widgets: when the dataset carries a
+ * date-typed column (ISO strings compare lexically), keep only rows inside
+ * [start, end] — the board master scope drives this so KPI cards and charts
+ * follow the selected range. Datasets without a date column pass through.
+ */
+export function filterDatasetRowsByWindow(
+  dataset: BoardDataset,
+  window: { start: string; end: string }
+): BoardDataset {
+  const dateIndex = dataset.columns.findIndex((column) => column.type === 'date')
+  if (dateIndex < 0) return dataset
+  const rows = dataset.rows.filter((row) => {
+    const value = row[dateIndex]
+    return typeof value === 'string' && value >= window.start && value <= window.end
+  })
+  return rows.length === dataset.rows.length ? dataset : { ...dataset, rows }
+}
+
 export function parseDateString(raw: string): string | null {
   const s = raw.trim()
   if (!s) return null

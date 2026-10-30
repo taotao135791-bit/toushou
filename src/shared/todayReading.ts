@@ -3,7 +3,7 @@ import type { ReadingErrorCode, ReadingFailure } from './readingError'
 import { formatTikTokAmount, type TikTokReadingAdvertiser, type TikTokReadingRange } from './tiktokReport'
 
 /** Morning page windows. last3 is intentionally absent: TikTok has no 3-day preset. */
-export type TodayRange = 'today' | 'last7' | 'last28'
+export type TodayRange = 'today' | 'yesterday' | 'last3' | 'last7' | 'last28' | 'last30'
 
 export interface TodayWindow {
   start: string
@@ -62,9 +62,11 @@ export interface TikTokTodayReading {
 
 export type TikTokTodayReadingResult = TikTokTodayReading | ReadingFailure
 
-const RANGE_DAYS: Record<Exclude<TodayRange, 'today'>, number> = {
+const RANGE_DAYS: Record<Exclude<TodayRange, 'today' | 'yesterday'>, number> = {
+  last3: 3,
   last7: 7,
-  last28: 28
+  last28: 28,
+  last30: 30
 }
 
 function parseIsoDate(value: string): Date | null {
@@ -92,6 +94,12 @@ export function todayWindow(range: TodayRange, today: Date = new Date()): TodayW
     const day = fbDateString(today)
     return { start: day, end: day }
   }
+  if (range === 'yesterday') {
+    const day = new Date(today)
+    day.setDate(day.getDate() - 1)
+    const iso = fbDateString(day)
+    return { start: iso, end: iso }
+  }
   const days = RANGE_DAYS[range]
   const end = new Date(today)
   end.setDate(end.getDate() - 1)
@@ -102,6 +110,9 @@ export function todayWindow(range: TodayRange, today: Date = new Date()): TodayW
 
 /** Board TT module window, on the today page's terms: '7' and '28' end yesterday. */
 export function tiktokReadingRangeWindow(range: TikTokReadingRange, today: Date = new Date()): TodayWindow {
+  if (range === '3') return todayWindow('last3', today)
+  if (range === 'yd') return todayWindow('yesterday', today)
+  if (range === '30') return todayWindow('last30', today)
   return todayWindow(range === '1' ? 'today' : range === '28' ? 'last28' : 'last7', today)
 }
 
@@ -125,6 +136,8 @@ export function previousEqualWindow(window: TodayWindow): TodayWindow | null {
 /** Facebook browser presets that are the same window. last28 has none. */
 export function fbPresetForTodayRange(range: TodayRange): FbReadingRange | null {
   if (range === 'today') return 'today'
+  if (range === 'yesterday') return 'yesterday'
+  if (range === 'last3') return 'last3'
   if (range === 'last7') return 'last7'
   return null
 }

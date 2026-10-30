@@ -926,7 +926,7 @@ function validateWidgetConfig(
       // Reading-module config: account reference + date window + metric set.
       // Legacy alias-only configs are upgraded via the builtin account table.
       const range = raw.range
-      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      if (range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
       const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr', 'balance']
       if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
       const metrics: string[] = []
@@ -955,7 +955,7 @@ function validateWidgetConfig(
     }
     case 'fb-reading-summary': {
       const range = raw.range
-      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      if (range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
       if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
       const metrics: string[] = []
       for (const metric of raw.metrics) {
@@ -1004,7 +1004,7 @@ function validateWidgetConfig(
         config.advertiserIds = ids
       }
       if (raw.range !== undefined) {
-        if (raw.range !== '1' && raw.range !== '7' && raw.range !== '28') return null
+        if (raw.range !== '1' && raw.range !== 'yd' && raw.range !== '3' && raw.range !== '7' && raw.range !== '28' && raw.range !== '30') return null
         config.range = raw.range
       }
       if (raw.independent === true) config.independent = true
@@ -1069,11 +1069,14 @@ function validateMasterScope(raw: unknown): BoardMasterScope | null {
  * list behind unification, refresh-all and the independence check. */
 export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading', 'fb-report-reading']
 
-/** TikTok day windows are a separate enum; last3 and last30 have no exact equivalent. */
+/** TikTok day windows: every master range now maps exactly (the master scope
+ *  is authoritative over controllable modules — no divergence escapes). */
 const TT_RANGE_BY_MASTER: Record<string, string> = {
-  yesterday: '1',
+  yesterday: 'yd',
   today: '1',
-  last7: '7'
+  last3: '3',
+  last7: '7',
+  last30: '30'
 }
 
 /** TikTok day window for a master range, or null when unrepresentable (last3 / last30). */
@@ -1098,15 +1101,14 @@ export function applyMasterScope(widget: BoardWidget, master: BoardMasterScope):
     if (range) {
       config.range = range
     } else {
-      // An unmatched preset cannot be expressed on TikTok — keep the current window and
-      // surface the divergence instead of silently nearest-mapping it.
+      // Defensive: unreachable while every master range maps (see map above).
       config.independent = true
     }
     return { ...widget, config }
   }
-  // FB modules have no "yesterday" reading window: keep their current window
-  // and flag the divergence (same honest-divergence rule as TikTok above).
-  if (master.range === 'yesterday') {
+  // The FB report module's auto-fetch can only drive FB's Today / Last 7 /
+  // Last 30 quick options — anything else keeps its own window, flagged.
+  if (widget.type === 'fb-report-reading' && !['today', 'last7', 'last30'].includes(master.range)) {
     config.independent = true
     return { ...widget, config }
   }

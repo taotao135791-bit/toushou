@@ -142,7 +142,7 @@ export type TikTokCredentialErrorCode =
 // ---------------------------------------------------------------------------
 
 /** 报表天数口径：今天（未收完）/ 近 7 天 / 近 28 天（都截止到昨天，整天）。 */
-export type TikTokReadingRange = '1' | '7' | '28'
+export type TikTokReadingRange = '1' | 'yd' | '3' | '7' | '28' | '30'
 
 export interface TikTokReadingAdvertiser {
   advertiserId: string

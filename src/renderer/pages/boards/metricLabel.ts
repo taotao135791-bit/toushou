@@ -16,6 +16,7 @@ export function fbReadingMetricLabel(t: (key: I18nKey) => string, value: string)
 
 export function fbReadingRangeLabel(t: (key: I18nKey) => string, range: string): string {
   if (range === 'today') return t('boards.master.range.today')
+  if (range === 'yesterday') return t('boards.master.range.yesterday')
   if (range === 'last3') return t('boards.master.range.last3')
   if (range === 'last30') return t('boards.master.range.last30')
   return t('boards.master.range.last7')
@@ -23,6 +24,9 @@ export function fbReadingRangeLabel(t: (key: I18nKey) => string, range: string):
 
 export function ttReadingRangeLabel(t: (key: I18nKey) => string, range: string): string {
   if (range === '1') return t('boards.tt.range.1')
+  if (range === 'yd') return t('boards.tt.range.yd')
+  if (range === '3') return t('boards.tt.range.3')
   if (range === '28') return t('boards.tt.range.28')
+  if (range === '30') return t('boards.master.range.last30')
   return t('boards.tt.range.7')
 }

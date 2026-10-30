@@ -393,7 +393,7 @@ describe('factories', () => {
     // Empty advertiserIds is meaningful (use the connected token's grant).
     expect(withWidget(widgetOf('tt-reading', { advertiserIds: '' }))?.widgets).toHaveLength(1)
     // Range enum is strict.
-    expect(withWidget(widgetOf('tt-reading', { range: '3' }))?.widgets).toHaveLength(0)
+    expect(withWidget(widgetOf('tt-reading', { range: '5' }))?.widgets).toHaveLength(0)
     expect(withWidget(widgetOf('tt-reading', { range: 7 }))?.widgets).toHaveLength(0)
     // Advertiser id string is length-bounded and digit/punctuation only.
     expect(withWidget(widgetOf('tt-reading', { advertiserIds: '7'.repeat(401) }))?.widgets).toHaveLength(0)
@@ -912,21 +912,25 @@ describe('master scope', () => {
     expect(unified.config.account).toBe('三国IOS')
   })
 
-  it('applyMasterScope maps TikTok windows and keeps last3 honest', () => {
+  it('applyMasterScope maps every TikTok window — the master is authoritative', () => {
     const base = { id: 't', type: 'tt-reading' as const, title: 't', layout: { x: 0, y: 0, w: 2, h: 2 } }
     expect(applyMasterScope({ ...base, config: { range: '1' } }, { range: 'last7', metrics: ['spend'] }).config.range).toBe('7')
     expect(applyMasterScope({ ...base, config: { range: '1' } }, { range: 'today', metrics: ['spend'] }).config.range).toBe('1')
-    const kept = applyMasterScope({ ...base, config: { range: '28' } }, { range: 'last3', metrics: ['spend'] })
-    expect(kept.config.range).toBe('28')
-    expect(kept.config.independent).toBe(true)
+    expect(applyMasterScope({ ...base, config: { range: '7' } }, { range: 'yesterday', metrics: ['spend'] }).config.range).toBe('yd')
+    const last3 = applyMasterScope({ ...base, config: { range: '28' } }, { range: 'last3', metrics: ['spend'] })
+    expect(last3.config.range).toBe('3')
+    expect(last3.config.independent).toBeUndefined()
+    const last30 = applyMasterScope({ ...base, config: { range: '7' } }, { range: 'last30', metrics: ['spend'] })
+    expect(last30.config.range).toBe('30')
+    expect(last30.config.independent).toBeUndefined()
   })
 
-  it('yesterday master scope drives TikTok and leaves FB honest', () => {
+  it('yesterday master scope drives both TikTok and FB reading modules', () => {
     const tt = applyMasterScope(
       { id: 't', type: 'tt-reading' as const, title: 't', layout: { x: 0, y: 0, w: 2, h: 2 }, config: { range: '7' } },
       { range: 'yesterday', metrics: ['spend'] }
     )
-    expect(tt.config.range).toBe('1')
+    expect(tt.config.range).toBe('yd')
     expect(tt.config.independent).toBeUndefined()
     const fb = applyMasterScope(
       {
@@ -938,8 +942,15 @@ describe('master scope', () => {
       },
       { range: 'yesterday', metrics: ['spend'] }
     )
-    expect(fb.config.range).toBe('last7')
-    expect(fb.config.independent).toBe(true)
+    expect(fb.config.range).toBe('yesterday')
+    expect(fb.config.independent).toBeUndefined()
+    // The FB report module cannot drive yesterday's quick option — it stays
+    // on its own window, flagged.
+    const report = applyMasterScope(
+      { id: 'r', type: 'fb-report-reading' as const, title: 'r', layout: { x: 0, y: 0, w: 2, h: 2 }, config: {} },
+      { range: 'yesterday', metrics: ['spend'] }
+    )
+    expect(report.config.independent).toBe(true)
   })
 
   it('applyMasterScope leaves non-reading widgets untouched', () => {
@@ -948,11 +959,11 @@ describe('master scope', () => {
     expect(out).toEqual(widget)
   })
 
-  it('does not represent thirty days as TikTok twenty-eight days', () => {
-    const widget = widgetOf('tt-reading', { range: '28' })
+  it('represents thirty master days exactly on TikTok', () => {
+    const widget = widgetOf('tt-reading', { range: '7' })
     const scoped = applyMasterScope(widget as never, { range: 'last30', metrics: ['spend'] })
-    expect(scoped.config.range).toBe('28')
-    expect(scoped.config.independent).toBe(true)
+    expect(scoped.config.range).toBe('30')
+    expect(scoped.config.independent).toBeUndefined()
   })
 
   it('accepts only Google Ads report links and retains their independent export scope', () => {

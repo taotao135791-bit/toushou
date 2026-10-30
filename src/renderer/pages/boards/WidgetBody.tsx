@@ -12,6 +12,7 @@ import {
   DatasetOp,
   aggregate,
   columnIndex,
+  filterDatasetRowsByWindow,
   groupAggregate
 } from '@shared/datasets'
 import { useAppStore } from '../../store'
@@ -44,6 +45,9 @@ export interface WidgetBodyProps {
   /** Owning board id; file widgets need it to address Main's read channel. */
   boardId: string
   onConfigChange: (config: Record<string, unknown>) => void
+  /** Board master-scope window: dataset-bound widgets filter rows to it, so
+   *  switching the master range re-scopes every card instantly. */
+  masterWindow?: { start: string; end: string }
 }
 
 function configOp(value: unknown): DatasetOp {
@@ -61,15 +65,22 @@ type Binding =
   | { kind: 'ok'; dataset: BoardDataset; metricIndex: number; dimIndex: number }
   | { kind: 'missing-dataset' | 'missing-column' | 'incomplete' }
 
-function resolveBinding(widget: BoardWidget, datasets: BoardDataset[], needsDim: boolean): Binding {
+function resolveBinding(
+  widget: BoardWidget,
+  datasets: BoardDataset[],
+  needsDim: boolean,
+  masterWindow?: { start: string; end: string }
+): Binding {
   const datasetId = configStr(widget.config.datasetId)
   const metric = configStr(widget.config.metric)
   const dimension = configStr(widget.config.dimension)
   if (!datasetId || !metric || (needsDim && !dimension)) return { kind: 'incomplete' }
   // Preset templates bind by dataset NAME ("TikTok 报表") — id match first,
   // name fallback so template widgets resolve without knowing generated ids.
-  const dataset = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
-  if (!dataset) return { kind: 'missing-dataset' }
+  const found = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
+  if (!found) return { kind: 'missing-dataset' }
+  // Master-scope window: dataset cards follow the board's selected range.
+  const dataset = masterWindow ? filterDatasetRowsByWindow(found, masterWindow) : found
   const metricIndex = columnIndex(dataset, metric)
   const dimIndex = needsDim ? columnIndex(dataset, dimension) : -1
   if (metricIndex < 0 || (needsDim && dimIndex < 0)) return { kind: 'missing-column' }
@@ -137,23 +148,35 @@ function NoteBody({ widget }: { widget: BoardWidget }) {
   )
 }
 
-function CounterBody({ widget, datasets }: { widget: BoardWidget; datasets: BoardDataset[] }) {
+function CounterBody({
+  widget,
+  datasets,
+  masterWindow
+}: {
+  widget: BoardWidget
+  datasets: BoardDataset[]
+  masterWindow?: { start: string; end: string }
+}) {
   const label = typeof widget.config.label === 'string' ? widget.config.label : ''
-  let value: number
+  let value: number | null
   if (widget.config.source === 'dataset') {
-    const binding = resolveBinding(widget, datasets, false)
+    const binding = resolveBinding(widget, datasets, false, masterWindow)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
-    value = aggregate(
-      binding.dataset.rows.map((r) => r[binding.metricIndex] ?? ''),
-      configOp(widget.config.op)
-    )
+    // An empty window-filtered slice is "no data in this range", not zero.
+    if (binding.dataset.rows.length === 0) value = null
+    else {
+      value = aggregate(
+        binding.dataset.rows.map((r) => r[binding.metricIndex] ?? ''),
+        configOp(widget.config.op)
+      )
+    }
   } else {
     value = typeof widget.config.value === 'number' ? widget.config.value : 0
   }
   return (
     <div className="flex h-full flex-col items-center justify-center gap-1.5">
       <div className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream">
-        {value.toLocaleString()}
+        {value === null ? '—' : value.toLocaleString()}
       </div>
       {label && (
         <div className="text-[10.5px] uppercase tracking-[0.14em] text-cream-faint">{label}</div>
@@ -292,11 +315,13 @@ function truncateAxisLabel(s: string): string {
 function ChartBody({
   widget,
   bar,
-  datasets
+  datasets,
+  masterWindow
 }: {
   widget: BoardWidget
   bar: boolean
   datasets: BoardDataset[]
+  masterWindow?: { start: string; end: string }
 }) {
   const t = useT()
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -309,7 +334,7 @@ function ChartBody({
   let dimName = ''
   let metricName = ''
   if (widget.config.source === 'dataset') {
-    const binding = resolveBinding(widget, datasets, true)
+    const binding = resolveBinding(widget, datasets, true, masterWindow)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
     const grouped = groupAggregate(
       binding.dataset,
@@ -897,7 +922,7 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   )
 }
 
-export function WidgetBody({ widget, datasets, boardId, onConfigChange }: WidgetBodyProps) {
+export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWindow }: WidgetBodyProps) {
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -914,13 +939,13 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange }: Widget
     case 'note':
       return <NoteBody widget={widget} />
     case 'counter':
-      return <CounterBody widget={widget} datasets={datasets} />
+      return <CounterBody widget={widget} datasets={datasets} masterWindow={masterWindow} />
     case 'gauge':
       return <GaugeBody widget={widget} />
     case 'chart-line':
-      return <ChartBody widget={widget} bar={false} datasets={datasets} />
+      return <ChartBody widget={widget} bar={false} datasets={datasets} masterWindow={masterWindow} />
     case 'chart-bar':
-      return <ChartBody widget={widget} bar={true} datasets={datasets} />
+      return <ChartBody widget={widget} bar={true} datasets={datasets} masterWindow={masterWindow} />
     case 'todo':
       return <TodoBody widget={widget} onConfigChange={onConfigChange} />
     case 'link':

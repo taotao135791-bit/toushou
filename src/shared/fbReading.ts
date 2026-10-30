@@ -11,7 +11,7 @@ import type { FbAccountBalance } from './fbBillingParser'
  * "last N days" excludes today (verified 2026-09-16).
  */
 
-export type FbReadingRange = 'today' | 'last3' | 'last7' | 'last30'
+export type FbReadingRange = 'today' | 'yesterday' | 'last3' | 'last7' | 'last30'
 export const FB_READING_ACCOUNT_MAX = 50
 
 /**
@@ -103,6 +103,12 @@ export function boardReadingRangeDates(
 ): { start: string; end: string } {
   if (range === 'today') {
     const s = fbDateString(today)
+    return { start: s, end: s }
+  }
+  if (range === 'yesterday') {
+    const day = new Date(today)
+    day.setDate(day.getDate() - 1)
+    const s = fbDateString(day)
     return { start: s, end: s }
   }
   const n = range === 'last3' ? 3 : range === 'last7' ? 7 : 30

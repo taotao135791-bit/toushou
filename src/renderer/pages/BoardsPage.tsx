@@ -1171,6 +1171,13 @@ export default function BoardsPage() {
           datasets={datasets}
           boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
+          masterWindow={
+            master
+              ? master.range === 'yesterday'
+                ? yesterdayWindow()
+                : boardReadingRangeDates(master.range)
+              : undefined
+          }
         />
       </div>
       {configWidgetId === widget.id && (
