@@ -262,9 +262,14 @@ export async function buildTikTokReadingSummary(
   // UTC+8 noon). The display then trims to the newest day that HAS data and
   // reports that day honestly in startDate/endDate.
   if (range === '1') {
-    const window = tiktokReadingRangeWindow('3', new Date(now))
-    startDate = window.start
-    endDate = window.end
+    // "今天" queries [yesterday, today] — local dates. (last3 ends YESTERDAY,
+    // so using it here could never include today's ongoing day.)
+    const nowDate = new Date(now)
+    const yesterday = new Date(nowDate)
+    yesterday.setDate(yesterday.getDate() - 1)
+    const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    startDate = iso(yesterday)
+    endDate = iso(nowDate)
   }
   const info = await lookupAdvertisers(client, advertiserIds)
   const rows: TikTokReportRow[] = []

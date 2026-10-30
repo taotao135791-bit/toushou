@@ -110,22 +110,21 @@ function resolveBinding(
   // name fallback so template widgets resolve without knowing generated ids.
   const found = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
   if (!found) return { kind: 'missing-dataset' }
-  // Master-scope window: dataset cards follow the board's selected range;
-  // the 今天 scope shows the account's CURRENT stat day (latest in the data).
-  let dataset = masterWindow
-    ? filterDatasetRowsByWindow(found, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
-    : found
-  // Optional row filter (e.g. 广告主=miclip): one board's cards scope to one
-  // advertiser instead of summing every account in the dataset.
+  // Row filter FIRST (e.g. 广告主=miclip): the 今天 scope's "latest stat day"
+  // must be the latest day OF THIS ADVERTISER, not of the whole dataset —
+  // otherwise another account's data decides the day and this card goes empty.
+  let dataset = found
   const filterColumn = configStr(widget.config.filterColumn)
   const filterValue = configStr(widget.config.filterValue)
   if (filterColumn && filterValue) {
     const filterIndex = columnIndex(dataset, filterColumn)
     if (filterIndex < 0) return { kind: 'missing-column' }
-    dataset = {
-      ...dataset,
-      rows: dataset.rows.filter((row) => row[filterIndex] === filterValue)
-    }
+    dataset = { ...dataset, rows: dataset.rows.filter((row) => row[filterIndex] === filterValue) }
+  }
+  // Master-scope window on top: dataset cards follow the board's range; the
+  // 今天 scope shows the account's CURRENT stat day (latest among filtered rows).
+  if (masterWindow) {
+    dataset = filterDatasetRowsByWindow(dataset, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
   }
   const metricIndex = columnIndex(dataset, metric)
   const dimIndex = needsDim ? columnIndex(dataset, dimension) : -1

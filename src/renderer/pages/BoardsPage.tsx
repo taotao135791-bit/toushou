@@ -735,21 +735,15 @@ export default function BoardsPage() {
     if (widgets.length === 0 && !hasDatasetBound) return
     setBoardRefreshBusy(true)
     setBoardRefreshProgress({ done: 0, total: Math.max(widgets.length, 1) })
-    // Dataset-bound cards (KPI/trend) read the TikTok 报表 dataset — a whole-
-    // board refresh must repull it or "今天" keeps showing the stale slice.
-    // A failed repull is LOUD (toast) and still reloads the local snapshot:
-    // silently swallowing it made users think the refresh did nothing.
-    if (hasDatasetBound || widgets.some((widget) => widget.type === 'tt-reading')) {
+    // ONE pipeline: the TT reading itself writes the shared dataset. When the
+    // board has dataset cards but no TT module to drive that read, run one
+    // reading pull here so refresh-all updates every card in one pass.
+    if (hasDatasetBound && !widgets.some((widget) => widget.type === 'tt-reading')) {
       try {
-        const outcome = await window.electronAPI.tiktokReportRefreshNow()
-        if (outcome && outcome.ok === false) flashToast(t('boards.datasetRefreshFailed'), false)
-      } catch {
-        flashToast(t('boards.datasetRefreshFailed'), false)
-      }
-      try {
+        await window.electronAPI.ttReadingSummary({ range: '7' })
         await refreshDatasets()
       } catch {
-        // Keep going — the reading modules below still refresh.
+        flashToast(t('boards.datasetRefreshFailed'), false)
       }
     }
     if (widgets.length === 0) {

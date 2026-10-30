@@ -241,8 +241,8 @@ describe('buildTikTokReadingSummary', () => {
     const api = tiktokApi({
       report: () =>
         reportResponse([
-          row({ date: '2026-09-18', campaignName: '昨日', spend: 90 }),
-          row({ date: '2026-09-19', campaignName: '今日进行中', spend: 30 })
+          row({ date: '2026-09-19', campaignName: '昨日', spend: 90 }),
+          row({ date: '2026-09-20', campaignName: '今日进行中', spend: 30 })
         ])
     })
     const result = await buildTikTokReadingSummary(
@@ -252,8 +252,8 @@ describe('buildTikTokReadingSummary', () => {
     if ('ok' in result) throw new Error(`expected a summary, got ${result.error}`)
     // Only the newest stat day is summed, and the shown window says that day.
     expect(result.totals.spend).toBe(30)
-    expect(result.startDate).toBe('2026-09-19')
-    expect(result.endDate).toBe('2026-09-19')
+    expect(result.startDate).toBe('2026-09-20')
+    expect(result.endDate).toBe('2026-09-20')
     expect(result.topCampaigns.map((campaign) => campaign.name)).toEqual(['今日进行中'])
   })
 
