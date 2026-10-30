@@ -78,7 +78,7 @@ export function SaveMessageToTaskDialog({
   const valid = !!cwd && !!prompt.trim()
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/75 p-4 backdrop-blur-sm">
+    <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-ink-950/75 p-4 backdrop-blur-sm">
       <section
         role="dialog"
         aria-modal="true"

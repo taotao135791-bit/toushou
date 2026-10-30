@@ -17,6 +17,7 @@ import {
   groupAggregate
 } from '@shared/datasets'
 import { usdHint, useFxRates } from '../../lib/fxRates'
+import { useTweenNumber } from '../../lib/useTweenNumber'
 import { useAppStore } from '../../store'
 import { useT } from '../../i18n'
 
@@ -52,6 +53,8 @@ export interface WidgetBodyProps {
    *  marks the 今天 scope — the account's CURRENT stat day, not a calendar
    *  date (stat days live in the account's timezone). */
   masterWindow?: { start: string; end: string; latestDay?: boolean }
+  /** First dataset snapshot still loading (cards show skeletons). */
+  datasetsLoading?: boolean
 }
 
 function configOp(value: unknown): DatasetOp {
@@ -138,8 +141,27 @@ function resolveBinding(
   return { kind: 'ok', dataset, metricIndex, dimIndex }
 }
 
-function BindingPlaceholder({ binding, widget }: { binding: Binding; widget: BoardWidget }) {
+function BindingPlaceholder({
+  binding,
+  widget,
+  loading = false
+}: {
+  binding: Binding
+  widget: BoardWidget
+  loading?: boolean
+}) {
   const t = useT()
+  // First dataset snapshot still loading: keep the card's geometry with a
+  // shimmer instead of flashing "dataset not available yet" then popping to
+  // numbers a beat later.
+  if (loading && binding.kind === 'missing-dataset') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-3">
+        <div className="skeleton h-8 w-2/3" />
+        <div className="skeleton h-2.5 w-1/3" />
+      </div>
+    )
+  }
   const text =
     binding.kind === 'missing-dataset'
       ? // Template widgets bind by dataset NAME and may legitimately point at a
@@ -199,14 +221,26 @@ function NoteBody({ widget }: { widget: BoardWidget }) {
   )
 }
 
+/** The big KPI number: tweens toward its new value instead of snapping. */
+function CounterValue({ value, className }: { value: number | null; className: string }) {
+  const shown = useTweenNumber(value)
+  return (
+    <div className={className}>
+      {shown === null ? '—' : shown.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+    </div>
+  )
+}
+
 function CounterBody({
   widget,
   datasets,
-  masterWindow
+  masterWindow,
+  datasetsLoading
 }: {
   widget: BoardWidget
   datasets: BoardDataset[]
   masterWindow?: { start: string; end: string; latestDay?: boolean }
+  datasetsLoading?: boolean
 }) {
   const label = typeof widget.config.label === 'string' ? widget.config.label : ''
   const fxRates = useFxRates()
@@ -216,7 +250,7 @@ function CounterBody({
   let scopeLabel: string | null = null
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, false, masterWindow)
-    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
+    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
     // The live 口径 label: what window the number actually covers (the
     // widget's own title is static text and must never mislead about scope).
     scopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
@@ -258,9 +292,7 @@ function CounterBody({
           {scopeLabel}
         </span>
       )}
-      <div className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream">
-        {value === null ? '—' : value.toLocaleString()}
-      </div>
+      <CounterValue value={value} className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream" />
       {usdHintText && (
         <div className="text-center text-[10.5px] leading-4 tabular-nums text-cream-faint">{usdHintText}</div>
       )}
@@ -402,12 +434,14 @@ function ChartBody({
   widget,
   bar,
   datasets,
-  masterWindow
+  masterWindow,
+  datasetsLoading
 }: {
   widget: BoardWidget
   bar: boolean
   datasets: BoardDataset[]
   masterWindow?: { start: string; end: string; latestDay?: boolean }
+  datasetsLoading?: boolean
 }) {
   const t = useT()
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -422,7 +456,7 @@ function ChartBody({
   let metricName = ''
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, true, masterWindow)
-    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
+    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
     chartScopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
     const grouped = groupAggregate(
       binding.dataset,
@@ -1015,7 +1049,7 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   )
 }
 
-export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWindow }: WidgetBodyProps) {
+export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWindow, datasetsLoading }: WidgetBodyProps) {
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -1032,13 +1066,13 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWi
     case 'note':
       return <NoteBody widget={widget} />
     case 'counter':
-      return <CounterBody widget={widget} datasets={datasets} masterWindow={masterWindow} />
+      return <CounterBody widget={widget} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
     case 'gauge':
       return <GaugeBody widget={widget} />
     case 'chart-line':
-      return <ChartBody widget={widget} bar={false} datasets={datasets} masterWindow={masterWindow} />
+      return <ChartBody widget={widget} bar={false} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
     case 'chart-bar':
-      return <ChartBody widget={widget} bar={true} datasets={datasets} masterWindow={masterWindow} />
+      return <ChartBody widget={widget} bar={true} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
     case 'todo':
       return <TodoBody widget={widget} onConfigChange={onConfigChange} />
     case 'link':

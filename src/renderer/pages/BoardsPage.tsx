@@ -283,6 +283,8 @@ export default function BoardsPage() {
   const [saveFailed, setSaveFailed] = useState(false)
   const [datasets, setDatasets] = useState<BoardDataset[]>([])
   const [datasetsLoadFailed, setDatasetsLoadFailed] = useState(false)
+  /** First snapshot not in yet: cards show skeletons, not "no data" flashes. */
+  const [datasetsReady, setDatasetsReady] = useState(false)
   const [datasetsOpen, setDatasetsOpen] = useState(false)
   const [fileDrag, setFileDrag] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -325,6 +327,7 @@ export default function BoardsPage() {
         setDatasets([])
         setDatasetsLoadFailed(true)
       }
+      setDatasetsReady(true)
     })()
     return () => {
       alive = false
@@ -1218,6 +1221,7 @@ export default function BoardsPage() {
           key={widget.id}
           widget={widget}
           datasets={datasets}
+          datasetsLoading={!datasetsReady}
           boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
           masterWindow={
@@ -1678,7 +1682,7 @@ export default function BoardsPage() {
               </button>
             </div>
           ) : (
-            <div className="px-4 pb-24 pt-4">
+            <div key={current?.id ?? 'none'} className="soft-swap px-4 pb-24 pt-4">
               <Grid
                 className="layout"
                 layout={gridLayout}
@@ -1994,7 +1998,7 @@ export default function BoardsPage() {
 
       {datasetsOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => setDatasetsOpen(false)}
         >
           <div
@@ -2092,7 +2096,7 @@ export default function BoardsPage() {
 
       {detailOpen && current && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => setDetailOpen(false)}
         >
           <div
@@ -2204,7 +2208,7 @@ export default function BoardsPage() {
 
       {composeOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => setComposeOpen(false)}
         >
           <div
@@ -2269,7 +2273,7 @@ export default function BoardsPage() {
 
       {readingOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => {
             if (!readingSubmitting) setReadingOpen(false)
           }}

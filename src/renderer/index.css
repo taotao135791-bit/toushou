@@ -457,3 +457,104 @@
 .board-widget .border-line {
   border-color: var(--board-widget-border) !important;
 }
+
+/* ------------------------------------------------------------------
+   Motion system (v1.5). One vocabulary for the whole app: short, eased,
+   transform/opacity only (compositor-friendly — never animate layout).
+   Jump-cuts become fades/rises; lists glide instead of snapping; dialogs
+   scale in and out. prefers-reduced-motion turns all of it off.
+   ------------------------------------------------------------------ */
+:root {
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 260ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* Page swap: a new route fades + rises a hair instead of hard-cutting. */
+.page-enter {
+  animation: page-enter var(--dur-3) var(--ease-out) both;
+  will-change: opacity, transform;
+}
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(6px) scale(0.997); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Dialogs: backdrop fades, panel scales from 0.96. Exit reverses quickly. */
+.dialog-backdrop {
+  animation: backdrop-in var(--dur-2) var(--ease-out) both;
+}
+.dialog-backdrop.is-closing {
+  animation: backdrop-out var(--dur-1) var(--ease-in-out) both;
+}
+@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes backdrop-out { from { opacity: 1; } to { opacity: 0; } }
+
+.dialog-panel {
+  animation: panel-in var(--dur-2) var(--ease-out) both;
+}
+.dialog-panel.is-closing {
+  animation: panel-out var(--dur-1) var(--ease-in-out) both;
+}
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes panel-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(4px) scale(0.98); }
+}
+
+/* A row that just appeared (new session, new task…) eases in. */
+.row-in {
+  animation: row-in var(--dur-2) var(--ease-out) both;
+}
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Skeleton shimmer while the first dataset snapshot loads: cards keep their
+   geometry instead of flashing "no data" then popping to numbers. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgb(var(--bg-sunken));
+  border-radius: 8px;
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  animation: shimmer 1.2s var(--ease-in-out) infinite;
+}
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+/* Column content that swaps in after a reload (dataset numbers, widget
+   bodies): a soft cross-fade instead of a snap. */
+.soft-swap {
+  animation: soft-swap var(--dur-2) var(--ease-out);
+}
+@keyframes soft-swap { from { opacity: 0.35; } to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter,
+  .dialog-backdrop,
+  .dialog-panel,
+  .row-in,
+  .soft-swap {
+    animation: none !important;
+  }
+  .skeleton::after {
+    animation: none !important;
+  }
+  [data-flip-id] {
+    transition: none !important;
+  }
+}

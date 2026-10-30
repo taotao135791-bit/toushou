@@ -34,6 +34,7 @@ import { useNotice, showNotice } from '../lib/notice'
 import { cleanSessionName } from '@shared/promptTitle'
 import { useModalBoundary } from '../lib/modalBoundary'
 import { ConfirmDialog } from './ConfirmDialog'
+import { useFlip } from '../lib/useFlip'
 import {
   recordDurableUuid,
   recordsForWorkspace,
@@ -531,6 +532,10 @@ export default function Sidebar() {
   // Modal delete confirmation (same centered-dialog pattern as rename): the
   // old two-stage inline confirm could not be cancelled once armed and never
   // said WHAT gets removed — deleting takes every durable copy of the uuid.
+  // Sidebar rows glide to their new slot when order changes (session floats
+  // to top on switch-away) instead of jump-cutting.
+  const listRef = useRef<HTMLDivElement | null>(null)
+  useFlip(listRef)
   const [pendingDelete, setPendingDelete] = useState<
     { kind: 'live' | 'history' | 'global'; id: string; title: string } | null
   >(null)
@@ -796,6 +801,7 @@ export default function Sidebar() {
     return (
       <div
         key={session.id}
+        data-flip-id={`s:${session.id}`}
         onClick={() => {
           setCurrentSessionId(session.id)
           navigate('/')
@@ -970,6 +976,7 @@ export default function Sidebar() {
     return (
       <div
         key={entry.key}
+        data-flip-id={`e:${entry.key}`}
         onClick={unarchiveAndOpen}
         title={entry.title}
         className="group flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-[6px] transition-colors duration-150 hover:bg-overlay"
@@ -1012,6 +1019,7 @@ export default function Sidebar() {
     return (
       <div
         key={info.id}
+        data-flip-id={`h:${info.id}`}
         onClick={() => void handleResumeHistory(info)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -1368,7 +1376,7 @@ export default function Sidebar() {
         </div>
       )}
 
-      <div className="mt-5 flex-1 overflow-y-auto px-2.5 pb-4">
+      <div className="mt-5 flex-1 overflow-y-auto px-2.5 pb-4" ref={listRef}>
         <div className="flex items-center justify-between px-2 pb-1.5">
           <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
             {t('sidebar.sessions')}
@@ -1543,14 +1551,14 @@ export default function Sidebar() {
         // The backdrop deliberately does NOT cancel: a stray click outside
         // must not eat a half-edited title. Explicit ✕ / Escape cancels;
         // ✓ / Enter commits.
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div
             ref={renameDialogRef}
             role="dialog"
             aria-modal="true"
             aria-label={t('sidebar.rename')}
             tabIndex={-1}
-            className="w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
+            className="dialog-panel w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-2 text-[12px] font-medium text-cream">{t('sidebar.rename')}</div>
