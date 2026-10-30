@@ -252,6 +252,7 @@ export interface ElectronAPI {
   listBoards: () => Promise<KanbanBoard[]>
   /** Whole-board upsert; rejects structurally invalid boards. */
   saveBoard: (board: KanbanBoard) => Promise<KanbanSaveResult>
+  reorderBoards: (ids: string[]) => Promise<KanbanSaveResult>
   /** Direct panel refresh of one FB reading module (no chat session). */
   refreshFbReading: (request: {
     alias: string
@@ -721,6 +722,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.STORE_SET, key, value),
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   saveBoard: (board: KanbanBoard) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE, board),
+  reorderBoards: (ids: string[]) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REORDER, ids),
   refreshFbReading: (request: { alias: string; act: string; businessId: string | null; range: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_READING_REFRESH, request),
   refreshFbAccountBalance: (request: { alias: string; act: string; businessId: string | null }) =>

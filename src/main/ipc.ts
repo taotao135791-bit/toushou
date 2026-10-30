@@ -140,7 +140,7 @@ import { readSessionTranscript } from './sessionTranscript'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
-import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, saveBoard } from './boards'
+import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from './boards'
 import { AdsCopyModelStore, validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
 import { adsCopyModelStore, discoverAdsCopyModels, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { getUsdRates } from './integrations/tiktok/fxRates'
@@ -2497,6 +2497,10 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown) => {
     return saveBoard(board)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BOARDS_REORDER, async (_event, ids: unknown) => {
+    return reorderBoards(ids)
   })
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_DELETE, async (_event, id: unknown) => {

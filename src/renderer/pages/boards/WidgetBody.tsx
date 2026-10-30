@@ -16,6 +16,7 @@ import {
   filterDatasetRowsByWindow,
   groupAggregate
 } from '@shared/datasets'
+import { usdHint, useFxRates } from '../../lib/fxRates'
 import { useAppStore } from '../../store'
 import { useT } from '../../i18n'
 
@@ -161,17 +162,6 @@ function NoteBody({ widget }: { widget: BoardWidget }) {
   )
 }
 
-/** Module-level FX cache: one IPC per mount batch, shared by every counter. */
-let fxRatesPromise: Promise<Record<string, number> | null> | null = null
-function useFxRates(): Record<string, number> | null {
-  const [rates, setRates] = useState<Record<string, number> | null>(null)
-  useEffect(() => {
-    fxRatesPromise ??= window.electronAPI.fxRatesGet().catch(() => null)
-    void fxRatesPromise.then(setRates)
-  }, [])
-  return rates
-}
-
 function CounterBody({
   widget,
   datasets,
@@ -184,7 +174,8 @@ function CounterBody({
   const label = typeof widget.config.label === 'string' ? widget.config.label : ''
   const fxRates = useFxRates()
   let value: number | null
-  let usdHint: string | null = null
+  let usdHintText: string | null = null
+  let currencyBadge: string | null = null
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, false, masterWindow)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
@@ -195,23 +186,29 @@ function CounterBody({
         binding.dataset.rows.map((r) => r[binding.metricIndex] ?? ''),
         configOp(widget.config.op)
       )
-      // Non-USD money metrics get a small ≈$ conversion under the number.
+      // Non-USD money metrics: a corner currency badge + a small ≈$ conversion.
       const currency = datasetMoneyCurrency(binding.dataset, configStr(widget.config.metric))
-      const rate = currency ? fxRates?.[currency] : undefined
-      if (currency && rate && typeof value === 'number') {
-        usdHint = `≈ $${(value * rate).toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`
-      }
+      currencyBadge = currency
+      if (currency && typeof value === 'number') usdHintText = usdHint(value, currency, fxRates)
     }
   } else {
     value = typeof widget.config.value === 'number' ? widget.config.value : 0
   }
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-1.5">
+    <div className="relative flex h-full flex-col items-center justify-center gap-1.5">
+      {currencyBadge && (
+        <span
+          className="absolute right-0 top-0 rounded-full border border-line px-1 py-px text-[9px] font-medium uppercase tracking-wider text-cream-faint"
+          title={currencyBadge}
+        >
+          {currencyBadge}
+        </span>
+      )}
       <div className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream">
         {value === null ? '—' : value.toLocaleString()}
       </div>
-      {usdHint && (
-        <div className="text-center text-[10.5px] leading-4 tabular-nums text-cream-faint">{usdHint}</div>
+      {usdHintText && (
+        <div className="text-center text-[10.5px] leading-4 tabular-nums text-cream-faint">{usdHintText}</div>
       )}
       {label && (
         <div className="text-[10.5px] uppercase tracking-[0.14em] text-cream-faint">{label}</div>

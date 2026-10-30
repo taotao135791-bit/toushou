@@ -15,6 +15,7 @@ import {
 } from '@shared/tiktokReport'
 import { formatReadingWindow, tiktokReadingRangeWindow } from '@shared/todayReading'
 import { ttMcpReadingEvidence } from '@shared/readingEvidence'
+import { usdHint, useFxRates } from '../../lib/fxRates'
 import { ReadingEvidenceLine } from './ReadingEvidenceLine'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
@@ -63,6 +64,7 @@ function Metric({
 
 export function TTReadingBody({ widget }: { widget: BoardWidget }) {
   const t = useT()
+  const fxRates = useFxRates()
   const navigate = useNavigate()
   const language = useAppStore((state) => state.language)
   const advertiserIds = typeof widget.config.advertiserIds === 'string' ? widget.config.advertiserIds : ''
@@ -219,7 +221,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
           <div className="grid grid-cols-2 gap-1.5">
             <Metric
               emphasis
-              label={t('boards.tt.metric.spend')}
+              label={summary?.currency && summary.currency !== 'USD' ? `${t('boards.tt.metric.spend')} (${summary.currency})` : t('boards.tt.metric.spend')}
               value={totals ? money(formatTikTokAmount(totals.spend)) : placeholder}
             />
             <Metric
@@ -243,6 +245,12 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
               value={totals ? money(formatTikTokCostPerConversion(totals.spend, totals.conversions)) : placeholder}
             />
           </div>
+
+          {summary?.currency && summary.currency !== 'USD' && totals && usdHint(totals.spend, summary.currency, fxRates) && (
+            <p className="text-[11px] leading-4 tabular-nums text-cream-faint">
+              {usdHint(totals.spend, summary.currency, fxRates)}
+            </p>
+          )}
 
           <div className="min-h-0 flex-1 overflow-auto">
             {summary && summary.topCampaigns.length > 0 ? (

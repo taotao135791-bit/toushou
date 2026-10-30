@@ -61,6 +61,8 @@ export const IPC_CHANNELS = {
   STORE_SET: 'store:set',
   BOARDS_LIST: 'boards:list',
   BOARDS_SAVE: 'boards:save',
+  /** Drag-to-reorder the board tabs; the id set must match the store. */
+  BOARDS_REORDER: 'boards:reorder',
   FB_READING_REFRESH: 'fb-reading:refresh',
   FB_READING_BALANCE_REFRESH: 'fb-reading:balance:refresh',
   FB_READING_BALANCES_LIST: 'fb-reading:balances:list',

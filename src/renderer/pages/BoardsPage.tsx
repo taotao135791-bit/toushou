@@ -240,6 +240,8 @@ export default function BoardsPage() {
   const [boardsLoadFailed, setBoardsLoadFailed] = useState(false)
   const [boardsLoadGeneration, setBoardsLoadGeneration] = useState(0)
   const [currentId, setCurrentId] = useState<string | null>(null)
+  // Drag-to-reorder board tabs: the id rides the DOM event (no re-render churn).
+  const dragBoardId = useRef<string | null>(null)
   const [surface, setSurface] = useState<'today' | 'board'>('today')
   const [creating, setCreating] = useState(false)
   const [newBoardName, setNewBoardName] = useState('')
@@ -1248,7 +1250,36 @@ export default function BoardsPage() {
             return (
               <div
                 key={b.id}
+                draggable
+                onDragStart={(e) => {
+                  dragBoardId.current = b.id
+                  e.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragOver={(e) => {
+                  if (dragBoardId.current && dragBoardId.current !== b.id) e.preventDefault()
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const from = dragBoardId.current
+                  dragBoardId.current = null
+                  if (!from || from === b.id) return
+                  setBoards((prev) => {
+                    const list = prev ?? []
+                    const fromIndex = list.findIndex((item) => item.id === from)
+                    const toIndex = list.findIndex((item) => item.id === b.id)
+                    if (fromIndex < 0 || toIndex < 0) return prev
+                    const next = [...list]
+                    const [moved] = next.splice(fromIndex, 1)
+                    next.splice(toIndex, 0, moved)
+                    void window.electronAPI.reorderBoards(next.map((item) => item.id))
+                    return next
+                  })
+                }}
+                onDragEnd={() => {
+                  dragBoardId.current = null
+                }}
                 onClick={() => switchBoard(b.id)}
+                title={t('boards.tabDragHint')}
                 className={`flex max-w-[200px] shrink-0 cursor-pointer items-center gap-1 rounded-full border px-3 py-1 text-[12px] transition ${
                   active
                     ? 'border-line bg-ink-850 text-cream shadow-card'

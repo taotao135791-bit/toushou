@@ -70,6 +70,35 @@ export function listBoards(file: string = defaultBoardsFile()): KanbanBoard[] {
   return readBoards(file)
 }
 
+/**
+ * Persist a new tab order (drag-to-reorder). The id set must match the store
+ * exactly — no additions, no drops — so a stale drag can never delete or
+ * resurrect boards; only the order changes.
+ */
+export function reorderBoards(ids: unknown, file: string = defaultBoardsFile()): KanbanSaveResult {
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id): id is string => typeof id === 'string')) {
+    return { ok: false, error: 'invalid-order' }
+  }
+  let boards: KanbanBoard[]
+  try {
+    boards = readBoards(file)
+  } catch {
+    return { ok: false, error: 'board-store-unreadable' }
+  }
+  const current = new Set(boards.map((b) => b.id))
+  const incoming = new Set(ids)
+  if (current.size !== incoming.size || [...current].some((id) => !incoming.has(id))) {
+    return { ok: false, error: 'order-mismatch' }
+  }
+  const byId = new Map(boards.map((b) => [b.id, b]))
+  try {
+    writeBoards(file, ids.map((id) => byId.get(id)!))
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 /** Whole-board upsert, keyed by board id. Validates before touching disk. */
 export function saveBoard(raw: unknown, file: string = defaultBoardsFile()): KanbanSaveResult {
   const board = validateBoard(raw, true)
