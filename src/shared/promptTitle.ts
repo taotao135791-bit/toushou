@@ -5,9 +5,19 @@
  * so their stored values can never drift apart.
  */
 
-/** Durable session names: collapse whitespace, cap at 60 (omp's own limit). */
+/** Keep the 60 UTF-16 unit OMP limit without splitting a surrogate pair. */
+function takeUtf16(value: string, limit: number): string {
+  let result = ''
+  for (const character of value) {
+    if (result.length + character.length > limit) break
+    result += character
+  }
+  return result
+}
+
+/** Durable session names: collapse whitespace and cap at 60 UTF-16 units. */
 export function cleanSessionName(name: string): string {
-  return name.replace(/\s+/g, ' ').trim().slice(0, 60)
+  return takeUtf16(name.replace(/\s+/g, ' ').trim(), 60)
 }
 
 /**
@@ -18,13 +28,15 @@ export function cleanSessionName(name: string): string {
 export function dedupeSessionTitle(candidate: string, taken: Iterable<string>): string {
   const used = new Set(taken)
   if (!used.has(candidate)) return candidate
-  for (let n = 2; n < 100; n++) {
+  // Each candidate uses a distinct suffix, so there is always a free one
+  // after at most used.size + 1 attempts.
+  for (let n = 2; n <= used.size + 2; n++) {
     const suffix = ` ${n}`
-    const base = Array.from(candidate).slice(0, 60 - suffix.length).join('').trimEnd()
+    const base = takeUtf16(candidate, 60 - suffix.length).trimEnd()
     const next = `${base}${suffix}`
     if (!used.has(next)) return next
   }
-  return candidate
+  throw new Error('Could not allocate a unique session title')
 }
 
 /**

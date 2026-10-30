@@ -69,6 +69,14 @@ const STATUS_BUSY: Partial<Record<SessionRuntimeState, boolean>> = {
   failed: false
 }
 
+function commitPendingSessionActivity(sessions: Session[], activeSessionId: string | null): Session[] {
+  return sessions.map((session) =>
+    session.pendingActivityAt !== undefined && session.id !== activeSessionId
+      ? { ...session, lastActivityAt: session.pendingActivityAt, pendingActivityAt: undefined }
+      : session
+  )
+}
+
 /**
  * App and Settings can both refresh the runtime overview. Only the most
  * recently-started request may update the singleton store: otherwise an older
@@ -500,7 +508,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setCurrentWorkspace: (grant) =>
     set((state) => {
-      if (!grant) return { currentWorkspace: null, currentSessionId: null }
+      if (!grant) return {
+        currentWorkspace: null,
+        currentSessionId: null,
+        sessions: commitPendingSessionActivity(state.sessions, null)
+      }
       // The MRU stores the grant's canonical realPath — that is what Main
       // persists for sessions (session.cwd), so display-spelling variants of
       // the same folder can't produce duplicate entries or orphan groups.
@@ -515,7 +527,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return {
         currentWorkspace: grant,
         recentProjects,
-        ...(workspaceChanged ? { currentSessionId: null } : {})
+        ...(workspaceChanged ? {
+          currentSessionId: null,
+          sessions: commitPendingSessionActivity(state.sessions, null)
+        } : {})
       }
     }),
   activateRecentWorkspace: async (recentId) => {
@@ -631,12 +646,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous.resumedHistoryId === guarded.resumedHistoryId &&
         previous.origin === guarded.origin &&
         previous.remoteReadonly === guarded.remoteReadonly &&
+        previous.lastActivityAt === guarded.lastActivityAt &&
         previous.pendingActivityAt === guarded.pendingActivityAt
       const nextCurrentSessionId = select ? guarded.id : state.currentSessionId
       if (same && nextCurrentSessionId === state.currentSessionId) return state
       changed = true
       return {
-        sessions: [guarded, ...state.sessions.filter((item) => item.id !== guarded.id)],
+        sessions: commitPendingSessionActivity(
+          [guarded, ...state.sessions.filter((item) => item.id !== guarded.id)], nextCurrentSessionId
+        ),
         sessionRecords: upsertLiveSessionRecord(state.sessionRecords, guarded),
         currentSessionId: nextCurrentSessionId
       }
@@ -726,11 +744,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentSessionId,
       // Leaving a session commits its pending interaction stamp — the row
       // re-floats to the top only now, never while the session is open.
-      sessions: state.sessions.map((s) =>
-        s.pendingActivityAt !== undefined && s.id !== currentSessionId
-          ? { ...s, lastActivityAt: s.pendingActivityAt, pendingActivityAt: undefined }
-          : s
-      ),
+      sessions: commitPendingSessionActivity(state.sessions, currentSessionId),
       // Selecting a session marks it read
       unreadSessionIds:
         currentSessionId && state.unreadSessionIds[currentSessionId]
@@ -1205,11 +1219,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       const current = state.sessions.find((session) => session.id === sessionId)
       if (!current) return state
       return {
-        // Only a PENDING stamp: the sidebar row must not re-float while the
-        // session is still open — setCurrentSessionId commits it on switch-away.
-        sessions: state.sessions.map((s) =>
-          s.id === sessionId ? { ...s, pendingActivityAt: Date.now() } : s
-        )
+        // Defer the active row's reorder until switch-away; a background
+        // queue has already been left and must update immediately.
+        sessions: state.sessions.map((s) => s.id !== sessionId ? s : (
+          state.currentSessionId === sessionId
+            ? { ...s, pendingActivityAt: Date.now() }
+            : { ...s, lastActivityAt: Date.now(), pendingActivityAt: undefined }
+        ))
       }
     }),
   maybeNameSession: async (sessionId) => {
@@ -1224,8 +1240,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const source = typeof firstUser?.content === 'string' ? firstUser.content : ''
     const name = summarizePromptTitle(source, state.language === 'zh' ? '链接' : 'link')
     if (!name) return
-    const ok = await window.electronAPI.setSessionName(sessionId, name)
-    if (ok) get().setSessionTitle(sessionId, name)
+    const result = await window.electronAPI.setSessionName(sessionId, name)
+    if (result) get().setSessionTitle(sessionId, result.title)
   },
   setSetupComplete: (setupComplete) => {
     set({ setupComplete })

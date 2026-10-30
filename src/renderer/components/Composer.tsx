@@ -733,6 +733,7 @@ export default memo(function Composer({
       images: imgs?.map(({ data, mimeType }) => ({ data, mimeType }))
     })
     latest.recordSteer(sessionId, text)
+    latest.touchSession(sessionId)
     latest.setSessionError(sessionId, null)
     return true
   }

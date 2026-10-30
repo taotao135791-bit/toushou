@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useRef } from 'react'
+import { useModalBoundary } from '../lib/modalBoundary'
 import { useT } from '../i18n'
 
 export interface ConfirmDialogRequest {
@@ -21,16 +22,13 @@ export interface ConfirmDialogRequest {
  */
 export function ConfirmDialog({ request, onClose }: { request: ConfirmDialogRequest; onClose: () => void }) {
   const t = useT()
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useModalBoundary(dialogRef, true, onClose)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="alertdialog"
         aria-modal="true"
         aria-label={request.title}

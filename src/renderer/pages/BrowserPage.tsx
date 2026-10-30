@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, ExternalLink, Globe2, Loader2, MessageSquareText
 import { BrowserPanelState } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
+import { useBrowserSuspendedForModal } from '../lib/modalBoundary'
 
 /**
  * In-app browser. The page itself is only a toolbar plus an empty placeholder;
@@ -21,6 +22,8 @@ interface BrowserPageProps {
 
 export default function BrowserPage({ embedded = false, active = true, initialUrl: requestedInitialUrl, onClose }: BrowserPageProps) {
   const t = useT()
+  const suspended = useBrowserSuspendedForModal()
+  const shownOnce = useRef(false)
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const placeholderRef = useRef<HTMLDivElement>(null)
@@ -54,7 +57,7 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
   // once from ?url= so re-renders never retrigger a load.
   const initialUrl = requestedInitialUrl ?? searchParams.get('url')
   useLayoutEffect(() => {
-    if (!active) {
+    if (!active || suspended) {
       void window.electronAPI.browserHide()
       return
     }
@@ -75,14 +78,16 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
     const observer = new ResizeObserver(syncBounds)
     observer.observe(el)
     window.addEventListener('resize', syncBounds)
-    void window.electronAPI.browserShow(readBounds(), initialUrl ?? undefined)
+    const url = shownOnce.current ? undefined : initialUrl ?? undefined
+    shownOnce.current = true
+    void window.electronAPI.browserShow(readBounds(), url)
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', syncBounds)
       void window.electronAPI.browserHide()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active])
+  }, [active, suspended])
 
   // An extension open (or a fresh /browser?url=… navigation) while the page
   // is already mounted must drive the panel — the mount effect alone would

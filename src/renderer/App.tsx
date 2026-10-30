@@ -359,7 +359,7 @@ function App() {
       (!session.title || session.title === projectName) && info.title !== 'Untitled'
         ? info.title
         : session.title
-    state.addSession({ ...session, title })
+    state.addSession({ ...session, title, lastActivityAt: info.timestamp })
     state.setMessages(session.id, restored)
     state.removeHistorySession(info.id)
     state.applyHistoricalAgents(session.id, historicalAgents ?? [])

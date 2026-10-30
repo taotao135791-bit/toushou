@@ -8,6 +8,7 @@ import { CheckpointInfo } from '@shared/types'
 interface MessageListProps {
   messages: MessageLike[]
   sessionId?: string | null
+  onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
 }
 
 /**
@@ -26,7 +27,7 @@ function isTurnStart(message: MessageLike): boolean {
   return message.role === 'user' && message.kind !== 'steer'
 }
 
-function MessageList({ messages, sessionId = null }: MessageListProps) {
+function MessageList({ messages, sessionId = null, onRetry }: MessageListProps) {
   const streaming = useAppStore((s) => (sessionId ? Boolean(s.busy[sessionId]) : false))
   // Live progress / frozen summary derive from the single execution projection
   // — never from a second per-turn counter store.
@@ -123,7 +124,7 @@ function MessageList({ messages, sessionId = null }: MessageListProps) {
       turnEndIdx = i
       nodes.push(
         <div key={message.id} className={`msg-row ${gapBefore(prev, message.role === 'user')}`}>
-          <MessageItem message={message} index={i} sessionId={sessionId} />
+          <MessageItem message={message} index={i} sessionId={sessionId} onRetry={onRetry} />
         </div>
       )
       prev = message

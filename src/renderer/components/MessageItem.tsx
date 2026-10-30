@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowRight,
@@ -32,6 +32,7 @@ interface MessageItemProps {
   /** Index within the session's message array; -1 when unknown. */
   index?: number
   sessionId?: string | null
+  onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
 }
 
 /** Collapsible card for a skill message: the full SOP still rides in the
@@ -75,8 +76,10 @@ function SkillMessageCard({
   )
 }
 
-function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps) {
+function MessageItem({ message, index = -1, sessionId = null, onRetry }: MessageItemProps) {
   const [copied, setCopied] = useState(false)
+  const [retrying, setRetrying] = useState(false)
+  const retryInFlight = useRef(false)
   const [restoring, setRestoring] = useState(false)
   const [thinkingOpen, setThinkingOpen] = useState(false)
   const [boardDialogOpen, setBoardDialogOpen] = useState(false)
@@ -243,23 +246,19 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
               <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-px text-[10px] font-medium text-red-500">
                 {t('msg.sendFailed')}
               </span>
-              {message.role === 'user' && (
+              {message.role === 'user' && sessionId && onRetry && (
                 <button
+                  disabled={retrying}
                   onClick={() => {
-                    // One-click resend through the composer's prefill+autosend
-                    // path — same pipeline as a fresh send (checkpoint, tags,
-                    // queue handling). A half-written draft is kept and the
-                    // retry text lands below it, mirroring edit-and-resend.
-                    const store = useAppStore.getState()
-                    const existing = sessionId ? store.composerDrafts[sessionId]?.text : undefined
-                    const merged =
-                      existing && existing.trim()
-                        ? `${existing}\n\n${message.content}`
-                        : String(message.content ?? '')
-                    store.setComposerAutosend(true)
-                    store.setComposerPrefill(merged)
+                    if (retryInFlight.current) return
+                    retryInFlight.current = true
+                    setRetrying(true)
+                    void onRetry(sessionId, message).catch(() => false).finally(() => {
+                      retryInFlight.current = false
+                      setRetrying(false)
+                    })
                   }}
-                  className="rounded-full border border-line px-2 py-px text-[10px] text-cream-dim transition hover:border-accent/50 hover:text-cream"
+                  className="rounded-full border border-line px-2 py-px text-[10px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-50"
                 >
                   {t('msg.retry')}
                 </button>

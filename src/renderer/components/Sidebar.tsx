@@ -32,6 +32,7 @@ import { MessageLike, useAppStore } from '../store'
 import { useT, modShortcut } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
 import { cleanSessionName } from '@shared/promptTitle'
+import { useModalBoundary } from '../lib/modalBoundary'
 import {
   recordDurableUuid,
   recordsForWorkspace,
@@ -532,6 +533,10 @@ export default function Sidebar() {
   const [pendingDelete, setPendingDelete] = useState<
     { kind: 'live' | 'history' | 'global'; id: string; title: string } | null
   >(null)
+  const renameDialogRef = useRef<HTMLDivElement>(null)
+  const deleteDialogRef = useRef<HTMLDivElement>(null)
+  useModalBoundary(renameDialogRef, Boolean(renamingId), () => setRenamingId(null))
+  useModalBoundary(deleteDialogRef, Boolean(pendingDelete), () => setPendingDelete(null))
   const confirmPendingDelete = () => {
     if (!pendingDelete) return
     const target = pendingDelete
@@ -760,10 +765,10 @@ export default function Sidebar() {
     // the edit.
     void window.electronAPI
       .setSessionName(id, name)
-      .then((ok) => {
-        if (ok) {
+      .then((result) => {
+        if (result) {
           setRenamingId(null)
-          useAppStore.getState().setSessionTitle(id, name)
+          useAppStore.getState().setSessionTitle(id, result.title)
         } else {
           showNotice('sidebar.renameFailed')
         }
@@ -1541,6 +1546,11 @@ export default function Sidebar() {
         // ✓ / Enter commits.
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div
+            ref={renameDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('sidebar.rename')}
+            tabIndex={-1}
             className="w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1551,7 +1561,6 @@ export default function Sidebar() {
               onChange={(e) => setRenameDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') commitRename()
-                if (e.key === 'Escape') setRenamingId(null)
               }}
               maxLength={60}
               aria-label={t('sidebar.rename')}
@@ -1581,11 +1590,10 @@ export default function Sidebar() {
         // explicit 取消 / Escape cancels, 删除 confirms.
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setPendingDelete(null)
-          }}
         >
           <div
+            ref={deleteDialogRef}
+            tabIndex={-1}
             role="alertdialog"
             aria-modal="true"
             aria-label={t('sidebar.deleteDialog.title')}

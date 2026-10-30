@@ -83,9 +83,8 @@ export class TikTokAdsConnectionManager {
   private lastConnectedAt: number | undefined
   /** Authorize URL while waiting for the browser round-trip (renderer shows a manual-open link). */
   private authorizationUrl: string | undefined
-  /** Lazily-created fetch session; rebuilt when the resolved proxy rules change. */
-  private fetchSession: Promise<Session> | null = null
-  private fetchSessionRules: string | null | undefined = undefined
+  /** In-memory sessions isolate simultaneous requests using different proxy rules. */
+  private readonly fetchSessions = new Map<string, Promise<Session>>()
 
   constructor(options: {
     credentialStore?: TikTokCredentialStore
@@ -107,19 +106,26 @@ export class TikTokAdsConnectionManager {
    * direct and dies wherever business-api.tiktok.com is unreachable without
    * a proxy. Route through a dedicated Chromium session instead: explicit
    * HTTPS_PROXY/HTTP_PROXY/NO_PROXY environment variables win when set;
-   * otherwise fall back to the OS proxy settings (any client's system-proxy
-   * toggle or PAC) — never forcing a direct connection.
+   * an explicit NO_PROXY match forces direct, and otherwise fall back to the
+   * OS proxy settings (any client's system-proxy toggle or PAC).
    */
   private fetchViaProxySession(url: string, init?: RequestInit): Promise<Response> {
-    const rules = resolveEnvProxyRules(url)
-    if (this.fetchSessionRules !== rules) {
-      this.fetchSessionRules = rules
-      const ses = session.fromPartition('tiktok-connect')
-      this.fetchSession = ses
-        .setProxy(rules ? { proxyRules: rules } : { mode: 'system' })
-        .then(() => ses)
+    const config = resolveEnvProxyRules(url)
+    const key = JSON.stringify(config)
+    let pending = this.fetchSessions.get(key)
+    if (!pending) {
+      // Sessions are in-memory (no persist: prefix), and a given partition's
+      // proxy never changes while requests using it are in flight.
+      const partition = `tiktok-connect-${createHash('sha256').update(key).digest('hex')}`
+      const ses = session.fromPartition(partition)
+      const created = ses.setProxy(config).then(() => ses)
+      pending = created.catch((error) => {
+        if (this.fetchSessions.get(key) === pending) this.fetchSessions.delete(key)
+        throw error
+      })
+      this.fetchSessions.set(key, pending)
     }
-    return this.fetchSession!.then((ses) => ses.fetch(url, init))
+    return pending.then((ses) => ses.fetch(url, init))
   }
 
   /** App-start hook: restore a stored connection (self-healing the mcp entry). */

@@ -31,6 +31,7 @@ import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
 import OpenWithMenu from './OpenWithMenu'
 import useElementWidth from '../lib/useElementWidth'
+import { retryFailedMessage } from '../lib/retryMessage'
 
 const EMPTY_MESSAGES: MessageLike[] = []
 const EMPTY_UI_REQUESTS: UiRequest[] = []
@@ -235,8 +236,6 @@ export default function ChatPanel() {
         content: trimmed,
         images: images?.map(({ data, mimeType }) => ({ data, mimeType }))
       })
-      // Real interaction: refresh sidebar recency. Mere viewing must not.
-      store.touchSession(sessionId)
       // Snapshot the worktree BEFORE the prompt can make its first edit, so the
       // checkpoint really is the "before" state of this turn. A checkpoint
       // failure must never swallow the prompt: send it, but tell the user
@@ -249,7 +248,7 @@ export default function ChatPanel() {
       }
       // Optimistic: show the working state until agent_end / error lands
       store.setBusy(sessionId, true)
-      const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images)
+      const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images).catch(() => false)
       if (!sent) {
         // The session's process is gone: never leave "Running" on and never
         // drain the parked queue into the void — flag the failure instead.
@@ -259,6 +258,7 @@ export default function ChatPanel() {
         store.updateMessage(sessionId, messageId, { failed: true })
         return false
       }
+      store.touchSession(sessionId)
       // Tag the turn with the ACTUAL dispatch-time model/thinking — the
       // historical turn keeps what it ran under, never later session state.
       void snapshot.then((snap) => {
@@ -273,6 +273,17 @@ export default function ChatPanel() {
     },
     [currentSessionId, cliAvailable]
   )
+
+  const handleRetry = useCallback(async (sessionId: string, message: MessageLike): Promise<boolean> => {
+    const state = useAppStore.getState()
+    return retryFailedMessage(sessionId, message, {
+      currentSessionId: state.currentSessionId,
+      busy: Boolean(state.busy[sessionId]),
+      enqueue: state.enqueueQueuedMessage,
+      send: handleSend,
+      createId: () => crypto.randomUUID()
+    })
+  }, [handleSend])
 
   const handleExport = async () => {
     if (!currentSessionId || exporting) return
@@ -556,7 +567,7 @@ export default function ChatPanel() {
           </div>
         ) : (
           <div className="mx-auto max-w-[760px]">
-            <MessageList messages={sessionMessages} sessionId={currentSessionId} />
+            <MessageList messages={sessionMessages} sessionId={currentSessionId} onRetry={handleRetry} />
             <ExecutionActivity sessionId={currentSessionId} />
             {showThinking && (
               <div className="msg-in flex items-center gap-1 px-6 pb-6">

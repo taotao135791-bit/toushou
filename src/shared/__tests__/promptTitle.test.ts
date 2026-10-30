@@ -81,6 +81,20 @@ describe('dedupeSessionTitle', () => {
     expect(dedupeSessionTitle('投放日报', ['投放日报', '投放日报 2', '投放日报 3'])).toBe('投放日报 4')
   })
 
+  it('keeps emoji intact and leaves room for the suffix under the UTF-16 limit', () => {
+    const name = '😀'.repeat(30)
+    const result = dedupeSessionTitle(name, [name])
+    expect(result).toBe('😀'.repeat(29) + ' 2')
+    expect(result.length).toBe(60)
+    expect(cleanSessionName(result)).toBe(result)
+    expect(cleanSessionName('a'.repeat(59) + '😀')).toBe('a'.repeat(59))
+  })
+
+  it('allocates a distinct suffix after more than 99 collisions', () => {
+    const taken = ['Daily', ...Array.from({ length: 120 }, (_, i) => `Daily ${i + 2}`)]
+    expect(dedupeSessionTitle('Daily', taken)).toBe('Daily 122')
+  })
+
   it('shortens the base, never the number, at the 60-char cap', () => {
     const long = '长'.repeat(60)
     const result = dedupeSessionTitle(long, [long])

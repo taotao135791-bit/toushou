@@ -375,8 +375,8 @@ export interface ElectronAPI {
    * Works regardless of the active workspace; true when nothing resolves anymore.
    */
   deleteSessionByUuid: (grantId: string, uuid: string) => Promise<boolean>
-  /** Set a session's display name (single line, max 60 chars). */
-  setSessionName: (sessionId: string, name: string) => Promise<boolean>
+  /** Return the canonical saved display name, or null if naming failed. */
+  setSessionName: (sessionId: string, name: string) => Promise<{ title: string } | null>
   /** Live subagent roster (get_subagents); null when unsupported/unavailable. */
   getSubagents: (sessionId: string) => Promise<SubagentSnapshot[] | null>
   /** Incrementally read a child agent transcript (get_subagent_messages). */
@@ -823,7 +823,7 @@ const api: ElectronAPI = {
   deleteSessionByUuid: (grantId: string, uuid: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_BY_UUID, grantId, uuid),
   setSessionName: (sessionId: string, name: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_SESSION_NAME, sessionId, name),
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_SESSION_NAME, sessionId, name) as Promise<{ title: string } | null>,
   getSubagents: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_GET_SUBAGENTS, sessionId),
   getSubagentMessages: (sessionId: string, selector: SubagentTranscriptSelector) =>
