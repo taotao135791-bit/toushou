@@ -1200,9 +1200,12 @@ export default function BoardsPage() {
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
           masterWindow={
             master
-              ? master.range === 'yesterday'
-                ? yesterdayWindow()
-                : boardReadingRangeDates(master.range)
+              ? master.range === 'today'
+                ? // 今天 = 账户当前正在过的统计日（数据里最新的一天），不看日历时区。
+                  { ...boardReadingRangeDates('today'), latestDay: true }
+                : master.range === 'yesterday'
+                  ? yesterdayWindow()
+                  : boardReadingRangeDates(master.range)
               : undefined
           }
         />

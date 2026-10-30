@@ -377,3 +377,36 @@ describe('datasetMoneyCurrency', () => {
     expect(datasetMoneyCurrency(noCurrencyColumn, '消耗')).toBeNull()
   })
 })
+
+describe('filterDatasetRowsByWindow latestDay (今天 scope)', () => {
+  const dataset: BoardDataset = {
+    id: 'd',
+    name: 'TikTok 报表',
+    columns: [
+      { name: '日期', type: 'date' },
+      { name: '消耗', type: 'number' }
+    ],
+    rows: [
+      ['2026-10-28', 100],
+      ['2026-10-29', 200],
+      ['2026-10-29', 50]
+    ]
+  }
+
+  it("keeps only the account's CURRENT stat day — the newest in the data", () => {
+    const filtered = filterDatasetRowsByWindow(dataset, { start: '2026-10-30', end: '2026-10-30' }, { latestDay: true })
+    expect(filtered.rows).toEqual([
+      ['2026-10-29', 200],
+      ['2026-10-29', 50]
+    ])
+  })
+
+  it('yields no rows when the dataset has no dates at all', () => {
+    const empty = filterDatasetRowsByWindow(
+      { ...dataset, rows: [['x', 1]] },
+      { start: '2026-10-30', end: '2026-10-30' },
+      { latestDay: true }
+    )
+    expect(empty.rows).toEqual([])
+  })
+})

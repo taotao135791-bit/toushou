@@ -250,7 +250,16 @@ export async function buildTikTokReadingSummary(
   if ('ok' in prepared) return prepared
   const { resolved, client, allAdvertisers } = prepared
   const advertiserIds = allAdvertisers.slice(0, MAX_ADVERTISERS_PER_SUMMARY)
-  const { start: startDate, end: endDate } = tiktokReadingRangeWindow(range, new Date(now))
+  let { start: startDate, end: endDate } = tiktokReadingRangeWindow(range, new Date(now))
+  // "今天" spans yesterday+today in the QUERY: stat days follow the ACCOUNT's
+  // timezone, so local-today may not exist yet (e.g. a UTC-6 account at
+  // UTC+8 noon). The display then trims to the newest day that HAS data and
+  // reports that day honestly in startDate/endDate.
+  if (range === '1') {
+    const window = tiktokReadingRangeWindow('3', new Date(now))
+    startDate = window.start
+    endDate = window.end
+  }
   const info = await lookupAdvertisers(client, advertiserIds)
   const rows: TikTokReportRow[] = []
   const advertisers: TikTokReadingAdvertiser[] = []
@@ -267,7 +276,21 @@ export async function buildTikTokReadingSummary(
     }
   }
   if (advertisers.length === 0 && failed.length > 0) return readingFailure(failed[0].error, failed[0].detail)
-  const { totals, topCampaigns } = summarizeTikTokReportRows(rows)
+  let shownRows = rows
+  if (range === '1') {
+    if (rows.length > 0) {
+      const newest = rows.reduce((max, row) => (row.date > max ? row.date : max), rows[0].date)
+      shownRows = rows.filter((row) => row.date === newest)
+      startDate = newest
+      endDate = newest
+    } else {
+      // No data at all: show the requested day, not the wider query window.
+      const oneDay = tiktokReadingRangeWindow('1', new Date(now))
+      startDate = oneDay.start
+      endDate = oneDay.end
+    }
+  }
+  const { totals, topCampaigns } = summarizeTikTokReportRows(shownRows)
   const known = [...new Set(advertisers.map((advertiser) => advertiser.currency).filter((code): code is string => !!code))]
   const everyKnown = advertisers.every((advertiser) => advertiser.currency !== null)
   const summary: TikTokReadingSummary = {

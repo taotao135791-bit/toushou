@@ -237,6 +237,26 @@ describe('buildTikTokReadingSummary', () => {
     expect(api.reports.every((params) => params.get('end_date') === '2026-09-19')).toBe(true)
   })
 
+  it("range '1' shows the account's CURRENT stat day — the newest day with data", async () => {
+    const api = tiktokApi({
+      report: () =>
+        reportResponse([
+          row({ date: '2026-09-18', campaignName: '昨日', spend: 90 }),
+          row({ date: '2026-09-19', campaignName: '今日进行中', spend: 30 })
+        ])
+    })
+    const result = await buildTikTokReadingSummary(
+      { range: '1' },
+      { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20 }
+    )
+    if ('ok' in result) throw new Error(`expected a summary, got ${result.error}`)
+    // Only the newest stat day is summed, and the shown window says that day.
+    expect(result.totals.spend).toBe(30)
+    expect(result.startDate).toBe('2026-09-19')
+    expect(result.endDate).toBe('2026-09-19')
+    expect(result.topCampaigns.map((campaign) => campaign.name)).toEqual(['今日进行中'])
+  })
+
   it('marks the MCP transport and makes an account cap visible', async () => {
     const ids = Array.from({ length: 21 }, (_, index) => String(7300000000 + index))
     const api = tiktokApi({ report: () => reportResponse([]) })

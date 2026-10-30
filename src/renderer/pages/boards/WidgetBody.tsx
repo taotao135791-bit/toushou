@@ -48,8 +48,10 @@ export interface WidgetBodyProps {
   boardId: string
   onConfigChange: (config: Record<string, unknown>) => void
   /** Board master-scope window: dataset-bound widgets filter rows to it, so
-   *  switching the master range re-scopes every card instantly. */
-  masterWindow?: { start: string; end: string }
+   *  switching the master range re-scopes every card instantly. latestDay
+   *  marks the 今天 scope — the account's CURRENT stat day, not a calendar
+   *  date (stat days live in the account's timezone). */
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
 }
 
 function configOp(value: unknown): DatasetOp {
@@ -71,7 +73,7 @@ function resolveBinding(
   widget: BoardWidget,
   datasets: BoardDataset[],
   needsDim: boolean,
-  masterWindow?: { start: string; end: string }
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
 ): Binding {
   const datasetId = configStr(widget.config.datasetId)
   const metric = configStr(widget.config.metric)
@@ -81,8 +83,11 @@ function resolveBinding(
   // name fallback so template widgets resolve without knowing generated ids.
   const found = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
   if (!found) return { kind: 'missing-dataset' }
-  // Master-scope window: dataset cards follow the board's selected range.
-  let dataset = masterWindow ? filterDatasetRowsByWindow(found, masterWindow) : found
+  // Master-scope window: dataset cards follow the board's selected range;
+  // the 今天 scope shows the account's CURRENT stat day (latest in the data).
+  let dataset = masterWindow
+    ? filterDatasetRowsByWindow(found, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
+    : found
   // Optional row filter (e.g. 广告主=miclip): one board's cards scope to one
   // advertiser instead of summing every account in the dataset.
   const filterColumn = configStr(widget.config.filterColumn)
@@ -169,7 +174,7 @@ function CounterBody({
 }: {
   widget: BoardWidget
   datasets: BoardDataset[]
-  masterWindow?: { start: string; end: string }
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
 }) {
   const label = typeof widget.config.label === 'string' ? widget.config.label : ''
   const fxRates = useFxRates()
@@ -353,7 +358,7 @@ function ChartBody({
   widget: BoardWidget
   bar: boolean
   datasets: BoardDataset[]
-  masterWindow?: { start: string; end: string }
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
 }) {
   const t = useT()
   const wrapRef = useRef<HTMLDivElement | null>(null)

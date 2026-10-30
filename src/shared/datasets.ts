@@ -84,17 +84,35 @@ export function cleanNumberString(raw: string): number | null {
  * date-typed column (ISO strings compare lexically), keep only rows inside
  * [start, end] — the board master scope drives this so KPI cards and charts
  * follow the selected range. Datasets without a date column pass through.
+ *
+ * `latestDay` (the 今天 scope) ignores the calendar window and keeps the
+ * NEWEST stat day present — the account's current today, whatever day that
+ * is in its own timezone.
  */
+/** Stat-day values are ISO dates; anything else is not a comparable day. */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
 export function filterDatasetRowsByWindow(
   dataset: BoardDataset,
-  window: { start: string; end: string }
+  window: { start: string; end: string },
+  opts?: { latestDay?: boolean }
 ): BoardDataset {
   const dateIndex = dataset.columns.findIndex((column) => column.type === 'date')
   if (dateIndex < 0) return dataset
-  const rows = dataset.rows.filter((row) => {
-    const value = row[dateIndex]
-    return typeof value === 'string' && value >= window.start && value <= window.end
-  })
+  let rows: typeof dataset.rows
+  if (opts?.latestDay) {
+    let newest = ''
+    for (const row of dataset.rows) {
+      const value = row[dateIndex]
+      if (typeof value === 'string' && ISO_DATE_RE.test(value) && value > newest) newest = value
+    }
+    rows = newest === '' ? [] : dataset.rows.filter((row) => row[dateIndex] === newest)
+  } else {
+    rows = dataset.rows.filter((row) => {
+      const value = row[dateIndex]
+      return typeof value === 'string' && value >= window.start && value <= window.end
+    })
+  }
   return rows.length === dataset.rows.length ? dataset : { ...dataset, rows }
 }
 
