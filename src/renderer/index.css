@@ -558,3 +558,62 @@
     transition: none !important;
   }
 }
+
+
+/* ------------------------------------------------------------------
+   Theme switch: circular reveal from the toggle (see themeTransition.ts).
+   The default cross-fade is replaced by the clip-path wipe; the old
+   snapshot stays put beneath the incoming one.
+   ------------------------------------------------------------------ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 0;
+}
+::view-transition-new(root) {
+  z-index: 1;
+}
+
+/* The toggle icon itself swaps with a quarter-turn + fade instead of a flicker. */
+.theme-icon {
+  display: inline-flex;
+  animation: theme-icon-in 260ms var(--ease-out) both;
+}
+@keyframes theme-icon-in {
+  from { opacity: 0; transform: rotate(-60deg) scale(0.7); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-icon {
+    animation: none !important;
+  }
+}
+
+/* Directional layering for the theme/language reveal (see themeTransition.ts):
+   expand → new frame on top; retract → OLD frame on top, shrinking away. */
+html.vt-expand::view-transition-new(root) { z-index: 2; }
+html.vt-expand::view-transition-old(root) { z-index: 0; }
+html.vt-retract::view-transition-old(root) { z-index: 2; }
+html.vt-retract::view-transition-new(root) { z-index: 0; }
+
+/* Micro-motion for small controls: icons lean in slightly on hover so the
+   surface feels alive without moving text or layout. */
+.icon-pop svg {
+  transition: transform 180ms var(--ease-out);
+}
+.icon-pop:hover svg {
+  transform: scale(1.12) rotate(-4deg);
+}
+.icon-pop:active svg {
+  transform: scale(0.94);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-pop svg { transition: none !important; }
+  .icon-pop:hover svg, .icon-pop:active svg { transform: none !important; }
+}
+

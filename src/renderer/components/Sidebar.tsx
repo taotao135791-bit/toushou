@@ -35,6 +35,7 @@ import { cleanSessionName } from '@shared/promptTitle'
 import { useModalBoundary } from '../lib/modalBoundary'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useFlip } from '../lib/useFlip'
+import { runLanguageTransition, runThemeTransition } from '../lib/themeTransition'
 import {
   recordDurableUuid,
   recordsForWorkspace,
@@ -727,7 +728,7 @@ export default function Sidebar() {
   }, [recentEntries, query, searchMessages])
 
   const navRow = (active: boolean) =>
-    `group flex h-8 w-full items-center gap-2.5 rounded-lg border px-2.5 text-[13px] transition-all duration-150 ease-standard ${
+    `icon-pop group flex h-8 w-full items-center gap-2.5 rounded-lg border px-2.5 text-[13px] transition-all duration-150 ease-standard ${
       active
         ? 'border-transparent bg-selected font-medium text-cream'
         : 'border-transparent text-cream-dim hover:bg-overlay hover:text-cream'
@@ -1516,7 +1517,7 @@ export default function Sidebar() {
           {(['zh', 'en'] as const).map((lang) => (
             <button
               key={lang}
-              onClick={() => setLanguage(lang)}
+              onClick={(e) => runLanguageTransition(() => setLanguage(lang), { x: e.clientX, y: e.clientY })}
               className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
                 language === lang
                   ? 'border-line bg-ink-850 text-cream shadow-card'
@@ -1528,11 +1529,11 @@ export default function Sidebar() {
           ))}
         </div>
         <button
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          onClick={(e) => runThemeTransition(() => setTheme(theme === 'dark' ? 'light' : 'dark'), { x: e.clientX, y: e.clientY }, theme === 'dark' ? 'light' : 'dark')}
           title={t('sidebar.theme')}
           className="focus-ring ml-auto rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
         >
-          {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+          <span key={theme} className="theme-icon">{theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}</span>
         </button>
       </div>
 
