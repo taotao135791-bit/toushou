@@ -64,6 +64,33 @@ function configStr(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+/**
+ * The live scope label for a dataset-bound card: which window the shown
+ * numbers actually cover. Widget titles are static text — the scope chip is
+ * the truth-teller (今天 · 10-29 when following the account's current day,
+ * plain date ranges otherwise).
+ */
+function datasetScopeLabel(
+  dataset: BoardDataset,
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
+): string | null {
+  if (!masterWindow) return null
+  const dateIndex = dataset.columns.findIndex((column) => column.type === 'date')
+  if (dateIndex < 0) return null
+  const short = (iso: string) => iso.slice(5)
+  if (masterWindow.latestDay) {
+    let newest = ''
+    for (const row of dataset.rows) {
+      const value = row[dateIndex]
+      if (typeof value === 'string' && value > newest) newest = value
+    }
+    return newest ? `今天 · ${short(newest)}` : null
+  }
+  return masterWindow.start === masterWindow.end
+    ? short(masterWindow.start)
+    : `${short(masterWindow.start)}~${short(masterWindow.end)}`
+}
+
 /** Outcome of resolving a widget's dataset binding against the loaded datasets. */
 type Binding =
   | { kind: 'ok'; dataset: BoardDataset; metricIndex: number; dimIndex: number }
@@ -181,9 +208,13 @@ function CounterBody({
   let value: number | null
   let usdHintText: string | null = null
   let currencyBadge: string | null = null
+  let scopeLabel: string | null = null
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, false, masterWindow)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
+    // The live 口径 label: what window the number actually covers (the
+    // widget's own title is static text and must never mislead about scope).
+    scopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
     // An empty window-filtered slice is "no data in this range", not zero.
     if (binding.dataset.rows.length === 0) value = null
     else {
@@ -207,6 +238,11 @@ function CounterBody({
           title={currencyBadge}
         >
           {currencyBadge}
+        </span>
+      )}
+      {scopeLabel && (
+        <span className="absolute left-0 top-0 text-[9px] leading-4 tabular-nums text-cream-faint/80" title={scopeLabel}>
+          {scopeLabel}
         </span>
       )}
       <div className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream">
@@ -369,10 +405,12 @@ function ChartBody({
   let points: ChartPoint[]
   let labels: string[]
   let dimName = ''
+  let chartScopeLabel: string | null = null
   let metricName = ''
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, true, masterWindow)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} />
+    chartScopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
     const grouped = groupAggregate(
       binding.dataset,
       binding.dimIndex,
@@ -538,6 +576,11 @@ function ChartBody({
       onMouseMove={handleMove}
       onMouseLeave={() => setHover(null)}
     >
+      {chartScopeLabel && (
+        <span className="absolute left-0 top-0 z-10 text-[9px] leading-4 tabular-nums text-cream-faint/80" title={chartScopeLabel}>
+          {chartScopeLabel}
+        </span>
+      )}
       <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full">
         {gridVals.map((v) => (
           <g key={v}>

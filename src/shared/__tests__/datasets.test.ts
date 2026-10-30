@@ -381,6 +381,7 @@ describe('datasetMoneyCurrency', () => {
 describe('filterDatasetRowsByWindow latestDay (今天 scope)', () => {
   const dataset: BoardDataset = {
     id: 'd',
+    createdAt: 0,
     name: 'TikTok 报表',
     columns: [
       { name: '日期', type: 'date' },

@@ -1,12 +1,23 @@
 import { useEffect, useState } from 'react'
 
-/** Cached currency → USD multipliers (Main fetches monthly; null offline). */
+/** Cached currency → USD multipliers (Main fetches monthly; null offline).
+ *  A FAILED fetch is never cached — the next mount retries, so a transient
+ *  network blip at startup cannot hide conversions for the whole app run. */
 let fxRatesPromise: Promise<Record<string, number> | null> | null = null
 
 export function useFxRates(): Record<string, number> | null {
   const [rates, setRates] = useState<Record<string, number> | null>(null)
   useEffect(() => {
-    fxRatesPromise ??= window.electronAPI.fxRatesGet().catch(() => null)
+    fxRatesPromise ??= window.electronAPI
+      .fxRatesGet()
+      .then((result) => {
+        if (result === null) fxRatesPromise = null
+        return result
+      })
+      .catch(() => {
+        fxRatesPromise = null
+        return null
+      })
     void fxRatesPromise.then(setRates)
   }, [])
   return rates
