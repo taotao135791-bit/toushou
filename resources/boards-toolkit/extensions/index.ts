@@ -92,7 +92,8 @@ export default function boardsTools(api: ToolHostApi): void {
         name: { type: 'string', description: '看板名称，如 "miclip"；缺省用模板名' },
         template: { type: 'string', enum: TEMPLATES, description: '标准模板，缺省 tiktok' },
         description: { type: 'string', description: '可选看板说明' },
-        advertiserIds: { type: 'string', description: '可选：TikTok 广告主 ID（逗号分隔），绑定 TT 读数模块' }
+        advertiserIds: { type: 'string', description: '可选：TikTok 广告主 ID（逗号分隔），绑定 TT 读数模块' },
+        advertiserName: { type: 'string', description: '可选：广告主名称（与 TikTok 后台一致）。传入后看板所有指标卡/图表只统计该广告主（按数据集「广告主」列过滤），币种也随之单一' }
       },
       required: []
     },

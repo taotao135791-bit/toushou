@@ -217,7 +217,7 @@ describe('refreshNow', () => {
     const datasets = listDatasets(datasetsFile)
     expect(datasets).toHaveLength(1)
     expect(datasets[0].name).toBe('TikTok 报表')
-    expect(datasets[0].rows[0]).toEqual(['2026-01-02', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5, ''])
+    expect(datasets[0].rows[0]).toEqual(['2026-01-02', '', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5, ''])
   })
 
   it('surfaces API failures through lastError without clobbering the dataset', async () => {

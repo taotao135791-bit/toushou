@@ -206,15 +206,15 @@ export class TikTokRefreshService {
       // needed — and discovers the granted advertisers when the token
       // response omitted them (the paste-store path keeps Open API below).
       let rows: TikTokReportRow[]
-      let currencies: Map<string, string> | undefined
+      let details: Map<string, { name: string | null; currency: string | null }> | undefined
       if (resolved.source === 'oauth') {
         const viaMcp = await this.fetchRowsViaMcp(resolved.token, resolved.advertiserIds)
         rows = viaMcp.rows
-        currencies = viaMcp.currencies
+        details = viaMcp.details
       } else {
         rows = await this.fetchRows(await this.accessTokenForReport(resolved), resolved.advertiserIds)
       }
-      const written = writeReportToDataset(rows, this.datasetsFile, currencies)
+      const written = writeReportToDataset(rows, this.datasetsFile, details)
       if (!written.ok) throw new Error(`dataset-${written.error}`)
       this.lastRefreshAt = this.now()
       this.lastError = undefined
@@ -310,20 +310,21 @@ export class TikTokRefreshService {
   private async fetchRowsViaMcp(
     token: string,
     advertiserIds: string[]
-  ): Promise<{ rows: TikTokReportRow[]; currencies: Map<string, string> }> {
+  ): Promise<{ rows: TikTokReportRow[]; details: Map<string, { name: string | null; currency: string | null }> }> {
     const client = new TikTokMcpReadingClient(token, this.fetchImpl)
     await client.initialize()
     const ids = advertiserIds.length > 0 ? advertiserIds : await client.advertisers()
     if (ids.length === 0) throw new Error('no-advertiser')
-    // Per-advertiser currency for the dataset's 币种 column (money widgets
-    // offer a USD conversion). Best-effort: info failing must not stop the pull.
-    const currencies = new Map<string, string>()
+    // Per-advertiser name+currency for the dataset's 广告主/币种 columns (one
+    // board's cards filter to ONE advertiser; money widgets offer a USD
+    // conversion). Best-effort: info failing must not stop the pull.
+    const details = new Map<string, { name: string | null; currency: string | null }>()
     try {
       for (const info of await client.info(ids)) {
-        if (info.currency) currencies.set(info.advertiserId, info.currency)
+        details.set(info.advertiserId, { name: info.name, currency: info.currency })
       }
     } catch {
-      // No currency column this round — conversion simply stays hidden.
+      // No advertiser detail this round — filtering/conversion stay hidden.
     }
     const nowDate = new Date(this.now())
     const end = formatLocalDate(nowDate)
@@ -334,7 +335,7 @@ export class TikTokRefreshService {
     for (const advertiserId of ids.slice(0, MAX_ADVERTISERS_PER_REFRESH)) {
       rows.push(...(await client.report(advertiserId, start, end)))
     }
-    return { rows: sortRowsByDateDesc(rows), currencies }
+    return { rows: sortRowsByDateDesc(rows), details }
   }
 
   /** Test-only: drop timers and module state so cases start clean. */

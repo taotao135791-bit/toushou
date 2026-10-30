@@ -13,6 +13,7 @@ export const TIKTOK_DATASET_NAME = 'TikTok 报表'
 
 export const TIKTOK_REPORT_GRID_COLUMNS = [
   '日期',
+  '广告主',
   '活动名称',
   '消耗',
   '展示',
@@ -24,32 +25,43 @@ export const TIKTOK_REPORT_GRID_COLUMNS = [
   '币种'
 ] as const
 
+/** Per-advertiser detail the refresh gathers alongside the rows. */
+export interface TikTokAdvertiserDetail {
+  name: string | null
+  currency: string | null
+}
+
 /** Report row → raw string grid cell ('' for absent metrics, like CSV blanks). */
 function cell(value: number | null): string {
   return value === null ? '' : String(value)
 }
 
 /** Pure: normalized rows → header/raw-row grid shaped for buildDataset.
- *  `currencies` (advertiser id → ISO currency) fills the per-row 币种 column
- *  so money widgets can offer a USD conversion subtitle. */
+ *  `details` (advertiser id → {name, currency}) fills the per-row 广告主 and
+ *  币种 columns: one board's cards can filter to ONE advertiser, and money
+ *  widgets can offer a USD conversion subtitle. */
 export function reportRowsToGrid(
   rows: TikTokReportRow[],
-  currencies?: ReadonlyMap<string, string>
+  details?: ReadonlyMap<string, TikTokAdvertiserDetail>
 ): { headers: string[]; rawRows: string[][] } {
   return {
     headers: [...TIKTOK_REPORT_GRID_COLUMNS],
-    rawRows: rows.map((row) => [
-      row.date,
-      row.campaignName,
-      cell(row.spend),
-      cell(row.impressions),
-      cell(row.clicks),
-      cell(row.ctr),
-      cell(row.cpc),
-      cell(row.conversion),
-      cell(row.costPerConversion),
-      row.advertiserId ? (currencies?.get(row.advertiserId) ?? '') : ''
-    ])
+    rawRows: rows.map((row) => {
+      const detail = row.advertiserId ? details?.get(row.advertiserId) : undefined
+      return [
+        row.date,
+        detail?.name?.trim() || row.advertiserId || '',
+        row.campaignName,
+        cell(row.spend),
+        cell(row.impressions),
+        cell(row.clicks),
+        cell(row.ctr),
+        cell(row.cpc),
+        cell(row.conversion),
+        cell(row.costPerConversion),
+        detail?.currency ?? ''
+      ]
+    })
   }
 }
 
@@ -62,9 +74,9 @@ export function reportRowsToGrid(
 export function writeReportToDataset(
   rows: TikTokReportRow[],
   file?: string,
-  currencies?: ReadonlyMap<string, string>
+  details?: ReadonlyMap<string, TikTokAdvertiserDetail>
 ): DatasetImportResult {
-  const grid = reportRowsToGrid(rows, currencies)
+  const grid = reportRowsToGrid(rows, details)
   const built = buildDataset(grid.headers, grid.rawRows)
   return createOrUpdateDataset(TIKTOK_DATASET_NAME, built, file)
 }

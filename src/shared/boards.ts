@@ -689,6 +689,27 @@ function validateLayout(raw: unknown): BoardWidgetLayout | null {
 }
 
 /**
+ * Row-filter branch shared by the counter/chart configs: an optional
+ * column=value filter (e.g. 广告主=miclip) so ONE board's cards can scope to
+ * ONE advertiser instead of summing the whole dataset. Bounded strings only;
+ * validated whenever present.
+ */
+function validateFilterBranch(raw: Record<string, unknown>, config: Record<string, unknown>): boolean {
+  if (raw.filterColumn === undefined && raw.filterValue === undefined) return true
+  for (const key of ['filterColumn', 'filterValue'] as const) {
+    const value = raw[key]
+    if (value === undefined) continue
+    if (typeof value !== 'string' || value.length > DATASET_LIMITS.maxColumnNameLength || CONTROL_RE.test(value)) {
+      return false
+    }
+    if (value) config[key] = value
+  }
+  // A value without a column filters nothing meaningful — reject the pair.
+  if (config.filterValue !== undefined && !config.filterColumn) return false
+  return true
+}
+
+/**
  * Dataset-binding branch shared by the counter/chart configs. Binding fields
  * (datasetId/metric/op/dimension) are validated whenever present so they
  * survive manual↔dataset toggles; source 'dataset' additionally requires
@@ -818,6 +839,7 @@ function validateWidgetConfig(
         if (label === null) return null
         if (label) config.label = label
       }
+      if (!validateFilterBranch(raw, config)) return null
       if (!validateSourceBranch(raw, config, false)) return null
       return config
     }
@@ -883,6 +905,7 @@ function validateWidgetConfig(
         }
         config.labels = labels
       }
+      if (!validateFilterBranch(raw, config)) return null
       if (!validateSourceBranch(raw, config, true)) return null
       return config
     }

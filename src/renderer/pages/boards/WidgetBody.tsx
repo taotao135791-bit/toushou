@@ -81,7 +81,19 @@ function resolveBinding(
   const found = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
   if (!found) return { kind: 'missing-dataset' }
   // Master-scope window: dataset cards follow the board's selected range.
-  const dataset = masterWindow ? filterDatasetRowsByWindow(found, masterWindow) : found
+  let dataset = masterWindow ? filterDatasetRowsByWindow(found, masterWindow) : found
+  // Optional row filter (e.g. 广告主=miclip): one board's cards scope to one
+  // advertiser instead of summing every account in the dataset.
+  const filterColumn = configStr(widget.config.filterColumn)
+  const filterValue = configStr(widget.config.filterValue)
+  if (filterColumn && filterValue) {
+    const filterIndex = columnIndex(dataset, filterColumn)
+    if (filterIndex < 0) return { kind: 'missing-column' }
+    dataset = {
+      ...dataset,
+      rows: dataset.rows.filter((row) => row[filterIndex] === filterValue)
+    }
+  }
   const metricIndex = columnIndex(dataset, metric)
   const dimIndex = needsDim ? columnIndex(dataset, dimension) : -1
   if (metricIndex < 0 || (needsDim && dimIndex < 0)) return { kind: 'missing-column' }

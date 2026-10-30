@@ -35,6 +35,7 @@ import {
   StickyNote,
   Trash2,
   X,
+  GripVertical,
   type LucideIcon
 } from 'lucide-react'
 import { BoardDataset, BoardDesignSpec, BoardMasterScope, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
@@ -1148,6 +1149,12 @@ export default function BoardsPage() {
         className="flex shrink-0 items-center gap-1"
       >
         <span
+          className="widget-drag-handle shrink-0 cursor-grab text-cream-faint/0 transition-colors group-hover/widget:text-cream-faint active:cursor-grabbing"
+          title={t('boards.dragHint')}
+        >
+          <GripVertical size={10} />
+        </span>
+        <span
           style={{ textAlign: effectiveStyle?.titleAlign ?? 'left' }}
           className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-[0.1em] text-cream-faint"
         >
@@ -1625,6 +1632,7 @@ export default function BoardsPage() {
                 compactType="vertical"
                 isDraggable
                 isResizable
+                draggableHandle=".widget-drag-handle"
                 draggableCancel="input, textarea, select, a, button, .widget-config"
                 onDragStop={handleLayoutStop}
                 onResizeStop={handleLayoutStop}
