@@ -16,7 +16,7 @@ import { resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokTok
 import { fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch, TikTokReportRow } from './tiktokClient'
 import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
 import { proxySessionFetch } from './proxyFetch'
-import { writeReportToDataset } from './tiktokReportDataset'
+import { mergeReportRowsIntoDataset, writeReportToDataset } from './tiktokReportDataset'
 
 /**
  * TikTok 报表自动刷新服务 — 一个轻量的 setInterval 驱动服务（默认每 30 分钟
@@ -214,7 +214,14 @@ export class TikTokRefreshService {
       } else {
         rows = await this.fetchRows(await this.accessTokenForReport(resolved), resolved.advertiserIds)
       }
-      const written = writeReportToDataset(rows, this.datasetsFile, details)
+      // MERGE, not replace: a reading card may have merged a longer window
+      // (28/30 days); replacing with the 7-day refresh window would silently
+      // delete that history. Replace only when rows cannot be name-keyed
+      // (missing advertiser info), where a merge would be unsafe.
+      const canMerge = rows.every((row) => !row.advertiserId || Boolean(details?.get(row.advertiserId)?.name))
+      const written = canMerge && details && details.size > 0
+        ? mergeReportRowsIntoDataset(rows, details, this.datasetsFile)
+        : writeReportToDataset(rows, this.datasetsFile, details)
       if (!written.ok) throw new Error(`dataset-${written.error}`)
       this.lastRefreshAt = this.now()
       this.lastError = undefined

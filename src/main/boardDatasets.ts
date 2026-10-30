@@ -210,12 +210,16 @@ export function importDataset(
     const replaces = explicitName !== null && datasets.some((dataset) => dataset.name === explicitName)
     if (!replaces) return { ok: false, error: 'dataset-limit' }
   }
+  // Replace-by-name keeps the existing id/createdAt: widgets bound by dataset
+  // ID (the widget settings store d.id) must survive an import that refreshes
+  // the same dataset.
+  const replaced = explicitName ? datasets.find((existing) => existing.name === explicitName) : undefined
   const dataset: BoardDataset = {
-    id: crypto.randomUUID(),
+    id: replaced?.id ?? crypto.randomUUID(),
     name: explicitName ?? datasetNameFromPath(filePath),
     columns: built.columns,
     rows: built.rows,
-    createdAt: Date.now()
+    createdAt: replaced?.createdAt ?? Date.now()
   }
   const next = explicitName
     ? datasets.filter((existing) => existing.name !== dataset.name)

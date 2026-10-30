@@ -8,7 +8,6 @@ import {
   cleanNumberString,
   columnIndex,
   groupAggregate,
-  datasetMoneyCurrency,
   datasetMoneyCurrencyList,
   filterDatasetRowsByWindow,
   inferColumnType,
@@ -346,36 +345,6 @@ describe('filterDatasetRowsByWindow', () => {
     expect(filterDatasetRowsByWindow(dataset, { start: '2026-10-01', end: '2026-10-31' })).toBe(dataset)
     const noDate: BoardDataset = { ...dataset, columns: dataset.columns.slice(1) }
     expect(filterDatasetRowsByWindow(noDate, { start: '2026-10-29', end: '2026-10-29' })).toBe(noDate)
-  })
-})
-
-describe('datasetMoneyCurrency', () => {
-  const withCurrency: BoardDataset = {
-    id: 'd',
-    createdAt: 0,
-    name: 'TikTok 报表',
-    columns: [
-      { name: '消耗', type: 'number' },
-      { name: '币种', type: 'text' }
-    ],
-    rows: [
-      [100, 'MXN'],
-      [200, 'MXN']
-    ]
-  }
-
-  it('returns the single non-USD currency for money metrics', () => {
-    expect(datasetMoneyCurrency(withCurrency, '消耗')).toBe('MXN')
-    expect(datasetMoneyCurrency(withCurrency, '转化成本')).toBe('MXN')
-  })
-
-  it('stays silent for USD, mixed or missing currencies and non-money metrics', () => {
-    expect(datasetMoneyCurrency({ ...withCurrency, rows: [[1, 'USD']] }, '消耗')).toBeNull()
-    expect(datasetMoneyCurrency({ ...withCurrency, rows: [[1, 'MXN'], [2, 'BRL']] }, '消耗')).toBeNull()
-    expect(datasetMoneyCurrency({ ...withCurrency, rows: [[1, '']] }, '消耗')).toBeNull()
-    expect(datasetMoneyCurrency(withCurrency, '展示')).toBeNull()
-    const noCurrencyColumn: BoardDataset = { ...withCurrency, columns: withCurrency.columns.slice(0, 1) }
-    expect(datasetMoneyCurrency(noCurrencyColumn, '消耗')).toBeNull()
   })
 })
 

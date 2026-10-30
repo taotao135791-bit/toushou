@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { serializeBoundedJson } from '../shared/boundedJson'
-import { resolveEnvProxyRules } from './integrations/tiktok/envProxy'
+import { proxyFetchFor as proxyAwareFetch } from './integrations/tiktok/proxyFetch'
 import { AdsCopyModelStore, type AdsCopyModelPool, type AdsCopyModelProvider } from './integrations/adscopy/AdsCopyModelStore'
 import { callCopyModel, discoverModels, pickStablePoolMember, type CopyFetch } from './integrations/adscopy/copyGenerate'
 import {
@@ -100,22 +100,16 @@ export function revokeAdsCopyBridgeTokens(sessionId: string): void {
 }
 
 /**
- * Proxy-aware fetch for user-configured model endpoints — same policy as the
- * TikTok connection: explicit env proxy wins, otherwise the OS proxy settings;
- * never a forced direct connection (many providers need a proxy from CN).
+ * Proxy-aware fetch for user-configured model endpoints. Each call resolves
+ * the proxy for ITS OWN URL, so a NO_PROXY entry for a relay host (or for
+ * TikTok) is honoured independently — model traffic never inherits TikTok's
+ * verdict, and vice versa.
  */
-let sessionFetchCache: { rules: string | null; promise: Promise<{ fetch: CopyFetch }> } | null = null
 async function proxySessionFetch(): Promise<CopyFetch> {
-  const rules = resolveEnvProxyRules('https://model.invalid/')
-  if (!sessionFetchCache || sessionFetchCache.rules !== rules) {
-    sessionFetchCache = { rules, promise: (async () => {
-      const { session } = await import('electron')
-      const ses = session.fromPartition('ads-copy-models')
-      await ses.setProxy(rules ? { proxyRules: rules } : { mode: 'system' })
-      return { fetch: (url, init) => ses.fetch(url, init) as unknown as ReturnType<CopyFetch> }
-    })() }
+  return async (url, init) => {
+    const fetch = await proxyAwareFetch(url, 'ads-copy-models')
+    return fetch(url, init as RequestInit) as unknown as ReturnType<CopyFetch>
   }
-  return sessionFetchCache.promise.then(({ fetch }) => fetch)
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -295,6 +289,24 @@ function buildBatchPrompt(opts: {
   return lines.filter(Boolean).join('\n')
 }
 
+/**
+ * Map a scoring rejectReason onto the retry-fix vocabulary (copyEngine's
+ * FIX_ACTIONS keys). Without this the retry prompt silently lost every
+ * targeted fix line because the two vocabularies never matched.
+ */
+function noteFailure(counts: Record<string, number>, item: ScoredCopyItem): void {
+  const reason = item.rejectReason ?? 'other'
+  const key =
+    reason === 'over_limit'
+      ? 'over'
+      : reason === 'financial_compliance_violation'
+        ? 'compliance'
+        : reason === 'below_score_targets'
+          ? 'total'
+          : reason
+  counts[key] = (counts[key] ?? 0) + 1
+}
+
 async function dispatchBatch(
   raw: Record<string, unknown>,
   deps: AdsCopyDispatchDeps,
@@ -409,13 +421,13 @@ async function dispatchBatch(
         const item = scoreCopyItem(text, { type: 'short', maxBytes: SHORT_MAX_BYTES, language, benefits, brandTerms, targets })
         shortPool.push(item)
         if (item.accepted) roundShort++
-        else failureCounts[item.rejectReason ?? 'other'] = (failureCounts[item.rejectReason ?? 'other'] ?? 0) + 1
+        else noteFailure(failureCounts, item)
       }
       for (const text of normalized.longs) {
         const item = scoreCopyItem(text, { type: 'long', maxBytes: LONG_MAX_BYTES, language, benefits, brandTerms, targets })
         longPool.push(item)
         if (item.accepted) roundLong++
-        else failureCounts[item.rejectReason ?? 'other'] = (failureCounts[item.rejectReason ?? 'other'] ?? 0) + 1
+        else noteFailure(failureCounts, item)
       }
     }
     acceptedShort += roundShort

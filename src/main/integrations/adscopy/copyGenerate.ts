@@ -6,7 +6,7 @@ import type { AdsCopyModelProvider } from './AdsCopyModelStore'
  * The caller owns the fetch implementation (proxy-aware session in Main, a
  * stub in tests) — keys stay in Main and never reach the agent process.
  */
-export type CopyFetch = (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{
+export type CopyFetch = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<{
   ok: boolean
   status: number
   text: () => Promise<string>
@@ -130,7 +130,8 @@ export async function discoverModels(
       ? { 'x-api-key': provider.apiKey, 'anthropic-version': '2023-06-01' }
       : { authorization: `Bearer ${provider.apiKey}` }
   try {
-    const response = await fetchImpl(url, { method: 'GET', headers, body: '' })
+    // GET carries no body (spec-illegal bodies make some relays reject).
+    const response = await fetchImpl(url, { method: 'GET', headers })
     if (!response.ok) return { ok: false, error: `http-${response.status}` }
     const data = JSON.parse(await response.text()) as { data?: Array<{ id?: unknown }> }
     if (!Array.isArray(data.data)) return { ok: false, error: 'unexpected-format' }

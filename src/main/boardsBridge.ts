@@ -241,7 +241,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   // Session binding: the tool only works inside a live TouShou session.
   const { getSession } = await import('./omp')
   if (!getSession(sessionId)) return json(response, 200, { ok: false, error: 'no-session' })
-  return json(response, 200, await dispatch(tool))
+  try {
+    return json(response, 200, await dispatch(tool))
+  } catch {
+    // A corrupt board/dataset store must answer with an error, not leave the
+    // request hanging until the agent tool times out.
+    return json(response, 200, { ok: false, error: 'store-unreadable' })
+  }
 }
 
 function findBoard(tool: { boardId?: unknown; name?: unknown }): KanbanBoard | null {

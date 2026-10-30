@@ -427,3 +427,14 @@ describe('applyBoardCards', () => {
     if (!result.ok) expect(result.error).toBe('invalid-proposal')
   })
 })
+
+describe('reorderBoards duplicate guard', () => {
+  it('rejects an order that repeats an id', () => {
+    const a = makeBoard('A')
+    const b = makeBoard('B')
+    saveBoard(a, file)
+    saveBoard(b, file)
+    expect(reorderBoards([a.id, a.id, b.id], file).ok).toBe(false)
+    expect(listBoards(file)).toHaveLength(2)
+  })
+})

@@ -246,6 +246,13 @@ export function selectTopN(items: ScoredCopyItem[], type: 'short' | 'long', qty:
     .sort((a, b) => scoreSortValue(b.item) - scoreSortValue(a.item) || a.index - b.index)
 
   for (const { item } of ranked) {
+    // Only candidates that passed EVERY gate (bytes + compliance + floors)
+    // may ship. A rejected line never fills quota or counts as fulfilled —
+    // "meets the count" must never smuggle a non-compliant claim through.
+    if (!item.accepted) {
+      rejected.push(item)
+      continue
+    }
     const key = keyOf(item)
     if (seen.has(key)) {
       rejected.push({ ...item, rejectReason: 'not_needed' })

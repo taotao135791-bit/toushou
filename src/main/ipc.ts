@@ -2588,7 +2588,7 @@ export function registerIpc() {
         alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
           ? { alias, act: input.act, businessId }
           : null
-      if (!ref || (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
+      if (!ref || (range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
         return { ok: false, error: 'invalid-input' }
       }
       return refreshBoardFbReading(ref, range)

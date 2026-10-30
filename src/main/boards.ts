@@ -87,7 +87,9 @@ export function reorderBoards(ids: unknown, file: string = defaultBoardsFile()):
   }
   const current = new Set(boards.map((b) => b.id))
   const incoming = new Set(ids)
-  if (current.size !== incoming.size || [...current].some((id) => !incoming.has(id))) {
+  // Duplicate ids ([a, a, b]) would persist a duplicated tab: the length
+  // check catches it because the Set collapses duplicates.
+  if (incoming.size !== ids.length || current.size !== incoming.size || [...current].some((id) => !incoming.has(id))) {
     return { ok: false, error: 'order-mismatch' }
   }
   const byId = new Map(boards.map((b) => [b.id, b]))

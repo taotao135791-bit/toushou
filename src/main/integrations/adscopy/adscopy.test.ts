@@ -97,8 +97,8 @@ describe('callCopyModel', () => {
   })
 
   it('speaks OpenAI-compatible chat completions with a bearer key', async () => {
-    let seen: { url: string; init: { headers: Record<string, string>; body: string } } | null = null
-    const fetchImpl = async (url: string, init: { headers: Record<string, string>; body: string }) => {
+    let seen: { url: string; init: { headers: Record<string, string>; body?: string } } | null = null
+    const fetchImpl = async (url: string, init: { headers: Record<string, string>; body?: string }) => {
       seen = { url, init }
       return jsonResponse({ choices: [{ message: { content: '  hello ' } }] })
     }
@@ -106,13 +106,13 @@ describe('callCopyModel', () => {
     expect(result).toEqual({ ok: true, text: 'hello' })
     expect(seen!.url).toBe('https://api.example.com/v1/chat/completions')
     expect(seen!.init.headers.authorization).toBe('Bearer sk-secret')
-    expect(JSON.parse(seen!.init.body).messages[0].role).toBe('user')
+    expect(JSON.parse(seen!.init.body ?? '{}').messages[0].role).toBe('user')
   })
 
   it('speaks Anthropic messages with the x-api-key header', async () => {
     const anthropic = { ...provider, protocol: 'anthropic' as const, baseUrl: 'https://api.anthropic.com' }
     let seen: { url: string; headers: Record<string, string> } | null = null
-    const fetchImpl = async (url: string, init: { headers: Record<string, string>; body: string }) => {
+    const fetchImpl = async (url: string, init: { headers: Record<string, string>; body?: string }) => {
       seen = { url, headers: init.headers }
       return jsonResponse({ content: [{ type: 'text', text: 'bonjour' }] })
     }
@@ -155,7 +155,7 @@ describe('discoverModels', () => {
 
   it('lists model ids from an OpenAI-compatible relay station', async () => {
     let seen: { url: string; headers: Record<string, string> } | null = null
-    const fetchImpl = async (url: string, init: { headers: Record<string, string>; body: string }) => {
+    const fetchImpl = async (url: string, init: { headers: Record<string, string>; body?: string }) => {
       seen = { url, headers: init.headers }
       return jsonResponse({ data: [{ id: 'gpt-4o-mini' }, { id: ' claude-3.5 ' }, { id: '' }, { nope: true }] })
     }

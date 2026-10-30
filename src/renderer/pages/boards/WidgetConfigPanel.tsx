@@ -120,8 +120,8 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
 
   // FB reading module: pinned account + date window + metric set.
   const [readingRange, setReadingRange] = useState(
-    widget.config.range === 'today' || widget.config.range === 'last3' || widget.config.range === 'last30'
-      ? (widget.config.range as 'today' | 'last3' | 'last30')
+    widget.config.range === 'today' || widget.config.range === 'yesterday' || widget.config.range === 'last3' || widget.config.range === 'last30'
+      ? (widget.config.range as 'today' | 'yesterday' | 'last3' | 'last30')
       : 'last7'
   )
   const [readingMetrics, setReadingMetrics] = useState<string[]>(() => {
@@ -387,6 +387,12 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
           delete config.independent
         }
       }
+    }
+    // The advertiser row filter (set by cross-account board creation) has no
+    // control in this panel — carry it through a save untouched, otherwise
+    // saving any setting silently widens the card to every advertiser.
+    for (const key of ['filterColumn', 'filterValue', 'filterValues'] as const) {
+      if (widget.config[key] !== undefined) config[key] = widget.config[key]
     }
     onSave({
       title: title.trim() || widget.title,

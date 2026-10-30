@@ -144,13 +144,17 @@ describe('selectTopN (W:662-705)', () => {
     expect(replaced.selected.map((i) => i.text).sort()).toEqual(['B', 'C'])
   })
 
-  it('keeps rejected reasons from scoring (W:700-705)', () => {
+  it('keeps rejected reasons from scoring and never selects a rejected line', () => {
     const over = { ...item('x'.repeat(26), 8), bytes: 26, accepted: false, rejectReason: 'over_limit' as const }
     const { selected, rejected } = selectTopN([over, item('ok copy', 7)], 'short', 2)
-    expect(selected).toHaveLength(2)
-    expect(rejected).toHaveLength(0)
+    // Quota is NOT padded with the over-limit line: only accepted copy ships.
+    expect(selected).toHaveLength(1)
+    expect(selected[0].text).toBe('ok copy')
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0].rejectReason).toBe('over_limit')
     const only = selectTopN([over], 'short', 1)
-    expect(only.selected[0].rejectReason).toBe('over_limit')
+    expect(only.selected).toHaveLength(0)
+    expect(only.rejected[0].rejectReason).toBe('over_limit')
   })
 })
 
@@ -229,5 +233,25 @@ describe('retry helpers (W:759-822, 893-936)', () => {
     expect(lines[2]).toContain('Shorten first')
     expect(targetedFixLines({})).toEqual([])
     expect(targetedFixLines({ space: 0 })).toEqual([])
+  })
+})
+
+describe('selectTopN compliance gate', () => {
+  const item = (text: string, accepted: boolean, total: number) => ({
+    text,
+    bytes: text.length,
+    scores: { hook: 8, relevance: 8, cta: 8, space: 8, brand: 8, total },
+    accepted,
+    ...(accepted ? {} : { rejectReason: 'financial_compliance_violation' })
+  })
+
+  it('never fills the quota with rejected candidates', () => {
+    const picked = selectTopN(
+      [item('Good line', true, 8), item('Guaranteed approval', false, 9), item('Miracle returns', false, 9)],
+      'short',
+      3
+    )
+    expect(picked.selected.map((entry) => entry.text)).toEqual(['Good line'])
+    expect(picked.rejected).toHaveLength(2)
   })
 })

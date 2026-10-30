@@ -249,3 +249,20 @@ describe('renameDataset', () => {
     if (!missing.ok) expect(missing.error).toBe('not-found')
   })
 })
+
+describe('importDataset replace-by-name identity', () => {
+  it('keeps the dataset id when replacing by name (widget bindings survive)', () => {
+    const csv = path.join(dir, 'a.csv')
+    writeFileSync(csv, '日期,消耗\n2026-10-01,10\n', 'utf8')
+    const first = importDataset(csv, file, 'TikTok 报表')
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    const csv2 = path.join(dir, 'b.csv')
+    writeFileSync(csv2, '日期,消耗\n2026-10-02,20\n', 'utf8')
+    const second = importDataset(csv2, file, 'TikTok 报表')
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
+    expect(second.dataset.id).toBe(first.dataset.id)
+    expect(listDatasets(file)).toHaveLength(1)
+  })
+})

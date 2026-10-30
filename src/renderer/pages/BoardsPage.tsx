@@ -744,7 +744,10 @@ export default function BoardsPage() {
     // reading pull here so refresh-all updates every card in one pass.
     if (hasDatasetBound && !widgets.some((widget) => widget.type === 'tt-reading')) {
       try {
-        await window.electronAPI.ttReadingSummary({ range: '7' })
+        const result = await window.electronAPI.ttReadingSummary({ range: '7' })
+        // A reading failure resolves with { ok:false } instead of throwing;
+        // reporting success while the dataset stayed stale was misleading.
+        if (result && 'ok' in result && result.ok === false) flashToast(t('boards.datasetRefreshFailed'), false)
         await refreshDatasets()
       } catch {
         flashToast(t('boards.datasetRefreshFailed'), false)
