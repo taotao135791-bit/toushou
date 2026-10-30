@@ -48,6 +48,12 @@ export function reportRowsToGrid(
     headers: [...TIKTOK_REPORT_GRID_COLUMNS],
     rawRows: rows.map((row) => {
       const detail = row.advertiserId ? details?.get(row.advertiserId) : undefined
+      // Derived rates: the MCP report request asks only for counts, so ctr /
+      // cpc / cost-per-conversion arrive null — compute them from the counts,
+      // otherwise the columns stay empty strings and "average CTR" reads 0.
+      const ctr = row.ctr ?? (row.impressions && row.clicks !== null ? (row.clicks / row.impressions) * 100 : null)
+      const cpc = row.cpc ?? (row.clicks ? (row.spend ?? 0) / row.clicks : null)
+      const cpa = row.costPerConversion ?? (row.conversion ? (row.spend ?? 0) / row.conversion : null)
       return [
         row.date,
         detail?.name?.trim() || row.advertiserId || '',
@@ -55,10 +61,10 @@ export function reportRowsToGrid(
         cell(row.spend),
         cell(row.impressions),
         cell(row.clicks),
-        cell(row.ctr),
-        cell(row.cpc),
+        cell(ctr),
+        cell(cpc),
         cell(row.conversion),
-        cell(row.costPerConversion),
+        cell(cpa),
         detail?.currency ?? ''
       ]
     })
