@@ -116,6 +116,10 @@ export function mergeReportRowsIntoDataset(
   })
   const merged: BoardDataset = {
     ...existing,
+    // Column TYPES refresh with the incoming grid: a column first created from
+    // empty cells (text) would otherwise stay text forever even after rates
+    // become numeric.
+    columns: mergedBuilt.columns,
     rows: [...kept, ...incomingRows.map((entry) => entry.row)],
     createdAt: existing.createdAt
   }
