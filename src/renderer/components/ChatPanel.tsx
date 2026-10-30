@@ -15,7 +15,6 @@ import {
   Settings2,
   BarChart3,
   Globe2,
-  FileText,
   Table2
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
@@ -32,6 +31,7 @@ import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
 import OpenWithMenu from './OpenWithMenu'
 import useElementWidth from '../lib/useElementWidth'
+import { retryFailedMessage } from '../lib/retryMessage'
 
 const EMPTY_MESSAGES: MessageLike[] = []
 const EMPTY_UI_REQUESTS: UiRequest[] = []
@@ -248,7 +248,7 @@ export default function ChatPanel() {
       }
       // Optimistic: show the working state until agent_end / error lands
       store.setBusy(sessionId, true)
-      const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images)
+      const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images).catch(() => false)
       if (!sent) {
         // The session's process is gone: never leave "Running" on and never
         // drain the parked queue into the void — flag the failure instead.
@@ -258,6 +258,7 @@ export default function ChatPanel() {
         store.updateMessage(sessionId, messageId, { failed: true })
         return false
       }
+      store.touchSession(sessionId)
       // Tag the turn with the ACTUAL dispatch-time model/thinking — the
       // historical turn keeps what it ran under, never later session state.
       void snapshot.then((snap) => {
@@ -272,6 +273,17 @@ export default function ChatPanel() {
     },
     [currentSessionId, cliAvailable]
   )
+
+  const handleRetry = useCallback(async (sessionId: string, message: MessageLike): Promise<boolean> => {
+    const state = useAppStore.getState()
+    return retryFailedMessage(sessionId, message, {
+      currentSessionId: state.currentSessionId,
+      busy: Boolean(state.busy[sessionId]),
+      enqueue: state.enqueueQueuedMessage,
+      send: handleSend,
+      createId: () => crypto.randomUUID()
+    })
+  }, [handleSend])
 
   const handleExport = async () => {
     if (!currentSessionId || exporting) return
@@ -402,7 +414,7 @@ export default function ChatPanel() {
             className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[10px] font-medium text-cream-faint"
             title={t('sidebar.feishuSession')}
           >
-            飞书
+            {t('chat.feishuChip')}
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-cream-dim">
@@ -534,10 +546,9 @@ export default function ChatPanel() {
                     <Globe2 size={15} aria-hidden="true" />
                     <span>{t('home.quick.browser')}</span>
                   </button>
-                  <button type="button" onClick={() => void openOfficeFile()}>
-                    <FileText size={15} aria-hidden="true" />
-                    <span>{t('home.quick.files')}</span>
-                  </button>
+                  {/* One office entry: the "files" and "sheets" quick buttons used
+                      to call the same dialog — the office panel is a workbook
+                      editor, so the single button says sheets. */}
                   <button type="button" onClick={() => void openOfficeFile()}>
                     <Table2 size={15} aria-hidden="true" />
                     <span>{t('home.quick.sheets')}</span>
@@ -556,7 +567,7 @@ export default function ChatPanel() {
           </div>
         ) : (
           <div className="mx-auto max-w-[760px]">
-            <MessageList messages={sessionMessages} sessionId={currentSessionId} />
+            <MessageList messages={sessionMessages} sessionId={currentSessionId} onRetry={handleRetry} />
             <ExecutionActivity sessionId={currentSessionId} />
             {showThinking && (
               <div className="msg-in flex items-center gap-1 px-6 pb-6">

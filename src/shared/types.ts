@@ -257,6 +257,19 @@ export interface Session {
   cwd: string
   title: string
   createdAt: number
+  /**
+   * Last REAL interaction (a message the user actually sent). Mere viewing
+   * must not refresh recency: a resumed session inherits the original
+   * conversation's time and keeps it until the user sends something. Absent
+   * → fall back to createdAt.
+   */
+  lastActivityAt?: number
+  /**
+   * Interaction stamp waiting to be committed: the row only re-floats to the
+   * top when the user switches AWAY from the session, never while it is open.
+   * Committed into lastActivityAt by setCurrentSessionId.
+   */
+  pendingActivityAt?: number
   status: 'idle' | 'running' | 'error'
   /** Session file this session was resumed from, if any. */
   resumeFrom?: string

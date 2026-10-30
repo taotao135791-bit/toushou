@@ -5,6 +5,8 @@ import { boardReadingRangeDates, fbReadingMatchesWindow, resolveFbReadingWidgetA
 import type { FbReadingHistoryEntry } from '@shared/fbReading'
 import type { FbAccountBalance } from '@shared/fbBillingParser'
 import { formatReadingWindow } from '@shared/todayReading'
+import { fbPanelReadingEvidence, type ReadingEvidence } from '@shared/readingEvidence'
+import { ReadingEvidenceLine } from './ReadingEvidenceLine'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
 import { refreshAccountWithRetry } from './fbReadingRefresh'
@@ -67,6 +69,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     totalSpend: number | null
     campaignCount: number | null
     rows: FbReadingDisplayRow[]
+    evidence: ReadingEvidence
   } | null>(null)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
@@ -82,6 +85,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
     capturedAt: hit.capturedAt,
     totalSpend: hit.totalSpend,
     campaignCount: hit.campaignCount,
+    evidence: fbPanelReadingEvidence(hit),
     rows: (hit.rows ?? []).map((r) => ({
       name: r.name,
       spend: r.spend,
@@ -219,7 +223,6 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
   const cell = (v: number | null, kind: 'usd' | 'pct') =>
     v === null ? '—' : kind === 'usd' ? '$' + v.toFixed(2) : v.toFixed(2) + '%'
 
-  const updated = entry ? new Date(entry.capturedAt).toLocaleString() : ''
   // Chat view cannot refresh Facebook, so "retry" becomes "open the browser" there.
   const inChatNotice = (notice: ReadingNotice): ReadingNotice =>
     inChat && notice.step === 'retry' ? { ...notice, step: 'open-browser' } : notice
@@ -301,9 +304,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
       ) : (
         <>
           <div className={`rounded-lg bg-ink-850 px-2 py-1.5 ${includeBalance ? 'grid grid-cols-2 gap-2' : ''}`}>
-            <div className="text-[12px] leading-[18px] text-cream-faint">
-              {entry.campaignCount ?? '—'} {t('boards.reading.campaigns')} · {t('boards.reading.updatedAt', { time: updated })}
-            </div>
+            <ReadingEvidenceLine evidence={entry.evidence} />
             <div className="font-mono text-[16px] font-semibold text-cream tabular-nums">
               ${entry.totalSpend?.toFixed(2) ?? '—'}
             </div>

@@ -38,7 +38,7 @@ import {
 } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
-import { useConfirmId } from '../lib/confirmClick'
+import { ConfirmDialog, type ConfirmDialogRequest } from '../components/ConfirmDialog'
 import { showNotice } from '../lib/notice'
 import { launchTool } from '../lib/launchTool'
 import Logo from '../components/Logo'
@@ -296,7 +296,22 @@ export default function PackagesPage() {
       setManagedBusyId(null)
     }
   }
-  const deleteManagedConfirm = useConfirmId((id: string) => void deleteManagedPlugin(id))
+  // All permanent package deletions go through the centered ConfirmDialog —
+  // including drag-to-trash, which previously uninstalled with NO
+  // confirmation at all (the card's inline two-click was bypassed).
+  const [pendingConfirm, setPendingConfirm] = useState<ConfirmDialogRequest | null>(null)
+  const uninstallRequest = (pkg: PackageDescriptor): ConfirmDialogRequest => ({
+    title: t('plugins.uninstallDialog.title'),
+    body: t('plugins.uninstallDialog.body', { name: pkg.name ?? pkg.id }),
+    danger: true,
+    onConfirm: () => void handleRemove(pkg)
+  })
+  const deleteManagedRequest = (id: string, name: string): ConfirmDialogRequest => ({
+    title: t('plugins.managedDeleteDialog.title'),
+    body: t('plugins.managedDeleteDialog.body', { name }),
+    danger: true,
+    onConfirm: () => void deleteManagedPlugin(id)
+  })
 
   const toggleKimiBridge = async () => {
     if (!kimiStatus || kimiPending) return
@@ -408,7 +423,7 @@ export default function PackagesPage() {
       if (!pkg) return
       if (zone === 'chassis') void handleToggle(pkg, true)
       else if (zone === 'rack') void handleToggle(pkg, false)
-      else void handleRemove(pkg)
+      else setPendingConfirm(uninstallRequest(pkg))
     }
   })
 
@@ -620,7 +635,6 @@ export default function PackagesPage() {
                   <div className="mt-3 grid gap-2">
                     {managedPlugins.map((plugin) => {
                       const busy = managedBusyId === plugin.id
-                      const confirmingDelete = deleteManagedConfirm.confirmingId === plugin.id
                       return (
                         <div key={plugin.id} className="flex items-center gap-2 rounded-xl border border-line bg-ink-900/60 px-3 py-2.5">
                           <Code2 size={13} className="shrink-0 text-accent" />
@@ -656,16 +670,12 @@ export default function PackagesPage() {
                               {busy ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
                             </button>
                             <button
-                              onClick={() => deleteManagedConfirm.click(plugin.id)}
+                              onClick={() => setPendingConfirm(deleteManagedRequest(plugin.id, plugin.displayName || plugin.name))}
                               disabled={busy}
-                              title={confirmingDelete ? t('plugins.write.deleteConfirm') : t('plugins.write.delete')}
-                              className={`rounded-md p-1.5 transition disabled:opacity-50 ${
-                                confirmingDelete
-                                  ? 'bg-red-500/15 text-red-500'
-                                  : 'text-cream-faint hover:bg-red-500/10 hover:text-red-500'
-                              }`}
+                              title={t('plugins.write.delete')}
+                              className="rounded-md p-1.5 text-cream-faint transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"
                             >
-                              {confirmingDelete ? <Check size={12} /> : <Trash2 size={12} />}
+                              <Trash2 size={12} />
                             </button>
                           </div>
                         </div>
@@ -749,7 +759,7 @@ export default function PackagesPage() {
                             onDragStateChange={setDragSource}
                             onUpdate={() => handleUpdate(pkg)}
                             onToggle={(next) => void handleToggle(pkg, next)}
-                            onRemove={() => void handleRemove(pkg)}
+                            onRemove={() => setPendingConfirm(uninstallRequest(pkg))}
                             {...launchPropsFor(pkg.name)}
                           />
                         ))}
@@ -786,7 +796,7 @@ export default function PackagesPage() {
                             onDragStateChange={setDragSource}
                             onUpdate={() => handleUpdate(pkg)}
                             onToggle={(next) => void handleToggle(pkg, next)}
-                            onRemove={() => void handleRemove(pkg)}
+                            onRemove={() => setPendingConfirm(uninstallRequest(pkg))}
                           />
                         ))}
                       </div>
@@ -829,7 +839,7 @@ export default function PackagesPage() {
                             onDragStateChange={setDragSource}
                             onUpdate={() => handleUpdate(pkg)}
                             onToggle={(next) => void handleToggle(pkg, next)}
-                            onRemove={() => void handleRemove(pkg)}
+                            onRemove={() => setPendingConfirm(uninstallRequest(pkg))}
                             {...launchPropsFor(pkg.name)}
                           />
                         ))}
@@ -884,6 +894,7 @@ export default function PackagesPage() {
           }}
         />
       )}
+      {pendingConfirm && <ConfirmDialog request={pendingConfirm} onClose={() => setPendingConfirm(null)} />}
     </div>
   )
 }
@@ -1029,17 +1040,6 @@ function PartCard({
   const toggling = busy && pending?.kind === 'toggle'
   const updatable = canUpdate && (pkg.canUpdate ?? (pkg.kind !== 'local' && !pkg.pinned))
   const [dragging, setDragging] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const confirmArm = () => {
-    setConfirming(true)
-    if (confirmTimer.current) clearTimeout(confirmTimer.current)
-    confirmTimer.current = setTimeout(() => setConfirming(false), 3000)
-  }
-  const confirmReset = () => {
-    if (confirmTimer.current) clearTimeout(confirmTimer.current)
-    setConfirming(false)
-  }
 
   return (
     <div
@@ -1163,27 +1163,10 @@ function PartCard({
             </button>
           )}
           <button
-            onClick={() => {
-              // Uninstalling removes files — a stray click on a 13px icon
-              // must not be instant and irreversible.
-              if (confirming) {
-                confirmReset()
-                onRemove()
-              } else {
-                confirmArm()
-              }
-            }}
+            onClick={onRemove}
             disabled={pending !== null}
-            title={
-              removing
-                ? t('plugins.removing')
-                : confirming
-                  ? t('plugins.uninstallConfirm')
-                  : t('plugins.uninstall')
-            }
-            className={`rounded-md p-1.5 transition disabled:opacity-50 ${
-              confirming ? 'bg-red-500/15 text-red-500' : 'text-cream-faint hover:bg-red-500/10 hover:text-red-500'
-            }`}
+            title={removing ? t('plugins.removing') : t('plugins.uninstall')}
+            className="rounded-md p-1.5 text-cream-faint transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"
           >
             <Trash2 size={13} />
           </button>

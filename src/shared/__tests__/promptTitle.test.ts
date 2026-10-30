@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { cleanSessionName, summarizePromptTitle } from '../promptTitle'
+import { cleanSessionName, dedupeSessionTitle, summarizePromptTitle } from '../promptTitle'
 
 describe('summarizePromptTitle', () => {
   it('keeps a short plain prompt as-is', () => {
-    expect(summarizePromptTitle('帮我看看消耗为什么涨了', '链接')).toBe('帮我看看消耗为什么涨了')
+    expect(summarizePromptTitle('帮我看看消耗为什么涨了', '链接')).toBe('消耗为什么涨了')
   })
 
   it('caps a comma-free long prompt at 24 code points with an ellipsis', () => {
@@ -13,7 +13,7 @@ describe('summarizePromptTitle', () => {
 
   it('takes the first fullwidth-comma clause of a long prompt', () => {
     expect(summarizePromptTitle('帮我按这个格式随便写一个飞书文档吧，要用标准流程处理这次的投放需求', '链接')).toBe(
-      '帮我按这个格式随便写一个飞书文档吧'
+      '按这个格式随便写一个飞书文档吧'
     )
   })
 
@@ -40,11 +40,17 @@ describe('summarizePromptTitle', () => {
 
   it('strips fenced code blocks and markdown noise but keeps identifiers', () => {
     const prompt = '```python\nprint(1)\n```\n帮我修一下 fix_snake_case 的问题'
-    expect(summarizePromptTitle(prompt, '链接')).toBe('帮我修一下 fix_snake_case 的问题')
+    expect(summarizePromptTitle(prompt, '链接')).toBe('修一下 fix_snake_case 的问题')
   })
 
   it('drops a leading slash command', () => {
-    expect(summarizePromptTitle('/boards 帮我加个看板', '链接')).toBe('帮我加个看板')
+    expect(summarizePromptTitle('/boards 帮我加个看板', '链接')).toBe('加个看板')
+  })
+
+  it('strips stacked request openers down to the topic', () => {
+    expect(summarizePromptTitle('请帮我看看这个系列为什么没消耗，预算还是出价问题', '链接')).toBe('这个系列为什么没消耗')
+    expect(summarizePromptTitle('Please help me check the spend', 'link')).toBe('check the spend')
+    expect(summarizePromptTitle('麻烦你，处理一下投放日报', '链接')).toBe('投放日报')
   })
 
   it('falls back to the whole text when the first clause is degenerate', () => {
@@ -61,5 +67,38 @@ describe('cleanSessionName', () => {
   it('collapses all whitespace and caps at 60 chars', () => {
     expect(cleanSessionName('  a\r\nb\t c  ')).toBe('a b c')
     expect(cleanSessionName('x'.repeat(80)).length).toBe(60)
+  })
+})
+
+describe('dedupeSessionTitle', () => {
+  it('returns a free candidate unchanged', () => {
+    expect(dedupeSessionTitle('投放日报', ['别的会话', '周报'])).toBe('投放日报')
+  })
+
+  it('appends the next free number on collision', () => {
+    expect(dedupeSessionTitle('投放日报', ['投放日报'])).toBe('投放日报 2')
+    expect(dedupeSessionTitle('投放日报', ['投放日报', '投放日报 2'])).toBe('投放日报 3')
+    expect(dedupeSessionTitle('投放日报', ['投放日报', '投放日报 2', '投放日报 3'])).toBe('投放日报 4')
+  })
+
+  it('keeps emoji intact and leaves room for the suffix under the UTF-16 limit', () => {
+    const name = '😀'.repeat(30)
+    const result = dedupeSessionTitle(name, [name])
+    expect(result).toBe('😀'.repeat(29) + ' 2')
+    expect(result.length).toBe(60)
+    expect(cleanSessionName(result)).toBe(result)
+    expect(cleanSessionName('a'.repeat(59) + '😀')).toBe('a'.repeat(59))
+  })
+
+  it('allocates a distinct suffix after more than 99 collisions', () => {
+    const taken = ['Daily', ...Array.from({ length: 120 }, (_, i) => `Daily ${i + 2}`)]
+    expect(dedupeSessionTitle('Daily', taken)).toBe('Daily 122')
+  })
+
+  it('shortens the base, never the number, at the 60-char cap', () => {
+    const long = '长'.repeat(60)
+    const result = dedupeSessionTitle(long, [long])
+    expect(result.endsWith(' 2')).toBe(true)
+    expect(Array.from(result).length).toBeLessThanOrEqual(60)
   })
 })

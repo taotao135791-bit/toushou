@@ -6,10 +6,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // No real network, no real keychain, no windows — fetch/openExternal are
 // injected fakes and electron is stubbed with temp dirs.
 const paths = vi.hoisted(() => ({ documents: '', userData: '' }))
+const proxyFixture = vi.hoisted(() => ({
+  sessions: new Map<string, { setProxy: ReturnType<typeof vi.fn>; fetch: ReturnType<typeof vi.fn> }>(),
+  failNext: false
+}))
 
 vi.mock('electron', () => ({
   app: { getPath: (key: string) => paths[key as keyof typeof paths] ?? '/tmp/toushou-tiktok-fallback' },
   BrowserWindow: { getAllWindows: () => [] },
+  session: { fromPartition: (partition: string) => {
+    let existing = proxyFixture.sessions.get(partition)
+    if (!existing) {
+      existing = {
+        setProxy: vi.fn(async () => { if (proxyFixture.failNext) { proxyFixture.failNext = false; throw new Error('proxy setup failed') } }),
+        fetch: vi.fn(async () => new Response('ok'))
+      }
+      proxyFixture.sessions.set(partition, existing)
+    }
+    return existing
+  } },
   shell: { openExternal: vi.fn() }
 }))
 
@@ -76,12 +91,15 @@ async function driveCallback(authorizeUrl: string, overrides: { state?: string }
 let tempDirs: string[] = []
 
 beforeEach(async () => {
+  proxyFixture.sessions.clear()
+  proxyFixture.failNext = false
   paths.documents = await mkdtemp(path.join(os.tmpdir(), 'toushou-tt-docs-'))
   paths.userData = await mkdtemp(path.join(os.tmpdir(), 'toushou-tt-user-'))
   tempDirs = [paths.documents, paths.userData]
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })))
   tempDirs = []
 })
@@ -376,5 +394,45 @@ describe('TikTokAdsConnectionManager lifecycle', () => {
     expect(mcpFile.mcpServers['tiktok-ads']).toBeUndefined()
     const raw = await readFile(path.join(paths.userData, 'tiktok-creds.bin'), 'utf-8').catch(() => '')
     expect(raw).toBe('')
+  })
+})
+
+
+describe('TikTok connection proxy sessions', () => {
+  function proxyFetch(manager: TikTokAdsConnectionManager, url: string): Promise<Response> {
+    return (manager as unknown as { fetchViaProxySession: (url: string) => Promise<Response> }).fetchViaProxySession(url)
+  }
+
+  it('isolates concurrent direct, system and fixed-proxy requests and reuses configurations', async () => {
+    vi.stubEnv('HTTPS_PROXY', 'https://proxy.example:443')
+    vi.stubEnv('HTTP_PROXY', '')
+    vi.stubEnv('http_proxy', '')
+    vi.stubEnv('NO_PROXY', 'direct.example')
+    const manager = new TikTokAdsConnectionManager()
+    await Promise.all([
+      proxyFetch(manager, 'https://direct.example/a'),
+      proxyFetch(manager, 'http://system.example/a'),
+      proxyFetch(manager, 'https://through.example/a'),
+      proxyFetch(manager, 'https://through.example/b')
+    ])
+    const sessions = [...proxyFixture.sessions.values()]
+    expect(sessions).toHaveLength(3)
+    expect(sessions.map((s) => s.setProxy.mock.calls[0][0])).toEqual(expect.arrayContaining([
+      { mode: 'direct' }, { mode: 'system' }, { mode: 'fixed_servers', proxyRules: 'https://proxy.example:443' }
+    ]))
+    expect(sessions.map((s) => s.fetch.mock.calls.length).sort()).toEqual([1, 1, 2])
+    expect(sessions.every((s) => s.setProxy.mock.calls.length === 1)).toBe(true)
+  })
+
+  it('retries proxy setup after a transient failure', async () => {
+    vi.stubEnv('HTTPS_PROXY', 'http://proxy.example:8080')
+    vi.stubEnv('NO_PROXY', '')
+    const manager = new TikTokAdsConnectionManager()
+    proxyFixture.failNext = true
+    await expect(proxyFetch(manager, 'https://through.example/a')).rejects.toThrow('proxy setup failed')
+    await expect(proxyFetch(manager, 'https://through.example/a')).resolves.toBeInstanceOf(Response)
+    const [ses] = [...proxyFixture.sessions.values()]
+    expect(ses.setProxy).toHaveBeenCalledTimes(2)
+    expect(ses.fetch).toHaveBeenCalledTimes(1)
   })
 })

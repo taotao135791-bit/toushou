@@ -29,9 +29,10 @@ import {
 } from 'lucide-react'
 import { HistorySessionDescriptor, HistorySessionRow, SessionSortOrder } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
-import { useT } from '../i18n'
+import { useT, modShortcut } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
 import { cleanSessionName } from '@shared/promptTitle'
+import { useModalBoundary } from '../lib/modalBoundary'
 import {
   recordDurableUuid,
   recordsForWorkspace,
@@ -66,6 +67,15 @@ export default function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const t = useT()
+  /**
+   * omp spawns untitled sessions with the project-dir name as an internal
+   * default. The list must never show that raw name — a fresh chat displays
+   * the localized placeholder until first-turn auto-naming gives it a real
+   * title (same projectName==unnamed convention as maybeNameSession), and
+   * 'Untitled' keeps its existing mapping.
+   */
+  const displayTitle = (title: string, projectName: string): string =>
+    title === projectName ? t('sidebar.newChat') : title === 'Untitled' ? t('history.untitled') : title
   // Atomic slices: streaming message deltas land only while a search is open
   // (the search reads transcript tails), never on the default grouped view.
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
@@ -408,7 +418,9 @@ export default function Sidebar() {
         (!session.title || session.title === projectName) && info.title !== 'Untitled'
           ? info.title
           : session.title
-      addSession({ ...session, title })
+      // Opening is not interacting: the resumed row keeps the ORIGINAL
+      // conversation's recency until the user actually sends something.
+      addSession({ ...session, title, lastActivityAt: info.timestamp })
       setMessages(session.id, restored)
       // A resumed session is now represented by its live row. Its old opaque
       // history capability must not leave a duplicate historical row behind.
@@ -515,17 +527,32 @@ export default function Sidebar() {
     showNotice('sidebar.projectSwitched')
   }
 
-  const deleteHistoryConfirm = useConfirmId((id: string) => {
-    setDeleteFailedHistoryId(null)
-    const info = visibleHistory.find((entry) => entry.id === id)
-    if (info) void handleDeleteHistory(info)
-  })
-  const deleteGlobalConfirm = useConfirmId((uuid: string) => {
-    setDeleteFailedGlobalUuid(null)
-    const row = globalHistory.find((entry) => entry.uuid === uuid)
-    if (row) void handleDeleteGlobal(row)
-  })
-  const deleteSessionConfirm = useConfirmId((id: string) => handleDeleteSession(id))
+  // Modal delete confirmation (same centered-dialog pattern as rename): the
+  // old two-stage inline confirm could not be cancelled once armed and never
+  // said WHAT gets removed — deleting takes every durable copy of the uuid.
+  const [pendingDelete, setPendingDelete] = useState<
+    { kind: 'live' | 'history' | 'global'; id: string; title: string } | null
+  >(null)
+  const renameDialogRef = useRef<HTMLDivElement>(null)
+  const deleteDialogRef = useRef<HTMLDivElement>(null)
+  useModalBoundary(renameDialogRef, Boolean(renamingId), () => setRenamingId(null))
+  useModalBoundary(deleteDialogRef, Boolean(pendingDelete), () => setPendingDelete(null))
+  const confirmPendingDelete = () => {
+    if (!pendingDelete) return
+    const target = pendingDelete
+    setPendingDelete(null)
+    if (target.kind === 'live') {
+      void handleDeleteSession(target.id)
+    } else if (target.kind === 'history') {
+      setDeleteFailedHistoryId(null)
+      const info = visibleHistory.find((entry) => entry.id === target.id)
+      if (info) void handleDeleteHistory(info)
+    } else {
+      setDeleteFailedGlobalUuid(null)
+      const row = globalHistory.find((entry) => entry.uuid === target.id)
+      if (row) void handleDeleteGlobal(row)
+    }
+  }
 
   const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   const archivedSet = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds])
@@ -605,7 +632,8 @@ export default function Sidebar() {
       entries.push({
         kind: 'live',
         key: `live:${s.id}`,
-        timestamp: s.createdAt,
+        // Recency = last REAL interaction; viewing alone must not float a row.
+        timestamp: s.lastActivityAt ?? s.createdAt,
         title: s.title,
         pinned: pinnedSet.has(s.id),
         projectName: basename(s.cwd) || s.cwd,
@@ -717,7 +745,7 @@ export default function Sidebar() {
         className="shrink-0 rounded border border-line px-1 text-[9px] font-medium leading-[14px] text-cream-faint"
         title={origin === 'feishu' ? t('sidebar.feishuSession') : t('sidebar.taskSession')}
       >
-        {origin === 'feishu' ? '飞书' : '任务'}
+        {origin === 'feishu' ? t('sidebar.badge.feishu') : t('sidebar.badge.task')}
       </span>
     )
   }
@@ -737,10 +765,10 @@ export default function Sidebar() {
     // the edit.
     void window.electronAPI
       .setSessionName(id, name)
-      .then((ok) => {
-        if (ok) {
+      .then((result) => {
+        if (result) {
           setRenamingId(null)
-          useAppStore.getState().setSessionTitle(id, name)
+          useAppStore.getState().setSessionTitle(id, result.title)
         } else {
           showNotice('sidebar.renameFailed')
         }
@@ -760,9 +788,7 @@ export default function Sidebar() {
     const status = getSessionStatus({ busy: running, waiting, error: dead, unread })
     const statusLabel = t(`sidebar.status.${status}`)
     // Armed confirms must stay visible even without hover.
-    const actionsForcedVisible =
-      archiveSessionConfirm.confirmingId === session.id ||
-      deleteSessionConfirm.confirmingId === session.id
+    const actionsForcedVisible = archiveSessionConfirm.confirmingId === session.id
     const pinned = pinnedSet.has(session.id)
     // Externally created (Feishu channel) rows keep a brand badge so users can
     // tell where the conversation lives; foreign-workspace rows carry the
@@ -784,7 +810,7 @@ export default function Sidebar() {
         }}
         role="button"
         tabIndex={0}
-        aria-label={`${session.title}, ${statusLabel}`}
+        aria-label={`${displayTitle(session.title, basename(session.cwd) || session.cwd)}, ${statusLabel}`}
         className={`group flex cursor-pointer items-center gap-2 rounded-lg border border-transparent px-2.5 py-[6px] transition-all duration-150 ease-standard ${
           active ? 'bg-selected' : 'hover:bg-overlay'
         }`}
@@ -810,13 +836,16 @@ export default function Sidebar() {
               dead ? 'text-cream-faint line-through' : 'text-cream'
             }`}
           >
-            <span className="min-w-0 truncate text-[13px] font-medium leading-5">{session.title}</span>
+            {/* Untitled new chats show the placeholder — see displayTitle. */}
+            <span className="min-w-0 truncate text-[13px] font-medium leading-5">
+              {displayTitle(session.title, basename(session.cwd) || session.cwd)}
+            </span>
             {renderOriginBadge(session.origin)}
           </div>
           <div className="truncate text-[11px] leading-4 text-cream-faint">
             {foreignWorkspace
-              ? `${basename(session.cwd) || session.cwd} · ${formatRelativeTime(session.createdAt, language)}`
-              : formatRelativeTime(session.createdAt, language)}
+              ? `${basename(session.cwd) || session.cwd} · ${formatRelativeTime(session.lastActivityAt ?? session.createdAt, language)}`
+              : formatRelativeTime(session.lastActivityAt ?? session.createdAt, language)}
           </div>
         </div>
         {/* min-w-0 + shrink: at the sidebar's min width the fixed action
@@ -902,19 +931,12 @@ export default function Sidebar() {
           <button
             onClick={(e) => {
               e.stopPropagation()
-              // Two-stage confirm: deleting kills the live pi process.
-              deleteSessionConfirm.click(session.id)
+              // Modal confirm: deleting kills the live pi process and every
+              // durable copy — always ask, always cancellable.
+              setPendingDelete({ kind: 'live', id: session.id, title: session.title })
             }}
-            title={
-              deleteSessionConfirm.confirmingId === session.id
-                ? t('sidebar.deleteConfirm')
-                : t('sidebar.deleteSession')
-            }
-            className={
-              deleteSessionConfirm.confirmingId === session.id
-                ? 'rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
-                : 'rounded-md p-1 text-cream-faint transition-all hover:bg-red-500/15 hover:text-red-500'
-            }
+            title={t('sidebar.deleteSession')}
+            className="rounded-md p-1 text-cream-faint transition-all hover:bg-red-500/15 hover:text-red-500"
           >
             <Trash2 size={12} />
           </button>
@@ -942,9 +964,9 @@ export default function Sidebar() {
       else void handleOpenGlobal(entry.row)
     }
     const confirmDelete = () => {
-      if (entry.kind === 'live') deleteSessionConfirm.click(entry.session.id)
-      else if (entry.kind === 'history') deleteHistoryConfirm.click(entry.info.id)
-      else deleteGlobalConfirm.click(entry.row.uuid)
+      if (entry.kind === 'live') setPendingDelete({ kind: 'live', id: entry.session.id, title: entry.session.title })
+      else if (entry.kind === 'history') setPendingDelete({ kind: 'history', id: entry.info.id, title: entry.info.title })
+      else setPendingDelete({ kind: 'global', id: entry.row.uuid, title: entry.row.title })
     }
     return (
       <div
@@ -955,7 +977,7 @@ export default function Sidebar() {
       >
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] leading-5 text-cream-faint">
-            {entry.title === 'Untitled' ? t('history.untitled') : entry.title}
+            {displayTitle(entry.title, entry.projectName)}
           </div>
           <div className="truncate text-[11px] leading-4 text-cream-faint/70">
             {`${entry.projectName} · ${formatRelativeTime(entry.timestamp, language)}`}
@@ -987,7 +1009,6 @@ export default function Sidebar() {
 
   const renderHistoryRow = (info: HistorySessionDescriptor) => {
     const resuming = resumingHistoryId === info.id
-    const confirming = deleteHistoryConfirm.confirmingId === info.id
     const failed = restoreFailedHistoryId === info.id
     return (
       <div
@@ -1009,7 +1030,7 @@ export default function Sidebar() {
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
-              {info.title === 'Untitled' ? t('history.untitled') : info.title}
+              {displayTitle(info.title, basename(currentWorkspace?.realPath ?? ''))}
             </span>
             {renderOriginBadge(info.origin)}
           </div>
@@ -1033,14 +1054,10 @@ export default function Sidebar() {
           <button
             onClick={(e) => {
               e.stopPropagation()
-              deleteHistoryConfirm.click(info.id)
+              setPendingDelete({ kind: 'history', id: info.id, title: info.title })
             }}
-            title={confirming ? t('history.deleteConfirm') : t('history.delete')}
-            className={
-              confirming
-                ? 'shrink-0 rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
-                : `${iconBtn} hover:bg-red-500/15 hover:text-red-500`
-            }
+            title={t('history.delete')}
+            className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
           >
             <Trash2 size={12} />
           </button>
@@ -1058,7 +1075,6 @@ export default function Sidebar() {
     // Only the row being resumed greys and locks — one pending resume must
     // not freeze every cross-project row in the list.
     const resuming = resumingGlobalUuid === row.uuid
-    const confirming = deleteGlobalConfirm.confirmingId === row.uuid
     return (
       <div
         key={`global:${row.uuid}`}
@@ -1079,7 +1095,7 @@ export default function Sidebar() {
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
-              {row.title === 'Untitled' ? t('history.untitled') : row.title}
+              {displayTitle(row.title, basename(row.cwd) || row.cwd)}
             </span>
             {renderOriginBadge(row.origin)}
           </div>
@@ -1096,14 +1112,10 @@ export default function Sidebar() {
         <button
           onClick={(e) => {
             e.stopPropagation()
-            deleteGlobalConfirm.click(row.uuid)
+            setPendingDelete({ kind: 'global', id: row.uuid, title: row.title })
           }}
-          title={confirming ? t('history.deleteConfirm') : t('history.delete')}
-          className={
-            confirming
-              ? 'shrink-0 rounded-md bg-red-500/15 p-1 text-red-500 transition-all'
-              : `${iconBtn} hover:bg-red-500/15 hover:text-red-500`
-          }
+          title={t('history.delete')}
+          className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
         >
           <Trash2 size={12} />
         </button>
@@ -1186,7 +1198,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <nav className="space-y-0.5 px-3" aria-label="主要导航">
+      <nav className="space-y-0.5 px-3" aria-label={t('sidebar.primaryNav')}>
         {/* 新建会话 = 回首页 + 清空选中。会话只在第一条消息发出时创建（⌘N 同效）。 */}
         <button
           onClick={() => {
@@ -1197,7 +1209,7 @@ export default function Sidebar() {
         >
           <MessageSquare size={14} className="shrink-0" />
           {t('sidebar.newChat')}
-          <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">⌘N</span>
+          <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">{modShortcut('N')}</span>
         </button>
         <button
           onClick={() => navigate('/plugins')}
@@ -1534,6 +1546,11 @@ export default function Sidebar() {
         // ✓ / Enter commits.
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div
+            ref={renameDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('sidebar.rename')}
+            tabIndex={-1}
             className="w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1544,7 +1561,6 @@ export default function Sidebar() {
               onChange={(e) => setRenameDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') commitRename()
-                if (e.key === 'Escape') setRenamingId(null)
               }}
               maxLength={60}
               aria-label={t('sidebar.rename')}
@@ -1563,6 +1579,46 @@ export default function Sidebar() {
                 className="rounded-full bg-cream px-3 py-1 text-[11.5px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
               >
                 {t('sidebar.renameSave')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingDelete && (
+        // Same centered-dialog pattern as rename, destructive variant. The
+        // backdrop keeps the dialog open (a stray click must not delete);
+        // explicit 取消 / Escape cancels, 删除 confirms.
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+        >
+          <div
+            ref={deleteDialogRef}
+            tabIndex={-1}
+            role="alertdialog"
+            aria-modal="true"
+            aria-label={t('sidebar.deleteDialog.title')}
+            className="w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-1 text-[12px] font-medium text-cream">{t('sidebar.deleteDialog.title')}</div>
+            <p className="text-[12px] leading-5 text-cream-dim">
+              {t('sidebar.deleteDialog.body', {
+                title: pendingDelete.title === 'Untitled' ? t('history.untitled') : pendingDelete.title
+              })}
+            </p>
+            <div className="mt-3 flex justify-end gap-1.5">
+              <button
+                autoFocus
+                onClick={() => setPendingDelete(null)}
+                className="rounded-full border border-line px-3 py-1 text-[11.5px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
+              >
+                {t('sidebar.deleteDialog.cancel')}
+              </button>
+              <button
+                onClick={confirmPendingDelete}
+                className="rounded-full bg-red-500 px-3 py-1 text-[11.5px] font-medium text-white transition hover:bg-red-600"
+              >
+                {t('sidebar.deleteDialog.confirm')}
               </button>
             </div>
           </div>

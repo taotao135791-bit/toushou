@@ -5,7 +5,7 @@ import { MessageLike, useAppStore } from '../store'
 import { TurnActivity, TurnSummary, TurnVerb } from '../lib/execution'
 import { I18nKey, useT } from '../i18n'
 import { formatSeconds } from '../lib/time'
-import { useConfirm } from '../lib/confirmClick'
+import { ConfirmDialog } from './ConfirmDialog'
 import ToolCallCard from './ToolCallCard'
 
 const VERB_KEYS: Record<TurnVerb, I18nKey> = {
@@ -270,10 +270,9 @@ export const TurnChangesRow = memo(function TurnChangesRow({
     }
   }
 
-  // Two-stage confirm, same pattern as the message hover rollback button.
-  const { confirming: confirmUndo, click: handleUndoClick } = useConfirm(() => {
-    void runUndo()
-  })
+  // Undo restores the previous turn's snapshot — newer workspace edits are
+  // overwritten. Centered dialog with an explicit cancel.
+  const [undoConfirmOpen, setUndoConfirmOpen] = useState(false)
 
   if (flashRestored) {
     return (
@@ -340,28 +339,30 @@ export const TurnChangesRow = memo(function TurnChangesRow({
           )}
         </button>
         <button
-          onClick={handleUndoClick}
+          onClick={() => setUndoConfirmOpen(true)}
           disabled={busy !== null}
-          title={
-            busy === 'undo'
-              ? t('rollback.restoring')
-              : confirmUndo
-                ? t('rollback.confirm')
-                : t('turn.undo')
-          }
-          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition disabled:opacity-60 ${
-            confirmUndo
-              ? 'border-red-500/40 bg-red-500/10 text-red-500'
-              : 'border-line bg-ink-850/60 text-cream-dim hover:border-line-strong hover:text-cream'
-          }`}
+          title={busy === 'undo' ? t('rollback.restoring') : t('turn.undo')}
+          className="inline-flex items-center gap-1 rounded-full border border-line bg-ink-850/60 px-2.5 py-1 text-[11px] text-cream-dim transition hover:border-line-strong hover:text-cream disabled:opacity-60"
         >
           {busy === 'undo' ? (
             <Loader2 size={11} className="animate-spin" />
           ) : (
             <Undo2 size={11} className="shrink-0" />
           )}
-          {busy === 'undo' ? t('rollback.restoring') : confirmUndo ? t('rollback.confirm') : t('turn.undo')}
+          {busy === 'undo' ? t('rollback.restoring') : t('turn.undo')}
         </button>
+        {undoConfirmOpen && (
+          <ConfirmDialog
+            request={{
+              title: t('turn.undoDialog.title'),
+              body: t('turn.undoDialog.body'),
+              confirmLabel: t('turn.undo'),
+              danger: true,
+              onConfirm: () => void runUndo()
+            }}
+            onClose={() => setUndoConfirmOpen(false)}
+          />
+        )}
       </div>
       {open && (
         <div className="mt-1.5 overflow-hidden rounded-lg border border-line bg-ink-850/50">

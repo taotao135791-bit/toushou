@@ -7,7 +7,7 @@ import { parseFbReportReference } from '../shared/fbReportReference'
 import { validGoogleReportUrl } from '../shared/googleReport'
 import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
 import { importGoogleReportFile, readGoogleReportReadings } from './googleReportReadings'
-import { cleanSessionName } from '../shared/promptTitle'
+import { announceNamedTask, createSessionNamer } from './sessionNaming'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
 import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
 import {
@@ -358,19 +358,14 @@ function broadcastExternalSession(descriptor: ExternalSessionDescriptor): void {
  * overlay (keyed by durable file path, same cap as setSessionName) is what
  * survives.
  */
-async function nameSessionDurally(sessionId: string, name: string): Promise<boolean> {
-  const clean = cleanSessionName(name)
-  if (!clean) return false
-  const ok = await setSessionName(sessionId, clean)
-  if (!ok) return false
-  const file = markSessionTitle(sessionId, clean)
-  if (file) {
-    const titles = { ...(getStore('sessionTitles') ?? {}) }
-    titles[file] = clean
-    setStore('sessionTitles', titles)
-  }
-  return true
-}
+const nameSessionDurally = createSessionNamer({
+  getSession,
+  listSessions,
+  getTitles: () => getStore('sessionTitles') ?? {},
+  setRuntimeName: setSessionName,
+  markTitle: markSessionTitle,
+  saveTitles: (titles) => setStore('sessionTitles', titles)
+})
 
 /** Drop one overlay entry (session file deleted — keep the map orphan-free). */
 function forgetSessionTitle(filePath: string): void {
@@ -714,6 +709,7 @@ export function registerIpc() {
               void getSessionState(event.sessionId).then((state) => {
                 if (state?.sessionFile) {
                   markSessionFile(event.sessionId, state.sessionFile)
+                  nameSessionDurally.fileAvailable(event.sessionId, state.sessionFile)
                   sessionOriginIndex.record(state.sessionFile, 'task')
                   const historyUuid = path.basename(state.sessionFile).match(/_([^_]+)\.jsonl$/)?.[1]
                   if (opts?.runId && historyUuid) noteTaskSessionFile(event.sessionId, opts.runId, historyUuid)
@@ -744,14 +740,18 @@ export function registerIpc() {
     // Human-readable identity beats "project-dir title" for recurring runs:
     // name the runtime session AND announce the row with that title so the
     // sidebar shows "每日报告" instead of the bare folder name.
-    void nameSessionDurally(session.id, title)
-    broadcastExternalSession({
-      sessionId: session.id,
-      workspacePath: cwd,
-      origin: 'task',
-      suggestedTitle: title,
-      createdAt: session.createdAt
-    })
+    void announceNamedTask(
+      nameSessionDurally(session.id, title),
+      () => Boolean(getSession(session.id)),
+      title,
+      (canonicalTitle) => broadcastExternalSession({
+        sessionId: session.id,
+        workspacePath: cwd,
+        origin: 'task',
+        suggestedTitle: canonicalTitle,
+        createdAt: session.createdAt
+      })
+    )
     return {
       sessionId: session.id,
       cancel: () => {
@@ -1179,7 +1179,10 @@ export function registerIpc() {
       // Every fresh session funnels through here right after creation (the
       // renderer backfills its own copy) — tap it so Main's record also
       // learns the durable file the title overlay keys on.
-      if (state?.sessionFile) markSessionFile(sessionId, state.sessionFile)
+      if (state?.sessionFile) {
+        markSessionFile(sessionId, state.sessionFile)
+        nameSessionDurally.fileAvailable(sessionId, state.sessionFile)
+      }
       return state
     }
   )
@@ -1261,10 +1264,16 @@ export function registerIpc() {
           // and refresh the recording (the file may have been re-created).
           const origin = sessionOriginIndex.lookup(filePath)
           if (origin) sessionOriginIndex.record(filePath, origin)
+          // The session must be BORN with its durable overlay title: the
+          // renderer pulls the live registry on the 'connected' event, seconds
+          // before this handler's response arrives — a title patched after
+          // the fact still flashes the project-dir default for that window.
+          const overlayTitle = (getStore('sessionTitles') ?? {})[filePath]
           let resumed: Awaited<ReturnType<typeof resumeSession>>
           try {
             resumed = await resumeSession(resolved.realPath, broadcastSessionEvent, filePath, {
-              ...(origin ? { origin } : {})
+              ...(origin ? { origin } : {}),
+              ...(overlayTitle ? { initialTitle: overlayTitle } : {})
             })
           } catch (error) {
             // The session spawned but its transcript could not be fetched.
@@ -1334,7 +1343,7 @@ export function registerIpc() {
   ipcMain.handle(
     IPC_CHANNELS.OMP_SET_SESSION_NAME,
     async (_event: IpcMainInvokeEvent, sessionId: string, name: string) => {
-      if (typeof sessionId !== 'string' || !sessionId || typeof name !== 'string') return false
+      if (typeof sessionId !== 'string' || !sessionId || typeof name !== 'string') return null
       return nameSessionDurally(sessionId, name)
     }
   )

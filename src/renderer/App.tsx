@@ -302,7 +302,9 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey && !e.shiftKey && !e.ctrlKey && e.key.toLowerCase() === 'n') {
+      // Same modifier policy as the ⌘K palette below: Ctrl on Windows/Linux,
+      // ⌘ on macOS (the sidebar hint is platform-aware via modKeyLabel).
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && !e.repeat && e.key.toLowerCase() === 'n') {
         e.preventDefault()
         setPaletteOpen(false)
         useAppStore.getState().setCurrentSessionId(null)
@@ -357,7 +359,7 @@ function App() {
       (!session.title || session.title === projectName) && info.title !== 'Untitled'
         ? info.title
         : session.title
-    state.addSession({ ...session, title })
+    state.addSession({ ...session, title, lastActivityAt: info.timestamp })
     state.setMessages(session.id, restored)
     state.removeHistorySession(info.id)
     state.applyHistoricalAgents(session.id, historicalAgents ?? [])

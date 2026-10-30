@@ -20,6 +20,8 @@ const en = {
 
   // Sidebar
   'sidebar.newChat': 'New Chat',
+  'common.cancel': 'Cancel',
+  'common.delete': 'Delete',
   'sidebar.mode.label': '投放 and Agent',
   'sidebar.mode.buying': '投放',
   'sidebar.mode.agent': 'Agent',
@@ -58,6 +60,10 @@ const en = {
   'sidebar.deleteConfirm': 'Confirm delete?',
   'sidebar.pin': 'Pin',
   'sidebar.rename': 'Rename',
+  'sidebar.deleteDialog.title': 'Delete session',
+  'sidebar.deleteDialog.body': 'Delete "{title}"? Every saved copy is removed — this cannot be undone.',
+  'sidebar.deleteDialog.cancel': 'Cancel',
+  'sidebar.deleteDialog.confirm': 'Delete',
   'sidebar.renameSave': 'Save name',
   'sidebar.renameCancel': 'Cancel rename',
   'sidebar.renameFailed': 'Rename failed — the session may be busy; try again once it finishes.',
@@ -78,6 +84,9 @@ const en = {
   'sidebar.status.unread': 'New',
   'sidebar.status.idle': 'Idle',
   'sidebar.feishuSession': 'Feishu channel session',
+  'sidebar.badge.feishu': 'Feishu',
+  'sidebar.badge.task': 'Task',
+  'sidebar.primaryNav': 'Primary navigation',
   'sidebar.taskSession': 'Scheduled-task session',
 
   // Compact relative timestamps (session/history rows)
@@ -230,6 +239,7 @@ const en = {
   'composer.feishuSync': 'Replies are also sent to Feishu',
   'composer.slashTitle': 'Commands',
   'composer.slashBuiltin': 'built-in',
+  'composer.slashApp': 'app',
   'composer.slashCompact': 'Compact the conversation context now',
   'composer.shortcuts': 'Enter to send · Shift+Enter for newline',
   'composer.placeholderBusy': 'Keep typing — queued messages send after the current reply finishes…',
@@ -249,6 +259,8 @@ const en = {
   'msg.steer': 'Adjust current turn',
   'msg.thinking': 'Thinking',
   'msg.sendFailed': 'Not delivered',
+  'msg.retry': 'Retry',
+  'chat.feishuChip': 'Feishu',
 
   // Agent Hub / execution projection
   'agents.title': 'Agent activity',
@@ -364,6 +376,8 @@ const en = {
   'tasks.failedBadge': '{count} failed',
   'tasks.autoDisabledHint': 'This task disabled itself after repeated start failures. Check its project folder and runtime, then re-enable.',
   'tasks.deleteConfirm': 'Click again to delete',
+  'tasks.deleteDialog.title': 'Delete task',
+  'tasks.deleteDialog.body': 'Delete "{name}"? The schedule and its history are removed permanently — this cannot be undone.',
   'tasks.empty.title': 'No scheduled tasks yet',
   'tasks.empty.subtitle': 'Create recurring agent tasks — daily reports, budget alerts, data pulls.',
   'tasks.lastRun': 'Last run',
@@ -429,6 +443,11 @@ const en = {
   // Per-turn change chip (checkpoint diff under a finished turn)
   'turn.filesChanged': 'Changed {count} files',
   'turn.undo': 'Undo',
+  'turn.undoDialog.title': 'Undo this turn',
+  'turn.undoDialog.body': 'Restore the workspace to the previous turn? Edits made after it are overwritten.',
+  'rollback.dialog.title': 'Roll back to this message',
+  'rollback.dialog.body': 'Restore workspace files to this message’s snapshot? Edits made after it are overwritten.',
+  'rollback.dialog.confirm': 'Roll back',
   'turn.restored': 'Restored to before this turn',
   'turn.redo': 'Redo this turn',
   'turn.showFiles': 'Show changed files',
@@ -707,6 +726,10 @@ const en = {
   'plugins.empty': 'No packages installed yet.',
   'plugins.emptyHint': 'Browse pi.dev/packages, or search npm for the "pi-package" keyword.',
   'plugins.uninstall': 'Uninstall',
+  'plugins.uninstallDialog.title': 'Uninstall plugin',
+  'plugins.uninstallDialog.body': 'Uninstall "{name}"? Its files are removed from this machine — this cannot be undone.',
+  'plugins.managedDeleteDialog.title': 'Delete handwritten plugin',
+  'plugins.managedDeleteDialog.body': 'Delete "{name}"? Its files are permanently removed; keep a copy elsewhere if you may need it again.',
   'permission.remoteFixed': 'Remote (Feishu) sessions are fixed to read-only.',
   'plugins.uninstallConfirm': 'Click again to uninstall',
   'packages.launchFailed': "Couldn't start — the workspace may need re-granting.",
@@ -881,6 +904,13 @@ const en = {
   'boards.more': 'More',
   'boards.resetLayout': 'Reset layout',
   'boards.clearWidgets': 'Clear all widgets',
+  'boards.boardDeleteDialog.title': 'Delete board',
+  'boards.widgetDeleteDialog.title': 'Remove widget',
+  'boards.widgetDeleteDialog.body': 'Remove "{name}"? Its configuration is lost — this cannot be undone.',
+  'boards.clearWidgetsDialog.title': 'Clear board',
+  'boards.clearWidgetsDialog.body': 'Remove every widget from "{name}"? This cannot be undone.',
+  'boards.datasetDeleteDialog.title': 'Delete dataset',
+  'boards.datasetDeleteDialog.body': 'Delete "{name}"? The dataset file is permanently removed.',
   'boards.clearConfirm': 'Confirm clear?',
   'boards.widgetSettings': 'Configure widget',
   'boards.deleteWidget': 'Remove widget',
@@ -1123,6 +1153,21 @@ const en = {
   'boards.reading.refresh': 'Refresh',
   'boards.reading.refreshing': 'Refreshing…',
   'boards.reading.updatedAt': 'Updated {time}',
+  'boards.evidence.toggle': 'Evidence',
+  'boards.evidence.hide': 'Hide',
+  'boards.evidence.capturedAt': 'Captured {time}',
+  'boards.evidence.sourceDetail': 'Source: {value}',
+  'boards.evidence.scopeDetails': 'Scope notes: {value}',
+  'boards.evidence.included.campaigns': 'Campaigns included: {count}',
+  'boards.evidence.included.accounts': 'Accounts included: {count}',
+  'boards.evidence.excluded': 'Not included: {value}',
+  'boards.evidence.warnings': 'Warnings: {value}',
+  'boards.evidence.kind.panel': 'FB panel reading',
+  'boards.evidence.kind.csv': 'CSV import',
+  'boards.evidence.kind.link': 'Report link',
+  'boards.evidence.kind.mcp': 'TikTok official API',
+  'boards.evidence.auth.oauth': 'managed OAuth',
+  'boards.evidence.auth.pasted': 'pasted token',
   'boards.reading.noData': 'No verified reading yet — hit Refresh.',
   'boards.reading.refreshFailed': 'Reading could not be verified. Previous data is kept; you can retry.',
   'boards.reading.error.page': 'Facebook could not load its page. This refresh has stopped; you can retry.',
@@ -1751,6 +1796,8 @@ const zh: Record<I18nKey, string> = {
   'update.dismiss': '关闭',
 
   'sidebar.newChat': '新建会话',
+  'common.cancel': '取消',
+  'common.delete': '删除',
   'sidebar.mode.label': '投放和 Agent',
   'sidebar.mode.buying': '投放',
   'sidebar.mode.agent': 'Agent',
@@ -1789,6 +1836,10 @@ const zh: Record<I18nKey, string> = {
   'sidebar.deleteConfirm': '确认删除？',
   'sidebar.pin': '置顶',
   'sidebar.rename': '重命名',
+  'sidebar.deleteDialog.title': '删除会话',
+  'sidebar.deleteDialog.body': '确定删除「{title}」？所有保存的副本都会被删除，无法撤销。',
+  'sidebar.deleteDialog.cancel': '取消',
+  'sidebar.deleteDialog.confirm': '删除',
   'sidebar.renameSave': '保存名称',
   'sidebar.renameCancel': '取消重命名',
   'sidebar.renameFailed': '重命名失败——会话可能正忙，等它跑完再试。',
@@ -1809,6 +1860,9 @@ const zh: Record<I18nKey, string> = {
   'sidebar.status.unread': '新消息',
   'sidebar.status.idle': '空闲',
   'sidebar.feishuSession': '飞书渠道会话',
+  'sidebar.badge.feishu': '飞书',
+  'sidebar.badge.task': '任务',
+  'sidebar.primaryNav': '主要导航',
   'sidebar.taskSession': '定时任务会话',
 
   'sidebar.time.secondsAgo': '{count}秒钟',
@@ -1957,6 +2011,7 @@ const zh: Record<I18nKey, string> = {
   'composer.feishuSync': '回复将同步发送到飞书',
   'composer.slashTitle': '命令',
   'composer.slashBuiltin': '内置',
+  'composer.slashApp': '应用',
   'composer.slashCompact': '立即压缩当前会话的上下文',
   'composer.shortcuts': 'Enter 发送 · Shift+Enter 换行',
   'composer.placeholderBusy': '继续输入，发送后会在当前回复结束后依次发送…',
@@ -1976,6 +2031,8 @@ const zh: Record<I18nKey, string> = {
   'msg.steer': '调整当前任务',
   'msg.thinking': '思考',
   'msg.sendFailed': '未送达',
+  'msg.retry': '重试',
+  'chat.feishuChip': '飞书',
 
   // Agent Hub / execution projection
   'agents.title': '子代理动态',
@@ -2090,6 +2147,8 @@ const zh: Record<I18nKey, string> = {
   'tasks.failedBadge': '失败 {count} 次',
   'tasks.autoDisabledHint': '该任务因连续启动失败已自动停用。请检查项目目录和运行环境后重新启用。',
   'tasks.deleteConfirm': '再点一次确认删除',
+  'tasks.deleteDialog.title': '删除任务',
+  'tasks.deleteDialog.body': '确定删除「{name}」？计划和历史记录将被永久删除，无法撤销。',
   'tasks.empty.title': '还没有自动任务',
   'tasks.empty.subtitle': '创建循环执行的自动任务——每日报告、预算提醒、数据拉取。',
   'tasks.lastRun': '上次运行',
@@ -2155,6 +2214,11 @@ const zh: Record<I18nKey, string> = {
   // 每轮改动 chip（回合结束后的检查点 diff）
   'turn.filesChanged': '已更改 {count} 个文件',
   'turn.undo': '撤销',
+  'turn.undoDialog.title': '撤销这一轮',
+  'turn.undoDialog.body': '把工作区文件恢复到上一轮的状态？之后做的修改会被覆盖。',
+  'rollback.dialog.title': '回滚到这条消息',
+  'rollback.dialog.body': '把工作区文件恢复到这条消息时的快照？之后做的修改会被覆盖。',
+  'rollback.dialog.confirm': '回滚',
   'turn.restored': '已恢复到本轮之前',
   'turn.redo': '重做本轮',
   'turn.showFiles': '展开文件列表',
@@ -2416,6 +2480,10 @@ const zh: Record<I18nKey, string> = {
   'plugins.empty': '还没有安装任何插件。',
   'plugins.emptyHint': '可以去 pi.dev/packages 逛逛，或在 npm 搜索关键词 pi-package。',
   'plugins.uninstall': '卸载',
+  'plugins.uninstallDialog.title': '卸载插件',
+  'plugins.uninstallDialog.body': '确定卸载「{name}」？文件将从本机删除，无法撤销。',
+  'plugins.managedDeleteDialog.title': '删除手写插件',
+  'plugins.managedDeleteDialog.body': '确定删除「{name}」？文件将被永久删除，如需再用请先自行留副本。',
   'permission.remoteFixed': '飞书远程会话固定为只读权限。',
   'plugins.uninstallConfirm': '再点一次确认卸载',
   'packages.launchFailed': '启动失败——工作区可能需要重新授权。',
@@ -2588,6 +2656,13 @@ const zh: Record<I18nKey, string> = {
   'boards.more': '更多',
   'boards.resetLayout': '重置布局',
   'boards.clearWidgets': '清空全部模块',
+  'boards.boardDeleteDialog.title': '删除看板',
+  'boards.widgetDeleteDialog.title': '移除组件',
+  'boards.widgetDeleteDialog.body': '确定移除「{name}」？它的配置将丢失，无法撤销。',
+  'boards.clearWidgetsDialog.title': '清空看板',
+  'boards.clearWidgetsDialog.body': '确定清空「{name}」的全部组件？此操作无法撤销。',
+  'boards.datasetDeleteDialog.title': '删除数据集',
+  'boards.datasetDeleteDialog.body': '确定删除数据集「{name}」？文件将被永久删除。',
   'boards.clearConfirm': '确认清空？',
   'boards.widgetSettings': '配置模块',
   'boards.deleteWidget': '移除模块',
@@ -2830,6 +2905,21 @@ const zh: Record<I18nKey, string> = {
   'boards.reading.refresh': '刷新',
   'boards.reading.refreshing': '刷新中…',
   'boards.reading.updatedAt': '更新于 {time}',
+  'boards.evidence.toggle': '证据',
+  'boards.evidence.hide': '收起',
+  'boards.evidence.capturedAt': '读取于 {time}',
+  'boards.evidence.sourceDetail': '来源：{value}',
+  'boards.evidence.scopeDetails': '范围说明：{value}',
+  'boards.evidence.included.campaigns': '已含广告系列：{count}',
+  'boards.evidence.included.accounts': '已含账户：{count}',
+  'boards.evidence.excluded': '未包含：{value}',
+  'boards.evidence.warnings': '警告：{value}',
+  'boards.evidence.kind.panel': 'FB 面板直读',
+  'boards.evidence.kind.csv': 'CSV 导入',
+  'boards.evidence.kind.link': '报表链接',
+  'boards.evidence.kind.mcp': 'TikTok 官方接口',
+  'boards.evidence.auth.oauth': '托管授权',
+  'boards.evidence.auth.pasted': '粘贴令牌',
   'boards.reading.noData': '暂无已验证读数，点「刷新」获取。',
   'boards.reading.refreshFailed': '读数未通过验证，已保留原数据，可重试。',
   'boards.reading.error.page': 'Facebook 页面加载失败，本次刷新已停止，可重新刷新。',
@@ -3445,6 +3535,16 @@ export function translate(
 }
 
 /** React hook: const t = useT(); t('sidebar.newChat') */
+/** Platform-correct modifier label for shortcut hints (⌘ on macOS, Ctrl elsewhere). */
+export function modKeyLabel(): string {
+  return /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl'
+}
+
+/** Full shortcut hint, e.g. modShortcut('N') → "⌘N" / "Ctrl+N". */
+export function modShortcut(key: string): string {
+  return `${modKeyLabel()}${modKeyLabel() === '⌘' ? '' : '+'}${key}`
+}
+
 export function useT() {
   const language = useAppStore((s) => s.language)
   return useCallback(

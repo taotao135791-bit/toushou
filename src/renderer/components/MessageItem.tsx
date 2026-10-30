@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowRight,
@@ -19,7 +19,7 @@ import {
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { formatSeconds } from '../lib/time'
-import { useConfirm } from '../lib/confirmClick'
+import { ConfirmDialog } from './ConfirmDialog'
 import { splitConnectionMarkers } from '../lib/connectionMarkers'
 import ConnectionGuideCard from './ConnectionGuideCard'
 import Markdown from './Markdown'
@@ -32,6 +32,7 @@ interface MessageItemProps {
   /** Index within the session's message array; -1 when unknown. */
   index?: number
   sessionId?: string | null
+  onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
 }
 
 /** Collapsible card for a skill message: the full SOP still rides in the
@@ -75,8 +76,10 @@ function SkillMessageCard({
   )
 }
 
-function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps) {
+function MessageItem({ message, index = -1, sessionId = null, onRetry }: MessageItemProps) {
   const [copied, setCopied] = useState(false)
+  const [retrying, setRetrying] = useState(false)
+  const retryInFlight = useRef(false)
   const [restoring, setRestoring] = useState(false)
   const [thinkingOpen, setThinkingOpen] = useState(false)
   const [boardDialogOpen, setBoardDialogOpen] = useState(false)
@@ -186,10 +189,9 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
     }
   }
 
-  // Two-stage confirm, same pattern as the packages page uninstall button.
-  const { confirming: confirmRollback, click: handleRollbackClick } = useConfirm(() => {
-    if (!restoring) void runRollback()
-  })
+  // Rollback restores workspace files to this turn's snapshot — newer edits
+  // are overwritten. Centered dialog with an explicit cancel.
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false)
 
   if (isUser) {
     const isSteer = message.kind === 'steer'
@@ -240,30 +242,37 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
             )}
           </div>
           {message.failed && (
-            <div className="mt-1 flex justify-end">
+            <div className="mt-1 flex items-center justify-end gap-1.5">
               <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-px text-[10px] font-medium text-red-500">
                 {t('msg.sendFailed')}
               </span>
+              {message.role === 'user' && sessionId && onRetry && (
+                <button
+                  disabled={retrying}
+                  onClick={() => {
+                    if (retryInFlight.current) return
+                    retryInFlight.current = true
+                    setRetrying(true)
+                    void onRetry(sessionId, message).catch(() => false).finally(() => {
+                      retryInFlight.current = false
+                      setRetrying(false)
+                    })
+                  }}
+                  className="rounded-full border border-line px-2 py-px text-[10px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-50"
+                >
+                  {t('msg.retry')}
+                </button>
+              )}
             </div>
           )}
           {/* hover action bar: per-turn model/thinking tag, rollback, copy, edit-and-resend */}
           <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-all group-hover:opacity-100">
             {checkpointAvailable && sessionId && index >= 0 && (
               <button
-                onClick={handleRollbackClick}
+                onClick={() => setRollbackConfirmOpen(true)}
                 disabled={restoring}
-                title={
-                  restoring
-                    ? t('rollback.restoring')
-                    : confirmRollback
-                      ? t('rollback.confirm')
-                      : t('rollback.button')
-                }
-                className={`rounded-md p-1 transition-all disabled:opacity-60 ${
-                  confirmRollback
-                    ? 'bg-red-500/10 text-red-500 opacity-100'
-                    : 'text-cream-faint hover:bg-overlay hover:text-cream'
-                }`}
+                title={restoring ? t('rollback.restoring') : t('rollback.button')}
+                className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay hover:text-cream disabled:opacity-60"
               >
                 {restoring ? (
                   <Loader2 size={12} className="animate-spin" />
@@ -306,6 +315,20 @@ function MessageItem({ message, index = -1, sessionId = null }: MessageItemProps
             <SaveMessageToTaskDialog
               content={message.content}
               onClose={() => setTaskDialogOpen(false)}
+            />
+          )}
+          {rollbackConfirmOpen && (
+            <ConfirmDialog
+              request={{
+                title: t('rollback.dialog.title'),
+                body: t('rollback.dialog.body'),
+                confirmLabel: t('rollback.button'),
+                danger: true,
+                onConfirm: () => {
+                  if (!restoring) void runRollback()
+                }
+              }}
+              onClose={() => setRollbackConfirmOpen(false)}
             />
           )}
         </div>

@@ -129,6 +129,8 @@ export function createSession(
   onEvent: (event: SessionEvent) => void,
   opts?: {
     resumeSessionPath?: string
+    /** Durable overlay title for resumes — see the title comment below. */
+    initialTitle?: string
     modelSelector?: string
     thinkingLevel?: SessionThinkingLevel
     skillSystemPrompt?: string
@@ -200,7 +202,12 @@ export function createSession(
   const session: Session = {
     id,
     cwd,
-    title: path.basename(cwd) || 'New Chat',
+    // A resumed session must be BORN with its durable overlay title: the
+    // renderer syncs the live registry the moment the process connects
+    // ('connected' event), long before the resume response with the transcript
+    // arrives — a spawn-default title here flashes the project name for that
+    // whole window no matter what the response later carries.
+    title: opts?.initialTitle ?? (path.basename(cwd) || 'New Chat'),
     createdAt: Date.now(),
     status: 'idle',
     ...(opts?.resumeSessionPath ? { resumeFrom: opts.resumeSessionPath } : {}),
@@ -543,11 +550,14 @@ export async function resumeSession(
     /** Remote channels must keep their downgraded access across resumes. */
     permissionMode?: PermissionMode
     origin?: 'feishu' | 'task'
+    /** Durable title so the live row is correct from the 'connected' sync on. */
+    initialTitle?: string
   }
 ): Promise<{ session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] } | null> {
   if (!isSessionFilePath(filePath)) return null
   const session = createSession(cwd, onEvent, {
     resumeSessionPath: filePath,
+    ...(opts?.initialTitle ? { initialTitle: opts.initialTitle } : {}),
     ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {})
   })

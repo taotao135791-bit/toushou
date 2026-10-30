@@ -24,6 +24,7 @@ import { formatRelativeTime } from '../lib/time'
 import { launchSkillSession } from '../lib/launchTool'
 import { formatSkillChatMessage, formatSkillChatReference } from '@shared/skills'
 import Markdown from '../components/Markdown'
+import { useModalBoundary } from '../lib/modalBoundary'
 
 /**
  * SKILL 目录 — the team library of self-made assets. Markdown docs open in
@@ -67,17 +68,21 @@ export default function SkillsPage() {
   >(null)
   const [viewerFailed, setViewerFailed] = useState(false)
   const [githubOpen, setGithubOpen] = useState(false)
+  const [deleting, setDeleting] = useState<SkillEntry | null>(null)
+  const deleteDialogRef = useRef<HTMLDivElement>(null)
+  useModalBoundary(deleteDialogRef, Boolean(deleting), () => setDeleting(null))
   useEffect(() => {
-    if (!githubOpen && !viewer) return
+    if (!githubOpen && !viewer && deleting === null) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.isComposing) return
       event.preventDefault()
       setGithubOpen(false)
       setViewer(null)
+      setDeleting(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [githubOpen, viewer])
+  }, [githubOpen, viewer, deleting])
   const [githubUrl, setGithubUrl] = useState('')
   const [githubBusy, setGithubBusy] = useState(false)
   const [githubError, setGithubError] = useState<string | null>(null)
@@ -89,7 +94,6 @@ export default function SkillsPage() {
   const [githubDone, setGithubDone] = useState<{ imported: number; skipped: number } | null>(null)
   const [launchingId, setLaunchingId] = useState<string | null>(null)
   const [picker, setPicker] = useState<SkillEntry | null>(null)
-  const [deleting, setDeleting] = useState<SkillEntry | null>(null)
   const [deleteFailed, setDeleteFailed] = useState(false)
   const sessions = useAppStore((s) => s.sessions)
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -773,7 +777,7 @@ export default function SkillsPage() {
      )}
       {deleting && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-ink-950/80 p-4 backdrop-blur-sm">
-          <div className="flex w-full max-w-sm flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-card">
+          <div ref={deleteDialogRef} role="alertdialog" aria-modal="true" aria-label={t('skills.deleteTitle')} tabIndex={-1} className="flex w-full max-w-sm flex-col overflow-hidden rounded-xl border border-line bg-ink-900 shadow-card">
             <div className="flex items-center gap-2 border-b border-line px-4 py-3">
               <TriangleAlert size={15} className="shrink-0 text-red-400" />
               <span className="text-[13px] font-medium text-cream">{t('skills.deleteTitle')}</span>
