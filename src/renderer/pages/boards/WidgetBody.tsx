@@ -12,7 +12,7 @@ import {
   DatasetOp,
   aggregate,
   columnIndex,
-  datasetMoneyCurrency,
+  datasetMoneyCurrencyList,
   filterDatasetRowsByWindow,
   groupAggregate
 } from '@shared/datasets'
@@ -110,16 +110,22 @@ function resolveBinding(
   // name fallback so template widgets resolve without knowing generated ids.
   const found = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
   if (!found) return { kind: 'missing-dataset' }
-  // Row filter FIRST (e.g. 广告主=miclip): the 今天 scope's "latest stat day"
-  // must be the latest day OF THIS ADVERTISER, not of the whole dataset —
-  // otherwise another account's data decides the day and this card goes empty.
+  // Row filter FIRST (e.g. 广告主=miclip, or a multi-account set): the 今天
+  // scope's "latest stat day" must be the latest day OF THESE ADVERTISERS,
+  // not of the whole dataset — otherwise another account's data decides the
+  // day and this card goes empty.
   let dataset = found
   const filterColumn = configStr(widget.config.filterColumn)
   const filterValue = configStr(widget.config.filterValue)
-  if (filterColumn && filterValue) {
+  const filterValues = Array.isArray(widget.config.filterValues)
+    ? widget.config.filterValues.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+    : []
+  if (filterColumn && (filterValues.length > 0 || filterValue)) {
     const filterIndex = columnIndex(dataset, filterColumn)
     if (filterIndex < 0) return { kind: 'missing-column' }
-    dataset = { ...dataset, rows: dataset.rows.filter((row) => row[filterIndex] === filterValue) }
+    // Multi-account boards: OR-match the set; single value stays a set of one.
+    const allowed = new Set(filterValues.length > 0 ? filterValues : [filterValue])
+    dataset = { ...dataset, rows: dataset.rows.filter((row) => allowed.has(String(row[filterIndex]))) }
   }
   // Master-scope window on top: dataset cards follow the board's range; the
   // 今天 scope shows the account's CURRENT stat day (latest among filtered rows).
@@ -221,10 +227,18 @@ function CounterBody({
         binding.dataset.rows.map((r) => r[binding.metricIndex] ?? ''),
         configOp(widget.config.op)
       )
-      // Non-USD money metrics: a corner currency badge + a small ≈$ conversion.
-      const currency = datasetMoneyCurrency(binding.dataset, configStr(widget.config.metric))
-      currencyBadge = currency
-      if (currency && typeof value === 'number') usdHintText = usdHint(value, currency, fxRates)
+      // Money metrics: uniform non-USD currency gets a badge + ≈$ conversion;
+      // MIXED currencies (multi-account boards) never sum money — MIX badge
+      // and "—" instead of a fake total (the established TT rule). Counts
+      // (clicks/impressions/…) are currency-free and always aggregate.
+      const currencyList = datasetMoneyCurrencyList(binding.dataset, configStr(widget.config.metric))
+      if (currencyList.length === 1 && currencyList[0] !== 'USD') {
+        currencyBadge = currencyList[0]
+        if (typeof value === 'number') usdHintText = usdHint(value, currencyBadge, fxRates)
+      } else if (currencyList.length > 1) {
+        currencyBadge = 'MIX'
+        value = null
+      }
     }
   } else {
     value = typeof widget.config.value === 'number' ? widget.config.value : 0

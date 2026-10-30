@@ -111,6 +111,7 @@ export type BoardsBridgeRequest =
       description?: unknown
       advertiserIds?: unknown
       advertiserName?: unknown
+      advertiserNames?: unknown
     }
   | { action: 'board_add_widget'; boardId?: unknown; name?: unknown; type?: unknown; title?: unknown; config?: unknown }
   | { action: 'board_remove_widget'; boardId?: unknown; name?: unknown; widgetId?: unknown }
@@ -140,7 +141,8 @@ export function parseBoardsBridgeRequest(raw: unknown): BoardsBridgeRequest | nu
         template: value.template,
         description: value.description,
         advertiserIds: value.advertiserIds,
-        advertiserName: value.advertiserName
+        advertiserName: value.advertiserName,
+        advertiserNames: value.advertiserNames
       }
     case 'board_add_widget':
       return {
@@ -311,13 +313,23 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
     // ONE account's numbers and its currency stays uniform.
     const advertiserIds = typeof tool.advertiserIds === 'string' ? tool.advertiserIds.trim() : ''
     const advertiserName = boundedString(tool.advertiserName, 120)
-    if (advertiserName) {
+    // Cross-account boards ("go photo 所有账户合一起"): accept an array or a
+    // comma/、-separated string of advertiser NAMES; every dataset card then
+    // OR-matches the set (single name keeps the scalar filter for compat).
+    const advertiserNames: string[] = Array.isArray(tool.advertiserNames)
+      ? tool.advertiserNames.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean).slice(0, 20)
+      : typeof tool.advertiserNames === 'string'
+        ? tool.advertiserNames.split(/[,，、;；]/).map((item) => item.trim()).filter(Boolean).slice(0, 20)
+        : []
+    const names = advertiserNames.length > 0 ? advertiserNames : advertiserName ? [advertiserName] : []
+    if (names.length > 0) {
+      const scope =
+        names.length === 1
+          ? { filterColumn: '广告主', filterValue: names[0] }
+          : { filterColumn: '广告主', filterValues: names }
       board.widgets = board.widgets.map((widget) =>
         widget.config && widget.config.source === 'dataset'
-          ? {
-              ...widget,
-              config: { ...widget.config, filterColumn: '广告主', filterValue: advertiserName }
-            }
+          ? { ...widget, config: { ...widget.config, ...scope } }
           : widget
       )
     }
@@ -343,9 +355,14 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
       board: boardSummary({ ...board }),
       datasetReady,
       note:
-        (advertiserIds
-          ? '已绑定指定广告主的 TT 读数模块；读数需要已连接的 TikTok 授权。'
-          : '已附 TT 读数模块（读取当前授权下的全部广告主）。') +
+        (names.length > 1
+          ? `已按 ${names.length} 个广告主合并过滤全部数据卡（${names.join('、')}）；`
+          : advertiserIds
+            ? '已绑定指定广告主的 TT 读数模块；读数需要已连接的 TikTok 授权。'
+            : '已附 TT 读数模块（读取当前授权下的全部广告主）。') +
+        (names.length > 1
+          ? '注意：这些账户币种不同时，金额合计卡会显示 — 并标 MIX（不同币种不可相加），计数类指标正常合计。'
+          : '') +
         (datasetReady
           ? '数据集「TikTok 报表」已有数据。'
           : '数据集「TikTok 报表」还没有数据：调用 touhou_tiktok_update（走 TikTok MCP 连接）拉取即可自动填充；它失败就如实把错误转述给用户并停下，禁止 CSV/文件/computer use 绕路。')

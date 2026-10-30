@@ -93,7 +93,12 @@ export default function boardsTools(api: ToolHostApi): void {
         template: { type: 'string', enum: TEMPLATES, description: '标准模板，缺省 tiktok' },
         description: { type: 'string', description: '可选看板说明' },
         advertiserIds: { type: 'string', description: '可选：TikTok 广告主 ID（逗号分隔），绑定 TT 读数模块' },
-        advertiserName: { type: 'string', description: '可选：广告主名称（与 TikTok 后台一致）。传入后看板所有指标卡/图表只统计该广告主（按数据集「广告主」列过滤），币种也随之单一' }
+        advertiserName: { type: 'string', description: '可选：单个广告主名称（与 TikTok 后台完全一致）。传入后看板所有指标卡/图表只统计该广告主' },
+        advertiserNames: {
+          type: 'array',
+          description:
+            '跨账户合并看板：多个广告主名称数组（也可用逗号分隔字符串）。例：用户说"go photo 所有账户合一起做一个看板"时，先用 tiktok-ads 的 auth_advertiser_get + advertiser_info_get 找出名称匹配的全部账户，把名称传这里（ID 传 advertiserIds 给读数模块）。同市场账户通常同币种；币种不同时金额合计卡会显示 — 并标 MIX（不可跨币种相加），计数指标正常合计'
+        }
       },
       required: []
     },

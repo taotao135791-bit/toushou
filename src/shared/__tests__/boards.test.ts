@@ -966,13 +966,33 @@ describe('master scope', () => {
     expect(scoped.config.independent).toBeUndefined()
   })
 
-  it('accepts only Google Ads report links and retains their independent export scope', () => {
-    const reportUrl = 'https://ads.google.com/aw/campaigns?ocid=123&tableState=example'
+  it('accepts only Google Ads report links and retains their independent export scope', () => {    const reportUrl = 'https://ads.google.com/aw/campaigns?ocid=123&tableState=example'
     const board = withWidget(widgetOf('google-report-reading', { reportUrl, token: 'must-not-persist' }))
     expect(board?.widgets[0].config).toEqual({ reportUrl })
     for (const invalid of ['https://ads.google.com.evil.test/aw/campaigns', 'http://ads.google.com/aw/campaigns', 'https://secret@ads.google.com/aw/campaigns', 'https://example.com/aw/campaigns']) {
       expect(withWidget(widgetOf('google-report-reading', { reportUrl: invalid }))?.widgets).toHaveLength(0)
     }
     expect(applyMasterScope(board!.widgets[0], { range: 'today', metrics: ['spend'] }).config).toEqual({ reportUrl })
+  })
+})
+
+describe('counter/chart filterValues (cross-account boards)', () => {
+  const card = (config: Record<string, unknown>) =>
+    widgetOf('counter', { source: 'dataset', datasetId: 'TikTok 报表', metric: '消耗', op: 'sum', ...config })
+
+  it('keeps a deduped multi-name set with the filter column', () => {
+    const board = withWidget(card({ filterColumn: '广告主', filterValues: ['go photo A', 'go photo B', 'go photo A'] }))
+    const config = board?.widgets[0].config as Record<string, unknown>
+    expect(config.filterValues).toEqual(['go photo A', 'go photo B'])
+  })
+
+  it('rejects empty sets, non-strings and overlong entries', () => {
+    expect(withWidget(card({ filterColumn: '广告主', filterValues: [] }))?.widgets).toHaveLength(0)
+    expect(withWidget(card({ filterColumn: '广告主', filterValues: ['ok', 5] }))?.widgets).toHaveLength(0)
+    expect(withWidget(card({ filterColumn: '广告主', filterValues: [''] }))?.widgets).toHaveLength(0)
+  })
+
+  it('rejects values without a filter column', () => {
+    expect(withWidget(card({ filterValues: ['go photo A'] }))?.widgets).toHaveLength(0)
   })
 })

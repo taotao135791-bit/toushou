@@ -1,6 +1,6 @@
 {
   "name": "toushou-boards-toolkit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "投手看板工具：让助手在对话里查看、新建和调整本机看板（绝不触碰广告平台数据）",
   "displayName": "看板工具",
   "author": "投手团队",

@@ -145,3 +145,37 @@ afterEach(() => {
     // Windows file locks — temp dirs are GC'd by the OS.
   }
 })
+
+describe('dispatch board_create cross-account', () => {
+  it('scopes template cards to a multi-advertiser OR-set', async () => {
+    const created = await dispatch({
+      action: 'board_create',
+      name: 'go photo 合并',
+      template: 'tiktok',
+      advertiserNames: ['Go Photo US', 'Go Photo MX'],
+      advertiserIds: '7300000000001, 7300000000002'
+    })
+    expect(created.ok).toBe(true)
+    const board = (created.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> })
+    const counter = board.widgets.find((w) => w.type === 'counter')!
+    expect(counter.config.filterColumn).toBe('广告主')
+    expect(counter.config.filterValues).toEqual(['Go Photo US', 'Go Photo MX'])
+    const reading = board.widgets.find((w) => w.type === 'tt-reading')!
+    expect(reading.config.advertiserIds).toBe('7300000000001, 7300000000002')
+    expect(String(created.note)).toContain('2 个广告主合并')
+  })
+
+  it('accepts a comma-separated names string and falls back to a scalar for one name', async () => {
+    const created = await dispatch({
+      action: 'board_create',
+      name: 'go photo 逗号',
+      template: 'tiktok',
+      advertiserNames: 'Go Photo US, Go Photo MX'
+    })
+    const board = (created.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> })
+    expect(board.widgets.find((w) => w.type === 'counter')!.config.filterValues).toEqual(['Go Photo US', 'Go Photo MX'])
+    const single = await dispatch({ action: 'board_create', name: '单账户', template: 'tiktok', advertiserNames: 'Go Photo US' })
+    const singleBoard = (single.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> })
+    expect(singleBoard.widgets.find((w) => w.type === 'counter')!.config.filterValue).toBe('Go Photo US')
+  })
+})

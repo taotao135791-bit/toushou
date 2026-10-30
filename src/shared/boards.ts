@@ -695,7 +695,7 @@ function validateLayout(raw: unknown): BoardWidgetLayout | null {
  * validated whenever present.
  */
 function validateFilterBranch(raw: Record<string, unknown>, config: Record<string, unknown>): boolean {
-  if (raw.filterColumn === undefined && raw.filterValue === undefined) return true
+  if (raw.filterColumn === undefined && raw.filterValue === undefined && raw.filterValues === undefined) return true
   for (const key of ['filterColumn', 'filterValue'] as const) {
     const value = raw[key]
     if (value === undefined) continue
@@ -704,8 +704,25 @@ function validateFilterBranch(raw: Record<string, unknown>, config: Record<strin
     }
     if (value) config[key] = value
   }
+  // Multi-value filter (cross-account boards): OR-match a bounded set of
+  // advertiser names. Deduped; empty/garbage entries reject the widget.
+  if (raw.filterValues !== undefined) {
+    if (!Array.isArray(raw.filterValues) || raw.filterValues.length === 0 || raw.filterValues.length > 20) return false
+    const seen = new Set<string>()
+    const values: string[] = []
+    for (const item of raw.filterValues) {
+      if (typeof item !== 'string') return false
+      const clean = item.trim()
+      if (!clean || clean.length > DATASET_LIMITS.maxColumnNameLength || CONTROL_RE.test(clean)) return false
+      if (!seen.has(clean)) {
+        seen.add(clean)
+        values.push(clean)
+      }
+    }
+    config.filterValues = values
+  }
   // A value without a column filters nothing meaningful — reject the pair.
-  if (config.filterValue !== undefined && !config.filterColumn) return false
+  if ((config.filterValue !== undefined || config.filterValues !== undefined) && !config.filterColumn) return false
   return true
 }
 

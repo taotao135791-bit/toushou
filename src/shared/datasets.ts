@@ -142,6 +142,24 @@ export function datasetMoneyCurrency(
   return currency
 }
 
+/**
+ * Distinct currencies of a money metric's filtered rows ([] when the dataset
+ * has no 币种 column or the metric is not money). One entry → uniform
+ * currency (badges/conversion allowed); multiple → MIXED (money totals must
+ * not be summed across currencies — the established TT rule).
+ */
+export function datasetMoneyCurrencyList(dataset: BoardDataset, metricName: string): string[] {
+  if (!MONEY_METRIC_RE.test(metricName)) return []
+  const currencyIndex = dataset.columns.findIndex((column) => column.name === '币种')
+  if (currencyIndex < 0) return []
+  const seen = new Set<string>()
+  for (const row of dataset.rows) {
+    const value = row[currencyIndex]
+    if (typeof value === 'string' && value !== '') seen.add(value)
+  }
+  return [...seen]
+}
+
 export function parseDateString(raw: string): string | null {
   const s = raw.trim()
   if (!s) return null
