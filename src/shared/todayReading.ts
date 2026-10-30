@@ -82,7 +82,14 @@ function parseIsoDate(value: string): Date | null {
 }
 
 export function isTodayRange(value: unknown): value is TodayRange {
-  return value === 'today' || value === 'last7' || value === 'last28'
+  return (
+    value === 'today' ||
+    value === 'yesterday' ||
+    value === 'last3' ||
+    value === 'last7' ||
+    value === 'last28' ||
+    value === 'last30'
+  )
 }
 
 /**

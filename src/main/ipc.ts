@@ -142,7 +142,8 @@ import { PackageActionGrantManager, matchesPackageActionTarget } from './package
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from './boards'
 import { AdsCopyModelStore, validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
-import { adsCopyModelStore, discoverAdsCopyModels, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
+import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
+import { revokeBoardsBridgeTokens } from './boardsBridge'
 import { getUsdRates } from './integrations/tiktok/fxRates'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
@@ -336,7 +337,11 @@ function broadcastSessionEvent(event: SessionEvent): void {
   // Task-spawned sessions drive their completion guard/notice from the same
   // event stream everything else uses — no second observation path to drift.
   noteTaskSessionEvent(event.sessionId, event)
-  if (event.type === 'closed') revokeBrowserUseSession(event.sessionId)
+  if (event.type === 'closed') {
+    revokeBrowserUseSession(event.sessionId)
+    revokeBoardsBridgeTokens(event.sessionId)
+    revokeAdsCopyBridgeTokens(event.sessionId)
+  }
   maybeNotifyTurnFinished(event)
   maybeNotifyUiRequest(event)
 }
@@ -2457,8 +2462,14 @@ export function registerIpc() {
   // stored encrypted and NEVER returned to the renderer — only the masked
   // projection crosses the boundary. Test runs a tiny real completion.
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_LIST, async () => {
-    const pool = await adsCopyModelStore.load()
-    return { mode: pool.mode, providers: AdsCopyModelStore.mask(pool) }
+    try {
+      const pool = await adsCopyModelStore.load()
+      return { mode: pool.mode, providers: AdsCopyModelStore.mask(pool) }
+    } catch {
+      // Unreadable store: tell the renderer "chat mode, nothing listed" —
+      // mutations still refuse to write, so the keys stay safe on disk.
+      return { mode: 'chat' as const, providers: [], storeUnavailable: true }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_UPSERT, async (_event, raw: unknown) => {
     const input = validateAdsCopyModelInput((raw ?? {}) as Record<string, unknown>)
@@ -2472,23 +2483,35 @@ export function registerIpc() {
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_REMOVE, async (_event, id: unknown) => {
     if (typeof id !== 'string' || !id) return { ok: false }
-    await adsCopyModelStore.remove(id)
-    return { ok: true }
+    try {
+      await adsCopyModelStore.remove(id)
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_SET_POOL, async (_event, raw: unknown) => {
     if (!Array.isArray(raw) || raw.length > 20 || !raw.every((id): id is string => typeof id === 'string')) {
       return { ok: false }
     }
-    await adsCopyModelStore.setPool(raw)
-    return { ok: true }
+    try {
+      await adsCopyModelStore.setPool(raw)
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_TEST, async (_event, id: unknown) => {
     if (typeof id !== 'string' || !id) return { ok: false, error: 'not-found' }
     return testAdsCopyProviderById(id)
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_SET_MODE, async (_event, mode: unknown) => {
-    await setAdsCopyMode(mode === 'pool' ? 'pool' : 'chat')
-    return { ok: true }
+    try {
+      await setAdsCopyMode(mode === 'pool' ? 'pool' : 'chat')
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_DISCOVER, async (_event, raw: unknown) => {
     return discoverAdsCopyModels((raw ?? {}) as Record<string, unknown>)

@@ -140,7 +140,8 @@ const DATASET_ERROR_KEYS: Record<DatasetImportError, I18nKey> = {
   'dataset-store-unreadable': 'boards.datasets.error.storeUnreadable',
   'write-failed': 'boards.datasets.error.writeFailed',
   // Main-internal writer path only (TikTok 报表 refresh) — never user-facing here.
-  'invalid-name': 'boards.datasets.error.invalidName'
+  'invalid-name': 'boards.datasets.error.invalidName',
+  'incomplete-advertiser-info': 'boards.datasets.error.incompleteAdvertiserInfo'
 }
 
 function hasFileDrag(e: DragEvent): boolean {

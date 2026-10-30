@@ -210,6 +210,14 @@ export function boardsBridgeEnv(sessionId: string): Record<string, string> {
   return { [BOARDS_TOOLS_ENV_KEY]: `http://127.0.0.1:${port}/${token}` }
 }
 
+/** Free every token minted for a session — wired to the 'closed' event so a
+ *  long-lived app never evicts a STILL-RUNNING session's tools at the cap. */
+export function revokeBoardsBridgeTokens(sessionId: string): void {
+  for (const [token, owner] of tokens) {
+    if (owner === sessionId) tokens.delete(token)
+  }
+}
+
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const token = (request.url ?? '').replace(/^\//, '')
   const sessionId = tokens.get(token)
@@ -357,9 +365,14 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
       note:
         (names.length > 1
           ? `已按 ${names.length} 个广告主合并过滤全部数据卡（${names.join('、')}）；`
-          : advertiserIds
-            ? '已绑定指定广告主的 TT 读数模块；读数需要已连接的 TikTok 授权。'
-            : '已附 TT 读数模块（读取当前授权下的全部广告主）。') +
+          : names.length === 1
+            ? `已按广告主「${names[0]}」过滤全部数据卡；` +
+              (advertiserIds
+                ? '读数模块已绑定对应 ID。'
+                : '注意：未传 advertiserIds，TT 读数模块会读全部授权账户、与卡片口径不一致——建议补传对应 ID。')
+            : advertiserIds
+              ? '已绑定指定广告主的 TT 读数模块；读数需要已连接的 TikTok 授权。'
+              : '已附 TT 读数模块（读取当前授权下的全部广告主）。') +
         (names.length > 1
           ? '注意：这些账户币种不同时，金额合计卡会显示 — 并标 MIX（不同币种不可相加），计数类指标正常合计。'
           : '') +

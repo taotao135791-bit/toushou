@@ -33,6 +33,7 @@ import { useT, modShortcut } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
 import { cleanSessionName } from '@shared/promptTitle'
 import { useModalBoundary } from '../lib/modalBoundary'
+import { ConfirmDialog } from './ConfirmDialog'
 import {
   recordDurableUuid,
   recordsForWorkspace,
@@ -534,9 +535,7 @@ export default function Sidebar() {
     { kind: 'live' | 'history' | 'global'; id: string; title: string } | null
   >(null)
   const renameDialogRef = useRef<HTMLDivElement>(null)
-  const deleteDialogRef = useRef<HTMLDivElement>(null)
   useModalBoundary(renameDialogRef, Boolean(renamingId), () => setRenamingId(null))
-  useModalBoundary(deleteDialogRef, Boolean(pendingDelete), () => setPendingDelete(null))
   const confirmPendingDelete = () => {
     if (!pendingDelete) return
     const target = pendingDelete
@@ -1585,44 +1584,20 @@ export default function Sidebar() {
         </div>
       )}
       {pendingDelete && (
-        // Same centered-dialog pattern as rename, destructive variant. The
-        // backdrop keeps the dialog open (a stray click must not delete);
-        // explicit 取消 / Escape cancels, 删除 confirms.
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-        >
-          <div
-            ref={deleteDialogRef}
-            tabIndex={-1}
-            role="alertdialog"
-            aria-modal="true"
-            aria-label={t('sidebar.deleteDialog.title')}
-            className="w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-1 text-[12px] font-medium text-cream">{t('sidebar.deleteDialog.title')}</div>
-            <p className="text-[12px] leading-5 text-cream-dim">
-              {t('sidebar.deleteDialog.body', {
-                title: pendingDelete.title === 'Untitled' ? t('history.untitled') : pendingDelete.title
-              })}
-            </p>
-            <div className="mt-3 flex justify-end gap-1.5">
-              <button
-                autoFocus
-                onClick={() => setPendingDelete(null)}
-                className="rounded-full border border-line px-3 py-1 text-[11.5px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
-              >
-                {t('sidebar.deleteDialog.cancel')}
-              </button>
-              <button
-                onClick={confirmPendingDelete}
-                className="rounded-full bg-red-500 px-3 py-1 text-[11.5px] font-medium text-white transition hover:bg-red-600"
-              >
-                {t('sidebar.deleteDialog.confirm')}
-              </button>
-            </div>
-          </div>
-        </div>
+        // The shared destructive-confirm dialog (same component as every
+        // other permanent deletion) — one Escape/Cancel contract everywhere.
+        <ConfirmDialog
+          request={{
+            title: t('sidebar.deleteDialog.title'),
+            body: t('sidebar.deleteDialog.body', {
+              title: pendingDelete.title === 'Untitled' ? t('history.untitled') : pendingDelete.title
+            }),
+            confirmLabel: t('sidebar.deleteDialog.confirm'),
+            danger: true,
+            onConfirm: confirmPendingDelete
+          }}
+          onClose={() => setPendingDelete(null)}
+        />
       )}
     </aside>
   )

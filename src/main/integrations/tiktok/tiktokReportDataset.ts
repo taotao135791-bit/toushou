@@ -107,12 +107,38 @@ export function mergeReportRowsIntoDataset(
   if (!existing) return writeReportToDataset(rows, file, details)
   const dateIdx = existing.columns.findIndex((column) => column.name === '日期')
   const advertiserIdx = existing.columns.findIndex((column) => column.name === '广告主')
+  // Schema mismatch (a pre-广告主 dataset from an older app version): merging
+  // would append 11-wide rows to 9-wide ones and garble every column index —
+  // replace wholesale instead. History outside the pull window is lost once,
+  // which the next full refresh (REPORT_RANGE_DAYS) rebuilds.
+  if (advertiserIdx < 0 || dateIdx < 0 || existing.columns.length !== incoming.headers.length) {
+    return writeReportToDataset(rows, file, details)
+  }
   const mergedBuilt = buildDataset(incoming.headers, incoming.rawRows)
-  const incomingRows = mergedBuilt.rows.map((row, index) => ({ key: `${row[advertiserIdx >= 0 ? advertiserIdx : 1]}|${row[dateIdx >= 0 ? dateIdx : 0]}`, row, raw: incoming.rawRows[index] }))
-  const seen = new Set(incomingRows.map((entry) => entry.key))
-  const kept = existing.rows.filter((row) => {
-    const key = `${row[advertiserIdx]}|${row[dateIdx]}`
-    return advertiserIdx >= 0 && dateIdx >= 0 ? !seen.has(key) : true
+  // Advertiser identity must be STABLE across rounds: the 广告主 cell is the
+  // NAME when info answered and the raw ID when it did not. Merging an
+  // ID-keyed round into NAME-keyed history duplicates every row (double
+  // counts spend) and there is no way back without the id — so a round with
+  // incomplete advertiser info is REFUSED (the reading card keeps its data;
+  // the dataset waits for a clean round).
+  const idCell = /^\d{6,}$/
+  for (const row of mergedBuilt.rows) {
+    if (idCell.test(String(row[advertiserIdx]))) {
+      return { ok: false, error: 'incomplete-advertiser-info' }
+    }
+  }
+  // Upgrade old ID-keyed rows to their NAME when this round knows it.
+  const upgrades = new Map<string, string>()
+  for (const [id, detail] of details ?? []) {
+    if (detail.name) upgrades.set(id, detail.name)
+  }
+  const withKeys = mergedBuilt.rows.map((row) => row)
+  const kept = existing.rows.map((row) => {
+    const cell = String(row[advertiserIdx])
+    return upgrades.has(cell) ? row.map((value, i) => (i === advertiserIdx ? upgrades.get(cell)! : value)) : row
+  }).filter((row) => {
+    const cell = String(row[advertiserIdx])
+    return !withKeys.some((incoming) => String(incoming[advertiserIdx]) === cell && String(incoming[dateIdx]) === String(row[dateIdx]))
   })
   const merged: BoardDataset = {
     ...existing,
@@ -120,7 +146,7 @@ export function mergeReportRowsIntoDataset(
     // empty cells (text) would otherwise stay text forever even after rates
     // become numeric.
     columns: mergedBuilt.columns,
-    rows: [...kept, ...incomingRows.map((entry) => entry.row)],
+    rows: [...kept, ...withKeys],
     createdAt: existing.createdAt
   }
   const replaced = datasets.map((dataset) => (dataset.name === TIKTOK_DATASET_NAME ? merged : dataset))

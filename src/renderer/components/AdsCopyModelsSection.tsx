@@ -268,7 +268,11 @@ export default function AdsCopyModelsSection() {
               <p className="text-[11px] text-cream-faint md:col-span-2">{t('adsCopy.discoveredCount', { count: discovered.length })}</p>
             )}
             {discoverError && (
-              <p className="text-[11px] text-red-500 md:col-span-2">{t('adsCopy.testFailed', { detail: discoverError })}</p>
+              <p className="text-[11px] text-red-500 md:col-span-2">
+                {discoverError === 'parse-failed'
+                  ? t('adsCopy.error.parse-failed')
+                  : t('adsCopy.testFailed', { detail: discoverError })}
+              </p>
             )}
             <input
               className={inputClass}

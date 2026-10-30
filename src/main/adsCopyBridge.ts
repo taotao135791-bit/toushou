@@ -91,6 +91,14 @@ export function adsCopyBridgeEnv(sessionId: string): Record<string, string> {
   return { [COPY_TOOLS_ENV_KEY]: `http://127.0.0.1:${port}/${token}` }
 }
 
+/** Free every token minted for a session — wired to the 'closed' event so a
+ *  long-lived app never evicts a STILL-RUNNING session's tools at the cap. */
+export function revokeAdsCopyBridgeTokens(sessionId: string): void {
+  for (const [token, owner] of tokens) {
+    if (owner === sessionId) tokens.delete(token)
+  }
+}
+
 /**
  * Proxy-aware fetch for user-configured model endpoints — same policy as the
  * TikTok connection: explicit env proxy wins, otherwise the OS proxy settings;
@@ -132,7 +140,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (!tool) return json(response, 400, { ok: false, error: 'unsupported-action' })
   const { getSession } = await import('./omp')
   if (!getSession(sessionId)) return json(response, 200, { ok: false, error: 'no-session' })
-  return json(response, 200, await dispatch(tool, { fetchImpl: await proxySessionFetch() }))
+  try {
+    return json(response, 200, await dispatch(tool, { fetchImpl: await proxySessionFetch() }))
+  } catch {
+    // An unreadable model store (or any dispatch failure) must surface as a
+    // clean error — never kill the connection mid-call.
+    return json(response, 200, { ok: false, error: 'store-unreadable' })
+  }
 }
 
 export interface AdsCopyDispatchDeps {
@@ -146,8 +160,12 @@ async function loadPool(deps: AdsCopyDispatchDeps): Promise<AdsCopyModelPool> {
 }
 
 export async function dispatch(tool: AdsCopyBridgeRequest, deps: AdsCopyDispatchDeps): Promise<Record<string, unknown>> {
+  // ONE decrypt per request: the pool file is read/decrypted once and the
+  // promise threads through every branch (read→decrypt is not free, and the
+  // batch fan-out used to trigger it three times per call).
+  const poolOnce = loadPool(deps)
   if (tool.action === 'copy_models_list') {
-    const pool = await loadPool(deps)
+    const pool = await poolOnce
     const members = pool.pool
       .map((id) => pool.providers.find((provider) => provider.id === id))
       .filter((provider): provider is AdsCopyModelProvider => provider !== undefined)
@@ -167,7 +185,7 @@ export async function dispatch(tool: AdsCopyBridgeRequest, deps: AdsCopyDispatch
 
   // The user may switch the copy tool back to "follow the chat model" at any
   // time — the agent then generates directly and never calls this bridge.
-  if ((await loadPool(deps)).mode === 'chat') {
+  if ((await poolOnce).mode === 'chat') {
     return {
       ok: false,
       error: 'mode-is-chat',
@@ -180,7 +198,7 @@ export async function dispatch(tool: AdsCopyBridgeRequest, deps: AdsCopyDispatch
     const prompt = typeof tool.prompt === 'string' ? tool.prompt.trim() : ''
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) return { ok: false, error: 'invalid-prompt' }
     const system = typeof tool.system === 'string' && tool.system.trim() ? tool.system.trim().slice(0, 8_000) : undefined
-    const pool = await loadPool(deps)
+    const pool = await poolOnce
     const modelName = typeof tool.model === 'string' ? tool.model.trim() : ''
     const agentId = typeof tool.agentId === 'string' ? tool.agentId.trim().slice(0, 120) : ''
 
@@ -228,7 +246,7 @@ export async function dispatch(tool: AdsCopyBridgeRequest, deps: AdsCopyDispatch
     return { ok: anyOk, strategy, results: settled }
   }
 
-  return dispatchBatch(tool.request as Record<string, unknown>, deps, await loadPool(deps))
+  return dispatchBatch(tool.request as Record<string, unknown>, deps, await poolOnce)
 }
 
 // ---------------------------------------------------------------------------

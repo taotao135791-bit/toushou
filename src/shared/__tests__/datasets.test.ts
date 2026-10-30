@@ -426,8 +426,10 @@ describe('datasetMoneyCurrencyList', () => {
   }
 
   it('lists distinct currencies for money metrics only', () => {
-    expect(datasetMoneyCurrencyList({ ...base, rows: [[1, 'MXN'], [2, 'MXN'], [3, '']] }, '消耗')).toEqual(['MXN'])
+    expect(datasetMoneyCurrencyList({ ...base, rows: [[1, 'MXN'], [2, 'MXN']] }, '消耗')).toEqual(['MXN'])
     expect(datasetMoneyCurrencyList({ ...base, rows: [[1, 'MXN'], [2, 'USD']] }, '消耗')).toEqual(['MXN', 'USD'])
+    // An unknown-currency cell counts as its own entry (drives the MIX guard).
+    expect(datasetMoneyCurrencyList({ ...base, rows: [[1, 'MXN'], [3, '']] }, '消耗')).toEqual(['MXN', ''])
     expect(datasetMoneyCurrencyList({ ...base, rows: [[1, 'MXN']] }, '点击')).toEqual([])
     const noColumn: BoardDataset = { ...base, columns: base.columns.slice(0, 1) }
     expect(datasetMoneyCurrencyList(noColumn, '消耗')).toEqual([])

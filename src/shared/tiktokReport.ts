@@ -235,5 +235,5 @@ export function formatTikTokCostPerConversion(spend: number, conversions: number
 }
 
 export function isTikTokReadingRange(value: unknown): value is TikTokReadingRange {
-  return value === '1' || value === '7' || value === '28'
+  return value === '1' || value === 'yd' || value === '3' || value === '7' || value === '28' || value === '30'
 }

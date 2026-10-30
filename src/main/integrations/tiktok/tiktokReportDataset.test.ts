@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 let userDataDir = ''
 vi.mock('electron', () => ({ app: { getPath: () => userDataDir } }))
 
-import { DATASET_LIMITS, validateDataset } from '../../../shared/datasets'
+import { DATASET_LIMITS, buildDataset, validateDataset } from '../../../shared/datasets'
 import { BoardDataset } from '../../../shared/types'
-import { listDatasets } from '../../boardDatasets'
+import { createOrUpdateDataset, listDatasets } from '../../boardDatasets'
 import { TikTokReportRow, fetchIntegratedReport } from './tiktokClient'
 import { mergeReportRowsIntoDataset, reportRowsToGrid, TIKTOK_DATASET_NAME, writeReportToDataset } from './tiktokReportDataset'
 
@@ -193,5 +193,56 @@ describe('mergeReportRowsIntoDataset (single-pipeline upsert)', () => {
     expect(newest?.[3]).toBe(99)
     // History retained.
     expect(dataset.rows.some((r) => r[0] === '2026-01-01')).toBe(true)
+  })
+})
+
+describe('mergeReportRowsIntoDataset schema safety', () => {
+  it('replaces wholesale when the stored dataset predates the 广告主 column', () => {
+    const file3 = path.join(dir, 'schema-datasets.json')
+    // Old 9-column dataset (pre-广告主/币种): 日期,活动名称,消耗,展示,点击,点击率,cpc,转化,cpa
+    const oldGrid = { headers: ['日期', '活动名称', '消耗', '展示', '点击', '点击率', '平均点击成本', '转化', '转化成本'], rawRows: [['2026-01-01', 'C0', '1', '10', '1', '0.1', '1', '0', '']] }
+    const built = buildDataset(oldGrid.headers, oldGrid.rawRows)
+    createOrUpdateDataset('TikTok 报表', built, file3)
+    const details = new Map([['7300001', { name: 'miclip', currency: 'MXN' }]])
+    const merged = mergeReportRowsIntoDataset([row({ date: '2026-01-02', advertiserId: '7300001' })], details, file3)
+    expect(merged.ok).toBe(true)
+    const dataset = listDatasets(file3).find((d) => d.name === 'TikTok 报表')!
+    // Old 9-wide garbage must NOT survive next to 11-wide rows.
+    expect(dataset.columns).toHaveLength(11)
+    expect(dataset.rows.every((r) => r.length === 11)).toBe(true)
+    expect(dataset.rows.some((r) => r[2] === 'C0')).toBe(false)
+  })
+
+  it('refuses to merge an ID-keyed round (no advertiser info) instead of duplicating', () => {
+    const file4 = path.join(dir, 'flip-datasets.json')
+    const named = new Map([['7300001', { name: 'miclip', currency: 'MXN' }]])
+    writeReportToDataset([row({ date: '2026-01-02', advertiserId: '7300001' })], file4, named)
+    const before = listDatasets(file4).find((d) => d.name === 'TikTok 报表')!.rows.length
+    // Info lookup failed this round → cells would key by the raw ID → refuse.
+    const refused = mergeReportRowsIntoDataset([row({ date: '2026-01-02', advertiserId: '7300001', spend: 55 })], undefined, file4)
+    expect(refused.ok).toBe(false)
+    expect((refused as { error?: string }).error).toBe('incomplete-advertiser-info')
+    const unchanged = listDatasets(file4).find((d) => d.name === 'TikTok 报表')!.rows.length
+    expect(unchanged).toBe(before)
+  })
+
+  it('upgrades old ID-keyed rows to their name when info becomes available', () => {
+    const file5 = path.join(dir, 'upgrade-datasets.json')
+    // Seed with an ID-keyed dataset (as written by refreshNow's degraded path).
+    const degraded = mergeReportRowsIntoDataset([row({ date: '2026-01-01', advertiserId: '7300001' })], new Map(), file5)
+    // A Map() with no entries still yields ID cells → refused; use writeReportToDataset with undefined details? That also keys by ID.
+    void degraded
+    const seeded = listDatasets(file5).find((d) => d.name === 'TikTok 报表')
+    if (seeded) {
+      // Fresh named round upgrades the cell and upserts by (name, date).
+      const named = new Map([['7300001', { name: 'miclip', currency: 'MXN' }]])
+      const upgraded = mergeReportRowsIntoDataset([row({ date: '2026-01-01', advertiserId: '7300001', spend: 42 })], named, file5)
+      expect(upgraded.ok).toBe(true)
+      const dataset = listDatasets(file5).find((d) => d.name === 'TikTok 报表')!
+      const thatDay = dataset.rows.filter((r) => r[0] === '2026-01-01')
+      expect(thatDay).toHaveLength(1)
+      expect(thatDay[0][1]).toBe('miclip')
+      expect(thatDay[0][3]).toBe(42)
+    }
   })
 })

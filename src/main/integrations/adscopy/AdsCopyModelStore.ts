@@ -86,9 +86,23 @@ export class AdsCopyModelStore {
   }
 
   async load(): Promise<AdsCopyModelPool> {
+    if (!this.backend.isAvailable()) {
+      // NEVER report an empty pool here: a mutation would then persist that
+      // empty state and wipe the user's stored providers and keys.
+      throw new Error('secure credential storage is unavailable on this device')
+    }
+    let encoded: string
     try {
-      if (!this.backend.isAvailable()) return { providers: [], pool: [], mode: 'chat' }
-      const encoded = await readFile(this.filePath, 'utf8')
+      encoded = await readFile(this.filePath, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        return { providers: [], pool: [], mode: 'chat' }
+      }
+      // Transient failures (file lock, permissions) must not masquerade as
+      // "no providers stored" — the next mutation would wipe the store.
+      throw error
+    }
+    try {
       const raw = JSON.parse(this.backend.decrypt(Buffer.from(encoded, 'base64'))) as Record<string, unknown>
       const providers: AdsCopyModelProvider[] = Array.isArray(raw.providers)
         ? (raw.providers as Array<Record<string, unknown>>)
@@ -101,8 +115,11 @@ export class AdsCopyModelStore {
         : []
       const mode = raw.mode === 'pool' ? 'pool' : 'chat'
       return { providers, pool, mode }
-    } catch {
-      return { providers: [], pool: [], mode: 'chat' }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('unreadable')) throw error
+      // A corrupt envelope cannot prove the pool is empty — refuse instead of
+      // letting the next mutation overwrite the user's keys.
+      throw new Error('ads-copy model store is unreadable')
     }
   }
 

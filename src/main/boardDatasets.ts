@@ -196,7 +196,6 @@ export function importDataset(
   } catch {
     return { ok: false, error: 'dataset-store-unreadable' }
   }
-  if (datasets.length >= DATASET_LIMITS.maxDatasets) return { ok: false, error: 'dataset-limit' }
   // An explicit name (agent imports for a template binding) REPLACES the
   // same-named dataset — refresh semantics, so the "TikTok 报表" binding
   // target stays single and up to date instead of accumulating copies.
@@ -205,6 +204,12 @@ export function importDataset(
     typeof asName === 'string' && asName.trim() && !/[\x00-\x1f\x7f]/.test(asName)
       ? asName.trim().slice(0, DATASET_LIMITS.maxNameLength)
       : null
+  if (datasets.length >= DATASET_LIMITS.maxDatasets) {
+    // A replace-by-name import removes one entry before adding — it must not
+    // hit the cap (the agent's「TikTok 报表」fill flow relies on this).
+    const replaces = explicitName !== null && datasets.some((dataset) => dataset.name === explicitName)
+    if (!replaces) return { ok: false, error: 'dataset-limit' }
+  }
   const dataset: BoardDataset = {
     id: crypto.randomUUID(),
     name: explicitName ?? datasetNameFromPath(filePath),

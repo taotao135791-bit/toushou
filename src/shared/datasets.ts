@@ -40,6 +40,8 @@ export type DatasetImportError =
   | 'write-failed'
   /** createOrUpdateDataset: the replacement name failed isValidDatasetName. */
   | 'invalid-name'
+  /** mergeReportRowsIntoDataset: advertiser info was incomplete this round. */
+  | 'incomplete-advertiser-info'
 
 export type DatasetImportResult =
   | { ok: true; dataset: BoardDataset; truncated: boolean }
@@ -144,9 +146,10 @@ export function datasetMoneyCurrency(
 
 /**
  * Distinct currencies of a money metric's filtered rows ([] when the dataset
- * has no 币种 column or the metric is not money). One entry → uniform
- * currency (badges/conversion allowed); multiple → MIXED (money totals must
- * not be summed across currencies — the established TT rule).
+ * has no 币种 column or the metric is not money). One KNOWN entry → uniform
+ * (badges/conversion allowed). An empty cell counts as its own "unknown"
+ * entry: known+unknown or multiple known → MIXED (money totals must not be
+ * summed across currencies — the established TT rule).
  */
 export function datasetMoneyCurrencyList(dataset: BoardDataset, metricName: string): string[] {
   if (!MONEY_METRIC_RE.test(metricName)) return []
@@ -154,8 +157,9 @@ export function datasetMoneyCurrencyList(dataset: BoardDataset, metricName: stri
   if (currencyIndex < 0) return []
   const seen = new Set<string>()
   for (const row of dataset.rows) {
+    if (row[currencyIndex] === undefined) continue
     const value = row[currencyIndex]
-    if (typeof value === 'string' && value !== '') seen.add(value)
+    seen.add(typeof value === 'string' ? value : String(value))
   }
   return [...seen]
 }

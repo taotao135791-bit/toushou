@@ -32,7 +32,7 @@ import { ReadingErrorNotice, tiktokReadingNotice, type ReadingNextStep } from '.
  */
 
 function isTikTokReadingRangeValue(value: unknown): value is TikTokReadingRange {
-  return value === '1' || value === '7' || value === '28'
+  return value === '1' || value === 'yd' || value === '3' || value === '7' || value === '28' || value === '30'
 }
 
 function advertiserLabel(advertiser: TikTokReadingAdvertiser): string {
