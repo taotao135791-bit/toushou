@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { listPackages } from '../packages'
+import { listPackages, linkLocalPackage } from '../packages'
 import { getStore, setStore } from '../store'
 import {
   BUNDLED_PACKAGES,
@@ -28,6 +28,7 @@ import {
 } from '../bundledPackages'
 
 const mockList = vi.mocked(listPackages)
+const mockLink = vi.mocked(linkLocalPackage)
 const mockGet = vi.mocked(getStore)
 const mockSet = vi.mocked(setStore)
 
@@ -122,5 +123,28 @@ describe('ensureBundledPackages', () => {
     await ensureBundledPackages()
     const record = mockSet.mock.calls[0][1] as Record<string, { userRemoved: boolean }>
     expect(record[firstPkg.name].userRemoved).toBe(false)
+  })
+
+  it('relinks our own stale link when the bundle carries a newer toolkit', async () => {
+    // The old 'stamp-only' behavior left agents running stale tools forever.
+    mockLink.mockClear()
+    mockList.mockResolvedValue([{ name: firstPkg.name } as never])
+    mockGet.mockReturnValue({
+      [firstPkg.name]: { version: '0.0.1', userRemoved: false }
+    })
+    await ensureBundledPackages()
+    expect(mockLink).toHaveBeenCalled()
+    const record = mockSet.mock.calls[0][1] as Record<string, { version: string }>
+    expect(record[firstPkg.name].version).toBe(firstVersion)
+  })
+
+  it('never touches a same-named package the app did not link itself', async () => {
+    mockLink.mockClear()
+    mockList.mockResolvedValue([{ name: firstPkg.name } as never])
+    // No record = someone else installed this name; a relink would stomp it.
+    mockGet.mockReturnValue(undefined as never)
+    await ensureBundledPackages()
+    const firstPath = JSON.stringify(firstPkg.resourceDir)
+    expect(mockLink.mock.calls.some((call) => JSON.stringify(call[0]).includes(firstPath))).toBe(false)
   })
 })

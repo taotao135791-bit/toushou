@@ -87,6 +87,10 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
         setFailure({ code: result.error, detail: result.detail })
       } else {
         setSummary(result)
+        // The TT reading and the dataset cards must show the SAME numbers:
+        // every successful read asks the page to repull the shared dataset
+        // so KPI cards and this module never diverge for long.
+        window.dispatchEvent(new CustomEvent('tt-reading:refreshed'))
       }
     } catch {
       if (version === requestVersion.current) setFailure({ code: 'invoke-failed' })

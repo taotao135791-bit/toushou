@@ -296,6 +296,9 @@ export default function BoardsPage() {
   const boardSaveGeneration = useRef(new Map<string, number>())
 
   const current = boards?.find((b) => b.id === currentId) ?? null
+  // The dataset-repull listener needs the CURRENT board without re-subscribing.
+  const useBoardsPageCurrentBoardRef = useRef(current)
+  useBoardsPageCurrentBoardRef.current = current
 
   useEffect(() => {
     let alive = true
@@ -334,6 +337,39 @@ export default function BoardsPage() {
     const onChange = () => setIsFullscreen(document.fullscreenElement !== null)
     document.addEventListener('fullscreenchange', onChange)
     return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  // TT reading modules ask for a dataset repull after every successful read:
+  // KPI cards and reading cards must derive from the SAME pull, or their
+  // numbers drift apart (two snapshots of one truth). Debounced so a board
+  // with several TT modules triggers ONE shared repull.
+  const datasetRepullTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const onTtRefreshed = () => {
+      if (datasetRepullTimer.current) clearTimeout(datasetRepullTimer.current)
+      datasetRepullTimer.current = setTimeout(() => {
+        datasetRepullTimer.current = null
+        const board = useBoardsPageCurrentBoardRef.current
+        const hasDatasetCards = board?.widgets.some(
+          (widget) => typeof widget.config.datasetId === 'string' && widget.config.datasetId !== ''
+        )
+        if (!hasDatasetCards) return
+        void window.electronAPI
+          .tiktokReportRefreshNow()
+          .then((outcome) => {
+            if (outcome && outcome.ok === false) flashToast(t('boards.datasetRefreshFailed'), false)
+          })
+          .catch(() => flashToast(t('boards.datasetRefreshFailed'), false))
+          .finally(() => {
+            void refreshDatasets()
+          })
+      }, 400)
+    }
+    window.addEventListener('tt-reading:refreshed', onTtRefreshed)
+    return () => {
+      window.removeEventListener('tt-reading:refreshed', onTtRefreshed)
+      if (datasetRepullTimer.current) clearTimeout(datasetRepullTimer.current)
+    }
   }, [])
 
   // Board design defaults: load once, then follow the file (dialog saves,

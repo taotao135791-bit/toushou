@@ -179,7 +179,7 @@ export default function boardsTools(api: ToolHostApi): void {
     description:
       '把一个 CSV/XLSX 文件导入为看板数据集（文件须已存在于本机，路径写绝对路径；列结构自动识别）。\n' +
       '关键用法：name 传「TikTok 报表」时为替换式导入——模板看板的指标卡/趋势图都按这个名字绑定，导入完成后整块看板立即点亮。' +
-      '拉取 TikTok 报表的常规链路：touhou_tiktok_update；它报凭据错误时，你自己拉取分日报表存成 CSV 再走本工具。',
+      '本工具只用于导入用户明确提供的报表文件；TikTok 数据的获取一律走 touhou_tiktok_update（MCP），它失败就如实报错，禁止用 CSV/文件/computer use 绕路。',
     parameters: {
       type: 'object',
       properties: {

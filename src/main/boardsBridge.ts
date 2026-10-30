@@ -110,6 +110,7 @@ export type BoardsBridgeRequest =
       template?: unknown
       description?: unknown
       advertiserIds?: unknown
+      advertiserName?: unknown
     }
   | { action: 'board_add_widget'; boardId?: unknown; name?: unknown; type?: unknown; title?: unknown; config?: unknown }
   | { action: 'board_remove_widget'; boardId?: unknown; name?: unknown; widgetId?: unknown }
@@ -138,7 +139,8 @@ export function parseBoardsBridgeRequest(raw: unknown): BoardsBridgeRequest | nu
         name: value.name,
         template: value.template,
         description: value.description,
-        advertiserIds: value.advertiserIds
+        advertiserIds: value.advertiserIds,
+        advertiserName: value.advertiserName
       }
     case 'board_add_widget':
       return {
@@ -304,8 +306,21 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
       ...(description ? { description } : {})
     }
     // A TikTok advertiser request binds a reading module to those advertisers
-    // (empty string = every advertiser the connected grant covers).
+    // (empty string = every advertiser the connected grant covers) AND scopes
+    // every dataset card to that advertiser (广告主 filter) so the board shows
+    // ONE account's numbers and its currency stays uniform.
     const advertiserIds = typeof tool.advertiserIds === 'string' ? tool.advertiserIds.trim() : ''
+    const advertiserName = boundedString(tool.advertiserName, 120)
+    if (advertiserName) {
+      board.widgets = board.widgets.map((widget) =>
+        widget.config && widget.config.source === 'dataset'
+          ? {
+              ...widget,
+              config: { ...widget.config, filterColumn: '广告主', filterValue: advertiserName }
+            }
+          : widget
+      )
+    }
     if (advertiserIds || template === 'tiktok') {
       const size = WIDGET_DEFAULT_SIZES['tt-reading']
       const slot = findFreeSlot(board.widgets, size.w, size.h)
@@ -333,7 +348,7 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
           : '已附 TT 读数模块（读取当前授权下的全部广告主）。') +
         (datasetReady
           ? '数据集「TikTok 报表」已有数据。'
-          : '数据集「TikTok 报表」还没有数据：先调用 touhou_tiktok_update 拉取；若报凭据类错误，则自己拉取近 7 天分日报表存为 CSV，再用 toushou_dataset_import（name=「TikTok 报表」）导入替换，看板即自动填充。')
+          : '数据集「TikTok 报表」还没有数据：调用 touhou_tiktok_update（走 TikTok MCP 连接）拉取即可自动填充；它失败就如实把错误转述给用户并停下，禁止 CSV/文件/computer use 绕路。')
     }
   }
 
