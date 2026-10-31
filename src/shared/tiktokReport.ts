@@ -116,13 +116,15 @@ export interface TikTokReportStatus {
   refreshing: boolean
   lastRefreshAt?: number
   lastError?: string
+  /** User-visible legacy datasets preserved by migration. */
+  legacyBackups?: string[]
   /** 最近一次成功写入 "TikTok 报表" 的行数。 */
   lastRowCount?: number
   info: TikTokCredentialInfo
 }
 
 export type TikTokRefreshOutcome =
-  | { ok: true; status: TikTokReportStatus; rowCount: number; truncated: boolean }
+  | { ok: true; status: TikTokReportStatus; rowCount: number; truncated: boolean; legacyBackups?: string[] }
   | { ok: false; error: string; status: TikTokReportStatus }
 
 /** Main 侧校验失败时的稳定错误码（渲染层用 i18n 映射为可读文案）。 */
@@ -142,13 +144,35 @@ export type TikTokCredentialErrorCode =
 // ---------------------------------------------------------------------------
 
 /** 报表天数口径：今天（未收完）/ 近 7 天 / 近 28 天（都截止到昨天，整天）。 */
-export type TikTokReadingRange = '1' | '7' | '28'
+export type TikTokReadingRange = '1' | 'yd' | '3' | '7' | '28' | '30'
+
+/** Calendar day for a verified account timezone, independent of host timezone. */
+export function tiktokAccountDate(now: number, timezone: string | null | undefined): string | null {
+  if (!timezone || !Number.isFinite(now)) return null
+  const zone = timezone.trim()
+  const offset = /^(?:UTC|GMT)([+-])(\d{1,2})(?::?(\d{2}))?$/i.exec(zone)
+  if (offset) {
+    const hours = Number(offset[2]), minutes = Number(offset[3] ?? 0)
+    if (hours > 14 || minutes > 59 || (hours === 14 && minutes !== 0)) return null
+    const shift = (hours * 60 + minutes) * 60_000 * (offset[1] === '+' ? 1 : -1)
+    const date = new Date(now + shift)
+    return Number.isFinite(date.valueOf()) ? date.toISOString().slice(0, 10) : null
+  }
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(now))
+    const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value
+    const year = value('year'), month = value('month'), day = value('day')
+    return year && month && day ? `${year}-${month}-${day}` : null
+  } catch { return null }
+}
 
 export interface TikTokReadingAdvertiser {
   advertiserId: string
   /** From the advertiser info call; null when TikTok did not return it. */
   name: string | null
   currency: string | null
+  /** Verified account timezone; unknown is never guessed. */
+  timezone?: string | null
 }
 
 export interface TikTokReadingAdvertiserFailure extends TikTokReadingAdvertiser {
@@ -166,19 +190,23 @@ export interface TikTokReadingTopCampaign {
 }
 
 export interface TikTokReadingTotals {
-  spend: number
+  spend: number | null
   impressions: number
   clicks: number
   /** 点击率，小数（0.0123 = 1.23%），由点击/展示重新计算而非逐行求平均。 */
   ctr: number
   conversions: number
   /** 转化成本 = 消耗 / 转化；无转化时为 0。 */
-  costPerConversion: number
+  costPerConversion: number | null
 }
 
 export interface TikTokReadingSummary {
   /** The application-owned official connector serving this reading. */
   transport?: 'mcp'
+  /** Persisting the shared dataset can fail independently of the live reading. */
+  datasetSync?: { ok: true; legacyBackups?: string[] } | { ok: false; error: string }
+  /** Per-account today windows; never assume all account calendars coincide. */
+  accountWindows?: Array<{ advertiserId: string; timezone: string; startDate: string; endDate: string }>
   /** The selected account scope exceeded this widget's read cap. */
   truncated?: boolean
   range: TikTokReadingRange
@@ -235,5 +263,5 @@ export function formatTikTokCostPerConversion(spend: number, conversions: number
 }
 
 export function isTikTokReadingRange(value: unknown): value is TikTokReadingRange {
-  return value === '1' || value === '7' || value === '28'
+  return value === '1' || value === 'yd' || value === '3' || value === '7' || value === '28' || value === '30'
 }

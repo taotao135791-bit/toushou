@@ -8,6 +8,7 @@
  * the reference implementation in the user's pi-kanban project.
  */
 import { BoardDataset, BoardDatasetColumn } from './types'
+import { tiktokAccountDate } from './tiktokReport'
 
 export const DATASET_LIMITS = {
   maxDatasets: 20,
@@ -40,9 +41,16 @@ export type DatasetImportError =
   | 'write-failed'
   /** createOrUpdateDataset: the replacement name failed isValidDatasetName. */
   | 'invalid-name'
+  /** mergeReportRowsIntoDataset: advertiser info was incomplete this round. */
+  | 'incomplete-advertiser-info'
+  | 'legacy-dataset'
+  | 'row-limit'
+  | 'invalid-scope'
+  | 'ambiguous-dataset'
+  | 'superseded'
 
 export type DatasetImportResult =
-  | { ok: true; dataset: BoardDataset; truncated: boolean }
+  | { ok: true; dataset: BoardDataset; truncated: boolean; legacyBackups?: string[] }
   | { ok: false; error: DatasetImportError; detail?: string }
 
 export type DatasetMutationResult = { ok: true } | { ok: false; error: string }
@@ -79,6 +87,66 @@ export function cleanNumberString(raw: string): number | null {
  * 2024年1月1日, 20240101 and US-style 01/02/2024 (when the first number
  * exceeds 12 it is treated as the day). Returns null for anything else.
  */
+/** Explicit scope result: unknown account timezones are not silently counted as zero. */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+export function filterDatasetRowsByWindowWithStatus(
+  dataset: BoardDataset,
+  window: { start: string; end: string },
+  opts?: { latestDay?: boolean; now?: number }
+): { dataset: BoardDataset; excludedUnknownTimezone: number; missingTimezone: boolean } {
+  const dateIndex = dataset.columns.findIndex((column) => column.type === 'date')
+  if (dateIndex < 0) return { dataset, excludedUnknownTimezone: 0, missingTimezone: false }
+  const timezoneIndex = dataset.columns.findIndex((column) => column.name === '账户时区')
+  const isTikTok = dataset.name === 'TikTok 报表'
+  let unknown = 0
+  const now = opts?.now ?? Date.now()
+  const zoneDates = new Map<string, string | null>()
+  const rows = dataset.rows.filter((row) => {
+    const day = row[dateIndex]
+    if (typeof day !== 'string' || !ISO_DATE_RE.test(day)) return false
+    if (opts?.latestDay && isTikTok) {
+      const zone = timezoneIndex < 0 ? '' : String(row[timezoneIndex] ?? '')
+      if (!zoneDates.has(zone)) zoneDates.set(zone, tiktokAccountDate(now, zone))
+      const today = zoneDates.get(zone)
+      if (!today) { unknown++; return false }
+      return day === today
+    }
+    return day >= window.start && day <= window.end
+  })
+  return { dataset: rows.length === dataset.rows.length ? dataset : { ...dataset, rows }, excludedUnknownTimezone: unknown, missingTimezone: opts?.latestDay === true && isTikTok && (timezoneIndex < 0 || unknown > 0) }
+}
+
+export function filterDatasetRowsByWindow(
+  dataset: BoardDataset,
+  window: { start: string; end: string },
+  opts?: { latestDay?: boolean; now?: number }
+): BoardDataset {
+  return filterDatasetRowsByWindowWithStatus(dataset, window, opts).dataset
+}
+
+/** Money-metric names eligible for a USD conversion subtitle. */
+const MONEY_METRIC_RE = /消耗|花费|成本|金额|spend|cost|cpc|cpa|cpm/i
+
+/**
+ * Distinct currencies of a money metric's filtered rows ([] when the dataset
+ * has no 币种 column or the metric is not money). One KNOWN entry → uniform
+ * (badges/conversion allowed). An empty cell counts as its own "unknown"
+ * entry: known+unknown or multiple known → MIXED (money totals must not be
+ * summed across currencies — the established TT rule).
+ */
+export function datasetMoneyCurrencyList(dataset: BoardDataset, metricName: string): string[] {
+  if (!MONEY_METRIC_RE.test(metricName)) return []
+  const currencyIndex = dataset.columns.findIndex((column) => column.name === '币种')
+  if (currencyIndex < 0) return []
+  const seen = new Set<string>()
+  for (const row of dataset.rows) {
+    if (row[currencyIndex] === undefined) continue
+    const value = row[currencyIndex]
+    seen.add(typeof value === 'string' ? value : String(value))
+  }
+  return [...seen]
+}
+
 export function parseDateString(raw: string): string | null {
   const s = raw.trim()
   if (!s) return null
@@ -356,5 +424,7 @@ export function validateDataset(raw: unknown): BoardDataset | null {
   if (typeof d.createdAt !== 'number' || !Number.isFinite(d.createdAt) || d.createdAt < 0) {
     return null
   }
-  return { id: d.id, name: d.name, columns, rows, createdAt: d.createdAt }
+  const result: BoardDataset & { source?: 'tiktok-report-v2' } = { id: d.id, name: d.name, columns, rows, createdAt: d.createdAt }
+  if (d.source === 'tiktok-report-v2') result.source = d.source
+  return result
 }

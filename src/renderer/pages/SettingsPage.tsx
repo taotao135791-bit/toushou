@@ -13,6 +13,7 @@ import { CliCapabilities, CliInfo, PermissionMode, UpdaterStatus } from '@shared
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
+import { runLanguageTransition, runThemeTransition } from '../lib/themeTransition'
 import CurrentOmpSettings from '../components/CurrentOmpSettings'
 import LegacyPiSettings from '../components/LegacyPiSettings'
 
@@ -248,7 +249,7 @@ export default function SettingsPage() {
   }
 
   const seg = (active: boolean) =>
-    `flex h-[26px] items-center rounded-full border px-2.5 text-[12px] font-medium transition-colors ${
+    `icon-pop flex h-[26px] items-center rounded-full border px-2.5 text-[12px] font-medium transition-colors ${
       active
         ? 'border-line bg-ink-850 text-cream shadow-card'
         : 'border-transparent text-cream-dim hover:text-cream'
@@ -313,13 +314,13 @@ export default function SettingsPage() {
           <Section title={t('settings.appearance')}>
             <Row label={t('settings.theme')}>
               <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                <button onClick={() => setTheme('light')} className={seg(theme === 'light')}>
+                <button onClick={(e) => runThemeTransition(() => setTheme('light'), { x: e.clientX, y: e.clientY }, 'light')} className={seg(theme === 'light')}>
                   <span className="flex items-center gap-1">
                     <Sun size={11} />
                     {t('settings.themeLight')}
                   </span>
                 </button>
-                <button onClick={() => setTheme('dark')} className={seg(theme === 'dark')}>
+                <button onClick={(e) => runThemeTransition(() => setTheme('dark'), { x: e.clientX, y: e.clientY }, 'dark')} className={seg(theme === 'dark')}>
                   <span className="flex items-center gap-1">
                     <Moon size={11} />
                     {t('settings.themeDark')}
@@ -344,10 +345,10 @@ export default function SettingsPage() {
               <div className="flex items-center gap-2">
                 <Languages size={13} className="text-cream-faint" />
                 <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                  <button onClick={() => setLanguage('zh')} className={seg(language === 'zh')}>
+                  <button onClick={(e) => runLanguageTransition(() => setLanguage('zh'), { x: e.clientX, y: e.clientY })} className={seg(language === 'zh')}>
                     中文
                   </button>
-                  <button onClick={() => setLanguage('en')} className={seg(language === 'en')}>
+                  <button onClick={(e) => runLanguageTransition(() => setLanguage('en'), { x: e.clientX, y: e.clientY })} className={seg(language === 'en')}>
                     English
                   </button>
                 </div>

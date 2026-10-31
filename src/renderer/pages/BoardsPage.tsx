@@ -35,6 +35,7 @@ import {
   StickyNote,
   Trash2,
   X,
+  GripVertical,
   type LucideIcon
 } from 'lucide-react'
 import { BoardDataset, BoardDesignSpec, BoardMasterScope, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
@@ -139,7 +140,13 @@ const DATASET_ERROR_KEYS: Record<DatasetImportError, I18nKey> = {
   'dataset-store-unreadable': 'boards.datasets.error.storeUnreadable',
   'write-failed': 'boards.datasets.error.writeFailed',
   // Main-internal writer path only (TikTok 报表 refresh) — never user-facing here.
-  'invalid-name': 'boards.datasets.error.invalidName'
+  'invalid-name': 'boards.datasets.error.invalidName',
+  'incomplete-advertiser-info': 'boards.datasets.error.incompleteAdvertiserInfo',
+  'legacy-dataset': 'boards.datasets.syncFailed',
+  'row-limit': 'boards.datasets.syncFailed',
+  'invalid-scope': 'boards.datasets.syncFailed',
+  'ambiguous-dataset': 'boards.datasets.syncFailed',
+  superseded: 'boards.datasets.syncSuperseded'
 }
 
 function hasFileDrag(e: DragEvent): boolean {
@@ -239,6 +246,8 @@ export default function BoardsPage() {
   const [boardsLoadFailed, setBoardsLoadFailed] = useState(false)
   const [boardsLoadGeneration, setBoardsLoadGeneration] = useState(0)
   const [currentId, setCurrentId] = useState<string | null>(null)
+  // Drag-to-reorder board tabs: the id rides the DOM event (no re-render churn).
+  const dragBoardId = useRef<string | null>(null)
   const [surface, setSurface] = useState<'today' | 'board'>('today')
   const [creating, setCreating] = useState(false)
   const [newBoardName, setNewBoardName] = useState('')
@@ -279,6 +288,9 @@ export default function BoardsPage() {
   const [saveFailed, setSaveFailed] = useState(false)
   const [datasets, setDatasets] = useState<BoardDataset[]>([])
   const [datasetsLoadFailed, setDatasetsLoadFailed] = useState(false)
+  const [ttSyncFailures, setTtSyncFailures] = useState<Record<string, boolean>>({})
+  /** First snapshot not in yet: cards show skeletons, not "no data" flashes. */
+  const [datasetsReady, setDatasetsReady] = useState(false)
   const [datasetsOpen, setDatasetsOpen] = useState(false)
   const [fileDrag, setFileDrag] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -293,6 +305,14 @@ export default function BoardsPage() {
   const boardSaveGeneration = useRef(new Map<string, number>())
 
   const current = boards?.find((b) => b.id === currentId) ?? null
+  const ttWidgets = current?.widgets.filter(widget => widget.type === 'tt-reading') ?? []
+  const hasCurrentTtDataset = current?.widgets.some(widget => {
+    const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
+    return id === 'TikTok 报表' || datasets.some(dataset => dataset.id === id && dataset.name === 'TikTok 报表')
+  }) ?? false
+  const fallbackStatus = current ? ttSyncFailures[`fallback:${current.id}`] : undefined
+  const ttFailed = fallbackStatus === true || ttWidgets.some(widget => ttSyncFailures[widget.id] === true)
+  const ttVerifiedThisSession = ttWidgets.length ? ttWidgets.every(widget => ttSyncFailures[widget.id] === false) : fallbackStatus === false
 
   useEffect(() => {
     let alive = true
@@ -321,6 +341,7 @@ export default function BoardsPage() {
         setDatasets([])
         setDatasetsLoadFailed(true)
       }
+      setDatasetsReady(true)
     })()
     return () => {
       alive = false
@@ -331,6 +352,32 @@ export default function BoardsPage() {
     const onChange = () => setIsFullscreen(document.fullscreenElement !== null)
     document.addEventListener('fullscreenchange', onChange)
     return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  // TT reading modules write their rows into the shared dataset in Main (one
+  // pipeline), so a successful read only needs the renderer to RELOAD the
+  // snapshot — a second refreshNow here raced the reading's own pull and
+  // surfaced bogus "refresh failed" toasts. Debounced: one reload per burst.
+  const datasetRepullTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const onTtRefreshed = () => {
+      if (datasetRepullTimer.current) clearTimeout(datasetRepullTimer.current)
+      datasetRepullTimer.current = setTimeout(() => {
+        datasetRepullTimer.current = null
+        void refreshDatasets()
+      }, 400)
+    }
+    const onSyncStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{id?: string; failed?: boolean}>).detail
+      if (typeof detail?.id === 'string') setTtSyncFailures(current => ({ ...current, [detail.id!]: detail.failed === true }))
+    }
+    window.addEventListener('tt-reading:sync-status', onSyncStatus)
+    window.addEventListener('tt-reading:refreshed', onTtRefreshed)
+    return () => {
+      window.removeEventListener('tt-reading:sync-status', onSyncStatus)
+      window.removeEventListener('tt-reading:refreshed', onTtRefreshed)
+      if (datasetRepullTimer.current) clearTimeout(datasetRepullTimer.current)
+    }
   }, [])
 
   // Board design defaults: load once, then follow the file (dialog saves,
@@ -706,9 +753,44 @@ export default function BoardsPage() {
     const widgets = current.widgets.filter(
       (widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type) || widget.type === 'fb-report-reading' || widget.type === 'google-report-reading'
     )
-    if (widgets.length === 0) return
+    const hasDatasetBound = current.widgets.some(
+      (widget) => typeof widget.config.datasetId === 'string' && widget.config.datasetId !== ''
+    )
+    const hasTtDatasetBound = current.widgets.some(widget => {
+      const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
+      return id === 'TikTok 报表' || datasets.some(dataset => dataset.id === id && dataset.name === 'TikTok 报表')
+    })
+    if (widgets.length === 0 && !hasDatasetBound) return
     setBoardRefreshBusy(true)
-    setBoardRefreshProgress({ done: 0, total: widgets.length })
+    setBoardRefreshProgress({ done: 0, total: Math.max(widgets.length, 1) })
+    // ONE pipeline: the TT reading itself writes the shared dataset. When the
+    // board has dataset cards but no TT module to drive that read, run one
+    // reading pull here so refresh-all updates every card in one pass.
+    if (hasTtDatasetBound && !widgets.some((widget) => widget.type === 'tt-reading')) {
+      try {
+        const scope = current.masterScope?.range
+        const range = scope === 'today' ? '1' : scope === 'yesterday' ? 'yd' : scope === 'last3' ? '3' : scope === 'last30' ? '30' : '7'
+        const result = await window.electronAPI.ttReadingSummary({ range })
+        // A reading failure resolves with { ok:false } instead of throwing;
+        // reporting success while the dataset stayed stale was misleading.
+        const superseded = !('ok' in result) && result.datasetSync?.ok === false && result.datasetSync.error === 'superseded'
+        const failed = 'ok' in result ? result.ok === false : (result.datasetSync?.ok === false && !superseded) || result.failed.length > 0 || result.truncated === true
+        setTtSyncFailures(current => ({ ...current, [`fallback:${currentId}`]: failed }))
+        if (failed) flashToast(t('boards.datasetRefreshFailed'), false)
+        else if (superseded) flashToast(t('boards.datasets.syncSuperseded'), true)
+        await refreshDatasets()
+      } catch {
+        setTtSyncFailures(current => ({ ...current, [`fallback:${currentId}`]: true }))
+        flashToast(t('boards.datasetRefreshFailed'), false)
+      }
+    } else if (hasDatasetBound && !hasTtDatasetBound) {
+      await refreshDatasets()
+    }
+    if (widgets.length === 0) {
+      setBoardRefreshBusy(false)
+      setBoardRefreshProgress({ done: 1, total: 1 })
+      return
+    }
     for (let index = 0; index < widgets.length; index += 1) {
       const widget = widgets[index]
       const isTt = widget.type === 'tt-reading'
@@ -744,6 +826,13 @@ export default function BoardsPage() {
 
   // Master scope: writing it re-unifies every reading module onto it and
   // clears all independence flags (see applyMasterScope in shared/boards).
+  /** 昨日窗口（总控"昨日"档的悬浮提示）：start=end=昨天，本机日期。 */
+  const yesterdayWindow = () => {
+    const d = new Date()
+    d.setDate(d.getDate() - 1)
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return { start: iso, end: iso }
+  }
   const saveMasterScope = (next: BoardMasterScope) => {
     if (!currentId) return
     mutateBoard(currentId, (b) => ({
@@ -1123,6 +1212,12 @@ export default function BoardsPage() {
         className="flex shrink-0 items-center gap-1"
       >
         <span
+          className="widget-drag-handle shrink-0 cursor-grab text-cream-faint/0 transition-colors group-hover/widget:text-cream-faint active:cursor-grabbing"
+          title={t('boards.dragHint')}
+        >
+          <GripVertical size={10} />
+        </span>
+        <span
           style={{ textAlign: effectiveStyle?.titleAlign ?? 'left' }}
           className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-[0.1em] text-cream-faint"
         >
@@ -1162,8 +1257,19 @@ export default function BoardsPage() {
           key={widget.id}
           widget={widget}
           datasets={datasets}
+          datasetsLoading={!datasetsReady}
           boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
+          masterWindow={
+            master
+              ? master.range === 'today'
+                ? // 今天 = 账户当前正在过的统计日（数据里最新的一天），不看日历时区。
+                  { ...boardReadingRangeDates('today'), latestDay: true }
+                : master.range === 'yesterday'
+                  ? yesterdayWindow()
+                  : boardReadingRangeDates(master.range)
+              : undefined
+          }
         />
       </div>
       {configWidgetId === widget.id && (
@@ -1209,7 +1315,36 @@ export default function BoardsPage() {
             return (
               <div
                 key={b.id}
+                draggable
+                onDragStart={(e) => {
+                  dragBoardId.current = b.id
+                  e.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragOver={(e) => {
+                  if (dragBoardId.current && dragBoardId.current !== b.id) e.preventDefault()
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const from = dragBoardId.current
+                  dragBoardId.current = null
+                  if (!from || from === b.id) return
+                  setBoards((prev) => {
+                    const list = prev ?? []
+                    const fromIndex = list.findIndex((item) => item.id === from)
+                    const toIndex = list.findIndex((item) => item.id === b.id)
+                    if (fromIndex < 0 || toIndex < 0) return prev
+                    const next = [...list]
+                    const [moved] = next.splice(fromIndex, 1)
+                    next.splice(toIndex, 0, moved)
+                    void window.electronAPI.reorderBoards(next.map((item) => item.id))
+                    return next
+                  })
+                }}
+                onDragEnd={() => {
+                  dragBoardId.current = null
+                }}
                 onClick={() => switchBoard(b.id)}
+                title={t('boards.tabDragHint')}
                 className={`flex max-w-[200px] shrink-0 cursor-pointer items-center gap-1 rounded-full border px-3 py-1 text-[12px] transition ${
                   active
                     ? 'border-line bg-ink-850 text-cream shadow-card'
@@ -1395,12 +1530,16 @@ export default function BoardsPage() {
           </div>
         )}
       </header>
+      {surface === 'board' && current && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
+      {surface === 'board' && current && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
+      {surface === 'board' && current && datasets.some(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')) && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names: datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name).join('、')})}</p>}
       {surface === 'board' && current && (
         <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 items-center gap-2 border-b border-line bg-ink-900/60 px-4">
           <span className="shrink-0 text-[12px] leading-[18px] text-cream-faint">{t('boards.master.label')}</span>
           <div className="flex items-center gap-1">
             {(
               [
+                ['yesterday', t('boards.master.range.yesterday')],
                 ['today', t('boards.master.range.today')],
                 ['last3', t('boards.master.range.last3')],
                 ['last7', t('boards.master.range.last7')],
@@ -1410,7 +1549,11 @@ export default function BoardsPage() {
               <button
                 key={value}
                 onClick={() => saveMasterScope({ range: value, metrics: master?.metrics ?? seedMasterMetrics() })}
-                title={formatReadingWindow(boardReadingRangeDates(value))}
+                title={
+                  value === 'yesterday'
+                    ? formatReadingWindow(yesterdayWindow())
+                    : formatReadingWindow(boardReadingRangeDates(value))
+                }
                 className={`focus-ring rounded-full border px-2.5 py-1 text-[12px] leading-[18px] transition ${
                   master?.range === value
                     ? 'border-accent/60 bg-accent-soft text-accent'
@@ -1423,7 +1566,9 @@ export default function BoardsPage() {
           </div>
           {master && (
             <span className="shrink-0 text-[12px] leading-[18px] tabular-nums text-cream-faint">
-              {formatReadingWindow(boardReadingRangeDates(master.range))}
+              {formatReadingWindow(
+                master.range === 'yesterday' ? yesterdayWindow() : boardReadingRangeDates(master.range)
+              )}
             </span>
           )}
           <div className="relative">
@@ -1576,7 +1721,7 @@ export default function BoardsPage() {
               </button>
             </div>
           ) : (
-            <div className="px-4 pb-24 pt-4">
+            <div key={current?.id ?? 'none'} className="soft-swap px-4 pb-24 pt-4">
               <Grid
                 className="layout"
                 layout={gridLayout}
@@ -1586,6 +1731,7 @@ export default function BoardsPage() {
                 compactType="vertical"
                 isDraggable
                 isResizable
+                draggableHandle=".widget-drag-handle"
                 draggableCancel="input, textarea, select, a, button, .widget-config"
                 onDragStop={handleLayoutStop}
                 onResizeStop={handleLayoutStop}
@@ -1891,7 +2037,7 @@ export default function BoardsPage() {
 
       {datasetsOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => setDatasetsOpen(false)}
         >
           <div
@@ -1989,7 +2135,7 @@ export default function BoardsPage() {
 
       {detailOpen && current && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => setDetailOpen(false)}
         >
           <div
@@ -2101,7 +2247,7 @@ export default function BoardsPage() {
 
       {composeOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => setComposeOpen(false)}
         >
           <div
@@ -2166,7 +2312,7 @@ export default function BoardsPage() {
 
       {readingOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => {
             if (!readingSubmitting) setReadingOpen(false)
           }}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { boardReadingRangeDates } from '../fbReading'
+import { tiktokAccountDate } from '../tiktokReport'
 import {
   buildTodayChatPrompt,
   fbPresetForTodayRange,
@@ -13,6 +14,18 @@ import {
 } from '../todayReading'
 
 const today = new Date(2026, 9, 1) // local 2026-10-01
+
+describe('account calendar dates', () => {
+  it('honors IANA daylight saving and validated UTC offsets independently of the host timezone', () => {
+    const instant = Date.parse('2026-11-01T06:30:00Z')
+    expect(tiktokAccountDate(instant, 'America/Los_Angeles')).toBe('2026-10-31')
+    expect(tiktokAccountDate(instant, 'Asia/Tokyo')).toBe('2026-11-01')
+    expect(tiktokAccountDate(instant, 'UTC-07:00')).toBe('2026-10-31')
+    expect(tiktokAccountDate(instant, 'GMT+05:30')).toBe('2026-11-01')
+    expect(tiktokAccountDate(instant, 'UTC+14:01')).toBeNull()
+    expect(tiktokAccountDate(instant, 'unknown/zone')).toBeNull()
+  })
+})
 
 describe('today windows', () => {
   it('uses complete days and matches the Facebook last-7 preset', () => {

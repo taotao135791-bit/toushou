@@ -58,7 +58,7 @@ function readDatasets(file: string): BoardDataset[] {
   return datasets
 }
 
-function writeDatasets(file: string, datasets: BoardDataset[]): void {
+export function writeDatasets(file: string = defaultDatasetsFile(), datasets: BoardDataset[]): void {
   mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.tmp-${process.pid}`
   writeFileSync(tmp, JSON.stringify(datasets, null, 2) + '\n', 'utf-8')
@@ -67,6 +67,23 @@ function writeDatasets(file: string, datasets: BoardDataset[]): void {
 
 export function listDatasets(file: string = defaultDatasetsFile()): BoardDataset[] {
   return readDatasets(file)
+}
+
+/** Strict read for migrations: refuse invalid rows rather than dropping them. */
+export function listDatasetsStrict(file: string = defaultDatasetsFile()): BoardDataset[] {
+  let text: string
+  try { text = readFileSync(file, 'utf8') } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw new Error('Could not read the local datasets file.')
+  }
+  let raw: unknown
+  try { raw = JSON.parse(text) } catch { throw new Error('The local datasets file is not valid JSON.') }
+  if (!Array.isArray(raw) || raw.some((item) => !validateDataset(item))) {
+    throw new Error('The local datasets file contains an invalid dataset.')
+  }
+  // Preserve extra fields verbatim for backups; validation above establishes
+  // the required BoardDataset shape without silently rewriting unknown data.
+  return raw as BoardDataset[]
 }
 
 export function deleteDataset(id: unknown, file: string = defaultDatasetsFile()): DatasetMutationResult {
@@ -150,7 +167,8 @@ function parseXlsxGrid(buffer: Buffer): string[][] {
 
 export function importDataset(
   filePath: unknown,
-  file: string = defaultDatasetsFile()
+  file: string = defaultDatasetsFile(),
+  asName?: string
 ): DatasetImportResult {
   // eslint-disable-next-line no-control-regex
   if (typeof filePath !== 'string' || !filePath || /[\x00-\x1f\x7f]/.test(filePath)) {
@@ -162,26 +180,32 @@ export function importDataset(
   }
   if (!existsSync(filePath)) return { ok: false, error: 'invalid-path' }
 
-  let grid: string[][]
   try {
-    if (statSync(filePath).size > DATASET_LIMITS.maxFileBytes) {
-      return { ok: false, error: 'file-too-large' }
-    }
+    if (statSync(filePath).size > DATASET_LIMITS.maxFileBytes) return { ok: false, error: 'file-too-large' }
+    return importDatasetBuffer(filePath, readFileSync(filePath), file, asName)
   } catch {
     return { ok: false, error: 'read-failed' }
   }
+}
+
+/** Parse bytes already opened and authorized by Main without reopening a path. */
+export function importDatasetBuffer(
+  fileName: string,
+  bytes: Buffer,
+  file: string = defaultDatasetsFile(),
+  asName?: string
+): DatasetImportResult {
+  // eslint-disable-next-line no-control-regex
+  if (typeof fileName !== 'string' || !fileName || /[\x00-\x1f\x7f]/.test(fileName)) return { ok: false, error: 'invalid-path' }
+  const ext = path.extname(fileName).slice(1).toLowerCase()
+  if (!DATASET_FILE_EXTENSIONS.includes(ext as (typeof DATASET_FILE_EXTENSIONS)[number])) return { ok: false, error: 'unsupported-type' }
+  if (!Buffer.isBuffer(bytes)) return { ok: false, error: 'read-failed' }
+  if (bytes.length > DATASET_LIMITS.maxFileBytes) return { ok: false, error: 'file-too-large' }
+  let grid: string[][]
   try {
-    if (ext === 'csv') {
-      grid = parseCsvGrid(readFileSync(filePath, 'utf-8'))
-    } else {
-      grid = parseXlsxGrid(readFileSync(filePath))
-    }
+    grid = ext === 'csv' ? parseCsvGrid(bytes.toString('utf8')) : parseXlsxGrid(bytes)
   } catch (err) {
-    return {
-      ok: false,
-      error: 'parse-failed',
-      detail: err instanceof Error ? err.message : String(err)
-    }
+    return { ok: false, error: 'parse-failed', detail: err instanceof Error ? err.message : String(err) }
   }
   if (grid.length === 0) return { ok: false, error: 'empty' }
 
@@ -195,16 +219,36 @@ export function importDataset(
   } catch {
     return { ok: false, error: 'dataset-store-unreadable' }
   }
-  if (datasets.length >= DATASET_LIMITS.maxDatasets) return { ok: false, error: 'dataset-limit' }
+  // An explicit name (agent imports for a template binding) REPLACES the
+  // same-named dataset — refresh semantics, so the "TikTok 报表" binding
+  // target stays single and up to date instead of accumulating copies.
+  // eslint-disable-next-line no-control-regex
+  const explicitName =
+    typeof asName === 'string' && asName.trim() && !/[\x00-\x1f\x7f]/.test(asName)
+      ? asName.trim().slice(0, DATASET_LIMITS.maxNameLength)
+      : null
+  if (datasets.length >= DATASET_LIMITS.maxDatasets) {
+    // A replace-by-name import removes one entry before adding — it must not
+    // hit the cap (the agent's「TikTok 报表」fill flow relies on this).
+    const replaces = explicitName !== null && datasets.some((dataset) => dataset.name === explicitName)
+    if (!replaces) return { ok: false, error: 'dataset-limit' }
+  }
+  // Replace-by-name keeps the existing id/createdAt: widgets bound by dataset
+  // ID (the widget settings store d.id) must survive an import that refreshes
+  // the same dataset.
+  const replaced = explicitName ? datasets.find((existing) => existing.name === explicitName) : undefined
   const dataset: BoardDataset = {
-    id: crypto.randomUUID(),
-    name: datasetNameFromPath(filePath),
+    id: replaced?.id ?? crypto.randomUUID(),
+    name: explicitName ?? datasetNameFromPath(fileName),
     columns: built.columns,
     rows: built.rows,
-    createdAt: Date.now()
+    createdAt: replaced?.createdAt ?? Date.now()
   }
+  const next = explicitName
+    ? datasets.filter((existing) => existing.name !== dataset.name)
+    : datasets
   try {
-    writeDatasets(file, [...datasets, dataset])
+    writeDatasets(file, [...next, dataset])
   } catch (err) {
     return {
       ok: false,

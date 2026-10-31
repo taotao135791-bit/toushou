@@ -56,8 +56,10 @@ export class FeishuCredentialStore {
 
   async load(): Promise<FeishuStoredCredentials | null> {
     try {
-      if (!this.backend.isAvailable()) return null
+      // A fresh profile has no envelope: avoid consulting Keychain at all.
+      // Only an existing file needs the secure-storage backend.
       const encoded = await readFile(this.filePath, 'utf8')
+      if (!this.backend.isAvailable()) return null
       const raw = JSON.parse(this.backend.decrypt(Buffer.from(encoded, 'base64'))) as Record<string, unknown>
       if (
         typeof raw.appId !== 'string' ||

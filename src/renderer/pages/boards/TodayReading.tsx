@@ -239,7 +239,7 @@ export function TodayReading() {
     store.setComposerPrefill(buildTodayChatPrompt(
       language === 'zh' ? 'zh' : 'en',
       t(rangeKey(range)),
-      formatReadingWindow(dateWindow),
+      `${formatReadingWindow(dateWindow)}${range === 'today' ? ` · ${t('boards.today.accountDates')}` : ''}`,
       chatRows(facebook, tiktok, tiktokFailure, preset !== null, t)
     ))
     navigate('/')
@@ -254,6 +254,7 @@ export function TodayReading() {
           <h1 className="text-[24px] font-semibold leading-[34px] text-cream">{t('boards.today.title')}</h1>
           <p className="mt-1 text-[12px] leading-[18px] tabular-nums text-cream-faint">
             {rangeLabel} · {formatReadingWindow(dateWindow)} · {t('boards.tt.localDate')}
+            {range === 'today' && <> · {t('boards.today.accountDates')}</>}
             {previous ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(previous))}` : ''}
           </p>
         </div>
@@ -327,7 +328,7 @@ export function TodayReading() {
         {tiktokFailure ? (
           <div className="rounded-2xl border border-line bg-ink-850 px-4 py-4">
             <ReadingErrorNotice
-              notice={tiktokReadingNotice(tiktokFailure.code, t)}
+              notice={tiktokReadingNotice(tiktokFailure.code, t, tiktokFailure.detail)}
               detail={tiktokFailure.detail}
               onAction={tiktokStep}
               busy={tiktokBusy}
@@ -337,6 +338,8 @@ export function TodayReading() {
           <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.loading')}</p>
         ) : tiktok ? (
           <>
+            {tiktok.datasetSync?.ok === false && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(tiktok.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : 'boards.datasets.syncFailed')}</p>}
+            {tiktok.datasetSync?.ok === true && Boolean(tiktok.datasetSync.legacyBackups?.length) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names:tiktok.datasetSync.legacyBackups!.join('、')})}</p>}
             {tiktok.accounts.map((account) => (
               <TikTokAccount
                 key={account.advertiserId}
@@ -436,7 +439,7 @@ function chatRows(
     rows.push({
       platform: 'TikTok',
       name: t('boards.tt.allAdvertisers'),
-      status: tiktokReadingNotice(tiktokFailure.code, t).message,
+      status: tiktokReadingNotice(tiktokFailure.code, t, tiktokFailure.detail).message,
       spend: null,
       delta: null,
       movers: []
@@ -448,7 +451,7 @@ function chatRows(
       rows.push({
         platform: 'TikTok',
         name,
-        status: tiktokReadingNotice(account.error, t).message,
+        status: tiktokReadingNotice(account.error, t, account.detail).message,
         spend: null,
         delta: null,
         movers: []
@@ -458,7 +461,7 @@ function chatRows(
     rows.push({
       platform: 'TikTok',
       name,
-      status: t('boards.today.official'),
+      status: `${t('boards.today.official')}${account.window ? ` · ${formatReadingWindow(account.window)}${account.timezone ? ` ${account.timezone}` : ''}${account.previousWindow ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(account.previousWindow))}` : ''}` : ''}`,
       spend: withCurrency(formatTikTokAmount(account.spend), account.currency),
       delta: formatSpendDelta(account.spend, account.previousSpend),
       movers: account.campaigns.map((move) => `${move.name} ${formatSpendDelta(move.spend, move.previousSpend) ?? ''}`)
@@ -521,6 +524,7 @@ function TikTokAccount({
         {' · '}
         {t('boards.reading.updatedAt', { time: new Date(generatedAt).toLocaleString() })}
       </p>
+      {!isTikTokTodayFailure(account) && account.window && <p className="text-[12px] leading-[18px] text-cream-faint">{formatReadingWindow(account.window)}{account.timezone ? ` · ${account.timezone}` : ''}{account.previousWindow ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(account.previousWindow))}` : ''}</p>}
     </div>
   )
   if (isTikTokTodayFailure(account)) {
@@ -529,7 +533,7 @@ function TikTokAccount({
         {title}
         <ReadingErrorNotice
           className="mt-2"
-          notice={tiktokReadingNotice(account.error, t)}
+          notice={tiktokReadingNotice(account.error, t, account.detail)}
           detail={account.detail}
           onAction={onStep}
           busy={busy}

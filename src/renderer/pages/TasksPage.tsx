@@ -465,7 +465,7 @@ export default function TasksPage() {
 
       {modalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-6 backdrop-blur-[2px]"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-6 backdrop-blur-[2px]"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) setModalOpen(false)
           }}

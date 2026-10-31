@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => userDataDir }
 }))
 
-import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, saveBoard } from '../boards'
+import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from '../boards'
 import { BOARD_LIMITS } from '../../shared/boards'
 import { KanbanBoard } from '../../shared/types'
 
@@ -184,6 +184,32 @@ describe('saveBoard', () => {
     expect(existsSync(target)).toBe(true)
     expect(JSON.parse(readFileSync(target, 'utf-8'))[0].id).toBe('default-file')
     expect(listBoards()).toHaveLength(1)
+  })
+})
+
+describe('reorderBoards', () => {
+  it('persists a new tab order without touching board content', () => {
+    const a = makeBoard('A')
+    const b = makeBoard('B')
+    const c = makeBoard('C')
+    saveBoard(a, file)
+    saveBoard(b, file)
+    saveBoard(c, file)
+    const result = reorderBoards([c.id, a.id, b.id], file)
+    expect(result.ok).toBe(true)
+    expect(listBoards(file).map((board) => board.id)).toEqual([c.id, a.id, b.id])
+    expect(listBoards(file).find((board) => board.id === a.id)?.name).toBe(a.name)
+  })
+
+  it('rejects stale or malformed orders — a drag can never add or drop boards', () => {
+    const a = makeBoard('A')
+    const b = makeBoard('B')
+    saveBoard(a, file)
+    saveBoard(b, file)
+    expect(reorderBoards([a.id], file).ok).toBe(false)
+    expect(reorderBoards([a.id, b.id, 'ghost'], file).ok).toBe(false)
+    expect(reorderBoards('not-an-array', file).ok).toBe(false)
+    expect(listBoards(file)).toHaveLength(2)
   })
 })
 
@@ -399,5 +425,16 @@ describe('applyBoardCards', () => {
     const result = applyBoardCards({ boardId: 'a', raw }, { file, resolveWorkspaceFile: () => null })
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toBe('invalid-proposal')
+  })
+})
+
+describe('reorderBoards duplicate guard', () => {
+  it('rejects an order that repeats an id', () => {
+    const a = makeBoard('A')
+    const b = makeBoard('B')
+    saveBoard(a, file)
+    saveBoard(b, file)
+    expect(reorderBoards([a.id, a.id, b.id], file).ok).toBe(false)
+    expect(listBoards(file)).toHaveLength(2)
   })
 })

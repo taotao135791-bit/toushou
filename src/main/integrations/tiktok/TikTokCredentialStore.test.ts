@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFile } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFile } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -32,6 +32,31 @@ afterEach(() => {
 })
 
 describe('TikTokCredentialStore advertiserIds persistence', () => {
+  it('does not touch secure storage when no credential file exists', async () => {
+    const isAvailable = vi.fn(() => { throw Error('Keychain must not be touched') })
+    const backend = { isAvailable, encrypt: vi.fn(), decrypt: vi.fn() } as unknown as SecretBackend
+    await expect(new TikTokCredentialStore({ filePath: path.join(dir, 'missing.bin'), backend }).load()).resolves.toBeNull()
+    expect(isAvailable).not.toHaveBeenCalled()
+    expect(backend.decrypt).not.toHaveBeenCalled()
+  })
+  it('does not accept an existing envelope when secure storage is unavailable', async () => {
+    const file = path.join(dir, 'corrupt.bin')
+    await writeFileP(file, 'invalid')
+    const isAvailable = vi.fn(() => false)
+    const backend = { isAvailable, encrypt: vi.fn(), decrypt: vi.fn() } as unknown as SecretBackend
+    const store = new TikTokCredentialStore({ filePath: file, backend })
+    await expect(store.load()).resolves.toBeNull()
+    expect(readFileSync(file, 'utf8')).toBe('invalid')
+    expect(isAvailable).toHaveBeenCalledOnce()
+    expect(backend.decrypt).not.toHaveBeenCalled()
+  })
+  it('leaves a corrupt encrypted envelope untouched', async () => {
+    const file = path.join(dir, 'corrupt.bin')
+    await writeFileP(file, 'invalid')
+    const backend = { isAvailable: () => true, encrypt: vi.fn(), decrypt: vi.fn(() => { throw Error('corrupt') }) } as unknown as SecretBackend
+    await expect(new TikTokCredentialStore({ filePath: file, backend }).load()).resolves.toBeNull()
+    expect(readFileSync(file, 'utf8')).toBe('invalid')
+  })
   it('round-trips advertiser ids through the encrypted envelope', async () => {
     const file = path.join(dir, 'creds.bin')
     const store = new TikTokCredentialStore({ filePath: file, backend: passthroughBackend() })

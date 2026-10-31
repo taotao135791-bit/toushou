@@ -17,6 +17,7 @@ import { getStore, setStore } from './store'
 
 export const BUNDLED_PACKAGES: readonly { name: string; resourceDir: string }[] = [
   { name: 'toushou-ads-toolkit', resourceDir: 'ads-toolkit' },
+  { name: 'toushou-boards-toolkit', resourceDir: 'boards-toolkit' },
   { name: 'toushou-browser-use', resourceDir: 'browser-use-toolkit' },
   { name: 'toushou-material-research', resourceDir: 'material-research-toolkit' },
   { name: 'toushou-tiktok-toolkit', resourceDir: 'tiktok-toolkit' },
@@ -114,7 +115,16 @@ export async function ensureBundledPackages(): Promise<void> {
       // A failed link writes no record, so the next launch retries.
       if (result.ok) record[pkg.name] = { version, userRemoved: false }
     } else if (action === 'mark') {
-      record[pkg.name] = { version, userRemoved: false }
+      // The app bundle carries a NEWER toolkit than the runtime is serving
+      // (the old 'stamp-only' behavior left agents running stale tools
+      // forever). Relink ONLY our own previous link — a package someone else
+      // installed under our name is never touched. Linking points the
+      // runtime at the bundle directory, so a re-link refreshes the served
+      // files; a failed re-link keeps the old record and retries next launch.
+      if (entry) {
+        const result = await linkLocalPackage(bundledResourcePath(pkg.resourceDir))
+        if (result.ok) record[pkg.name] = { version, userRemoved: false }
+      }
     } else if (action === 'note-removed') {
       record[pkg.name] = { version: entry?.version ?? '', userRemoved: true }
     }

@@ -1,5 +1,5 @@
 import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect, useState } from 'react'
-import { Routes, Route, useNavigate } from 'react-router-dom'
+import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { HistorySessionDescriptor, SessionEvent } from '@shared/types'
 import { useAppStore } from './store'
@@ -75,6 +75,9 @@ class RendererErrorBoundary extends Component<
 function App() {
   // File drags that miss every drop zone must not navigate the window.
   useWindowDropGuard()
+  // Route changes swap content with a short fade/rise (see .page-enter) —
+  // keying by pathname re-runs the entrance on each real navigation only.
+  const location = useLocation()
   const {
     setupComplete,
     setTheme,
@@ -475,18 +478,20 @@ function App() {
             </div>
           }
         >
-          <Routes>
-            <Route path="/" element={<ChatPage />} />
-            <Route path="/plugins" element={<PackagesPage />} />
-            <Route path="/plugins/new" element={<PluginAuthorPage />} />
-            <Route path="/boards" element={<BoardsPage />} />
-            <Route path="/browser" element={<BrowserPage />} />
-            <Route path="/office" element={<OfficePage />} />
-            <Route path="/skills" element={<SkillsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/connections" element={<ConnectionsPage />} />
-            <Route path="/tasks" element={<TasksPage />} />
-          </Routes>
+          <div key={location.pathname} className="page-enter h-full">
+            <Routes>
+              <Route path="/" element={<ChatPage />} />
+              <Route path="/plugins" element={<PackagesPage />} />
+              <Route path="/plugins/new" element={<PluginAuthorPage />} />
+              <Route path="/boards" element={<BoardsPage />} />
+              <Route path="/browser" element={<BrowserPage />} />
+              <Route path="/office" element={<OfficePage />} />
+              <Route path="/skills" element={<SkillsPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/connections" element={<ConnectionsPage />} />
+              <Route path="/tasks" element={<TasksPage />} />
+            </Routes>
+          </div>
         </Suspense>
       </Layout>
       <CommandPalette

@@ -68,6 +68,7 @@ function apiError(code: number, message: string): Response {
 interface Advertiser {
   name?: string
   currency?: string
+  timezone?: string
 }
 
 /**
@@ -97,7 +98,7 @@ function tiktokApi(options: {
       const ids = args.advertiser_ids as string[]
       infoCalls.push(ids)
       const known = options.advertisers ?? {}
-      const body = options.infoFails ? { code: 50000 } : { code: 0, data: { list: ids.filter((id) => known[id]).map((id) => ({ advertiser_id: id, name: known[id].name ?? '', currency: known[id].currency ?? '' })) } }
+      const body = options.infoFails ? { code: 50000 } : { code: 0, data: { list: ids.filter((id) => known[id]).map((id) => ({ advertiser_id: id, name: known[id].name ?? '', currency: known[id].currency ?? '', timezone: known[id].timezone ?? '' })) } }
       return response({ structuredContent: body })
     }
     if (request.params.name !== 'report_integrated_get') throw new Error('unexpected tool')
@@ -109,6 +110,7 @@ function tiktokApi(options: {
     for (const item of body.data?.list ?? []) {
       if (item.dimensions.stat_time_day.startsWith('2026-01-02')) item.dimensions.stat_time_day = `${args.start_date} 00:00:00`
     }
+    if (body.data?.list) body.data.list = body.data.list.filter((item) => item.dimensions.stat_time_day.slice(0, 10) >= String(args.start_date) && item.dimensions.stat_time_day.slice(0, 10) <= String(args.end_date))
     return response({ structuredContent: body })
   }
   return { fetchImpl, reports, infoCalls, methods }
@@ -237,6 +239,58 @@ describe('buildTikTokReadingSummary', () => {
     expect(api.reports.every((params) => params.get('end_date') === '2026-09-19')).toBe(true)
   })
 
+  it("range '1' requests the account's verified current day", async () => {
+    const api = tiktokApi({
+      advertisers: { [ID_A]: { timezone: 'Asia/Shanghai', currency: 'USD' } },
+      report: () =>
+        reportResponse([
+          row({ date: '2026-09-19', campaignName: '昨日', spend: 90 }),
+          row({ date: '2026-09-20', campaignName: '今日进行中', spend: 30 })
+        ])
+    })
+    const result = await buildTikTokReadingSummary(
+      { range: '1' },
+      { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20 }
+    )
+    if ('ok' in result) throw new Error(`expected a summary, got ${result.error}`)
+    // Only the verified account-local current day is requested.
+    expect(result.totals.spend).toBe(30)
+    expect(result.startDate).toBe('2026-09-20')
+    expect(result.endDate).toBe('2026-09-20')
+    expect(result.topCampaigns.map((campaign) => campaign.name)).toEqual(['今日进行中'])
+  })
+
+  it('reads each account today in its own verified timezone, including different local dates', async () => {
+    const api = tiktokApi({
+      advertisers: { [ID_A]: { timezone: 'Asia/Tokyo', currency: 'USD' }, [ID_B]: { timezone: 'America/Los_Angeles', currency: 'USD' } },
+      report: (id, params) => reportResponse([row({ date: params.get('start_date')!, campaignName: id === ID_A ? 'A' : 'B', spend: id === ID_A ? 10 : 20 })])
+    })
+    const saved: unknown[] = []
+    const result = await buildTikTokReadingSummary({ range: '1' }, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-09-20T00:30:00Z'), persistRows: (_rows, _details, scopes) => { saved.push(scopes) } })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.totals.spend).toBe(30)
+    expect(result.accountWindows?.map((w) => [w.advertiserId, w.startDate])).toEqual([[ID_A, '2026-09-20'], [ID_B, '2026-09-19']])
+    expect(api.reports.map((p) => [p.get('start_date'), p.get('end_date')])).toEqual([['2026-09-20', '2026-09-20'], ['2026-09-19', '2026-09-19']])
+    expect(saved).toHaveLength(1)
+  })
+
+  it('excludes and reports unknown-timezone accounts instead of assigning another account day', async () => {
+    const api = tiktokApi({ advertisers: { [ID_A]: { timezone: 'UTC' }, [ID_B]: {} }, report: (_id, params) => reportResponse([row({ date: params.get('start_date')!, spend: 10 })]) })
+    const result = await buildTikTokReadingSummary({ range: '1' }, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-09-20T12:00:00Z'), persistRows: () => undefined })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.advertisers.map((a) => a.advertiserId)).toEqual([ID_A])
+    expect(result.failed).toMatchObject([{ advertiserId: ID_B, error: 'api', detail: 'account-timezone-unavailable' }])
+    expect(api.reports).toHaveLength(1)
+  })
+
+  it('reports dataset write failure while retaining a valid independent reading', async () => {
+    const api = tiktokApi({ report: () => reportResponse([row()]), advertisers: { [ID_A]: { currency: 'USD' } } })
+    const result = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, persistRows: () => ({ ok: false, error: 'row-limit' }) })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.totals.spend).toBe(10)
+    expect(result.datasetSync).toEqual({ ok: false, error: 'row-limit' })
+  })
+
   it('marks the MCP transport and makes an account cap visible', async () => {
     const ids = Array.from({ length: 21 }, (_, index) => String(7300000000 + index))
     const api = tiktokApi({ report: () => reportResponse([]) })
@@ -245,10 +299,11 @@ describe('buildTikTokReadingSummary', () => {
     expect(result.transport).toBe('mcp')
     expect(result.truncated).toBe(true)
     expect(api.reports).toHaveLength(20)
+    expect(result.failed).toEqual([{ advertiserId: ids[20], name: null, currency: null, error: 'api', detail: 'account-limit-not-read' }])
   })
 
   it('reads only today for the 1-day range', async () => {
-    const api = tiktokApi({ report: () => reportResponse([]) })
+    const api = tiktokApi({ report: () => reportResponse([]), advertisers: { [ID_A]: { timezone: 'Asia/Shanghai' } } })
     const result = await buildTikTokReadingSummary(
       { range: '1' },
       { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20 }
@@ -258,7 +313,7 @@ describe('buildTikTokReadingSummary', () => {
   })
 
   it('lets the widget config override the advertiser scope', async () => {
-    const api = tiktokApi({ report: () => reportResponse([row()]) })
+    const api = tiktokApi({ report: () => reportResponse([row()]), advertisers: { '7399999999999999999': { timezone: 'UTC' } } })
     const result = await buildTikTokReadingSummary(
       { advertiserIds: '7399999999999999999', range: '1' },
       { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl }
@@ -331,6 +386,8 @@ describe('buildTikTokReadingSummary', () => {
     })
     const mixedResult = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A, ID_B]), fetchImpl: mixed.fetchImpl })
     if ('ok' in mixedResult) throw new Error(mixedResult.error)
+    expect(mixedResult.totals).toMatchObject({ spend: null, costPerConversion: null })
+    expect(mixedResult.topCampaigns).toEqual([])
     expect(mixedResult.currency).toBeNull()
     expect(mixedResult.mixedCurrency).toBe(true)
 
@@ -338,6 +395,8 @@ describe('buildTikTokReadingSummary', () => {
     const partial = tiktokApi({ report: () => reportResponse([row()]), advertisers: { [ID_A]: { currency: 'USD' } } })
     const partialResult = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A, ID_B]), fetchImpl: partial.fetchImpl })
     if ('ok' in partialResult) throw new Error(partialResult.error)
+    expect(partialResult.totals).toMatchObject({ spend: null, costPerConversion: null })
+    expect(partialResult.topCampaigns).toEqual([])
     expect(partialResult.currency).toBeNull()
     expect(partialResult.mixedCurrency).toBe(false)
   })
@@ -346,7 +405,7 @@ describe('buildTikTokReadingSummary', () => {
     const api = tiktokApi({ report: () => reportResponse([row({ spend: 3 })]), infoFails: true })
     const result = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
     if ('ok' in result) throw new Error(result.error)
-    expect(result.totals.spend).toBe(3)
+    expect(result.totals.spend).toBeNull()
     expect(result.advertisers).toEqual([{ advertiserId: ID_A, name: null, currency: null }])
   })
 
@@ -359,6 +418,33 @@ describe('buildTikTokReadingSummary', () => {
 })
 
 describe('buildTikTokTodayReading', () => {
+  it('saves complete successful account windows and reports dataset failures independently', async () => {
+    const api = tiktokApi({ report: () => reportResponse([]), advertisers: { [ID_A]: { timezone: 'UTC', currency: 'USD' } } })
+    const persistRows: NonNullable<import('./tiktokReading').TikTokReadingDeps['persistRows']> = vi.fn(() => ({ ok: false as const, error: 'write-failed' as const }))
+    const result = await buildTikTokTodayReading({ range: 'today' }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-11-01T06:30:00Z'), persistRows })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.datasetSync).toEqual({ ok: false, error: 'write-failed' })
+    expect(vi.mocked(persistRows).mock.calls[0][2]).toEqual([{ advertiserId: ID_A, startDate: '2026-10-31', endDate: '2026-11-01' }])
+    expect(result.accounts).toHaveLength(1)
+  })
+
+  it('requests each account today and previous day in its own timezone', async () => {
+    const api = tiktokApi({ report: () => reportResponse([]), advertisers: {
+      [ID_A]: { name: 'A', currency: 'USD', timezone: 'Asia/Tokyo' },
+      [ID_B]: { name: 'B', currency: 'USD', timezone: 'America/Los_Angeles' }
+    } })
+    const result = await buildTikTokTodayReading({ range: 'today' }, {
+      resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-11-01T06:30:00Z')
+    })
+    if ('ok' in result) throw new Error(result.error)
+    expect(api.reports.map((request) => [request.get('start_date'), request.get('end_date')])).toEqual([
+      ['2026-10-31', '2026-11-01'], ['2026-10-30', '2026-10-31']
+    ])
+    expect(result.accounts.map((account) => 'window' in account ? account.window : null)).toEqual([
+      { start: '2026-11-01', end: '2026-11-01' }, { start: '2026-10-31', end: '2026-10-31' }
+    ])
+  })
+
   it('splits one report pull into the current window and the previous one', async () => {
     const api = tiktokApi({
       report: () =>
@@ -418,5 +504,7 @@ describe('buildTikTokTodayReading', () => {
     if ('ok' in result) throw new Error(result.error)
     expect(api.reports).toHaveLength(TODAY_ADVERTISER_CAP)
     expect(result.truncated).toBe(true)
+    expect(result.accounts).toHaveLength(ids.length)
+    expect(result.accounts.at(-1)).toMatchObject({ advertiserId: ids.at(-1), error: 'api', detail: 'account-limit-not-read' })
   })
 })

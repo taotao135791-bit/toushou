@@ -252,6 +252,7 @@ export interface ElectronAPI {
   listBoards: () => Promise<KanbanBoard[]>
   /** Whole-board upsert; rejects structurally invalid boards. */
   saveBoard: (board: KanbanBoard) => Promise<KanbanSaveResult>
+  reorderBoards: (ids: string[]) => Promise<KanbanSaveResult>
   /** Direct panel refresh of one FB reading module (no chat session). */
   refreshFbReading: (request: {
     alias: string
@@ -300,6 +301,16 @@ export interface ElectronAPI {
   onBoardDesignChanged: (callback: (change: BoardDesignChange) => void) => () => void
   /** Apply a ```board-cards proposal; Main re-parses the raw fence text. */
   applyBoardCards: (request: BoardCardsApplyRequest) => Promise<BoardCardsApplyResult>
+  /** Ads-copy model pool management (Connections page; keys never return). */
+  adsCopyModelsList: () => Promise<{ mode: 'chat' | 'pool'; providers: Array<{ id: string; name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; inPool: boolean; createdAt: number }>; storeUnavailable?: boolean }>
+  adsCopyModelsUpsert: (input: { name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; apiKey: string }) => Promise<{ ok: boolean; error?: string }>
+  adsCopyModelsRemove: (id: string) => Promise<{ ok: boolean }>
+  adsCopyModelsSetPool: (poolIds: string[]) => Promise<{ ok: boolean }>
+  adsCopyModelsTest: (id: string) => Promise<{ ok: boolean; error?: string }>
+  adsCopyModelsSetMode: (mode: 'chat' | 'pool') => Promise<{ ok: boolean }>
+  adsCopyModelsDiscover: (input: { baseUrl: string; protocol: 'openai' | 'anthropic'; apiKey: string }) => Promise<{ ok: boolean; models?: string[]; error?: string }>
+  /** Cached currency → USD multipliers; resolves null when unavailable. */
+  fxRatesGet: () => Promise<Record<string, number> | null>
   /** Read a file widget's bound workspace file through the active grant. */
   readBoardWidgetFile: (request: BoardWidgetFileReadRequest) => Promise<BoardWidgetFileReadResult>
   /** Native picker → workspace-relative bind path for a file widget (null = canceled). */
@@ -711,6 +722,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.STORE_SET, key, value),
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   saveBoard: (board: KanbanBoard) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE, board),
+  reorderBoards: (ids: string[]) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REORDER, ids),
   refreshFbReading: (request: { alias: string; act: string; businessId: string | null; range: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_READING_REFRESH, request),
   refreshFbAccountBalance: (request: { alias: string; act: string; businessId: string | null }) =>
@@ -773,6 +785,17 @@ const api: ElectronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.BOARDS_FILE_CHANGED, handler)
     }
   },
+  adsCopyModelsList: () => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_LIST),
+  adsCopyModelsUpsert: (input: { name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; apiKey: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_UPSERT, input),
+  adsCopyModelsRemove: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_REMOVE, id),
+  adsCopyModelsSetPool: (poolIds: string[]) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_SET_POOL, poolIds),
+  adsCopyModelsTest: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_TEST, id),
+  adsCopyModelsSetMode: (mode: 'chat' | 'pool') =>
+    ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_SET_MODE, mode === 'pool' ? 'pool' : 'chat'),
+  adsCopyModelsDiscover: (input: { baseUrl: string; protocol: 'openai' | 'anthropic'; apiKey: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_DISCOVER, input),
+  fxRatesGet: () => ipcRenderer.invoke(IPC_CHANNELS.FX_RATES_GET),
   listSkills: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST),
   listBundledSkills: (): Promise<SkillBundledListResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_BUNDLED),

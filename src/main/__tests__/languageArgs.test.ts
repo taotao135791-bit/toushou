@@ -41,3 +41,13 @@ describe('buildAgentArgs', () => {
     expect(args[1]).not.toContain('<team-skill')
   })
 })
+
+describe('data-source priority baseline', () => {
+  it('injects the no-computer-use rule for tooled data into every session', () => {
+    const args = buildAgentArgs('zh')
+    expect(args[1]).toContain('session-baseline name="data-source-priority"')
+    expect(args[1]).toContain('禁止改用 computer use')
+    const en = buildAgentArgs('en')
+    expect(en[1]).toContain('data-source-priority')
+  })
+})

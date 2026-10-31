@@ -45,6 +45,7 @@ const BOARD_READING_ACCOUNT_TARGETS = ACCOUNT_TARGETS as Record<
 
 export const BOARD_READING_RANGE_LABELS: Record<BoardReadingRange, string> = {
   today: '今天',
+  yesterday: '昨天',
   last3: '近3天',
   last7: '近7天',
   last30: '近30天'

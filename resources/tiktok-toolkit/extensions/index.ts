@@ -42,7 +42,7 @@ export default function tiktokTools(api: ToolHostApi): void {
     parameters: {
       type: 'object',
       properties: {
-        advertiserId: { type: 'number', description: '可选：指定广告主 ID（多广告主时使用）' }
+        advertiserId: { type: 'string', description: '可选：指定已授权广告主 ID，必须是数字字符串；省略则读取已配置的广告主，未配置时读取授权广告主。' }
       },
       required: []
     },

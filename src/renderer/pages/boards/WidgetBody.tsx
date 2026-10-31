@@ -10,10 +10,12 @@ import { BOARD_LIMITS, TodoItem, isValidLinkUrl } from '@shared/boards'
 import {
   DATASET_OPS,
   DatasetOp,
-  aggregate,
   columnIndex,
-  groupAggregate
+  filterDatasetRowsByWindowWithStatus
 } from '@shared/datasets'
+import { usdHint, useFxRates } from '../../lib/fxRates'
+import { hasAmbiguousAdvertiserFilter, metricCurrencySafety, safeMetricGroups, safeMetricValue, uniformCurrency } from '../../lib/boardMetricSafety'
+import { useTweenNumber } from '../../lib/useTweenNumber'
 import { useAppStore } from '../../store'
 import { useT } from '../../i18n'
 
@@ -44,6 +46,13 @@ export interface WidgetBodyProps {
   /** Owning board id; file widgets need it to address Main's read channel. */
   boardId: string
   onConfigChange: (config: Record<string, unknown>) => void
+  /** Board master-scope window: dataset-bound widgets filter rows to it, so
+   *  switching the master range re-scopes every card instantly. latestDay
+   *  marks the 今天 scope — the account's CURRENT stat day, not a calendar
+   *  date (stat days live in the account's timezone). */
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
+  /** First dataset snapshot still loading (cards show skeletons). */
+  datasetsLoading?: boolean
 }
 
 function configOp(value: unknown): DatasetOp {
@@ -56,31 +65,111 @@ function configStr(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+/**
+ * The live scope label for a dataset-bound card: which window the shown
+ * numbers actually cover. Widget titles are static text — the scope chip is
+ * the truth-teller (今天 · 10-29 when following the account's current day,
+ * plain date ranges otherwise).
+ */
+function datasetScopeLabel(
+  dataset: BoardDataset,
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
+): string | null {
+  if (!masterWindow) return null
+  const dateIndex = dataset.columns.findIndex((column) => column.type === 'date')
+  if (dateIndex < 0) return null
+  const short = (iso: string) => iso.slice(5)
+  if (masterWindow.latestDay) {
+    const days = dataset.rows.map(row => row[dateIndex]).filter((value): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)).sort()
+    if (!days.length) return null
+    return days[0] === days[days.length - 1] ? days[0] : `${days[0]} – ${days[days.length - 1]}`
+  }
+  return masterWindow.start === masterWindow.end
+    ? short(masterWindow.start)
+    : `${short(masterWindow.start)}~${short(masterWindow.end)}`
+}
+
 /** Outcome of resolving a widget's dataset binding against the loaded datasets. */
 type Binding =
   | { kind: 'ok'; dataset: BoardDataset; metricIndex: number; dimIndex: number }
-  | { kind: 'missing-dataset' | 'missing-column' | 'incomplete' }
+  | { kind: 'missing-dataset' | 'missing-column' | 'incomplete' | 'ambiguous-account' | 'timezone-unavailable' }
 
-function resolveBinding(widget: BoardWidget, datasets: BoardDataset[], needsDim: boolean): Binding {
+function resolveBinding(
+  widget: BoardWidget,
+  datasets: BoardDataset[],
+  needsDim: boolean,
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
+): Binding {
   const datasetId = configStr(widget.config.datasetId)
   const metric = configStr(widget.config.metric)
   const dimension = configStr(widget.config.dimension)
   if (!datasetId || !metric || (needsDim && !dimension)) return { kind: 'incomplete' }
   // Preset templates bind by dataset NAME ("TikTok 报表") — id match first,
   // name fallback so template widgets resolve without knowing generated ids.
-  const dataset = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
-  if (!dataset) return { kind: 'missing-dataset' }
+  const found = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
+  if (!found) return { kind: 'missing-dataset' }
+  // Row filter FIRST (e.g. 广告主=miclip, or a multi-account set): the 今天
+  // scope's "latest stat day" must be the latest day OF THESE ADVERTISERS,
+  // not of the whole dataset — otherwise another account's data decides the
+  // day and this card goes empty.
+  let dataset = found
+  const filterColumn = configStr(widget.config.filterColumn)
+  const filterValue = configStr(widget.config.filterValue)
+  const filterValues = Array.isArray(widget.config.filterValues)
+    ? widget.config.filterValues.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+    : []
+  if (filterColumn && (filterValues.length > 0 || filterValue)) {
+    if (hasAmbiguousAdvertiserFilter(dataset, filterColumn, filterValues.length ? filterValues : [filterValue])) return { kind: 'ambiguous-account' }
+    const filterIndex = columnIndex(dataset, filterColumn)
+    if (filterIndex < 0) return { kind: 'missing-column' }
+    // Multi-account boards: OR-match the set; single value stays a set of one.
+    const allowed = new Set(filterValues.length > 0 ? filterValues : [filterValue])
+    dataset = { ...dataset, rows: dataset.rows.filter((row) => allowed.has(String(row[filterIndex]))) }
+  }
+  // Master-scope window on top: dataset cards follow the board's range; the
+  // 今天 scope shows the account's CURRENT stat day (latest among filtered rows).
+  if (masterWindow) {
+    const scope = filterDatasetRowsByWindowWithStatus(dataset, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
+    if (scope.missingTimezone) return { kind: 'timezone-unavailable' }
+    dataset = scope.dataset
+  }
   const metricIndex = columnIndex(dataset, metric)
   const dimIndex = needsDim ? columnIndex(dataset, dimension) : -1
   if (metricIndex < 0 || (needsDim && dimIndex < 0)) return { kind: 'missing-column' }
   return { kind: 'ok', dataset, metricIndex, dimIndex }
 }
 
-function BindingPlaceholder({ binding }: { binding: Binding }) {
+function BindingPlaceholder({
+  binding,
+  widget,
+  loading = false
+}: {
+  binding: Binding
+  widget: BoardWidget
+  loading?: boolean
+}) {
   const t = useT()
+  // First dataset snapshot still loading: keep the card's geometry with a
+  // shimmer instead of flashing "dataset not available yet" then popping to
+  // numbers a beat later.
+  if (loading && binding.kind === 'missing-dataset') {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-3">
+        <div className="skeleton h-8 w-2/3" />
+        <div className="skeleton h-2.5 w-1/3" />
+      </div>
+    )
+  }
   const text =
     binding.kind === 'missing-dataset'
-      ? t('boards.datasets.datasetMissing')
+      ? // Template widgets bind by dataset NAME and may legitimately point at a
+        // dataset that does not exist YET (e.g. a fresh TikTok board before the
+        // first report pull) — guide the user instead of crying "deleted".
+        t('boards.datasets.datasetMissing', { name: configStr(widget.config.datasetId) })
+      : binding.kind === 'timezone-unavailable'
+        ? t('boards.datasets.timezoneUnavailable')
+      : binding.kind === 'ambiguous-account'
+        ? t('boards.datasets.ambiguousAccount')
       : binding.kind === 'missing-column'
         ? t('boards.datasets.columnMissing')
         : t('boards.datasets.incomplete')
@@ -134,24 +223,75 @@ function NoteBody({ widget }: { widget: BoardWidget }) {
   )
 }
 
-function CounterBody({ widget, datasets }: { widget: BoardWidget; datasets: BoardDataset[] }) {
+/** The big KPI number: tweens toward its new value instead of snapping. */
+function CounterValue({ value, className, animate = true }: { value: number | null; className: string; animate?: boolean }) {
+  const tween = useTweenNumber(animate ? value : null)
+  const shown = animate ? (value === null ? null : tween) : value
+  return (
+    <div className={className}>
+      {shown === null ? '—' : shown.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+    </div>
+  )
+}
+
+function CounterBody({
+  widget,
+  datasets,
+  masterWindow,
+  datasetsLoading
+}: {
+  widget: BoardWidget
+  datasets: BoardDataset[]
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
+  datasetsLoading?: boolean
+}) {
   const label = typeof widget.config.label === 'string' ? widget.config.label : ''
-  let value: number
+  const fxRates = useFxRates()
+  let value: number | null
+  let usdHintText: string | null = null
+  let currencyBadge: string | null = null
+  let scopeLabel: string | null = null
   if (widget.config.source === 'dataset') {
-    const binding = resolveBinding(widget, datasets, false)
-    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} />
-    value = aggregate(
-      binding.dataset.rows.map((r) => r[binding.metricIndex] ?? ''),
-      configOp(widget.config.op)
-    )
+    const binding = resolveBinding(widget, datasets, false, masterWindow)
+    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
+    // The live 口径 label: what window the number actually covers (the
+    // widget's own title is static text and must never mislead about scope).
+    scopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
+    // An empty window-filtered slice is "no data in this range", not zero.
+    if (binding.dataset.rows.length === 0) value = null
+    else {
+      const safety = metricCurrencySafety(binding.dataset, configStr(widget.config.metric))
+      value = safety === 'mixed' || safety === 'unknown' ? null : safeMetricValue(binding.dataset, binding.dataset.rows, binding.metricIndex, configOp(widget.config.op))
+      const currency = uniformCurrency(binding.dataset)
+      if (safety === 'mixed') currencyBadge = 'MIX'
+      else if (safety === 'unknown') currencyBadge = '?'
+      else if (safety === 'safe' && currency && currency !== 'USD') {
+        currencyBadge = currency
+        if (typeof value === 'number') usdHintText = usdHint(value, currencyBadge, fxRates)
+      }
+    }
   } else {
     value = typeof widget.config.value === 'number' ? widget.config.value : 0
   }
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-1.5">
-      <div className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream">
-        {value.toLocaleString()}
-      </div>
+    <div className="relative flex h-full flex-col items-center justify-center gap-1.5">
+      {currencyBadge && (
+        <span
+          className="absolute right-0 top-0 rounded-full border border-line px-1 py-px text-[9px] font-medium uppercase tracking-wider text-cream-faint"
+          title={currencyBadge}
+        >
+          {currencyBadge}
+        </span>
+      )}
+      {scopeLabel && (
+        <span className="absolute left-0 top-0 text-[9px] leading-4 tabular-nums text-cream-faint/80" title={scopeLabel}>
+          {scopeLabel}
+        </span>
+      )}
+      <CounterValue value={value} animate={widget.config.source !== 'dataset'} className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream" />
+      {usdHintText && (
+        <div className="text-center text-[10.5px] leading-4 tabular-nums text-cream-faint">{usdHintText}</div>
+      )}
       {label && (
         <div className="text-[10.5px] uppercase tracking-[0.14em] text-cream-faint">{label}</div>
       )}
@@ -289,11 +429,15 @@ function truncateAxisLabel(s: string): string {
 function ChartBody({
   widget,
   bar,
-  datasets
+  datasets,
+  masterWindow,
+  datasetsLoading
 }: {
   widget: BoardWidget
   bar: boolean
   datasets: BoardDataset[]
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
+  datasetsLoading?: boolean
 }) {
   const t = useT()
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -304,17 +448,18 @@ function ChartBody({
   let points: ChartPoint[]
   let labels: string[]
   let dimName = ''
+  let chartScopeLabel: string | null = null
+  let chartCurrency: string | null = null
   let metricName = ''
   if (widget.config.source === 'dataset') {
-    const binding = resolveBinding(widget, datasets, true)
-    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} />
-    const grouped = groupAggregate(
-      binding.dataset,
-      binding.dimIndex,
-      binding.metricIndex,
-      configOp(widget.config.op),
-      t('boards.datasets.other')
-    )
+    const binding = resolveBinding(widget, datasets, true, masterWindow)
+    if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
+    chartScopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
+    const currency = metricCurrencySafety(binding.dataset, configStr(widget.config.metric))
+    if (currency === 'safe') chartCurrency = uniformCurrency(binding.dataset)
+    if (currency === 'mixed' || currency === 'unknown') return <div role="status" className="flex h-full items-center justify-center px-2 text-center text-[11px] text-cream-faint">{t('boards.datasets.currencyUnavailable')}</div>
+    const grouped = safeMetricGroups(binding.dataset, binding.dimIndex, binding.metricIndex, configOp(widget.config.op), t('boards.datasets.other'))
+    if (!grouped) return <div role="status" className="flex h-full items-center justify-center px-2 text-center text-[11px] text-cream-faint">{t('boards.datasets.metricUnavailable')}</div>
     points = grouped.points.map(parseChartPoint).filter((p): p is ChartPoint => p !== null)
     labels = grouped.labels
     dimName = binding.dataset.columns[binding.dimIndex]?.name ?? ''
@@ -473,6 +618,12 @@ function ChartBody({
       onMouseMove={handleMove}
       onMouseLeave={() => setHover(null)}
     >
+      {chartCurrency && <span className="absolute right-0 top-0 z-10 text-[9px] text-cream-faint">{chartCurrency}</span>}
+      {chartScopeLabel && (
+        <span className="absolute left-0 top-0 z-10 text-[9px] leading-4 tabular-nums text-cream-faint/80" title={chartScopeLabel}>
+          {chartScopeLabel}
+        </span>
+      )}
       <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full">
         {gridVals.map((v) => (
           <g key={v}>
@@ -894,7 +1045,7 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   )
 }
 
-export function WidgetBody({ widget, datasets, boardId, onConfigChange }: WidgetBodyProps) {
+export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWindow, datasetsLoading }: WidgetBodyProps) {
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -911,13 +1062,13 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange }: Widget
     case 'note':
       return <NoteBody widget={widget} />
     case 'counter':
-      return <CounterBody widget={widget} datasets={datasets} />
+      return <CounterBody widget={widget} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
     case 'gauge':
       return <GaugeBody widget={widget} />
     case 'chart-line':
-      return <ChartBody widget={widget} bar={false} datasets={datasets} />
+      return <ChartBody widget={widget} bar={false} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
     case 'chart-bar':
-      return <ChartBody widget={widget} bar={true} datasets={datasets} />
+      return <ChartBody widget={widget} bar={true} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
     case 'todo':
       return <TodoBody widget={widget} onConfigChange={onConfigChange} />
     case 'link':

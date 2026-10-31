@@ -29,7 +29,9 @@ const STEP_LABEL: Record<ReadingNextStep, I18nKey> = {
 }
 
 /** TikTok reading codes from Main, plus the renderer's own failed invoke. */
-export function tiktokReadingNotice(code: ReadingErrorCode | 'invoke-failed', t: Translate): ReadingNotice {
+export function tiktokReadingNotice(code: ReadingErrorCode | 'invoke-failed', t: Translate, detail?: string | null): ReadingNotice {
+  if (detail === 'account-limit-not-read') return { message: t('boards.tt.limitNotRead'), step: 'pick-advertiser' }
+  if (detail === 'account-timezone-unavailable') return { message: t('boards.datasets.timezoneUnavailable'), step: 'retry' }
   switch (code) {
     case 'no-credentials':
       return { message: t('boards.tt.noCredentials'), step: 'connect' }

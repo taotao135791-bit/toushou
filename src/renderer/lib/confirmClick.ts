@@ -1,48 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 /**
- * Two-stage confirm for destructive actions: the first click arms, the second
- * click within `timeoutMs` fires `onConfirm`. The armed state self-clears
- * after the timeout; the timer is cleaned up on unmount.
- */
-export function useConfirm(onConfirm: () => void, timeoutMs = 3000) {
-  const [confirming, setConfirming] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const action = useRef(onConfirm)
-  action.current = onConfirm
-
-  useEffect(
-    () => () => {
-      if (timer.current) clearTimeout(timer.current)
-    },
-    []
-  )
-
-  const click = useCallback(() => {
-    if (!confirming) {
-      if (timer.current) clearTimeout(timer.current)
-      timer.current = setTimeout(() => setConfirming(false), timeoutMs)
-      setConfirming(true)
-      return
-    }
-    if (timer.current) clearTimeout(timer.current)
-    timer.current = null
-    setConfirming(false)
-    action.current()
-  }, [confirming, timeoutMs])
-
-  const reset = useCallback(() => {
-    if (timer.current) clearTimeout(timer.current)
-    timer.current = null
-    setConfirming(false)
-  }, [])
-
-  return { confirming, click, reset }
-}
-
-/**
- * Id-keyed variant of `useConfirm` for lists: arming one row re-arms (never
- * fires) when a different row is clicked. `null` means nothing is armed.
+ * Two-stage confirm for the remaining inline cases (archive in the sidebar):
+ * the first click arms, the second click within `timeoutMs` fires
+ * `onConfirm`. The armed state self-clears after the timeout; the timer is
+ * cleaned up on unmount. Permanent deletions moved to the centered
+ * ConfirmDialog — do not add new uses of this hook for destructive actions.
  */
 export function useConfirmId<T>(onConfirm: (id: T) => void, timeoutMs = 3000) {
   const [confirmingId, setConfirmingId] = useState<T | null>(null)

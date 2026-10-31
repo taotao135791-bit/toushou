@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { listPackages } from '../packages'
+import { listPackages, linkLocalPackage } from '../packages'
 import { getStore, setStore } from '../store'
 import {
   BUNDLED_PACKAGES,
@@ -28,6 +28,7 @@ import {
 } from '../bundledPackages'
 
 const mockList = vi.mocked(listPackages)
+const mockLink = vi.mocked(linkLocalPackage)
 const mockGet = vi.mocked(getStore)
 const mockSet = vi.mocked(setStore)
 
@@ -122,5 +123,60 @@ describe('ensureBundledPackages', () => {
     await ensureBundledPackages()
     const record = mockSet.mock.calls[0][1] as Record<string, { userRemoved: boolean }>
     expect(record[firstPkg.name].userRemoved).toBe(false)
+  })
+
+  it('relinks our own stale link when the bundle carries a newer toolkit', async () => {
+    // The old 'stamp-only' behavior left agents running stale tools forever.
+    mockLink.mockClear()
+    mockList.mockResolvedValue([{ name: firstPkg.name } as never])
+    mockGet.mockReturnValue({
+      [firstPkg.name]: { version: '0.0.1', userRemoved: false }
+    })
+    await ensureBundledPackages()
+    expect(mockLink).toHaveBeenCalled()
+    const record = mockSet.mock.calls[0][1] as Record<string, { version: string }>
+    expect(record[firstPkg.name].version).toBe(firstVersion)
+  })
+
+  it('never touches a same-named package the app did not link itself', async () => {
+    mockLink.mockClear()
+    mockList.mockResolvedValue([{ name: firstPkg.name } as never])
+    // No record = someone else installed this name; a relink would stomp it.
+    mockGet.mockReturnValue(undefined as never)
+    await ensureBundledPackages()
+    const firstPath = JSON.stringify(firstPkg.resourceDir)
+    expect(mockLink.mock.calls.some((call) => JSON.stringify(call[0]).includes(firstPath))).toBe(false)
+  })
+})
+
+describe('packaged toolkit resource layout', () => {
+  it('places every registered toolkit at the external path used by the runtime', async () => {
+    const { mkdtempSync, cpSync, readFileSync, existsSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const path = await import('node:path')
+    const { app } = await import('electron')
+    const fixture = mkdtempSync(path.join(tmpdir(), 'toushou-bundled-layout-'))
+    const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
+    const packaged = app.isPackaged
+    try {
+      const config = JSON.parse(readFileSync(path.join(process.cwd(), 'electron-builder.json'), 'utf8')) as { extraResources: Array<{ from: string; to: string }> }
+      for (const pkg of BUNDLED_PACKAGES) {
+        const mapping = config.extraResources.find((entry) => entry.from === `resources/${pkg.resourceDir}` && entry.to === pkg.resourceDir)
+        expect(mapping, `missing external resource mapping for ${pkg.name}`).toBeDefined()
+        cpSync(path.join(process.cwd(), mapping!.from), path.join(fixture, mapping!.to), { recursive: true })
+      }
+      Object.defineProperty(process, 'resourcesPath', { configurable: true, value: fixture })
+      Object.defineProperty(app, 'isPackaged', { configurable: true, value: true })
+      for (const pkg of BUNDLED_PACKAGES) {
+        expect(readBundledPackageVersion(pkg.resourceDir), `unreadable packaged ${pkg.name}`).toBeTruthy()
+        const manifest = JSON.parse(readFileSync(path.join(fixture, pkg.resourceDir, 'package.json'), 'utf8')) as { omp?: { extensions?: string[] } }
+        for (const extension of manifest.omp?.extensions ?? []) expect(existsSync(path.join(fixture, pkg.resourceDir, extension))).toBe(true)
+      }
+    } finally {
+      Object.defineProperty(app, 'isPackaged', { configurable: true, value: packaged })
+      if (original) Object.defineProperty(process, 'resourcesPath', original)
+      else Reflect.deleteProperty(process, 'resourcesPath')
+      rmSync(fixture, { recursive: true, force: true })
+    }
   })
 })

@@ -457,3 +457,223 @@
 .board-widget .border-line {
   border-color: var(--board-widget-border) !important;
 }
+
+/* ------------------------------------------------------------------
+   Motion system (v1.5). One vocabulary for the whole app: short, eased,
+   transform/opacity only (compositor-friendly — never animate layout).
+   Jump-cuts become fades/rises; lists glide instead of snapping; dialogs
+   scale in and out. prefers-reduced-motion turns all of it off.
+   ------------------------------------------------------------------ */
+:root {
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 260ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* Page swap: a new route fades + rises a hair instead of hard-cutting. */
+.page-enter {
+  animation: page-enter var(--dur-3) var(--ease-out) both;
+  will-change: opacity;
+}
+@keyframes page-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Dialogs: backdrop fades, panel scales from 0.96. Exit reverses quickly. */
+.dialog-backdrop {
+  animation: backdrop-in var(--dur-2) var(--ease-out) both;
+}
+.dialog-backdrop.is-closing {
+  animation: backdrop-out var(--dur-1) var(--ease-in-out) both;
+}
+@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes backdrop-out { from { opacity: 1; } to { opacity: 0; } }
+
+.dialog-panel {
+  animation: panel-in var(--dur-2) var(--ease-out) both;
+}
+.dialog-panel.is-closing {
+  animation: panel-out var(--dur-1) var(--ease-in-out) both;
+}
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes panel-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(4px) scale(0.98); }
+}
+
+/* A row that just appeared (new session, new task…) eases in. */
+.row-in {
+  animation: row-in var(--dur-2) var(--ease-out) both;
+}
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Skeleton shimmer while the first dataset snapshot loads: cards keep their
+   geometry instead of flashing "no data" then popping to numbers. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgb(var(--bg-sunken));
+  border-radius: 8px;
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  animation: shimmer 1.2s var(--ease-in-out) infinite;
+}
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+/* Column content that swaps in after a reload (dataset numbers, widget
+   bodies): a soft cross-fade instead of a snap. */
+.soft-swap {
+  animation: soft-swap var(--dur-2) var(--ease-out);
+}
+@keyframes soft-swap { from { opacity: 0.35; } to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter,
+  .dialog-backdrop,
+  .dialog-panel,
+  .row-in,
+  .soft-swap {
+    animation: none !important;
+  }
+  .skeleton::after {
+    animation: none !important;
+  }
+  [data-flip-id] {
+    transition: none !important;
+  }
+}
+
+
+/* ------------------------------------------------------------------
+   Theme switch: circular reveal from the toggle (see themeTransition.ts).
+   The default cross-fade is replaced by the clip-path wipe; the old
+   snapshot stays put beneath the incoming one.
+   ------------------------------------------------------------------ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 0;
+}
+::view-transition-new(root) {
+  z-index: 1;
+}
+
+/* The toggle icon itself swaps with a quarter-turn + fade instead of a flicker. */
+.theme-icon {
+  display: inline-flex;
+  animation: theme-icon-in 260ms var(--ease-out) both;
+}
+@keyframes theme-icon-in {
+  from { opacity: 0; transform: rotate(-60deg) scale(0.7); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-icon {
+    animation: none !important;
+  }
+}
+
+/* Directional layering for the theme/language reveal (see themeTransition.ts):
+   expand → new frame on top; retract → OLD frame on top, shrinking away. */
+html.vt-expand::view-transition-new(root) { z-index: 2; }
+html.vt-expand::view-transition-old(root) { z-index: 0; }
+html.vt-retract::view-transition-old(root) { z-index: 2; }
+html.vt-retract::view-transition-new(root) { z-index: 0; }
+
+/* Micro-motion for small controls: icons lean in slightly on hover so the
+   surface feels alive without moving text or layout. */
+.icon-pop svg {
+  transition: transform 180ms var(--ease-out);
+}
+.icon-pop:hover svg {
+  transform: scale(1.12) rotate(-4deg);
+}
+.icon-pop:active svg {
+  transform: scale(0.94);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-pop svg { transition: none !important; }
+  .icon-pop:hover svg, .icon-pop:active svg { transform: none !important; }
+}
+
+
+/* ------------------------------------------------------------------
+   Icon micro-interactions. Purpose-built per icon family (a gear winds, a
+   refresh arrow spins half a turn, a folder lifts, a plus becomes an x…)
+   so hover reads as "this control understood you", not decoration.
+   Only transform is animated → compositor-only, no layout cost.
+   ------------------------------------------------------------------ */
+button svg.lucide {
+  transition: transform 180ms var(--ease-out);
+  transform-origin: center;
+}
+
+/* Generic lift for any icon without a bespoke rule below. */
+button:not(:disabled):hover > svg.lucide,
+button:not(:disabled):hover > span > svg.lucide {
+  transform: translateY(-0.5px) scale(1.06);
+}
+button:not(:disabled):active > svg.lucide,
+button:not(:disabled):active > span > svg.lucide {
+  transform: scale(0.95);
+}
+
+/* Bespoke moves (declared after the generic so they win on equal specificity). */
+button:not(:disabled):hover svg.lucide-settings { transform: rotate(24deg); }
+button:not(:disabled):hover svg.lucide-rotate-ccw,
+button:not(:disabled):hover svg.lucide-rotate-cw,
+button:not(:disabled):hover svg.lucide-refresh-cw { transform: rotate(-180deg); }
+button:not(:disabled):hover svg.lucide-folder,
+button:not(:disabled):hover svg.lucide-folder-open { transform: translateY(-1px) scale(1.06); }
+button:not(:disabled):hover svg.lucide-file,
+button:not(:disabled):hover svg.lucide-file-text { transform: translateY(-1px) rotate(-3deg); }
+button:not(:disabled):hover svg.lucide-briefcase-business { transform: translateY(-1px) rotate(-4deg); }
+button:not(:disabled):hover svg.lucide-puzzle { transform: rotate(-8deg) scale(1.05); }
+button:not(:disabled):hover svg.lucide-square-kanban { transform: translateY(-1px) scale(1.06); }
+button:not(:disabled):hover svg.lucide-library { transform: rotate(-4deg) scale(1.06); }
+button:not(:disabled):hover svg.lucide-link2 { transform: rotate(12deg) scale(1.06); }
+button:not(:disabled):hover svg.lucide-clock { transform: rotate(14deg); }
+button:not(:disabled):hover svg.lucide-pin { transform: rotate(-14deg); }
+button:not(:disabled):hover svg.lucide-pencil { transform: rotate(-10deg) translateY(-1px); }
+button:not(:disabled):hover svg.lucide-trash2 { transform: rotate(-6deg) scale(1.05); }
+button:not(:disabled):hover svg.lucide-plus { transform: rotate(90deg); }
+button:not(:disabled):hover svg.lucide-search { transform: scale(1.12); }
+button:not(:disabled):hover svg.lucide-sun,
+button:not(:disabled):hover svg.lucide-moon { transform: rotate(12deg) scale(1.12); }
+button:not(:disabled):hover svg.lucide-arrow-up-down { transform: translateY(-1px) scale(1.06); }
+button:not(:disabled):hover svg.lucide-chevron-down { transform: translateY(1px); }
+button:not(:disabled):hover svg.lucide-chevron-right,
+button:not(:disabled):hover svg.lucide-chevron-left { transform: translateX(1px); }
+button:not(:disabled):hover svg.lucide-external-link { transform: translate(1px, -1px); }
+
+/* Icons that are themselves spinning (busy states) must not fight the hover rule. */
+button:hover svg.animate-spin {
+  transform: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button svg.lucide { transition: none !important; }
+  button:hover svg.lucide,
+  button:active svg.lucide { transform: none !important; }
+}

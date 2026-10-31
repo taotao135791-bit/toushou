@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => userDataDir }
 }))
 
-import { deleteDataset, importDataset, listDatasets, renameDataset } from '../boardDatasets'
+import { deleteDataset, importDataset, importDatasetBuffer, listDatasets, listDatasetsStrict, renameDataset } from '../boardDatasets'
 import { DATASET_LIMITS } from '../../shared/datasets'
 import { BoardDataset } from '../../shared/types'
 
@@ -247,5 +247,41 @@ describe('renameDataset', () => {
     const missing = renameDataset('nope', 'valid', file)
     expect(missing.ok).toBe(false)
     if (!missing.ok) expect(missing.error).toBe('not-found')
+  })
+})
+
+describe('importDataset replace-by-name identity', () => {
+  it('keeps the dataset id when replacing by name (widget bindings survive)', () => {
+    const csv = path.join(dir, 'a.csv')
+    writeFileSync(csv, '日期,消耗\n2026-10-01,10\n', 'utf8')
+    const first = importDataset(csv, file, 'TikTok 报表')
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    const csv2 = path.join(dir, 'b.csv')
+    writeFileSync(csv2, '日期,消耗\n2026-10-02,20\n', 'utf8')
+    const second = importDataset(csv2, file, 'TikTok 报表')
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
+    expect(second.dataset.id).toBe(first.dataset.id)
+    expect(listDatasets(file)).toHaveLength(1)
+  })
+})
+
+
+describe('strict migration and pinned bytes', () => {
+  it('preserves unknown metadata and rejects invalid entries without rewriting the file', () => {
+    const dataset = { ...makeDataset('one'), unknownMetadata: { source: 'fixture' } }
+    writeFileSync(file, JSON.stringify([dataset]))
+    expect(listDatasetsStrict(file)).toEqual([dataset])
+    writeFileSync(file, JSON.stringify([dataset, { id: 'invalid' }]))
+    const before = readFileSync(file, 'utf8')
+    expect(() => listDatasetsStrict(file)).toThrow()
+    expect(readFileSync(file, 'utf8')).toBe(before)
+  })
+  it('imports already-opened CSV bytes without consulting a path', () => {
+    const result = importDatasetBuffer('fixture.csv', Buffer.from(CSV), file, 'Imported')
+    expect(result.ok).toBe(true)
+    expect(listDatasets(file)[0].name).toBe('Imported')
+    expect(importDatasetBuffer('fixture.csv', Buffer.alloc(DATASET_LIMITS.maxFileBytes + 1), file)).toEqual({ ok: false, error: 'file-too-large' })
   })
 })

@@ -140,7 +140,11 @@ import { readSessionTranscript } from './sessionTranscript'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
-import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, saveBoard } from './boards'
+import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from './boards'
+import { AdsCopyModelStore, validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
+import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
+import { revokeBoardsBridgeTokens } from './boardsBridge'
+import { getUsdRates } from './integrations/tiktok/fxRates'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
 import { readBoardWidgetFile, registerBoardFileBinding } from './boardFiles'
@@ -333,7 +337,11 @@ function broadcastSessionEvent(event: SessionEvent): void {
   // Task-spawned sessions drive their completion guard/notice from the same
   // event stream everything else uses — no second observation path to drift.
   noteTaskSessionEvent(event.sessionId, event)
-  if (event.type === 'closed') revokeBrowserUseSession(event.sessionId)
+  if (event.type === 'closed') {
+    revokeBrowserUseSession(event.sessionId)
+    revokeBoardsBridgeTokens(event.sessionId)
+    revokeAdsCopyBridgeTokens(event.sessionId)
+  }
   maybeNotifyTurnFinished(event)
   maybeNotifyUiRequest(event)
 }
@@ -2450,8 +2458,72 @@ export function registerIpc() {
     return listBoards()
   })
 
+  // Ads-copy model pool (Connections page section). Keys are validated,
+  // stored encrypted and NEVER returned to the renderer — only the masked
+  // projection crosses the boundary. Test runs a tiny real completion.
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_LIST, async () => {
+    try {
+      const pool = await adsCopyModelStore.load()
+      return { mode: pool.mode, providers: AdsCopyModelStore.mask(pool) }
+    } catch {
+      // Unreadable store: tell the renderer "chat mode, nothing listed" —
+      // mutations still refuse to write, so the keys stay safe on disk.
+      return { mode: 'chat' as const, providers: [], storeUnavailable: true }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_UPSERT, async (_event, raw: unknown) => {
+    const input = validateAdsCopyModelInput((raw ?? {}) as Record<string, unknown>)
+    if ('error' in input) return { ok: false, error: input.error }
+    try {
+      await adsCopyModelStore.upsert(input)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message.slice(0, 80) : 'save-failed' }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_REMOVE, async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return { ok: false }
+    try {
+      await adsCopyModelStore.remove(id)
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_SET_POOL, async (_event, raw: unknown) => {
+    if (!Array.isArray(raw) || raw.length > 20 || !raw.every((id): id is string => typeof id === 'string')) {
+      return { ok: false }
+    }
+    try {
+      await adsCopyModelStore.setPool(raw)
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_TEST, async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return { ok: false, error: 'not-found' }
+    return testAdsCopyProviderById(id)
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_SET_MODE, async (_event, mode: unknown) => {
+    try {
+      await setAdsCopyMode(mode === 'pool' ? 'pool' : 'chat')
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_DISCOVER, async (_event, raw: unknown) => {
+    return discoverAdsCopyModels((raw ?? {}) as Record<string, unknown>)
+  })
+  ipcMain.handle(IPC_CHANNELS.FX_RATES_GET, () => getUsdRates())
+
   ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown) => {
     return saveBoard(board)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BOARDS_REORDER, async (_event, ids: unknown) => {
+    return reorderBoards(ids)
   })
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_DELETE, async (_event, id: unknown) => {
@@ -2516,7 +2588,7 @@ export function registerIpc() {
         alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
           ? { alias, act: input.act, businessId }
           : null
-      if (!ref || (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
+      if (!ref || (range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
         return { ok: false, error: 'invalid-input' }
       }
       return refreshBoardFbReading(ref, range)

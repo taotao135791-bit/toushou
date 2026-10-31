@@ -61,6 +61,8 @@ export const IPC_CHANNELS = {
   STORE_SET: 'store:set',
   BOARDS_LIST: 'boards:list',
   BOARDS_SAVE: 'boards:save',
+  /** Drag-to-reorder the board tabs; the id set must match the store. */
+  BOARDS_REORDER: 'boards:reorder',
   FB_READING_REFRESH: 'fb-reading:refresh',
   FB_READING_BALANCE_REFRESH: 'fb-reading:balance:refresh',
   FB_READING_BALANCES_LIST: 'fb-reading:balances:list',
@@ -109,6 +111,16 @@ export const IPC_CHANNELS = {
   BOARDS_WIDGET_FILE_SELECT: 'boards:widget-file-select',
   /** Main → renderer push when a bound file-widget file changes on disk. */
   BOARDS_FILE_CHANGED: 'boards:file-changed',
+  /** Ads-copy model pool (Connections page section; keys stay in Main). */
+  ADS_COPY_MODELS_LIST: 'ads-copy-models:list',
+  ADS_COPY_MODELS_UPSERT: 'ads-copy-models:upsert',
+  ADS_COPY_MODELS_REMOVE: 'ads-copy-models:remove',
+  ADS_COPY_MODELS_SET_POOL: 'ads-copy-models:set-pool',
+  ADS_COPY_MODELS_TEST: 'ads-copy-models:test',
+  ADS_COPY_MODELS_SET_MODE: 'ads-copy-models:set-mode',
+  ADS_COPY_MODELS_DISCOVER: 'ads-copy-models:discover',
+  /** Cached USD conversion rates for board money widgets (null when offline). */
+  FX_RATES_GET: 'fx-rates:get',
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
   DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_SELECT_IMAGE: 'dialog:select-image',

@@ -8,15 +8,19 @@
 
 ## 下载安装
 
-当前版本 v1.4.8，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.8) 下载：
+当前版本 v1.4.9，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.9) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.8/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.8/TouShou-arm64.zip) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.8/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.8/TouShou-x64.zip) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.8/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.9/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.9/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.9/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.9/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.9/TouShou-x64.exe) | 见 Release | 见 Release |
 
 安装包由 GitHub Actions 在推送版本标签后自动构建，并附带更新清单与 SHA-256 校验文件。
+
+v1.4.9：多平台看板与数据同步更新。TikTok 官方 MCP 读数可同步到看板数据集，按广告主和活动 ID 区分数据；更新指定日期范围时保留其他历史范围，旧格式数据会在迁移时保留独立备份，无法安全保存时会提示。不同账户的币种和统计日期单独标明，缺少可靠口径时不合并金额。Agent 可按会话权限查看和维护本地看板；只读及远程只读会话不能修改看板，需确认的操作会请求批准。看板读数对广告平台使用只读请求，不修改广告、预算或状态。Google 链接读取和 CSV 导入仍有页面及口径限制，**尚未完成真实 Google 账户验收**。
+
+TT 近 7 天读数卡截至昨天；Agent 或定时任务的近 7 天同步包含今天，两者日期范围不同。详见[多平台读数](docs/multi-platform-readings.md)。
 
 v1.4.8：会话体验与读数来源说明更新。失败消息按原文本和图片重试，保留当前草稿与附件；会话标题去重后在界面与磁盘保持一致，支持并发命名和长 emoji 标题。打开旧会话保留原时间，成功发送后离开会话才更新排序。永久删除和撤销统一确认，浏览器面板在确认期间暂停显示，避免覆盖按钮。四类读数卡片新增可展开来源证据；TikTok 授权请求支持环境代理和系统代理，`NO_PROXY` 明确直连，HTTPS 代理保留协议。独立 TT 数据集仍沿用原路径，Google 真实账户验收范围不变。
 

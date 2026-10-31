@@ -689,6 +689,44 @@ function validateLayout(raw: unknown): BoardWidgetLayout | null {
 }
 
 /**
+ * Row-filter branch shared by the counter/chart configs: an optional
+ * column=value filter (e.g. 广告主=miclip) so ONE board's cards can scope to
+ * ONE advertiser instead of summing the whole dataset. Bounded strings only;
+ * validated whenever present.
+ */
+function validateFilterBranch(raw: Record<string, unknown>, config: Record<string, unknown>): boolean {
+  if (raw.filterColumn === undefined && raw.filterValue === undefined && raw.filterValues === undefined) return true
+  for (const key of ['filterColumn', 'filterValue'] as const) {
+    const value = raw[key]
+    if (value === undefined) continue
+    if (typeof value !== 'string' || value.length > DATASET_LIMITS.maxColumnNameLength || CONTROL_RE.test(value)) {
+      return false
+    }
+    if (value) config[key] = value
+  }
+  // Multi-value filter (cross-account boards): OR-match a bounded set of
+  // advertiser names. Deduped; empty/garbage entries reject the widget.
+  if (raw.filterValues !== undefined) {
+    if (!Array.isArray(raw.filterValues) || raw.filterValues.length === 0 || raw.filterValues.length > 20) return false
+    const seen = new Set<string>()
+    const values: string[] = []
+    for (const item of raw.filterValues) {
+      if (typeof item !== 'string') return false
+      const clean = item.trim()
+      if (!clean || clean.length > DATASET_LIMITS.maxColumnNameLength || CONTROL_RE.test(clean)) return false
+      if (!seen.has(clean)) {
+        seen.add(clean)
+        values.push(clean)
+      }
+    }
+    config.filterValues = values
+  }
+  // A value without a column filters nothing meaningful — reject the pair.
+  if ((config.filterValue !== undefined || config.filterValues !== undefined) && !config.filterColumn) return false
+  return true
+}
+
+/**
  * Dataset-binding branch shared by the counter/chart configs. Binding fields
  * (datasetId/metric/op/dimension) are validated whenever present so they
  * survive manual↔dataset toggles; source 'dataset' additionally requires
@@ -818,6 +856,7 @@ function validateWidgetConfig(
         if (label === null) return null
         if (label) config.label = label
       }
+      if (!validateFilterBranch(raw, config)) return null
       if (!validateSourceBranch(raw, config, false)) return null
       return config
     }
@@ -883,6 +922,7 @@ function validateWidgetConfig(
         }
         config.labels = labels
       }
+      if (!validateFilterBranch(raw, config)) return null
       if (!validateSourceBranch(raw, config, true)) return null
       return config
     }
@@ -926,7 +966,7 @@ function validateWidgetConfig(
       // Reading-module config: account reference + date window + metric set.
       // Legacy alias-only configs are upgraded via the builtin account table.
       const range = raw.range
-      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      if (range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
       const allowed = ['spend', 'cpi', 'cpm', 'cpa', 'ctr', 'balance']
       if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
       const metrics: string[] = []
@@ -955,7 +995,7 @@ function validateWidgetConfig(
     }
     case 'fb-reading-summary': {
       const range = raw.range
-      if (range !== 'today' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
+      if (range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30') return null
       if (!Array.isArray(raw.metrics) || raw.metrics.length === 0) return null
       const metrics: string[] = []
       for (const metric of raw.metrics) {
@@ -1004,7 +1044,7 @@ function validateWidgetConfig(
         config.advertiserIds = ids
       }
       if (raw.range !== undefined) {
-        if (raw.range !== '1' && raw.range !== '7' && raw.range !== '28') return null
+        if (raw.range !== '1' && raw.range !== 'yd' && raw.range !== '3' && raw.range !== '7' && raw.range !== '28' && raw.range !== '30') return null
         config.range = raw.range
       }
       if (raw.independent === true) config.independent = true
@@ -1044,7 +1084,13 @@ function validateWidget(raw: unknown): BoardWidget | null {
 function validateMasterScope(raw: unknown): BoardMasterScope | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const m = raw as Record<string, unknown>
-  if (m.range !== 'today' && m.range !== 'last3' && m.range !== 'last7' && m.range !== 'last30') {
+  if (
+    m.range !== 'yesterday' &&
+    m.range !== 'today' &&
+    m.range !== 'last3' &&
+    m.range !== 'last7' &&
+    m.range !== 'last30'
+  ) {
     return null
   }
   if (!Array.isArray(m.metrics) || m.metrics.length === 0) return null
@@ -1063,10 +1109,14 @@ function validateMasterScope(raw: unknown): BoardMasterScope | null {
  * list behind unification, refresh-all and the independence check. */
 export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading', 'fb-report-reading']
 
-/** TikTok day windows are a separate enum; last3 and last30 have no exact equivalent. */
+/** TikTok day windows: every master range now maps exactly (the master scope
+ *  is authoritative over controllable modules — no divergence escapes). */
 const TT_RANGE_BY_MASTER: Record<string, string> = {
+  yesterday: 'yd',
   today: '1',
-  last7: '7'
+  last3: '3',
+  last7: '7',
+  last30: '30'
 }
 
 /** TikTok day window for a master range, or null when unrepresentable (last3 / last30). */
@@ -1091,10 +1141,15 @@ export function applyMasterScope(widget: BoardWidget, master: BoardMasterScope):
     if (range) {
       config.range = range
     } else {
-      // An unmatched preset cannot be expressed on TikTok — keep the current window and
-      // surface the divergence instead of silently nearest-mapping it.
+      // Defensive: unreachable while every master range maps (see map above).
       config.independent = true
     }
+    return { ...widget, config }
+  }
+  // The FB report module's auto-fetch can only drive FB's Today / Last 7 /
+  // Last 30 quick options — anything else keeps its own window, flagged.
+  if (widget.type === 'fb-report-reading' && !['today', 'last7', 'last30'].includes(master.range)) {
+    config.independent = true
     return { ...widget, config }
   }
   config.range = master.range

@@ -1160,7 +1160,7 @@ export interface BoardWidget {
  * own config until the next master adjustment re-unifies them.
  */
 export interface BoardMasterScope {
-  range: 'today' | 'last3' | 'last7' | 'last30'
+  range: 'yesterday' | 'today' | 'last3' | 'last7' | 'last30'
   metrics: string[]
 }
 

@@ -4,7 +4,7 @@ import type { TikTokApiFetch } from './tiktokClient'
 
 const ID = '7300000000000000001'
 const names = ['auth_advertiser_get', 'advertiser_info_get', 'report_integrated_get']
-function mockServer(options: { missing?: string; pages?: number; sse?: boolean; fail?: boolean; duplicate?: boolean; missingMetric?: boolean; wrongDate?: boolean } = {}) {
+function mockServer(options: { missing?: string; pages?: number; sse?: boolean; fail?: boolean; duplicate?: boolean; missingMetric?: boolean; wrongDate?: boolean; inconsistentTotal?: boolean; emptyEarly?: boolean; changedPagination?: boolean } = {}) {
   const calls: Array<{ method: string; params: Record<string, unknown>; headers: Headers }> = []
   const fetchImpl: TikTokApiFetch = async (url, init) => {
     expect(url).toBe('https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer')
@@ -19,7 +19,7 @@ function mockServer(options: { missing?: string; pages?: number; sse?: boolean; 
       const args = request.params.arguments as Record<string, unknown>
       if (options.fail && name === 'report_integrated_get') result = { isError: true, content: [{ type: 'text', text: 'failure' }] }
       else {
-        const data = name === 'auth_advertiser_get' ? { list: [{ advertiser_id: ID }] } : name === 'advertiser_info_get' ? { list: [{ advertiser_id: ID, name: 'Account', currency: 'USD' }] } : { list: [{ dimensions: { campaign_id: options.duplicate ? '1' : String(args.page), stat_time_day: options.wrongDate ? '2020-01-01' : args.start_date }, metrics: { campaign_name: 'A', spend: '5', impressions: '100', clicks: '2', ...(options.missingMetric ? {} : { conversion: '1' }) } }], page_info: { total_page: options.pages ?? 1 } }
+        const data = name === 'auth_advertiser_get' ? { list: [{ advertiser_id: ID }] } : name === 'advertiser_info_get' ? { list: [{ advertiser_id: ID, name: 'Account', currency: 'USD', timezone: 'Asia/Tokyo' }] } : { list: options.emptyEarly ? [] : [{ dimensions: { campaign_id: options.duplicate ? '1' : String(args.page), stat_time_day: options.wrongDate ? '2020-01-01' : args.start_date }, metrics: { campaign_name: 'A', spend: '5', impressions: '100', clicks: '2', ...(options.missingMetric ? {} : { conversion: '1' }) } }], page_info: { total_page: options.changedPagination && Number(args.page) === 2 ? 1 : options.pages ?? 1, ...(options.inconsistentTotal ? { total_number: 10 } : {}) } }
         result = { content: [{ type: 'text', text: JSON.stringify({ code: 0, data }) }] }
       }
     }
@@ -35,7 +35,9 @@ describe('application TikTok MCP reading client', () => {
     const client = new TikTokMcpReadingClient('secret', server.fetchImpl)
     await client.initialize()
     expect(await client.advertisers()).toEqual([ID])
-    expect(await client.info([ID])).toEqual([{ advertiserId: ID, name: 'Account', currency: 'USD' }])
+    expect(await client.info([ID])).toEqual([{ advertiserId: ID, name: 'Account', currency: 'USD', timezone: 'Asia/Tokyo' }])
+    const infoCall = server.calls.find((call) => call.params.name === 'advertiser_info_get')
+    expect((infoCall?.params.arguments as { fields: string[] }).fields).toEqual(['advertiser_id', 'name', 'currency', 'timezone'])
     expect(await client.report(ID, '2026-09-01', '2026-09-07')).toHaveLength(2)
     expect(server.calls.every((c) => c.headers.get('authorization') === 'Bearer secret')).toBe(true)
     expect(server.calls.slice(1).every((c) => c.headers.get('mcp-session-id') === 'session')).toBe(true)
@@ -55,6 +57,15 @@ describe('application TikTok MCP reading client', () => {
     for (const options of [{ missingMetric: true }, { wrongDate: true }, { duplicate: true, pages: 2 }]) {
       const server = mockServer(options)
       const client = new TikTokMcpReadingClient('secret', server.fetchImpl)
+      await client.initialize()
+      await expect(client.report(ID, '2026-09-01', '2026-09-07')).rejects.toThrow()
+    }
+  })
+
+  it('rejects contradictory total counts and empty pages before completion', async () => {
+    for (const options of [{ inconsistentTotal: true }, { emptyEarly: true, pages: 2 }, { changedPagination: true, pages: 2 }]) {
+      const server = mockServer(options)
+      const client = new TikTokMcpReadingClient('fake-token', server.fetchImpl)
       await client.initialize()
       await expect(client.report(ID, '2026-09-01', '2026-09-07')).rejects.toThrow()
     }

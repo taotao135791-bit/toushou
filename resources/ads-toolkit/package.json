@@ -1,18 +1,40 @@
 {
   "name": "toushou-ads-toolkit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "谷歌 App Campaign 广告文案工具：产品接入 → 批量素材 → 五维评分 → 迭代导出",
   "displayName": "谷歌广告文案工具",
   "author": "投手团队",
   "license": "MIT",
-  "keywords": ["pi-package", "google-ads", "ad-copy"],
+  "keywords": [
+    "pi-package",
+    "google-ads",
+    "ad-copy"
+  ],
   "pi": {
-    "skills": ["skills"],
-    "prompts": ["prompts"]
+    "skills": [
+      "skills"
+    ],
+    "prompts": [
+      "prompts"
+    ],
+    "extensions": [
+      "extensions/index.ts"
+    ]
   },
   "omp": {
-    "skills": ["skills"],
-    "prompts": ["prompts"]
+    "skills": [
+      "skills"
+    ],
+    "prompts": [
+      "prompts"
+    ],
+    "extensions": [
+      "extensions/index.ts"
+    ]
   },
-  "files": ["skills", "prompts"]
+  "files": [
+    "skills",
+    "prompts",
+    "extensions"
+  ]
 }

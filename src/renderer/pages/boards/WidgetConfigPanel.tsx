@@ -120,8 +120,8 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
 
   // FB reading module: pinned account + date window + metric set.
   const [readingRange, setReadingRange] = useState(
-    widget.config.range === 'today' || widget.config.range === 'last3' || widget.config.range === 'last30'
-      ? (widget.config.range as 'today' | 'last3' | 'last30')
+    widget.config.range === 'today' || widget.config.range === 'yesterday' || widget.config.range === 'last3' || widget.config.range === 'last30'
+      ? (widget.config.range as 'today' | 'yesterday' | 'last3' | 'last30')
       : 'last7'
   )
   const [readingMetrics, setReadingMetrics] = useState<string[]>(() => {
@@ -142,9 +142,9 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
 
   // TT 读数 module: optional advertiser-id list + day-window enum.
   const [ttAdvertiserIds, setTtAdvertiserIds] = useState(configString(widget, 'advertiserIds'))
-  const [ttRange, setTtRange] = useState<'1' | '7' | '28'>(
-    widget.config.range === '1' || widget.config.range === '28'
-      ? (widget.config.range as '1' | '28')
+  const [ttRange, setTtRange] = useState<'1' | 'yd' | '3' | '7' | '28' | '30'>(
+    widget.config.range === '1' || widget.config.range === 'yd' || widget.config.range === '3' || widget.config.range === '28' || widget.config.range === '30'
+      ? (widget.config.range as '1' | 'yd' | '3' | '28' | '30')
       : '7'
   )
 
@@ -388,6 +388,12 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
         }
       }
     }
+    // The advertiser row filter (set by cross-account board creation) has no
+    // control in this panel — carry it through a save untouched, otherwise
+    // saving any setting silently widens the card to every advertiser.
+    for (const key of ['filterColumn', 'filterValue', 'filterValues'] as const) {
+      if (widget.config[key] !== undefined) config[key] = widget.config[key]
+    }
     onSave({
       title: title.trim() || widget.title,
       config,
@@ -571,7 +577,7 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
             />
             <PillField label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
-                {(['today', 'last3', 'last7', 'last30'] as const).map((value) => (
+                {(['today', 'yesterday', 'last3', 'last7', 'last30'] as const).map((value) => (
                     <button
                       key={value}
                       type="button"
@@ -630,7 +636,7 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
             <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.tt.config.advertiserIdsHint')}</p>
             <PillField label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
-                {(['1', '7', '28'] as const).map((value) => (
+                {(['1', 'yd', '3', '7', '28', '30'] as const).map((value) => (
                   <button
                     key={value}
                     type="button"

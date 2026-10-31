@@ -393,7 +393,7 @@ describe('factories', () => {
     // Empty advertiserIds is meaningful (use the connected token's grant).
     expect(withWidget(widgetOf('tt-reading', { advertiserIds: '' }))?.widgets).toHaveLength(1)
     // Range enum is strict.
-    expect(withWidget(widgetOf('tt-reading', { range: '3' }))?.widgets).toHaveLength(0)
+    expect(withWidget(widgetOf('tt-reading', { range: '5' }))?.widgets).toHaveLength(0)
     expect(withWidget(widgetOf('tt-reading', { range: 7 }))?.widgets).toHaveLength(0)
     // Advertiser id string is length-bounded and digit/punctuation only.
     expect(withWidget(widgetOf('tt-reading', { advertiserIds: '7'.repeat(401) }))?.widgets).toHaveLength(0)
@@ -861,7 +861,7 @@ describe('master scope', () => {
     const good = validateBoard({ ...validBoard(), masterScope: { range: 'last3', metrics: ['spend'] } })
     expect(good?.masterScope).toEqual({ range: 'last3', metrics: ['spend'] })
 
-    expect(validateBoard({ ...validBoard(), masterScope: { range: 'yesterday', metrics: ['spend'] } })?.masterScope).toBeUndefined()
+    expect(validateBoard({ ...validBoard(), masterScope: { range: 'lastQuarter', metrics: ['spend'] } })?.masterScope).toBeUndefined()
     expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: [] } })?.masterScope).toBeUndefined()
     expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: ['not-a-metric'] } })?.masterScope).toBeUndefined()
     expect(validateBoard({ ...validBoard(), masterScope: { range: 'today', metrics: ['spend', 'spend'] } })?.masterScope).toBeUndefined()
@@ -912,13 +912,45 @@ describe('master scope', () => {
     expect(unified.config.account).toBe('三国IOS')
   })
 
-  it('applyMasterScope maps TikTok windows and keeps last3 honest', () => {
+  it('applyMasterScope maps every TikTok window — the master is authoritative', () => {
     const base = { id: 't', type: 'tt-reading' as const, title: 't', layout: { x: 0, y: 0, w: 2, h: 2 } }
     expect(applyMasterScope({ ...base, config: { range: '1' } }, { range: 'last7', metrics: ['spend'] }).config.range).toBe('7')
     expect(applyMasterScope({ ...base, config: { range: '1' } }, { range: 'today', metrics: ['spend'] }).config.range).toBe('1')
-    const kept = applyMasterScope({ ...base, config: { range: '28' } }, { range: 'last3', metrics: ['spend'] })
-    expect(kept.config.range).toBe('28')
-    expect(kept.config.independent).toBe(true)
+    expect(applyMasterScope({ ...base, config: { range: '7' } }, { range: 'yesterday', metrics: ['spend'] }).config.range).toBe('yd')
+    const last3 = applyMasterScope({ ...base, config: { range: '28' } }, { range: 'last3', metrics: ['spend'] })
+    expect(last3.config.range).toBe('3')
+    expect(last3.config.independent).toBeUndefined()
+    const last30 = applyMasterScope({ ...base, config: { range: '7' } }, { range: 'last30', metrics: ['spend'] })
+    expect(last30.config.range).toBe('30')
+    expect(last30.config.independent).toBeUndefined()
+  })
+
+  it('yesterday master scope drives both TikTok and FB reading modules', () => {
+    const tt = applyMasterScope(
+      { id: 't', type: 'tt-reading' as const, title: 't', layout: { x: 0, y: 0, w: 2, h: 2 }, config: { range: '7' } },
+      { range: 'yesterday', metrics: ['spend'] }
+    )
+    expect(tt.config.range).toBe('yd')
+    expect(tt.config.independent).toBeUndefined()
+    const fb = applyMasterScope(
+      {
+        id: 'f',
+        type: 'fb-reading' as const,
+        title: 'f',
+        layout: { x: 0, y: 0, w: 2, h: 2 },
+        config: fbReading({ range: 'last7' }).config as Record<string, unknown>
+      },
+      { range: 'yesterday', metrics: ['spend'] }
+    )
+    expect(fb.config.range).toBe('yesterday')
+    expect(fb.config.independent).toBeUndefined()
+    // The FB report module cannot drive yesterday's quick option — it stays
+    // on its own window, flagged.
+    const report = applyMasterScope(
+      { id: 'r', type: 'fb-report-reading' as const, title: 'r', layout: { x: 0, y: 0, w: 2, h: 2 }, config: {} },
+      { range: 'yesterday', metrics: ['spend'] }
+    )
+    expect(report.config.independent).toBe(true)
   })
 
   it('applyMasterScope leaves non-reading widgets untouched', () => {
@@ -927,20 +959,40 @@ describe('master scope', () => {
     expect(out).toEqual(widget)
   })
 
-  it('does not represent thirty days as TikTok twenty-eight days', () => {
-    const widget = widgetOf('tt-reading', { range: '28' })
+  it('represents thirty master days exactly on TikTok', () => {
+    const widget = widgetOf('tt-reading', { range: '7' })
     const scoped = applyMasterScope(widget as never, { range: 'last30', metrics: ['spend'] })
-    expect(scoped.config.range).toBe('28')
-    expect(scoped.config.independent).toBe(true)
+    expect(scoped.config.range).toBe('30')
+    expect(scoped.config.independent).toBeUndefined()
   })
 
-  it('accepts only Google Ads report links and retains their independent export scope', () => {
-    const reportUrl = 'https://ads.google.com/aw/campaigns?ocid=123&tableState=example'
+  it('accepts only Google Ads report links and retains their independent export scope', () => {    const reportUrl = 'https://ads.google.com/aw/campaigns?ocid=123&tableState=example'
     const board = withWidget(widgetOf('google-report-reading', { reportUrl, token: 'must-not-persist' }))
     expect(board?.widgets[0].config).toEqual({ reportUrl })
     for (const invalid of ['https://ads.google.com.evil.test/aw/campaigns', 'http://ads.google.com/aw/campaigns', 'https://secret@ads.google.com/aw/campaigns', 'https://example.com/aw/campaigns']) {
       expect(withWidget(widgetOf('google-report-reading', { reportUrl: invalid }))?.widgets).toHaveLength(0)
     }
     expect(applyMasterScope(board!.widgets[0], { range: 'today', metrics: ['spend'] }).config).toEqual({ reportUrl })
+  })
+})
+
+describe('counter/chart filterValues (cross-account boards)', () => {
+  const card = (config: Record<string, unknown>) =>
+    widgetOf('counter', { source: 'dataset', datasetId: 'TikTok 报表', metric: '消耗', op: 'sum', ...config })
+
+  it('keeps a deduped multi-name set with the filter column', () => {
+    const board = withWidget(card({ filterColumn: '广告主', filterValues: ['go photo A', 'go photo B', 'go photo A'] }))
+    const config = board?.widgets[0].config as Record<string, unknown>
+    expect(config.filterValues).toEqual(['go photo A', 'go photo B'])
+  })
+
+  it('rejects empty sets, non-strings and overlong entries', () => {
+    expect(withWidget(card({ filterColumn: '广告主', filterValues: [] }))?.widgets).toHaveLength(0)
+    expect(withWidget(card({ filterColumn: '广告主', filterValues: ['ok', 5] }))?.widgets).toHaveLength(0)
+    expect(withWidget(card({ filterColumn: '广告主', filterValues: [''] }))?.widgets).toHaveLength(0)
+  })
+
+  it('rejects values without a filter column', () => {
+    expect(withWidget(card({ filterValues: ['go photo A'] }))?.widgets).toHaveLength(0)
   })
 })

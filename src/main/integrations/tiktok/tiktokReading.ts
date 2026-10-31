@@ -1,6 +1,7 @@
 import { readingFailure, type ReadingErrorCode } from '../../../shared/readingError'
 import {
   isTikTokReadingRange,
+  tiktokAccountDate,
   parseTikTokAdvertiserIdList,
   type TikTokReadingAdvertiser,
   type TikTokReadingAdvertiserFailure,
@@ -16,9 +17,12 @@ import {
   tiktokReadingRangeWindow,
   todayWindow,
   type TikTokTodayAccount,
+  type TikTokTodayReading,
   type TikTokTodayReadingResult
 } from '../../../shared/todayReading'
 import { resolveTikTokMcpToken, type ResolvedTikTokToken } from './resolveTikTokToken'
+import { beginTikTokDatasetRead, mergeReportRowsIntoDataset, type TikTokDatasetScope } from './tiktokReportDataset'
+import type { DatasetImportResult } from '../../../shared/datasets'
 import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
 import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
 import {
@@ -34,7 +38,7 @@ import {
  */
 
 /** Morning page queries at most this many advertisers. */
-export const TODAY_ADVERTISER_CAP = 8
+export const TODAY_ADVERTISER_CAP = 20
 
 /** Upper bound on advertiser fan-out per summary request (mirrors the refresh service). */
 export const MAX_ADVERTISERS_PER_SUMMARY = 20
@@ -92,6 +96,7 @@ export async function buildTikTokTodayReading(
   input: { range?: unknown } = {},
   deps: TikTokReadingDeps = {}
 ): Promise<TikTokTodayReadingResult> {
+  const requestVersion = beginTikTokDatasetRead()
   const now = deps.now?.() ?? Date.now()
   const range = isTodayRange(input.range) ? input.range : 'last7'
   const window = todayWindow(range, new Date(now))
@@ -103,23 +108,39 @@ export async function buildTikTokTodayReading(
   const advertiserIds = allAdvertisers.slice(0, TODAY_ADVERTISER_CAP)
   const advertisers = await lookupAdvertisers(client, advertiserIds)
   const accounts: TikTokTodayAccount[] = []
+  const rowsToPersist: TikTokReportRow[] = []
+  const scopes: TikTokDatasetScope[] = []
+  const details = new Map<string, { name: string | null; currency: string | null; timezone?: string | null }>()
   for (const advertiserId of advertiserIds) {
     const advertiser = advertisers.get(advertiserId) ?? { advertiserId, name: null, currency: null }
+    let currentWindow = window
+    let previousWindow = previous
+    if (range === 'today') {
+      const day = tiktokAccountDate(now, advertiser.timezone)
+      if (!day) { accounts.push({ ...advertiser, error: 'api', detail: 'account-timezone-unavailable' }); continue }
+      currentWindow = { start: day, end: day }
+      const prior = previousEqualWindow(currentWindow)
+      if (!prior) { accounts.push({ ...advertiser, error: 'api', detail: 'account-timezone-unavailable' }); continue }
+      previousWindow = prior
+    }
     let rows: TikTokReportRow[]
-    try {
-      rows = await client.report(advertiserId, previous.start, window.end)
-    } catch (error) {
+    try { rows = await client.report(advertiserId, previousWindow.start, currentWindow.end) }
+    catch (error) {
       const failure = classifyTikTokError(error)
       if (WHOLE_READ_FAILURES.has(failure.code)) return readingFailure(failure.code, failure.detail)
       accounts.push({ ...advertiser, error: failure.code, detail: failure.detail })
       continue
     }
-    const currentRows = rowsInWindow(rows, window)
-    const previousRows = rowsInWindow(rows, previous)
+    rowsToPersist.push(...rows)
+    scopes.push({ advertiserId, startDate: previousWindow.start, endDate: currentWindow.end })
+    details.set(advertiserId, { name: advertiser.name, currency: advertiser.currency, timezone: advertiser.timezone })
+    const currentRows = rowsInWindow(rows, currentWindow)
+    const previousRows = rowsInWindow(rows, previousWindow)
     const currentTotals = summarizeTikTokReportRows(currentRows).totals
     const previousTotals = summarizeTikTokReportRows(previousRows).totals
     accounts.push({
       ...advertiser,
+      ...(range === 'today' ? { window: currentWindow, previousWindow } : {}),
       spend: currentTotals.spend,
       previousSpend: previousTotals.spend,
       impressions: currentTotals.impressions,
@@ -128,19 +149,17 @@ export async function buildTikTokTodayReading(
       campaigns: campaignMoves(currentRows, previousRows)
     })
   }
+  for (const advertiserId of allAdvertisers.slice(TODAY_ADVERTISER_CAP)) {
+    accounts.push({ advertiserId, name: null, currency: null, error: 'api', detail: 'account-limit-not-read' })
+  }
   const firstFailure = accounts.find(isTikTokTodayFailure)
-  if (firstFailure && accounts.every(isTikTokTodayFailure)) {
-    return readingFailure(firstFailure.error, firstFailure.detail)
-  }
-  return {
-    range,
-    window,
-    previousWindow: previous,
-    source: resolved.source,
-    generatedAt: now,
-    truncated: allAdvertisers.length > TODAY_ADVERTISER_CAP,
-    accounts
-  }
+  if (firstFailure && accounts.every(isTikTokTodayFailure)) return readingFailure(firstFailure.error, firstFailure.detail)
+  let datasetSync: NonNullable<TikTokTodayReading['datasetSync']>
+  try {
+    const result = deps.persistRows ? deps.persistRows(rowsToPersist, details, scopes) : mergeReportRowsIntoDataset(rowsToPersist, details, undefined, scopes, requestVersion)
+    datasetSync = !result || result.ok ? { ok: true, ...(result?.legacyBackups?.length ? { legacyBackups: result.legacyBackups } : {}) } : { ok: false, error: result.error }
+  } catch { datasetSync = { ok: false, error: 'write-failed' } }
+  return { range, window, previousWindow: previous, source: resolved.source, generatedAt: now, truncated: allAdvertisers.length > TODAY_ADVERTISER_CAP, accounts, datasetSync }
 }
 
 function sumField(rows: TikTokReportRow[], key: 'spend' | 'impressions' | 'clicks' | 'conversion'): number {
@@ -154,7 +173,7 @@ function sumField(rows: TikTokReportRow[], key: 'spend' | 'impressions' | 'click
 
 /** Outcome of the pure aggregation — the summary's computed halves. */
 export interface TikTokReadingAggregate {
-  totals: TikTokReadingTotals
+  totals: Omit<TikTokReadingTotals, 'spend' | 'costPerConversion'> & { spend: number; costPerConversion: number }
   topCampaigns: TikTokReadingTopCampaign[]
 }
 
@@ -171,7 +190,7 @@ export function summarizeTikTokReportRows(rows: TikTokReportRow[]): TikTokReadin
   const impressions = sumField(rows, 'impressions')
   const clicks = sumField(rows, 'clicks')
   const conversions = sumField(rows, 'conversion')
-  const totals: TikTokReadingTotals = {
+  const totals: TikTokReadingAggregate['totals'] = {
     spend,
     impressions,
     clicks,
@@ -203,6 +222,12 @@ export interface TikTokReadingDeps {
   resolveToken?: () => Promise<ResolvedTikTokToken>
   fetchImpl?: TikTokApiFetch
   now?: () => number
+  /** Where a successful read lands (defaults to the shared TikTok dataset). */
+  persistRows?: (
+    rows: TikTokReportRow[],
+    details: Map<string, { name: string | null; currency: string | null; timezone?: string | null }>,
+    scopes: TikTokDatasetScope[]
+  ) => DatasetImportResult | void
 }
 
 /** Discover authorized accounts through MCP, independent of the user's selection. */
@@ -242,6 +267,7 @@ export async function buildTikTokReadingSummary(
   input: { advertiserIds?: unknown; range?: unknown } = {},
   deps: TikTokReadingDeps = {}
 ): Promise<TikTokReadingResult> {
+  const requestVersion = beginTikTokDatasetRead()
   const now = deps.now?.() ?? Date.now()
   const range = isTikTokReadingRange(input.range) ? input.range : '7'
   const override = input.advertiserIds === undefined ? [] : parseTikTokAdvertiserIdList(input.advertiserIds)
@@ -250,16 +276,30 @@ export async function buildTikTokReadingSummary(
   if ('ok' in prepared) return prepared
   const { resolved, client, allAdvertisers } = prepared
   const advertiserIds = allAdvertisers.slice(0, MAX_ADVERTISERS_PER_SUMMARY)
-  const { start: startDate, end: endDate } = tiktokReadingRangeWindow(range, new Date(now))
+  const baseWindow = tiktokReadingRangeWindow(range, new Date(now))
+  let { start: startDate, end: endDate } = baseWindow
   const info = await lookupAdvertisers(client, advertiserIds)
   const rows: TikTokReportRow[] = []
   const advertisers: TikTokReadingAdvertiser[] = []
   const failed: TikTokReadingAdvertiserFailure[] = []
+  const scopes: TikTokDatasetScope[] = []
+  const accountWindows: NonNullable<TikTokReadingSummary['accountWindows']> = []
   for (const advertiserId of advertiserIds) {
     const advertiser = info.get(advertiserId) ?? { advertiserId, name: null, currency: null }
+    let window = baseWindow
+    if (range === '1') {
+      const day = tiktokAccountDate(now, advertiser.timezone)
+      if (!day || !advertiser.timezone) {
+        failed.push({ ...advertiser, error: 'api', detail: 'account-timezone-unavailable' })
+        continue
+      }
+      window = { start: day, end: day }
+    }
     try {
-      rows.push(...(await client.report(advertiserId, startDate, endDate)))
+      rows.push(...(await client.report(advertiserId, window.start, window.end)))
       advertisers.push(advertiser)
+      scopes.push({ advertiserId, startDate: window.start, endDate: window.end })
+      if (range === '1' && advertiser.timezone) accountWindows.push({ advertiserId, timezone: advertiser.timezone, startDate: window.start, endDate: window.end })
     } catch (error) {
       const failure = classifyTikTokError(error)
       if (WHOLE_READ_FAILURES.has(failure.code)) return readingFailure(failure.code, failure.detail)
@@ -267,22 +307,39 @@ export async function buildTikTokReadingSummary(
     }
   }
   if (advertisers.length === 0 && failed.length > 0) return readingFailure(failed[0].error, failed[0].detail)
+  for (const advertiserId of allAdvertisers.slice(MAX_ADVERTISERS_PER_SUMMARY)) {
+    failed.push({ advertiserId, name: null, currency: null, error: 'api', detail: 'account-limit-not-read' })
+  }
+  if (accountWindows.length) {
+    startDate = accountWindows.map((item) => item.startDate).sort()[0]
+    endDate = accountWindows.map((item) => item.endDate).sort().at(-1)!
+  }
   const { totals, topCampaigns } = summarizeTikTokReportRows(rows)
+  const details = new Map<string, { name: string | null; currency: string | null; timezone?: string | null }>()
+  for (const advertiser of advertisers) details.set(advertiser.advertiserId, { name: advertiser.name, currency: advertiser.currency, timezone: advertiser.timezone })
+  let datasetSync: NonNullable<TikTokReadingSummary['datasetSync']>
+  try {
+    const result = deps.persistRows ? deps.persistRows(rows, details, scopes) : mergeReportRowsIntoDataset(rows, details, undefined, scopes, requestVersion)
+    datasetSync = !result || result.ok ? { ok: true, ...(result?.legacyBackups?.length ? { legacyBackups: result.legacyBackups } : {}) } : { ok: false, error: result.error }
+  } catch { datasetSync = { ok: false, error: 'write-failed' } }
   const known = [...new Set(advertisers.map((advertiser) => advertiser.currency).filter((code): code is string => !!code))]
-  const everyKnown = advertisers.every((advertiser) => advertiser.currency !== null)
+  const everyKnown = advertisers.every((advertiser) => !!advertiser.currency)
+  const currency = known.length === 1 && everyKnown ? known[0] : null
   const summary: TikTokReadingSummary = {
     transport: 'mcp',
+    datasetSync,
+    ...(range === '1' ? { accountWindows } : {}),
     truncated: allAdvertisers.length > MAX_ADVERTISERS_PER_SUMMARY,
     range,
     startDate,
     endDate,
-    totals,
-    topCampaigns,
+    totals: currency ? totals : { ...totals, spend: null, costPerConversion: null },
+    topCampaigns: currency ? topCampaigns : [],
     source: resolved.source,
     generatedAt: now,
     advertisers,
     failed,
-    currency: known.length === 1 && everyKnown ? known[0] : null,
+    currency,
     mixedCurrency: known.length > 1
   }
   return summary

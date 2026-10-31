@@ -15,6 +15,7 @@ import {
 } from '@shared/tiktokReport'
 import { formatReadingWindow, tiktokReadingRangeWindow } from '@shared/todayReading'
 import { ttMcpReadingEvidence } from '@shared/readingEvidence'
+import { usdHint, useFxRates } from '../../lib/fxRates'
 import { ReadingEvidenceLine } from './ReadingEvidenceLine'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
@@ -31,7 +32,7 @@ import { ReadingErrorNotice, tiktokReadingNotice, type ReadingNextStep } from '.
  */
 
 function isTikTokReadingRangeValue(value: unknown): value is TikTokReadingRange {
-  return value === '1' || value === '7' || value === '28'
+  return value === '1' || value === 'yd' || value === '3' || value === '7' || value === '28' || value === '30'
 }
 
 function advertiserLabel(advertiser: TikTokReadingAdvertiser): string {
@@ -63,6 +64,7 @@ function Metric({
 
 export function TTReadingBody({ widget }: { widget: BoardWidget }) {
   const t = useT()
+  const fxRates = useFxRates()
   const navigate = useNavigate()
   const language = useAppStore((state) => state.language)
   const advertiserIds = typeof widget.config.advertiserIds === 'string' ? widget.config.advertiserIds : ''
@@ -83,15 +85,19 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
       if ('ok' in result) {
         setSummary(null)
         setFailure({ code: result.error, detail: result.detail })
+        window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: true } }))
       } else {
         setSummary(result)
+        window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: (result.datasetSync?.ok === false && result.datasetSync.error !== 'superseded') || result.failed.length > 0 || result.truncated === true } }))
+        // Do not claim stale dataset cards refreshed after a failed sync.
+        if (result.datasetSync?.ok !== false || result.datasetSync.error === 'superseded') window.dispatchEvent(new CustomEvent('tt-reading:refreshed'))
       }
     } catch {
-      if (version === requestVersion.current) setFailure({ code: 'invoke-failed' })
+      if (version === requestVersion.current) { setFailure({ code: 'invoke-failed' }); window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: true } })) }
     } finally {
       if (version === requestVersion.current) setBusy(false)
     }
-  }, [advertiserIds, range])
+  }, [advertiserIds, range, widget.id])
 
   useEffect(() => {
     void load()
@@ -150,8 +156,8 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
             {accountsLabel}
           </p>
           <p className="truncate text-[12px] leading-[18px] tabular-nums text-cream-faint">
-            {ttReadingRangeLabel(t, range)} · {windowLabel}
-            {' · '}{t('boards.tt.localDate')}
+            {ttReadingRangeLabel(t, range)}{range === '1' && summary?.accountWindows ? '' : ` · ${windowLabel}`}
+            {range === '1' && summary?.accountWindows ? '' : <> · {t('boards.tt.localDate')}</>}
           </p>
         </div>
         <button
@@ -167,13 +173,16 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
 
       {failure ? (
         <ReadingErrorNotice
-          notice={tiktokReadingNotice(failure.code, t)}
+          notice={tiktokReadingNotice(failure.code, t, failure.detail)}
           detail={failure.detail}
           onAction={runStep}
           busy={busy}
         />
       ) : (
         <>
+          {summary?.datasetSync?.ok === false && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(summary.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : 'boards.datasets.syncFailed')}</p>}
+          {summary?.datasetSync?.ok === true && Boolean(summary.datasetSync.legacyBackups?.length) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', { names: summary.datasetSync.legacyBackups!.join('、') })}</p>}
+          {summary?.accountWindows && summary.accountWindows.length > 0 && <details className="text-[12px] text-cream-faint"><summary className="cursor-pointer">{t('boards.tt.accountWindows')}</summary><div className="max-h-24 overflow-auto">{summary.accountWindows.map(window => <span className="block" key={window.advertiserId}>{window.advertiserId} · {window.timezone} · {formatReadingWindow({start:window.startDate,end:window.endDate})}</span>)}</div></details>}
           {summary && summary.failed.length > 0 && (
             <div role="status" className="rounded-lg bg-[#F8F2E7] px-2.5 py-1.5 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]">
               <div className="flex items-start gap-1.5">
@@ -182,7 +191,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
                   {t('boards.tt.failedAccounts', { n: summary.failed.length })}
                   {summary.failed.map((advertiser) => (
                     <span key={advertiser.advertiserId} className="block truncate" title={advertiser.advertiserId}>
-                      {advertiserLabel(advertiser)}{language === 'zh' ? '：' : ': '}{tiktokReadingNotice(advertiser.error, t).message}
+                      {advertiserLabel(advertiser)}{language === 'zh' ? '：' : ': '}{tiktokReadingNotice(advertiser.error, t, advertiser.detail).message}
                     </span>
                   ))}
                 </span>
@@ -219,8 +228,8 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
           <div className="grid grid-cols-2 gap-1.5">
             <Metric
               emphasis
-              label={t('boards.tt.metric.spend')}
-              value={totals ? money(formatTikTokAmount(totals.spend)) : placeholder}
+              label={summary?.currency && summary.currency !== 'USD' ? `${t('boards.tt.metric.spend')} (${summary.currency})` : t('boards.tt.metric.spend')}
+              value={totals ? totals.spend === null ? '—' : money(formatTikTokAmount(totals.spend)) : placeholder}
             />
             <Metric
               label={t('boards.tt.metric.ctr')}
@@ -240,12 +249,20 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
             />
             <Metric
               label={t('boards.tt.metric.costPerConversion')}
-              value={totals ? money(formatTikTokCostPerConversion(totals.spend, totals.conversions)) : placeholder}
+              value={totals ? totals.spend === null ? '—' : money(formatTikTokCostPerConversion(totals.spend, totals.conversions)) : placeholder}
             />
           </div>
 
+          {summary?.currency && summary.currency !== 'USD' && totals && totals.spend !== null && usdHint(totals.spend, summary.currency, fxRates) && (
+            <p className="text-[11px] leading-4 tabular-nums text-cream-faint">
+              {usdHint(totals.spend, summary.currency, fxRates)}
+            </p>
+          )}
+
           <div className="min-h-0 flex-1 overflow-auto">
-            {summary && summary.topCampaigns.length > 0 ? (
+            {summary && !summary.currency ? (
+              <div role="status" className="flex h-full items-center justify-center px-2 text-center text-[12px] text-cream-faint">{t('boards.datasets.currencyUnavailable')}</div>
+            ) : summary && summary.topCampaigns.length > 0 ? (
               <table className="w-full border-collapse text-left text-[12px] leading-[18px]">
                 <thead>
                   <tr className="text-cream-faint">
@@ -275,7 +292,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
             )}
           </div>
 
-          {summary && <ReadingEvidenceLine evidence={ttMcpReadingEvidence(summary)} />}
+          {summary && <ReadingEvidenceLine evidence={{ ...ttMcpReadingEvidence(summary), ...(summary.accountWindows?.length ? { scopeLabel: null } : {}) }} />}
         </>
       )}
     </div>
