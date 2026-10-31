@@ -51,8 +51,8 @@ async function defaultOAuthLoader(): Promise<TikTokStoredCredentials | null> {
     return await oauthLoader()
   } catch (error) {
     if (error instanceof TikTokCredentialStorageError) throw error
-    // A broken connector (e.g. unreadable safeStorage envelope) must not take
-    // the reading modules down — the paste fallback stays usable.
+    // Unrelated connector errors may still use the explicitly configured
+    // paste fallback; credential-storage failures must never silently switch.
     return null
   }
 }
@@ -79,8 +79,8 @@ export async function resolveTikTokToken(
   deps: ResolveTikTokTokenDeps = {}
 ): Promise<ResolvedTikTokToken> {
   const loadOAuth = deps.loadOAuthCredentials ?? defaultOAuthLoader
-  // Any OAuth-side failure (loader throw, unreadable envelope) degrades to
-  // "no OAuth token" so the paste fallback stays reachable.
+  // Unrelated OAuth loader failures can use the explicit paste fallback;
+  // credential-storage failures remain visible and preserve the old data.
   const credentials = await loadOAuth().catch((error) => {
     if (error instanceof TikTokCredentialStorageError) throw error
     return null

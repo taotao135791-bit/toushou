@@ -142,6 +142,7 @@ import { PackageActionGrantManager, matchesPackageActionTarget } from './package
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from './boards'
 import { AdsCopyModelStore, validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
+import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
 import { getUsdRates } from './integrations/tiktok/fxRates'
@@ -2478,7 +2479,9 @@ export function registerIpc() {
       await adsCopyModelStore.upsert(input)
       return { ok: true }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message.slice(0, 80) : 'save-failed' }
+      const code = error instanceof SecureStorageUnavailableError ? 'secure-storage-unavailable'
+        : error instanceof Error && ['provider-limit', 'not-found'].includes(error.message) ? error.message : 'save-failed'
+      return { ok: false, error: code }
     }
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_REMOVE, async (_event, id: unknown) => {

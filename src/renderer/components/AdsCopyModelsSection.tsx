@@ -314,7 +314,7 @@ export default function AdsCopyModelsSection() {
               <Plus size={12} />
               {t('adsCopy.form.add')}
             </button>
-            {error && error !== 'load-failed' && <p role="alert" className="text-[11px] text-red-500 md:col-span-2">{t(`adsCopy.error.${['invalid-name','invalid-base-url','invalid-protocol','invalid-model','invalid-api-key','provider-limit','not-found'].includes(error) ? error : 'save-failed'}` as Parameters<typeof t>[0])}</p>}
+            {error && error !== 'load-failed' && <p role="alert" className="text-[11px] text-red-500 md:col-span-2">{t(`adsCopy.error.${['invalid-name','invalid-base-url','invalid-protocol','invalid-model','invalid-api-key','provider-limit','not-found','secure-storage-unavailable'].includes(error) ? error : 'save-failed'}` as Parameters<typeof t>[0])}</p>}
           </div>
         </>
       )}
