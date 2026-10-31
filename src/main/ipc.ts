@@ -3,13 +3,15 @@ import fs from 'node:fs'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
+import { saveReadingSnapshot } from './readingSnapshots'
+import { exportReadingSnapshot } from './readingSnapshotExport'
 import { parseFbReportReference } from '../shared/fbReportReference'
 import { validGoogleReportUrl } from '../shared/googleReport'
 import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
 import { importGoogleReportFile, readGoogleReportReadings } from './googleReportReadings'
 import { announceNamedTask, createSessionNamer } from './sessionNaming'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
-import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
+import { isValidFbReadingAct, isValidFbReadingBusinessId, parseFbCustomWindow } from '../shared/fbReading'
 import {
   captureFbReadingAccountFromPanel,
   discoverFbReadingAccounts,
@@ -881,7 +883,7 @@ export function registerIpc() {
   // fallback) and the aggregation happens in Main. Input is bounded strings
   // only; failures return stable reading error codes (shared/readingError).
   const ttReadingRequests = new TikTokReadingRequests()
-  const runTtReading = async <T>(event: IpcMainInvokeEvent, requestId: unknown, run: (deps: { signal?: AbortSignal; onProgress?: (value: { completed: number; total: number; succeeded: number }) => void; onCommitting?: () => void; onDatasetCommitted?: () => void }) => Promise<T>): Promise<T | { ok: false; error: 'invalid-input' }> => {
+  const runTtReading = async <T>(event: IpcMainInvokeEvent, requestId: unknown, run: (deps: { signal?: AbortSignal; onProgress?: (value: { completed: number; total: number; succeeded: number; today?: import('../shared/todayReading').TikTokTodayProgressItem }) => void; onCommitting?: () => void; onDatasetCommitted?: () => void }) => Promise<T>): Promise<T | { ok: false; error: 'invalid-input' }> => {
     const onDestroyed = () => ttReadingRequests.cancelOwner(event.sender.id)
     event.sender.once('destroyed', onDestroyed)
     try {
@@ -902,9 +904,8 @@ export function registerIpc() {
     return runTtReading(event, input.requestId, (deps) => buildTikTokReadingSummary(input, deps))
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_TODAY, (event, raw: unknown) => {
-    const input = (raw ?? {}) as { range?: unknown; advertiserId?: unknown; requestId?: unknown }
-    const range = typeof input.range === 'string' ? input.range.slice(0, 8) : undefined
-    return runTtReading(event, input.requestId, (deps) => buildTikTokTodayReading({ range, ...(input.advertiserId !== undefined ? { advertiserId: input.advertiserId } : {}) }, deps))
+    const input = (raw ?? {}) as { range?: unknown; startDate?: unknown; endDate?: unknown; advertiserId?: unknown; requestId?: unknown }
+    return runTtReading(event, input.requestId, (deps) => buildTikTokTodayReading(input, deps))
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_LIST, async () => {
     return listTikTokMcpReadingAdvertisers()
@@ -2539,6 +2540,9 @@ export function registerIpc() {
   })
   ipcMain.handle(IPC_CHANNELS.FX_RATES_GET, () => getUsdRates())
 
+  ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_SAVE, (_event, input: unknown) => saveReadingSnapshot(input))
+  ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, (_event, input: unknown) => exportReadingSnapshot(input))
+
   ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown) => {
     return saveBoard(board)
   })
@@ -2601,18 +2605,21 @@ export function registerIpc() {
   ipcMain.handle(
     IPC_CHANNELS.FB_READING_REFRESH,
     async (_event, raw: unknown) => {
-      const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown; range?: unknown }
+      const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown; range?: unknown; startDate?: unknown; endDate?: unknown }
       const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
       const businessId = input.businessId ?? null
-      const range = input.range as FbReadingRange | undefined
+      const range = input.range as FbReadingRange | 'custom' | undefined
       const ref: FbReadingAccountRef | null =
         alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
           ? { alias, act: input.act, businessId }
           : null
-      if (!ref || (range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
+      if (!ref || (range !== 'custom' && range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
         return { ok: false, error: 'invalid-input' }
       }
-      return refreshBoardFbReading(ref, range)
+      if (range !== 'custom' && (input.startDate !== undefined || input.endDate !== undefined)) return { ok: false, error: 'invalid-input' }
+      const window = range === 'custom' ? parseFbCustomWindow(input.startDate, input.endDate) : null
+      if (range === 'custom' && !window) return { ok: false, error: 'invalid-input' }
+      return refreshBoardFbReading(ref, range, window ?? undefined)
     }
   )
 

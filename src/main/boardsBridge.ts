@@ -7,6 +7,7 @@ import { DATASET_LIMITS } from '../shared/datasets'
 import type { PermissionMode } from '../shared/types'
 import { parseTikTokAdvertiserIdList } from '../shared/tiktokReport'
 import { serializeBoundedJson } from '../shared/boundedJson'
+import { validateReadingSnapshot } from '../shared/readingSnapshot'
 import { listBoards, saveBoard } from './boards'
 import { listDatasets } from './boardDatasets'
 import {
@@ -100,6 +101,7 @@ const WIDGET_TITLE_ZH: Record<WidgetType, string> = {
   'fb-report-reading': 'FB 报表读数',
   'google-report-reading': 'Google 读数',
   'tt-reading': 'TT 读数',
+  'reading-snapshot': '读数快照',
   gauge: '仪表',
   'chart-line': '折线图',
   'chart-bar': '柱状图',
@@ -262,20 +264,47 @@ function findBoard(tool: { boardId?: unknown; name?: unknown }): KanbanBoard | n
   return boards.find((board) => board.name.toLowerCase() === lower) ?? null
 }
 
+/** Do not expose a user-chosen snapshot board name to a model. */
+function modelBoardName(board: KanbanBoard): string {
+  return board.widgets.some((widget) => widget.type === 'reading-snapshot') ? '读数快照看板' : board.name
+}
+
 function boardSummary(board: KanbanBoard): Record<string, unknown> {
+  const isSnapshotBoard = board.widgets.some((widget) => widget.type === 'reading-snapshot')
   return {
     id: board.id,
-    name: board.name,
+    name: modelBoardName(board),
     locked: board.locked === true,
     widgetCount: board.widgets.length,
     updatedAt: board.updatedAt,
     widgets: board.widgets.map((widget) => ({
       id: widget.id,
       type: widget.type,
-      title: widget.title,
-      config: widget.config
+      title: widget.type === 'reading-snapshot' ? '读数快照' : isSnapshotBoard ? '组件' : widget.title,
+      config: widget.type === 'reading-snapshot' ? readingSnapshotSummary(widget.config) : isSnapshotBoard ? { withheld: true } : widget.config
     }))
   }
+}
+
+/** Model-facing board reads use a bounded projection, not the private local snapshot. */
+function readingSnapshotSummary(config: Record<string, unknown>): Record<string, unknown> {
+  const snapshot = validateReadingSnapshot(config.snapshot)
+  if (!snapshot) return { anonymized: true, unavailable: true }
+  const accounts = snapshot.accounts.slice(0, 50).map((account, index) => ({
+    index: index + 1,
+    platform: account.platform,
+    status: account.status,
+    window: account.window,
+    previousWindow: account.previousWindow,
+    sourceAt: account.sourceAt,
+    currency: account.currency,
+    spend: account.spend,
+    previousSpend: account.previousSpend,
+    impressions: account.impressions,
+    clicks: account.clicks,
+    conversions: account.conversions
+  }))
+  return { anonymized: true, window: snapshot.window, capturedAt: snapshot.capturedAt, accountCount: snapshot.accounts.length, omittedCount: snapshot.accounts.length - accounts.length, accounts }
 }
 
 function datasetsOverview(): Array<Record<string, unknown>> {
@@ -367,7 +396,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
   if (tool.action === 'boards_list') {
     return {
       ok: true,
-      boards: listBoards().map((board) => ({ id: board.id, name: board.name, widgetCount: board.widgets.length, locked: board.locked === true, updatedAt: board.updatedAt })),
+      boards: listBoards().map((board) => ({ id: board.id, name: modelBoardName(board), widgetCount: board.widgets.length, locked: board.locked === true, updatedAt: board.updatedAt })),
       datasets: datasetsOverview()
     }
   }
@@ -388,7 +417,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const composed = composeBoard('', boardText, template)
     const name = boundedString(tool.name, BOARD_LIMITS.maxNameLength) ?? composed.name
     if (boards.some((board) => board.name.toLowerCase() === name.toLowerCase())) {
-      return { ok: false, error: 'name-exists', existingBoards: boards.map((board) => board.name).slice(0, 50) }
+      return { ok: false, error: 'name-exists', existingBoards: boards.map(modelBoardName).slice(0, 50) }
     }
     const description = boundedString(tool.description, BOARD_LIMITS.maxDescriptionLength)
     const board: KanbanBoard = {
@@ -500,7 +529,10 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
   if (tool.action === 'board_add_widget') {
     if (board.widgets.length >= BOARD_LIMITS.maxWidgets) return { ok: false, error: 'too-many-widgets' }
     const type = typeof tool.type === 'string' && WIDGET_TYPES.includes(tool.type as WidgetType) ? (tool.type as WidgetType) : null
-    if (!type) return { ok: false, error: 'unsupported-widget-type', supported: WIDGET_TYPES }
+    if (!type) return { ok: false, error: 'unsupported-widget-type', supported: WIDGET_TYPES.filter((item) => item !== 'reading-snapshot') }
+    // A model cannot fabricate an allegedly saved reading by supplying a
+    // well-shaped snapshot. Only the local reading-save flow creates these.
+    if (type === 'reading-snapshot') return { ok: false, error: 'snapshot-requires-reading' }
     const title = boundedString(tool.title, BOARD_LIMITS.maxWidgetTitleLength) ?? WIDGET_TITLE_ZH[type]
     const size = WIDGET_DEFAULT_SIZES[type]
     const slot = findFreeSlot(board.widgets, size.w, size.h)

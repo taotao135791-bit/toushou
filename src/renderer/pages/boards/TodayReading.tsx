@@ -1,32 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronDown, RefreshCw } from 'lucide-react'
-import {
-  fbReadingMatchesWindow,
-  type FbReadingAccountEntry,
-  type FbReadingHistoryEntry
-} from '@shared/fbReading'
+import type { KanbanBoard } from '@shared/types'
+import type { ReadingSnapshot } from '@shared/readingSnapshot'
 import type { ReadingErrorCode } from '@shared/readingError'
 import {
-  buildTodayChatPrompt,
   fbPresetForTodayRange,
   formatReadingWindow,
   formatSpendDelta,
   isTikTokTodayFailure,
   previousEqualWindow,
-  sumFinite,
   todayWindow,
-  topSpendMoves,
+  todayWindowForAccountDate,
+  parseTikTokCustomWindow,
+  TIKTOK_CUSTOM_MAX_DAYS,
   type TikTokTodayAccount,
   type TikTokTodayAccountReading,
   type TodayCampaignMove,
   type TodayRange,
+  type TikTokTodayRange,
   type TikTokTodayReading
 } from '@shared/todayReading'
 import { formatTikTokAmount, formatTikTokCostPerConversion, formatTikTokCount, formatTikTokRate, tiktokAccountDate } from '@shared/tiktokReport'
 import { useT, type I18nKey } from '../../i18n'
 import { useAppStore } from '../../store'
 import { refreshAccountWithRetry } from './fbReadingRefresh'
+import { loadTodayFacebookAccounts, type TodayFacebookRow as FacebookRow } from './todayFacebook'
+import { ReadingDraftDialog } from './ReadingDraftDialog'
+import { SaveReadingBoardDialog } from './SaveReadingBoardDialog'
+import { snapshotToday, anonymousReadingDraft } from './todaySnapshot'
+import { isTikTokAccountCurrent } from './readingFreshness'
 import { TTReadingProgress, type TTProgress } from './TTReadingProgress'
 import { TikTokAccountPicker } from './TikTokAccountPicker'
 import { buildTikTokAccountDraft } from './tiktokAccountDraft'
@@ -44,17 +47,6 @@ const RANGES: TodayRange[] = ['today', 'last7', 'last28']
 
 type Translate = (key: I18nKey, vars?: Record<string, string | number>) => string
 
-interface FacebookRow {
-  account: FbReadingAccountEntry
-  covered: boolean
-  spend: number | null
-  previousSpend: number | null
-  impressions: number | null
-  clicks: number | null
-  conversions: number | null
-  capturedAt: string | null
-  movers: TodayCampaignMove[]
-}
 
 interface TikTokFailure {
   code: ReadingErrorCode | 'invoke-failed'
@@ -76,24 +68,38 @@ function Metric({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function TodayReading() {
+export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => void } = {}) {
   const t = useT()
   const navigate = useNavigate()
   const language = useAppStore((state) => state.language)
   const inChat = useAppStore((state) => state.workspacePanel) === null
   const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
-  const [range, setRange] = useState<TodayRange>('last7')
+  const [range, setRange] = useState<TikTokTodayRange>('last7')
+  const [customWindow, setCustomWindow] = useState(todayWindow('last7'))
+  const [startInput, setStartInput] = useState(customWindow.start)
+  const [endInput, setEndInput] = useState(customWindow.end)
+  const [dateError, setDateError] = useState(false)
+  const [facebookLoadedKey, setFacebookLoadedKey] = useState('')
+  const [facebookLoading, setFacebookLoading] = useState(true)
+  const [facebookLoadError, setFacebookLoadError] = useState(false)
+  const [saveSnapshot, setSaveSnapshot] = useState<ReadingSnapshot | null>(null)
+  const [localMappings, setLocalMappings] = useState<{ label: string; name: string }[]>([])
   const [facebook, setFacebook] = useState<FacebookRow[] | null>(null)
   const [tiktok, setTiktok] = useState<TikTokTodayReading | null>(null)
   const [tiktokFailure, setTiktokFailure] = useState<TikTokFailure | null>(null)
   const [tiktokBusy, setTiktokBusy] = useState(false)
   const [refreshingAct, setRefreshingAct] = useState<string | null>(null)
-  const [rowFailure, setRowFailure] = useState<{ act: string; code: string } | null>(null)
+  const [rowFailures, setRowFailures] = useState<Record<string, string | null>>({})
   const [captureError, setCaptureError] = useState<string | null>(null)
   const [captureBusy, setCaptureBusy] = useState(false)
   const [openAct, setOpenAct] = useState<string | null>(null)
+  const [resultQuery, setResultQuery] = useState('')
+  const [onlyFailed, setOnlyFailed] = useState(false)
+  const [sortSpend, setSortSpend] = useState(false)
   const [openTikTok, setOpenTikTok] = useState<string | null>(null)
   const facebookLoad = useRef(0)
+  const facebookRefresh = useRef(0)
+  const facebookContext = useRef('')
   const tiktokLoad = useRef(0)
   const tiktokRequest = useRef<string | null>(null)
   const ttPageScopeRef = useRef<TikTokPageScope | null>(null)
@@ -111,46 +117,48 @@ export function TodayReading() {
   const [singleDraftCopy, setSingleDraftCopy] = useState<'copied' | 'failed' | null>(null)
 
   useEffect(() => window.electronAPI.onTtReadingProgress?.((event) => {
-    if (event.requestId === tiktokRequest.current) setTtProgress(event)
+    if (event.requestId === tiktokRequest.current) {
+      setTtProgress(event)
+      if (event.today) {
+        const partial = event.today
+        setTiktok(current => ({
+          range: partial.range, window: partial.window, previousWindow: partial.previousWindow,
+          source: partial.source, generatedAt: partial.generatedAt, truncated: false,
+          accounts: [...(current?.accounts ?? []).filter(a => a.advertiserId !== partial.account.advertiserId), partial.account],
+          datasetSync: { ok: false, error: 'reading-in-progress' }
+        }))
+      }
+    }
     if (event.requestId === singleRequest.current?.requestId) setSingleProgress(event)
   }), [])
   const alive = useRef(true)
 
-  const dateWindow = todayWindow(range)
+  const zh = language === 'zh'
+  const dateWindow = range === 'custom' ? customWindow : todayWindow(range)
   const previous = previousEqualWindow(dateWindow)
-  const preset = fbPresetForTodayRange(range)
+  const preset = range === 'custom' ? null : fbPresetForTodayRange(range)
+  const facebookKey = `${dateWindow.start}|${dateWindow.end}`
+  facebookContext.current = facebookKey
+  const visibleFacebook = facebookLoadedKey === facebookKey ? facebook : null
+  const facebookPending = facebookLoading || facebookLoadedKey !== facebookKey
 
   const loadFacebook = useCallback(async () => {
+    const expected = range === 'custom' ? customWindow : todayWindow(range)
+    const key = `${expected.start}|${expected.end}`
+    if (facebookContext.current !== key) return
     const id = ++facebookLoad.current
-    const accounts = await window.electronAPI.listFbReadingAccounts()
-    if (id !== facebookLoad.current) return
-    const coveredPreset = fbPresetForTodayRange(range)
-    const currentWindow = todayWindow(range)
-    const previousWindow = previousEqualWindow(currentWindow)
-    if (!coveredPreset || !previousWindow) {
-      setFacebook(accounts.map((account) => ({
-        account,
-        covered: false,
-        spend: null,
-        previousSpend: null,
-        impressions: null,
-        clicks: null,
-        conversions: null,
-        capturedAt: null,
-        movers: []
-      })))
-      return
-    }
-    const rows = await Promise.all(accounts.map(async (account) => {
-      const list = await window.electronAPI.listFbReadings({ accountId: account.act })
-      const entries = Array.isArray(list) ? list : []
-      const current = entries.find((entry) => fbReadingMatchesWindow(entry, account.act, currentWindow)) ?? null
-      const prior = entries.find((entry) => fbReadingMatchesWindow(entry, account.act, previousWindow)) ?? null
-      return rowFromEntry(account, current, prior)
-    }))
-    if (id !== facebookLoad.current) return
-    setFacebook(rows)
-  }, [range])
+    setFacebookLoading(true)
+    setFacebookLoadError(false)
+    try {
+      const accounts = await window.electronAPI.listFbReadingAccounts()
+      if (id !== facebookLoad.current || facebookContext.current !== key) return
+      const rows = await loadTodayFacebookAccounts(accounts, range === 'custom' ? 'last7' : range,
+        (accountId) => window.electronAPI.listFbReadings({ accountId }), new Date(), range === 'custom' ? customWindow : !fbPresetForTodayRange(range) ? todayWindow(range) : undefined)
+      if (id === facebookLoad.current && facebookContext.current === key) { setFacebook(rows); setFacebookLoadedKey(key) }
+    } catch {
+      if (id === facebookLoad.current && facebookContext.current === key) { setFacebookLoadError(true); setFacebook([]); setFacebookLoadedKey(key) }
+    } finally { if (id === facebookLoad.current && facebookContext.current === key) setFacebookLoading(false) }
+  }, [range, customWindow.start, customWindow.end])
 
   const loadTikTok = useCallback(async (scope: TikTokPageScope) => {
     if (singleRequest.current) void window.electronAPI.ttReadingCancel?.(singleRequest.current.requestId)
@@ -170,14 +178,14 @@ export function TodayReading() {
     setTiktok(null)
     setTiktokFailure(null)
     try {
-      const input = buildTikTokPageRead(scope, range, requestId)
+      const input = buildTikTokPageRead(scope, range, requestId, customWindow)
       if (!input) return
       const result = await window.electronAPI.ttReadingToday(input)
       if (id !== tiktokLoad.current) return
       if ('ok' in result) {
         setTiktok(null)
         setTiktokFailure({ code: result.error, detail: result.detail })
-      } else if (!matchesTikTokPageRead(scope, range, result)) {
+      } else if (!matchesTikTokPageRead(scope, range, result, customWindow)) {
         setTiktok(null)
         setTiktokFailure({ code: 'api', detail: 'single-result-invalid' })
       } else {
@@ -190,7 +198,7 @@ export function TodayReading() {
     } finally {
       if (id === tiktokLoad.current) { tiktokRequest.current = null; setTiktokBusy(false); setTtCancelling(false) }
     }
-  }, [range])
+  }, [range, customWindow.start, customWindow.end])
 
   useEffect(() => {
     alive.current = true
@@ -201,6 +209,9 @@ export function TodayReading() {
 
   useEffect(() => {
     let active = true
+    facebookRefresh.current += 1
+    setRefreshingAct(null)
+    setRowFailures({})
     void loadFacebook().catch(() => {
       if (active) setFacebook([])
     })
@@ -216,26 +227,31 @@ export function TodayReading() {
   }, [loadFacebook, loadTikTok])
 
   const refreshFacebook = async (row: FacebookRow) => {
-    if (!preset) return
+    if (refreshingAct) return
+    const key = facebookContext.current
+    const refreshId = ++facebookRefresh.current
+    const isCurrent = () => alive.current && key === facebookContext.current && refreshId === facebookRefresh.current
     if (inChat) {
       setWorkspacePanel({ kind: 'browser' })
       return
     }
     setRefreshingAct(row.account.act)
-    setRowFailure(null)
+    setRowFailures((old) => ({ ...old, [row.account.act]: null }))
     try {
       const outcome = await refreshAccountWithRetry({
         alias: row.account.alias,
         act: row.account.act,
         businessId: row.account.businessId,
-        range: preset
+        range: preset ?? 'custom',
+        ...(!preset ? { startDate: dateWindow.start, endDate: dateWindow.end } : {})
       }, {
-        isCurrent: () => alive.current
+        isCurrent
       })
-      if (outcome.kind === 'failed') setRowFailure({ act: row.account.act, code: outcome.error })
+      if (!isCurrent()) return
+      if (outcome.kind === 'failed') setRowFailures((old) => ({ ...old, [row.account.act]: outcome.error }))
       await loadFacebook()
     } finally {
-      setRefreshingAct(null)
+      if (isCurrent()) setRefreshingAct(null)
     }
   }
 
@@ -271,14 +287,10 @@ export function TodayReading() {
     const cancelled = await window.electronAPI.ttReadingCancel(requestId).catch(() => false)
     if (!cancelled || tiktokRequest.current !== requestId) return
     setTtCancelling(true)
-    setTiktok(null)
   }
 
   const refreshTikTokAccount = async (advertiserId: string) => {
     if (tiktokBusy || singleRequest.current || !tiktok || tiktok.range !== range) return
-    const scope: TikTokPageScope = { kind: 'one', advertiserId }
-    ttPageScopeRef.current = scope
-    setTtPageScope(scope)
     const requestId = crypto.randomUUID()
     singleRequest.current = { advertiserId, requestId }
     setSingleActive(advertiserId)
@@ -287,7 +299,7 @@ export function TodayReading() {
     setSingleFailures((current) => ({ ...current, [advertiserId]: null }))
     setSingleSyncError((current) => ({ ...current, [advertiserId]: null }))
     try {
-      const result = await window.electronAPI.ttReadingToday({ range, advertiserId, requestId })
+      const result = await window.electronAPI.ttReadingToday({ range, advertiserId, requestId, ...(range === 'custom' ? { startDate: customWindow.start, endDate: customWindow.end } : {}) })
       if (singleRequest.current?.requestId !== requestId) return
       if ('ok' in result) {
         setSingleFailures((current) => ({ ...current, [advertiserId]: { code: result.error, detail: result.detail } }))
@@ -328,14 +340,14 @@ export function TodayReading() {
     if (!tiktok || tiktok.range !== range || singleFailures[account.advertiserId] || singleActive === account.advertiserId) return
     const currentWindow = account.window ?? tiktok.window
     const previousWindow = account.previousWindow ?? tiktok.previousWindow
-    const expected = todayWindow(range)
-    const current = range === 'today'
-      ? tiktokAccountDate(Date.now(), account.timezone) === currentWindow.end && currentWindow.start === currentWindow.end
-      : currentWindow.start === expected.start && currentWindow.end === expected.end
+    const accountDay = tiktokAccountDate(Date.now(), account.timezone)
+    const expected = range === 'custom' ? customWindow : accountDay ? todayWindowForAccountDate(range, accountDay) : null
+    const current = !!expected && currentWindow.start === expected.start && currentWindow.end === expected.end
     if (!current) {
       setSingleFailures((old) => ({ ...old, [account.advertiserId]: { code: 'api', detail: 'reading-window-expired' } }))
       return
     }
+    setLocalMappings([{ label: zh ? '所选 TikTok 账户' : 'Selected TikTok account', name: account.name ?? account.advertiserId }, ...account.campaigns.slice(0, 3).map((move, i) => ({ label: `${zh ? '活动' : 'Campaign'} ${String.fromCharCode(65 + i)}`, name: move.name }))])
     setSingleDraft(buildTikTokAccountDraft(language === 'zh' ? 'zh' : 'en', account, currentWindow, previousWindow, singleUpdatedAt[account.advertiserId] ?? tiktok.generatedAt))
     setSingleDraftCopy(null)
   }
@@ -353,6 +365,7 @@ export function TodayReading() {
   }
 
   const tiktokStep = (step: ReadingNextStep) => {
+    if (step === 'pick-date') { document.getElementById('today-start-date')?.focus(); return }
     if (step === 'connect' || step === 'reconnect' || step === 'pick-advertiser') navigate('/connections')
     else if (ttPageScopeRef.current) void loadTikTok(ttPageScopeRef.current)
   }
@@ -362,48 +375,50 @@ export function TodayReading() {
     else void refreshFacebook(row)
   }
 
-  const currentTikTok = scopeTikTokPageData(tiktok?.range === range ? tiktok : null, ttPageScope)
+  const scopedTikTok = () => {
+    const scoped = scopeTikTokPageData(tiktok?.range === range ? tiktok : null, ttPageScope)
+    return scoped ? { ...scoped, accounts: scoped.accounts.map(account => isTikTokTodayFailure(account) || isTikTokAccountCurrent(account, scoped, range, customWindow) ? account : { advertiserId: account.advertiserId, name: account.name, currency: account.currency, timezone: account.timezone, error: 'api' as const, detail: 'reading-window-expired' }) } : null
+  }
+  const currentTikTok = scopedTikTok()
+  const displayedTikTok = [...(currentTikTok?.accounts ?? [])].filter(account =>
+    (!onlyFailed || isTikTokTodayFailure(account) || !!singleFailures[account.advertiserId]) &&
+    (!resultQuery.trim() || `${account.name ?? ''} ${account.advertiserId}`.toLowerCase().includes(resultQuery.trim().toLowerCase())))
+  if (sortSpend) displayedTikTok.sort((a, b) => (a.currency ?? '').localeCompare(b.currency ?? '') || (isTikTokTodayFailure(b) ? -1 : isTikTokTodayFailure(a) ? 1 : b.spend - a.spend))
   const failedAccountIds = new Set(Object.entries(singleFailures).filter(([, failure]) => !!failure).map(([id]) => id))
   if (singleActive) failedAccountIds.add(singleActive)
   const draftTikTok = scopeTikTokPageData(currentTikTok, ttPageScope, failedAccountIds)
-  const hasFigures =
-    (facebook ?? []).some((row) => row.spend !== null) ||
-    (draftTikTok?.accounts ?? []).some((account) => !isTikTokTodayFailure(account))
-
-  // Fills a new chat's draft only; the user reads it and presses send.
+  const goodFacebook = (visibleFacebook ?? []).filter(row => !rowFailures[row.account.act] && !row.readError && refreshingAct !== row.account.act)
+  const hasFigures = goodFacebook.some(row => row.spend !== null) || (draftTikTok?.accounts ?? []).some(account => !isTikTokTodayFailure(account))
+  const rangeLabel = range === 'custom' ? (zh ? '自选日期' : 'Custom dates') : t(rangeKey(range))
+  const currentSnapshot = () => snapshotToday({ rangeLabel, window: dateWindow, capturedAt: Date.now(), facebook: visibleFacebook,
+    tiktok: scopedTikTok(), facebookLoadError, tiktokFailure, facebookFailures: rowFailures, tiktokFailures: singleFailures, updatedAt: singleUpdatedAt })
   const ask = () => {
-    if (!hasFigures) return
-    const store = useAppStore.getState()
-    store.setComposerAutosend(false)
-    store.setCurrentSessionId(null)
-    store.setComposerPrefill(buildTodayChatPrompt(
-      language === 'zh' ? 'zh' : 'en',
-      t(rangeKey(range)),
-      `${formatReadingWindow(dateWindow)}${range === 'today' ? ` · ${t('boards.today.accountDates')}` : ''}`,
-      chatRows(facebook, draftTikTok, tiktokFailure, preset !== null, t)
-    ))
-    navigate('/')
+    if (!hasFigures || tiktokBusy || facebookPending || refreshingAct || singleActive) return
+    const draft = anonymousReadingDraft(snapshotToday({ rangeLabel, window: dateWindow, capturedAt: Date.now(),
+      facebook: goodFacebook, facebookLoadError, tiktokFailure, tiktok: scopeTikTokPageData(scopedTikTok(), ttPageScope, failedAccountIds) }), zh ? 'zh' : 'en')
+    setLocalMappings(draft.mappings.map(text => { const [label, ...name] = text.split(' → '); return { label, name: name.join(' → ') } }))
+    setSingleDraft(draft.text); setSingleDraftCopy(null)
   }
-
-  const rangeLabel = t(rangeKey(range))
+  const applyDates = () => {
+    const next = parseTikTokCustomWindow(startInput, endInput)
+    if (!next) { setDateError(true); return }
+    setDateError(false); setSingleDraft(null)
+    if (range === 'custom' && customWindow.start === next.start && customWindow.end === next.end) {
+      void loadFacebook()
+      if (ttPageScopeRef.current) void loadTikTok(ttPageScopeRef.current)
+    } else { setCustomWindow(next); setRange('custom') }
+  }
 
   return (
     <div className="mx-auto flex h-full w-full max-w-[880px] flex-col gap-6 overflow-y-auto px-8 py-8">
-      {singleDraft !== null && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onKeyDown={(event) => { if (event.key === 'Escape') setSingleDraft(null) }}>
-        <div role="dialog" aria-modal="true" aria-labelledby="single-tt-draft-title" className="w-full max-w-xl rounded-2xl border border-line bg-ink-850 p-5 shadow-card">
-          <h2 id="single-tt-draft-title" className="text-[16px] font-semibold text-cream">{t('boards.today.singleDraftTitle')}</h2>
-          <p className="mt-1 text-[12px] text-cream-faint">{t('boards.today.singleDraftInstructions')}</p>
-          <textarea autoFocus aria-label={t('boards.today.singleDraftTitle')} value={singleDraft} onChange={(event) => { setSingleDraft(event.target.value); setSingleDraftCopy(null) }} className="mt-3 min-h-48 w-full rounded-lg border border-line bg-ink-900 p-3 text-[13px] text-cream" />
-          {singleDraftCopy && <p role="status" className="mt-2 text-[12px] text-cream-dim">{t(singleDraftCopy === 'copied' ? 'boards.today.singleDraftCopied' : 'boards.today.singleDraftCopyFailed')}</p>}
-          <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => setSingleDraft(null)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('boards.today.singleDraftClose')}</button><button type="button" onClick={() => void copySingleDraft()} className="rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white">{t('boards.today.singleDraftCopy')}</button></div>
-        </div>
-      </div>}
+      {singleDraft !== null && <ReadingDraftDialog title={t('boards.today.singleDraftTitle')} language={zh ? 'zh' : 'en'} value={singleDraft} copyState={singleDraftCopy} localMappings={localMappings} onChange={(value) => { setSingleDraft(value); setSingleDraftCopy(null) }} onClose={() => setSingleDraft(null)} onCopy={() => void copySingleDraft()} />}
+      {saveSnapshot && <SaveReadingBoardDialog snapshot={saveSnapshot} language={zh ? 'zh' : 'en'} onClose={() => setSaveSnapshot(null)} onSaved={(board) => { setSaveSnapshot(null); onSaved?.(board) }} />}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[24px] font-semibold leading-[34px] text-cream">{t('boards.today.title')}</h1>
           <p className="mt-1 text-[12px] leading-[18px] tabular-nums text-cream-faint">
-            {rangeLabel} · {formatReadingWindow(dateWindow)} · {t('boards.tt.localDate')}
-            {range === 'today' && <> · {t('boards.today.accountDates')}</>}
+            {rangeLabel} · {formatReadingWindow(dateWindow)}
+            <span> · {zh ? 'Facebook 按来源日期；TikTok 快捷范围按账户时区，详见账户行' : 'Facebook uses source dates; TikTok presets use account timezones, shown per account'}</span>
             {previous ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(previous))}` : ''}
           </p>
         </div>
@@ -414,7 +429,7 @@ export function TodayReading() {
               type="button"
               role="tab"
               aria-selected={range === value}
-              onClick={() => setRange(value)}
+              onClick={() => { const window = todayWindow(value); setStartInput(window.start); setEndInput(window.end); setDateError(false); setSingleDraft(null); setRange(value) }}
               className={`focus-ring rounded-full border px-3 py-1 text-[12px] leading-[18px] transition ${
                 range === value
                   ? 'border-accent/60 bg-accent-soft text-accent'
@@ -427,11 +442,19 @@ export function TodayReading() {
         </div>
       </div>
 
+      <form onSubmit={e => { e.preventDefault(); applyDates() }} className="flex flex-wrap items-end gap-3 rounded-xl border border-line p-3">
+        <label className="flex flex-col gap-1 text-[12px] text-cream-dim">{zh ? '开始日期' : 'Start date'}<input id="today-start-date" aria-label={zh ? '开始日期' : 'Start date'} type="date" value={startInput} onChange={e => setStartInput(e.target.value)} className="rounded-lg border border-line bg-ink-850 px-2 py-1.5 text-cream" /></label>
+        <label className="flex flex-col gap-1 text-[12px] text-cream-dim">{zh ? '结束日期' : 'End date'}<input aria-label={zh ? '结束日期' : 'End date'} type="date" value={endInput} onChange={e => setEndInput(e.target.value)} className="rounded-lg border border-line bg-ink-850 px-2 py-1.5 text-cream" /></label>
+        <button type="submit" className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] text-cream">{zh ? '应用日期' : 'Apply dates'}</button>
+        <p className="w-full text-[12px] text-cream-faint">{zh ? `可选单日或起止日期，每次最多 ${TIKTOK_CUSTOM_MAX_DAYS} 天。TikTok 按账户校验日期；Facebook 仅展示与日期完全匹配的读数。` : `Choose a day or a range up to ${TIKTOK_CUSTOM_MAX_DAYS} days. Dates are checked per TikTok account; Facebook only shows exact matching readings.`}</p>
+        {dateError && <p role="alert" className="text-[12px] text-red-600">{zh ? '日期无效、开始晚于结束，或范围过长。' : 'Invalid dates, reversed range, or range too long.'}</p>}
+      </form>
+      {range === 'today' && <p role="note" className="text-[12px] text-amber-700 dark:text-amber-300">{zh ? '今天的数据截至读取时，比较项为昨天全天，两者不是等时段。' : 'Today is measured at read time; the comparison is the whole of yesterday. These are not equal elapsed periods.'}</p>}
       <section className="flex flex-col gap-2">
         <h2 className="text-[16px] font-semibold leading-[26px] text-cream">{t('boards.today.facebook')}</h2>
-        {facebook === null ? (
+        {facebookLoadError ? <div role="alert" className="rounded-xl border border-line p-4 text-[13px] text-cream"><p>{zh ? '无法加载 Facebook 账户或历史读数。' : 'Could not load Facebook accounts or history.'}</p><button onClick={() => void loadFacebook()} className="focus-ring mt-2 rounded-full border border-line px-3 py-1">{zh ? '重试' : 'Retry'}</button></div> : visibleFacebook === null ? (
           <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.loading')}</p>
-        ) : facebook.length === 0 ? (
+        ) : visibleFacebook.length === 0 ? (
           <div className="rounded-2xl border border-line bg-ink-850 px-4 py-4">
             <p className="text-[14px] leading-[22px] text-cream">{t('boards.today.noFacebook')}</p>
             <p className="mt-1 max-w-[52ch] text-[12px] leading-[18px] text-cream-faint">{t('boards.today.noFacebookHint')}</p>
@@ -455,17 +478,18 @@ export function TodayReading() {
             {captureError && <p role="alert" className="mt-2 text-[12px] leading-[18px] text-red-600 dark:text-red-400">{captureError}</p>}
           </div>
         ) : (
-          facebook.map((row) => (
+          visibleFacebook.map((row) => (
             <FacebookAccount
               key={row.account.id}
               row={row}
               open={openAct === row.account.act}
               busy={refreshingAct === row.account.act}
               needsBrowser={inChat}
-              failure={rowFailure?.act === row.account.act ? rowFailure.code : null}
+              refreshDisabled={refreshingAct !== null}
+              failure={rowFailures[row.account.act] ?? row.readError}
               onToggle={() => setOpenAct((current) => current === row.account.act ? null : row.account.act)}
               onRefresh={() => void refreshFacebook(row)}
-              onStep={(step) => facebookStep(step, row)}
+              onStep={(step) => row.readError ? void loadFacebook() : facebookStep(step, row)}
               t={t}
             />
           ))
@@ -478,8 +502,9 @@ export function TodayReading() {
           busy={tiktokBusy || singleActive !== null}
           onReadOne={(advertiserId) => chooseTikTokScope({ kind: 'one', advertiserId })}
           onReadAll={() => chooseTikTokScope({ kind: 'all' })}
+          onConnect={() => navigate('/connections')}
           labels={{
-            title: t('boards.today.ttPicker.title'), description: t('boards.today.ttPicker.description'),
+            connect: zh ? '连接 TikTok' : 'Connect TikTok', title: t('boards.today.ttPicker.title'), description: t('boards.today.ttPicker.description'),
             accountLabel: t('boards.today.ttPicker.accountLabel'), accountPlaceholder: t('boards.today.ttPicker.placeholder'),
             manualHint: t('boards.today.ttPicker.manualHint'), loading: t('boards.today.ttPicker.loading'), empty: t('boards.today.ttPicker.empty'),
             discoveryError: t('boards.today.ttPicker.error'), namesIncomplete: t('boards.today.ttPicker.namesIncomplete'), noMatch: t('boards.today.ttPicker.noMatch'),
@@ -488,6 +513,7 @@ export function TodayReading() {
           }}
         />
         {ttPageScope && <p className="text-[12px] text-cream-faint">{t(ttPageScope.kind === 'one' ? 'boards.today.ttPicker.currentOne' : 'boards.today.ttPicker.currentAll')}</p>}
+        {currentTikTok?.cancelled && <p role="status" className="text-[12px] text-cream-dim">{zh ? '已取消。已完成的账户保留，未读取项单独标记；本次未覆盖数据集。' : 'Cancelled. Completed accounts are retained; unread accounts are marked. The dataset was not replaced.'}</p>}
         {tiktokBusy && <TTReadingProgress progress={ttProgress} cancelling={ttCancelling} onCancel={() => void cancelTikTok()} />}
         {tiktokFailure ? (
           <div className="rounded-2xl border border-line bg-ink-850 px-4 py-4">
@@ -502,9 +528,16 @@ export function TodayReading() {
           <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.loading')}</p>
         ) : currentTikTok ? (
           <>
-            {currentTikTok.datasetSync?.ok === false && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(currentTikTok.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : currentTikTok.datasetSync.error === 'proof-failed' ? 'boards.datasets.proofFailed' : currentTikTok.datasetSync.error === 'row-limit' ? 'boards.datasets.ttRowLimit' : 'boards.datasets.syncFailed')}</p>}
+            {currentTikTok.datasetSync?.ok === false && !tiktokBusy && !['reading-in-progress', 'reading-cancelled'].includes(currentTikTok.datasetSync.error) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(currentTikTok.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : currentTikTok.datasetSync.error === 'proof-failed' ? 'boards.datasets.proofFailed' : currentTikTok.datasetSync.error === 'row-limit' ? 'boards.datasets.ttRowLimit' : 'boards.datasets.syncFailed')}</p>}
             {currentTikTok.datasetSync?.ok === true && Boolean(currentTikTok.datasetSync.legacyBackups?.length) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names:currentTikTok.datasetSync.legacyBackups!.join('、')})}</p>}
-            {currentTikTok.accounts.map((account) => (
+            <div className="flex flex-wrap items-center gap-3 text-[12px] text-cream-dim">
+              <input type="search" aria-label={zh ? '筛选巡检结果' : 'Filter inspection results'} placeholder={zh ? '筛选账户名或 ID' : 'Filter account name or ID'} value={resultQuery} onChange={e => setResultQuery(e.target.value)} className="rounded-lg border border-line bg-ink-850 px-3 py-1.5 text-cream" />
+              <label className="flex items-center gap-1"><input type="checkbox" checked={onlyFailed} onChange={e => setOnlyFailed(e.target.checked)} />{zh ? '仅失败或未读取' : 'Failed or unread only'}</label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={sortSpend} onChange={e => setSortSpend(e.target.checked)} />{zh ? '按币种分组后消耗排序' : 'Sort spend within each currency'}</label>
+              <span role="status">{zh ? `显示 ${displayedTikTok.length} / ${currentTikTok.accounts.length} 个账户；列表筛选不改变保存范围。` : `Showing ${displayedTikTok.length} / ${currentTikTok.accounts.length} accounts; filtering does not change the saved scope.`}</span>
+            </div>
+            {displayedTikTok.length === 0 && <p className="text-[12px] text-cream-faint">{zh ? '没有匹配的账户。' : 'No matching accounts.'}</p>}
+            {displayedTikTok.map((account) => (
               <TikTokAccount
                 key={account.advertiserId}
                 account={account}
@@ -532,16 +565,17 @@ export function TodayReading() {
       </section>
 
       <div className="flex flex-col items-start gap-2 pb-8">
+        <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) setSaveSnapshot(currentSnapshot()) }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring rounded-full border border-line px-4 py-2 text-[13px] text-cream disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
         <button
           type="button"
           onClick={ask}
-          disabled={!hasFigures}
+          disabled={!hasFigures || tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null}
           className="focus-ring rounded-full bg-accent px-4 py-2 text-[13px] font-medium leading-5 text-[rgb(var(--bg-app))] disabled:opacity-40"
         >
-          {t('boards.today.ask')}
+          {zh ? '预览脱敏分析草稿' : 'Preview anonymized analysis'}
         </button>
         <p className="text-[12px] leading-[18px] text-cream-faint">
-          {hasFigures ? t('boards.today.askHint') : t('boards.today.askDisabled')}
+          {hasFigures ? (zh ? '先预览、编辑并复制，不覆盖已有对话草稿。' : 'Preview, edit and copy without replacing an existing chat draft.') : t('boards.today.askDisabled')}
         </p>
         <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.currencyNote')}</p>
       </div>
@@ -549,97 +583,10 @@ export function TodayReading() {
   )
 }
 
-function rowFromEntry(
-  account: FbReadingAccountEntry,
-  current: FbReadingHistoryEntry | null,
-  prior: FbReadingHistoryEntry | null
-): FacebookRow {
-  const rows = current?.rows ?? []
-  const priorRows = prior?.rows ?? []
-  return {
-    account,
-    covered: true,
-    spend: current?.totalSpend ?? null,
-    previousSpend: prior?.totalSpend ?? null,
-    impressions: sumFinite(rows.map((row) => row.impressions)),
-    clicks: sumFinite(rows.map((row) => row.clicks)),
-    conversions: sumFinite(rows.map((row) => row.results)),
-    capturedAt: current?.capturedAt ?? null,
-    movers: current
-      ? topSpendMoves(
-        rows.map((row) => ({ name: row.name, spend: row.spend ?? 0 })),
-        prior ? priorRows.map((row) => ({ name: row.name, spend: row.spend ?? 0 })) : null,
-        3
-      )
-      : []
-  }
-}
-
 function rangeKey(range: TodayRange): I18nKey {
   if (range === 'today') return 'boards.today.range.today'
   if (range === 'last28') return 'boards.today.range.last28'
   return 'boards.today.range.last7'
-}
-
-function withCurrency(amount: string, currency: string | null): string {
-  return currency ? `${amount} ${currency}` : amount
-}
-
-function chatRows(
-  facebook: FacebookRow[] | null,
-  tiktok: TikTokTodayReading | null,
-  tiktokFailure: TikTokFailure | null,
-  facebookCovered: boolean,
-  t: Translate
-) {
-  const rows = []
-  for (const row of facebook ?? []) {
-    rows.push({
-      platform: 'Facebook',
-      name: row.account.alias,
-      status: !facebookCovered
-        ? t('boards.today.uncovered')
-        : row.spend === null
-          ? t('boards.today.noReading')
-          : t('boards.today.verified'),
-      spend: row.spend === null ? null : formatTikTokAmount(row.spend),
-      delta: formatSpendDelta(row.spend, row.previousSpend),
-      movers: row.movers.map((move) => `${move.name} ${formatSpendDelta(move.spend, move.previousSpend) ?? ''}`)
-    })
-  }
-  if (tiktokFailure) {
-    rows.push({
-      platform: 'TikTok',
-      name: t('boards.tt.allAdvertisers'),
-      status: tiktokReadingNotice(tiktokFailure.code, t, tiktokFailure.detail).message,
-      spend: null,
-      delta: null,
-      movers: []
-    })
-  }
-  for (const account of tiktok?.accounts ?? []) {
-    const name = account.name ?? account.advertiserId
-    if (isTikTokTodayFailure(account)) {
-      rows.push({
-        platform: 'TikTok',
-        name,
-        status: tiktokReadingNotice(account.error, t, account.detail).message,
-        spend: null,
-        delta: null,
-        movers: []
-      })
-      continue
-    }
-    rows.push({
-      platform: 'TikTok',
-      name,
-      status: `${t('boards.today.official')}${account.window ? ` · ${formatReadingWindow(account.window)}${account.timezone ? ` ${account.timezone}` : ''}${account.previousWindow ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(account.previousWindow))}` : ''}` : ''}`,
-      spend: withCurrency(formatTikTokAmount(account.spend), account.currency),
-      delta: formatSpendDelta(account.spend, account.previousSpend),
-      movers: account.campaigns.map((move) => `${move.name} ${formatSpendDelta(move.spend, move.previousSpend) ?? ''}`)
-    })
-  }
-  return rows
 }
 
 function Movers({
@@ -789,6 +736,7 @@ function FacebookAccount({
   open,
   busy,
   needsBrowser,
+  refreshDisabled,
   failure,
   onToggle,
   onRefresh,
@@ -799,6 +747,7 @@ function FacebookAccount({
   open: boolean
   busy: boolean
   needsBrowser: boolean
+  refreshDisabled?: boolean
   failure: string | null
   onToggle: () => void
   onRefresh: () => void
@@ -806,6 +755,7 @@ function FacebookAccount({
   t: Translate
 }) {
   const delta = formatSpendDelta(row.spend, row.previousSpend)
+  const lang = useAppStore(state => state.language)
   const notice: ReadingNotice | null = failure ? fbReadingNotice(failure, t, 'boards.today.refreshFailed') : null
   return (
     <article className="rounded-2xl border border-line bg-ink-850 px-4 py-3">
@@ -822,13 +772,14 @@ function FacebookAccount({
         </div>
         <div className="text-right">
           <p className="text-[20px] font-semibold leading-7 tabular-nums text-cream">
-            {row.spend === null ? '—' : formatTikTokAmount(row.spend)}
+            {row.spend === null ? '—' : `${formatTikTokAmount(row.spend)} ${row.currency ?? (lang === 'zh' ? '币种未知' : 'currency unknown')}`}
           </p>
           <p className="text-[12px] leading-[18px] tabular-nums text-cream-dim">
             {row.covered ? (delta ?? t('boards.today.noPrevious')) : '—'}
           </p>
         </div>
       </div>
+      {row.readError && <p role="alert" className="mt-2 text-[12px] text-red-600">{lang === 'zh' ? '历史读数加载失败，账户仍已保留；请重试。' : 'History could not be loaded. The account is preserved; retry.'}</p>}
       {notice && failure && (
         <ReadingErrorNotice className="mt-2" notice={notice} detail={failure} onAction={onStep} busy={busy} />
       )}
@@ -837,7 +788,7 @@ function FacebookAccount({
           <button
             type="button"
             onClick={onRefresh}
-            disabled={busy}
+            disabled={busy || refreshDisabled}
             className="focus-ring flex items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[12px] leading-[18px] text-cream-dim disabled:opacity-40"
           >
             <RefreshCw size={12} className={busy ? 'animate-spin' : ''} />
@@ -860,8 +811,8 @@ function FacebookAccount({
             value={row.impressions === null || row.clicks === null ? '—' : formatTikTokRate(row.clicks, row.impressions)}
           />
           <Metric
-            label={t('boards.tt.metric.costPerConversion')}
-            value={formatTikTokCostPerConversion(row.spend ?? 0, row.conversions ?? 0)}
+            label={`${lang === 'zh' ? '每次结果成本' : 'Cost per result'}${row.resultType ? ` · ${row.resultType}` : ''}`}
+            value={row.costPerResult === null ? '—' : formatTikTokAmount(row.costPerResult)}
           />
         </div>
       )}

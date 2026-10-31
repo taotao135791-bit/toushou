@@ -70,6 +70,16 @@ function widgetSummary(widget: BoardWidget): string {
   return `- ${title} (${widget.type}): ${detail}`
 }
 
+/** Snapshot boards default to no free-form titles, bindings or dataset names. */
+function snapshotBoardContext(board: KanbanBoard): { name: string; widgets: string[] } | null {
+  if (!board.widgets.some((widget) => widget.type === 'reading-snapshot')) return null
+  const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(board.id) ? ` (${board.id})` : ''
+  return {
+    name: `Reading snapshot${id}`,
+    widgets: board.widgets.slice(0, MAX_WIDGETS).map((widget) => widget.type === 'reading-snapshot' ? '- Reading snapshot (reading-snapshot)' : `- Widget (${widget.type})`)
+  }
+}
+
 function datasetSummary(dataset: BoardDataset): string {
   const columns = dataset.columns
     .slice(0, MAX_COLUMNS)
@@ -84,37 +94,38 @@ export function buildBoardChatPrompt(
   datasets: BoardDataset[],
   language: Language = 'en'
 ): string {
-  const widgets = board.widgets.slice(0, MAX_WIDGETS).map(widgetSummary)
-  const datasetLines = datasets.slice(0, MAX_DATASETS).map(datasetSummary)
+  const privateContext = snapshotBoardContext(board)
+  const widgets = privateContext?.widgets ?? board.widgets.slice(0, MAX_WIDGETS).map(widgetSummary)
+  const datasetLines = privateContext ? [] : datasets.slice(0, MAX_DATASETS).map(datasetSummary)
   const isChinese = language === 'zh'
   const content = isChinese
     ? [
         '请基于下面的本地看板快照帮助我分析和规划。它只是只读上下文：不要声称你已经修改了看板；如建议改动，请列出可执行的组件/数据/布局建议。',
         '',
-        `看板：${compact(board.name, 200)}`,
-        board.description ? `用途：${compact(board.description, 1000)}` : '',
+        `看板：${privateContext?.name ?? compact(board.name, 200)}`,
+        !privateContext && board.description ? `用途：${compact(board.description, 1000)}` : '',
         `组件（${board.widgets.length} 个）：`,
         ...(widgets.length ? widgets : ['- 暂无组件']),
         board.widgets.length > MAX_WIDGETS ? `- 其余 ${board.widgets.length - MAX_WIDGETS} 个组件未列出` : '',
         '',
-        `可用数据集（仅模式，未包含数据行；${datasets.length} 个）：`,
-        ...(datasetLines.length ? datasetLines : ['- 暂无数据集']),
-        datasets.length > MAX_DATASETS ? `- 其余 ${datasets.length - MAX_DATASETS} 个数据集未列出` : '',
+        privateContext ? '快照看板默认不包含全局数据集。' : `可用数据集（仅模式，未包含数据行；${datasets.length} 个）：`,
+        ...(privateContext ? [] : datasetLines.length ? datasetLines : ['- 暂无数据集']),
+        !privateContext && datasets.length > MAX_DATASETS ? `- 其余 ${datasets.length - MAX_DATASETS} 个数据集未列出` : '',
         '',
         '请先说明你观察到的重点、风险或缺口，再给出下一步建议。'
       ]
     : [
         'Help me analyze and plan from this local board snapshot. Treat it as read-only context: do not claim that you edited the board. If you suggest changes, make the widget, data, or layout steps explicit.',
         '',
-        `Board: ${compact(board.name, 200)}`,
-        board.description ? `Purpose: ${compact(board.description, 1000)}` : '',
+        `Board: ${privateContext?.name ?? compact(board.name, 200)}`,
+        !privateContext && board.description ? `Purpose: ${compact(board.description, 1000)}` : '',
         `Widgets (${board.widgets.length}):`,
         ...(widgets.length ? widgets : ['- none yet']),
         board.widgets.length > MAX_WIDGETS ? `- ${board.widgets.length - MAX_WIDGETS} more widgets omitted` : '',
         '',
-        `Available datasets (schema only; no data rows; ${datasets.length}):`,
-        ...(datasetLines.length ? datasetLines : ['- none yet']),
-        datasets.length > MAX_DATASETS ? `- ${datasets.length - MAX_DATASETS} more datasets omitted` : '',
+        privateContext ? 'Global datasets are excluded by default for snapshot boards.' : `Available datasets (schema only; no data rows; ${datasets.length}):`,
+        ...(privateContext ? [] : datasetLines.length ? datasetLines : ['- none yet']),
+        !privateContext && datasets.length > MAX_DATASETS ? `- ${datasets.length - MAX_DATASETS} more datasets omitted` : '',
         '',
         'First identify the key observations, risks, or gaps, then suggest the next steps.'
       ]
@@ -241,25 +252,26 @@ function boardContextLines(
 ): string[] {
   if (!context) return []
   const { board, datasets } = context
-  const widgets = board.widgets.slice(0, MAX_WIDGETS).map(widgetSummary)
-  const datasetLines = datasets.slice(0, MAX_DATASETS).map(datasetSummary)
+  const privateContext = snapshotBoardContext(board)
+  const widgets = privateContext?.widgets ?? board.widgets.slice(0, MAX_WIDGETS).map(widgetSummary)
+  const datasetLines = privateContext ? [] : datasets.slice(0, MAX_DATASETS).map(datasetSummary)
   return isChinese
     ? [
         '',
-        `目标看板：${compact(board.name, 200)}`,
+        `目标看板：${privateContext?.name ?? compact(board.name, 200)}`,
         `现有组件（${board.widgets.length} 个）：`,
         ...(widgets.length ? widgets : ['- 暂无组件']),
         '',
-        `可用数据集（仅模式，未包含数据行；${datasets.length} 个）：`,
-        ...(datasetLines.length ? datasetLines : ['- 暂无数据集'])
+        privateContext ? '快照看板默认不包含全局数据集。' : `可用数据集（仅模式，未包含数据行；${datasets.length} 个）：`,
+        ...(privateContext ? [] : datasetLines.length ? datasetLines : ['- 暂无数据集'])
       ]
     : [
         '',
-        `Target board: ${compact(board.name, 200)}`,
+        `Target board: ${privateContext?.name ?? compact(board.name, 200)}`,
         `Existing widgets (${board.widgets.length}):`,
         ...(widgets.length ? widgets : ['- none yet']),
         '',
-        `Available datasets (schema only; no data rows; ${datasets.length}):`,
-        ...(datasetLines.length ? datasetLines : ['- none yet'])
+        privateContext ? 'Global datasets are excluded by default for snapshot boards.' : `Available datasets (schema only; no data rows; ${datasets.length}):`,
+        ...(privateContext ? [] : datasetLines.length ? datasetLines : ['- none yet'])
       ]
 }

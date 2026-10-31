@@ -4,10 +4,16 @@ import { formatTikTokAmount, type TikTokReadingAdvertiser, type TikTokReadingRan
 
 /** Morning page windows. last3 is intentionally absent: TikTok has no 3-day preset. */
 export type TodayRange = 'today' | 'yesterday' | 'last3' | 'last7' | 'last28' | 'last30'
+export type TikTokTodayRange = TodayRange | 'custom'
+
+/** Maximum current-window length; comparison adds an equally long preceding window. */
+export const TIKTOK_CUSTOM_MAX_DAYS = 366
 
 /** An explicit ID reads only that authorized advertiser; omission uses the connection selection. */
 export interface TikTokTodayReadingInput {
   range?: string
+  startDate?: string
+  endDate?: string
   advertiserId?: string
   requestId?: string
 }
@@ -36,7 +42,7 @@ export interface TodayChatRow {
 
 /** Morning TikTok row. previousSpend is 0 when the earlier window had no spend. */
 export interface TikTokTodayAccountReading extends TikTokReadingAdvertiser {
-  /** Today/previous day for this account when account timezone is known. */
+  /** Date windows are per-account and calculated using its own timezone. */
   window?: TodayWindow
   previousWindow?: TodayWindow
   spend: number
@@ -60,7 +66,7 @@ export function isTikTokTodayFailure(account: TikTokTodayAccount): account is Ti
 }
 
 export interface TikTokTodayReading {
-  range: TodayRange
+  range: TikTokTodayRange
   window: TodayWindow
   previousWindow: TodayWindow
   source: 'oauth' | 'pasted'
@@ -68,8 +74,13 @@ export interface TikTokTodayReading {
   /** True when the token grant has more advertisers than this page queries. */
   truncated: boolean
   accounts: TikTokTodayAccount[]
+  /** Cancellation keeps completed rows and marks remaining accounts as unattempted. */
+  cancelled?: boolean
   datasetSync?: { ok: true; legacyBackups?: string[] } | { ok: false; error: string }
 }
+
+/** One bounded account result, delivered only to the window owning the request. */
+export type TikTokTodayProgressItem = Pick<TikTokTodayReading, 'range' | 'window' | 'previousWindow' | 'source' | 'generatedAt'> & { account: TikTokTodayAccount }
 
 export type TikTokTodayReadingResult = TikTokTodayReading | ReadingFailure
 
@@ -86,10 +97,33 @@ function parseIsoDate(value: string): Date | null {
   const year = Number(match[1])
   const month = Number(match[2])
   const day = Number(match[3])
-  const date = new Date(year, month - 1, day)
-  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(0, 0, 0, 0)
+  return year > 0 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
     ? date
     : null
+}
+
+/** Validate exact calendar dates and the service's explicit range bound. */
+export function parseTikTokCustomWindow(startDate: unknown, endDate: unknown): TodayWindow | null {
+  if (typeof startDate !== 'string' || typeof endDate !== 'string') return null
+  const parse = (raw: string): number | null => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || raw.startsWith('0000-')) return null
+    const [year, month, day] = raw.split('-').map(Number)
+    const date = new Date(0)
+    date.setUTCFullYear(year, month - 1, day)
+    date.setUTCHours(0, 0, 0, 0)
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null
+    return date.getTime()
+  }
+  const start = parse(startDate), end = parse(endDate)
+  if (start === null || end === null || end < start) return null
+  const days = (end - start) / 86_400_000 + 1
+  if (days > TIKTOK_CUSTOM_MAX_DAYS) return null
+  // The previous comparison must also fit in a four-digit ISO date.
+  if (new Date(start - days * 86_400_000).getUTCFullYear() < 1) return null
+  return { start: startDate, end: endDate }
 }
 
 export function isTodayRange(value: unknown): value is TodayRange {
@@ -126,6 +160,18 @@ export function todayWindow(range: TodayRange, today: Date = new Date()): TodayW
   return { start: fbDateString(start), end: fbDateString(end) }
 }
 
+/** Preset date windows relative to a verified account-local calendar day. */
+export function todayWindowForAccountDate(range: TodayRange, accountDay: string): TodayWindow | null {
+  const day = parseIsoDate(accountDay)
+  if (!day) return null
+  const offset = range === 'today' ? 0 : 1
+  const days = range === 'today' || range === 'yesterday' ? 1 : RANGE_DAYS[range]
+  const end = day.getTime() - offset * 86_400_000
+  const start = end - (days - 1) * 86_400_000
+  if (new Date(start).getUTCFullYear() < 1) return null
+  return { start: new Date(start).toISOString().slice(0, 10), end: new Date(end).toISOString().slice(0, 10) }
+}
+
 /** Board TT module window, on the today page's terms: '7' and '28' end yesterday. */
 export function tiktokReadingRangeWindow(range: TikTokReadingRange, today: Date = new Date()): TodayWindow {
   if (range === '3') return todayWindow('last3', today)
@@ -141,14 +187,13 @@ export function formatReadingWindow(window: TodayWindow): string {
 export function previousEqualWindow(window: TodayWindow): TodayWindow | null {
   const start = parseIsoDate(window.start)
   const end = parseIsoDate(window.end)
-  if (!start || !end || fbDateString(start) > fbDateString(end)) return null
-  const days = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1
+  if (!start || !end || start.getTime() > end.getTime()) return null
+  const days = (end.getTime() - start.getTime()) / 86_400_000 + 1
   if (!Number.isFinite(days) || days < 1) return null
-  const prevEnd = new Date(start)
-  prevEnd.setDate(prevEnd.getDate() - 1)
-  const prevStart = new Date(prevEnd)
-  prevStart.setDate(prevStart.getDate() - (days - 1))
-  return { start: fbDateString(prevStart), end: fbDateString(prevEnd) }
+  const prevEnd = start.getTime() - 86_400_000
+  const prevStart = prevEnd - (days - 1) * 86_400_000
+  if (new Date(prevStart).getUTCFullYear() < 1) return null
+  return { start: new Date(prevStart).toISOString().slice(0, 10), end: new Date(prevEnd).toISOString().slice(0, 10) }
 }
 
 /** Facebook browser presets that are the same window. last28 has none. */

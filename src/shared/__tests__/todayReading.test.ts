@@ -6,9 +6,11 @@ import {
   fbPresetForTodayRange,
   formatReadingWindow,
   formatSpendDelta,
+  parseTikTokCustomWindow,
   previousEqualWindow,
   tiktokReadingRangeWindow,
   todayWindow,
+  todayWindowForAccountDate,
   todayWindowMatchesFbPreset,
   topSpendMoves
 } from '../todayReading'
@@ -28,6 +30,14 @@ describe('account calendar dates', () => {
 })
 
 describe('today windows', () => {
+  it('validates up to 366 calendar days and compares exactly across leap days and DST', () => {
+    expect(parseTikTokCustomWindow('2024-01-01', '2024-12-31')).toEqual({ start: '2024-01-01', end: '2024-12-31' })
+    expect(parseTikTokCustomWindow('2024-01-01', '2025-01-01')).toBeNull()
+    expect(parseTikTokCustomWindow('2024-02-30', '2024-03-02')).toBeNull()
+    expect(parseTikTokCustomWindow('2024-3-01', '2024-03-02')).toBeNull()
+    expect(previousEqualWindow({ start: '2024-03-09', end: '2024-03-12' })).toEqual({ start: '2024-03-05', end: '2024-03-08' })
+    expect(todayWindowForAccountDate('last7', '2026-10-31')).toEqual({ start: '2026-10-24', end: '2026-10-30' })
+  })
   it('uses complete days and matches the Facebook last-7 preset', () => {
     expect(todayWindow('today', today)).toEqual({ start: '2026-10-01', end: '2026-10-01' })
     expect(todayWindow('last7', today)).toEqual(boardReadingRangeDates('last7', today))

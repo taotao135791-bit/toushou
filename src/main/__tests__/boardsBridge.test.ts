@@ -12,6 +12,10 @@ vi.mock('electron', () => ({
 
 import { authorizeAndDispatch, dispatch, parseBoardsBridgeRequest, readWorkspaceDataset } from '../boardsBridge'
 import { listBoards } from '../boards'
+import { saveBoard } from '../boards'
+import { saveReadingSnapshot } from '../readingSnapshots'
+import type { ReadingSnapshot } from '../../shared/readingSnapshot'
+import { createWidget } from '../../shared/boards'
 
 let dir: string
 
@@ -32,6 +36,35 @@ describe('parseBoardsBridgeRequest', () => {
 })
 
 describe('boards bridge dispatch', () => {
+  it('only exposes a bounded anonymized projection of reading snapshots to model board operations', async () => {
+    const snapshot: ReadingSnapshot = {
+      kind: 'reading-snapshot', version: 1, rangeLabel: 'PRIVATE_RANGE', window: { start: '2026-01-01', end: '2026-01-07' }, capturedAt: 10,
+      accounts: Array.from({ length: 51 }, (_, index) => ({
+        platform: 'tiktok' as const, accountId: `PRIVATE_ID_${index}`, name: `PRIVATE_NAME_${index}`, status: 'ok' as const,
+        statusDetail: 'PRIVATE_DETAIL', window: { start: '2026-01-01', end: '2026-01-07' }, previousWindow: null,
+        sourceAt: 10, timezone: 'PRIVATE_TIMEZONE', currency: 'USD', spend: 1, previousSpend: null,
+        impressions: 10, clicks: 1, conversions: 1, resultType: 'PRIVATE_RESULT'
+      }))
+    }
+    const saved = saveReadingSnapshot({ name: 'PRIVATE_BOARD_NAME', snapshot, includeChart: true })
+    if (!saved.ok) throw new Error(saved.error)
+    const board = saved.board
+    board.widgets[0].title = 'PRIVATE_WIDGET_TITLE'
+    board.widgets.push(createWidget('note', 'PRIVATE_OTHER_TITLE', { x: 0, y: 12 }, { text: 'PRIVATE_OTHER_BODY' }))
+    expect(saveBoard(board)).toEqual({ ok: true })
+    const raw = listBoards()[0].widgets[0].config.snapshot as ReadingSnapshot
+    expect(raw.accounts[0].name).toBe('PRIVATE_NAME_0')
+    for (const result of [await dispatch({ action: 'board_get', boardId: board.id }), await dispatch({ action: 'boards_list' }), await dispatch({ action: 'board_create', name: 'PRIVATE_BOARD_NAME', template: 'blank' }), await dispatch({ action: 'board_rename', boardId: board.id, newName: 'PRIVATE_RENAMED' })]) {
+      const output = JSON.stringify(result)
+      for (const secret of ['PRIVATE_ID_', 'PRIVATE_NAME_', 'PRIVATE_DETAIL', 'PRIVATE_RANGE', 'PRIVATE_TIMEZONE', 'PRIVATE_RESULT', 'PRIVATE_WIDGET_TITLE', 'PRIVATE_OTHER_TITLE', 'PRIVATE_OTHER_BODY', 'PRIVATE_BOARD_NAME', 'PRIVATE_RENAMED']) expect(output).not.toContain(secret)
+    }
+    const projected = await dispatch({ action: 'board_get', boardId: board.id })
+    expect(projected.board).toMatchObject({ id: board.id, name: '读数快照看板' })
+    const config = (projected.board as { widgets: Array<{ config: { anonymized: boolean; accountCount: number; omittedCount: number; accounts: unknown[] } }> }).widgets[0].config
+    expect(config).toMatchObject({ anonymized: true, accountCount: 51, omittedCount: 1 })
+    expect(config.accounts).toHaveLength(50)
+    expect(config.accounts[0]).toMatchObject({ index: 1, platform: 'tiktok', status: 'ok', currency: 'USD', spend: 1 })
+  })
   it('creates a standard TikTok board with a bound reading module', async () => {
     const created = await dispatch({
       action: 'board_create',
@@ -96,6 +129,19 @@ describe('boards bridge dispatch', () => {
     const removed = await dispatch({ action: 'board_remove_widget', name: '看板A', widgetId: widget!.id })
     expect(removed.ok).toBe(true)
     expect((removed.board as { widgets: unknown[] }).widgets).toHaveLength(0)
+  })
+
+  it('does not let model board tools fabricate reading snapshot widgets', async () => {
+    const created = await dispatch({ action: 'board_create', name: 'Fixture', template: 'blank' })
+    expect(created.ok).toBe(true)
+    const boardId = (created.board as { id: string }).id
+    const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'Test', window: { start: '2026-01-01', end: '2026-01-02' }, capturedAt: 1,
+      accounts: [{ platform: 'tiktok', accountId: '123', name: 'Fixture', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-02' }, previousWindow: null, sourceAt: 1, timezone: 'UTC', currency: 'USD', spend: 12, previousSpend: null, impressions: 1, clicks: 1, conversions: 0 }] }
+    const result = await dispatch({ action: 'board_add_widget', boardId, type: 'reading-snapshot', config: { snapshot, includeChart: false } })
+    expect(result).toEqual({ ok: false, error: 'snapshot-requires-reading' })
+    expect(listBoards().find(board => board.id === boardId)?.widgets).toHaveLength(0)
+    const unsupported = await dispatch({ action: 'board_add_widget', boardId, type: 'bad-type' })
+    expect(unsupported.supported).not.toContain('reading-snapshot')
   })
 
   it('rejects an out-of-domain widget config without corrupting the board', async () => {
