@@ -46,6 +46,7 @@ const BOARD_TEXT: Record<string, string> = {
   'boards.widget.fb-reading-summary': 'FB 读数汇总',
   'boards.widget.fb-report-reading': 'FB 报表读数',
   'boards.widget.tt-reading': 'TT 读数',
+  'boards.reading.ttModuleName': 'TT 读数',
   'boards.preset.ads': '海外广告投放',
   'boards.preset.ads.kpiSpend': '今日消耗 ($)',
   'boards.preset.ads.kpiImpressions': '展示次数',
@@ -402,7 +403,8 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     // (empty string = every advertiser the connected grant covers) AND scopes
     // every dataset card to that advertiser (广告主 filter) so the board shows
     // ONE account's numbers and its currency stays uniform.
-    const advertiserIds = typeof tool.advertiserIds === 'string' ? tool.advertiserIds.trim() : ''
+    if (tool.advertiserIds != null && typeof tool.advertiserIds !== 'string') return { ok: false, error: 'invalid-advertiser-ids', message: '请提供数字广告主 ID 字符串，多个 ID 用逗号分隔。' }
+    const advertiserIdInput = typeof tool.advertiserIds === 'string' ? tool.advertiserIds.trim() : ''
     const advertiserName = boundedString(tool.advertiserName, 120)
     // Cross-account boards ("go photo 所有账户合一起"): accept an array or a
     // comma/、-separated string of advertiser NAMES; every dataset card then
@@ -413,7 +415,15 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
         ? tool.advertiserNames.split(/[,，、;；]/).map((item) => item.trim()).filter(Boolean).slice(0, 20)
         : []
     const names = advertiserNames.length > 0 ? advertiserNames : advertiserName ? [advertiserName] : []
-    const ids = parseTikTokAdvertiserIdList(advertiserIds)
+    // Even a malformed name field signals that a narrower account scope was
+    // requested; never turn it into an unscoped all-account reading.
+    const nameScopeRequested = [tool.advertiserName, tool.advertiserNames].some((value) =>
+      typeof value === 'string' ? value.trim().length > 0 : Array.isArray(value) ? value.length > 0 : value != null
+    )
+    const ids = parseTikTokAdvertiserIdList(advertiserIdInput)
+    if (!ids || (advertiserIdInput && ids.length === 0)) return { ok: false, error: 'invalid-advertiser-ids', message: '请提供数字广告主 ID 字符串，多个 ID 用逗号分隔。' }
+    const advertiserIds = ids.join(', ')
+    if (nameScopeRequested && ids.length === 0) return { ok: false, error: 'advertiser-ids-required', message: '按名称筛选时请同时提供对应的数字广告主 ID，避免读取其他账户。' }
     const filterValues = ids?.length ? ids : names
     if (filterValues.length > 0) {
       const filterColumn = ids?.length ? '广告主ID' : '广告主'
@@ -427,14 +437,16 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       )
     }
     if (advertiserIds || template === 'tiktok') {
-      const size = WIDGET_DEFAULT_SIZES['tt-reading']
-      const slot = findFreeSlot(board.widgets, size.w, size.h)
-      board.widgets.push(
-        createWidget('tt-reading', BOARD_TEXT['boards.widget.tt-reading'], slot, {
-          advertiserIds: /^[0-9,，;；\s]*$/.test(advertiserIds) ? advertiserIds : '',
-          range: '7'
-        })
-      )
+      const existing = board.widgets.find((widget) => widget.type === 'tt-reading')
+      if (existing) {
+        board.widgets = board.widgets.map((widget) => widget === existing
+          ? { ...widget, config: { ...widget.config, advertiserIds } }
+          : widget)
+      } else {
+        const size = WIDGET_DEFAULT_SIZES['tt-reading']
+        const slot = findFreeSlot(board.widgets, size.w, size.h)
+        board.widgets.push(createWidget('tt-reading', BOARD_TEXT['boards.widget.tt-reading'], slot, { advertiserIds, range: '7' }))
+      }
     }
     const result = saveBoard(board)
     if (!result.ok) return { ok: false, error: 'save-failed' }
@@ -448,17 +460,12 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       board: boardSummary({ ...board }),
       datasetReady,
       note:
-        (names.length > 1
-          ? `已按 ${names.length} 个广告主合并过滤全部数据卡（${names.join('、')}）；`
-          : names.length === 1
-            ? `已按广告主「${names[0]}」过滤全部数据卡；` +
-              (advertiserIds
-                ? '读数模块已绑定对应 ID。'
-                : '注意：未传 advertiserIds，TT 读数模块会读全部授权账户、与卡片口径不一致——建议补传对应 ID。')
-            : advertiserIds
-              ? '已绑定指定广告主的 TT 读数模块；读数需要已连接的 TikTok 授权。'
-              : '已附 TT 读数模块（读取当前授权下的全部广告主）。') +
-        (names.length > 1
+        (ids.length > 0
+          ? `已按 ${ids.length} 个广告主 ID 过滤数据卡并绑定 TT 读数模块；读数需要已连接的 TikTok 授权。`
+          : template === 'tiktok'
+            ? '已附 TT 读数模块（读取连接页所选账户；未选择时读取授权下的广告主）。'
+            : '看板已创建。') +
+        (ids.length > 1
           ? '注意：这些账户币种不同时，金额合计卡会显示 — 并标 MIX（不同币种不可相加），计数类指标正常合计。'
           : '') +
         (datasetReady
