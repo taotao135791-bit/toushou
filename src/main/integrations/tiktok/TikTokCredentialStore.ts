@@ -1,5 +1,8 @@
 import { app, safeStorage } from 'electron'
-import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
+import { SecureStorageCoordinator, secureStorageCoordinator } from '../secureStorageCoordinator'
 import path from 'node:path'
 import { normalizeTikTokAdvertiserIds } from '../../../shared/tiktokReport'
 import type { SecretBackend } from '../feishu/FeishuCredentialStore'
@@ -39,31 +42,97 @@ const electronBackend: SecretBackend = {
 export class TikTokCredentialStore {
   private readonly filePath: string
   private readonly backend: SecretBackend
+  private readonly coordinator: SecureStorageCoordinator
+  private retryNativePending = false
+  private retryEpochPending: number | null = null
+  private failure: TikTokCredentialStorageError | null = null
+  private pendingLoad: Promise<TikTokStoredCredentials | null> | null = null
+  private verified = false
+  private verifiedEnvelope: string | null = null
 
-  constructor(options: { filePath?: string; backend?: SecretBackend } = {}) {
+  constructor(options: { filePath?: string; backend?: SecretBackend; coordinator?: SecureStorageCoordinator } = {}) {
     this.filePath = options.filePath ?? path.join(app.getPath('userData'), 'tiktok-ads-credentials.bin')
     this.backend = options.backend ?? electronBackend
+    this.coordinator = options.coordinator ?? (options.backend ? new SecureStorageCoordinator() : secureStorageCoordinator)
   }
 
-  async save(credentials: Omit<TikTokStoredCredentials, 'savedAt'>): Promise<void> {
-    if (!this.backend.isAvailable()) {
-      throw new Error('secure credential storage is unavailable on this device')
+  /** Snapshot the shared failure at the start of an explicit user action. */
+  sharedStorageBlockedEpoch(): number | null { return this.coordinator.blockedEpoch() }
+
+  /** Explicit user retry is the only operation that clears a storage failure. */
+  async retry(retryEpoch: number | null = this.coordinator.blockedEpoch()): Promise<TikTokStoredCredentials | null> {
+    this.failure = null
+    this.retryNativePending = true
+    this.retryEpochPending = retryEpoch
+    return this.load()
+  }
+
+  async save(credentials: Omit<TikTokStoredCredentials, 'savedAt'>, options: { retryNewAuthorizationEpoch?: number | null } = {}): Promise<void> {
+    if (this.failure) throw this.failure
+    // Never replace an existing envelope until it has been decrypted successfully.
+    if (!this.verified) await this.load()
+    if (this.failure) throw this.failure
+    // Another process may have created or replaced the file after our read.
+    let current: string | null
+    try { current = await readFile(this.filePath, 'utf8') }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { this.failure = new TikTokCredentialStorageError(); throw this.failure }
+      current = null
     }
-    const payload: TikTokStoredCredentials = { ...credentials, savedAt: Date.now() }
-    const encrypted = this.backend.encrypt(JSON.stringify(payload))
-    await mkdir(path.dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, encrypted.toString('base64'), { mode: 0o600 })
-    await chmod(this.filePath, 0o600)
+    if (current !== this.verifiedEnvelope) { this.verified = false; await this.load() }
+    let encrypted: Buffer
+    try {
+      // A completed user-initiated first OAuth grant may try the shared gate
+      // once; an existing envelope must have been read successfully first.
+      const retryEpoch = this.verifiedEnvelope === null ? options.retryNewAuthorizationEpoch : undefined
+      this.retryNativePending = false
+      this.retryEpochPending = null
+      encrypted = this.coordinator.encrypt(this.backend, JSON.stringify({ ...credentials, savedAt: Date.now() }), { retry: retryEpoch != null, retryEpoch })
+    } catch {
+      this.failure = new TikTokCredentialStorageError()
+      throw this.failure
+    }
+    const temporary = `${this.filePath}.${randomUUID()}.tmp`
+    try {
+      await mkdir(path.dirname(this.filePath), { recursive: true })
+      await writeFile(temporary, encrypted.toString('base64'), { mode: 0o600 })
+      await chmod(temporary, 0o600)
+      await rename(temporary, this.filePath)
+      this.verified = true
+      this.verifiedEnvelope = encrypted.toString('base64')
+    } catch (error) {
+      await unlink(temporary).catch(() => {})
+      throw error
+    }
   }
 
   async load(): Promise<TikTokStoredCredentials | null> {
+    if (this.failure) throw this.failure
+    if (this.pendingLoad) return this.pendingLoad
+    const pending = this.readCredentials()
+    this.pendingLoad = pending
+    try { return await pending } finally { if (this.pendingLoad === pending) this.pendingLoad = null }
+  }
+
+  private async readCredentials(): Promise<TikTokStoredCredentials | null> {
+    let encoded: string
     try {
-      // A fresh profile has no envelope: avoid consulting Keychain at all.
-      // Only an existing file needs the secure-storage backend.
-      const encoded = await readFile(this.filePath, 'utf8')
-      if (!this.backend.isAvailable()) return null
-      const raw = JSON.parse(this.backend.decrypt(Buffer.from(encoded, 'base64'))) as Record<string, unknown>
-      if (typeof raw.clientId !== 'string' || !raw.clientId) return null
+      encoded = await readFile(this.filePath, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { this.verified = true; this.verifiedEnvelope = null; return null }
+      this.failure = new TikTokCredentialStorageError()
+      throw this.failure
+    }
+    try {
+      const retry = this.retryNativePending
+      const retryEpoch = this.retryEpochPending
+      this.retryNativePending = false
+      this.retryEpochPending = null
+      const plaintext = this.coordinator.decrypt(this.backend, Buffer.from(encoded, 'base64'), { retry, retryEpoch })
+      const raw = JSON.parse(plaintext) as Record<string, unknown>
+      if (typeof raw.clientId !== 'string' || !raw.clientId) throw new Error('invalid envelope')
+      this.verified = true
+      this.verifiedEnvelope = encoded
       return {
         clientId: raw.clientId,
         clientSecret: typeof raw.clientSecret === 'string' ? raw.clientSecret : undefined,
@@ -72,23 +141,23 @@ export class TikTokCredentialStore {
         refreshToken: typeof raw.refreshToken === 'string' ? raw.refreshToken : undefined,
         expiresAt: typeof raw.expiresAt === 'number' ? raw.expiresAt : undefined,
         scope: typeof raw.scope === 'string' ? raw.scope : undefined,
-        // Tolerate absence AND a corrupt claim: drop non-positive/duplicate
-        // entries instead of failing the whole load. An empty result is
-        // omitted entirely so `advertiserIds` stays a real "grant present"
-        // signal for the token resolver.
         ...(normalizeTikTokAdvertiserIds(raw.advertiserIds).length > 0
           ? { advertiserIds: normalizeTikTokAdvertiserIds(raw.advertiserIds) }
           : {}),
         savedAt: typeof raw.savedAt === 'number' ? raw.savedAt : 0
       }
     } catch {
-      return null
+      this.failure = new TikTokCredentialStorageError()
+      throw this.failure
     }
   }
 
   async clear(): Promise<void> {
     try {
       await unlink(this.filePath)
+      this.failure = null
+      this.verified = false
+      this.verifiedEnvelope = null
     } catch {
       // Already absent is the desired outcome.
     }

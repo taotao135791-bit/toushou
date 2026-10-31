@@ -7,6 +7,7 @@ import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
 import { parseFbReportReference } from '@shared/fbReportReference'
 import { validGoogleReportUrl } from '@shared/googleReport'
+import { parseTikTokAdvertiserIdList } from '@shared/tiktokReport'
 import {
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   boardReadingRangeDates,
@@ -362,7 +363,7 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
       }
       case 'tt-reading':
         // Empty advertiserIds is valid: the token's own grant covers all.
-        config = { advertiserIds: ttAdvertiserIds.slice(0, 400), range: ttRange }
+        config = { advertiserIds: ttAdvertiserIds, range: ttRange }
         break
     }
     // Master scope: a reading module saved with a scope that diverges from
@@ -634,6 +635,7 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
               />
             </Field>
             <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.tt.config.advertiserIdsHint')}</p>
+            {(parseTikTokAdvertiserIdList(ttAdvertiserIds) === null || /[\x00-\x1f\x7f]/.test(ttAdvertiserIds) || (ttAdvertiserIds.trim() !== '' && parseTikTokAdvertiserIdList(ttAdvertiserIds)?.length === 0)) && <p role="alert" className="text-[12px] text-red-500">{t('boards.tt.invalidAdvertisers')}</p>}
             <PillField label={t('boards.reading.config.range')}>
               <div className="flex flex-wrap gap-1">
                 {(['1', 'yd', '3', '7', '28', '30'] as const).map((value) => (
@@ -1018,7 +1020,7 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
         </button>
         <button
           onClick={handleSave}
-          disabled={datasetIncomplete}
+          disabled={datasetIncomplete || (widget.type === 'tt-reading' && (parseTikTokAdvertiserIdList(ttAdvertiserIds) === null || /[\x00-\x1f\x7f]/.test(ttAdvertiserIds) || (ttAdvertiserIds.trim() !== '' && parseTikTokAdvertiserIdList(ttAdvertiserIds)?.length === 0)))}
           className="flex items-center gap-1 rounded-full bg-cream px-2.5 py-1 text-[11px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
         >
           <Check size={10} />

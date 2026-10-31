@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { SecretBackend } from '../feishu/FeishuCredentialStore'
+import { SecureStorageCoordinator, SecureStorageUnavailableError, secureStorageCoordinator } from '../secureStorageCoordinator'
 
 /**
  * 文案模型池的自定义供应商存储 — the same encrypted-envelope pattern as the
@@ -76,11 +77,14 @@ const writes = new Map<string, Promise<void>>()
 export class AdsCopyModelStore {
   private readonly filePathOverride?: string
   private readonly backend: SecretBackend
+  private readonly coordinator: SecureStorageCoordinator
+  private failed: Error | null = null
   private resolvedPath: string | null = null
 
-  constructor(options: { filePath?: string; backend?: SecretBackend } = {}) {
+  constructor(options: { filePath?: string; backend?: SecretBackend; coordinator?: SecureStorageCoordinator } = {}) {
     this.filePathOverride = options.filePath
     this.backend = options.backend ?? electronBackend
+    this.coordinator = options.coordinator ?? (options.backend ? new SecureStorageCoordinator() : secureStorageCoordinator)
   }
 
   /** Resolved lazily so module-level construction never races app.getPath. */
@@ -91,25 +95,26 @@ export class AdsCopyModelStore {
     return this.resolvedPath
   }
 
-  async load(): Promise<AdsCopyModelPool> {
+  async load(options: { retry?: boolean } = {}): Promise<AdsCopyModelPool> {
+    if (this.failed && !options.retry) throw this.failed
+    const retryEpoch = options.retry ? this.coordinator.blockedEpoch() : null
     let encoded: string
     try {
       encoded = await readFile(this.filePath, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        this.failed = null
         return { providers: [], pool: [], mode: 'chat' }
       }
       // Transient failures (file lock, permissions) must not masquerade as
       // "no providers stored" — the next mutation would wipe the store.
       throw error
     }
-    // An absent envelope is a fresh pool and must not consult Keychain.
-    // An existing file still fails closed when secure storage is unavailable.
-    if (!this.backend.isAvailable()) {
-      throw new Error('secure credential storage is unavailable on this device')
-    }
+    // A single explicit retry may bypass the shared latch; parsing errors
+    // below remain local to this file and never disable unrelated stores.
     try {
-      const raw = JSON.parse(this.backend.decrypt(Buffer.from(encoded, 'base64'))) as Record<string, unknown>
+      const decrypted = this.coordinator.decrypt(this.backend, Buffer.from(encoded, 'base64'), { retry: options.retry === true, retryEpoch })
+      const raw = JSON.parse(decrypted) as Record<string, unknown>
       if (!Array.isArray(raw.providers) || !Array.isArray(raw.pool) || (raw.mode !== 'chat' && raw.mode !== 'pool')) throw new Error('invalid-envelope')
       const parsedProviders = (raw.providers as Array<Record<string, unknown>>).map((item) => item && typeof item === 'object' ? this.validateProvider(item) : null)
       if (parsedProviders.some((item) => item === null)) throw new Error('invalid-provider')
@@ -120,12 +125,13 @@ export class AdsCopyModelStore {
       if (pool.some(id => typeof id !== 'string' || !known.has(id)) || new Set(pool).size !== pool.length) throw new Error('invalid-pool')
       const poolIds = pool as string[]
       const mode = raw.mode === 'pool' ? 'pool' : 'chat'
+      this.failed = null
       return { providers, pool: poolIds, mode }
     } catch (error) {
-      if (error instanceof Error && error.message.includes('unreadable')) throw error
       // A corrupt envelope cannot prove the pool is empty — refuse instead of
       // letting the next mutation overwrite the user's keys.
-      throw new Error('ads-copy model store is unreadable')
+      this.failed = error instanceof SecureStorageUnavailableError ? error : new Error('ads-copy model store is unreadable')
+      throw this.failed
     }
   }
 
@@ -144,12 +150,11 @@ export class AdsCopyModelStore {
     }
   }
 
-  private async persist(pool: AdsCopyModelPool): Promise<void> {
-    if (!this.backend.isAvailable()) {
-      throw new Error('secure credential storage is unavailable on this device')
-    }
+  private async persist(pool: AdsCopyModelPool, retryEpoch: number | null): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true })
-    const encrypted = this.backend.encrypt(JSON.stringify(pool))
+    // A user action that began after a shared failure may explicitly retry
+    // an initial save; a failure occurring later must not cause a second prompt.
+    const encrypted = this.coordinator.encrypt(this.backend, JSON.stringify(pool), { retry: retryEpoch !== null, retryEpoch })
     const tmp = `${this.filePath}.${randomUUID()}.tmp`
     try {
       await writeFile(tmp, encrypted.toString('base64'), { mode: 0o600, flag: 'wx' })
@@ -172,6 +177,7 @@ export class AdsCopyModelStore {
   async upsert(input: AdsCopyModelInput, id?: string): Promise<AdsCopyModelPool> {
     const checked = validateAdsCopyModelInput(input)
     if ('error' in checked) throw new Error(checked.error)
+    const retryEpoch = this.coordinator.blockedEpoch()
     return this.exclusive(async () => {
       const current = await this.load()
       if (current.providers.length >= MAX_PROVIDERS && !id) {
@@ -188,17 +194,18 @@ export class AdsCopyModelStore {
           pool: current.pool,
           mode: current.mode
         }
-        await this.persist(next)
+        await this.persist(next, retryEpoch)
         return next
       }
       const provider: AdsCopyModelProvider = { id: crypto.randomUUID(), ...checked, createdAt: now }
       const next: AdsCopyModelPool = { providers: [...current.providers, provider], pool: current.pool, mode: current.mode }
-      await this.persist(next)
+      await this.persist(next, retryEpoch)
       return next
     })
   }
 
   async remove(id: string): Promise<AdsCopyModelPool> {
+    const retryEpoch = this.coordinator.blockedEpoch()
     return this.exclusive(async () => {
       const current = await this.load()
       const next: AdsCopyModelPool = {
@@ -206,12 +213,13 @@ export class AdsCopyModelStore {
         pool: current.pool.filter((poolId) => poolId !== id),
         mode: current.mode
       }
-      await this.persist(next)
+      await this.persist(next, retryEpoch)
       return next
     })
   }
 
   async setPool(poolIds: string[]): Promise<AdsCopyModelPool> {
+    const retryEpoch = this.coordinator.blockedEpoch()
     return this.exclusive(async () => {
       const current = await this.load()
       const known = new Set(current.providers.map((provider) => provider.id))
@@ -220,16 +228,17 @@ export class AdsCopyModelStore {
         if (typeof id === 'string' && known.has(id) && !deduped.includes(id)) deduped.push(id)
       }
       const next: AdsCopyModelPool = { providers: current.providers, pool: deduped, mode: current.mode }
-      await this.persist(next)
+      await this.persist(next, retryEpoch)
       return next
     })
   }
 
   async setMode(mode: 'chat' | 'pool'): Promise<AdsCopyModelPool> {
+    const retryEpoch = this.coordinator.blockedEpoch()
     return this.exclusive(async () => {
       const current = await this.load()
       const next: AdsCopyModelPool = { ...current, mode: mode === 'pool' ? 'pool' : 'chat' }
-      await this.persist(next)
+      await this.persist(next, retryEpoch)
       return next
     })
   }

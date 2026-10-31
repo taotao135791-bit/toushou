@@ -1,3 +1,4 @@
+import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
 import type { TikTokStoredCredentials } from './TikTokCredentialStore'
 import { loadTikTokCredentials, type TikTokReportCredentials } from './TikTokConnectionStore'
 import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
@@ -18,7 +19,7 @@ import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
  */
 
 export type ResolvedTikTokToken =
-  | { token: string; source: 'oauth' | 'pasted'; advertiserIds: string[] }
+  | { token: string; source: 'oauth' | 'pasted'; advertiserIds: string[]; selectionExplicit?: boolean }
   | { token: null; source: 'none' }
 
 export interface ResolveTikTokTokenDeps {
@@ -48,9 +49,10 @@ async function defaultOAuthLoader(): Promise<TikTokStoredCredentials | null> {
   if (!oauthLoader) return null
   try {
     return await oauthLoader()
-  } catch {
-    // A broken connector (e.g. unreadable safeStorage envelope) must not take
-    // the reading modules down — the paste fallback stays usable.
+  } catch (error) {
+    if (error instanceof TikTokCredentialStorageError) throw error
+    // Unrelated connector errors may still use the explicitly configured
+    // paste fallback; credential-storage failures must never silently switch.
     return null
   }
 }
@@ -77,19 +79,17 @@ export async function resolveTikTokToken(
   deps: ResolveTikTokTokenDeps = {}
 ): Promise<ResolvedTikTokToken> {
   const loadOAuth = deps.loadOAuthCredentials ?? defaultOAuthLoader
-  // Any OAuth-side failure (loader throw, unreadable envelope) degrades to
-  // "no OAuth token" so the paste fallback stays reachable.
-  const credentials = await loadOAuth().catch(() => null)
+  // Unrelated OAuth loader failures can use the explicit paste fallback;
+  // credential-storage failures remain visible and preserve the old data.
+  const credentials = await loadOAuth().catch((error) => {
+    if (error instanceof TikTokCredentialStorageError) throw error
+    return null
+  })
   const loadPasted = deps.loadPastedCredentials ?? (() => loadTikTokCredentials())
   const resolved = fromOAuth(credentials) ?? fromPasted(loadPasted())
   if (!resolved) return { token: null, source: 'none' }
-  let selected: string[] = []
-  try {
-    selected = (deps.loadSelectedAdvertisers ?? (() => listTikTokReadingAdvertisers()))()
-  } catch {
-    selected = []
-  }
-  return selected.length > 0 ? { ...resolved, advertiserIds: selected } : resolved
+  const selected = (deps.loadSelectedAdvertisers ?? (() => listTikTokReadingAdvertisers()))()
+  return selected.length > 0 ? { ...resolved, advertiserIds: selected, selectionExplicit: true } : resolved.source === 'oauth' ? { ...resolved, selectionExplicit: false } : resolved
 }
 
 /** OAuth credentials for the MCP connection only; pasted Open API tokens are never used. */
@@ -97,7 +97,6 @@ export async function resolveTikTokMcpToken(options: { ignoreSelected?: boolean 
   const credentials = await defaultOAuthLoader()
   const resolved = fromOAuth(credentials)
   if (!resolved) return { token: null, source: 'none' }
-  let selected: string[] = []
-  try { if (!options.ignoreSelected) selected = listTikTokReadingAdvertisers() } catch { /* use grant scope */ }
-  return selected.length ? { ...resolved, advertiserIds: selected } : resolved
+  const selected = options.ignoreSelected ? [] : listTikTokReadingAdvertisers()
+  return selected.length ? { ...resolved, advertiserIds: selected, selectionExplicit: true } : { ...resolved, selectionExplicit: false }
 }

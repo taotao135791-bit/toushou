@@ -22,7 +22,7 @@ import { Session, SessionEvent, ExternalSessionDescriptor } from '../../../share
 import { createSession, getSession, getSessionState, killSession, resumeSession, sendMessage } from '../../omp'
 import { getStore } from '../../store'
 import { FeishuChannel } from './FeishuChannel'
-import { FeishuCredentialStore, FeishuStoredCredentials, maskSecret } from './FeishuCredentialStore'
+import { FEISHU_CREDENTIAL_UNAVAILABLE, FeishuCredentialStore, FeishuStoredCredentials, maskSecret } from './FeishuCredentialStore'
 import { PersonalAgentRegistrationProvider, RegistrationSession } from './FeishuAppRegistration'
 import { FeishuOAuthManager } from './FeishuOAuthManager'
 import { FeishuSessionContext, FeishuSessionRouter, mostRecentPushRoute } from './FeishuSessionRouter'
@@ -196,16 +196,22 @@ export class FeishuConnectionManager {
     if (this.initialized) return
     this.initialized = true
     await mkdir(this.workspacePath, { recursive: true }).catch(() => undefined)
-    const hadStoredCredentials = await this.credentialStore.exists()
-    this.credentials = await this.credentialStore.load()
-    if (hadStoredCredentials && !this.credentials) {
+    const loaded = await this.credentialStore.loadResult()
+    this.credentials = loaded.status === 'ready' ? loaded.credentials : null
+    if (loaded.status === 'unavailable') {
       // A stored envelope that cannot be read (keychain mismatch after a
       // system migration) must not look like "never connected".
-      this.lastError = '已保存的飞书凭据无法读取，请重新扫码连接。'
+      this.lastError = FEISHU_CREDENTIAL_UNAVAILABLE
       this.state = 'failed'
       this.emitState()
       return
     }
+    await this.prepareRestoredConnection()
+    if (!this.credentials) return
+    void this.connectSavedCredentials()
+  }
+
+  private async prepareRestoredConnection(): Promise<void> {
     this.router.setOwnerOpenId(this.credentials?.ownerOpenId)
     this.authorizedCapabilities = await this.oauthManager.authorizedCapabilities()
     this.startWatchdog()
@@ -216,8 +222,6 @@ export class FeishuConnectionManager {
     for (const route of this.router.listRoutes()) {
       if (route.sessionFile) this.sessionOriginRecorder?.(route.sessionFile, 'feishu')
     }
-    if (!this.credentials) return
-    void this.connectSavedCredentials()
   }
 
   getSnapshot(): FeishuConnectionSnapshot {
@@ -265,6 +269,21 @@ export class FeishuConnectionManager {
 
   async beginConnection(brand: LarkBrand = 'feishu'): Promise<FeishuConnectionResult> {
     if (this.state === 'connected') return { ok: true, snapshot: this.getSnapshot() }
+    const retryEpoch = this.credentialStore.blockedEpoch()
+    // A user-initiated retry is the only path that re-attempts a failed
+    // envelope. Never start a fresh registration over an unreadable one.
+    let loaded = await this.credentialStore.loadResult()
+    if (loaded.status === 'unavailable') loaded = await this.credentialStore.retryLoad(retryEpoch)
+    if (loaded.status === 'unavailable') {
+      this.lastError = FEISHU_CREDENTIAL_UNAVAILABLE
+      this.state = 'failed'
+      this.emitState()
+      return { ok: false, error: this.lastError, snapshot: this.getSnapshot() }
+    }
+    if (loaded.status === 'ready' && !this.credentials) {
+      this.credentials = loaded.credentials
+      await this.prepareRestoredConnection()
+    }
     // "Retry" with stored credentials means RECONNECT — a fresh QR
     // registration would silently orphan the existing Feishu app.
     if (this.credentials) {
@@ -301,7 +320,7 @@ export class FeishuConnectionManager {
         userCode: this.registration.userCode,
         expiresAt: Date.now() + this.registration.expiresIn * 1000
       }
-      void this.finishRegistration(this.registration, this.registrationAbort)
+      void this.finishRegistration(this.registration, this.registrationAbort, retryEpoch)
       return { ok: true, snapshot: this.getSnapshot(), registration: view }
     } catch (error) {
       return this.failRegistration(error)
@@ -309,10 +328,17 @@ export class FeishuConnectionManager {
   }
 
   async connectManual(input: FeishuManualCredentials): Promise<FeishuConnectionResult> {
+    const retryEpoch = this.credentialStore.blockedEpoch()
     const appId = input.appId.trim()
     const appSecret = input.appSecret.trim()
     if (!/^cli_[A-Za-z0-9_-]{4,200}$/.test(appId) || appSecret.length < 8 || appSecret.length > 500) {
       return { ok: false, error: '请检查 App ID 和 App Secret。', snapshot: this.getSnapshot() }
+    }
+    if ((await this.credentialStore.loadForNewConnection()).status === 'unavailable') {
+      this.lastError = FEISHU_CREDENTIAL_UNAVAILABLE
+      this.state = 'failed'
+      this.emitState()
+      return { ok: false, error: this.lastError, snapshot: this.getSnapshot() }
     }
     await this.disconnectChannelOnly()
     this.state = 'storing_credentials'
@@ -323,7 +349,7 @@ export class FeishuConnectionManager {
       const stored = { ...next, savedAt: Date.now() }
       this.router.setOwnerOpenId(stored.ownerOpenId)
       await this.connectCredentials(stored)
-      await this.credentialStore.save(next)
+      await this.credentialStore.save(next, { retryEpoch })
       this.credentials = stored
       return { ok: true, snapshot: this.getSnapshot() }
     } catch (error) {
@@ -358,9 +384,10 @@ export class FeishuConnectionManager {
    * opens the OAuth consent page for the full grant.
    */
   async beginPermissionRepair(): Promise<FeishuConnectionResult> {
-    const credentials = await this.credentialStore.load()
+    const loaded = await this.credentialStore.loadResult()
+    const credentials = loaded.status === 'ready' ? loaded.credentials : null
     if (!credentials) {
-      this.lastError = '飞书尚未连接。'
+      this.lastError = loaded.status === 'unavailable' ? FEISHU_CREDENTIAL_UNAVAILABLE : '飞书尚未连接。'
       this.emitState()
       return { ok: false, error: this.lastError, snapshot: this.getSnapshot() }
     }
@@ -438,6 +465,7 @@ export class FeishuConnectionManager {
 
   async beginOAuth(capability: FeishuCapability | 'all'): Promise<FeishuOAuthBeginResult> {
     try {
+      if ((await this.credentialStore.loadResult()).status === 'unavailable') throw new Error(FEISHU_CREDENTIAL_UNAVAILABLE)
       const authorization = await this.oauthManager.begin(capability)
       const view: FeishuOAuthAuthorizationView = { ...authorization, capability }
       return { ok: true, authorization: view, snapshot: this.getSnapshot() }
@@ -471,7 +499,7 @@ export class FeishuConnectionManager {
     return this.getSnapshot()
   }
 
-  private async finishRegistration(session: RegistrationSession, controller: AbortController): Promise<void> {
+  private async finishRegistration(session: RegistrationSession, controller: AbortController, retryEpoch: number | null = null): Promise<void> {
     try {
       const result = await this.registrationProvider.poll(session, controller.signal)
       if (controller.signal.aborted) return
@@ -490,7 +518,7 @@ export class FeishuConnectionManager {
       const stored = { ...credentials, savedAt: Date.now() }
       this.router.setOwnerOpenId(stored.ownerOpenId)
       await this.connectCredentials(stored)
-      await this.credentialStore.save(credentials)
+      await this.credentialStore.save(credentials, { retryEpoch })
       this.credentials = stored
       this.registration = null
       this.registrationAbort = null

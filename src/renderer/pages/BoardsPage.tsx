@@ -57,6 +57,7 @@ import {
   detectPreset,
   findFreeSlot,
   reflowWidgets,
+  ttWindowForMasterRange,
   type BoardPresetId
 } from '@shared/boards'
 import { buildBoardCardsPrompt, buildBoardChatPrompt } from '@shared/boardChat'
@@ -75,6 +76,8 @@ import {
   type BoardReadingRange
 } from '../lib/boardReading'
 import { WidgetBody } from './boards/WidgetBody'
+import { reloadLatestDataset, type DatasetReloadState } from '../lib/latestDatasetReload'
+import { combineTikTokScopes, nextTikTokScopeExpiry, tiktokScopeMatchesDataset, type VerifiedTikTokScope } from '../lib/tiktokDatasetScope'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
 import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
@@ -289,6 +292,10 @@ export default function BoardsPage() {
   const [datasets, setDatasets] = useState<BoardDataset[]>([])
   const [datasetsLoadFailed, setDatasetsLoadFailed] = useState(false)
   const [ttSyncFailures, setTtSyncFailures] = useState<Record<string, boolean>>({})
+  const [ttScopes, setTtScopes] = useState<Record<string, VerifiedTikTokScope | null>>({})
+  const [ttVerifiedSnapshot, setTtVerifiedSnapshot] = useState<{ scope: VerifiedTikTokScope; datasets: BoardDataset[] } | null>(null)
+  const ttScopeGeneration = useRef<Record<string, number>>({})
+  const ttDatasetEpoch = useRef(0)
   /** First snapshot not in yet: cards show skeletons, not "no data" flashes. */
   const [datasetsReady, setDatasetsReady] = useState(false)
   const [datasetsOpen, setDatasetsOpen] = useState(false)
@@ -298,25 +305,82 @@ export default function BoardsPage() {
   const [design, setDesign] = useState<BoardDesignSpec | null>(null)
   const [designOpen, setDesignOpen] = useState(false)
   const boardAreaRef = useRef<HTMLDivElement>(null)
+  const boardScrollRef = useRef<HTMLDivElement>(null)
+  const revealTargetRef = useRef<{ boardId: string; widgetId: string } | null>(null)
+  const [revealTarget, setRevealTarget] = useState<{ boardId: string; widgetId: string } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveFailedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileDragDepth = useRef(0)
-  const datasetRefreshGeneration = useRef(0)
+  const datasetReloadState = useRef<DatasetReloadState>({ generation: 0, latest: null })
   const boardSaveGeneration = useRef(new Map<string, number>())
 
   const current = boards?.find((b) => b.id === currentId) ?? null
+  useEffect(() => {
+    if (!revealTarget || surface !== 'board' || currentId !== revealTarget.boardId) return
+    // Let the grid commit its final position before measuring the card.
+    let secondFrame = 0
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        if (revealTargetRef.current !== revealTarget) return
+        const container = boardScrollRef.current
+        const card = Array.from(container?.querySelectorAll<HTMLElement>('[data-board-widget-id]') ?? [])
+          .find(element => element.dataset.boardWidgetId === revealTarget.widgetId)
+        if (!container || !card) return
+        const top = container.scrollTop + card.getBoundingClientRect().top - container.getBoundingClientRect().top - 12
+        container.scrollTo({ top: Math.max(0, top), behavior: 'auto' })
+        card.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select')?.focus({ preventScroll: true })
+        revealTargetRef.current = null
+        setRevealTarget(null)
+      })
+    })
+    return () => { cancelAnimationFrame(firstFrame); cancelAnimationFrame(secondFrame) }
+  }, [revealTarget, surface, currentId])
   const ttWidgets = current?.widgets.filter(widget => widget.type === 'tt-reading') ?? []
   const hasCurrentTtDataset = current?.widgets.some(widget => {
     const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
     return id === 'TikTok 报表' || datasets.some(dataset => dataset.id === id && dataset.name === 'TikTok 报表')
   }) ?? false
+  const candidateTtScope = useMemo(() => {
+    if (!current) return null
+    const combined = combineTikTokScopes(ttScopes, current.widgets)
+    return combined && (!current.masterScope || ttWindowForMasterRange(current.masterScope.range) === combined.range) ? combined : null
+  }, [current, ttScopes])
+  const currentTtScope = ttVerifiedSnapshot?.scope === candidateTtScope && ttVerifiedSnapshot.datasets === datasets ? candidateTtScope : null
+  const ttScopeConflict = ttWidgets.length > 1 && !candidateTtScope
+
+  useEffect(() => {
+    let active = true
+    const epoch = ttDatasetEpoch.current
+    if (!candidateTtScope) { setTtVerifiedSnapshot(null); return }
+    const dataset = datasets.find((item) => item.name === 'TikTok 报表')
+    if (!dataset) { setTtVerifiedSnapshot(null); return }
+    void tiktokScopeMatchesDataset(candidateTtScope, dataset).then((valid) => {
+      if (active && epoch === ttDatasetEpoch.current) setTtVerifiedSnapshot(valid ? { scope: candidateTtScope, datasets } : null)
+    })
+    return () => { active = false }
+  }, [candidateTtScope, datasets])
   const fallbackStatus = current ? ttSyncFailures[`fallback:${current.id}`] : undefined
   const ttFailed = fallbackStatus === true || ttWidgets.some(widget => ttSyncFailures[widget.id] === true)
   const ttVerifiedThisSession = ttWidgets.length ? ttWidgets.every(widget => ttSyncFailures[widget.id] === false) : fallbackStatus === false
 
   useEffect(() => {
+    if (!currentTtScope) return
+    const now = Date.now()
+    const expiry = nextTikTokScopeExpiry(currentTtScope, now)
+    if (expiry === null) return
+    const timer = setTimeout(() => {
+      setTtScopes((scopes) => {
+        const next = { ...scopes }
+        for (const id of currentTtScope.memberWidgetIds ?? [currentTtScope.widgetId]) next[id] = null
+        return next
+      })
+    }, Math.max(0, expiry - now + 1))
+    return () => clearTimeout(timer)
+  }, [currentTtScope])
+
+  useEffect(() => {
     let alive = true
-    const datasetGeneration = ++datasetRefreshGeneration.current
+    const datasetGeneration = ++datasetReloadState.current.generation
     void (async () => {
       const [boardResult, datasetResult] = await Promise.allSettled([
         window.electronAPI.listBoards(),
@@ -333,7 +397,7 @@ export default function BoardsPage() {
         setCurrentId(null)
         setBoardsLoadFailed(true)
       }
-      if (!alive || datasetGeneration !== datasetRefreshGeneration.current) return
+      if (!alive || datasetGeneration !== datasetReloadState.current.generation) return
       if (datasetResult.status === 'fulfilled') {
         setDatasets(datasetResult.value)
         setDatasetsLoadFailed(false)
@@ -361,6 +425,8 @@ export default function BoardsPage() {
   const datasetRepullTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     const onTtRefreshed = () => {
+      ttDatasetEpoch.current += 1
+      setTtVerifiedSnapshot(null)
       if (datasetRepullTimer.current) clearTimeout(datasetRepullTimer.current)
       datasetRepullTimer.current = setTimeout(() => {
         datasetRepullTimer.current = null
@@ -368,12 +434,36 @@ export default function BoardsPage() {
       }, 400)
     }
     const onSyncStatus = (event: Event) => {
-      const detail = (event as CustomEvent<{id?: string; failed?: boolean}>).detail
-      if (typeof detail?.id === 'string') setTtSyncFailures(current => ({ ...current, [detail.id!]: detail.failed === true }))
+      const detail = (event as CustomEvent<{id?: string; failed?: boolean; scope?: VerifiedTikTokScope | null}>).detail
+      if (typeof detail?.id !== 'string') return
+      const id = detail.id
+      const generation = (ttScopeGeneration.current[id] ?? 0) + 1
+      ttScopeGeneration.current[id] = generation
+      setTtScopes(current => ({ ...current, [id]: null }))
+      setTtSyncFailures(current => ({ ...current, [id]: detail.failed === true }))
+      if (detail.scope) {
+        const scope = detail.scope
+        void refreshDatasets().then((ok) => {
+          if (ttScopeGeneration.current[id] !== generation) return
+          setTtScopes(current => ({ ...current, [id]: ok ? scope : null }))
+          if (!ok) setTtSyncFailures(current => ({ ...current, [id]: true }))
+        })
+      }
     }
+    let refreshingReport = false
+    const offReport = window.electronAPI.onTiktokReportStatus?.((status) => {
+      if (status.refreshing) refreshingReport = true
+      else if (refreshingReport) {
+        refreshingReport = false
+        if (!status.lastError) onTtRefreshed()
+      }
+    })
+    const offDataset = window.electronAPI.onTtReadingDatasetChanged?.(onTtRefreshed)
     window.addEventListener('tt-reading:sync-status', onSyncStatus)
     window.addEventListener('tt-reading:refreshed', onTtRefreshed)
     return () => {
+      offReport?.()
+      offDataset?.()
       window.removeEventListener('tt-reading:sync-status', onSyncStatus)
       window.removeEventListener('tt-reading:refreshed', onTtRefreshed)
       if (datasetRepullTimer.current) clearTimeout(datasetRepullTimer.current)
@@ -494,6 +584,8 @@ export default function BoardsPage() {
   }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, readingPickerOpen, masterMetricsOpen, datasetsOpen, detailOpen, composeOpen])
 
   const switchBoard = (id: string) => {
+    revealTargetRef.current = null
+    setRevealTarget(null)
     closeMenus()
     setPendingConfirm(null)
     setConfigWidgetId(null)
@@ -527,7 +619,7 @@ export default function BoardsPage() {
     }
     const board = createBoard(name)
     setBoards((prev) => [...(prev ?? []), board])
-    setCurrentId(board.id)
+    switchBoard(board.id)
     persist(board)
   }
 
@@ -551,9 +643,9 @@ export default function BoardsPage() {
       return
     }
     const { composed, needsAccounts } = await composeForUser('', preset)
-    const board = { ...createBoard(composed.name), widgets: composed.widgets }
+    const board = { ...createBoard(composed.name), ...(composed.masterScope ? { masterScope: composed.masterScope } : {}), widgets: composed.widgets }
     setBoards((prev) => [...(prev ?? []), board])
-    setCurrentId(board.id)
+    switchBoard(board.id)
     persist(board)
     if (needsAccounts) openReadingPicker()
   }
@@ -569,12 +661,13 @@ export default function BoardsPage() {
     const board = {
       ...createBoard(composed.name),
       ...(description ? { description } : {}),
+      ...(composed.masterScope ? { masterScope: composed.masterScope } : {}),
       widgets: composed.widgets
     }
     setComposeOpen(false)
     setComposeText('')
     setBoards((prev) => [...(prev ?? []), board])
-    setCurrentId(board.id)
+    switchBoard(board.id)
     persist(board)
     if (needsAccounts) openReadingPicker()
   }
@@ -665,6 +758,9 @@ export default function BoardsPage() {
       return { ...b, widgets: [...b.widgets, ms ? applyMasterScope(widget, ms) : widget] }
     })
     if (CONFIG_ON_ADD.includes(type)) setConfigWidgetId(widget.id)
+    const target = { boardId: current.id, widgetId: widget.id }
+    revealTargetRef.current = target
+    setRevealTarget(target)
   }
 
   const openReadingPicker = () => {
@@ -1042,20 +1138,12 @@ export default function BoardsPage() {
 
   // ---------------------------------------------------------------- datasets
 
-  const refreshDatasets = async (): Promise<boolean> => {
-    const generation = ++datasetRefreshGeneration.current
-    try {
-      const next = await window.electronAPI.listBoardDatasets()
-      if (generation !== datasetRefreshGeneration.current) return false
-      setDatasets(next)
-      setDatasetsLoadFailed(false)
-      return true
-    } catch {
-      if (generation !== datasetRefreshGeneration.current) return false
-      setDatasetsLoadFailed(true)
-      return false
-    }
-  }
+  const refreshDatasets = (): Promise<boolean> => reloadLatestDataset(
+    datasetReloadState.current,
+    () => window.electronAPI.listBoardDatasets(),
+    (next) => { setDatasets(next); setDatasetsLoadFailed(false); setDatasetsReady(true) },
+    () => { setDatasetsLoadFailed(true); setDatasetsReady(true) }
+  )
 
   /** Import one picked/dropped file through Main's one-use FileGrant. */
   const importDatasetGrant = async (fileGrantId: string) => {
@@ -1199,6 +1287,7 @@ export default function BoardsPage() {
     return (
     <div
       key={widget.id}
+      data-board-widget-id={widget.id}
       style={widgetCardStyle(effectiveStyle)}
       className="board-widget group/widget relative flex flex-col overflow-hidden border border-line bg-ink-850"
     >
@@ -1258,6 +1347,9 @@ export default function BoardsPage() {
           widget={widget}
           datasets={datasets}
           datasetsLoading={!datasetsReady}
+          ttScope={currentTtScope}
+          ttScopeConflict={ttScopeConflict}
+          ttScopeRequired={ttWidgets.length > 0 || widget.config.requireVerifiedTtScope === true}
           boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
           masterWindow={
@@ -1298,6 +1390,8 @@ export default function BoardsPage() {
           <button
             type="button"
             onClick={() => {
+              revealTargetRef.current = null
+              setRevealTarget(null)
               closeMenus()
               setSurface('today')
             }}
@@ -1484,7 +1578,7 @@ export default function BoardsPage() {
         >
           <Palette size={14} />
         </button>
-        {current && (
+        {surface === 'board' && current && (
           <div className="app-no-drag relative shrink-0">
             <button
               onClick={() => {
@@ -1685,10 +1779,10 @@ export default function BoardsPage() {
 
       <div
         ref={boardAreaRef}
-        style={boardCanvasStyle(mergeBoardStyle(design?.board, current?.style))}
+        style={boardCanvasStyle(mergeBoardStyle(design?.board, surface === 'board' ? current?.style : undefined))}
         className="relative flex-1 overflow-hidden bg-ink-950"
       >
-        <div className="h-full overflow-y-auto">
+        <div ref={boardScrollRef} className="h-full overflow-y-auto">
           {surface === 'today' ? (
             <TodayReading />
           ) : boards === null ? (
@@ -1775,7 +1869,7 @@ export default function BoardsPage() {
           </div>
         )}
 
-        {current && (
+        {surface === 'board' && current && (
           <div className="absolute bottom-4 left-1/2 z-30 -translate-x-1/2">
             {galleryOpen && (
               <div className="fade-in absolute bottom-full left-1/2 mb-2 w-[300px] -translate-x-1/2 rounded-2xl border border-line bg-ink-900 p-2 shadow-pop">

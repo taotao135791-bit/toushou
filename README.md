@@ -8,15 +8,23 @@
 
 ## 下载安装
 
-当前版本 v1.4.10，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.10) 下载：
+当前版本 v1.4.11，前往 [GitHub Release 页面](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.11) 下载：
 
 | 平台 | 在线下载 | 大小 | SHA-256 |
 | --- | --- | --- | --- |
-| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.10/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.10/TouShou-arm64.zip) | 见 Release | 见 Release |
-| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.10/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.10/TouShou-x64.zip) | 见 Release | 见 Release |
-| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.10/TouShou-x64.exe) | 见 Release | 见 Release |
+| macOS（Apple Silicon） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.11/TouShou-arm64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.11/TouShou-arm64.zip) | 见 Release | 见 Release |
+| macOS（Intel） | [下载 DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.11/TouShou-x64.dmg) / [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.11/TouShou-x64.zip) | 见 Release | 见 Release |
+| Windows（x64） | [下载 EXE](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.11/TouShou-x64.exe) | 见 Release | 见 Release |
 
 安装包由 GitHub Actions 在推送版本标签后自动构建，并附带更新清单与 SHA-256 校验文件。
+
+v1.4.11：改善飞书和 TikTok 加密凭据的恢复。安全存储不可用或旧凭据无法读取时保留原文件，暂停重复的自动读取，并提供明确的重试提示；不会将凭据降级为明文或重置系统钥匙串。新建看板后立即打开，TikTok 模板直接提供读数和连接入口；已有看板保持原样。
+
+TikTok 支持多账户巡检：自动分批获取账户信息、逐账户读取报表，并显示进度、失败和未读取情况，支持取消。账户范围、日期及已保存数据会核对后才用于看板汇总。单次最多 500 个账户；本地数据集超过 10,000 行时，巡检继续，数据集保留原值并提示用户。
+
+「今日」页先选择读取单个 TikTok 账户或巡检连接页所选账户；可单独刷新账户并生成脱敏分析草稿。草稿可编辑、复制，需自行检查并发送。应用读取报表本身不调用大模型，只有提交分析对话才消耗模型 token。
+
+macOS 的钥匙串提示也可能由系统或内置浏览器触发；此版本不能保证消除所有系统弹窗。遇到“找不到钥匙串”时，请先取消并检查系统设置，不要直接重置默认钥匙串。
 
 v1.4.10：多平台看板与数据同步更新。TikTok 官方 MCP 读数可同步到看板数据集，按广告主和活动 ID 区分数据；更新指定日期范围时保留其他历史范围，旧格式数据会在迁移时保留独立备份，无法安全保存时会提示。不同账户的币种和统计日期单独标明，缺少可靠口径时不合并金额。Agent 可按会话权限查看和维护本地看板；只读及远程只读会话不能修改看板，需确认的操作会请求批准。看板读数对广告平台使用只读请求，不修改广告、预算或状态。Google 链接读取和 CSV 导入仍有页面及口径限制，**尚未完成真实 Google 账户验收**。
 

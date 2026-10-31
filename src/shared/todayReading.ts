@@ -5,6 +5,13 @@ import { formatTikTokAmount, type TikTokReadingAdvertiser, type TikTokReadingRan
 /** Morning page windows. last3 is intentionally absent: TikTok has no 3-day preset. */
 export type TodayRange = 'today' | 'yesterday' | 'last3' | 'last7' | 'last28' | 'last30'
 
+/** An explicit ID reads only that authorized advertiser; omission uses the connection selection. */
+export interface TikTokTodayReadingInput {
+  range?: string
+  advertiserId?: string
+  requestId?: string
+}
+
 export interface TodayWindow {
   start: string
   end: string

@@ -11,6 +11,7 @@ vi.mock('electron', () => ({
 }))
 
 import { authorizeAndDispatch, dispatch, parseBoardsBridgeRequest, readWorkspaceDataset } from '../boardsBridge'
+import { listBoards } from '../boards'
 
 let dir: string
 
@@ -42,9 +43,12 @@ describe('boards bridge dispatch', () => {
     const board = (created.board as { id: string; widgets: Array<{ type: string; config: Record<string, unknown> }> })
     expect(board.widgets.some((w) => w.type === 'counter')).toBe(true)
     expect(board.widgets.some((w) => w.type === 'chart-line')).toBe(true)
-    const reading = board.widgets.find((w) => w.type === 'tt-reading')
+    const readings = board.widgets.filter((w) => w.type === 'tt-reading')
+    expect(readings).toHaveLength(1)
+    const reading = readings[0]
     expect(reading?.config.advertiserIds).toBe('7300000000001, 7300000000002')
     expect(reading?.config.range).toBe('7')
+    expect(listBoards()[0].masterScope).toMatchObject({ range: 'last7' })
     expect(existsSync(path.join(dir, 'kanban-boards.json'))).toBe(true)
   })
 
@@ -162,21 +166,50 @@ describe('dispatch board_create cross-account', () => {
     expect(counter.config.filterValues).toEqual(['7300000000001', '7300000000002'])
     const reading = board.widgets.find((w) => w.type === 'tt-reading')!
     expect(reading.config.advertiserIds).toBe('7300000000001, 7300000000002')
-    expect(String(created.note)).toContain('2 个广告主合并')
+    expect(String(created.note)).toContain('2 个广告主 ID')
   })
 
-  it('accepts a comma-separated names string and falls back to a scalar for one name', async () => {
-    const created = await dispatch({
-      action: 'board_create',
-      name: 'go photo 逗号',
-      template: 'tiktok',
-      advertiserNames: 'Go Photo US, Go Photo MX'
-    })
-    const board = (created.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> })
-    expect(board.widgets.find((w) => w.type === 'counter')!.config.filterValues).toEqual(['Go Photo US', 'Go Photo MX'])
-    const single = await dispatch({ action: 'board_create', name: '单账户', template: 'tiktok', advertiserNames: 'Go Photo US' })
-    const singleBoard = (single.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> })
-    expect(singleBoard.widgets.find((w) => w.type === 'counter')!.config.filterValue).toBe('Go Photo US')
+  it('rejects names without IDs rather than reading unrelated authorized advertisers', async () => {
+    for (const advertiserNames of ['Go Photo US, Go Photo MX', 'Go Photo US', ['x'.repeat(121)], [123], { unknown: true }]) {
+      expect(await dispatch({ action: 'board_create', name: 'name-only', template: 'tiktok', advertiserNames })).toMatchObject({ ok: false, error: 'advertiser-ids-required', message: expect.stringContaining('数字广告主 ID') })
+    }
+    expect((await dispatch({ action: 'boards_list' })).boards).toEqual([])
+  })
+
+  it('rejects malformed account scopes instead of silently reading all accounts', async () => {
+    for (const advertiserIds of ['bad', '7300000000001,invalid', ',,,', '1'.repeat(14001), ['7300000000001']]) {
+      expect(await dispatch({ action: 'board_create', name: 'bad-scope', template: 'tiktok', advertiserIds })).toMatchObject({ ok: false, error: 'invalid-advertiser-ids', message: expect.stringContaining('数字广告主 ID') })
+    }
+    expect((await dispatch({ action: 'boards_list' })).boards).toEqual([])
+  })
+
+  it('adds exactly one scoped module to a template without a TikTok module', async () => {
+    const created = await dispatch({ action: 'board_create', name: 'custom', template: 'blank', advertiserIds: '7300000000001\n7300000000002' })
+    expect(created.ok).toBe(true)
+    const board = created.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> }
+    const readings = board.widgets.filter(w => w.type === 'tt-reading')
+    expect(readings).toHaveLength(1)
+    expect(readings[0].config.advertiserIds).toBe('7300000000001, 7300000000002')
+  })
+  it('persists a 500-account reading and ID filter without truncation', async () => {
+    const ids = Array.from({ length: 500 }, (_, index) => String(7300000000 + index))
+    const result = await dispatch({ action: 'board_create', name: 'large-scope', template: 'tiktok', advertiserIds: ids.join(', ') })
+    expect(result.ok).toBe(true)
+    const board = listBoards().find(item => item.name === 'large-scope')!
+    const reading = board.widgets.filter(widget => widget.type === 'tt-reading')
+    expect(reading).toHaveLength(1)
+    expect(reading[0].config.advertiserIds).toBe(ids.join(', '))
+    expect(board.widgets.find(widget => widget.type === 'counter')?.config.filterValues).toEqual(ids)
+  })
+  it('keeps unscoped TikTok boards readable using the connection selection or grant', async () => {
+    const created = await dispatch({ action: 'board_create', name: 'unscoped', template: 'tiktok' })
+    expect(created.ok).toBe(true)
+    const board = created.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> }
+    const readings = board.widgets.filter(w => w.type === 'tt-reading')
+    expect(readings).toHaveLength(1)
+    expect(readings[0].config.advertiserIds).toBe('')
+    expect(String(created.note)).toContain('读取连接页所选账户')
+    expect(String(created.note)).toContain('未选择时读取授权下的广告主')
   })
 })
 

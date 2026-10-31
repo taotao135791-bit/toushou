@@ -18,6 +18,7 @@ import { hasAmbiguousAdvertiserFilter, metricCurrencySafety, safeMetricGroups, s
 import { useTweenNumber } from '../../lib/useTweenNumber'
 import { useAppStore } from '../../store'
 import { useT } from '../../i18n'
+import { filterTikTokDatasetByScope, type VerifiedTikTokScope } from '../../lib/tiktokDatasetScope'
 
 /**
  * Per-type widget bodies for the board grid. All painting is hand-rolled SVG
@@ -53,6 +54,9 @@ export interface WidgetBodyProps {
   masterWindow?: { start: string; end: string; latestDay?: boolean }
   /** First dataset snapshot still loading (cards show skeletons). */
   datasetsLoading?: boolean
+  ttScope?: VerifiedTikTokScope | null
+  ttScopeRequired?: boolean
+  ttScopeConflict?: boolean
 }
 
 function configOp(value: unknown): DatasetOp {
@@ -89,16 +93,25 @@ function datasetScopeLabel(
     : `${short(masterWindow.start)}~${short(masterWindow.end)}`
 }
 
+function tikTokScopeLabel(scope: VerifiedTikTokScope): string {
+  const start = scope.windows.map((window) => window.startDate).sort()[0]
+  const end = scope.windows.map((window) => window.endDate).sort().at(-1)
+  return start === end ? start : `${start} – ${end}`
+}
+
 /** Outcome of resolving a widget's dataset binding against the loaded datasets. */
 type Binding =
   | { kind: 'ok'; dataset: BoardDataset; metricIndex: number; dimIndex: number }
-  | { kind: 'missing-dataset' | 'missing-column' | 'incomplete' | 'ambiguous-account' | 'timezone-unavailable' }
+  | { kind: 'missing-dataset' | 'missing-column' | 'incomplete' | 'ambiguous-account' | 'timezone-unavailable' | 'tt-unverified' | 'tt-conflict' }
 
 function resolveBinding(
   widget: BoardWidget,
   datasets: BoardDataset[],
   needsDim: boolean,
-  masterWindow?: { start: string; end: string; latestDay?: boolean }
+  masterWindow?: { start: string; end: string; latestDay?: boolean },
+  ttScope?: VerifiedTikTokScope | null,
+  ttScopeRequired = false,
+  ttScopeConflict = false
 ): Binding {
   const datasetId = configStr(widget.config.datasetId)
   const metric = configStr(widget.config.metric)
@@ -113,6 +126,12 @@ function resolveBinding(
   // not of the whole dataset — otherwise another account's data decides the
   // day and this card goes empty.
   let dataset = found
+  if (found.name === 'TikTok 报表' && (ttScopeRequired || widget.config.requireVerifiedTtScope === true)) {
+    if (!ttScope) return { kind: ttScopeConflict ? 'tt-conflict' : 'tt-unverified' }
+    const scoped = filterTikTokDatasetByScope(found, ttScope)
+    if (!scoped) return { kind: 'tt-unverified' }
+    dataset = scoped
+  }
   const filterColumn = configStr(widget.config.filterColumn)
   const filterValue = configStr(widget.config.filterValue)
   const filterValues = Array.isArray(widget.config.filterValues)
@@ -128,7 +147,7 @@ function resolveBinding(
   }
   // Master-scope window on top: dataset cards follow the board's range; the
   // 今天 scope shows the account's CURRENT stat day (latest among filtered rows).
-  if (masterWindow) {
+  if (masterWindow && !(found.name === 'TikTok 报表' && (ttScopeRequired || widget.config.requireVerifiedTtScope === true))) {
     const scope = filterDatasetRowsByWindowWithStatus(dataset, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
     if (scope.missingTimezone) return { kind: 'timezone-unavailable' }
     dataset = scope.dataset
@@ -166,6 +185,10 @@ function BindingPlaceholder({
         // dataset that does not exist YET (e.g. a fresh TikTok board before the
         // first report pull) — guide the user instead of crying "deleted".
         t('boards.datasets.datasetMissing', { name: configStr(widget.config.datasetId) })
+      : binding.kind === 'tt-conflict'
+        ? t('boards.datasets.ttScopeConflict')
+      : binding.kind === 'tt-unverified'
+        ? t('boards.datasets.ttScopeUnverified')
       : binding.kind === 'timezone-unavailable'
         ? t('boards.datasets.timezoneUnavailable')
       : binding.kind === 'ambiguous-account'
@@ -238,13 +261,20 @@ function CounterBody({
   widget,
   datasets,
   masterWindow,
-  datasetsLoading
+  datasetsLoading,
+  ttScope,
+  ttScopeRequired,
+  ttScopeConflict
 }: {
   widget: BoardWidget
   datasets: BoardDataset[]
   masterWindow?: { start: string; end: string; latestDay?: boolean }
   datasetsLoading?: boolean
+  ttScope?: VerifiedTikTokScope | null
+  ttScopeRequired?: boolean
+  ttScopeConflict?: boolean
 }) {
+  const t = useT()
   const label = typeof widget.config.label === 'string' ? widget.config.label : ''
   const fxRates = useFxRates()
   let value: number | null
@@ -252,11 +282,12 @@ function CounterBody({
   let currencyBadge: string | null = null
   let scopeLabel: string | null = null
   if (widget.config.source === 'dataset') {
-    const binding = resolveBinding(widget, datasets, false, masterWindow)
+    const binding = resolveBinding(widget, datasets, false, masterWindow, ttScope, ttScopeRequired, ttScopeConflict)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
     // The live 口径 label: what window the number actually covers (the
     // widget's own title is static text and must never mislead about scope).
-    scopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
+    scopeLabel = binding.dataset.name === 'TikTok 报表' && ttScope && ttScopeRequired ? tikTokScopeLabel(ttScope) : datasetScopeLabel(binding.dataset, masterWindow)
+    if (!scopeLabel && !masterWindow && binding.dataset.name === 'TikTok 报表') scopeLabel = t('boards.datasets.ttAllHistory')
     // An empty window-filtered slice is "no data in this range", not zero.
     if (binding.dataset.rows.length === 0) value = null
     else {
@@ -431,13 +462,19 @@ function ChartBody({
   bar,
   datasets,
   masterWindow,
-  datasetsLoading
+  datasetsLoading,
+  ttScope,
+  ttScopeRequired,
+  ttScopeConflict
 }: {
   widget: BoardWidget
   bar: boolean
   datasets: BoardDataset[]
   masterWindow?: { start: string; end: string; latestDay?: boolean }
   datasetsLoading?: boolean
+  ttScope?: VerifiedTikTokScope | null
+  ttScopeRequired?: boolean
+  ttScopeConflict?: boolean
 }) {
   const t = useT()
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -452,9 +489,10 @@ function ChartBody({
   let chartCurrency: string | null = null
   let metricName = ''
   if (widget.config.source === 'dataset') {
-    const binding = resolveBinding(widget, datasets, true, masterWindow)
+    const binding = resolveBinding(widget, datasets, true, masterWindow, ttScope, ttScopeRequired, ttScopeConflict)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
-    chartScopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
+    chartScopeLabel = binding.dataset.name === 'TikTok 报表' && ttScope && ttScopeRequired ? tikTokScopeLabel(ttScope) : datasetScopeLabel(binding.dataset, masterWindow)
+    if (!chartScopeLabel && !masterWindow && binding.dataset.name === 'TikTok 报表') chartScopeLabel = t('boards.datasets.ttAllHistory')
     const currency = metricCurrencySafety(binding.dataset, configStr(widget.config.metric))
     if (currency === 'safe') chartCurrency = uniformCurrency(binding.dataset)
     if (currency === 'mixed' || currency === 'unknown') return <div role="status" className="flex h-full items-center justify-center px-2 text-center text-[11px] text-cream-faint">{t('boards.datasets.currencyUnavailable')}</div>
@@ -1045,7 +1083,7 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   )
 }
 
-export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWindow, datasetsLoading }: WidgetBodyProps) {
+export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -1062,13 +1100,13 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWi
     case 'note':
       return <NoteBody widget={widget} />
     case 'counter':
-      return <CounterBody widget={widget} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
+      return <CounterBody widget={widget} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} ttScope={ttScope} ttScopeRequired={ttScopeRequired} ttScopeConflict={ttScopeConflict} />
     case 'gauge':
       return <GaugeBody widget={widget} />
     case 'chart-line':
-      return <ChartBody widget={widget} bar={false} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
+      return <ChartBody widget={widget} bar={false} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} ttScope={ttScope} ttScopeRequired={ttScopeRequired} ttScopeConflict={ttScopeConflict} />
     case 'chart-bar':
-      return <ChartBody widget={widget} bar={true} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} />
+      return <ChartBody widget={widget} bar={true} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} ttScope={ttScope} ttScopeRequired={ttScopeRequired} ttScopeConflict={ttScopeConflict} />
     case 'todo':
       return <TodoBody widget={widget} onConfigChange={onConfigChange} />
     case 'link':

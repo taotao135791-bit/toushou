@@ -82,6 +82,9 @@ export const IPC_CHANNELS = {
   GOOGLE_REPORT_AUTO_FETCH: 'google-report:auto-fetch',
   /** TT 读数 board module: Main resolves the TikTok token + aggregates the report. */
   TT_READING_SUMMARY: 'tt-reading:summary',
+  TT_READING_PROGRESS: 'tt-reading:progress',
+  TT_READING_CANCEL: 'tt-reading:cancel',
+  TT_READING_DATASET_CHANGED: 'tt-reading:dataset-changed',
   /** Today page: current window plus the previous equal window, split in Main. */
   TT_READING_TODAY: 'tt-reading:today',
   /** Advertisers the readings use: the user's own list and what the authorization carried. */

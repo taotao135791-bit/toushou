@@ -95,7 +95,8 @@ export function mergeReportRowsIntoDataset(
   details?: ReadonlyMap<string, TikTokAdvertiserDetail>,
   file?: string,
   explicitScope?: TikTokDatasetScope[],
-  requestVersion?: number
+  requestVersion?: number,
+  beforeCommit?: (candidate: BoardDataset) => void
 ): DatasetImportResult {
   const scopes = explicitScope ?? inferScope(rows)
   if (!scopes.length || new Set(scopes.map((scope) => scope.advertiserId)).size !== scopes.length || scopes.some((scope) => !ID.test(scope.advertiserId) || !validDate(scope.startDate) || !validDate(scope.endDate) || scope.startDate > scope.endDate || (scope.source !== undefined && scope.source !== 'mcp' && scope.source !== 'open-api'))) return { ok: false, error: 'invalid-scope' }
@@ -128,6 +129,7 @@ export function mergeReportRowsIntoDataset(
   const next = datasets.filter((dataset) => dataset !== existing)
   if (legacy && existing) next.push({ ...existing, id: crypto.randomUUID(), name: backupName(datasets) })
   next.push(merged)
+  try { beforeCommit?.(merged) } catch { return { ok: false, error: 'write-failed', detail: 'proof-failed' } }
   try { writeDatasets(file, next) } catch { return { ok: false, error: 'write-failed' } }
   if (requestVersion !== undefined) for (const key of keys) committedVersions.set(key, requestVersion)
   const legacyBackups = next.filter((dataset) => dataset.name.startsWith(LEGACY_PREFIX)).map((dataset) => dataset.name)

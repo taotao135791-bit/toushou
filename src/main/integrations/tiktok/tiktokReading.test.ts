@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 
 // buildTikTokReadingSummary pulls the client + resolver chains, which import
 // electron-backed stores at module level — stub like the sibling suites.
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/toushou-unused' } }))
 
-import { isTikTokTodayFailure } from '../../../shared/todayReading'
+import { isTikTokTodayFailure, todayWindow, previousEqualWindow } from '../../../shared/todayReading'
+import { DATASET_LIMITS } from '../../../shared/datasets'
 import type { TikTokReportRow } from './tiktokClient'
 import {
   buildTikTokReadingSummary,
@@ -15,6 +19,8 @@ import {
   TODAY_ADVERTISER_CAP
 } from './tiktokReading'
 import type { ResolvedTikTokToken } from './resolveTikTokToken'
+import { mergeReportRowsIntoDataset } from './tiktokReportDataset'
+import { listDatasets } from '../../boardDatasets'
 
 const ID_A = '7300000000000000001'
 const ID_B = '7300000000000000002'
@@ -290,16 +296,124 @@ describe('buildTikTokReadingSummary', () => {
     expect(result.totals.spend).toBe(10)
     expect(result.datasetSync).toEqual({ ok: false, error: 'row-limit' })
   })
+  it('attaches proofs only for successfully persisted account windows', async () => {
+    const api = tiktokApi({ report: () => reportResponse([]), advertisers: { [ID_A]: { currency: 'USD' } } })
+    const dataset = { id: 'test-dataset', name: 'TikTok 报表', createdAt: 0, columns: [{ name: '日期', type: 'date' as const }, { name: '广告主ID', type: 'text' as const }], rows: [] }
+    const onDatasetCommitted = vi.fn()
+    const result = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, onDatasetCommitted, persistRows: (_rows, _details, _scopes, beforeCommit) => { beforeCommit?.(dataset); return { ok: true, dataset, truncated: false } } })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.datasetSync).toMatchObject({ ok: true, proofs: [{ advertiserId: ID_A, digest: expect.stringMatching(/^[0-9a-f]{64}$/) }] })
+    const bad = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, onDatasetCommitted, persistRows: (_rows, _details, _scopes, beforeCommit) => { beforeCommit?.({ ...dataset, columns: [] }); return { ok: true, dataset, truncated: false } } })
+    if ('ok' in bad) throw new Error(bad.error)
+    expect(bad.datasetSync).toEqual({ ok: false, error: 'proof-failed' })
+    expect(onDatasetCommitted).toHaveBeenCalledOnce()
+  })
+  it('does not write or broadcast when pre-commit SHA-256 fails', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'tt-proof-failure-'))
+    const file = path.join(dir, 'dataset.json')
+    try {
+      const originalRow = row({ advertiserId: ID_A, campaignId: '100', date: '2026-09-15', spend: 10 })
+      const scope = [{ advertiserId: ID_A, startDate: '2026-09-13', endDate: '2026-09-19' }]
+      expect(mergeReportRowsIntoDataset([originalRow], undefined, file, scope).ok).toBe(true)
+      const before = readFileSync(file, 'utf8')
+      const api = tiktokApi({ report: () => reportResponse([row({ date: '2026-09-15', spend: 99 })]), advertisers: { [ID_A]: { currency: 'USD' } } })
+      const onDatasetCommitted = vi.fn()
+      const result = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20, onDatasetCommitted, hashProofPayload: () => { throw new Error('simulated crypto failure') }, persistRows: (rows, details, scopes, beforeCommit) => mergeReportRowsIntoDataset(rows, details, file, scopes, undefined, beforeCommit) })
+      if ('ok' in result) throw new Error(result.error)
+      expect(result.datasetSync).toEqual({ ok: false, error: 'proof-failed' })
+      expect(readFileSync(file, 'utf8')).toBe(before)
+      expect(onDatasetCommitted).not.toHaveBeenCalled()
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
 
-  it('marks the MCP transport and makes an account cap visible', async () => {
-    const ids = Array.from({ length: 21 }, (_, index) => String(7300000000 + index))
-    const api = tiktokApi({ report: () => reportResponse([]) })
-    const result = await buildTikTokReadingSummary({}, { resolveToken: token(ids), fetchImpl: api.fetchImpl })
+  it('discovers all 51 granted accounts despite an old 50-account OAuth envelope', async () => {
+    const ids = Array.from({ length: 51 }, (_, index) => String(7300000000 + index))
+    const api = tiktokApi({ report: () => reportResponse([]), granted: ids })
+    const result = await buildTikTokReadingSummary({}, { resolveToken: async () => ({ token: 'oauth-token', source: 'oauth', advertiserIds: ids.slice(0, 50), selectionExplicit: false }), fetchImpl: api.fetchImpl, persistRows: () => undefined })
     if ('ok' in result) throw new Error(result.error)
     expect(result.transport).toBe('mcp')
-    expect(result.truncated).toBe(true)
-    expect(api.reports).toHaveLength(20)
-    expect(result.failed).toEqual([{ advertiserId: ids[20], name: null, currency: null, error: 'api', detail: 'account-limit-not-read' }])
+    expect(result.truncated).toBe(false)
+    expect(api.reports).toHaveLength(51)
+    expect(api.infoCalls.map(batch => batch.length)).toEqual([20, 20, 11])
+    expect(result.advertisers.map(account => account.advertiserId)).toEqual(ids)
+    expect(result.failed).toEqual([])
+  })
+  it('reads 50 selected accounts in 20/20/10 batches without broadening the scope', async () => {
+    const ids = Array.from({ length: 50 }, (_, index) => String(7300000000 + index))
+    const api = tiktokApi({ granted: [...ids, '9999999999'], report: () => reportResponse([]) })
+    const result = await buildTikTokReadingSummary({}, { resolveToken: async () => ({ token: 'fake', source: 'oauth', advertiserIds: ids, selectionExplicit: true }), fetchImpl: api.fetchImpl, persistRows: () => undefined })
+    if ('ok' in result) throw new Error(result.error)
+    expect(api.infoCalls.map(batch => batch.length)).toEqual([20, 20, 10])
+    expect(api.reports.map(report => report.get('advertiser_id'))).toEqual(ids)
+    expect(result.advertisers.map(account => account.advertiserId)).toEqual(ids)
+    expect(result.failed).toEqual([])
+  })
+  it('rejects over 500 accounts without silently reading a prefix', async () => {
+    const ids = Array.from({ length: 501 }, (_, index) => String(7300000000 + index))
+    const api = tiktokApi({ report: () => reportResponse([]), granted: ids })
+    const result = await buildTikTokReadingSummary({}, { resolveToken: async () => ({ token: 'fake', source: 'oauth', advertiserIds: [], selectionExplicit: false }), fetchImpl: api.fetchImpl })
+    expect(result).toMatchObject({ ok: false, error: 'api', detail: 'account-safety-limit-exceeded' })
+    expect(api.reports).toHaveLength(0)
+    expect(api.infoCalls).toHaveLength(0)
+  })
+
+  it('keeps completed accounts and marks unattempted accounts after rate limiting', async () => {
+    const ids = Array.from({ length: 25 }, (_, index) => String(7300000000 + index))
+    const advertisers = Object.fromEntries(ids.map(id => [id, { currency: 'USD' }]))
+    const api = tiktokApi({ advertisers, report: id => id === ids[20] ? apiError(40131, 'rate limit') : reportResponse([]) })
+    let persistedIds: string[] = []
+    const progress: Array<{ completed: number; total: number; succeeded: number }> = []
+    const result = await buildTikTokReadingSummary({}, { resolveToken: token(ids), fetchImpl: api.fetchImpl, onProgress: value => progress.push(value), persistRows: (_rows, _details, scopes) => { persistedIds = scopes.map(scope => scope.advertiserId) } })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.advertisers.map(account => account.advertiserId)).toEqual(ids.slice(0, 20))
+    expect(result.failed).toHaveLength(5)
+    expect(result.failed[0]).toMatchObject({ advertiserId: ids[20], error: 'rate-limit' })
+    expect(result.failed.slice(1).map(account => [account.advertiserId, account.detail])).toEqual(ids.slice(21).map(id => [id, 'account-batch-not-attempted']))
+    expect(api.reports).toHaveLength(21)
+    expect(persistedIds).toEqual(ids.slice(0, 20))
+    expect(progress.at(-1)).toEqual({ completed: 21, total: 25, succeeded: 20 })
+  })
+
+  it.each(['summary', 'today'] as const)('cancels %s without touching remaining accounts or persisting partial scope', async (kind) => {
+    const ids = Array.from({ length: 21 }, (_, index) => String(7300000000 + index))
+    const controller = new AbortController()
+    const api = tiktokApi({ report: id => { if (id === ids[2]) controller.abort(); return reportResponse([]) } })
+    const progress: Array<{ completed: number; total: number; succeeded: number }> = []
+    const persistRows = vi.fn()
+    const onDatasetCommitted = vi.fn()
+    const deps = { resolveToken: token(ids), fetchImpl: api.fetchImpl, signal: controller.signal, onProgress: (value: { completed: number; total: number; succeeded: number }) => progress.push(value), persistRows, onDatasetCommitted }
+    const result = kind === 'summary' ? await buildTikTokReadingSummary({}, deps) : await buildTikTokTodayReading({}, deps)
+    expect(result).toEqual({ ok: false, error: 'api', detail: 'reading-cancelled' })
+    expect(api.reports).toHaveLength(3)
+    expect(persistRows).not.toHaveBeenCalled()
+    expect(onDatasetCommitted).not.toHaveBeenCalled()
+    expect(progress).toEqual([{ completed: 0, total: 21, succeeded: 0 }, { completed: 1, total: 21, succeeded: 1 }, { completed: 2, total: 21, succeeded: 2 }])
+  })
+  it.each(['summary', 'today'] as const)('continues %s account reads after the dataset buffer limit without writing a partial table', async (kind) => {
+    const limits = DATASET_LIMITS as unknown as { maxRows: number }
+    const oldLimit = limits.maxRows
+    limits.maxRows = 1
+    try {
+      const ids = [ID_A, ID_B, '7300000000000000003']
+      const advertisers = Object.fromEntries(ids.map(id => [id, { currency: 'USD' }]))
+      const api = tiktokApi({ advertisers, report: () => reportResponse([row({ spend: 10 })]) })
+      const persistRows = vi.fn()
+      const deps = { resolveToken: token(ids), fetchImpl: api.fetchImpl, persistRows }
+      if (kind === 'summary') {
+        const result = await buildTikTokReadingSummary({}, deps)
+        if ('ok' in result) throw new Error(result.error)
+        expect(result.advertisers).toHaveLength(3)
+        expect(result.totals.spend).toBe(30)
+        expect(result.datasetSync).toEqual({ ok: false, error: 'row-limit' })
+      } else {
+        const result = await buildTikTokTodayReading({}, deps)
+        if ('ok' in result) throw new Error(result.error)
+        expect(result.accounts).toHaveLength(3)
+        expect(result.datasetSync).toEqual({ ok: false, error: 'row-limit' })
+      }
+      expect(api.reports).toHaveLength(3)
+      expect(persistRows).not.toHaveBeenCalled()
+    } finally { limits.maxRows = oldLimit }
   })
 
   it('reads only today for the 1-day range', async () => {
@@ -358,7 +472,7 @@ describe('buildTikTokReadingSummary', () => {
   it('stops the whole read when the token itself is rejected', async () => {
     const api = tiktokApi({ report: () => apiError(40105, 'Access token is incorrect or has been revoked') })
     const result = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl })
-    expect(result).toMatchObject({ ok: false, error: 'auth' })
+    expect(result).toMatchObject({ advertisers: [], failed: [{ advertiserId: ID_A, error: 'auth' }, { advertiserId: ID_B, error: 'auth', detail: 'account-batch-not-attempted' }], datasetSync: { ok: false, error: 'no-successful-accounts' } })
     expect(api.reports).toHaveLength(1)
   })
 
@@ -373,9 +487,10 @@ describe('buildTikTokReadingSummary', () => {
   it('reports the shared reason when every advertiser fails on its own', async () => {
     const api = tiktokApi({ report: () => apiError(40001, 'No permission to operate') })
     const result = await buildTikTokReadingSummary({}, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl })
-    expect(result).toMatchObject({ ok: false, error: 'permission' })
-    if (!('ok' in result)) throw new Error('expected a failure')
-    expect(result.detail).toContain('40001')
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.failed).toMatchObject([{ advertiserId: ID_A, error: 'permission' }, { advertiserId: ID_B, error: 'permission' }])
+    expect(result.failed[0].detail).toContain('40001')
+    expect(result.datasetSync).toEqual({ ok: false, error: 'no-successful-accounts' })
     expect(api.reports).toHaveLength(2)
   })
 
@@ -418,6 +533,80 @@ describe('buildTikTokReadingSummary', () => {
 })
 
 describe('buildTikTokTodayReading', () => {
+  it('reads only the requested authorized account without changing the connection selection', async () => {
+    const now = Date.parse('2026-11-01T06:30:00Z')
+    const api = tiktokApi({ granted: [ID_A, ID_B], advertisers: { [ID_A]: { timezone: 'UTC', currency: 'USD' }, [ID_B]: { timezone: 'America/Los_Angeles', currency: 'USD' } }, report: () => reportResponse([]) })
+    const progress: Array<{ completed: number; total: number; succeeded: number }> = []
+    let writtenIds: string[] = []
+    const result = await buildTikTokTodayReading({ range: 'today', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: () => now, onProgress: value => progress.push(value), persistRows: (_rows, _details, scopes) => { writtenIds = scopes.map(scope => scope.advertiserId) } })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.window).toEqual({ start: '2026-10-31', end: '2026-10-31' })
+    expect(result.previousWindow).toEqual({ start: '2026-10-30', end: '2026-10-30' })
+    expect(result.accounts).toMatchObject([{ advertiserId: ID_B, window: result.window, previousWindow: result.previousWindow }])
+    expect(api.infoCalls).toEqual([[ID_B]])
+    expect(api.reports.map(item => [item.get('advertiser_id'), item.get('start_date'), item.get('end_date')])).toEqual([[ID_B, '2026-10-30', '2026-10-31']])
+    expect(writtenIds).toEqual([ID_B])
+    expect(progress).toEqual([{ completed: 0, total: 1, succeeded: 0 }, { completed: 1, total: 1, succeeded: 1 }])
+  })
+
+  it('returns the existing complete-day window for a single-account last-seven-days read', async () => {
+    const now = Date.parse('2026-11-01T06:30:00Z')
+    const api = tiktokApi({ granted: [ID_B], advertisers: { [ID_B]: { timezone: 'America/Los_Angeles', currency: 'USD' } }, report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ range: 'last7', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: () => now, persistRows: () => undefined })
+    if ('ok' in result) throw new Error(result.error)
+    const window = todayWindow('last7', new Date(now))
+    expect(result.window).toEqual(window)
+    expect(result.previousWindow).toEqual(previousEqualWindow(window))
+    expect(result.accounts).toMatchObject([{ advertiserId: ID_B, window, previousWindow: result.previousWindow }])
+  })
+
+  it('updates only the requested account window and preserves other accounts on disk', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'tt-single-account-'))
+    const file = path.join(dir, 'dataset.json')
+    try {
+      const windows = [ID_A, ID_B].map(advertiserId => ({ advertiserId, startDate: '2026-09-06', endDate: '2026-09-19' }))
+      const existing = [ID_A, ID_B].map(advertiserId => row({ advertiserId, campaignId: '100', date: '2026-09-15', spend: 10 }))
+      expect(mergeReportRowsIntoDataset(existing, undefined, file, windows).ok).toBe(true)
+      const api = tiktokApi({ granted: [ID_A, ID_B], advertisers: { [ID_B]: { currency: 'USD' } }, report: () => reportResponse([row({ date: '2026-09-15', spend: 99 })]) })
+      const result = await buildTikTokTodayReading({ range: 'last7', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20, persistRows: (rows, details, scopes) => mergeReportRowsIntoDataset(rows, details, file, scopes) })
+      if ('ok' in result) throw new Error(result.error)
+      expect(result.datasetSync?.ok).toBe(true)
+      const rows = listDatasets(file)[0].rows
+      expect(rows.filter(item => item[11] === ID_A).map(item => item[3])).toEqual([10])
+      expect(rows.filter(item => item[11] === ID_B).map(item => item[3])).toEqual([99])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('fails the selected today account when its timezone is unknown', async () => {
+    const api = tiktokApi({ granted: [ID_B], advertisers: { [ID_B]: { currency: 'USD' } }, report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ range: 'today', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.accounts).toMatchObject([{ advertiserId: ID_B, error: 'api', detail: 'account-timezone-unavailable' }])
+    expect(api.reports).toHaveLength(0)
+  })
+
+  it('rejects malformed or unauthorized single IDs without reading other accounts', async () => {
+    for (const advertiserId of ['', ' 7300001', '7300001\n', '0', 42, null, '9'.repeat(26)]) {
+      const resolveToken = vi.fn(token([ID_A]))
+      expect(await buildTikTokTodayReading({ advertiserId }, { resolveToken })).toMatchObject({ ok: false, error: 'invalid-input', detail: 'invalid-advertiser-id' })
+      expect(resolveToken).not.toHaveBeenCalled()
+    }
+    const api = tiktokApi({ granted: [ID_A], report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    expect(result).toEqual({ ok: false, error: 'permission', detail: 'advertiser-not-authorized' })
+    expect(api.infoCalls).toHaveLength(0)
+    expect(api.reports).toHaveLength(0)
+  })
+
+  it('cancels a single-account read before writing any data', async () => {
+    const controller = new AbortController()
+    const persistRows = vi.fn()
+    const api = tiktokApi({ granted: [ID_A], report: () => { controller.abort(); return reportResponse([]) } })
+    const result = await buildTikTokTodayReading({ advertiserId: ID_A }, { resolveToken: token([ID_B]), fetchImpl: api.fetchImpl, signal: controller.signal, persistRows })
+    expect(result).toEqual({ ok: false, error: 'api', detail: 'reading-cancelled' })
+    expect(persistRows).not.toHaveBeenCalled()
+    expect(api.reports).toHaveLength(1)
+  })
   it('saves complete successful account windows and reports dataset failures independently', async () => {
     const api = tiktokApi({ report: () => reportResponse([]), advertisers: { [ID_A]: { timezone: 'UTC', currency: 'USD' } } })
     const persistRows: NonNullable<import('./tiktokReading').TikTokReadingDeps['persistRows']> = vi.fn(() => ({ ok: false as const, error: 'write-failed' as const }))
@@ -493,18 +682,19 @@ describe('buildTikTokTodayReading', () => {
   it('fails the whole page when the token is rejected', async () => {
     const api = tiktokApi({ report: () => apiError(40104, 'Access token is empty') })
     const result = await buildTikTokTodayReading({}, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl })
-    expect(result).toMatchObject({ ok: false, error: 'auth' })
+    expect(result).toMatchObject({ accounts: [{ advertiserId: ID_A, error: 'auth' }, { advertiserId: ID_B, error: 'auth', detail: 'account-batch-not-attempted' }], datasetSync: { ok: false, error: 'no-successful-accounts' } })
     expect(api.reports).toHaveLength(1)
   })
 
-  it(`reads at most ${TODAY_ADVERTISER_CAP} advertisers and says so`, async () => {
+  it('reads every advertiser in bounded metadata batches', async () => {
     const ids = Array.from({ length: TODAY_ADVERTISER_CAP + 1 }, (_, index) => String(7300000000 + index))
     const api = tiktokApi({ report: () => reportResponse([]) })
     const result = await buildTikTokTodayReading({}, { resolveToken: token(ids), fetchImpl: api.fetchImpl })
     if ('ok' in result) throw new Error(result.error)
-    expect(api.reports).toHaveLength(TODAY_ADVERTISER_CAP)
-    expect(result.truncated).toBe(true)
+    expect(api.reports).toHaveLength(ids.length)
+    expect(api.infoCalls.map(batch => batch.length)).toEqual([20, 1])
+    expect(result.truncated).toBe(false)
     expect(result.accounts).toHaveLength(ids.length)
-    expect(result.accounts.at(-1)).toMatchObject({ advertiserId: ids.at(-1), error: 'api', detail: 'account-limit-not-read' })
+    expect(result.accounts.at(-1)).toMatchObject({ advertiserId: ids.at(-1) })
   })
 })

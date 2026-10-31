@@ -1,3 +1,4 @@
+import { autosendForPrefill } from '../lib/composerAutosend'
 import { useState, useRef, useMemo, useEffect, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -323,7 +324,7 @@ export default memo(function Composer({
     if (composerPrefill == null) return
     commitDraft(composerPrefill)
     setCaret(composerPrefill.length)
-    if (composerAutosend) autosendRef.current = composerPrefill
+    autosendRef.current = autosendForPrefill(composerPrefill, composerAutosend)
     setComposerPrefill(null)
     setComposerAutosend(false)
     requestAnimationFrame(() => {

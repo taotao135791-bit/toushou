@@ -31,6 +31,7 @@ vi.mock('electron', () => ({
 import { TikTokAdsConnectionManager, TikTokFetch } from './TikTokAdsConnectionManager'
 import { TikTokCredentialStore } from './TikTokCredentialStore'
 import { TIKTOK_ADS_SKILL_FILE_NAME, TIKTOK_ADS_SKILL_MARKDOWN } from './tiktokAdsSkill'
+import { SecureStorageCoordinator } from '../secureStorageCoordinator'
 
 const ISSUER = 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer/oauth'
 
@@ -140,6 +141,154 @@ function fakeBackend() {
 }
 
 describe('TikTokAdsConnectionManager connect flow', () => {
+  it('saves a first user OAuth grant when another store had locked shared secure storage', async () => {
+    const coordinator = new SecureStorageCoordinator()
+    const backend = fakeBackend()
+    expect(() => coordinator.decrypt({ ...backend, decrypt: () => { throw new Error('locked') } }, Buffer.from('fake'))).toThrow()
+    const store = new TikTokCredentialStore({ filePath: path.join(paths.userData, 'fresh.bin'), backend, coordinator })
+    const { fetch } = makeFetch({})
+    let opened = ''
+    const manager = new TikTokAdsConnectionManager({ credentialStore: store, fetchImpl: fetch, openExternal: async (url) => { opened = url }, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    expect((await manager.begin()).status).toBe('waiting_for_user')
+    await driveCallback(opened)
+    await vi.waitFor(() => expect(manager.getSnapshot().status).toBe('connected'))
+    expect(coordinator.isBlocked()).toBe(false)
+    expect((await store.load())?.accessToken).toBe('at-1')
+    await manager.disconnect()
+  })
+
+  it('does not retry a new failure after the original shared failure was resolved', async () => {
+    const coordinator = new SecureStorageCoordinator()
+    const base = fakeBackend()
+    const backend = { ...base, encrypt: vi.fn(base.encrypt) }
+    const failBackend = { ...backend, decrypt: () => { throw new Error('native failure') } }
+    expect(() => coordinator.decrypt(failBackend, Buffer.from('fake'))).toThrow()
+    const initialEpoch = coordinator.blockedEpoch()
+    const store = new TikTokCredentialStore({ filePath: path.join(paths.userData, 'fresh.bin'), backend, coordinator })
+    const { fetch } = makeFetch({})
+    let opened = ''
+    const manager = new TikTokAdsConnectionManager({ credentialStore: store, fetchImpl: fetch, openExternal: async (url) => { opened = url }, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    expect((await manager.begin()).status).toBe('waiting_for_user')
+    coordinator.encrypt(backend, 'recovery', { retry: true, retryEpoch: initialEpoch })
+    backend.encrypt.mockClear()
+    expect(() => coordinator.decrypt(failBackend, Buffer.from('fake'))).toThrow()
+    expect(coordinator.blockedEpoch()).not.toBe(initialEpoch)
+    await driveCallback(opened)
+    await vi.waitFor(() => expect(manager.getSnapshot().status).toBe('degraded'))
+    expect(backend.encrypt).not.toHaveBeenCalled()
+    await expect(readFile(path.join(paths.userData, 'fresh.bin'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('does not retry a shared failure that happened after first authorization started', async () => {
+    const coordinator = new SecureStorageCoordinator()
+    const base = fakeBackend()
+    const backend = { ...base, encrypt: vi.fn(base.encrypt) }
+    const store = new TikTokCredentialStore({ filePath: path.join(paths.userData, 'fresh.bin'), backend, coordinator })
+    const { fetch } = makeFetch({})
+    let opened = ''
+    const manager = new TikTokAdsConnectionManager({ credentialStore: store, fetchImpl: fetch, openExternal: async (url) => { opened = url }, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    expect((await manager.begin()).status).toBe('waiting_for_user')
+    expect(() => coordinator.decrypt({ ...backend, decrypt: () => { throw new Error('locked later') } }, Buffer.from('fake'))).toThrow()
+    await driveCallback(opened)
+    await vi.waitFor(() => expect(manager.getSnapshot().status).toBe('degraded'))
+    expect(backend.encrypt).not.toHaveBeenCalled()
+    expect(coordinator.isBlocked()).toBe(true)
+    await expect(readFile(path.join(paths.userData, 'fresh.bin'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('keeps an inaccessible envelope, reports degraded and retries Keychain only on user action', async () => {
+    const file = path.join(paths.userData, 'locked.bin')
+    const existing = Buffer.from(JSON.stringify({ clientId: 'old', accessToken: 'old-token' })).toString('base64')
+    await writeFile(file, existing)
+    let unlocked = false
+    const isAvailable = vi.fn(() => unlocked)
+    const backend = { isAvailable, encrypt: (value: string) => Buffer.from(value), decrypt: (value: Buffer) => value.toString('utf8') }
+    const { fetch, log } = makeFetch({})
+    const manager = new TikTokAdsConnectionManager({ credentialStore: new TikTokCredentialStore({ filePath: file, backend }), fetchImpl: fetch, openExternal: async () => {}, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    await manager.initialize()
+    expect(manager.getSnapshot()).toMatchObject({ status: 'degraded', connected: false })
+    expect(manager.getSnapshot().lastError).toContain('钥匙串')
+    await expect(manager.loadFreshCredentials()).rejects.toThrow('钥匙串')
+    await expect(manager.loadFreshCredentials()).rejects.toThrow('钥匙串')
+    expect(isAvailable).toHaveBeenCalledTimes(1)
+    expect(log).toHaveLength(0)
+    expect(await readFile(file, 'utf8')).toBe(existing)
+    expect((await manager.begin()).status).toBe('degraded')
+    expect(isAvailable).toHaveBeenCalledTimes(2)
+    expect(log).toHaveLength(0)
+    unlocked = true
+    expect((await manager.begin()).status).toBe('connected')
+    expect(isAvailable).toHaveBeenCalledTimes(3)
+    expect(log).toHaveLength(0)
+    expect(await readFile(file, 'utf8')).toBe(existing)
+  })
+
+  it('does not recreate credentials when disconnect races a pending refresh', async () => {
+    const file = path.join(paths.userData, 'refresh-race.bin')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
+    let now = 0, release!: () => void, entered!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const started = new Promise<void>((resolve) => { entered = resolve })
+    const manager = new TikTokAdsConnectionManager({ credentialStore: store, fetchImpl: async () => { entered(); await gate; return jsonResponse({ access_token: 'new', refresh_token: 'new-refresh', expires_in: 3600 }) }, now: () => now, openExternal: async () => {}, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    await manager.initialize()
+    now = 1_900_000
+    const reading = manager.loadFreshCredentials()
+    await started
+    const disconnect = manager.disconnect()
+    release()
+    await disconnect
+    await reading
+    expect(manager.getSnapshot().status).toBe('disconnected')
+    await expect(readFile(file, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('does not restore state when disconnect occurs while refreshed credentials are being saved', async () => {
+    const file = path.join(paths.userData, 'save-race.bin')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const started = new Promise<void>((resolve) => { entered = resolve })
+    const realSave = store.save.bind(store)
+    vi.spyOn(store, 'save').mockImplementation(async (credentials) => { entered(); await gate; await realSave(credentials) })
+    let now = 0
+    const manager = new TikTokAdsConnectionManager({ credentialStore: store, fetchImpl: async () => jsonResponse({ access_token: 'new', refresh_token: 'new-refresh', expires_in: 3600 }), now: () => now, openExternal: async () => {}, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    await manager.initialize()
+    now = 1_900_000
+    const reading = manager.loadFreshCredentials()
+    await started
+    const disconnect = manager.disconnect()
+    release()
+    await disconnect
+    expect(await reading).toBeNull()
+    expect(manager.getSnapshot().status).toBe('disconnected')
+    await expect(readFile(file, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    const mcp = JSON.parse(await readFile(path.join(paths.userData, 'mcp.json'), 'utf8')) as { mcpServers: Record<string, unknown> }
+    expect(mcp.mcpServers['tiktok-ads']).toBeUndefined()
+  })
+
+  it('stops repeated refresh attempts when saving renewed credentials fails', async () => {
+    const file = path.join(paths.userData, 'refresh.bin')
+    let available = true
+    const backend = { isAvailable: vi.fn(() => available), encrypt: (value: string) => Buffer.from(value), decrypt: (value: Buffer) => value.toString('utf8') }
+    const store = new TikTokCredentialStore({ filePath: file, backend })
+    await store.save({ clientId: 'client-1', accessToken: 'old-token', refreshToken: 'old-refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
+    const original = await readFile(file, 'utf8')
+    let now = 0
+    const { fetch, log } = makeFetch({ token: () => { available = false; return jsonResponse({ access_token: 'new-token', refresh_token: 'new-refresh', expires_in: 3600 }) } })
+    const manager = new TikTokAdsConnectionManager({ credentialStore: store, fetchImpl: fetch, now: () => now, openExternal: async () => {}, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    await manager.initialize()
+    now = 1_900_000
+    const concurrent = await Promise.allSettled([manager.loadFreshCredentials(), manager.loadFreshCredentials()])
+    expect(concurrent.every((result) => result.status === 'rejected')).toBe(true)
+    await expect(manager.loadFreshCredentials()).rejects.toThrow('钥匙串')
+    expect(log.filter((entry) => entry.url === `${ISSUER}/token`)).toHaveLength(1)
+    expect(manager.getSnapshot().status).toBe('degraded')
+    expect(await readFile(file, 'utf8')).toBe(original)
+    await manager.disconnect()
+  })
+
   it('walks discovery → registration → PKCE authorize → callback → connected, writing mcp + skill', async () => {
     const { fetch, log } = makeFetch({})
     const { manager, openedUrls } = makeManager({ fetch })

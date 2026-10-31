@@ -142,6 +142,7 @@ import { PackageActionGrantManager, matchesPackageActionTarget } from './package
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from './boards'
 import { AdsCopyModelStore, validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
+import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
 import { getUsdRates } from './integrations/tiktok/fxRates'
@@ -211,6 +212,7 @@ import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConne
 import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { buildTikTokReadingSummary, buildTikTokTodayReading, listTikTokMcpReadingAdvertisers } from './integrations/tiktok/tiktokReading'
+import { TikTokReadingRequests } from './integrations/tiktok/tiktokReadingRequests'
 import { setTikTokReadingAdvertisers } from './integrations/tiktok/tiktokReadingAdvertisers'
 import { setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
 import { importFbReportFile, readFbReportReadings } from './fbReportReadings'
@@ -878,14 +880,31 @@ export function registerIpc() {
   // resolver (OAuth connector's auto-refreshed token first, paste store as
   // fallback) and the aggregation happens in Main. Input is bounded strings
   // only; failures return stable reading error codes (shared/readingError).
-  ipcMain.handle(IPC_CHANNELS.TT_READING_SUMMARY, (_event, raw: unknown) => {
-    const input = (raw ?? {}) as { advertiserIds?: unknown; range?: unknown }
-    return buildTikTokReadingSummary(input)
+  const ttReadingRequests = new TikTokReadingRequests()
+  const runTtReading = async <T>(event: IpcMainInvokeEvent, requestId: unknown, run: (deps: { signal?: AbortSignal; onProgress?: (value: { completed: number; total: number; succeeded: number }) => void; onCommitting?: () => void; onDatasetCommitted?: () => void }) => Promise<T>): Promise<T | { ok: false; error: 'invalid-input' }> => {
+    const onDestroyed = () => ttReadingRequests.cancelOwner(event.sender.id)
+    event.sender.once('destroyed', onDestroyed)
+    try {
+      return await ttReadingRequests.run(event.sender.id, requestId, (deps) => run({ ...deps, onDatasetCommitted: () => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          try { if (!win.isDestroyed()) win.webContents.send(IPC_CHANNELS.TT_READING_DATASET_CHANGED) } catch { /* a closing window must not prevent other notifications */ }
+        }
+      } }), (value) => {
+        if (!event.sender.isDestroyed()) event.sender.send(IPC_CHANNELS.TT_READING_PROGRESS, value)
+      })
+    } finally {
+      event.sender.removeListener('destroyed', onDestroyed)
+    }
+  }
+  ipcMain.handle(IPC_CHANNELS.TT_READING_CANCEL, (event, requestId: unknown) => ttReadingRequests.cancel(event.sender.id, requestId))
+  ipcMain.handle(IPC_CHANNELS.TT_READING_SUMMARY, (event, raw: unknown) => {
+    const input = (raw ?? {}) as { advertiserIds?: unknown; range?: unknown; requestId?: unknown }
+    return runTtReading(event, input.requestId, (deps) => buildTikTokReadingSummary(input, deps))
   })
-  ipcMain.handle(IPC_CHANNELS.TT_READING_TODAY, (_event, raw: unknown) => {
-    const input = (raw ?? {}) as { range?: unknown }
+  ipcMain.handle(IPC_CHANNELS.TT_READING_TODAY, (event, raw: unknown) => {
+    const input = (raw ?? {}) as { range?: unknown; advertiserId?: unknown; requestId?: unknown }
     const range = typeof input.range === 'string' ? input.range.slice(0, 8) : undefined
-    return buildTikTokTodayReading({ range })
+    return runTtReading(event, input.requestId, (deps) => buildTikTokTodayReading({ range, ...(input.advertiserId !== undefined ? { advertiserId: input.advertiserId } : {}) }, deps))
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_LIST, async () => {
     return listTikTokMcpReadingAdvertisers()
@@ -2461,9 +2480,9 @@ export function registerIpc() {
   // Ads-copy model pool (Connections page section). Keys are validated,
   // stored encrypted and NEVER returned to the renderer — only the masked
   // projection crosses the boundary. Test runs a tiny real completion.
-  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_LIST, async () => {
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_LIST, async (_event, retry: unknown) => {
     try {
-      const pool = await adsCopyModelStore.load()
+      const pool = await adsCopyModelStore.load({ retry: retry === true })
       return { mode: pool.mode, providers: AdsCopyModelStore.mask(pool) }
     } catch {
       // Unreadable store: tell the renderer "chat mode, nothing listed" —
@@ -2478,7 +2497,9 @@ export function registerIpc() {
       await adsCopyModelStore.upsert(input)
       return { ok: true }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message.slice(0, 80) : 'save-failed' }
+      const code = error instanceof SecureStorageUnavailableError ? 'secure-storage-unavailable'
+        : error instanceof Error && ['provider-limit', 'not-found'].includes(error.message) ? error.message : 'save-failed'
+      return { ok: false, error: code }
     }
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_REMOVE, async (_event, id: unknown) => {

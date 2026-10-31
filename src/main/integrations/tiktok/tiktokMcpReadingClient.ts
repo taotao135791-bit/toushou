@@ -1,4 +1,4 @@
-import { normalizeTikTokAdvertiserId } from '../../../shared/tiktokReport'
+import { normalizeTikTokAdvertiserId, TIKTOK_ADVERTISER_ID_LIMIT } from '../../../shared/tiktokReport'
 import { proxyFetchFor } from './proxyFetch'
 import { normalizeReportList, TikTokApiError, type TikTokApiFetch, type TikTokReportRow } from './tiktokClient'
 
@@ -6,6 +6,9 @@ import { normalizeReportList, TikTokApiError, type TikTokApiFetch, type TikTokRe
 const ENDPOINT = 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer'
 const PROTOCOL = '2025-03-26'
 const READ_TOOLS = ['auth_advertiser_get', 'advertiser_info_get', 'report_integrated_get'] as const
+/** Bound total work without silently dropping authorised accounts. */
+export const TIKTOK_DISCOVERED_ACCOUNT_LIMIT = TIKTOK_ADVERTISER_ID_LIMIT
+export const TIKTOK_METADATA_BATCH_SIZE = 20
 type ReadTool = typeof READ_TOOLS[number]
 type ObjectValue = Record<string, unknown>
 const asObject = (value: unknown): ObjectValue | null => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : null
@@ -16,14 +19,16 @@ export class TikTokMcpReadingClient {
   private version = PROTOCOL
   private id = 0
   private available = new Set<string>()
-  constructor(private readonly token: string, private readonly fetchImpl: TikTokApiFetch = async (url, init) => (await proxyFetchFor(url, 'tiktok-api'))(url, init)) {}
+  constructor(private readonly token: string, private readonly fetchImpl: TikTokApiFetch = async (url, init) => (await proxyFetchFor(url, 'tiktok-api'))(url, init), private readonly signal?: AbortSignal) {}
 
   private async send(method: string, params: ObjectValue, notification = false): Promise<ObjectValue> {
     const id = ++this.id
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }
     if (this.session) headers['Mcp-Session-Id'] = this.session
     if (method !== 'initialize') headers['MCP-Protocol-Version'] = this.version
-    const response = await this.fetchImpl(ENDPOINT, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }), signal: AbortSignal.timeout(20_000) })
+    const timeout = AbortSignal.timeout(20_000)
+    const signal = this.signal ? AbortSignal.any([this.signal, timeout]) : timeout
+    const response = await this.fetchImpl(ENDPOINT, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }), signal })
     if (!response.ok) throw new TikTokApiError(response.status === 401 ? 40100 : response.status === 403 ? 40001 : response.status === 429 ? 40131 : -1, `TikTok MCP HTTP ${response.status}`)
     this.session = response.headers.get('mcp-session-id') ?? this.session
     if (notification) return {}
@@ -92,11 +97,16 @@ export class TikTokMcpReadingClient {
   async advertisers(): Promise<string[]> {
     const data = await this.call('auth_advertiser_get', {})
     if (!Array.isArray(data.list)) throw new TikTokApiError(-1, 'TikTok MCP 广告主列表无效')
-    const ids = data.list.map((raw) => normalizeTikTokAdvertiserId(asObject(raw)?.advertiser_id)).filter((id): id is string => !!id)
-    return [...new Set(ids)]
+    if (data.list.length > TIKTOK_DISCOVERED_ACCOUNT_LIMIT) throw new TikTokApiError(-1, 'account-safety-limit-exceeded')
+    const page = asObject(data.page_info)
+    if (data.has_more === true || data.next_cursor || (page && ((page.total_page !== undefined && (!Number.isSafeInteger(Number(page.total_page)) || Number(page.total_page) > 1)) || (page.total_number !== undefined && Number(page.total_number) !== data.list.length)))) throw new TikTokApiError(-1, 'account-list-incomplete')
+    const ids = data.list.map((raw) => normalizeTikTokAdvertiserId(asObject(raw)?.advertiser_id))
+    if (ids.some((id) => !id)) throw new TikTokApiError(-1, 'account-list-invalid')
+    return [...new Set(ids as string[])]
   }
 
   async info(ids: string[]): Promise<Array<{ advertiserId: string; name: string | null; currency: string | null; timezone?: string | null }>> {
+    if (ids.length > TIKTOK_METADATA_BATCH_SIZE) throw new TikTokApiError(-1, 'account-metadata-batch-too-large')
     const data = await this.call('advertiser_info_get', { advertiser_ids: ids, fields: ['advertiser_id', 'name', 'currency', 'timezone'] })
     if (!Array.isArray(data.list)) throw new TikTokApiError(-1, 'TikTok MCP 广告主信息无效')
     return data.list.flatMap((raw) => {
@@ -107,7 +117,7 @@ export class TikTokMcpReadingClient {
     })
   }
 
-  async report(advertiserId: string, startDate: string, endDate: string): Promise<TikTokReportRow[]> {
+  async report(advertiserId: string, startDate: string, endDate: string, maxRows = 20_000): Promise<TikTokReportRow[]> {
     const rows: TikTokReportRow[] = []
     const seenRows = new Set<string>()
     // TikTok's stat_time_day limit is 30 days; compare windows can span 56.
@@ -124,8 +134,10 @@ export class TikTokMcpReadingClient {
       for (let page = 1; page <= 100; page++) {
         const data = await this.call('report_integrated_get', { advertiser_id: advertiserId, report_type: 'BASIC', data_level: 'AUCTION_CAMPAIGN', dimensions: ['campaign_id', 'stat_time_day'], metrics: ['campaign_name', 'spend', 'impressions', 'clicks', 'conversion'], start_date: date(start), end_date: date(segmentEnd), page, page_size: 200 })
         if (!Array.isArray(data.list)) throw new TikTokApiError(-1, 'TikTok MCP 报表列表无效')
+        if (data.list.length > 200) throw new TikTokApiError(-1, 'TikTok MCP 报表分页超过请求大小')
         const normalized = normalizeReportList(data)
         if (normalized.length !== data.list.length) throw new TikTokApiError(-1, 'TikTok MCP 报表行格式无效')
+        if (rows.length + normalized.length > maxRows) throw new TikTokApiError(-1, 'report-row-limit')
         for (let i = 0; i < normalized.length; i++) {
           const row = normalized[i]
           const dimensions = asObject(asObject(data.list[i])?.dimensions)

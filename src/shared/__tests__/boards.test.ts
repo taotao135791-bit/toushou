@@ -597,9 +597,10 @@ describe('overseasAdsPreset', () => {
 describe('tiktokAdsPreset', () => {
   const t = (key: string) => key
 
-  it('builds eight dataset-bound widgets and passes validation', () => {
+  it('places the actionable TikTok reading above the eight existing widgets and passes validation', () => {
     const widgets = tiktokAdsPreset(t)
     expect(widgets.map((w) => w.type)).toEqual([
+      'tt-reading',
       'counter',
       'counter',
       'counter',
@@ -610,11 +611,16 @@ describe('tiktokAdsPreset', () => {
       'note'
     ])
     const board = { ...createBoard('TikTok', 1), widgets }
-    expect(validateBoard(board)?.widgets).toHaveLength(8)
+    expect(widgets[0]).toMatchObject({ title: 'boards.reading.ttModuleName', layout: { x: 0, y: 0, w: 12, h: 6 }, config: { advertiserIds: '', range: '7' } })
+    expect(validateBoard(board)?.widgets).toHaveLength(9)
     // composeBoard routes the chip-selected preset to the same widgets.
     const composed = composeBoard('tiktok ads', t, 'tiktok')
+    expect(composed.masterScope).toEqual({ range: 'last7', metrics: ['spend', 'cpi'] })
+    const restored = validateBoard({ ...createBoard(composed.name, 1), ...composed })
+    expect(restored?.masterScope).toEqual(composed.masterScope)
+    expect(restored?.widgets.filter((widget) => widget.config.source === 'dataset').every((widget) => widget.config.requireVerifiedTtScope === true)).toBe(true)
     expect(composed.name).toBe('boards.preset.tiktok')
-    expect(composed.widgets).toHaveLength(8)
+    expect(composed.widgets).toHaveLength(9)
   })
 
   it('keeps the grid clean: every widget inside 12 cols and no overlaps', () => {
@@ -640,10 +646,10 @@ describe('tiktokAdsPreset', () => {
   it('binds the four KPI counters to the TikTok dataset across the top row', () => {
     const counters = tiktokAdsPreset(t).filter((w) => w.type === 'counter')
     expect(counters.map((w) => w.layout)).toEqual([
-      { x: 0, y: 0, w: 3, h: 3 },
-      { x: 3, y: 0, w: 3, h: 3 },
-      { x: 6, y: 0, w: 3, h: 3 },
-      { x: 9, y: 0, w: 3, h: 3 }
+      { x: 0, y: 6, w: 3, h: 3 },
+      { x: 3, y: 6, w: 3, h: 3 },
+      { x: 6, y: 6, w: 3, h: 3 },
+      { x: 9, y: 6, w: 3, h: 3 }
     ])
     expect(counters.map((w) => w.title)).toEqual([
       'boards.preset.tiktok.kpiSpend',
@@ -653,10 +659,10 @@ describe('tiktokAdsPreset', () => {
     ])
     // Binding contract: the dataset NAME lives in the datasetId field.
     expect(counters.map((w) => w.config)).toEqual([
-      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '消耗', op: 'sum' },
-      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '点击', op: 'sum' },
-      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '点击率', op: 'avg' },
-      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '转化', op: 'sum' }
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', requireVerifiedTtScope: true, metric: '消耗', op: 'sum' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', requireVerifiedTtScope: true, metric: '点击', op: 'sum' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', requireVerifiedTtScope: true, metric: '点击率', op: 'avg' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', requireVerifiedTtScope: true, metric: '转化', op: 'sum' }
     ])
   })
 
@@ -669,9 +675,9 @@ describe('tiktokAdsPreset', () => {
       ['chart-line', 'boards.preset.tiktok.conversionTrend']
     ])
     expect(charts.map((w) => w.layout)).toEqual([
-      { x: 0, y: 3, w: 6, h: 6 },
-      { x: 6, y: 3, w: 6, h: 6 },
-      { x: 0, y: 9, w: 6, h: 6 }
+      { x: 0, y: 9, w: 6, h: 6 },
+      { x: 6, y: 9, w: 6, h: 6 },
+      { x: 0, y: 15, w: 6, h: 6 }
     ])
     for (const chart of charts) {
       expect(chart.config.source).toBe('dataset')
@@ -690,7 +696,7 @@ describe('tiktokAdsPreset', () => {
   it('seeds the data-source note below the conversion trend', () => {
     const note = tiktokAdsPreset(t).find((w) => w.type === 'note')
     expect(note?.title).toBe('boards.preset.tiktok.note')
-    expect(note?.layout).toEqual({ x: 6, y: 9, w: 6, h: 6 })
+    expect(note?.layout).toEqual({ x: 6, y: 15, w: 6, h: 6 })
     expect(typeof note?.config.text).toBe('string')
     expect(note?.config.text).not.toBe('')
   })

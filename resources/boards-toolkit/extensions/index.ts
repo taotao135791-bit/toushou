@@ -26,7 +26,9 @@ async function call(params: Record<string, unknown>): Promise<string> {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(params)
     })
-    return JSON.stringify(await response.json()).slice(0, 24_000)
+    // Main already returns bounded JSON with explicit truncation metadata;
+    // slicing here would corrupt JSON and hide a large account scope.
+    return JSON.stringify(await response.json())
   } catch {
     return JSON.stringify({ ok: false, error: '看板工具暂时不可用' })
   }
@@ -84,7 +86,7 @@ export default function boardsTools(api: ToolHostApi): void {
       '新建本机看板并回报结果；需要确认时等待用户批准，不触碰广告平台。\n' +
       '用户没提具体要求时按模板标配建：\n' +
       Object.entries(TEMPLATE_HELP).map(([id, help]) => `- ${id}：${help}`).join('\n') +
-      '\n用户提到 TikTok 广告主（如"看 miclip 数据"）时传 advertiserIds（逗号分隔；不知道 ID 就先用 toushou_boards_list 或连接信息查询，或留空让模块读取全部授权广告主）。' +
+      '\n用户指定 TikTok 广告主时，必须先通过 TikTok 连接信息查询其数字 ID，并以逗号分隔的字符串传 advertiserIds；不知道 ID 时先查明或请用户提供，不能留空代替指定范围。未指定账户时留空会读取连接页所选账户，未选择时读取授权账户。' +
       '\n建板返回 datasetReady=false 时，立即调用 touhou_tiktok_update 拉取报表（需要已连接 TikTok），指标卡和趋势图会自动填充，然后如实向用户汇报。',
     parameters: {
       type: 'object',
@@ -92,12 +94,12 @@ export default function boardsTools(api: ToolHostApi): void {
         name: { type: 'string', description: '看板名称，如 "miclip"；缺省用模板名' },
         template: { type: 'string', enum: TEMPLATES, description: '标准模板，缺省 tiktok' },
         description: { type: 'string', description: '可选看板说明' },
-        advertiserIds: { type: 'string', description: '可选：TikTok 广告主 ID（逗号分隔），绑定 TT 读数模块' },
-        advertiserName: { type: 'string', description: '可选：单个广告主名称（与 TikTok 后台完全一致）。传入后看板所有指标卡/图表只统计该广告主' },
+        advertiserIds: { type: 'string', description: '指定账户时必填：数字广告主 ID 字符串，多个 ID 用逗号分隔；读数与数据卡都按这些 ID 筛选。' },
+        advertiserName: { type: 'string', description: '可选显示名称；提供名称时也必须提供对应 advertiserIds，数据卡按 ID 而不是名称筛选。' },
         advertiserNames: {
           type: 'array',
           description:
-            '跨账户合并看板：多个广告主名称数组（也可用逗号分隔字符串）。例：用户说"go photo 所有账户合一起做一个看板"时，先用 tiktok-ads 的 auth_advertiser_get + advertiser_info_get 找出名称匹配的全部账户，把名称传这里（ID 传 advertiserIds 给读数模块）。同市场账户通常同币种；币种不同时金额合计卡会显示 — 并标 MIX（不可跨币种相加），计数指标正常合计'
+            '可选显示名称数组，必须同时提供对应 advertiserIds。先从 TikTok 授权账户中核实 ID；读数与数据卡均按 ID 筛选。币种不同时金额合计卡会显示 — 并标 MIX，计数指标正常合计。'
         }
       },
       required: []
