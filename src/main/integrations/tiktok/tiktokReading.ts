@@ -269,7 +269,25 @@ export async function listTikTokMcpReadingAdvertisers(deps: TikTokReadingDeps = 
   const client = new TikTokMcpReadingClient(resolved.token, deps.fetchImpl)
   await client.initialize()
   const granted = await client.advertisers()
-  return { selected, granted }
+  const names = new Map<string, string>()
+  for (let index = 0; index < granted.length; index += TIKTOK_METADATA_BATCH_SIZE) {
+    const batch = granted.slice(index, index + TIKTOK_METADATA_BATCH_SIZE)
+    try {
+      const seen = new Map<string, string | null>()
+      const conflicts = new Set<string>()
+      for (const account of await client.info(batch)) {
+        if (seen.has(account.advertiserId) && seen.get(account.advertiserId) !== account.name) conflicts.add(account.advertiserId)
+        else seen.set(account.advertiserId, account.name)
+      }
+      for (const [id, name] of seen) if (name && !conflicts.has(id)) names.set(id, name)
+    } catch (error) {
+      // Auth, network and rate-limit failures apply globally; do not cause
+      // more requests, and leave the affected names explicitly unknown.
+      if (WHOLE_READ_FAILURES.has(classifyTikTokError(error).code)) break
+    }
+  }
+  const accounts = granted.map(advertiserId => ({ advertiserId, name: names.get(advertiserId) ?? null }))
+  return { selected, granted, accounts, namesIncomplete: accounts.some(account => account.name === null) }
 }
 
 /** Only a managed OAuth grant can authenticate the app-owned MCP server. */

@@ -21,7 +21,7 @@ Object.assign(window, {
     listBoards: async () => [existing],
     listBoardDatasets: async () => { if (scenario.datasetFail) throw new Error('synthetic dataset failure'); return scenario.datasets },
     listFbReadingAccounts: async () => [],
-    ttReadingAdvertisers: async () => ({ selected: [], granted: ['7300000000000000001', '7300000000000000002'] }),
+    ttReadingAdvertisers: async () => ({ selected: [], granted: ['7300000000000000001', '7300000000000000002'], accounts: [{ advertiserId: '7300000000000000001', name: 'Fixture Shared' }, { advertiserId: '7300000000000000002', name: 'Fixture Shared' }], namesIncomplete: false }),
     listFbReadings: async () => [],
     googleReportReadingGet: async () => null,
     ttReadingToday: async (input: { requestId?: string; range?: string; advertiserId?: string }) => { scenario.todayInputs.push(input); scenario.todayRequest = input.requestId ?? null; if (scenario.todayPending || (input.advertiserId && scenario.singlePending)) return new Promise((resolve) => { if (input.requestId) pendingRequests.set(input.requestId, resolve) }); return (input.advertiserId ? input.range === 'today' && scenario.singleTodayResult ? scenario.singleTodayResult : scenario.singleResult : input.range === 'today' && scenario.todayAlternateResult ? scenario.todayAlternateResult : scenario.todayResult) ?? { ok: false, error: 'no-credentials' } },

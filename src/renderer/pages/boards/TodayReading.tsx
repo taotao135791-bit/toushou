@@ -482,7 +482,8 @@ export function TodayReading() {
             title: t('boards.today.ttPicker.title'), description: t('boards.today.ttPicker.description'),
             accountLabel: t('boards.today.ttPicker.accountLabel'), accountPlaceholder: t('boards.today.ttPicker.placeholder'),
             manualHint: t('boards.today.ttPicker.manualHint'), loading: t('boards.today.ttPicker.loading'), empty: t('boards.today.ttPicker.empty'),
-            discoveryError: t('boards.today.ttPicker.error'), retry: t('boards.today.ttPicker.retry'), invalidId: t('boards.today.ttPicker.invalid'),
+            discoveryError: t('boards.today.ttPicker.error'), namesIncomplete: t('boards.today.ttPicker.namesIncomplete'), noMatch: t('boards.today.ttPicker.noMatch'),
+            retry: t('boards.today.ttPicker.retry'), invalidId: t('boards.today.ttPicker.invalid'),
             readOne: t('boards.today.ttPicker.readOne'), readAll: t('boards.today.ttPicker.readAll'), readAllHint: t('boards.today.ttPicker.readAllHint')
           }}
         />

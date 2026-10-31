@@ -1,26 +1,44 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { TikTokAccountPicker, discoverPickerAccounts, parsePickerAccount, type TikTokAccountPickerLabels } from './TikTokAccountPicker'
+import { TikTokAccountOptions, TikTokAccountPicker, discoverPickerAccounts, filterPickerAccounts, parsePickerAccount, type TikTokAccountPickerLabels } from './TikTokAccountPicker'
 
 const labels: TikTokAccountPickerLabels = {
   title: 'Choose a scope', description: 'Choose one account or the connection scope.',
-  accountLabel: 'Account ID', accountPlaceholder: 'Enter an ID', manualHint: 'Authorization is checked on reading.',
-  loading: 'Discovering', empty: 'No accounts found', discoveryError: 'Discovery failed', retry: 'Retry',
+  accountLabel: 'Account name or ID', accountPlaceholder: 'Search or enter an ID', manualHint: 'Authorization is checked on reading.',
+  loading: 'Discovering', empty: 'No accounts found', discoveryError: 'Discovery failed', namesIncomplete: 'Some names unavailable', noMatch: 'No matches', retry: 'Retry',
   invalidId: 'Invalid account ID', readOne: 'Read one', readAll: 'Inspect selected accounts', readAllHint: 'Uses the connection scope.'
 }
 
 describe('TikTok account picker', () => {
-  it('discovers only valid authorized IDs and does not use the saved connection selection', async () => {
-    const discover = vi.fn(async () => ({ selected: ['999'], granted: ['101', '202', '101'] }))
-    expect(await discoverPickerAccounts(discover)).toEqual(['101', '202'])
+  it('maps display names to authoritative granted string IDs and supports name/ID search', async () => {
+    const discover = vi.fn(async () => ({ selected: ['999'], granted: ['101', '202', '303'], accounts: [
+      { advertiserId: '101', name: 'Fixture Alpha' }, { advertiserId: '202', name: 'Fixture Alpha' }, { advertiserId: '303', name: null }, { advertiserId: '999', name: 'Not Granted' }
+    ], namesIncomplete: true }))
+    const found = await discoverPickerAccounts(discover)
+    expect(found).toEqual({ accounts: [{ advertiserId: '101', name: 'Fixture Alpha' }, { advertiserId: '202', name: 'Fixture Alpha' }, { advertiserId: '303', name: null }], namesIncomplete: true })
+    expect(filterPickerAccounts(found.accounts, 'ALPHA').map(account => account.advertiserId)).toEqual(['101', '202'])
+    expect(filterPickerAccounts(found.accounts, '20').map(account => account.advertiserId)).toEqual(['202'])
+    expect(filterPickerAccounts(found.accounts, 'not granted')).toEqual([])
+    expect(parsePickerAccount('Fixture Alpha')).toBeNull()
     expect(discover).toHaveBeenCalledOnce()
   })
-  it('reports discovery failures or malformed lists rather than silently dropping accounts', async () => {
+  it('shows IDs for missing, conflicting or unavailable names and allows retry at the caller', async () => {
+    const found = await discoverPickerAccounts(async () => ({ selected: [], granted: ['101', '202', '303'], accounts: [
+      { advertiserId: '101', name: 'One' }, { advertiserId: '101', name: 'Different' }, { advertiserId: '202', name: null }
+    ], namesIncomplete: true }))
+    expect(found).toEqual({ accounts: [{ advertiserId: '101', name: null }, { advertiserId: '202', name: null }, { advertiserId: '303', name: null }], namesIncomplete: true })
+    expect(await discoverPickerAccounts(async () => ({ selected: [], granted: ['101'] }))).toEqual({ accounts: [{ advertiserId: '101', name: null }], namesIncomplete: true })
+    const html = renderToStaticMarkup(createElement(TikTokAccountOptions, { accounts: [{ advertiserId: '101', name: 'Fixture Alpha' }, { advertiserId: '202', name: null }], selectedId: null, busy: false, onSelect: () => {} }))
+    expect(html).toContain('Fixture Alpha')
+    expect(html).toContain('101')
+    expect(html).toContain('202')
+  })
+  it('reports invalid grant lists instead of silently broadening scope', async () => {
     await expect(discoverPickerAccounts(async () => { throw new Error('unavailable') })).rejects.toThrow()
     await expect(discoverPickerAccounts(async () => ({ selected: [], granted: ['101', 'bad'] }))).rejects.toThrow('invalid-account-discovery')
     await expect(discoverPickerAccounts(async () => ({ selected: [], granted: Array.from({ length: 501 }, (_, i) => String(i + 1)) }))).rejects.toThrow('invalid-account-discovery')
-    expect(await discoverPickerAccounts(async () => ({ selected: [], granted: [] }))).toEqual([])
+    expect(await discoverPickerAccounts(async () => ({ selected: [], granted: [] }))).toEqual({ accounts: [], namesIncomplete: false })
   })
   it('accepts a single numeric string and rejects malformed or multiple IDs', () => {
     expect(parsePickerAccount(' 7300001 ')).toBe('7300001')

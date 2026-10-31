@@ -10,7 +10,9 @@ app.whenReady().then(async () => {
     const html = path.join(dir, 'index.html')
     const gridCss = fs.readFileSync(require.resolve('react-grid-layout/css/styles.css'), 'utf8')
     fs.writeFileSync(html, `<!doctype html><html><head><meta charset="utf-8"><style>${gridCss}.react-grid-item{transition:none!important}.widget-config{position:absolute;inset:0;overflow:auto;background:white}</style></head><body><div id="root"></div><script src="fixture.js"></script></body></html>`)
-    win = new BrowserWindow({ show: false, width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
+    // Exercise visible-window rendering: hidden Windows windows may not
+    // produce compositor frames even with background throttling disabled.
+    win = new BrowserWindow({ show: true, width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
     const wc = win.webContents
     wc.on('console-message', (_event, _level, message) => console.log('RENDERER ' + message))
     await win.loadFile(html)
@@ -62,8 +64,15 @@ app.whenReady().then(async () => {
     phase = 'after-today'
     const returned = await inspect()
     const returnedTodayReads = await wc.executeJavaScript(`window.boardFixture.scenario.todayInputs.length`)
-    await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;s.singleResult={ok:false,error:'network'};const e=document.querySelector('[placeholder="Choose or enter an advertiser ID"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'7300000000000000001');e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;s.singleResult={ok:false,error:'network'};const e=document.querySelector('[placeholder="Search by name or enter advertiser ID"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'0000000000000002');e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
     await wait()
+    const searchById = await wc.executeJavaScript(`[...document.querySelectorAll('button[aria-pressed]')].map(e=>e.innerText)`)
+    await wc.executeJavaScript(`(() => {const e=document.querySelector('[placeholder="Search by name or enter advertiser ID"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'Fixture Shared');e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await wait()
+    const searchByName = await wc.executeJavaScript(`[...document.querySelectorAll('button[aria-pressed]')].map(e=>e.innerText)`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('button[aria-pressed]')].find(e=>e.innerText.includes('7300000000000000001')).click()`)
+    await wait()
+    const chosenAccountId = await wc.executeJavaScript(`document.querySelector('[placeholder="Search by name or enter advertiser ID"]').value`)
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Read this account').click()`)
     await wait()
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Retry').click()`)
@@ -138,18 +147,26 @@ app.whenReady().then(async () => {
     await wait()
     await wc.executeJavaScript(`(() => {const grid=document.querySelector('.react-grid-layout');const viewport=grid.parentElement.parentElement; viewport.style.height='230px';viewport.style.overflowY='auto';viewport.scrollTop=0})()`)
     const addWidget = async (name) => {
+      const existingIds = await wc.executeJavaScript(`[...document.querySelectorAll('.react-grid-layout [data-board-widget-id]')].map(e=>e.dataset.boardWidgetId)`)
       await wc.executeJavaScript(`document.querySelector('[title="Add widget"]').click()`)
       await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify(name)}).click()`)
-      await wait()
-      return wc.executeJavaScript(`(() => {const grid=document.querySelector('.react-grid-layout');const viewport=grid.parentElement.parentElement;const board=window.boardFixture.saved.at(-1);const id=board.widgets.at(-1).id;const card=[...grid.querySelectorAll('[data-board-widget-id]')].find(e=>e.dataset.boardWidgetId===id);const input=card?.querySelector('.widget-config input');const r=card?.getBoundingClientRect();const v=viewport.getBoundingClientRect();const i=input?.getBoundingClientRect();return {scrolled:viewport.scrollTop>0,cardVisible:!!r&&r.top>=v.top-1&&r.top<v.bottom,inputVisible:!!i&&i.top>=v.top&&i.top<v.bottom,focused:document.activeElement===input}})()`)
+      const deadline = Date.now() + 6000
+      let state
+      do {
+        state = await wc.executeJavaScript(`(() => {const grid=document.querySelector('.react-grid-layout');const viewport=grid?.parentElement?.parentElement;const card=[...(grid?.querySelectorAll('[data-board-widget-id]')??[])].find(e=>!${JSON.stringify(existingIds)}.includes(e.dataset.boardWidgetId));const input=card?.querySelector('.widget-config input');const r=card?.getBoundingClientRect();const v=viewport?.getBoundingClientRect();const i=input?.getBoundingClientRect();return {scrolled:!!viewport&&viewport.scrollTop>0,cardVisible:!!r&&!!v&&r.top>=v.top-1&&r.top<v.bottom,inputVisible:!!i&&!!v&&i.top>=v.top&&i.top<v.bottom,focused:!!input&&document.activeElement===input,diagnostics:{cardFound:!!card,inputFound:!!input,cardTop:r?.top,viewportTop:v?.top,viewportBottom:v?.bottom,inputTop:i?.top,scrollTop:viewport?.scrollTop,scrollHeight:viewport?.scrollHeight,clientHeight:viewport?.clientHeight,visibility:document.visibilityState}}})()`)
+        if (state.scrolled && state.cardVisible && state.inputVisible && state.focused) break
+        await new Promise(resolve => setTimeout(resolve, 100))
+      } while (Date.now() < deadline)
+      const { diagnostics, ...visible } = state
+      return { visible, diagnostics }
     }
-    const googleVisible = await addWidget('Google reading')
-    const ttVisible = await addWidget('TT reading')
+    const googleCheck = await addWidget('Google reading')
+    const ttCheck = await addWidget('TT reading')
     await wc.executeJavaScript(`document.querySelector('[title="Add widget"]').click()`)
     await wc.executeJavaScript(`(() => { [...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Google reading').click(); [...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Today').click() })()`)
     await wait()
     const switchedAway = await wc.executeJavaScript(`({today:!![...document.querySelectorAll('h1')].find(e=>e.textContent==="Today's readings"), focusedInConfig:!!document.activeElement?.closest('.widget-config')})`)
-    console.log('E2E_RESULT '+JSON.stringify({initial,initialTodayReads,created,verified,failedReload,noSuccessfulAccounts,progress,cancelled,unverified,connect,returned,returnedTodayReads,singleScopeRetries,singleDateSwitch,todayProgress,todayCancelled,singleRefresh,failedSingle,singleDraft,copiedDraft,switchedSingle,blank,composed,googleVisible,ttVisible,switchedAway}))
+    console.log('E2E_RESULT '+JSON.stringify({initial,initialTodayReads,created,verified,failedReload,noSuccessfulAccounts,progress,cancelled,unverified,connect,returned,returnedTodayReads,searchById,searchByName,chosenAccountId,singleScopeRetries,singleDateSwitch,todayProgress,todayCancelled,singleRefresh,failedSingle,singleDraft,copiedDraft,switchedSingle,blank,composed,googleVisible:googleCheck.visible,googleDiagnostics:googleCheck.diagnostics,ttVisible:ttCheck.visible,ttDiagnostics:ttCheck.diagnostics,switchedAway}))
   } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error),phase})) }
   finally { if (win && !win.isDestroyed()) win.destroy(); app.exit(0) }
 }).catch(error => { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})); app.exit(1) })
