@@ -302,7 +302,7 @@ export interface ElectronAPI {
   /** Apply a ```board-cards proposal; Main re-parses the raw fence text. */
   applyBoardCards: (request: BoardCardsApplyRequest) => Promise<BoardCardsApplyResult>
   /** Ads-copy model pool management (Connections page; keys never return). */
-  adsCopyModelsList: () => Promise<{ mode: 'chat' | 'pool'; providers: Array<{ id: string; name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; inPool: boolean; createdAt: number }>; storeUnavailable?: boolean }>
+  adsCopyModelsList: (retry?: boolean) => Promise<{ mode: 'chat' | 'pool'; providers: Array<{ id: string; name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; inPool: boolean; createdAt: number }>; storeUnavailable?: boolean }>
   adsCopyModelsUpsert: (input: { name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; apiKey: string }) => Promise<{ ok: boolean; error?: string }>
   adsCopyModelsRemove: (id: string) => Promise<{ ok: boolean }>
   adsCopyModelsSetPool: (poolIds: string[]) => Promise<{ ok: boolean }>
@@ -785,7 +785,7 @@ const api: ElectronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.BOARDS_FILE_CHANGED, handler)
     }
   },
-  adsCopyModelsList: () => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_LIST),
+  adsCopyModelsList: (retry) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_LIST, retry === true),
   adsCopyModelsUpsert: (input: { name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; apiKey: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_UPSERT, input),
   adsCopyModelsRemove: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_REMOVE, id),

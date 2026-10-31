@@ -2461,9 +2461,9 @@ export function registerIpc() {
   // Ads-copy model pool (Connections page section). Keys are validated,
   // stored encrypted and NEVER returned to the renderer — only the masked
   // projection crosses the boundary. Test runs a tiny real completion.
-  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_LIST, async () => {
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_LIST, async (_event, retry: unknown) => {
     try {
-      const pool = await adsCopyModelStore.load()
+      const pool = await adsCopyModelStore.load({ retry: retry === true })
       return { mode: pool.mode, providers: AdsCopyModelStore.mask(pool) }
     } catch {
       // Unreadable store: tell the renderer "chat mode, nothing listed" —

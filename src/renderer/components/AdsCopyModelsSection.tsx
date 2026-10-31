@@ -44,9 +44,9 @@ export default function AdsCopyModelsSection() {
   const mutationInFlight = useRef(false)
   const [pendingDelete, setPendingDelete] = useState<ConfirmDialogRequest | null>(null)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (retry = false) => {
     try {
-      const snapshot = await window.electronAPI.adsCopyModelsList()
+      const snapshot = await window.electronAPI.adsCopyModelsList(retry)
       if (snapshot.storeUnavailable) { setLoadFailed(true); setError('load-failed'); return }
       setLoadFailed(false)
       setError(null)
@@ -187,7 +187,7 @@ export default function AdsCopyModelsSection() {
       </div>
       {mode === 'chat' && <p className="mb-3 text-[11.5px] text-cream-faint">{t('adsCopy.mode.chatNote')}</p>}
 
-      {error === 'load-failed' && <p role="alert" className="mb-2 text-[12px] text-red-500">{t('adsCopy.error.load-failed')} <button type="button" onClick={() => void refresh()} className="underline">{t('adsCopy.retry')}</button></p>}
+      {error === 'load-failed' && <p role="alert" className="mb-2 text-[12px] text-red-500">{t('adsCopy.error.load-failed')} <button type="button" onClick={() => void refresh(true)} className="underline">{t('adsCopy.retry')}</button></p>}
       {rows === null ? (
         error === 'load-failed' ? null : <Loader2 size={14} className="animate-spin text-cream-faint" />
       ) : (

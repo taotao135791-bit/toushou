@@ -16,6 +16,7 @@ vi.mock('electron', () => ({
 }))
 
 import { AdsCopyModelStore, validateAdsCopyModelInput } from './AdsCopyModelStore'
+import { SecureStorageCoordinator } from '../secureStorageCoordinator'
 import { callCopyModel, discoverModels, pickStablePoolMember } from './copyGenerate'
 
 let dir: string
@@ -49,6 +50,42 @@ describe('validateAdsCopyModelInput', () => {
 })
 
 describe('AdsCopyModelStore', () => {
+  it('pauses failed secure reads until an explicit retry, preserving the file', async () => {
+    const file = path.join(dir, 'paused.bin')
+    const data = Buffer.from(JSON.stringify({ providers: [], pool: [], mode: 'chat' })).toString('base64')
+    writeFileSync(file, data)
+    let available = false
+    const backend = { isAvailable: vi.fn(() => available), encrypt: vi.fn((s: string) => Buffer.from(s)), decrypt: vi.fn((b: Buffer) => b.toString()) }
+    const coordinator = new SecureStorageCoordinator()
+    const store = new AdsCopyModelStore({ filePath: file, backend, coordinator })
+    await expect(store.load()).rejects.toThrow('secure credential storage is unavailable')
+    await expect(store.load()).rejects.toThrow('secure credential storage is unavailable')
+    expect(backend.isAvailable).toHaveBeenCalledTimes(1)
+    expect(readFileSync(file, 'utf8')).toBe(data)
+    available = true
+    await expect(store.load({ retry: true })).resolves.toMatchObject({ mode: 'chat', providers: [] })
+    expect(coordinator.isBlocked()).toBe(false)
+  })
+
+  it('lets a new user save retry an already paused secure store, without retrying a later concurrent failure', async () => {
+    const makeBackend = () => ({ isAvailable: vi.fn(() => true), encrypt: vi.fn((s: string) => Buffer.from(s)), decrypt: vi.fn((b: Buffer) => b.toString()) })
+    const failed = { isAvailable: () => false, encrypt: () => Buffer.alloc(0), decrypt: () => '' }
+    const input = { name: 'sample', baseUrl: 'https://example.com', protocol: 'openai' as const, model: 'm', apiKey: 'test' }
+    const coordinator = new SecureStorageCoordinator()
+    expect(() => coordinator.decrypt(failed, Buffer.alloc(0))).toThrow()
+    const first = makeBackend()
+    const store = new AdsCopyModelStore({ filePath: path.join(dir, 'first.bin'), backend: first, coordinator })
+    await expect(store.upsert(input)).resolves.toMatchObject({ mode: 'chat' })
+    expect(first.encrypt).toHaveBeenCalledTimes(1)
+    const second = makeBackend()
+    const next = new AdsCopyModelStore({ filePath: path.join(dir, 'next.bin'), backend: second, coordinator })
+    const pending = next.upsert(input)
+    expect(() => coordinator.decrypt(failed, Buffer.alloc(0))).toThrow()
+    await expect(pending).rejects.toThrow('secure credential storage is unavailable')
+    expect(second.isAvailable).not.toHaveBeenCalled()
+    expect(second.encrypt).not.toHaveBeenCalled()
+  })
+
   it('does not touch secure storage for a fresh missing pool', async () => {
     const isAvailable = vi.fn(() => { throw Error('Keychain must not be touched') })
     const fake = { isAvailable, encrypt: vi.fn(), decrypt: vi.fn() }
