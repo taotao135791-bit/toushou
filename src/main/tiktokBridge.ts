@@ -106,13 +106,22 @@ type BridgeDeps = {
   status: typeof tiktokReportService.getStatus
 }
 
+function safeRefreshError(error: unknown): string {
+  const allowed = new Set(['not-configured', 'refresh-in-progress', 'invalid-advertiser', 'advertiser-not-authorized', 'permission-denied', 'token-expired', 'no-advertiser', 'advertiser-limit', 'account-timezone-unavailable', 'dataset-row-limit', 'dataset-legacy-dataset', 'dataset-invalid-scope', 'dataset-ambiguous-dataset'])
+  return typeof error === 'string' && allowed.has(error) ? error : 'refresh-failed'
+}
+
 /** Enforce session authority in Main, including just before the dataset write. */
 export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBridgeRequest, deps?: BridgeDeps): Promise<Record<string, unknown>> {
   const getAccess = deps?.getAccess ?? (await import('./omp')).getSessionBridgeAccess
   const access = getAccess(sessionId)
   if (!access) return { ok: false, error: 'no-session' }
   if (tool.action === 'tiktok_status') {
-    return { ok: true, status: (deps?.status ?? (() => tiktokReportService.getStatus()))() }
+    const { configured, autoRefresh, refreshing, lastRefreshAt, lastError, lastRowCount, legacyBackups } =
+      (deps?.status ?? (() => tiktokReportService.getStatus()))()
+    // Credential hints and account IDs are for the local settings UI only;
+    // tool responses may be sent to the model provider.
+    return { ok: true, status: { configured, autoRefresh, refreshing, lastRefreshAt, ...(lastError ? { lastError: safeRefreshError(lastError) } : {}), lastRowCount, legacyBackups } }
   }
   if (tool.days !== undefined && tool.days !== 7) return { ok: false, error: 'unsupported-range', hint: '仅支持近 7 天。' }
   if (tool.advertiserId !== undefined && (typeof tool.advertiserId !== 'string' || !/^\d{1,30}$/.test(tool.advertiserId))) return { ok: false, error: 'invalid-advertiser-id', hint: '广告主 ID 必须为数字字符串。' }
@@ -139,7 +148,7 @@ export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBrid
   const refresh = deps?.refresh ?? ((options) => tiktokReportService.refreshNow(options))
   const outcome = await refresh({ ...(tool.advertiserId ? { advertiserId: tool.advertiserId as string } : {}), beforeWrite })
   if (!outcome.ok) {
-    return { ok: false, error: outcome.error ?? 'refresh-failed', dataset: 'TikTok 报表' }
+    return { ok: false, error: safeRefreshError(outcome.error), dataset: 'TikTok 报表' }
   }
   return {
     ok: true,
