@@ -1,0 +1,43 @@
+const { app, BrowserWindow } = require('electron')
+const path = require('node:path')
+const fs = require('node:fs')
+const dir = process.argv[2]
+app.setPath('userData', path.join(dir, 'profile'))
+app.whenReady().then(async () => {
+  let win
+  try {
+    const html = path.join(dir, 'index.html')
+    fs.writeFileSync(html, '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="fixture.js"></script></body></html>')
+    win = new BrowserWindow({ show: false, width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true } })
+    const wc = win.webContents
+    wc.on('console-message', (_event, _level, message) => console.log('RENDERER ' + message))
+    await win.loadFile(html)
+    const wait = () => new Promise(resolve => setTimeout(resolve, 300))
+    await wait()
+    const inspect = () => wc.executeJavaScript(`(() => ({today:!![...document.querySelectorAll('h1')].find(e=>e.textContent==="Today's readings"), activeBoard:document.querySelector('[title="Click to open · drag to reorder tabs"].shadow-card span')?.textContent ?? null, toolbar:!!document.querySelector('[title="Add widget"]'), menu:!!document.querySelector('[title="Board menu"]'), ttNotice:document.body.textContent.includes('TikTok Ads is not connected'), noReading:document.body.textContent.includes('No reading modules yet'), connect:[...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='Connect'), route:document.querySelector('#fixture-route').textContent, saved:window.boardFixture.saved.map(b=>({name:b.name,types:b.widgets.map(w=>w.type)}))}))()`)
+    const initial = await inspect()
+    await wc.executeJavaScript(`document.querySelector('[title="New board"]').click()`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='TikTok投放全景').click()`)
+    await wait()
+    const created = await inspect()
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Connect').click()`)
+    await wait()
+    const connect = await inspect()
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Today').click()`)
+    await wait()
+    const returned = await inspect()
+    await wc.executeJavaScript(`document.querySelector('[title="New board"]').click()`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Blank board').click()`)
+    await wc.executeJavaScript(`(() => { const e=document.querySelector('[placeholder="Board name…"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'Blank fixture'); e.dispatchEvent(new Event('input',{bubbles:true})); })()`)
+    await wait()
+    await wc.executeJavaScript(`document.querySelector('[placeholder="Board name…"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`)
+    await wait()
+    const blank = await inspect()
+    await wc.executeJavaScript(`document.querySelector('[title="Describe a board"]').click()`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Blank').click()`)
+    await wait()
+    const composed = await inspect()
+    console.log('E2E_RESULT '+JSON.stringify({initial,created,connect,returned,blank,composed}))
+  } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})) }
+  finally { if (win && !win.isDestroyed()) win.destroy(); app.exit(0) }
+}).catch(error => { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})); app.exit(1) })

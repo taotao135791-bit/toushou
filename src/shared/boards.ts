@@ -365,7 +365,8 @@ export function fbDailyV2Preset(t: BoardText): BoardWidget[] {
 /**
  * TikTok Ads panorama board: a KPI row of dataset-bound counters (spend,
  * clicks, avg CTR, conversions), daily spend and conversion trends, a
- * per-campaign spend comparison and a data-source note. Widgets bind the
+ * per-campaign spend comparison and a data-source note, preceded by an
+ * actionable TikTok reading module. Dataset widgets bind the
  * "TikTok 报表" dataset by NAME (stored in the `datasetId` binding field —
  * the dataset importer coins ids, the template pins the human-readable name
  * the dataset is imported under). Until that dataset exists the widgets show
@@ -390,7 +391,7 @@ export function tiktokAdsPreset(t: BoardText): BoardWidget[] {
     op: 'sum',
     dimension: '日期'
   })
-  return [
+  const datasetWidgets = [
     kpi('boards.preset.tiktok.kpiSpend', '消耗', 'sum', 0),
     kpi('boards.preset.tiktok.kpiClicks', '点击', 'sum', 3),
     kpi('boards.preset.tiktok.kpiCtr', '点击率', 'avg', 6),
@@ -429,6 +430,10 @@ export function tiktokAdsPreset(t: BoardText): BoardWidget[] {
       { x: 6, y: 9, w: 6, h: 6 },
       { text: t('boards.preset.tiktok.noteBody') }
     )
+  ]
+  return [
+    presetWidget('tt-reading', t('boards.reading.ttModuleName'), { x: 0, y: 0, w: 12, h: 6 }, defaultWidgetConfig('tt-reading')),
+    ...datasetWidgets.map((widget) => ({ ...widget, layout: { ...widget.layout, y: widget.layout.y + 6 } }))
   ]
 }
 

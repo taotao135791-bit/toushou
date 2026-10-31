@@ -527,7 +527,7 @@ export default function BoardsPage() {
     }
     const board = createBoard(name)
     setBoards((prev) => [...(prev ?? []), board])
-    setCurrentId(board.id)
+    switchBoard(board.id)
     persist(board)
   }
 
@@ -553,7 +553,7 @@ export default function BoardsPage() {
     const { composed, needsAccounts } = await composeForUser('', preset)
     const board = { ...createBoard(composed.name), widgets: composed.widgets }
     setBoards((prev) => [...(prev ?? []), board])
-    setCurrentId(board.id)
+    switchBoard(board.id)
     persist(board)
     if (needsAccounts) openReadingPicker()
   }
@@ -574,7 +574,7 @@ export default function BoardsPage() {
     setComposeOpen(false)
     setComposeText('')
     setBoards((prev) => [...(prev ?? []), board])
-    setCurrentId(board.id)
+    switchBoard(board.id)
     persist(board)
     if (needsAccounts) openReadingPicker()
   }
@@ -1484,7 +1484,7 @@ export default function BoardsPage() {
         >
           <Palette size={14} />
         </button>
-        {current && (
+        {surface === 'board' && current && (
           <div className="app-no-drag relative shrink-0">
             <button
               onClick={() => {
@@ -1685,7 +1685,7 @@ export default function BoardsPage() {
 
       <div
         ref={boardAreaRef}
-        style={boardCanvasStyle(mergeBoardStyle(design?.board, current?.style))}
+        style={boardCanvasStyle(mergeBoardStyle(design?.board, surface === 'board' ? current?.style : undefined))}
         className="relative flex-1 overflow-hidden bg-ink-950"
       >
         <div className="h-full overflow-y-auto">
@@ -1775,7 +1775,7 @@ export default function BoardsPage() {
           </div>
         )}
 
-        {current && (
+        {surface === 'board' && current && (
           <div className="absolute bottom-4 left-1/2 z-30 -translate-x-1/2">
             {galleryOpen && (
               <div className="fade-in absolute bottom-full left-1/2 mb-2 w-[300px] -translate-x-1/2 rounded-2xl border border-line bg-ink-900 p-2 shadow-pop">
