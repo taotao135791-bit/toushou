@@ -19,7 +19,10 @@ app.whenReady().then(async () => {
     const pageCss = sourceCss.match(/\.page-enter\s*\{[^}]*\}/)?.[0]
     const animCss = sourceCss.match(/@keyframes page-enter\s*\{[\s\S]*?\n\}/)?.[0]
     if (!pageCss || !animCss) throw Error('page animation CSS missing')
-    fs.writeFileSync(html, `<!doctype html><html><head><meta charset="utf-8"><style>${pageCss}${animCss}.fixed{position:fixed}.inset-0{inset:0}.flex{display:flex}.items-center{align-items:center}.justify-center{justify-content:center}</style></head><body><div id="root"></div><script src="fixture.js"></script></body></html>`)
+    // Force a classic scrollbar, including on macOS where scrollbars are often
+    // overlaid. innerWidth includes that scrollbar; fixed inset-0 does not.
+    const clippedFixture = process.env.MODAL_FIXTURE_CLIP === '1' ? '.page-enter{transform:translateY(1px)}' : ''
+    fs.writeFileSync(html, `<!doctype html><html><head><meta charset="utf-8"><style>${pageCss}${animCss}${clippedFixture}html{overflow-y:scroll}::-webkit-scrollbar{width:15px}.fixed{position:fixed}.inset-0{inset:0}.flex{display:flex}.items-center{align-items:center}.justify-center{justify-content:center}</style></head><body><div id="root"></div><script src="fixture.js"></script></body></html>`)
     const wc = win.webContents
     wc.on('console-message', (_event, _level, message) => console.log('RENDERER '+message))
     await win.loadFile(html)
@@ -30,8 +33,8 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript("document.querySelector('#opener').focus(); document.querySelector('#opener').click()")
     await wait()
     const hidden = panel.getBounds().x === 2000
-    const backdrop = await wc.executeJavaScript("(() => { const r=document.querySelector('[role=alertdialog]').parentElement.getBoundingClientRect(); return {left:r.left,width:r.width,viewport:innerWidth} })()")
-    const fullViewport = backdrop.left === 0 && backdrop.width === backdrop.viewport
+    const backdrop = await wc.executeJavaScript("(() => { const el=document.querySelector('[role=alertdialog]').parentElement; const r=el.getBoundingClientRect(); const root=document.documentElement; return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,viewportWidth:root.clientWidth,viewportHeight:root.clientHeight,innerWidth,innerHeight,devicePixelRatio,visualViewportScale:visualViewport.scale,cornerCovered:[[1,1],[root.clientWidth-1,1],[1,root.clientHeight-1],[root.clientWidth-1,root.clientHeight-1]].every(([x,y])=>el.contains(document.elementFromPoint(x,y)))} })()")
+    const fullViewport = backdrop.left <= 0 && backdrop.top <= 0 && backdrop.right >= backdrop.viewportWidth && backdrop.bottom >= backdrop.viewportHeight && backdrop.cornerCovered
     const focusInside = await wc.executeJavaScript("document.querySelector('[role=alertdialog]').contains(document.activeElement)")
     const tabTrap = await wc.executeJavaScript(`(() => {const d=document.querySelector('[role=alertdialog]');const b=d.querySelectorAll('button');b[b.length-1].focus();const e=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true});document.activeElement.dispatchEvent(e);return e.defaultPrevented&&document.activeElement===b[0]})()`)
     // Open a nested boundary by calling the fixture control programmatically.
@@ -46,7 +49,7 @@ app.whenReady().then(async () => {
     await wait()
     const restored = panel.getBounds().x !== 2000
     const focusRestored = await wc.executeJavaScript("document.activeElement?.id === 'opener'")
-    console.log('E2E_RESULT '+JSON.stringify({tt,metrics,hidden,fullViewport,focusInside,tabTrap,nestedHidden,staysHidden,parentStillOpen,restored,focusRestored,calls}))
+    console.log('E2E_RESULT '+JSON.stringify({tt,metrics,hidden,fullViewport,backdrop,focusInside,tabTrap,nestedHidden,staysHidden,parentStillOpen,restored,focusRestored,calls}))
   } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})) }
   finally { if(win&&!win.isDestroyed())win.destroy(); app.exit(0) }
 }).catch(error => {console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)}));app.exit(1)})

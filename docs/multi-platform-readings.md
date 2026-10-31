@@ -1,6 +1,6 @@
 # 多平台读数
 
-v1.4.9 支持 Facebook、TikTok 与 Google 多平台看板读数。FB 继续使用现有报表链接和导出校验流程。
+v1.4.10 支持 Facebook、TikTok 与 Google 多平台看板读数。FB 继续使用现有报表链接和导出校验流程。
 
 ## 使用
 
