@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -39,5 +39,19 @@ describe('tiktok reading advertisers store', () => {
       error: 'invalid-input'
     })
     expect(listTikTokReadingAdvertisers(file)).toEqual([])
+  })
+  it('does not turn corrupt or oversized saved selections into an all-account scope', () => {
+    writeFileSync(file, '{bad json')
+    expect(() => listTikTokReadingAdvertisers(file)).toThrow('tiktok-advertiser-selection-unavailable')
+    writeFileSync(file, JSON.stringify({ advertiserIds: Array.from({ length: 501 }, (_, i) => String(i + 1)) }))
+    expect(() => listTikTokReadingAdvertisers(file)).toThrow('tiktok-advertiser-selection-unavailable')
+  })
+  it('accepts 500 explicit IDs and rejects a 501st or separators alone without changing selection', () => {
+    const ids = Array.from({ length: 500 }, (_, i) => String(7300000000 + i))
+    expect(setTikTokReadingAdvertisers({ advertiserIds: ids.join(', ') }, file)).toEqual({ ok: true, selected: ids })
+    expect(listTikTokReadingAdvertisers(file)).toEqual(ids)
+    expect(setTikTokReadingAdvertisers({ advertiserIds: [...ids, '9999999999'].join(', ') }, file)).toEqual({ ok: false, error: 'invalid-input' })
+    expect(setTikTokReadingAdvertisers({ advertiserIds: ',,,' }, file)).toEqual({ ok: false, error: 'invalid-input' })
+    expect(listTikTokReadingAdvertisers(file)).toEqual(ids)
   })
 })

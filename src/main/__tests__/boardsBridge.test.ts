@@ -177,7 +177,7 @@ describe('dispatch board_create cross-account', () => {
   })
 
   it('rejects malformed account scopes instead of silently reading all accounts', async () => {
-    for (const advertiserIds of ['bad', '7300000000001,invalid', ',,,', '1'.repeat(401), ['7300000000001']]) {
+    for (const advertiserIds of ['bad', '7300000000001,invalid', ',,,', '1'.repeat(14001), ['7300000000001']]) {
       expect(await dispatch({ action: 'board_create', name: 'bad-scope', template: 'tiktok', advertiserIds })).toMatchObject({ ok: false, error: 'invalid-advertiser-ids', message: expect.stringContaining('数字广告主 ID') })
     }
     expect((await dispatch({ action: 'boards_list' })).boards).toEqual([])
@@ -190,6 +190,16 @@ describe('dispatch board_create cross-account', () => {
     const readings = board.widgets.filter(w => w.type === 'tt-reading')
     expect(readings).toHaveLength(1)
     expect(readings[0].config.advertiserIds).toBe('7300000000001, 7300000000002')
+  })
+  it('persists a 500-account reading and ID filter without truncation', async () => {
+    const ids = Array.from({ length: 500 }, (_, index) => String(7300000000 + index))
+    const result = await dispatch({ action: 'board_create', name: 'large-scope', template: 'tiktok', advertiserIds: ids.join(', ') })
+    expect(result.ok).toBe(true)
+    const board = listBoards().find(item => item.name === 'large-scope')!
+    const reading = board.widgets.filter(widget => widget.type === 'tt-reading')
+    expect(reading).toHaveLength(1)
+    expect(reading[0].config.advertiserIds).toBe(ids.join(', '))
+    expect(board.widgets.find(widget => widget.type === 'counter')?.config.filterValues).toEqual(ids)
   })
   it('keeps unscoped TikTok boards readable using the connection selection or grant', async () => {
     const created = await dispatch({ action: 'board_create', name: 'unscoped', template: 'tiktok' })

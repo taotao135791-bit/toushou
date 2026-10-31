@@ -22,8 +22,10 @@ import {
 } from '../../../shared/todayReading'
 import { resolveTikTokMcpToken, type ResolvedTikTokToken } from './resolveTikTokToken'
 import { beginTikTokDatasetRead, mergeReportRowsIntoDataset, type TikTokDatasetScope } from './tiktokReportDataset'
-import type { DatasetImportResult } from '../../../shared/datasets'
-import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
+import { DATASET_LIMITS, type DatasetImportResult } from '../../../shared/datasets'
+import { createHash } from 'node:crypto'
+import { buildTikTokDatasetProofPayloads, type TikTokDatasetProof } from '../../../shared/tiktokDatasetProof'
+import { TikTokMcpReadingClient, TIKTOK_DISCOVERED_ACCOUNT_LIMIT, TIKTOK_METADATA_BATCH_SIZE } from './tiktokMcpReadingClient'
 import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
 import {
   classifyTikTokError,
@@ -37,14 +39,13 @@ import {
  * the aggregation itself is a pure function for tests.
  */
 
-/** Morning page queries at most this many advertisers. */
-export const TODAY_ADVERTISER_CAP = 20
-
-/** Upper bound on advertiser fan-out per summary request (mirrors the refresh service). */
-export const MAX_ADVERTISERS_PER_SUMMARY = 20
+/** Metadata requests are grouped; reports remain sequential per account. */
+export const TODAY_ADVERTISER_CAP = TIKTOK_METADATA_BATCH_SIZE
 
 /** These failures hit every advertiser alike, so the read stops at the first one. */
 const WHOLE_READ_FAILURES: ReadonlySet<ReadingErrorCode> = new Set(['auth', 'network', 'rate-limit'])
+/** Bound per-account report memory while continuing unrelated accounts. */
+const MAX_ACCOUNT_REPORT_ROWS = 20_000
 
 /** Compatibility hook for existing tests; info is fetched per read to avoid stale account data. */
 export function resetTikTokAdvertiserInfoCacheForTest(): void {}
@@ -55,7 +56,10 @@ async function lookupAdvertisers(
   advertiserIds: string[]
 ): Promise<Map<string, TikTokReadingAdvertiser>> {
   let found: TikTokReadingAdvertiser[] = []
-  try { found = await client.info(advertiserIds) } catch { /* keep unknown metadata */ }
+  try { found = await client.info(advertiserIds) } catch (error) {
+    if (WHOLE_READ_FAILURES.has(classifyTikTokError(error).code)) throw error
+    // Non-global metadata errors leave currencies/timezones unknown.
+  }
   const byId = new Map(found.map((advertiser) => [advertiser.advertiserId, advertiser]))
   return new Map(advertiserIds.map((id) => [id, byId.get(id) ?? { advertiserId: id, name: null, currency: null }]))
 }
@@ -105,14 +109,27 @@ export async function buildTikTokTodayReading(
   const prepared = await prepareMcp(deps)
   if ('ok' in prepared) return prepared
   const { resolved, client, allAdvertisers } = prepared
-  const advertiserIds = allAdvertisers.slice(0, TODAY_ADVERTISER_CAP)
-  const advertisers = await lookupAdvertisers(client, advertiserIds)
+  const advertiserIds = allAdvertisers
+  deps.onProgress?.({ completed: 0, total: advertiserIds.length, succeeded: 0 })
+  let metadata = new Map<string, TikTokReadingAdvertiser>()
+  let stopped: { code: ReadingErrorCode; detail: string } | null = null
+  let completed = 0
   const accounts: TikTokTodayAccount[] = []
   const rowsToPersist: TikTokReportRow[] = []
+  let datasetOverflow = false
   const scopes: TikTokDatasetScope[] = []
   const details = new Map<string, { name: string | null; currency: string | null; timezone?: string | null }>()
-  for (const advertiserId of advertiserIds) {
-    const advertiser = advertisers.get(advertiserId) ?? { advertiserId, name: null, currency: null }
+  for (let index = 0; index < advertiserIds.length; index++) {
+    if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
+    const attempted = !stopped
+    try {
+    const advertiserId = advertiserIds[index]
+    if (stopped) { accounts.push({ advertiserId, name: null, currency: null, error: stopped.code, detail: 'account-batch-not-attempted' }); continue }
+    if (index % TIKTOK_METADATA_BATCH_SIZE === 0) {
+      try { metadata = await lookupAdvertisers(client, advertiserIds.slice(index, index + TIKTOK_METADATA_BATCH_SIZE)) }
+      catch (error) { stopped = classifyTikTokError(error); accounts.push({ advertiserId, name: null, currency: null, error: stopped.code, detail: stopped.detail }); continue }
+    }
+    const advertiser = metadata.get(advertiserId) ?? { advertiserId, name: null, currency: null }
     let currentWindow = window
     let previousWindow = previous
     if (range === 'today') {
@@ -124,14 +141,15 @@ export async function buildTikTokTodayReading(
       previousWindow = prior
     }
     let rows: TikTokReportRow[]
-    try { rows = await client.report(advertiserId, previousWindow.start, currentWindow.end) }
+    try { rows = await client.report(advertiserId, previousWindow.start, currentWindow.end, MAX_ACCOUNT_REPORT_ROWS) }
     catch (error) {
       const failure = classifyTikTokError(error)
-      if (WHOLE_READ_FAILURES.has(failure.code)) return readingFailure(failure.code, failure.detail)
       accounts.push({ ...advertiser, error: failure.code, detail: failure.detail })
+      if (WHOLE_READ_FAILURES.has(failure.code)) stopped = failure
       continue
     }
-    rowsToPersist.push(...rows)
+    if (!datasetOverflow && rowsToPersist.length + rows.length > DATASET_LIMITS.maxRows) { datasetOverflow = true; rowsToPersist.length = 0 }
+    else if (!datasetOverflow) rowsToPersist.push(...rows)
     scopes.push({ advertiserId, startDate: previousWindow.start, endDate: currentWindow.end })
     details.set(advertiserId, { name: advertiser.name, currency: advertiser.currency, timezone: advertiser.timezone })
     const currentRows = rowsInWindow(rows, currentWindow)
@@ -148,18 +166,19 @@ export async function buildTikTokTodayReading(
       conversions: currentTotals.conversions,
       campaigns: campaignMoves(currentRows, previousRows)
     })
+    } finally {
+      if (attempted && !deps.signal?.aborted) deps.onProgress?.({ completed: ++completed, total: advertiserIds.length, succeeded: accounts.filter(account => !isTikTokTodayFailure(account)).length })
+    }
   }
-  for (const advertiserId of allAdvertisers.slice(TODAY_ADVERTISER_CAP)) {
-    accounts.push({ advertiserId, name: null, currency: null, error: 'api', detail: 'account-limit-not-read' })
-  }
-  const firstFailure = accounts.find(isTikTokTodayFailure)
-  if (firstFailure && accounts.every(isTikTokTodayFailure)) return readingFailure(firstFailure.error, firstFailure.detail)
+  if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
   let datasetSync: NonNullable<TikTokTodayReading['datasetSync']>
   try {
-    const result = deps.persistRows ? deps.persistRows(rowsToPersist, details, scopes) : mergeReportRowsIntoDataset(rowsToPersist, details, undefined, scopes, requestVersion)
+    if (scopes.length && !datasetOverflow) deps.onCommitting?.()
+    const result = datasetOverflow ? { ok: false as const, error: 'row-limit' } : !scopes.length ? { ok: false as const, error: 'no-successful-accounts' } : deps.persistRows ? deps.persistRows(rowsToPersist, details, scopes) : mergeReportRowsIntoDataset(rowsToPersist, details, undefined, scopes, requestVersion)
+    if (result?.ok) { try { deps.onDatasetCommitted?.() } catch { /* notification is advisory */ } }
     datasetSync = !result || result.ok ? { ok: true, ...(result?.legacyBackups?.length ? { legacyBackups: result.legacyBackups } : {}) } : { ok: false, error: result.error }
   } catch { datasetSync = { ok: false, error: 'write-failed' } }
-  return { range, window, previousWindow: previous, source: resolved.source, generatedAt: now, truncated: allAdvertisers.length > TODAY_ADVERTISER_CAP, accounts, datasetSync }
+  return { range, window, previousWindow: previous, source: resolved.source, generatedAt: now, truncated: false, accounts, datasetSync }
 }
 
 function sumField(rows: TikTokReportRow[], key: 'spend' | 'impressions' | 'clicks' | 'conversion'): number {
@@ -222,11 +241,18 @@ export interface TikTokReadingDeps {
   resolveToken?: () => Promise<ResolvedTikTokToken>
   fetchImpl?: TikTokApiFetch
   now?: () => number
+  signal?: AbortSignal
+  onProgress?: (progress: { completed: number; total: number; succeeded: number }) => void
+  onCommitting?: () => void
+  onDatasetCommitted?: () => void
+  /** Test seam for exercising hashing failures before disk commit. */
+  hashProofPayload?: (payload: string) => string
   /** Where a successful read lands (defaults to the shared TikTok dataset). */
   persistRows?: (
     rows: TikTokReportRow[],
     details: Map<string, { name: string | null; currency: string | null; timezone?: string | null }>,
-    scopes: TikTokDatasetScope[]
+    scopes: TikTokDatasetScope[],
+    beforeCommit?: (candidate: import('../../../shared/types').BoardDataset) => void
   ) => DatasetImportResult | void
 }
 
@@ -245,13 +271,16 @@ export async function listTikTokMcpReadingAdvertisers(deps: TikTokReadingDeps = 
 async function prepareMcp(deps: TikTokReadingDeps, override: string[] = []) {
   try {
     const resolved = await (deps.resolveToken ?? resolveTikTokMcpToken)()
+    if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
     if (!resolved.token || resolved.source !== 'oauth') return readingFailure('no-credentials')
-    const client = new TikTokMcpReadingClient(resolved.token, deps.fetchImpl)
+    const client = new TikTokMcpReadingClient(resolved.token, deps.fetchImpl, deps.signal)
     await client.initialize()
-    const allAdvertisers = override.length ? override : resolved.advertiserIds.length ? resolved.advertiserIds : await client.advertisers()
+    const allAdvertisers = override.length ? override : resolved.selectionExplicit === false ? await client.advertisers() : resolved.advertiserIds.length ? resolved.advertiserIds : await client.advertisers()
     if (!allAdvertisers.length) return readingFailure('no-advertiser')
+    if (allAdvertisers.length > TIKTOK_DISCOVERED_ACCOUNT_LIMIT) return readingFailure('api', 'account-safety-limit-exceeded')
     return { resolved, client, allAdvertisers }
   } catch (error) {
+    if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
     const failure = classifyTikTokError(error)
     return readingFailure(failure.code, failure.detail)
   }
@@ -271,20 +300,35 @@ export async function buildTikTokReadingSummary(
   const now = deps.now?.() ?? Date.now()
   const range = isTikTokReadingRange(input.range) ? input.range : '7'
   const override = input.advertiserIds === undefined ? [] : parseTikTokAdvertiserIdList(input.advertiserIds)
-  if (override === null) return readingFailure('invalid-input')
+  if (override === null || (typeof input.advertiserIds === 'string' && input.advertiserIds.trim() !== '' && override.length === 0)) return readingFailure('invalid-input')
   const prepared = await prepareMcp(deps, override)
   if ('ok' in prepared) return prepared
   const { resolved, client, allAdvertisers } = prepared
-  const advertiserIds = allAdvertisers.slice(0, MAX_ADVERTISERS_PER_SUMMARY)
+  const advertiserIds = allAdvertisers
+  deps.onProgress?.({ completed: 0, total: advertiserIds.length, succeeded: 0 })
   const baseWindow = tiktokReadingRangeWindow(range, new Date(now))
   let { start: startDate, end: endDate } = baseWindow
-  const info = await lookupAdvertisers(client, advertiserIds)
+  let info = new Map<string, TikTokReadingAdvertiser>()
+  let stopped: { code: ReadingErrorCode; detail: string } | null = null
+  let completed = 0
   const rows: TikTokReportRow[] = []
+  let datasetOverflow = false
+  let spend = 0, impressions = 0, clicks = 0, conversions = 0
+  let topCampaigns: TikTokReadingTopCampaign[] = []
   const advertisers: TikTokReadingAdvertiser[] = []
   const failed: TikTokReadingAdvertiserFailure[] = []
   const scopes: TikTokDatasetScope[] = []
   const accountWindows: NonNullable<TikTokReadingSummary['accountWindows']> = []
-  for (const advertiserId of advertiserIds) {
+  for (let index = 0; index < advertiserIds.length; index++) {
+    if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
+    const attempted = !stopped
+    try {
+    const advertiserId = advertiserIds[index]
+    if (stopped) { failed.push({ advertiserId, name: null, currency: null, error: stopped.code, detail: 'account-batch-not-attempted' }); continue }
+    if (index % TIKTOK_METADATA_BATCH_SIZE === 0) {
+      try { info = await lookupAdvertisers(client, advertiserIds.slice(index, index + TIKTOK_METADATA_BATCH_SIZE)) }
+      catch (error) { stopped = classifyTikTokError(error); failed.push({ advertiserId, name: null, currency: null, error: stopped.code, detail: stopped.detail }); continue }
+    }
     const advertiser = info.get(advertiserId) ?? { advertiserId, name: null, currency: null }
     let window = baseWindow
     if (range === '1') {
@@ -296,32 +340,51 @@ export async function buildTikTokReadingSummary(
       window = { start: day, end: day }
     }
     try {
-      rows.push(...(await client.report(advertiserId, window.start, window.end)))
+      const accountRows = await client.report(advertiserId, window.start, window.end, MAX_ACCOUNT_REPORT_ROWS)
+      const account = summarizeTikTokReportRows(accountRows)
+      spend += account.totals.spend
+      impressions += account.totals.impressions
+      clicks += account.totals.clicks
+      conversions += account.totals.conversions
+      topCampaigns = [...topCampaigns, ...account.topCampaigns].sort((a, b) => b.spend - a.spend || a.name.localeCompare(b.name)).slice(0, 5)
+      if (!datasetOverflow && rows.length + accountRows.length > DATASET_LIMITS.maxRows) { datasetOverflow = true; rows.length = 0 }
+      else if (!datasetOverflow) rows.push(...accountRows)
       advertisers.push(advertiser)
       scopes.push({ advertiserId, startDate: window.start, endDate: window.end })
       if (range === '1' && advertiser.timezone) accountWindows.push({ advertiserId, timezone: advertiser.timezone, startDate: window.start, endDate: window.end })
     } catch (error) {
       const failure = classifyTikTokError(error)
-      if (WHOLE_READ_FAILURES.has(failure.code)) return readingFailure(failure.code, failure.detail)
       failed.push({ ...advertiser, error: failure.code, detail: failure.detail })
+      if (WHOLE_READ_FAILURES.has(failure.code)) stopped = failure
+    }
+    } finally {
+      if (attempted && !deps.signal?.aborted) deps.onProgress?.({ completed: ++completed, total: advertiserIds.length, succeeded: advertisers.length })
     }
   }
-  if (advertisers.length === 0 && failed.length > 0) return readingFailure(failed[0].error, failed[0].detail)
-  for (const advertiserId of allAdvertisers.slice(MAX_ADVERTISERS_PER_SUMMARY)) {
-    failed.push({ advertiserId, name: null, currency: null, error: 'api', detail: 'account-limit-not-read' })
-  }
+  if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
   if (accountWindows.length) {
     startDate = accountWindows.map((item) => item.startDate).sort()[0]
     endDate = accountWindows.map((item) => item.endDate).sort().at(-1)!
   }
-  const { totals, topCampaigns } = summarizeTikTokReportRows(rows)
+  const totals = { spend, impressions, clicks, ctr: impressions > 0 ? clicks / impressions : 0, conversions, costPerConversion: conversions > 0 ? spend / conversions : 0 }
   const details = new Map<string, { name: string | null; currency: string | null; timezone?: string | null }>()
   for (const advertiser of advertisers) details.set(advertiser.advertiserId, { name: advertiser.name, currency: advertiser.currency, timezone: advertiser.timezone })
   let datasetSync: NonNullable<TikTokReadingSummary['datasetSync']>
+  let proofs: TikTokDatasetProof[] | undefined
+  let proofFailed = false
+  const beforeCommit = (candidate: import('../../../shared/types').BoardDataset) => {
+    try {
+      proofs = buildTikTokDatasetProofPayloads(candidate, scopes).map(({ payload, ...scope }) => ({ ...scope, digest: deps.hashProofPayload ? deps.hashProofPayload(payload) : createHash('sha256').update(payload, 'utf8').digest('hex') }))
+    } catch (error) { proofFailed = true; throw error }
+  }
   try {
-    const result = deps.persistRows ? deps.persistRows(rows, details, scopes) : mergeReportRowsIntoDataset(rows, details, undefined, scopes, requestVersion)
-    datasetSync = !result || result.ok ? { ok: true, ...(result?.legacyBackups?.length ? { legacyBackups: result.legacyBackups } : {}) } : { ok: false, error: result.error }
-  } catch { datasetSync = { ok: false, error: 'write-failed' } }
+    if (scopes.length && !datasetOverflow) deps.onCommitting?.()
+    const result = datasetOverflow ? { ok: false as const, error: 'row-limit' } : !scopes.length ? { ok: false as const, error: 'no-successful-accounts' } : deps.persistRows ? deps.persistRows(rows, details, scopes, beforeCommit) : mergeReportRowsIntoDataset(rows, details, undefined, scopes, requestVersion, beforeCommit)
+    if (result?.ok) { try { deps.onDatasetCommitted?.() } catch { /* notification is advisory */ } }
+    if (!result) datasetSync = { ok: true }
+    else if (!result.ok) datasetSync = { ok: false, error: 'detail' in result && result.detail === 'proof-failed' ? 'proof-failed' : result.error }
+    else datasetSync = { ok: true, ...(result.legacyBackups?.length ? { legacyBackups: result.legacyBackups } : {}), ...(proofs ? { proofs } : {}) }
+  } catch { datasetSync = { ok: false, error: proofFailed ? 'proof-failed' : 'write-failed' } }
   const known = [...new Set(advertisers.map((advertiser) => advertiser.currency).filter((code): code is string => !!code))]
   const everyKnown = advertisers.every((advertiser) => !!advertiser.currency)
   const currency = known.length === 1 && everyKnown ? known[0] : null
@@ -329,7 +392,7 @@ export async function buildTikTokReadingSummary(
     transport: 'mcp',
     datasetSync,
     ...(range === '1' ? { accountWindows } : {}),
-    truncated: allAdvertisers.length > MAX_ADVERTISERS_PER_SUMMARY,
+    truncated: false,
     range,
     startDate,
     endDate,

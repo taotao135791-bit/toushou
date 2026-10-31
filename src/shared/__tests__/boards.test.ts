@@ -615,6 +615,10 @@ describe('tiktokAdsPreset', () => {
     expect(validateBoard(board)?.widgets).toHaveLength(9)
     // composeBoard routes the chip-selected preset to the same widgets.
     const composed = composeBoard('tiktok ads', t, 'tiktok')
+    expect(composed.masterScope).toEqual({ range: 'last7', metrics: ['spend', 'cpi'] })
+    const restored = validateBoard({ ...createBoard(composed.name, 1), ...composed })
+    expect(restored?.masterScope).toEqual(composed.masterScope)
+    expect(restored?.widgets.filter((widget) => widget.config.source === 'dataset').every((widget) => widget.config.requireVerifiedTtScope === true)).toBe(true)
     expect(composed.name).toBe('boards.preset.tiktok')
     expect(composed.widgets).toHaveLength(9)
   })
@@ -655,10 +659,10 @@ describe('tiktokAdsPreset', () => {
     ])
     // Binding contract: the dataset NAME lives in the datasetId field.
     expect(counters.map((w) => w.config)).toEqual([
-      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '消耗', op: 'sum' },
-      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '点击', op: 'sum' },
-      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '点击率', op: 'avg' },
-      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', metric: '转化', op: 'sum' }
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', requireVerifiedTtScope: true, metric: '消耗', op: 'sum' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', requireVerifiedTtScope: true, metric: '点击', op: 'sum' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', requireVerifiedTtScope: true, metric: '点击率', op: 'avg' },
+      { value: 0, source: 'dataset', datasetId: 'TikTok 报表', requireVerifiedTtScope: true, metric: '转化', op: 'sum' }
     ])
   })
 

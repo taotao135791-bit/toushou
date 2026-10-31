@@ -33,6 +33,7 @@ import type {
   TikTokRefreshOutcome,
   TikTokReportStatus
 } from '../shared/tiktokReport'
+import { TIKTOK_ADVERTISER_LIST_MAX_LENGTH } from '../shared/tiktokReport'
 import type { TikTokTodayReadingResult } from '../shared/todayReading'
 import type { FbReportAutoFetchResult, FbReportImportResult, FbReportStoredReading } from '../shared/fbReportCsv'
 import type { GoogleReportReadingResult, GoogleReportImportResult, GoogleReportStoredReading } from '../shared/googleReport'
@@ -518,9 +519,12 @@ export interface ElectronAPI {
   tiktokReportStatus: () => Promise<TikTokReportStatus>
   onTiktokReportStatus: (callback: (status: TikTokReportStatus) => void) => () => void
   /** TT 读数 board module: Main resolves the token + aggregates the report. */
-  ttReadingSummary: (input: { advertiserIds?: string; range?: string }) => Promise<TikTokReadingResult>
+  ttReadingSummary: (input: { advertiserIds?: string; range?: string; requestId?: string }) => Promise<TikTokReadingResult>
   /** Today page TikTok read: current window and the previous equal window. */
-  ttReadingToday: (input: { range?: string }) => Promise<TikTokTodayReadingResult>
+  ttReadingToday: (input: { range?: string; requestId?: string }) => Promise<TikTokTodayReadingResult>
+  ttReadingCancel: (requestId: string) => Promise<boolean>
+  onTtReadingProgress: (callback: (value: { requestId: string; completed: number; total: number; succeeded: number }) => void) => () => void
+  onTtReadingDatasetChanged: (callback: () => void) => () => void
   /** Advertisers the readings use: the user's own list wins over the authorization's. */
   ttReadingAdvertisers: () => Promise<TikTokReadingAdvertisers>
   ttReadingSetAdvertisers: (input: { advertiserIds: string }) => Promise<TikTokReadingAdvertisersSetResult>
@@ -992,24 +996,38 @@ const api: ElectronAPI = {
     }
   },
   // TT 读数 — same preload posture: bounded strings only, real validation in Main.
-  ttReadingSummary: (input: { advertiserIds?: string; range?: string }) => {
+  ttReadingSummary: (input: { advertiserIds?: string; range?: string; requestId?: string }) => {
     const bounded = (value: unknown, max: number): string | undefined =>
       typeof value === 'string' && value.length <= max ? value : undefined
     return ipcRenderer.invoke(IPC_CHANNELS.TT_READING_SUMMARY, {
-      ...(input?.advertiserIds !== undefined ? { advertiserIds: bounded(input.advertiserIds, 400) ?? '' } : {}),
-      ...(input?.range !== undefined ? { range: bounded(input.range, 3) ?? '' } : {})
+      // Invalid explicit scope must fail Main validation, never become "all".
+      ...(input?.advertiserIds !== undefined ? { advertiserIds: bounded(input.advertiserIds, TIKTOK_ADVERTISER_LIST_MAX_LENGTH) ?? '!' } : {}),
+      ...(input?.range !== undefined ? { range: bounded(input.range, 3) ?? '' } : {}),
+      ...(input?.requestId !== undefined ? { requestId: bounded(input.requestId, 64) ?? '!' } : {})
     }) as Promise<TikTokReadingResult>
   },
-  ttReadingToday: (input: { range?: string }) =>
+  ttReadingToday: (input: { range?: string; requestId?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.TT_READING_TODAY, {
-      range: typeof input?.range === 'string' ? input.range.slice(0, 8) : ''
+      range: typeof input?.range === 'string' ? input.range.slice(0, 8) : '',
+      ...(input?.requestId !== undefined ? { requestId: typeof input.requestId === 'string' && input.requestId.length <= 64 ? input.requestId : '!' } : {})
     }) as Promise<TikTokTodayReadingResult>,
+  ttReadingCancel: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.TT_READING_CANCEL, typeof requestId === 'string' && requestId.length <= 64 ? requestId : null) as Promise<boolean>,
+  onTtReadingProgress: (callback: (value: { requestId: string; completed: number; total: number; succeeded: number }) => void) => {
+    const handler = (_event: IpcRendererEvent, value: { requestId: string; completed: number; total: number; succeeded: number }) => callback(value)
+    ipcRenderer.on(IPC_CHANNELS.TT_READING_PROGRESS, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.TT_READING_PROGRESS, handler)
+  },
+  onTtReadingDatasetChanged: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC_CHANNELS.TT_READING_DATASET_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.TT_READING_DATASET_CHANGED, handler)
+  },
   ttReadingAdvertisers: () =>
     ipcRenderer.invoke(IPC_CHANNELS.TT_READING_ADVERTISERS_LIST) as Promise<TikTokReadingAdvertisers>,
   // Too-long text goes through as null so Main rejects it; cutting it could save a wrong id.
   ttReadingSetAdvertisers: (input: { advertiserIds: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.TT_READING_ADVERTISERS_SET, {
-      advertiserIds: typeof input?.advertiserIds === 'string' && input.advertiserIds.length <= 400 ? input.advertiserIds : null
+      advertiserIds: typeof input?.advertiserIds === 'string' && input.advertiserIds.length <= TIKTOK_ADVERTISER_LIST_MAX_LENGTH ? input.advertiserIds : null
     }) as Promise<TikTokReadingAdvertisersSetResult>,
   googleReportImport: (widgetId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GOOGLE_REPORT_IMPORT, {

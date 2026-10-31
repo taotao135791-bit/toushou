@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The service touches electron windows and the settings store — keep this
 // suite Electron-free with targeted mocks (same posture as scheduledTasks).
-vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
+vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] }, app: { getPath: () => dir } }))
 const { getStore, setStore } = vi.hoisted(() => ({
   getStore: vi.fn(),
   setStore: vi.fn()
@@ -13,6 +13,7 @@ const { getStore, setStore } = vi.hoisted(() => ({
 vi.mock('../../store', () => ({ getStore, setStore }))
 
 import { TikTokReportStatus } from '../../../shared/tiktokReport'
+import type { TikTokApiFetch } from './tiktokClient'
 import { listDatasets } from '../../boardDatasets'
 import { setTikTokCredentials } from './TikTokConnectionStore'
 import {
@@ -69,6 +70,7 @@ function makeService(options: {
   now?: () => number
   intervalMs?: number
   initialAuto?: boolean
+  onDatasetCommitted?: () => void
 } = {}): Fixture {
   const statuses: TikTokReportStatus[] = []
   const settings = { auto: options.initialAuto ?? false }
@@ -91,7 +93,8 @@ function makeService(options: {
     datasetsFile,
     now: options.now ?? (() => 1767441600000),
     intervalMs: options.intervalMs,
-    broadcast: (status) => statuses.push(status)
+    broadcast: (status) => statuses.push(status),
+    onDatasetCommitted: options.onDatasetCommitted
   })
   return { service, statuses, settings, requests }
 }
@@ -236,7 +239,8 @@ describe('refreshNow', () => {
     const startDate = new Date(now)
     startDate.setDate(startDate.getDate() - 6)
     const startExpectedStr = localDate(startDate)
-    const { service, requests } = makeService({ now: () => now })
+    const onDatasetCommitted = vi.fn()
+    const { service, requests } = makeService({ now: () => now, onDatasetCommitted })
     const outcome = await service.refreshNow()
     expect(outcome.ok).toBe(true)
     if (outcome.ok) {
@@ -246,6 +250,9 @@ describe('refreshNow', () => {
     expect(outcome.status.lastRowCount).toBe(1)
     expect(outcome.status.lastRefreshAt).toBe(now)
     expect(outcome.status.lastError).toBeUndefined()
+    expect(onDatasetCommitted).toHaveBeenCalledOnce()
+    service.getStatus()
+    expect(onDatasetCommitted).toHaveBeenCalledOnce()
 
     // One report call scoped to the configured advertiser, last-7-days window
     // (timezone-independent: expected dates are computed in the local zone).
@@ -278,10 +285,22 @@ describe('refreshNow', () => {
     const outcome = await service.refreshNow()
     expect(outcome.ok).toBe(false)
     if (outcome.ok) return
-    expect(outcome.error).toContain('40100')
-    expect(service.getStatus().lastError).toContain('40100')
+    expect(outcome.error).toContain('auth')
+    expect(service.getStatus().lastError).toContain('auth')
     expect(service.getStatus().refreshing).toBe(false)
     expect(readFileSync(datasetsFile, 'utf-8')).toBe('[]')
+  })
+  it('reports completed, failed and unattempted counts while preserving the old dataset', async () => {
+    setTikTokCredentials({ accessToken: 'fake', advertiserIds: [7300001, 7300002, 7300003] }, credentialsFile)
+    writeFileSync(datasetsFile, '[]')
+    let calls = 0
+    const onDatasetCommitted = vi.fn()
+    const { service, requests } = makeService({ onDatasetCommitted, reportPlan: () => ++calls === 2 ? jsonResponse({ code: 40131, message: 'rate limit', data: {} }) : reportResponse([['2026-01-02', 'C1', '10.5']]) })
+    const outcome = await service.refreshNow()
+    expect(outcome).toMatchObject({ ok: false, error: expect.stringContaining('已完成 1，失败 1，未尝试 1') })
+    expect(requests).toHaveLength(2)
+    expect(readFileSync(datasetsFile, 'utf8')).toBe('[]')
+    expect(onDatasetCommitted).not.toHaveBeenCalled()
   })
 
   it('prevents an older slow refresh from overwriting a newer successful refresh', async () => {
@@ -378,6 +397,38 @@ describe('refreshNow', () => {
     expect(reportArgs.advertiser_id).toBe('7300042')
     expect(calls.every((call) => call.bearer === 'Bearer oauth-token' || call.method === 'notifications/initialized')).toBe(true)
     expect((outcome as { rowCount?: number }).rowCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('refreshes 51 discovered grant accounts in 20-account metadata batches', async () => {
+    const ids = Array.from({ length: 51 }, (_, index) => String(7300000000 + index))
+    const metadataBatches: number[] = []
+    const reportIds: string[] = []
+    const fetchImpl: TikTokApiFetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as { id?: number; method: string; params: { name?: string; arguments?: Record<string, unknown> } }
+      if (request.method === 'notifications/initialized') return new Response(null, { status: 202 })
+      let result: unknown
+      if (request.method === 'initialize') result = { protocolVersion: '2025-03-26' }
+      else if (request.method === 'tools/list') result = { tools: ['auth_advertiser_get', 'advertiser_info_get', 'report_integrated_get'].map(name => ({ name })) }
+      else {
+        const args = request.params.arguments ?? {}
+        let data: unknown
+        if (request.params.name === 'auth_advertiser_get') data = { list: ids.map(advertiser_id => ({ advertiser_id })) }
+        else if (request.params.name === 'advertiser_info_get') {
+          const batch = args.advertiser_ids as string[]
+          metadataBatches.push(batch.length)
+          data = { list: batch.map(advertiser_id => ({ advertiser_id, currency: 'USD', timezone: 'UTC' })) }
+        } else {
+          reportIds.push(String(args.advertiser_id))
+          data = { list: [], page_info: { total_page: 1 } }
+        }
+        result = { structuredContent: { code: 0, data } }
+      }
+      return jsonResponse({ jsonrpc: '2.0', id: request.id, result })
+    }
+    const service = new TikTokRefreshService({ fetchImpl, settings: { getAutoRefresh: () => false, setAutoRefresh: () => {} }, datasetsFile, resolveToken: async () => ({ token: 'fake', source: 'oauth', advertiserIds: ids.slice(0, 50), selectionExplicit: false }), now: () => 1767441600000, broadcast: () => {} })
+    expect(await service.refreshNow()).toMatchObject({ ok: true })
+    expect(metadataBatches).toEqual([20, 20, 11])
+    expect(reportIds).toEqual(ids)
   })
 
   it('rotates an expired token before pulling the report', async () => {

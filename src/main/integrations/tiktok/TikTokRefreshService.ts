@@ -14,11 +14,12 @@ import {
   TikTokReportCredentials
 } from './TikTokConnectionStore'
 import { resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokToken'
-import { fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch, TikTokReportRow } from './tiktokClient'
-import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
+import { classifyTikTokError, fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch, TikTokReportRow } from './tiktokClient'
+import { TikTokMcpReadingClient, TIKTOK_DISCOVERED_ACCOUNT_LIMIT, TIKTOK_METADATA_BATCH_SIZE } from './tiktokMcpReadingClient'
 import { proxySessionFetch } from './proxyFetch'
 import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
 import { beginTikTokDatasetRead, mergeReportRowsIntoDataset, type TikTokDatasetScope, type TikTokAdvertiserDetail } from './tiktokReportDataset'
+import { DATASET_LIMITS } from '../../../shared/datasets'
 
 /**
  * TikTok 报表自动刷新服务 — 一个轻量的 setInterval 驱动服务（默认每 30 分钟
@@ -35,7 +36,12 @@ export const REPORT_RANGE_DAYS = 7
 /** Refresh the access token when less than this remains (24h-lived tokens). */
 const TOKEN_REFRESH_MARGIN_MS = 60 * 60 * 1000
 /** Cap per-credential advertiser fan-out — protects against a huge id list. */
-const MAX_ADVERTISERS_PER_REFRESH = 20
+const MAX_ADVERTISERS_PER_REFRESH = TIKTOK_DISCOVERED_ACCOUNT_LIMIT
+
+function incompleteRefresh(completed: number, total: number, error: unknown): Error {
+  const reason = error instanceof Error && error.message === 'account-timezone-unavailable' ? '账户时区不可用' : error instanceof Error && error.message === 'report-row-limit' ? '报表行数超过安全上限，请缩短日期或缩小账户范围' : classifyTikTokError(error).code
+  return new Error(`账户读取未完成：已完成 ${completed}，失败 1，未尝试 ${Math.max(0, total - completed - 1)}（${reason}）；未更新数据，请检查后重试。`)
+}
 
 export interface TikTokRefreshSettings {
   getAutoRefresh(): boolean
@@ -62,6 +68,8 @@ export interface TikTokRefreshServiceOptions {
   resolveToken?: () => Promise<ResolvedTikTokToken>
   /** Test seam: where status pushes go (defaults to every app window). */
   broadcast?: (status: TikTokReportStatus) => void
+  /** Called only after the dataset commit succeeds; carries no account data. */
+  onDatasetCommitted?: () => void
 }
 
 function formatLocalDate(date: Date): string {
@@ -79,6 +87,7 @@ export class TikTokRefreshService {
   private readonly credentialsFile: string | undefined
   private readonly datasetsFile: string | undefined
   private readonly broadcastImpl: (status: TikTokReportStatus) => void
+  private readonly onDatasetCommitted: () => void
   private readonly resolveTokenImpl: () => Promise<ResolvedTikTokToken>
   private timer: ReturnType<typeof setInterval> | null = null
   private refreshing = false
@@ -108,6 +117,11 @@ export class TikTokRefreshService {
           if (!win.isDestroyed()) win.webContents.send(IPC_CHANNELS.TIKTOK_REPORT_STATUS, status)
         }
       })
+    this.onDatasetCommitted = options.onDatasetCommitted ?? (() => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        try { if (!win.isDestroyed()) win.webContents.send(IPC_CHANNELS.TT_READING_DATASET_CHANGED) } catch { /* a closing window must not prevent other notifications */ }
+      }
+    })
     // Default token source: the shared resolver with THIS service's paste
     // store (an injected credentialsFile must keep working in tests).
     this.resolveTokenImpl =
@@ -201,7 +215,7 @@ export class TikTokRefreshService {
       try {
         resolved = await this.resolveTokenImpl()
       } catch (error) {
-        if (error instanceof TikTokCredentialStorageError) throw error
+        if (error instanceof TikTokCredentialStorageError || (error instanceof Error && error.message === 'tiktok-advertiser-selection-unavailable')) throw error
         resolved = { token: null, source: 'none' }
       }
       if (!resolved.token) {
@@ -218,7 +232,7 @@ export class TikTokRefreshService {
       let details: Map<string, TikTokAdvertiserDetail> | undefined
       let scopes: TikTokDatasetScope[]
       if (resolved.source === 'oauth') {
-        const viaMcp = await this.fetchRowsViaMcp(resolved.token, resolved.advertiserIds, options.advertiserId)
+        const viaMcp = await this.fetchRowsViaMcp(resolved.token, resolved.advertiserIds, options.advertiserId, resolved.selectionExplicit)
         rows = viaMcp.rows
         details = viaMcp.details
         scopes = viaMcp.scopes
@@ -235,6 +249,7 @@ export class TikTokRefreshService {
       }
       const written = mergeReportRowsIntoDataset(rows, details, this.datasetsFile, scopes, requestVersion)
       if (!written.ok) throw new Error(`dataset-${written.error}`)
+      try { this.onDatasetCommitted() } catch { /* notification is advisory */ }
       this.lastRefreshAt = this.now()
       this.lastError = undefined
       this.lastRowCount = written.dataset.rows.length
@@ -304,7 +319,7 @@ export class TikTokRefreshService {
   /** One query per advertiser, merged. The report API has no token-wide query. */
   private async fetchRows(accessToken: string, advertiserIds: string[]) {
     if (advertiserIds.length === 0) throw new Error('no-advertiser')
-    if (advertiserIds.length > MAX_ADVERTISERS_PER_REFRESH) throw new Error('advertiser-limit')
+    if (advertiserIds.length > MAX_ADVERTISERS_PER_REFRESH) throw new Error('account-safety-limit-exceeded')
     const nowDate = new Date(this.now())
     const end = formatLocalDate(nowDate)
     const startDate = new Date(nowDate)
@@ -313,14 +328,16 @@ export class TikTokRefreshService {
     const scopes: TikTokDatasetScope[] = []
     const rows: TikTokReportRow[] = []
     for (const advertiserId of advertiserIds) {
-      rows.push(...(await fetchIntegratedReport(this.fetchImpl, { accessToken, advertiserId, startDate: start, endDate: end })))
-      scopes.push({ advertiserId, startDate: start, endDate: end, source: 'open-api' })
+      try {
+        rows.push(...(await fetchIntegratedReport(this.fetchImpl, { accessToken, advertiserId, startDate: start, endDate: end }, DATASET_LIMITS.maxRows - rows.length)))
+        scopes.push({ advertiserId, startDate: start, endDate: end, source: 'open-api' })
+      } catch (error) { throw incompleteRefresh(scopes.length, advertiserIds.length, error) }
     }
     return { rows: sortRowsByDateDesc(rows), scopes }
   }
 
   /** The MCP report uses each account's verified local calendar. */
-  private async fetchRowsViaMcp(token: string, advertiserIds: string[], selectedId?: string): Promise<{ rows: TikTokReportRow[]; details: Map<string, TikTokAdvertiserDetail>; scopes: TikTokDatasetScope[] }> {
+  private async fetchRowsViaMcp(token: string, advertiserIds: string[], selectedId?: string, selectionExplicit?: boolean): Promise<{ rows: TikTokReportRow[]; details: Map<string, TikTokAdvertiserDetail>; scopes: TikTokDatasetScope[] }> {
     const client = new TikTokMcpReadingClient(token, this.fetchImpl)
     await client.initialize()
     let ids: string[]
@@ -329,21 +346,28 @@ export class TikTokRefreshService {
       if (!granted.includes(selectedId)) throw new Error('advertiser-not-authorized')
       ids = [selectedId]
     } else {
-      ids = advertiserIds.length > 0 ? advertiserIds : await client.advertisers()
+      ids = selectionExplicit === false ? await client.advertisers() : advertiserIds.length > 0 ? advertiserIds : await client.advertisers()
     }
     if (ids.length === 0) throw new Error('no-advertiser')
-    if (ids.length > MAX_ADVERTISERS_PER_REFRESH) throw new Error('advertiser-limit')
+    if (ids.length > MAX_ADVERTISERS_PER_REFRESH) throw new Error('account-safety-limit-exceeded')
     const details = new Map<string, TikTokAdvertiserDetail>()
-    for (const info of await client.info(ids)) details.set(info.advertiserId, { name: info.name, currency: info.currency, timezone: info.timezone })
     const rows: TikTokReportRow[] = []
     const scopes: TikTokDatasetScope[] = []
     const now = this.now()
-    for (const advertiserId of ids) {
-      const end = tiktokAccountDate(now, details.get(advertiserId)?.timezone)
-      if (!end) throw new Error('account-timezone-unavailable')
-      const start = new Date(Date.parse(`${end}T00:00:00Z`) - (REPORT_RANGE_DAYS - 1) * 86_400_000).toISOString().slice(0, 10)
-      rows.push(...(await client.report(advertiserId, start, end)))
-      scopes.push({ advertiserId, startDate: start, endDate: end, source: 'mcp' })
+    for (let i = 0; i < ids.length; i += TIKTOK_METADATA_BATCH_SIZE) {
+      const batch = ids.slice(i, i + TIKTOK_METADATA_BATCH_SIZE)
+      try {
+        for (const info of await client.info(batch)) details.set(info.advertiserId, { name: info.name, currency: info.currency, timezone: info.timezone })
+      } catch (error) { throw incompleteRefresh(scopes.length, ids.length, error) }
+      for (const advertiserId of batch) {
+        try {
+          const end = tiktokAccountDate(now, details.get(advertiserId)?.timezone)
+          if (!end) throw new Error('account-timezone-unavailable')
+          const start = new Date(Date.parse(`${end}T00:00:00Z`) - (REPORT_RANGE_DAYS - 1) * 86_400_000).toISOString().slice(0, 10)
+          rows.push(...(await client.report(advertiserId, start, end, DATASET_LIMITS.maxRows - rows.length)))
+          scopes.push({ advertiserId, startDate: start, endDate: end, source: 'mcp' })
+        } catch (error) { throw incompleteRefresh(scopes.length, ids.length, error) }
+      }
     }
     return { rows: sortRowsByDateDesc(rows), details, scopes }
   }
@@ -361,6 +385,8 @@ export class TikTokRefreshService {
 
 function friendlyError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
+  if (message === 'account-safety-limit-exceeded') return '授权账户超过 500 个安全上限，请在连接页缩小账户范围后重试。'
+  if (message === 'tiktok-advertiser-selection-unavailable') return '无法读取已选账户，请检查连接页的账户选择后重试；未扩大读取范围。'
   return message.slice(0, 300)
 }
 

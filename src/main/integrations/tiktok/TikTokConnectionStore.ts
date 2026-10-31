@@ -4,6 +4,7 @@ import { app } from 'electron'
 import {
   normalizeTikTokAdvertiserId,
   normalizeTikTokAdvertiserIds,
+  TIKTOK_ADVERTISER_ID_LIMIT,
   TikTokCredentialErrorCode,
   TikTokCredentialInfo,
   TikTokCredentialInput,
@@ -25,7 +26,7 @@ export const TIKTOK_CREDENTIAL_LIMITS = {
   maxIdLength: 64,
   maxSecretLength: 256,
   maxTokenLength: 4096,
-  maxAdvertisers: 50
+  maxAdvertisers: TIKTOK_ADVERTISER_ID_LIMIT
 } as const
 
 export interface TikTokReportCredentials {
@@ -132,6 +133,7 @@ function readCredentialsFile(file: string): TikTokReportCredentials | null {
   if (isBoundedString(entry.appId, TIKTOK_CREDENTIAL_LIMITS.maxIdLength)) credentials.appId = entry.appId
   if (isBoundedString(entry.appSecret, TIKTOK_CREDENTIAL_LIMITS.maxSecretLength)) credentials.appSecret = entry.appSecret
   if (isBoundedString(entry.refreshToken, TIKTOK_CREDENTIAL_LIMITS.maxTokenLength)) credentials.refreshToken = entry.refreshToken
+  if (entry.advertisers !== undefined && (!Array.isArray(entry.advertisers) || entry.advertisers.length > TIKTOK_CREDENTIAL_LIMITS.maxAdvertisers || entry.advertisers.some(value => !normalizeTikTokAdvertiserId(value)))) return null
   const advertisers = normalizeTikTokAdvertiserIds(entry.advertisers, TIKTOK_CREDENTIAL_LIMITS.maxAdvertisers)
   if (advertisers.length > 0) credentials.advertisers = advertisers
   if (typeof entry.expiresAt === 'number' && Number.isFinite(entry.expiresAt) && entry.expiresAt >= 0) {
@@ -208,7 +210,10 @@ export function mergeTikTokTokens(
   tokens: { accessToken: string; expiresAt?: number; refreshToken?: string; advertisers?: string[] },
   file: string = defaultCredentialsFile()
 ): TikTokReportCredentials {
-  const current = readCredentialsFile(file) ?? { accessToken: tokens.accessToken, savedAt: 0 }
+  const previous = readCredentialsFile(file)
+  if (!previous && existsSync(file)) throw new Error('stored-tiktok-credentials-unreadable')
+  if (tokens.advertisers && (tokens.advertisers.length > TIKTOK_CREDENTIAL_LIMITS.maxAdvertisers || tokens.advertisers.some(value => !normalizeTikTokAdvertiserId(value)))) throw new Error('invalid-advertisers')
+  const current = previous ?? { accessToken: tokens.accessToken, savedAt: 0 }
   const stored: TikTokReportCredentials = {
     ...current,
     accessToken: tokens.accessToken,

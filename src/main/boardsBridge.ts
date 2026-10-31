@@ -33,7 +33,7 @@ import type { BoardWidget, KanbanBoard, WidgetType } from '../shared/types'
  * validator, so an out-of-domain widget config is rejected atomically.
  */
 
-const MAX_BODY_BYTES = 16 * 1024
+const MAX_BODY_BYTES = 64 * 1024
 export const BOARDS_TOOLS_ENV_KEY = 'TOUSHOU_BOARDS'
 
 /** Main-side zh display text for the shared board presets (Main cannot import
@@ -557,5 +557,5 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-  response.end(serializeBoundedJson(body, 30_000))
+  response.end(serializeBoundedJson(body, 256_000))
 }

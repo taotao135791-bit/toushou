@@ -265,7 +265,8 @@ export function sortRowsByDateDesc(rows: TikTokReportRow[]): TikTokReportRow[] {
  */
 export async function fetchIntegratedReport(
   fetchImpl: TikTokApiFetch,
-  query: TikTokReportQuery
+  query: TikTokReportQuery,
+  maxRows = 20_000
 ): Promise<TikTokReportRow[]> {
   const advertiserId = normalizeTikTokAdvertiserId(query.advertiserId)
   if (!advertiserId) throw new TikTokApiError(-1, '报表接口需要广告主 ID（advertiser_id）')
@@ -288,6 +289,7 @@ export async function fetchIntegratedReport(
     const payload = await getJson(fetchImpl, url, query.accessToken, '报表接口')
     const data = assertEnvelope(payload, '拉取报表')
     if (!Array.isArray(data.list)) throw new TikTokApiError(-1, 'TikTok 报表列表无效')
+    if (data.list.length > PAGE_SIZE) throw new TikTokApiError(-1, 'TikTok 报表分页超过请求大小')
     for (const entry of data.list) {
       if (!entry || typeof entry !== 'object') throw new TikTokApiError(-1, 'TikTok 报表行无效')
       const item = entry as Record<string, unknown>
@@ -298,6 +300,7 @@ export async function fetchIntegratedReport(
       const key = `${campaignId}:${normalized[0].date}`
       if (seen.has(key)) throw new TikTokApiError(-1, 'TikTok 报表存在重复行')
       seen.add(key)
+      if (rows.length >= maxRows) throw new TikTokApiError(-1, 'report-row-limit')
       rows.push({ ...normalized[0], advertiserId, campaignId })
     }
     const pageInfo = (data.page_info && typeof data.page_info === 'object' ? data.page_info : {}) as Record<string, unknown>

@@ -102,6 +102,15 @@ describe('stable report data and atomic migration', () => {
     expect(mergeReportRowsIntoDataset([row()], details, file, [scope(A)])).toMatchObject({ ok: false, error: 'dataset-store-unreadable' })
     expect(readFileSync(file, 'utf8')).toBe(raw)
   })
+  it('leaves the previous file byte-for-byte unchanged when pre-commit hashing fails', () => {
+    expect(mergeReportRowsIntoDataset([row()], details, file, [scope(A)]).ok).toBe(true)
+    const before = readFileSync(file, 'utf8')
+    const hash = vi.fn(() => { throw new Error('simulated SHA-256 failure') })
+    const result = mergeReportRowsIntoDataset([row(A, '2026-01-01', 20)], details, file, [scope(A)], undefined, hash)
+    expect(result).toMatchObject({ ok: false, error: 'write-failed', detail: 'proof-failed' })
+    expect(hash).toHaveBeenCalledOnce()
+    expect(readFileSync(file, 'utf8')).toBe(before)
+  })
 
   it('backs up a malformed current table instead of merging duplicate identities', () => {
     const first = mergeReportRowsIntoDataset([row()], details, file, [scope(A)])

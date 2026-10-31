@@ -18,6 +18,7 @@ import {
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
 import { parseFbReportReference } from './fbReportReference'
 import { validGoogleReportUrl } from './googleReport'
+import { parseTikTokAdvertiserIdList, TIKTOK_ADVERTISER_ID_LIMIT, TIKTOK_ADVERTISER_LIST_MAX_LENGTH } from './tiktokReport'
 import {
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   FB_READING_SUMMARY_METRICS,
@@ -186,6 +187,7 @@ export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' |
 export interface ComposedBoard {
   name: string
   widgets: BoardWidget[]
+  masterScope?: BoardMasterScope
 }
 
 // ASCII keywords match on word boundaries so "tt" doesn't fire inside
@@ -433,7 +435,7 @@ export function tiktokAdsPreset(t: BoardText): BoardWidget[] {
   ]
   return [
     presetWidget('tt-reading', t('boards.reading.ttModuleName'), { x: 0, y: 0, w: 12, h: 6 }, defaultWidgetConfig('tt-reading')),
-    ...datasetWidgets.map((widget) => ({ ...widget, layout: { ...widget.layout, y: widget.layout.y + 6 } }))
+    ...datasetWidgets.map((widget) => ({ ...widget, ...(widget.config.source === 'dataset' ? { config: { ...widget.config, requireVerifiedTtScope: true } } : {}), layout: { ...widget.layout, y: widget.layout.y + 6 } }))
   ]
 }
 
@@ -460,7 +462,7 @@ export function composeBoard(
     case 'fb-daily-v2':
       return { name: t('boards.preset.fbDaily2'), widgets: fbDailyV2Preset(t) }
     case 'tiktok':
-      return { name: t('boards.preset.tiktok'), widgets: tiktokAdsPreset(t) }
+      return { name: t('boards.preset.tiktok'), widgets: tiktokAdsPreset(t), masterScope: { range: 'last7', metrics: ['spend', 'cpi'] } }
     case 'blank':
       return { name: t('boards.preset.blank'), widgets: [] }
     default:
@@ -712,7 +714,8 @@ function validateFilterBranch(raw: Record<string, unknown>, config: Record<strin
   // Multi-value filter (cross-account boards): OR-match a bounded set of
   // advertiser names. Deduped; empty/garbage entries reject the widget.
   if (raw.filterValues !== undefined) {
-    if (!Array.isArray(raw.filterValues) || raw.filterValues.length === 0 || raw.filterValues.length > 20) return false
+    const limit = raw.filterColumn === '广告主ID' ? TIKTOK_ADVERTISER_ID_LIMIT : 20
+    if (!Array.isArray(raw.filterValues) || raw.filterValues.length === 0 || raw.filterValues.length > limit) return false
     const seen = new Set<string>()
     const values: string[] = []
     for (const item of raw.filterValues) {
@@ -780,6 +783,8 @@ function validateSourceBranch(
     if (!datasetId || !metric || !op) return false
     if (requireDimension && !dimension) return false
   }
+  if (raw.requireVerifiedTtScope !== undefined && typeof raw.requireVerifiedTtScope !== 'boolean') return false
+  if (raw.requireVerifiedTtScope === true) config.requireVerifiedTtScope = true
   if (source !== undefined) config.source = source
   if (datasetId) config.datasetId = datasetId
   if (metric) config.metric = metric
@@ -1040,9 +1045,11 @@ function validateWidgetConfig(
         const ids = raw.advertiserIds
         if (
           typeof ids !== 'string' ||
-          ids.length > 400 ||
+          ids.length > TIKTOK_ADVERTISER_LIST_MAX_LENGTH ||
           CONTROL_RE.test(ids) ||
-          !/^[0-9,，;；\s]*$/.test(ids)
+          !/^[0-9,，;；\s]*$/.test(ids) ||
+          parseTikTokAdvertiserIdList(ids) === null ||
+          (ids.trim() !== '' && parseTikTokAdvertiserIdList(ids)?.length === 0)
         ) {
           return null
         }

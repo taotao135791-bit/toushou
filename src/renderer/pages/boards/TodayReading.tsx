@@ -26,6 +26,7 @@ import { formatTikTokAmount, formatTikTokCostPerConversion, formatTikTokCount, f
 import { useT, type I18nKey } from '../../i18n'
 import { useAppStore } from '../../store'
 import { refreshAccountWithRetry } from './fbReadingRefresh'
+import { TTReadingProgress, type TTProgress } from './TTReadingProgress'
 import {
   ReadingErrorNotice,
   fbReadingNotice,
@@ -89,6 +90,13 @@ export function TodayReading() {
   const [openTikTok, setOpenTikTok] = useState<string | null>(null)
   const facebookLoad = useRef(0)
   const tiktokLoad = useRef(0)
+  const tiktokRequest = useRef<string | null>(null)
+  const [ttProgress, setTtProgress] = useState<TTProgress | null>(null)
+  const [ttCancelling, setTtCancelling] = useState(false)
+
+  useEffect(() => window.electronAPI.onTtReadingProgress?.((event) => {
+    if (event.requestId === tiktokRequest.current) setTtProgress(event)
+  }), [])
   const alive = useRef(true)
 
   const dateWindow = todayWindow(range)
@@ -128,11 +136,18 @@ export function TodayReading() {
   }, [range])
 
   const loadTikTok = useCallback(async () => {
+    const previousRequest = tiktokRequest.current
+    if (previousRequest) void window.electronAPI.ttReadingCancel?.(previousRequest)
+    const requestId = crypto.randomUUID()
+    tiktokRequest.current = requestId
+    setTtProgress(null)
+    setTtCancelling(false)
     const id = ++tiktokLoad.current
     setTiktokBusy(true)
+    setTiktok(null)
     setTiktokFailure(null)
     try {
-      const result = await window.electronAPI.ttReadingToday({ range })
+      const result = await window.electronAPI.ttReadingToday({ range, requestId })
       if (id !== tiktokLoad.current) return
       if ('ok' in result) {
         setTiktok(null)
@@ -145,7 +160,7 @@ export function TodayReading() {
       setTiktok(null)
       setTiktokFailure({ code: 'invoke-failed' })
     } finally {
-      if (id === tiktokLoad.current) setTiktokBusy(false)
+      if (id === tiktokLoad.current) { tiktokRequest.current = null; setTiktokBusy(false); setTtCancelling(false) }
     }
   }, [range])
 
@@ -164,6 +179,9 @@ export function TodayReading() {
     void loadTikTok()
     return () => {
       active = false
+      tiktokLoad.current += 1
+      if (tiktokRequest.current) void window.electronAPI.ttReadingCancel?.(tiktokRequest.current)
+      tiktokRequest.current = null
     }
   }, [loadFacebook, loadTikTok])
 
@@ -215,6 +233,15 @@ export function TodayReading() {
     } finally {
       setCaptureBusy(false)
     }
+  }
+
+  const cancelTikTok = async () => {
+    const requestId = tiktokRequest.current
+    if (!requestId || !window.electronAPI.ttReadingCancel) return
+    const cancelled = await window.electronAPI.ttReadingCancel(requestId).catch(() => false)
+    if (!cancelled || tiktokRequest.current !== requestId) return
+    setTtCancelling(true)
+    setTiktok(null)
   }
 
   const tiktokStep = (step: ReadingNextStep) => {
@@ -325,6 +352,7 @@ export function TodayReading() {
 
       <section className="flex flex-col gap-2">
         <h2 className="text-[16px] font-semibold leading-[26px] text-cream">{t('boards.today.tiktok')}</h2>
+        {tiktokBusy && <TTReadingProgress progress={ttProgress} cancelling={ttCancelling} onCancel={() => void cancelTikTok()} />}
         {tiktokFailure ? (
           <div className="rounded-2xl border border-line bg-ink-850 px-4 py-4">
             <ReadingErrorNotice
@@ -338,7 +366,7 @@ export function TodayReading() {
           <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.loading')}</p>
         ) : tiktok ? (
           <>
-            {tiktok.datasetSync?.ok === false && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(tiktok.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : 'boards.datasets.syncFailed')}</p>}
+            {tiktok.datasetSync?.ok === false && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(tiktok.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : tiktok.datasetSync.error === 'proof-failed' ? 'boards.datasets.proofFailed' : tiktok.datasetSync.error === 'row-limit' ? 'boards.datasets.ttRowLimit' : 'boards.datasets.syncFailed')}</p>}
             {tiktok.datasetSync?.ok === true && Boolean(tiktok.datasetSync.legacyBackups?.length) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names:tiktok.datasetSync.legacyBackups!.join('、')})}</p>}
             {tiktok.accounts.map((account) => (
               <TikTokAccount

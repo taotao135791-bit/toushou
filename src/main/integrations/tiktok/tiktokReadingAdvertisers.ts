@@ -3,6 +3,8 @@ import path from 'node:path'
 import { app } from 'electron'
 import {
   normalizeTikTokAdvertiserIds,
+  normalizeTikTokAdvertiserId,
+  TIKTOK_ADVERTISER_ID_LIMIT,
   parseTikTokAdvertiserIdList,
   type TikTokReadingAdvertisersSetResult
 } from '../../../shared/tiktokReport'
@@ -22,9 +24,11 @@ function defaultFile(): string {
 export function listTikTokReadingAdvertisers(file?: string): string[] {
   try {
     const raw = JSON.parse(readFileSync(file ?? defaultFile(), 'utf-8')) as { advertiserIds?: unknown } | null
+    if (!raw || !Array.isArray(raw.advertiserIds) || raw.advertiserIds.length > TIKTOK_ADVERTISER_ID_LIMIT || raw.advertiserIds.some((id) => !normalizeTikTokAdvertiserId(id))) throw new Error('selection-invalid')
     return normalizeTikTokAdvertiserIds(raw?.advertiserIds)
-  } catch {
-    return []
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return []
+    throw new Error('tiktok-advertiser-selection-unavailable')
   }
 }
 
@@ -32,7 +36,7 @@ export function listTikTokReadingAdvertisers(file?: string): string[] {
 export function setTikTokReadingAdvertisers(raw: unknown, file?: string): TikTokReadingAdvertisersSetResult {
   const text = raw && typeof raw === 'object' ? (raw as { advertiserIds?: unknown }).advertiserIds : undefined
   const ids = parseTikTokAdvertiserIdList(text)
-  if (!ids) return { ok: false, error: 'invalid-input' }
+  if (!ids || (typeof text === 'string' && text.trim() !== '' && ids.length === 0)) return { ok: false, error: 'invalid-input' }
   try {
     const target = file ?? defaultFile()
     mkdirSync(path.dirname(target), { recursive: true })

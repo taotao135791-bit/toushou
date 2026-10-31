@@ -26,7 +26,9 @@ async function call(params: Record<string, unknown>): Promise<string> {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(params)
     })
-    return JSON.stringify(await response.json()).slice(0, 24_000)
+    // Main already returns bounded JSON with explicit truncation metadata;
+    // slicing here would corrupt JSON and hide a large account scope.
+    return JSON.stringify(await response.json())
   } catch {
     return JSON.stringify({ ok: false, error: '看板工具暂时不可用' })
   }

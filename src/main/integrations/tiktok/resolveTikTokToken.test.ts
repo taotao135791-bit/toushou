@@ -36,7 +36,8 @@ describe('resolveTikTokToken', () => {
     expect(resolved).toEqual({
       token: 'oauth-token',
       source: 'oauth',
-      advertiserIds: []
+      advertiserIds: [],
+      selectionExplicit: false
     })
     // The paste store is never even consulted when OAuth answers.
     expect(loadPastedCredentials).not.toHaveBeenCalled()
@@ -100,23 +101,23 @@ describe('resolveTikTokToken', () => {
     expect(resolved).toEqual({
       token: 'oauth-token',
       source: 'oauth',
-      advertiserIds: ['7311111111111111111', '7322222222222222222']
+      advertiserIds: ['7311111111111111111', '7322222222222222222'],
+      selectionExplicit: true
     })
   })
 
-  it('keeps the grant when the chosen list is empty or unreadable', async () => {
+  it('keeps the grant when the chosen list is empty and rejects unreadable selection', async () => {
     const empty = await resolveTikTokToken({
       loadOAuthCredentials: async () => oauthCredentials({ advertiserIds: ['7300001'] }),
       loadSelectedAdvertisers: noSelection
     })
     expect(empty.token ? empty.advertiserIds : null).toEqual(['7300001'])
 
-    const broken = await resolveTikTokToken({
+    await expect(resolveTikTokToken({
       loadOAuthCredentials: async () => oauthCredentials({ advertiserIds: ['7300001'] }),
       loadSelectedAdvertisers: () => {
         throw new Error('EACCES')
       }
-    })
-    expect(broken.token ? broken.advertiserIds : null).toEqual(['7300001'])
+    })).rejects.toThrow('EACCES')
   })
 })

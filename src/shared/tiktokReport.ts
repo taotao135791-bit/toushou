@@ -1,3 +1,4 @@
+import type { TikTokDatasetProof } from './tiktokDatasetProof'
 /**
  * TikTok Ads 后台报表接入（Open API v1.3）— Main 与 Renderer 共享的公共契约。
  *
@@ -19,10 +20,10 @@ export type TikTokCredentialMode = 'none' | 'oauth' | 'pasted-token'
  */
 const ADVERTISER_ID_RE = /^[1-9]\d{0,24}$/
 
-export const TIKTOK_ADVERTISER_ID_LIMIT = 50
+export const TIKTOK_ADVERTISER_ID_LIMIT = 500
 
 /** Longest accepted comma-separated advertiser list ("7300…, 7311…"). */
-export const TIKTOK_ADVERTISER_LIST_MAX_LENGTH = 400
+export const TIKTOK_ADVERTISER_LIST_MAX_LENGTH = 14_000
 
 export function normalizeTikTokAdvertiserId(value: unknown): string | null {
   if (typeof value === 'string') {
@@ -204,7 +205,7 @@ export interface TikTokReadingSummary {
   /** The application-owned official connector serving this reading. */
   transport?: 'mcp'
   /** Persisting the shared dataset can fail independently of the live reading. */
-  datasetSync?: { ok: true; legacyBackups?: string[] } | { ok: false; error: string }
+  datasetSync?: { ok: true; legacyBackups?: string[]; proofs?: TikTokDatasetProof[] } | { ok: false; error: string }
   /** Per-account today windows; never assume all account calendars coincide. */
   accountWindows?: Array<{ advertiserId: string; timezone: string; startDate: string; endDate: string }>
   /** The selected account scope exceeded this widget's read cap. */

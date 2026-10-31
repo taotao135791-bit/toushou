@@ -19,7 +19,7 @@ import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
  */
 
 export type ResolvedTikTokToken =
-  | { token: string; source: 'oauth' | 'pasted'; advertiserIds: string[] }
+  | { token: string; source: 'oauth' | 'pasted'; advertiserIds: string[]; selectionExplicit?: boolean }
   | { token: null; source: 'none' }
 
 export interface ResolveTikTokTokenDeps {
@@ -88,13 +88,8 @@ export async function resolveTikTokToken(
   const loadPasted = deps.loadPastedCredentials ?? (() => loadTikTokCredentials())
   const resolved = fromOAuth(credentials) ?? fromPasted(loadPasted())
   if (!resolved) return { token: null, source: 'none' }
-  let selected: string[] = []
-  try {
-    selected = (deps.loadSelectedAdvertisers ?? (() => listTikTokReadingAdvertisers()))()
-  } catch {
-    selected = []
-  }
-  return selected.length > 0 ? { ...resolved, advertiserIds: selected } : resolved
+  const selected = (deps.loadSelectedAdvertisers ?? (() => listTikTokReadingAdvertisers()))()
+  return selected.length > 0 ? { ...resolved, advertiserIds: selected, selectionExplicit: true } : resolved.source === 'oauth' ? { ...resolved, selectionExplicit: false } : resolved
 }
 
 /** OAuth credentials for the MCP connection only; pasted Open API tokens are never used. */
@@ -102,7 +97,6 @@ export async function resolveTikTokMcpToken(options: { ignoreSelected?: boolean 
   const credentials = await defaultOAuthLoader()
   const resolved = fromOAuth(credentials)
   if (!resolved) return { token: null, source: 'none' }
-  let selected: string[] = []
-  try { if (!options.ignoreSelected) selected = listTikTokReadingAdvertisers() } catch { /* use grant scope */ }
-  return selected.length ? { ...resolved, advertiserIds: selected } : resolved
+  const selected = options.ignoreSelected ? [] : listTikTokReadingAdvertisers()
+  return selected.length ? { ...resolved, advertiserIds: selected, selectionExplicit: true } : { ...resolved, selectionExplicit: false }
 }

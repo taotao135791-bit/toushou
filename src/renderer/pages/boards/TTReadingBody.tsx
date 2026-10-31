@@ -1,3 +1,4 @@
+import { verifiedTikTokScope } from '../../lib/tiktokDatasetScope'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
@@ -17,6 +18,7 @@ import { formatReadingWindow, tiktokReadingRangeWindow } from '@shared/todayRead
 import { ttMcpReadingEvidence } from '@shared/readingEvidence'
 import { usdHint, useFxRates } from '../../lib/fxRates'
 import { ReadingEvidenceLine } from './ReadingEvidenceLine'
+import { TTReadingProgress, type TTProgress } from './TTReadingProgress'
 import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
 import { ttReadingRangeLabel } from './metricLabel'
@@ -73,29 +75,43 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
   const [failure, setFailure] = useState<{ code: ReadingErrorCode | 'invoke-failed'; detail?: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const requestVersion = useRef(0)
+  const activeRequest = useRef<string | null>(null)
+  const [progress, setProgress] = useState<TTProgress | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+
+  useEffect(() => window.electronAPI.onTtReadingProgress?.((event) => {
+    if (event.requestId === activeRequest.current) setProgress(event)
+  }), [])
 
   const load = useCallback(async () => {
+    const previous = activeRequest.current
+    if (previous) void window.electronAPI.ttReadingCancel?.(previous)
+    const requestId = crypto.randomUUID()
+    activeRequest.current = requestId
+    setProgress(null)
+    setCancelling(false)
     requestVersion.current += 1
     const version = requestVersion.current
     setBusy(true)
     setFailure(null)
+    setSummary(null)
+    window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: false, scope: null } }))
     try {
-      const result: TikTokReadingResult = await window.electronAPI.ttReadingSummary({ advertiserIds, range })
+      const result: TikTokReadingResult = await window.electronAPI.ttReadingSummary({ advertiserIds, range, requestId })
       if (version !== requestVersion.current) return
       if ('ok' in result) {
         setSummary(null)
         setFailure({ code: result.error, detail: result.detail })
-        window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: true } }))
+        window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: true, scope: null } }))
       } else {
         setSummary(result)
-        window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: (result.datasetSync?.ok === false && result.datasetSync.error !== 'superseded') || result.failed.length > 0 || result.truncated === true } }))
-        // Do not claim stale dataset cards refreshed after a failed sync.
-        if (result.datasetSync?.ok !== false || result.datasetSync.error === 'superseded') window.dispatchEvent(new CustomEvent('tt-reading:refreshed'))
+        const scope = verifiedTikTokScope(widget.id, advertiserIds, range, result)
+        window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: !scope, scope } }))
       }
     } catch {
-      if (version === requestVersion.current) { setFailure({ code: 'invoke-failed' }); window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: true } })) }
+      if (version === requestVersion.current) { setFailure({ code: 'invoke-failed' }); window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: true, scope: null } })) }
     } finally {
-      if (version === requestVersion.current) setBusy(false)
+      if (version === requestVersion.current) { activeRequest.current = null; setBusy(false); setCancelling(false) }
     }
   }, [advertiserIds, range, widget.id])
 
@@ -103,6 +119,9 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
     void load()
     return () => {
       requestVersion.current += 1
+      if (activeRequest.current) void window.electronAPI.ttReadingCancel?.(activeRequest.current)
+      activeRequest.current = null
+      window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: false, scope: null } }))
     }
   }, [load])
 
@@ -119,6 +138,16 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
     window.addEventListener('tt-reading:board-refresh', onBoardRefresh)
     return () => window.removeEventListener('tt-reading:board-refresh', onBoardRefresh)
   }, [load, widget.id])
+
+  const cancelReading = async () => {
+    const requestId = activeRequest.current
+    if (!requestId || !window.electronAPI.ttReadingCancel) return
+    const cancelled = await window.electronAPI.ttReadingCancel(requestId).catch(() => false)
+    if (!cancelled || activeRequest.current !== requestId) return
+    setCancelling(true)
+    setSummary(null)
+    window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: true, scope: null } }))
+  }
 
   const runStep = (step: ReadingNextStep) => {
     if (step === 'retry') void load()
@@ -138,7 +167,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
   const windowLabel = formatReadingWindow(
     summary ? { start: summary.startDate, end: summary.endDate } : tiktokReadingRangeWindow(range)
   )
-  const totals = summary?.totals
+  const totals = summary?.advertisers.length ? summary.totals : undefined
   const pending = busy && !totals
   const placeholder = pending ? t('boards.tt.loading') : '—'
   const mixed = summary?.mixedCurrency === true
@@ -171,6 +200,8 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
         </button>
       </div>
 
+      {busy && <TTReadingProgress progress={progress} cancelling={cancelling} onCancel={() => void cancelReading()} />}
+
       {failure ? (
         <ReadingErrorNotice
           notice={tiktokReadingNotice(failure.code, t, failure.detail)}
@@ -180,7 +211,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
         />
       ) : (
         <>
-          {summary?.datasetSync?.ok === false && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(summary.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : 'boards.datasets.syncFailed')}</p>}
+          {summary?.datasetSync?.ok === false && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(summary.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : summary.datasetSync.error === 'proof-failed' ? 'boards.datasets.proofFailed' : summary.datasetSync.error === 'row-limit' ? 'boards.datasets.ttRowLimit' : 'boards.datasets.syncFailed')}</p>}
           {summary?.datasetSync?.ok === true && Boolean(summary.datasetSync.legacyBackups?.length) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', { names: summary.datasetSync.legacyBackups!.join('、') })}</p>}
           {summary?.accountWindows && summary.accountWindows.length > 0 && <details className="text-[12px] text-cream-faint"><summary className="cursor-pointer">{t('boards.tt.accountWindows')}</summary><div className="max-h-24 overflow-auto">{summary.accountWindows.map(window => <span className="block" key={window.advertiserId}>{window.advertiserId} · {window.timezone} · {formatReadingWindow({start:window.startDate,end:window.endDate})}</span>)}</div></details>}
           {summary && summary.failed.length > 0 && (
@@ -216,7 +247,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
             </div>
           )}
 
-          {summary && !summary.currency && !mixed && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.unknownCurrency')}</p>}
+          {summary && summary.advertisers.length > 0 && !summary.currency && !mixed && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.unknownCurrency')}</p>}
           {summary?.truncated && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.truncated')}</p>}
 
           {mixed && (

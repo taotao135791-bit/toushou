@@ -30,6 +30,12 @@ const STEP_LABEL: Record<ReadingNextStep, I18nKey> = {
 
 /** TikTok reading codes from Main, plus the renderer's own failed invoke. */
 export function tiktokReadingNotice(code: ReadingErrorCode | 'invoke-failed', t: Translate, detail?: string | null): ReadingNotice {
+  if (detail === 'report-row-limit') return { message: t('boards.tt.reportRowLimit'), step: 'pick-advertiser' }
+  if (detail === 'tiktok-advertiser-selection-unavailable') return { message: t('boards.tt.selectionUnavailable'), step: 'pick-advertiser' }
+  if (detail === 'reading-cancelled') return { message: t('boards.tt.cancelled'), step: 'retry' }
+  if (detail === 'account-batch-not-attempted') return { message: t('boards.tt.batchNotAttempted'), step: 'retry' }
+  if (detail === 'account-safety-limit-exceeded') return { message: t('boards.tt.safetyLimit'), step: 'pick-advertiser' }
+  if (detail === 'account-list-incomplete' || detail === 'account-list-invalid' || detail === 'account-list-duplicate') return { message: t('boards.tt.accountListIncomplete'), step: 'retry' }
   if (detail === 'account-limit-not-read') return { message: t('boards.tt.limitNotRead'), step: 'pick-advertiser' }
   if (detail === 'account-timezone-unavailable') return { message: t('boards.datasets.timezoneUnavailable'), step: 'retry' }
   switch (code) {

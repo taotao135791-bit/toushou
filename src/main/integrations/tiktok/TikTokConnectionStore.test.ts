@@ -47,7 +47,7 @@ describe('parseTikTokCredentialInput', () => {
     expect(parseTikTokCredentialInput({ accessToken: 'tok', appSecret: 's'.repeat(300) }).ok).toBe(false)
     expect(parseTikTokCredentialInput({ accessToken: 'tok', advertiserIds: ['abc'] }).ok).toBe(false)
     expect(parseTikTokCredentialInput({ accessToken: 'tok', advertiserIds: [0] }).ok).toBe(false)
-    expect(parseTikTokCredentialInput({ accessToken: 'tok', advertiserIds: Array(51).fill(1) }).ok).toBe(false)
+    expect(parseTikTokCredentialInput({ accessToken: 'tok', advertiserIds: Array(501).fill(1) }).ok).toBe(false)
     expect(parseTikTokCredentialInput('nope').ok).toBe(false)
   })
 
@@ -63,6 +63,14 @@ describe('parseTikTokCredentialInput', () => {
 })
 
 describe('credentials round-trip + masking', () => {
+  it('preserves 500 explicit advertiser IDs and rejects overflow', () => {
+    const ids = Array.from({ length: 500 }, (_, i) => String(7300000000 + i))
+    expect(setTikTokCredentials({ accessToken: 'fake-token', advertiserIds: ids }, file).ok).toBe(true)
+    expect(loadTikTokCredentials(file)?.advertisers).toEqual(ids)
+    const before = readFileSync(file, 'utf8')
+    expect(setTikTokCredentials({ accessToken: 'fake-token', advertiserIds: [...ids, '9999999999'] }, file)).toMatchObject({ ok: false, error: 'invalid-advertisers' })
+    expect(readFileSync(file, 'utf8')).toBe(before)
+  })
   it('saves, loads and lists with only masked values', () => {
     const outcome = setTikTokCredentials(
       {
