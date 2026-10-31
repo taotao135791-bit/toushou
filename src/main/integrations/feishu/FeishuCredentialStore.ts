@@ -1,7 +1,9 @@
 import { app, safeStorage } from 'electron'
-import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { LarkBrand } from '../../../shared/connections'
+import { SecureStorageCoordinator, secureStorageCoordinator } from '../secureStorageCoordinator'
 
 export interface FeishuStoredCredentials {
   appId: string
@@ -29,6 +31,12 @@ const electronBackend: SecretBackend = {
   decrypt: (value) => safeStorage.decryptString(value)
 }
 
+export const FEISHU_CREDENTIAL_UNAVAILABLE = '已保存的飞书凭据暂时无法读取，原数据已保留。请检查系统安全存储后点击重试。'
+export type FeishuCredentialLoadResult =
+  | { status: 'absent' }
+  | { status: 'unavailable' }
+  | { status: 'ready'; credentials: FeishuStoredCredentials }
+
 /**
  * Main-only credential storage. The file is just an encrypted envelope; the
  * plaintext app secret, OAuth tokens, and owner identity never enter
@@ -37,30 +45,94 @@ const electronBackend: SecretBackend = {
 export class FeishuCredentialStore {
   private readonly filePath: string
   private readonly backend: SecretBackend
+  private readonly coordinator: SecureStorageCoordinator
+  private failed = false
+  private failedOnEmptyStore = false
+  private inFlight: Promise<FeishuCredentialLoadResult> | null = null
+  private cached: { encoded: string; credentials: FeishuStoredCredentials } | null = null
 
-  constructor(options: { filePath?: string; backend?: SecretBackend } = {}) {
+  constructor(options: { filePath?: string; backend?: SecretBackend; coordinator?: SecureStorageCoordinator } = {}) {
     this.filePath = options.filePath ?? path.join(app.getPath('userData'), 'feishu-credentials.bin')
     this.backend = options.backend ?? electronBackend
+    this.coordinator = options.coordinator ?? (options.backend ? new SecureStorageCoordinator() : secureStorageCoordinator)
   }
 
-  async save(credentials: Omit<FeishuStoredCredentials, 'savedAt'>): Promise<void> {
-    if (!this.backend.isAvailable()) {
-      throw new Error('secure credential storage is unavailable on this device')
-    }
+  async save(credentials: Omit<FeishuStoredCredentials, 'savedAt'>, options: { retryEpoch?: number | null } = {}): Promise<void> {
+    // Never replace an existing envelope that we cannot read. In particular,
+    // a failed automatic restore is not the same as a fresh profile.
+    const current = await this.loadResult()
+    if (current.status === 'unavailable') throw new Error(FEISHU_CREDENTIAL_UNAVAILABLE)
     const payload: FeishuStoredCredentials = { ...credentials, savedAt: Date.now() }
-    const encrypted = this.backend.encrypt(JSON.stringify(payload))
+    let encrypted: Buffer
+    try {
+      encrypted = this.coordinator.encrypt(this.backend, JSON.stringify(payload), { retry: options.retryEpoch != null && current.status === 'absent', retryEpoch: options.retryEpoch })
+    } catch {
+      this.failed = true
+      this.failedOnEmptyStore = current.status === 'absent'
+      this.cached = null
+      throw new Error(current.status === 'ready' ? FEISHU_CREDENTIAL_UNAVAILABLE : '系统安全存储暂不可用，未保存飞书凭据。请检查系统安全存储后点击重试。')
+    }
     await mkdir(path.dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, encrypted.toString('base64'), { mode: 0o600 })
-    await chmod(this.filePath, 0o600)
+    const tempPath = `${this.filePath}.${randomUUID()}.tmp`
+    try {
+      await writeFile(tempPath, encrypted.toString('base64'), { mode: 0o600, flag: 'wx' })
+      await rename(tempPath, this.filePath)
+    } finally {
+      await unlink(tempPath).catch(() => undefined)
+    }
+    this.cached = { encoded: encrypted.toString('base64'), credentials: payload }
   }
 
   async load(): Promise<FeishuStoredCredentials | null> {
+    const result = await this.loadResult()
+    return result.status === 'ready' ? result.credentials : null
+  }
+
+  /** Failed decryptions stay paused until an explicit user retry. */
+  blockedEpoch(): number | null { return this.coordinator.blockedEpoch() }
+
+  async retryLoad(retryEpoch = this.coordinator.blockedEpoch()): Promise<FeishuCredentialLoadResult> {
+    if (this.inFlight) await this.inFlight
+    this.failed = false
+    this.failedOnEmptyStore = false
+    this.inFlight = this.readResult(true, retryEpoch).finally(() => { this.inFlight = null })
+    return this.inFlight
+  }
+
+  async loadResult(): Promise<FeishuCredentialLoadResult> {
+    if (this.failed) return { status: 'unavailable' }
+    if (!this.inFlight) {
+      this.inFlight = this.readResult().finally(() => { this.inFlight = null })
+    }
+    return this.inFlight
+  }
+
+  /** A new connection can recheck an earlier failed first save without
+   * retrying an unreadable existing envelope or touching native storage. */
+  async loadForNewConnection(): Promise<FeishuCredentialLoadResult> {
+    if (this.failedOnEmptyStore) {
+      this.failed = false
+      this.failedOnEmptyStore = false
+    }
+    return this.loadResult()
+  }
+
+  private async readResult(retry = false, retryEpoch: number | null = null): Promise<FeishuCredentialLoadResult> {
+    let encoded: string
     try {
       // A fresh profile has no envelope: avoid consulting Keychain at all.
       // Only an existing file needs the secure-storage backend.
-      const encoded = await readFile(this.filePath, 'utf8')
-      if (!this.backend.isAvailable()) return null
-      const raw = JSON.parse(this.backend.decrypt(Buffer.from(encoded, 'base64'))) as Record<string, unknown>
+      encoded = await readFile(this.filePath, 'utf8')
+    } catch (error) {
+      this.cached = null
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { status: 'absent' }
+      this.failed = true
+      return { status: 'unavailable' }
+    }
+    try {
+      if (!retry && this.cached?.encoded === encoded) return { status: 'ready', credentials: this.cached.credentials }
+      const decoded = this.coordinator.decrypt(this.backend, Buffer.from(encoded, 'base64'), { retry, retryEpoch })
+      const raw = JSON.parse(decoded) as Record<string, unknown>
       if (
         typeof raw.appId !== 'string' ||
         !raw.appId ||
@@ -68,9 +140,9 @@ export class FeishuCredentialStore {
         !raw.appSecret ||
         (raw.brand !== 'feishu' && raw.brand !== 'lark')
       ) {
-        return null
+        throw new Error('invalid credential envelope')
       }
-      return {
+      const credentials: FeishuStoredCredentials = {
         appId: raw.appId,
         appSecret: raw.appSecret,
         brand: raw.brand,
@@ -83,8 +155,12 @@ export class FeishuCredentialStore {
         scope: typeof raw.scope === 'string' ? raw.scope : undefined,
         savedAt: typeof raw.savedAt === 'number' ? raw.savedAt : 0
       }
+      this.cached = { encoded, credentials }
+      return { status: 'ready', credentials }
     } catch {
-      return null
+      this.cached = null
+      this.failed = true
+      return { status: 'unavailable' }
     }
   }
 
@@ -105,6 +181,9 @@ export class FeishuCredentialStore {
     } catch {
       // Already absent is the desired outcome.
     }
+    this.failed = false
+    this.failedOnEmptyStore = false
+    this.cached = null
   }
 
   /** Test-only visibility: proves the persisted envelope is not plaintext. */

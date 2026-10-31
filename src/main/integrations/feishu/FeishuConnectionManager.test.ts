@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,9 +8,11 @@ import { NormalizedFeishuMessage } from './FeishuChannel'
 // FeishuConnectionManager touches electron (paths, windows) and Main's live
 // omp registry; both are stubbed so the test only exercises routing + sinks.
 const paths = vi.hoisted(() => ({ documents: '', userData: '' }))
+const secureStorage = vi.hoisted(() => ({ isEncryptionAvailable: vi.fn(() => false), encryptString: vi.fn((value: string): Buffer => Buffer.from(value)), decryptString: vi.fn((_value: Buffer): string => '') }))
 
 vi.mock('electron', () => ({
   app: { getPath: (key: string) => paths[key as keyof typeof paths] ?? '/tmp/toushou-feishu-fallback' },
+  safeStorage: secureStorage,
   BrowserWindow: { getAllWindows: () => [] },
   shell: { openExternal: vi.fn() }
 }))
@@ -31,6 +33,7 @@ vi.mock('../../store', () => ({
 
 import { createSession, getSession, getSessionState, resumeSession } from '../../omp'
 import { FeishuConnectionManager } from './FeishuConnectionManager'
+import { secureStorageCoordinator } from '../secureStorageCoordinator'
 
 interface RouterAccess {
   router: {
@@ -56,6 +59,85 @@ beforeEach(async () => {
   paths.documents = await mkdtemp(path.join(os.tmpdir(), 'toushou-feishu-docs-'))
   paths.userData = await mkdtemp(path.join(os.tmpdir(), 'toushou-feishu-user-'))
   vi.clearAllMocks()
+  // The application singleton deliberately survives manager instances. Reset
+  // it between isolated tests with a synthetic backend, never the Keychain.
+  secureStorageCoordinator.encrypt({ isAvailable: () => true, encrypt: value => Buffer.from(value), decrypt: value => value.toString() }, 'fixture', { retry: true, retryEpoch: secureStorageCoordinator.blockedEpoch() })
+})
+
+describe('Feishu credential recovery', () => {
+  it('reports unreadable credentials, blocks replacement and retries only on user action', async () => {
+    const file = path.join(paths.userData, 'feishu-credentials.bin')
+    await writeFile(file, 'unreadable-envelope')
+    const manager = new FeishuConnectionManager()
+    await manager.initialize()
+    expect(manager.getSnapshot()).toMatchObject({ status: 'failed', lastError: expect.stringContaining('原数据已保留') })
+    expect(secureStorage.isEncryptionAvailable).toHaveBeenCalledTimes(1)
+    await manager.beginPermissionRepair()
+    const manual = await manager.connectManual({ appId: 'cli_test', appSecret: 'secret-value', brand: 'feishu' })
+    expect(manual).toMatchObject({ ok: false, error: expect.stringContaining('原数据已保留') })
+    expect(secureStorage.isEncryptionAvailable).toHaveBeenCalledTimes(1)
+    expect(await readFile(file, 'utf8')).toBe('unreadable-envelope')
+    const retry = await manager.beginConnection()
+    expect(retry).toMatchObject({ ok: false, error: expect.stringContaining('原数据已保留') })
+    expect(secureStorage.isEncryptionAvailable).toHaveBeenCalledTimes(2)
+    expect(await readFile(file, 'utf8')).toBe('unreadable-envelope')
+  })
+  it('restores the old connection after an explicit successful retry', async () => {
+    const file = path.join(paths.userData, 'feishu-credentials.bin')
+    await writeFile(file, 'ZW5jcnlwdGVk')
+    secureStorage.isEncryptionAvailable.mockReturnValueOnce(false).mockReturnValue(true)
+    secureStorage.decryptString.mockReturnValue(JSON.stringify({ appId: 'cli_test', appSecret: 'secret-value', brand: 'feishu' }))
+    const manager = new FeishuConnectionManager()
+    const connect = vi.spyOn(manager as unknown as { connectCredentials: (credentials: unknown) => Promise<void> }, 'connectCredentials').mockResolvedValue(undefined)
+    try {
+      await manager.initialize()
+      expect(manager.getSnapshot().status).toBe('failed')
+      expect(await manager.beginConnection()).toMatchObject({ ok: true })
+      expect(connect).toHaveBeenCalledOnce()
+      expect(connect).toHaveBeenCalledWith(expect.objectContaining({ appId: 'cli_test' }))
+      expect(await readFile(file, 'utf8')).toBe('ZW5jcnlwdGVk')
+    } finally {
+      await manager.disconnect()
+      secureStorage.isEncryptionAvailable.mockReturnValue(false)
+    }
+  })
+  it('allows an explicit manual first connection to recover a shared storage lock', async () => {
+    expect(() => secureStorageCoordinator.encrypt({ isAvailable: () => false, encrypt: value => Buffer.from(value), decrypt: value => value.toString() }, 'fixture')).toThrow()
+    secureStorage.isEncryptionAvailable.mockReturnValue(true)
+    const manager = new FeishuConnectionManager()
+    const connect = vi.spyOn(manager as unknown as { connectCredentials: (credentials: unknown) => Promise<void> }, 'connectCredentials').mockResolvedValue(undefined)
+    try {
+      const result = await manager.connectManual({ appId: 'cli_test', appSecret: 'secret-value', brand: 'feishu' })
+      expect(result).toMatchObject({ ok: true })
+      expect(connect).toHaveBeenCalledOnce()
+      expect(secureStorage.isEncryptionAvailable).toHaveBeenCalledOnce()
+      expect(secureStorageCoordinator.isBlocked()).toBe(false)
+      expect(await readFile(path.join(paths.userData, 'feishu-credentials.bin'), 'utf8')).not.toContain('secret-value')
+    } finally {
+      await manager.disconnect()
+      secureStorage.isEncryptionAvailable.mockReturnValue(false)
+    }
+  })
+  it.each([false, true])('does not retry a new failure that appears after manual connection starts (initially blocked: %s)', async (initiallyBlocked) => {
+    const fail = { isAvailable: () => false, encrypt: (value: string) => Buffer.from(value), decrypt: (value: Buffer) => value.toString() }
+    const success = { ...fail, isAvailable: () => true }
+    if (initiallyBlocked) expect(() => secureStorageCoordinator.encrypt(fail, 'fixture')).toThrow()
+    secureStorage.isEncryptionAvailable.mockReturnValue(true)
+    const manager = new FeishuConnectionManager()
+    vi.spyOn(manager as unknown as { connectCredentials: (credentials: unknown) => Promise<void> }, 'connectCredentials').mockImplementation(async () => {
+      if (initiallyBlocked) secureStorageCoordinator.encrypt(success, 'fixture', { retry: true, retryEpoch: secureStorageCoordinator.blockedEpoch() })
+      expect(() => secureStorageCoordinator.encrypt(fail, 'fixture')).toThrow()
+    })
+    try {
+      const result = await manager.connectManual({ appId: 'cli_test', appSecret: 'secret-value', brand: 'feishu' })
+      expect(result).toMatchObject({ ok: false })
+      expect(secureStorage.isEncryptionAvailable).not.toHaveBeenCalled()
+      await expect(readFile(path.join(paths.userData, 'feishu-credentials.bin'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await manager.disconnect()
+      secureStorage.isEncryptionAvailable.mockReturnValue(false)
+    }
+  })
 })
 
 afterEach(async () => {
