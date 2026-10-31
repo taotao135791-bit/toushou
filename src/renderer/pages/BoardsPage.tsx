@@ -938,6 +938,7 @@ export default function BoardsPage() {
     }))
   }
   const master = current?.masterScope ?? null
+  const snapshotIndependent = !!current?.widgets.some(widget => widget.type === 'reading-snapshot') && !current.widgets.some(widget => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type))
   const readingModuleCount = current
     ? current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)).length
     : 0
@@ -1624,10 +1625,11 @@ export default function BoardsPage() {
           </div>
         )}
       </header>
-      {surface === 'board' && current && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
-      {surface === 'board' && current && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
-      {surface === 'board' && current && datasets.some(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')) && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names: datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name).join('、')})}</p>}
-      {surface === 'board' && current && (
+      {surface === 'board' && current && !snapshotIndependent && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
+      {surface === 'board' && current && !snapshotIndependent && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
+      {surface === 'board' && current && !snapshotIndependent && datasets.some(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')) && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names: datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name).join('、')})}</p>}
+      {surface === 'board' && current && snapshotIndependent && <p className="border-b border-line px-4 py-2 text-[12px] text-cream-dim">{language === 'zh' ? '已保存的快照使用固定日期。可回到“今日”选择其他日期，再保存为新看板。' : 'Saved snapshots keep their original dates. Return to Today to choose dates and save a new board.'}</p>}
+      {surface === 'board' && current && !snapshotIndependent && (
         <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 items-center gap-2 border-b border-line bg-ink-900/60 px-4">
           <span className="shrink-0 text-[12px] leading-[18px] text-cream-faint">{t('boards.master.label')}</span>
           <div className="flex items-center gap-1">
