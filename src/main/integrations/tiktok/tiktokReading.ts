@@ -14,9 +14,12 @@ import {
   isTikTokTodayFailure,
   isTodayRange,
   previousEqualWindow,
+  parseTikTokCustomWindow,
   tiktokReadingRangeWindow,
   todayWindow,
+  todayWindowForAccountDate,
   type TikTokTodayAccount,
+  type TikTokTodayProgressItem,
   type TikTokTodayReading,
   type TikTokTodayReadingResult
 } from '../../../shared/todayReading'
@@ -67,7 +70,9 @@ async function lookupAdvertisers(
 function campaignSpends(rows: TikTokReportRow[]): Array<{ key: string; name: string; spend: number }> {
   const grouped = new Map<string, { key: string; name: string; spend: number }>()
   for (const row of rows) {
-    const name = row.campaignName || '—'
+    // Progress sends at most three campaign names; cap each untrusted display
+    // string so one provider row cannot make a progress event unbounded.
+    const name = row.campaignName ? row.campaignName.slice(0, 256) : '—'
     const key = row.advertiserId && row.campaignId ? `${row.advertiserId}:${row.campaignId}` : name
     const current = grouped.get(key) ?? { key, name, spend: 0 }
     current.spend += typeof row.spend === 'number' && Number.isFinite(row.spend) ? row.spend : 0
@@ -97,13 +102,16 @@ function rowsInWindow(rows: TikTokReportRow[], window: { start: string; end: str
  * This does not change the board widget's own 1/7/28 summary.
  */
 export async function buildTikTokTodayReading(
-  input: { range?: unknown; advertiserId?: unknown } = {},
+  input: { range?: unknown; advertiserId?: unknown; startDate?: unknown; endDate?: unknown } = {},
   deps: TikTokReadingDeps = {}
 ): Promise<TikTokTodayReadingResult> {
   const requestVersion = beginTikTokDatasetRead()
   const now = deps.now?.() ?? Date.now()
-  const range = isTodayRange(input.range) ? input.range : 'last7'
-  const window = todayWindow(range, new Date(now))
+  const range = input.range === undefined ? 'last7' : input.range
+  if (range !== 'custom' && !isTodayRange(range)) return readingFailure('invalid-input', 'invalid-range')
+  const customWindow = range === 'custom' ? parseTikTokCustomWindow(input.startDate, input.endDate) : null
+  if (range === 'custom' && !customWindow) return readingFailure('invalid-input', 'custom-window-invalid')
+  const window = range === 'custom' ? customWindow! : todayWindow(range, new Date(now))
   const previous = previousEqualWindow(window)
   if (!previous) return readingFailure('invalid-input')
   const single = input.advertiserId !== undefined
@@ -121,38 +129,37 @@ export async function buildTikTokTodayReading(
   let datasetOverflow = false
   let resultWindow = window
   let resultPreviousWindow = previous
+  let hasResolvedWindow = false
   const scopes: TikTokDatasetScope[] = []
   const details = new Map<string, { name: string | null; currency: string | null; timezone?: string | null }>()
   for (let index = 0; index < advertiserIds.length; index++) {
-    if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
+    if (deps.signal?.aborted) break
     const attempted = !stopped
+    const previousCount = accounts.length
     try {
     const advertiserId = advertiserIds[index]
     if (stopped) { accounts.push({ advertiserId, name: null, currency: null, error: stopped.code, detail: 'account-batch-not-attempted' }); continue }
     if (index % TIKTOK_METADATA_BATCH_SIZE === 0) {
       try { metadata = await lookupAdvertisers(client, advertiserIds.slice(index, index + TIKTOK_METADATA_BATCH_SIZE)) }
-      catch (error) { stopped = classifyTikTokError(error); accounts.push({ advertiserId, name: null, currency: null, error: stopped.code, detail: stopped.detail }); continue }
+      catch (error) { if (deps.signal?.aborted) break; stopped = classifyTikTokError(error); accounts.push({ advertiserId, name: null, currency: null, error: stopped.code, detail: stopped.detail }); continue }
     }
     const advertiser = metadata.get(advertiserId) ?? { advertiserId, name: null, currency: null }
-    let currentWindow = window
-    let previousWindow = previous
-    if (range === 'today') {
-      const day = tiktokAccountDate(now, advertiser.timezone)
-      if (!day) { accounts.push({ ...advertiser, error: 'api', detail: 'account-timezone-unavailable' }); continue }
-      currentWindow = { start: day, end: day }
-      const prior = previousEqualWindow(currentWindow)
-      if (!prior) { accounts.push({ ...advertiser, error: 'api', detail: 'account-timezone-unavailable' }); continue }
-      previousWindow = prior
-    }
-    if (single) { resultWindow = currentWindow; resultPreviousWindow = previousWindow }
+    const day = tiktokAccountDate(now, advertiser.timezone)
+    if (!day) { accounts.push({ ...advertiser, error: 'api', detail: 'account-timezone-unavailable' }); continue }
+    if (range === 'custom' && window.end > day) { accounts.push({ ...advertiser, error: 'invalid-input', detail: 'custom-window-future' }); continue }
+    const currentWindow = range === 'custom' ? window : todayWindowForAccountDate(range, day)
+    const previousWindow = currentWindow && previousEqualWindow(currentWindow)
+    if (!currentWindow || !previousWindow) { accounts.push({ ...advertiser, error: 'invalid-input', detail: 'custom-window-invalid' }); continue }
     let rows: TikTokReportRow[]
     try { rows = await client.report(advertiserId, previousWindow.start, currentWindow.end, MAX_ACCOUNT_REPORT_ROWS) }
     catch (error) {
+      if (deps.signal?.aborted) break
       const failure = classifyTikTokError(error)
       accounts.push({ ...advertiser, error: failure.code, detail: failure.detail })
       if (WHOLE_READ_FAILURES.has(failure.code)) stopped = failure
       continue
     }
+    if (deps.signal?.aborted) break
     if (!datasetOverflow && rowsToPersist.length + rows.length > DATASET_LIMITS.maxRows) { datasetOverflow = true; rowsToPersist.length = 0 }
     else if (!datasetOverflow) rowsToPersist.push(...rows)
     scopes.push({ advertiserId, startDate: previousWindow.start, endDate: currentWindow.end })
@@ -161,9 +168,11 @@ export async function buildTikTokTodayReading(
     const previousRows = rowsInWindow(rows, previousWindow)
     const currentTotals = summarizeTikTokReportRows(currentRows).totals
     const previousTotals = summarizeTikTokReportRows(previousRows).totals
+    if (!hasResolvedWindow) { resultWindow = currentWindow; resultPreviousWindow = previousWindow; hasResolvedWindow = true }
     accounts.push({
       ...advertiser,
-      ...(range === 'today' || single ? { window: currentWindow, previousWindow } : {}),
+      window: currentWindow,
+      previousWindow,
       spend: currentTotals.spend,
       previousSpend: previousTotals.spend,
       impressions: currentTotals.impressions,
@@ -172,10 +181,17 @@ export async function buildTikTokTodayReading(
       campaigns: campaignMoves(currentRows, previousRows)
     })
     } finally {
-      if (attempted && !deps.signal?.aborted) deps.onProgress?.({ completed: ++completed, total: advertiserIds.length, succeeded: accounts.filter(account => !isTikTokTodayFailure(account)).length })
+      if (attempted && !deps.signal?.aborted) {
+        const account = accounts.length === previousCount + 1 ? accounts[accounts.length - 1] : null
+        deps.onProgress?.({ completed: ++completed, total: advertiserIds.length, succeeded: accounts.filter(account => !isTikTokTodayFailure(account)).length,
+          ...(account ? { today: { account, range, window: resultWindow, previousWindow: resultPreviousWindow, source: resolved.source, generatedAt: now } } : {}) })
+      }
     }
   }
-  if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
+  if (deps.signal?.aborted) {
+    for (const advertiserId of advertiserIds.slice(accounts.length)) accounts.push({ advertiserId, name: null, currency: null, error: 'api', detail: 'account-batch-not-attempted' })
+    return { range, window: resultWindow, previousWindow: resultPreviousWindow, source: resolved.source, generatedAt: now, truncated: false, accounts, cancelled: true, datasetSync: { ok: false, error: 'reading-cancelled' } }
+  }
   let datasetSync: NonNullable<TikTokTodayReading['datasetSync']>
   try {
     if (scopes.length && !datasetOverflow) deps.onCommitting?.()
@@ -247,7 +263,7 @@ export interface TikTokReadingDeps {
   fetchImpl?: TikTokApiFetch
   now?: () => number
   signal?: AbortSignal
-  onProgress?: (progress: { completed: number; total: number; succeeded: number }) => void
+  onProgress?: (progress: { completed: number; total: number; succeeded: number; today?: TikTokTodayProgressItem }) => void
   onCommitting?: () => void
   onDatasetCommitted?: () => void
   /** Test seam for exercising hashing failures before disk commit. */

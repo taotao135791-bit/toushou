@@ -12,6 +12,8 @@ import type { FbAccountBalance } from './fbBillingParser'
  */
 
 export type FbReadingRange = 'today' | 'yesterday' | 'last3' | 'last7' | 'last30'
+export const FB_CUSTOM_MAX_DAYS = 366
+export type FbReadingWindow = { start: string; end: string }
 export const FB_READING_ACCOUNT_MAX = 50
 
 /**
@@ -117,6 +119,21 @@ export function boardReadingRangeDates(
   const start = new Date(today)
   start.setDate(start.getDate() - n)
   return { start: fbDateString(start), end: fbDateString(end) }
+}
+
+/** An explicit inclusive FB report window, bounded and never in the local future. */
+export function parseFbCustomWindow(start: unknown, end: unknown, now: Date = new Date()): FbReadingWindow | null {
+  const parse = (raw: unknown): number | null => {
+    if (typeof raw !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw) || raw.startsWith('0000-')) return null
+    const [year, month, day] = raw.split('-').map(Number)
+    const date = new Date(0)
+    date.setUTCFullYear(year, month - 1, day)
+    date.setUTCHours(0, 0, 0, 0)
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? date.getTime() : null
+  }
+  const first = parse(start), last = parse(end)
+  if (first === null || last === null || typeof start !== 'string' || typeof end !== 'string' || first > last || (last - first) / 86_400_000 + 1 > FB_CUSTOM_MAX_DAYS || end > fbDateString(now)) return null
+  return { start, end }
 }
 
 /** Visible Chinese date label, not the requested URL or an inferred preset. */
@@ -421,11 +438,21 @@ export function buildFbReadingUrlForRef(
   range: FbReadingRange,
   today: Date = new Date()
 ): string {
-  if (!ref || !isValidFbReadingAct(ref.act)) return ''
-  const { start, end } = boardReadingRangeDates(range, today)
+  return buildFbReadingUrlForWindow(ref, boardReadingRangeDates(range, today), today)
+}
+
+/** Canonical Ads Manager URL for a validated explicit inclusive window. */
+export function buildFbReadingUrlForWindow(
+  ref: FbReadingAccountRef | null,
+  requested: FbReadingWindow,
+  today: Date = new Date()
+): string {
+  if (!ref || !isValidFbReadingAct(ref.act) || !isValidFbReadingBusinessId(ref.businessId)) return ''
+  const window = parseFbCustomWindow(requested?.start, requested?.end, today)
+  if (!window) return ''
+  const { start, end } = window
   // UI/report dates are inclusive; Ads Manager's URL end is exclusive.
-  const [year, month, day] = end.split('-').map(Number)
-  const exclusiveEnd = fbDateString(new Date(year, month - 1, day + 1))
+  const exclusiveEnd = new Date(Date.parse(`${end}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
   const dates = `${start}_${exclusiveEnd}`
   // Canonical columns prevent each account's saved Ads Manager view from
   // omitting a denominator needed by product-level aggregation.

@@ -5,6 +5,8 @@ import { FbReportReadingBody } from './FbReportReadingBody'
 import { FbReadingSummaryBody } from './FbReadingSummaryBody'
 import { TTReadingBody } from './TTReadingBody'
 import { GoogleReportReadingBody } from './GoogleReportReadingBody'
+import { ReadingSnapshotView } from './ReadingSnapshotView'
+import { validateReadingSnapshot } from '@shared/readingSnapshot'
 import { BoardDataset, BoardWidget } from '@shared/types'
 import { BOARD_LIMITS, TodoItem, isValidLinkUrl } from '@shared/boards'
 import {
@@ -1083,6 +1085,33 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   )
 }
 
+function ReadingSnapshotBody({ widget, boardId }: { widget: BoardWidget; boardId: string }) {
+  const language = useAppStore(state => state.language) === 'en' ? 'en' : 'zh'
+  const zh = language === 'zh'
+  const [anonymous, setAnonymous] = useState(true)
+  const [exporting, setExporting] = useState(false)
+  const [exportStatus, setExportStatus] = useState<'saved' | 'failed' | null>(null)
+  const snapshot = validateReadingSnapshot(widget.config.snapshot)
+  if (!snapshot) return <p>{zh ? '快照无法读取。' : 'Snapshot could not be read.'}</p>
+  const exportHtml = async () => {
+    setExporting(true); setExportStatus(null)
+    try {
+      const result = await window.electronAPI.exportReadingSnapshot({ boardId, widgetId: widget.id, anonymize: anonymous, language })
+      if (result.ok) setExportStatus('saved')
+      else if (result.error !== 'cancelled') setExportStatus('failed')
+    } catch { setExportStatus('failed') }
+    finally { setExporting(false) }
+  }
+  return <div className="flex h-full flex-col gap-3">
+    <div className="flex flex-wrap items-center gap-3 text-[12px] text-cream-dim">
+      <label className="flex items-center gap-2"><input type="checkbox" checked={anonymous} onChange={e => setAnonymous(e.target.checked)} disabled={exporting} />{zh ? '导出时脱敏账户信息' : 'Anonymize account information on export'}</label>
+      <button type="button" disabled={exporting} onClick={() => void exportHtml()} className="focus-ring rounded-full border border-line px-3 py-1 disabled:opacity-40">{exporting ? (zh ? '导出中…' : 'Exporting…') : (zh ? '导出 HTML' : 'Export HTML')}</button>
+      {exportStatus && <span role="status">{exportStatus === 'saved' ? (zh ? '已导出，可离线打开或分享文件。' : 'Exported. Open offline or share the file.') : (zh ? '导出失败，请重试。' : 'Export failed. Try again.')}</span>}
+    </div>
+    <div className="min-h-0 flex-1"><ReadingSnapshotView snapshot={snapshot} includeChart={widget.config.includeChart === true} language={language} /></div>
+  </div>
+}
+
 export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
   switch (widget.type) {
     case 'clock':
@@ -1097,6 +1126,8 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, masterWi
       return <GoogleReportReadingBody widget={widget} />
     case 'tt-reading':
       return <TTReadingBody widget={widget} />
+    case 'reading-snapshot':
+      return <ReadingSnapshotBody widget={widget} boardId={boardId} />
     case 'note':
       return <NoteBody widget={widget} />
     case 'counter':

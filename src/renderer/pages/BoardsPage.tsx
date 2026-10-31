@@ -1784,7 +1784,7 @@ export default function BoardsPage() {
       >
         <div ref={boardScrollRef} className="h-full overflow-y-auto">
           {surface === 'today' ? (
-            <TodayReading />
+            <TodayReading onSaved={(board) => { setBoards(prev => [...(prev ?? []), board]); switchBoard(board.id) }} />
           ) : boards === null ? (
             <div className="flex h-full items-center justify-center text-sm text-cream-faint">
               {t('app.loading')}

@@ -344,8 +344,8 @@ describe('factories', () => {
     expect(validateBoard(board)).toEqual(board)
   })
 
-  it('createWidget produces a valid widget of every type', () => {
-    for (const type of WIDGET_TYPES) {
+  it('createWidget produces a valid default widget for types without required snapshot data', () => {
+    for (const type of WIDGET_TYPES.filter((entry) => entry !== 'reading-snapshot')) {
       const widget = createWidget(type, type, { x: 0, y: 0 })
       expect(widget.layout).toEqual({ x: 0, y: 0, ...WIDGET_DEFAULT_SIZES[type] })
       expect(widget.config).toEqual(defaultWidgetConfig(type))
@@ -353,6 +353,11 @@ describe('factories', () => {
       expect(validateBoard(board)).not.toBeNull()
       expect(validateBoard(board)?.widgets[0].type).toBe(type)
     }
+  })
+
+  it('rejects an empty snapshot rather than creating a fake reading', () => {
+    const widget = createWidget('reading-snapshot', 'Snapshot', { x: 0, y: 0 })
+    expect(validateBoard({ ...createBoard('B', 1), widgets: [widget] }, true)).toBeNull()
   })
 
   it('validates summary reading configs with bounded, unique account refs', () => {

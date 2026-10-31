@@ -1,6 +1,8 @@
 import { app } from 'electron'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import {
   BoardCardsApplyResult,
   BoardCardsCard,
@@ -61,9 +63,15 @@ function readBoards(file: string): KanbanBoard[] {
 
 function writeBoards(file: string, boards: KanbanBoard[]): void {
   mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(boards, null, 2) + '\n', 'utf-8')
-  renameSync(tmp, file)
+  const tmp = `${file}.tmp-${process.pid}-${randomUUID()}`
+  try {
+    // Create a fresh private file: a leftover temp file must not cause a
+    // brief write to a more permissive path containing account metrics.
+    writeFileSync(tmp, JSON.stringify(boards, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600, flag: 'wx' })
+    renameSync(tmp, file)
+  } finally {
+    try { rmSync(tmp, { force: true }) } catch { /* best effort after failure */ }
+  }
 }
 
 export function listBoards(file: string = defaultBoardsFile()): KanbanBoard[] {
@@ -112,6 +120,16 @@ export function saveBoard(raw: unknown, file: string = defaultBoardsFile()): Kan
     return { ok: false, error: 'board-store-unreadable' }
   }
   const index = boards.findIndex((b) => b.id === board.id)
+  if (index !== -1) {
+    for (const previous of boards[index].widgets) {
+      if (previous.type !== 'reading-snapshot') continue
+      const next = board.widgets.find(widget => widget.id === previous.id)
+      // Removing a widget is allowed; silently rewriting a saved reading is not.
+      if (next && (next.type !== 'reading-snapshot' || !isDeepStrictEqual(previous.config.snapshot, next.config.snapshot))) {
+        return { ok: false, error: 'snapshot-immutable' }
+      }
+    }
+  }
   if (index === -1 && boards.length >= BOARD_LIMITS.maxBoards) {
     return { ok: false, error: 'board-limit' }
   }

@@ -66,13 +66,17 @@ app.whenReady().then(async () => {
     const returnedTodayReads = await wc.executeJavaScript(`window.boardFixture.scenario.todayInputs.length`)
     await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;s.singleResult={ok:false,error:'network'};const e=document.querySelector('[placeholder="Search by name or enter advertiser ID"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'0000000000000002');e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
     await wait()
-    const searchById = await wc.executeJavaScript(`[...document.querySelectorAll('button[aria-pressed]')].map(e=>e.innerText)`)
+    const searchById = await wc.executeJavaScript(`[...document.querySelectorAll('button[role="option"]')].map(e=>e.innerText)`)
     await wc.executeJavaScript(`(() => {const e=document.querySelector('[placeholder="Search by name or enter advertiser ID"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'Fixture Shared');e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
     await wait()
-    const searchByName = await wc.executeJavaScript(`[...document.querySelectorAll('button[aria-pressed]')].map(e=>e.innerText)`)
-    await wc.executeJavaScript(`[...document.querySelectorAll('button[aria-pressed]')].find(e=>e.innerText.includes('7300000000000000001')).click()`)
+    const searchByName = await wc.executeJavaScript(`[...document.querySelectorAll('button[role="option"]')].map(e=>e.innerText)`)
+    await wc.executeJavaScript(`(() => {const e=document.querySelector('[placeholder="Search by name or enter advertiser ID"]');e.focus();e.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))})()`)
+    await wait()
+    const keyboardActive = await wc.executeJavaScript(`(() => {const e=document.querySelector('[placeholder="Search by name or enter advertiser ID"]');const id=e.getAttribute('aria-activedescendant');return !!id && document.getElementById(id)?.innerText.includes('7300000000000000001')})()`)
+    await wc.executeJavaScript(`(() => {const e=document.querySelector('[placeholder="Search by name or enter advertiser ID"]');e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))})()`)
     await wait()
     const chosenAccountId = await wc.executeJavaScript(`document.querySelector('[placeholder="Search by name or enter advertiser ID"]').value`)
+    const readsBeforeSubmit = await wc.executeJavaScript(`window.boardFixture.scenario.todayInputs.length`)
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Read this account').click()`)
     await wait()
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Retry').click()`)
@@ -93,8 +97,9 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(`(() => {
       const d=(days)=>{const x=new Date();x.setDate(x.getDate()-days);return [x.getFullYear(),String(x.getMonth()+1).padStart(2,'0'),String(x.getDate()).padStart(2,'0')].join('-')};
       const accountWindow={start:d(7),end:d(1)}, previousWindow={start:d(14),end:d(8)};
-      const a={advertiserId:'7300000000000000001',name:'PRIVATE_ACCOUNT_A',currency:'USD',spend:5,previousSpend:3,impressions:100,clicks:10,conversions:2,campaigns:[{name:'PRIVATE_CAMPAIGN https://example.test/secret',spend:5,previousSpend:3,delta:2}]};
-      const b={advertiserId:'7300000000000000002',name:'PRIVATE_ACCOUNT_B',currency:'USD',spend:77,previousSpend:70,impressions:200,clicks:20,conversions:3,campaigns:[]};
+      const timezone=Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const a={advertiserId:'7300000000000000001',name:'PRIVATE_ACCOUNT_A',currency:'USD',timezone,spend:5,previousSpend:3,impressions:100,clicks:10,conversions:2,campaigns:[{name:'PRIVATE_CAMPAIGN https://example.test/secret',spend:5,previousSpend:3,delta:2}]};
+      const b={advertiserId:'7300000000000000002',name:'PRIVATE_ACCOUNT_B',currency:'EUR',timezone,spend:77,previousSpend:70,impressions:200,clicks:20,conversions:3,campaigns:[]};
       const base={range:'last7',window:accountWindow,previousWindow,source:'oauth',generatedAt:Date.now(),truncated:false,datasetSync:{ok:true}};
       const s=window.boardFixture.scenario;s.todayResult={...base,accounts:[a,b]};s.singleResult={...base,accounts:[{...a,spend:15,window:accountWindow,previousWindow}]};
       [...document.querySelectorAll('[role=tab]')].find(e=>e.textContent.trim()==='Last 7 days').click()
@@ -111,6 +116,11 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Refresh this account').click()`)
     await wait()
     await wc.executeJavaScript(`(() => {const s=window.boardFixture.store.getState();s.setComposerPrefill('existing unsent draft');s.setComposerAutosend(true)})()`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Preview anonymized analysis').click()`)
+    await wait()
+    const overallDraft = await wc.executeJavaScript(`(() => {const s=window.boardFixture.store.getState();const dialog=document.querySelector('[role=dialog]');return {text:dialog?.querySelector('textarea')?.value,autosend:s.composerAutosend,existingDraft:s.composerPrefill}})()`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent.trim()==='Close').click()`)
+    await wait()
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Analyze this account').click()`)
     await wait()
     const singleDraft = await wc.executeJavaScript(`(() => {const s=window.boardFixture.store.getState();const dialog=document.querySelector('[role=dialog]');return {text:dialog?.querySelector('textarea')?.value,autosend:s.composerAutosend,existingDraft:s.composerPrefill}})()`)
@@ -120,7 +130,7 @@ app.whenReady().then(async () => {
     await wait()
     const copiedDraft = await wc.executeJavaScript(`window.boardFixture.scenario.clipboard`)
     await wc.executeJavaScript(`[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent.trim()==='Close').click()`)
-    await wc.executeJavaScript(`(() => {const f=window.boardFixture;const s=f.scenario;s.singlePending=true;s.denySingleCancel=true;const b=s.todayResult;const now=new Date();const day=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');const y=new Date(now);y.setDate(y.getDate()-1);const yesterday=[y.getFullYear(),String(y.getMonth()+1).padStart(2,'0'),String(y.getDate()).padStart(2,'0')].join('-');s.todayAlternateResult={...b,range:'today',window:{start:day,end:day},previousWindow:{start:yesterday,end:yesterday},accounts:b.accounts.map((a,i)=>({...a,spend:i?88:44,timezone:'UTC',window:{start:day,end:day},previousWindow:{start:yesterday,end:yesterday}}))};s.singleTodayResult={...s.todayAlternateResult,accounts:[s.todayAlternateResult.accounts[0]]};[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Refresh this account').click()})()`)
+    await wc.executeJavaScript(`(() => {const f=window.boardFixture;const s=f.scenario;s.singlePending=true;s.denySingleCancel=true;const b=s.todayResult;const now=new Date();const day=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');const y=new Date(now);y.setDate(y.getDate()-1);const yesterday=[y.getFullYear(),String(y.getMonth()+1).padStart(2,'0'),String(y.getDate()).padStart(2,'0')].join('-');s.todayAlternateResult={...b,range:'today',window:{start:day,end:day},previousWindow:{start:yesterday,end:yesterday},accounts:b.accounts.map((a,i)=>({...a,spend:i?88:44,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,window:{start:day,end:day},previousWindow:{start:yesterday,end:yesterday}}))};s.singleTodayResult={...s.todayAlternateResult,accounts:[s.todayAlternateResult.accounts[0]]};[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Refresh this account').click()})()`)
     await wait()
     const staleRequest = await wc.executeJavaScript(`window.boardFixture.scenario.todayRequest`)
     await wc.executeJavaScript(`window.boardFixture.scenario.singlePending=false`)
@@ -129,6 +139,49 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(`window.boardFixture.resolvePending(${JSON.stringify(staleRequest)},window.boardFixture.scenario.goodSingle)`)
     await wait()
     const switchedSingle = await wc.executeJavaScript(`(() => {const rows=[...document.querySelectorAll('article')];return {a:rows.find(e=>e.textContent.includes('PRIVATE_ACCOUNT_A'))?.innerText,b:rows.find(e=>e.textContent.includes('PRIVATE_ACCOUNT_B'))?.innerText ?? null,last:window.boardFixture.scenario.todayInputs.at(-1)}})()`)
+    phase = 'custom-date-race'
+    // Two successive calendar selections: delay the older request, complete
+    // the newer one first, then deliver the stale response out of order.
+    await wc.executeJavaScript(`(() => {const d=n=>{const x=new Date();x.setDate(x.getDate()-n);return [x.getFullYear(),String(x.getMonth()+1).padStart(2,'0'),String(x.getDate()).padStart(2,'0')].join('-')}; const s=window.boardFixture.scenario; s.firstDates={start:d(10),end:d(8)};s.nextDates={start:d(7),end:d(5)}; s.todayPending=true;s.denySingleCancel=true;const set=(label,v)=>{const e=document.querySelector('input[aria-label="'+label+'"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}))};set('Start date',s.firstDates.start);set('End date',s.firstDates.end)})()`)
+    await wait()
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Apply dates').click()`)
+    await wait()
+    const firstCustom = await wc.executeJavaScript(`window.boardFixture.scenario.todayInputs.at(-1)`)
+    await wc.executeJavaScript(`(() => {const d=n=>{const x=new Date();x.setDate(x.getDate()-n);return [x.getFullYear(),String(x.getMonth()+1).padStart(2,'0'),String(x.getDate()).padStart(2,'0')].join('-')};const s=window.boardFixture.scenario;const base=s.todayResult;const w=s.nextDates;const p={start:d(10),end:d(8)};s.customResult={...base,range:'custom',window:w,previousWindow:p,accounts:base.accounts.map((a,i)=>({...a,window:w,previousWindow:p,spend:i?88:44}))};s.todayPending=false;const set=(label,v)=>{const e=document.querySelector('input[aria-label="'+label+'"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}))};set('Start date',w.start);set('End date',w.end)})()`)
+    await wait()
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Apply dates').click()`)
+    await wait()
+    const latestCustom = await wc.executeJavaScript(`window.boardFixture.scenario.todayInputs.at(-1)`)
+    await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;const old={...s.customResult,window:s.firstDates,accounts:s.customResult.accounts.map(a=>({...a,window:s.firstDates,spend:999}))};window.boardFixture.resolvePending(${JSON.stringify(firstCustom.requestId)},old)})()`)
+    await wait()
+    const customResult = await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;const cards=[...document.querySelectorAll('article')];return {first:s.firstDates,next:s.nextDates,a:cards.find(e=>e.textContent.includes('PRIVATE_ACCOUNT_A'))?.innerText,b:cards.find(e=>e.textContent.includes('PRIVATE_ACCOUNT_B'))?.innerText}})()`)
+
+    phase = 'result-filter'
+    await wc.executeJavaScript(`(() => {const e=document.querySelector('input[aria-label="Filter inspection results"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'PRIVATE_ACCOUNT_A');e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await wait()
+    const resultFilter = await wc.executeJavaScript(`({a:document.body.textContent.includes('PRIVATE_ACCOUNT_A'),b:document.body.textContent.includes('PRIVATE_ACCOUNT_B'),scopeNotice:document.body.textContent.includes('filtering does not change the saved scope')})`)
+    await wc.executeJavaScript(`(() => {const e=document.querySelector('input[aria-label="Filter inspection results"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'');e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await wait()
+    phase = 'snapshot-save'
+    // Snapshot save failure keeps both readings and the open dialog; retry
+    // creates and immediately opens one immutable board with an optional chart.
+    await wc.executeJavaScript(`window.boardFixture.scenario.snapshotSaveFail=true`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Save as new board').click()`)
+    await wait()
+    const chartInitially = await wc.executeJavaScript(`document.querySelector('[role=dialog] input[type=checkbox]').checked`)
+    await wc.executeJavaScript(`(() => {const dialog=document.querySelector('[role=dialog]');const name=dialog.querySelector('#reading-board-name');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(name,'Snapshot fixture');name.dispatchEvent(new Event('input',{bubbles:true}));dialog.querySelector('input[type=checkbox]').click()})()`)
+    await wait()
+    await wc.executeJavaScript(`[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent.trim()==='Save and open board').click()`)
+    await wait()
+    const failedSnapshot = await wc.executeJavaScript(`({error:!!document.querySelector('[role=dialog] [role=alert]'),dialog:!!document.querySelector('[role=dialog]'),a:document.body.textContent.includes('PRIVATE_ACCOUNT_A'),b:document.body.textContent.includes('PRIVATE_ACCOUNT_B'),chart:window.boardFixture.scenario.snapshotInput?.includeChart})`)
+    await wc.executeJavaScript(`window.boardFixture.scenario.snapshotSaveFail=false`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent.trim()==='Save and open board').click()`)
+    await wait()
+    const savedSnapshot = await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;const card=document.querySelector('.reading-snapshot');return {activeBoard:document.querySelector('[title="Click to open · drag to reorder tabs"].shadow-card span')?.textContent ?? null,chart:s.snapshotInput?.includeChart,accountCount:s.snapshotInput?.snapshot.accounts.length,table:!!card?.querySelector('table'),svg:!!card?.querySelector('svg'),groupHeadings:[...(card?.querySelectorAll('h4')??[])].map(e=>e.textContent)}})()`)
+    phase = 'snapshot-export'
+    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Export HTML').click()`)
+    await wait()
+    const exportedSnapshot = await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;const doc=new DOMParser().parseFromString(s.exportedHtml,'text/html');return {anonymized:s.exportInput?.anonymize,table:!!doc.querySelector('table'),svg:!!doc.querySelector('svg'),script:!!doc.querySelector('script'),groups:[...doc.querySelectorAll('.group')].map(e=>({heading:e.querySelector('h3')?.textContent,accounts:[...e.querySelectorAll('li>span:first-child')].map(x=>x.textContent)})),containsPrivate:/PRIVATE_ACCOUNT|730000000000000000/.test(s.exportedHtml)}})()`)
     await wc.executeJavaScript(`document.querySelector('[title="New board"]').click()`)
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Blank board').click()`)
     await wc.executeJavaScript(`(() => { const e=document.querySelector('[placeholder="Board name…"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'Blank fixture'); e.dispatchEvent(new Event('input',{bubbles:true})); })()`)
@@ -166,7 +219,7 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(`(() => { [...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Google reading').click(); [...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Today').click() })()`)
     await wait()
     const switchedAway = await wc.executeJavaScript(`({today:!![...document.querySelectorAll('h1')].find(e=>e.textContent==="Today's readings"), focusedInConfig:!!document.activeElement?.closest('.widget-config')})`)
-    console.log('E2E_RESULT '+JSON.stringify({initial,initialTodayReads,created,verified,failedReload,noSuccessfulAccounts,progress,cancelled,unverified,connect,returned,returnedTodayReads,searchById,searchByName,chosenAccountId,singleScopeRetries,singleDateSwitch,todayProgress,todayCancelled,singleRefresh,failedSingle,singleDraft,copiedDraft,switchedSingle,blank,composed,googleVisible:googleCheck.visible,googleDiagnostics:googleCheck.diagnostics,ttVisible:ttCheck.visible,ttDiagnostics:ttCheck.diagnostics,switchedAway}))
+    console.log('E2E_RESULT '+JSON.stringify({initial,initialTodayReads,created,verified,failedReload,noSuccessfulAccounts,progress,cancelled,unverified,connect,returned,returnedTodayReads,searchById,searchByName,keyboardActive,chosenAccountId,readsBeforeSubmit,singleScopeRetries,singleDateSwitch,todayProgress,todayCancelled,singleRefresh,failedSingle,overallDraft,singleDraft,copiedDraft,switchedSingle,firstCustom,latestCustom,customResult,resultFilter,chartInitially,failedSnapshot,savedSnapshot,exportedSnapshot,blank,composed,googleVisible:googleCheck.visible,googleDiagnostics:googleCheck.diagnostics,ttVisible:ttCheck.visible,ttDiagnostics:ttCheck.diagnostics,switchedAway}))
   } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error),phase})) }
   finally { if (win && !win.isDestroyed()) win.destroy(); app.exit(0) }
 }).catch(error => { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})); app.exit(1) })
