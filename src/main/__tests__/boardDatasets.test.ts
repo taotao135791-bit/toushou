@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => userDataDir }
 }))
 
-import { deleteDataset, importDataset, listDatasets, renameDataset } from '../boardDatasets'
+import { deleteDataset, importDataset, importDatasetBuffer, listDatasets, listDatasetsStrict, renameDataset } from '../boardDatasets'
 import { DATASET_LIMITS } from '../../shared/datasets'
 import { BoardDataset } from '../../shared/types'
 
@@ -264,5 +264,24 @@ describe('importDataset replace-by-name identity', () => {
     if (!second.ok) return
     expect(second.dataset.id).toBe(first.dataset.id)
     expect(listDatasets(file)).toHaveLength(1)
+  })
+})
+
+
+describe('strict migration and pinned bytes', () => {
+  it('preserves unknown metadata and rejects invalid entries without rewriting the file', () => {
+    const dataset = { ...makeDataset('one'), unknownMetadata: { source: 'fixture' } }
+    writeFileSync(file, JSON.stringify([dataset]))
+    expect(listDatasetsStrict(file)).toEqual([dataset])
+    writeFileSync(file, JSON.stringify([dataset, { id: 'invalid' }]))
+    const before = readFileSync(file, 'utf8')
+    expect(() => listDatasetsStrict(file)).toThrow()
+    expect(readFileSync(file, 'utf8')).toBe(before)
+  })
+  it('imports already-opened CSV bytes without consulting a path', () => {
+    const result = importDatasetBuffer('fixture.csv', Buffer.from(CSV), file, 'Imported')
+    expect(result.ok).toBe(true)
+    expect(listDatasets(file)[0].name).toBe('Imported')
+    expect(importDatasetBuffer('fixture.csv', Buffer.alloc(DATASET_LIMITS.maxFileBytes + 1), file)).toEqual({ ok: false, error: 'file-too-large' })
   })
 })

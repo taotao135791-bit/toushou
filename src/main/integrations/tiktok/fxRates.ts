@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { proxySessionFetch } from './proxyFetch'
+import { proxyFetchFor } from './proxyFetch'
 
 /**
  * USD conversion rates for board money widgets: currency → USD multiplier.
@@ -59,7 +59,7 @@ export async function getUsdRates(fetchImpl?: (url: string) => Promise<Response>
   if (inflight) return inflight
   inflight = (async () => {
     try {
-      const fetch = fetchImpl ?? (await proxySessionFetch())
+      const fetch = fetchImpl ?? (await proxyFetchFor(SOURCE_URL, 'exchange-rates'))
       const response = await fetch(SOURCE_URL)
       if (!response.ok) throw new Error(`http-${response.status}`)
       const data = JSON.parse(await response.text()) as { result?: unknown; rates?: Record<string, unknown> }

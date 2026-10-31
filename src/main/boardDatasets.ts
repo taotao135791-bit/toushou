@@ -69,6 +69,23 @@ export function listDatasets(file: string = defaultDatasetsFile()): BoardDataset
   return readDatasets(file)
 }
 
+/** Strict read for migrations: refuse invalid rows rather than dropping them. */
+export function listDatasetsStrict(file: string = defaultDatasetsFile()): BoardDataset[] {
+  let text: string
+  try { text = readFileSync(file, 'utf8') } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw new Error('Could not read the local datasets file.')
+  }
+  let raw: unknown
+  try { raw = JSON.parse(text) } catch { throw new Error('The local datasets file is not valid JSON.') }
+  if (!Array.isArray(raw) || raw.some((item) => !validateDataset(item))) {
+    throw new Error('The local datasets file contains an invalid dataset.')
+  }
+  // Preserve extra fields verbatim for backups; validation above establishes
+  // the required BoardDataset shape without silently rewriting unknown data.
+  return raw as BoardDataset[]
+}
+
 export function deleteDataset(id: unknown, file: string = defaultDatasetsFile()): DatasetMutationResult {
   if (!isValidDatasetId(id)) return { ok: false, error: 'invalid-dataset' }
   let datasets: BoardDataset[]
@@ -163,26 +180,32 @@ export function importDataset(
   }
   if (!existsSync(filePath)) return { ok: false, error: 'invalid-path' }
 
-  let grid: string[][]
   try {
-    if (statSync(filePath).size > DATASET_LIMITS.maxFileBytes) {
-      return { ok: false, error: 'file-too-large' }
-    }
+    if (statSync(filePath).size > DATASET_LIMITS.maxFileBytes) return { ok: false, error: 'file-too-large' }
+    return importDatasetBuffer(filePath, readFileSync(filePath), file, asName)
   } catch {
     return { ok: false, error: 'read-failed' }
   }
+}
+
+/** Parse bytes already opened and authorized by Main without reopening a path. */
+export function importDatasetBuffer(
+  fileName: string,
+  bytes: Buffer,
+  file: string = defaultDatasetsFile(),
+  asName?: string
+): DatasetImportResult {
+  // eslint-disable-next-line no-control-regex
+  if (typeof fileName !== 'string' || !fileName || /[\x00-\x1f\x7f]/.test(fileName)) return { ok: false, error: 'invalid-path' }
+  const ext = path.extname(fileName).slice(1).toLowerCase()
+  if (!DATASET_FILE_EXTENSIONS.includes(ext as (typeof DATASET_FILE_EXTENSIONS)[number])) return { ok: false, error: 'unsupported-type' }
+  if (!Buffer.isBuffer(bytes)) return { ok: false, error: 'read-failed' }
+  if (bytes.length > DATASET_LIMITS.maxFileBytes) return { ok: false, error: 'file-too-large' }
+  let grid: string[][]
   try {
-    if (ext === 'csv') {
-      grid = parseCsvGrid(readFileSync(filePath, 'utf-8'))
-    } else {
-      grid = parseXlsxGrid(readFileSync(filePath))
-    }
+    grid = ext === 'csv' ? parseCsvGrid(bytes.toString('utf8')) : parseXlsxGrid(bytes)
   } catch (err) {
-    return {
-      ok: false,
-      error: 'parse-failed',
-      detail: err instanceof Error ? err.message : String(err)
-    }
+    return { ok: false, error: 'parse-failed', detail: err instanceof Error ? err.message : String(err) }
   }
   if (grid.length === 0) return { ok: false, error: 'empty' }
 
@@ -216,7 +239,7 @@ export function importDataset(
   const replaced = explicitName ? datasets.find((existing) => existing.name === explicitName) : undefined
   const dataset: BoardDataset = {
     id: replaced?.id ?? crypto.randomUUID(),
-    name: explicitName ?? datasetNameFromPath(filePath),
+    name: explicitName ?? datasetNameFromPath(fileName),
     columns: built.columns,
     rows: built.rows,
     createdAt: replaced?.createdAt ?? Date.now()

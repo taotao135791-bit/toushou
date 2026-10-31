@@ -148,3 +148,35 @@ describe('ensureBundledPackages', () => {
     expect(mockLink.mock.calls.some((call) => JSON.stringify(call[0]).includes(firstPath))).toBe(false)
   })
 })
+
+describe('packaged toolkit resource layout', () => {
+  it('places every registered toolkit at the external path used by the runtime', async () => {
+    const { mkdtempSync, cpSync, readFileSync, existsSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const path = await import('node:path')
+    const { app } = await import('electron')
+    const fixture = mkdtempSync(path.join(tmpdir(), 'toushou-bundled-layout-'))
+    const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
+    const packaged = app.isPackaged
+    try {
+      const config = JSON.parse(readFileSync(path.join(process.cwd(), 'electron-builder.json'), 'utf8')) as { extraResources: Array<{ from: string; to: string }> }
+      for (const pkg of BUNDLED_PACKAGES) {
+        const mapping = config.extraResources.find((entry) => entry.from === `resources/${pkg.resourceDir}` && entry.to === pkg.resourceDir)
+        expect(mapping, `missing external resource mapping for ${pkg.name}`).toBeDefined()
+        cpSync(path.join(process.cwd(), mapping!.from), path.join(fixture, mapping!.to), { recursive: true })
+      }
+      Object.defineProperty(process, 'resourcesPath', { configurable: true, value: fixture })
+      Object.defineProperty(app, 'isPackaged', { configurable: true, value: true })
+      for (const pkg of BUNDLED_PACKAGES) {
+        expect(readBundledPackageVersion(pkg.resourceDir), `unreadable packaged ${pkg.name}`).toBeTruthy()
+        const manifest = JSON.parse(readFileSync(path.join(fixture, pkg.resourceDir, 'package.json'), 'utf8')) as { omp?: { extensions?: string[] } }
+        for (const extension of manifest.omp?.extensions ?? []) expect(existsSync(path.join(fixture, pkg.resourceDir, extension))).toBe(true)
+      }
+    } finally {
+      Object.defineProperty(app, 'isPackaged', { configurable: true, value: packaged })
+      if (original) Object.defineProperty(process, 'resourcesPath', original)
+      else Reflect.deleteProperty(process, 'resourcesPath')
+      rmSync(fixture, { recursive: true, force: true })
+    }
+  })
+})

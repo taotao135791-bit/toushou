@@ -1,43 +1,40 @@
+import { createHash } from 'node:crypto'
+import { session } from 'electron'
 import { resolveEnvProxyRules } from './envProxy'
 
 export type ProxyAwareFetch = (url: string, init?: RequestInit) => Promise<Response>
 
-/**
- * Proxy-aware fetch for Main-initiated HTTP. The proxy decision is resolved
- * for the ACTUAL target URL, so NO_PROXY entries for one host (e.g. an
- * internal model relay) do not leak into another (e.g. TikTok's API).
- *
- * Sessions are created per partition and re-configured only when the resolved
- * config changes; concurrent calls are serialized through a small queue so a
- * setProxy never races a request that assumes the previous config.
- */
-const states = new Map<string, { ses: Promise<import('electron').Session>; appliedKey: string | null; queue: Promise<unknown> }>()
+/** Sessions are in-memory and immutable per resolved proxy config. */
+const sessions = new Map<string, Promise<import('electron').Session>>()
 
 export async function proxyFetchFor(targetUrl: string, partition: string): Promise<ProxyAwareFetch> {
   const config = resolveEnvProxyRules(targetUrl)
-  const key = JSON.stringify(config)
-  let state = states.get(partition)
-  if (!state) {
-    state = {
-      ses: import('electron').then((m) => m.session.fromPartition(partition)),
-      appliedKey: null,
-      queue: Promise.resolve()
-    }
-    states.set(partition, state)
-  }
-  const current = state
-  const ses = await current.ses
-  current.queue = current.queue.then(async () => {
-    if (current.appliedKey !== key) {
+  const key = JSON.stringify([partition, config])
+  let pending = sessions.get(key)
+  if (!pending) {
+    const hash = createHash('sha256').update(key).digest('hex')
+    const created = Promise.resolve().then(async () => {
+      const ses = session.fromPartition(`proxy-${hash}`)
       await ses.setProxy(config)
-      current.appliedKey = key
+      return ses
+    })
+    pending = created.catch((error) => {
+      if (sessions.get(key) === pending) sessions.delete(key)
+      throw error
+    })
+    sessions.set(key, pending)
+  }
+  const ses = await pending
+  return async (url, init) => {
+    // Never let a caller accidentally use the configuration for another URL.
+    if (JSON.stringify([partition, resolveEnvProxyRules(url)]) !== key) {
+      return (await proxyFetchFor(url, partition))(url, init)
     }
-  })
-  await current.queue
-  return (url, init) => ses.fetch(url, init) as unknown as Promise<Response>
+    return ses.fetch(url, init) as unknown as Promise<Response>
+  }
 }
 
-/** TikTok-facing calls: one target, one dedicated session. */
+/** TikTok-facing calls, resolved afresh for each actual target. */
 export async function proxySessionFetch(): Promise<ProxyAwareFetch> {
-  return proxyFetchFor('https://business-api.tiktok.com/', 'tiktok-api')
+  return (url, init) => proxyFetchFor(url, 'tiktok-api').then((fetch) => fetch(url, init))
 }

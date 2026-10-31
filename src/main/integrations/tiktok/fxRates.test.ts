@@ -5,8 +5,9 @@ import path from 'node:path'
 
 let userDataDir: string
 vi.mock('electron', () => ({ app: { getPath: () => userDataDir } }))
-// proxySessionFetch is only the default transport; tests inject fetchImpl.
-vi.mock('./proxyFetch', () => ({ proxySessionFetch: async () => { throw new Error('not needed') } }))
+// Tests inject fetchImpl unless validating the target of the default transport.
+const proxyMock = vi.hoisted(() => vi.fn(async () => { throw new Error('offline') }))
+vi.mock('./proxyFetch', () => ({ proxyFetchFor: proxyMock }))
 
 import { getUsdRates, resetFxRatesForTest } from './fxRates'
 
@@ -49,6 +50,11 @@ describe('getUsdRates', () => {
     )
     const rates = await getUsdRates(async () => ({ ok: false, status: 503, text: async () => '' }) as unknown as Response)
     expect(rates).toEqual({ MXN: 0.05 })
+  })
+
+  it('resolves the default proxy against the actual rates host', async () => {
+    await getUsdRates()
+    expect(proxyMock).toHaveBeenCalledWith('https://open.er-api.com/v6/latest/USD', 'exchange-rates')
   })
 
   it('returns null when nothing is available', async () => {

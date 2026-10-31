@@ -1,5 +1,11 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
+import { constants, closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs'
+import path from 'node:path'
+import { BrowserWindow, dialog } from 'electron'
+import { DATASET_LIMITS } from '../shared/datasets'
+import type { PermissionMode } from '../shared/types'
+import { parseTikTokAdvertiserIdList } from '../shared/tiktokReport'
 import { serializeBoundedJson } from '../shared/boundedJson'
 import { listBoards, saveBoard } from './boards'
 import { listDatasets } from './boardDatasets'
@@ -238,14 +244,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   const tool = parseBoardsBridgeRequest(raw)
   if (!tool) return json(response, 400, { ok: false, error: 'unsupported-action' })
-  // Session binding: the tool only works inside a live TouShou session.
-  const { getSession } = await import('./omp')
-  if (!getSession(sessionId)) return json(response, 200, { ok: false, error: 'no-session' })
   try {
-    return json(response, 200, await dispatch(tool))
+    return json(response, 200, await authorizeAndDispatch(sessionId, tool))
   } catch {
-    // A corrupt board/dataset store must answer with an error, not leave the
-    // request hanging until the agent tool times out.
     return json(response, 200, { ok: false, error: 'store-unreadable' })
   }
 }
@@ -285,7 +286,83 @@ function datasetsOverview(): Array<Record<string, unknown>> {
   }))
 }
 
-export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string, unknown>> {
+export interface BoardsSessionAccess { cwd: string; mode: PermissionMode; remoteReadonly: boolean }
+export interface BoardsAuthorizationDeps {
+  getAccess: (sessionId: string) => BoardsSessionAccess | null
+  confirm: (tool: BoardsBridgeRequest) => Promise<boolean>
+}
+
+/** Main enforces authority even if an extension bypasses its tool approval metadata. */
+export async function authorizeAndDispatch(
+  sessionId: string,
+  tool: BoardsBridgeRequest,
+  deps?: BoardsAuthorizationDeps
+): Promise<Record<string, unknown>> {
+  const getAccess = deps?.getAccess ?? (await import('./omp')).getSessionBridgeAccess
+  const access = getAccess(sessionId)
+  if (!access) return { ok: false, error: 'no-session' }
+  const write = tool.action !== 'boards_list' && tool.action !== 'board_get'
+  if (write && (access.remoteReadonly || !['full', 'no-bash', 'ask'].includes(access.mode))) return { ok: false, error: 'permission-denied' }
+  if (write && access.mode === 'ask') {
+    const confirm = deps?.confirm ?? (async (request: BoardsBridgeRequest) => {
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+      if (!win || win.isDestroyed()) return false
+      const labels: Record<string, string> = {
+        board_create: '新建看板', board_rename: '重命名看板', board_add_widget: '添加组件',
+        board_update_widget: '修改组件', board_remove_widget: '移除组件', dataset_import: '导入数据集'
+      }
+      const details = Object.entries(request).filter(([key]) => ['boardId', 'name', 'newName', 'widgetId', 'title', 'type', 'filePath'].includes(key))
+        .flatMap(([key, value]) => typeof value === 'string' ? [`${key}: ${value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 240)}`] : [])
+      const result = await dialog.showMessageBox(win, {
+        type: 'question', title: '确认看板操作',
+        message: `允许此会话${labels[request.action] ?? '修改本地看板'}？`,
+        detail: details.join('\n'),
+        buttons: ['拒绝', '允许一次'], defaultId: 0, cancelId: 0, noLink: true
+      })
+      return result.response === 1
+    })
+    if (!(await confirm(tool))) return { ok: false, error: 'permission-denied' }
+    const current = getAccess(sessionId)
+    if (!current || current.remoteReadonly || !['full', 'no-bash', 'ask'].includes(current.mode) || current.cwd !== access.cwd) return { ok: false, error: 'permission-denied' }
+  }
+  const stillAuthorized = (): boolean => {
+    const current = getAccess(sessionId)
+    return Boolean(current && !current.remoteReadonly && ['full', 'no-bash', 'ask'].includes(current.mode) && current.cwd === access.cwd && (current.mode !== 'ask' || access.mode === 'ask'))
+  }
+  return dispatch(tool, access.cwd, write ? stillAuthorized : undefined)
+}
+
+/** Open and pin a workspace file before parsing; never reopen the supplied path. */
+export function readWorkspaceDataset(raw: unknown, cwd: string): { name: string; bytes: Buffer } | null {
+  if (typeof raw !== 'string' || !raw || /[\x00-\x1f\x7f]/.test(raw)) return null
+  let fd: number | undefined
+  try {
+    const root = realpathSync(cwd)
+    if (!statSync(root).isDirectory()) return null
+    const source = path.resolve(root, raw)
+    const real = realpathSync(source)
+    const relative = path.relative(root, real)
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null
+    fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    const opened = fstatSync(fd)
+    const current = statSync(real)
+    if (!opened.isFile() || opened.size > DATASET_LIMITS.maxFileBytes || opened.dev !== current.dev || opened.ino !== current.ino || realpathSync(source) !== real) return null
+    const buffer = Buffer.alloc(Math.min(opened.size + 1, DATASET_LIMITS.maxFileBytes + 1))
+    let used = 0
+    while (used < buffer.length) {
+      const count = readSync(fd, buffer, used, buffer.length - used, null)
+      if (!count) break
+      used += count
+    }
+    if (used > DATASET_LIMITS.maxFileBytes || realpathSync(source) !== real) return null
+    const after = statSync(real)
+    const finalHandle = fstatSync(fd)
+    if (after.dev !== opened.dev || after.ino !== opened.ino || finalHandle.dev !== opened.dev || finalHandle.ino !== opened.ino || finalHandle.size !== opened.size || finalHandle.mtimeMs !== opened.mtimeMs || finalHandle.ctimeMs !== opened.ctimeMs || used !== opened.size) return null
+    return { name: path.basename(real), bytes: buffer.subarray(0, used) }
+  } catch { return null } finally { if (fd !== undefined) closeSync(fd) }
+}
+
+export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string, stillAuthorized?: () => boolean): Promise<Record<string, unknown>> {
   if (tool.action === 'boards_list') {
     return {
       ok: true,
@@ -336,11 +413,13 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
         ? tool.advertiserNames.split(/[,，、;；]/).map((item) => item.trim()).filter(Boolean).slice(0, 20)
         : []
     const names = advertiserNames.length > 0 ? advertiserNames : advertiserName ? [advertiserName] : []
-    if (names.length > 0) {
-      const scope =
-        names.length === 1
-          ? { filterColumn: '广告主', filterValue: names[0] }
-          : { filterColumn: '广告主', filterValues: names }
+    const ids = parseTikTokAdvertiserIdList(advertiserIds)
+    const filterValues = ids?.length ? ids : names
+    if (filterValues.length > 0) {
+      const filterColumn = ids?.length ? '广告主ID' : '广告主'
+      const scope = filterValues.length === 1
+        ? { filterColumn, filterValue: filterValues[0] }
+        : { filterColumn, filterValues }
       board.widgets = board.widgets.map((widget) =>
         widget.config && widget.config.source === 'dataset'
           ? { ...widget, config: { ...widget.config, ...scope } }
@@ -392,10 +471,14 @@ export async function dispatch(tool: BoardsBridgeRequest): Promise<Record<string
   // TikTok report CSV, and template widgets bind「TikTok 报表」BY NAME, so an
   // explicit-name import REPLACES that dataset and every bound widget fills.
   if (tool.action === 'dataset_import') {
-    const { importDataset } = await import('./boardDatasets')
+    if (!workspaceRoot) return { ok: false, error: 'workspace-required' }
+    const input = readWorkspaceDataset(tool.filePath, workspaceRoot)
+    if (!input) return { ok: false, error: 'path-not-authorized' }
+    const { importDatasetBuffer } = await import('./boardDatasets')
+    if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
     const targetName = boundedString(tool.name, 200)
-    const result = importDataset(tool.filePath, undefined, targetName ?? undefined)
-    if (!result.ok) return { ...result, hint: 'CSV/XLSX，先由你自己下载/生成；路径写绝对路径。name 传「TikTok 报表」可直接点亮模板看板。' }
+    const result = importDatasetBuffer(input.name, input.bytes, undefined, targetName ?? undefined)
+    if (!result.ok) return { ...result, hint: 'CSV/XLSX，先由你自己下载/生成；路径需位于当前会话工作区。name 传「TikTok 报表」可直接点亮模板看板。' }
     return {
       ok: true,
       dataset: { name: result.dataset.name, rowCount: result.dataset.rows.length, columns: result.dataset.columns.map((c) => c.name) },

@@ -30,6 +30,7 @@ import { reconstructSessionMetadata, reconstructHistoricalAgents } from '../sess
 import { isSessionFilePath } from '../sessionHistory'
 import { planSpawn, removeApprovalConfig, resolvePermissionMode, spawnProcess, writeApprovalConfig } from './OmpProcess'
 import { OmpSession } from './OmpSession'
+import { SessionBridgePermissionRegistry } from './bridgePermissions'
 import { extensionExternalLinkMessage } from './extensionLinks'
 import {
   detectCli,
@@ -55,6 +56,15 @@ export {
 export { drainLines } from './OmpTransport'
 
 const sessions = new Map<string, OmpSession>()
+// Main-owned spawn-time authority, never supplied by the renderer or bridge.
+const sessionBridgePermissions = new SessionBridgePermissionRegistry()
+
+export function getSessionBridgeAccess(sessionId: string): { cwd: string; mode: PermissionMode; remoteReadonly: boolean } | null {
+  const live = sessions.get(sessionId)?.session
+  const policy = sessionBridgePermissions.get(sessionId, getStore('permissionMode'))
+  if (!live || !policy) return null
+  return { cwd: live.cwd, ...policy }
+}
 
 /**
  * A runtime extension asked to open an in-app panel. The request was fully
@@ -170,8 +180,9 @@ export function createSession(
     // Knowledge file is optional — never block session creation.
   }
 
+  const permissionMode = opts?.permissionMode ?? getStore('permissionMode')
   const plan = planSpawn(id, cli, {
-    permissionMode: opts?.permissionMode ?? getStore('permissionMode'),
+    permissionMode,
     language: getStore('language'),
     resumeSessionPath: opts?.resumeSessionPath,
     modelSelector: opts?.modelSelector,
@@ -222,12 +233,13 @@ export function createSession(
       : {})
   }
 
+  sessionBridgePermissions.register(id, permissionMode, session.remoteReadonly === true)
   sessions.set(
     id,
     new OmpSession(session, proc, {
       label: cli.command,
       onEvent,
-      onGone: () => sessions.delete(id),
+      onGone: () => { sessions.delete(id); sessionBridgePermissions.remove(id) },
       onHandshake: (outcome) => {
         noteHandshake(outcome)
         // Current Oh My Pi: enable subagent progress subscription + roster
@@ -456,6 +468,7 @@ export function updateApprovalConfig(sessionId: string, mode: PermissionMode): b
   if (mode !== 'ask' && mode !== 'full') return false
   const { approval } = resolvePermissionMode(mode)
   writeApprovalConfig(sessionId, approval)
+  sessionBridgePermissions.update(sessionId, mode)
   return true
 }
 

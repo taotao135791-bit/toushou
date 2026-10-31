@@ -81,7 +81,7 @@ export default function boardsTools(api: ToolHostApi): void {
     name: 'toushou_board_create',
     label: '新建看板',
     description:
-      '直接新建一块看板并回报结果（本机画布操作，无需用户确认；但绝不触碰广告平台）。\n' +
+      '新建本机看板并回报结果；需要确认时等待用户批准，不触碰广告平台。\n' +
       '用户没提具体要求时按模板标配建：\n' +
       Object.entries(TEMPLATE_HELP).map(([id, help]) => `- ${id}：${help}`).join('\n') +
       '\n用户提到 TikTok 广告主（如"看 miclip 数据"）时传 advertiserIds（逗号分隔；不知道 ID 就先用 toushou_boards_list 或连接信息查询，或留空让模块读取全部授权广告主）。' +
@@ -182,13 +182,13 @@ export default function boardsTools(api: ToolHostApi): void {
     name: 'toushou_dataset_import',
     label: '导入看板数据集',
     description:
-      '把一个 CSV/XLSX 文件导入为看板数据集（文件须已存在于本机，路径写绝对路径；列结构自动识别）。\n' +
+      '把一个 CSV/XLSX 文件导入为看板数据集（文件须位于当前会话的授权工作区；列结构自动识别）。\n' +
       '关键用法：name 传「TikTok 报表」时为替换式导入——模板看板的指标卡/趋势图都按这个名字绑定，导入完成后整块看板立即点亮。' +
       '本工具只用于导入用户明确提供的报表文件；TikTok 数据的获取一律走 touhou_tiktok_update（MCP），它失败就如实报错，禁止用 CSV/文件/computer use 绕路。',
     parameters: {
       type: 'object',
       properties: {
-        filePath: { type: 'string', description: '本机 CSV/XLSX 文件的绝对路径' },
+        filePath: { type: 'string', description: '当前会话已授权工作区内的 CSV/XLSX 路径' },
         name: { type: 'string', description: '目标数据集名称；传「TikTok 报表」为替换式导入' }
       },
       required: ['filePath']
