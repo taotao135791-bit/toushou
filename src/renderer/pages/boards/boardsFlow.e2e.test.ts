@@ -84,7 +84,7 @@ describe('board creation flow in Electron', () => {
       expect(data.resultFilter).toEqual({ a: true, b: false, scopeNotice: true })
       expect(data.chartInitially).toBe(false)
       expect(data.failedSnapshot).toEqual({ error: true, dialog: true, a: true, b: true, chart: true })
-      expect(data.savedSnapshot).toMatchObject({ activeBoard: 'Snapshot fixture', chart: true, accountCount: 2, table: true, svg: false })
+      expect(data.savedSnapshot).toMatchObject({ activeBoard: 'Snapshot fixture', chart: true, accountCount: 2, table: true, svg: false, fixedDateNote: true, masterToolbar: false, noModulesNotice: false, cachedNotice: false })
       expect(data.savedSnapshot.groupHeadings).toEqual(expect.arrayContaining(['TikTok · USD', 'TikTok · EUR']))
       expect(data.exportedSnapshot).toMatchObject({ anonymized: true, table: true, svg: false, script: false, containsPrivate: false })
       expect(data.exportedSnapshot.groups).toEqual(expect.arrayContaining([
