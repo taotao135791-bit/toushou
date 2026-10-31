@@ -92,11 +92,6 @@ export class AdsCopyModelStore {
   }
 
   async load(): Promise<AdsCopyModelPool> {
-    if (!this.backend.isAvailable()) {
-      // NEVER report an empty pool here: a mutation would then persist that
-      // empty state and wipe the user's stored providers and keys.
-      throw new Error('secure credential storage is unavailable on this device')
-    }
     let encoded: string
     try {
       encoded = await readFile(this.filePath, 'utf8')
@@ -107,6 +102,11 @@ export class AdsCopyModelStore {
       // Transient failures (file lock, permissions) must not masquerade as
       // "no providers stored" — the next mutation would wipe the store.
       throw error
+    }
+    // An absent envelope is a fresh pool and must not consult Keychain.
+    // An existing file still fails closed when secure storage is unavailable.
+    if (!this.backend.isAvailable()) {
+      throw new Error('secure credential storage is unavailable on this device')
     }
     try {
       const raw = JSON.parse(this.backend.decrypt(Buffer.from(encoded, 'base64'))) as Record<string, unknown>

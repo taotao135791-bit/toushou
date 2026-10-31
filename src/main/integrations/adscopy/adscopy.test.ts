@@ -49,6 +49,25 @@ describe('validateAdsCopyModelInput', () => {
 })
 
 describe('AdsCopyModelStore', () => {
+  it('does not touch secure storage for a fresh missing pool', async () => {
+    const isAvailable = vi.fn(() => { throw Error('Keychain must not be touched') })
+    const fake = { isAvailable, encrypt: vi.fn(), decrypt: vi.fn() }
+    const store = new AdsCopyModelStore({ filePath: path.join(dir, 'missing.bin'), backend: fake })
+    await expect(store.load()).resolves.toEqual({ providers: [], pool: [], mode: 'chat' })
+    expect(isAvailable).not.toHaveBeenCalled()
+    expect(fake.decrypt).not.toHaveBeenCalled()
+  })
+  it('fails closed for an existing envelope when secure storage is unavailable', async () => {
+    const filePath = path.join(dir, 'existing.bin')
+    writeFileSync(filePath, 'encrypted')
+    const isAvailable = vi.fn(() => false)
+    const fake = { isAvailable, encrypt: vi.fn(), decrypt: vi.fn() }
+    const store = new AdsCopyModelStore({ filePath, backend: fake })
+    await expect(store.load()).rejects.toThrow('secure credential storage is unavailable')
+    await expect(store.setMode('pool')).rejects.toThrow('secure credential storage is unavailable')
+    expect(readFileSync(filePath, 'utf8')).toBe('encrypted')
+    expect(fake.decrypt).not.toHaveBeenCalled()
+  })
   it('serializes simultaneous updates even across instances for the same file', async () => {
     const file = path.join(dir, 'shared.bin')
     const a = new AdsCopyModelStore({ filePath: file }), b = new AdsCopyModelStore({ filePath: file })
