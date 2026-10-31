@@ -85,6 +85,8 @@ function tiktokApi(options: {
   report: (advertiserId: string, params: URLSearchParams) => Response
   advertisers?: Record<string, Advertiser>
   infoFails?: boolean
+  infoErrorCode?: (ids: string[], index: number) => number | null
+  extraInfo?: Array<{ advertiser_id: string; name: string }>
   granted?: string[]
 }) {
   const reports: URLSearchParams[] = []
@@ -104,7 +106,8 @@ function tiktokApi(options: {
       const ids = args.advertiser_ids as string[]
       infoCalls.push(ids)
       const known = options.advertisers ?? {}
-      const body = options.infoFails ? { code: 50000 } : { code: 0, data: { list: ids.filter((id) => known[id]).map((id) => ({ advertiser_id: id, name: known[id].name ?? '', currency: known[id].currency ?? '', timezone: known[id].timezone ?? '' })) } }
+      const errorCode = options.infoErrorCode?.(ids, infoCalls.length - 1) ?? (options.infoFails ? 50000 : null)
+      const body = errorCode ? { code: errorCode } : { code: 0, data: { list: [...ids.filter((id) => known[id]).map((id) => ({ advertiser_id: id, name: known[id].name ?? '', currency: known[id].currency ?? '', timezone: known[id].timezone ?? '' })), ...(options.extraInfo ?? [])] } }
       return response({ structuredContent: body })
     }
     if (request.params.name !== 'report_integrated_get') throw new Error('unexpected tool')
@@ -194,6 +197,57 @@ describe('listTikTokMcpReadingAdvertisers', () => {
     const rejected = tiktokApi({ report: () => reportResponse([]), granted: [ID_A] })
     expect((await listTikTokMcpReadingAdvertisers({ resolveToken: token([ID_A], 'pasted'), fetchImpl: rejected.fetchImpl })).granted).toEqual([])
     expect(rejected.methods).toHaveLength(0)
+  })
+  it('loads names in bounded batches while preserving exact authorized IDs', async () => {
+    const ids = Array.from({ length: 41 }, (_, index) => String(7300000000 + index))
+    const advertisers = Object.fromEntries(ids.map((id, index) => [id, { name: `Synthetic ${index}` }]))
+    const api = tiktokApi({ report: () => reportResponse([]), granted: ids, advertisers })
+    const result = await listTikTokMcpReadingAdvertisers({ resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    expect(result.granted).toEqual(ids)
+    expect(result.accounts).toEqual(ids.map((advertiserId, index) => ({ advertiserId, name: `Synthetic ${index}` })))
+    expect(result.namesIncomplete).toBe(false)
+    expect(api.infoCalls.map(batch => batch.length)).toEqual([20, 20, 1])
+    expect(api.reports).toHaveLength(0)
+  })
+  it('keeps every authorized ID at the 500-account ceiling', async () => {
+    const ids = Array.from({ length: 500 }, (_, index) => String(7300000000 + index))
+    const advertisers = Object.fromEntries(ids.map((id, index) => [id, { name: `Synthetic ${index}` }]))
+    const api = tiktokApi({ report: () => reportResponse([]), granted: ids, advertisers })
+    const result = await listTikTokMcpReadingAdvertisers({ resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    expect(result.granted).toEqual(ids)
+    expect(result.accounts).toHaveLength(500)
+    expect(result.accounts?.at(-1)).toEqual({ advertiserId: ids[499], name: 'Synthetic 499' })
+    expect(api.infoCalls).toHaveLength(25)
+    expect(api.infoCalls.every(batch => batch.length <= 20)).toBe(true)
+  })
+  it('keeps all IDs and marks names unavailable for failed metadata batches', async () => {
+    const ids = Array.from({ length: 41 }, (_, index) => String(7300000000 + index))
+    const advertisers = Object.fromEntries(ids.map((id, index) => [id, { name: `Synthetic ${index}` }]))
+    const api = tiktokApi({ report: () => reportResponse([]), granted: ids, advertisers, infoErrorCode: (_batch, index) => index === 1 ? 50000 : null })
+    const result = await listTikTokMcpReadingAdvertisers({ resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    expect(result.granted).toEqual(ids)
+    expect(result.namesIncomplete).toBe(true)
+    expect(result.accounts?.slice(20, 40)).toEqual(ids.slice(20, 40).map(advertiserId => ({ advertiserId, name: null })))
+    expect(result.accounts?.at(-1)).toEqual({ advertiserId: ids[40], name: 'Synthetic 40' })
+    expect(api.infoCalls.map(batch => batch.length)).toEqual([20, 20, 1])
+  })
+  it('stops metadata calls after rate limiting while retaining earlier names and every ID', async () => {
+    const ids = Array.from({ length: 41 }, (_, index) => String(7300000000 + index))
+    const advertisers = Object.fromEntries(ids.map((id, index) => [id, { name: `Synthetic ${index}` }]))
+    const api = tiktokApi({ report: () => reportResponse([]), granted: ids, advertisers, infoErrorCode: (_batch, index) => index === 1 ? 40131 : null })
+    const result = await listTikTokMcpReadingAdvertisers({ resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    expect(result.granted).toEqual(ids)
+    expect(result.namesIncomplete).toBe(true)
+    expect(result.accounts?.[0].name).toBe('Synthetic 0')
+    expect(result.accounts?.slice(20).every(account => account.name === null)).toBe(true)
+    expect(api.infoCalls.map(batch => batch.length)).toEqual([20, 20])
+  })
+  it('never chooses an arbitrary name when metadata conflicts for the same ID', async () => {
+    const api = tiktokApi({ report: () => reportResponse([]), granted: [ID_A], advertisers: { [ID_A]: { name: 'Synthetic A' } }, extraInfo: [{ advertiser_id: ID_A, name: 'Synthetic B' }] })
+    const result = await listTikTokMcpReadingAdvertisers({ resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    expect(result.granted).toEqual([ID_A])
+    expect(result.accounts).toEqual([{ advertiserId: ID_A, name: null }])
+    expect(result.namesIncomplete).toBe(true)
   })
 })
 

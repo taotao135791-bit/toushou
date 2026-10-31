@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 const require_ = createRequire(import.meta.url)
 describe('board creation flow in Electron', () => {
-  it('opens created boards and hides board controls on Today', { timeout: 30000 }, () => {
+  it('opens created boards and hides board controls on Today', { timeout: 60000 }, () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'boards-flow-'))
     try {
       const root = path.dirname(require_.resolve('electron/package.json'))
@@ -17,7 +17,7 @@ describe('board creation flow in Electron', () => {
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
       build.buildSync({ entryPoints: [path.resolve(__dirname, 'boardsFlow.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.css': 'empty' }, alias: { '@shared': path.resolve(__dirname, '../../../shared') } })
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
-      const result = spawnSync(electron, [path.resolve(__dirname, 'boardsFlow.harness.cjs'), dir], { encoding: 'utf8', timeout: 20000, env })
+      const result = spawnSync(electron, [path.resolve(__dirname, 'boardsFlow.harness.cjs'), dir], { encoding: 'utf8', timeout: 45000, env })
       const line = result.stdout?.split('\n').find(s => s.startsWith('E2E_RESULT '))
       expect(line, result.stderr).toBeDefined()
       const data = JSON.parse(line!.slice('E2E_RESULT '.length))
@@ -40,6 +40,13 @@ describe('board creation flow in Electron', () => {
       expect(data.connect.route).toBe('/connections')
       expect(data.returned).toMatchObject({ today: true, activeBoard: null, toolbar: false, menu: false })
       expect(data.returnedTodayReads).toBe(0)
+      expect(data.searchById).toHaveLength(1)
+      expect(data.searchById[0]).toContain('7300000000000000002')
+      expect(data.searchByName).toHaveLength(2)
+      expect(data.searchByName[0]).toContain('Fixture Shared')
+      expect(data.searchByName[0]).toContain('7300000000000000001')
+      expect(data.searchByName[1]).toContain('7300000000000000002')
+      expect(data.chosenAccountId).toBe('7300000000000000001')
       expect(data.singleScopeRetries).toHaveLength(2)
       expect(data.singleScopeRetries.every((request: { advertiserId?: string }) => request.advertiserId === '7300000000000000001')).toBe(true)
       expect(data.singleDateSwitch).toMatchObject({ range: 'today', advertiserId: '7300000000000000001' })
@@ -64,8 +71,8 @@ describe('board creation flow in Electron', () => {
       expect(data.blank.saved[1]).toMatchObject({ name: 'Blank fixture', types: [] })
       expect(data.composed).toMatchObject({ today: false, activeBoard: 'Blank board', toolbar: true, menu: true })
       expect(data.composed.saved).toHaveLength(3)
-      expect(data.googleVisible).toEqual({ scrolled: true, cardVisible: true, inputVisible: true, focused: true })
-      expect(data.ttVisible).toEqual({ scrolled: true, cardVisible: true, inputVisible: true, focused: true })
+      expect(data.googleVisible, JSON.stringify(data.googleDiagnostics)).toEqual({ scrolled: true, cardVisible: true, inputVisible: true, focused: true })
+      expect(data.ttVisible, JSON.stringify(data.ttDiagnostics)).toEqual({ scrolled: true, cardVisible: true, inputVisible: true, focused: true })
       expect(data.switchedAway).toEqual({ today: true, focusedInConfig: false })
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })

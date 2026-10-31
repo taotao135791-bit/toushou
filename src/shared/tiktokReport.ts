@@ -68,6 +68,10 @@ export function parseTikTokAdvertiserIdList(raw: unknown): string[] | null {
 export interface TikTokReadingAdvertisers {
   selected: string[]
   granted: string[]
+  /** Optional metadata for the grant, in the same order; missing names are never guessed. */
+  accounts?: Array<{ advertiserId: string; name: string | null }>
+  /** At least one account name could not be verified; discovery may be retried. */
+  namesIncomplete?: boolean
 }
 
 export type TikTokReadingAdvertisersSetResult =

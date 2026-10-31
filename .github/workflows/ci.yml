@@ -46,6 +46,29 @@ jobs:
       - name: Build
         run: pnpm build
 
+  # Catch native Windows viewport/focus regressions before the release tag.
+  windows-boards-e2e:
+    name: Windows board UI
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Set up Bun for OMP
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Board UI in Electron
+        run: pnpm exec vitest run src/renderer/pages/boards/boardsFlow.e2e.test.ts
+
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
