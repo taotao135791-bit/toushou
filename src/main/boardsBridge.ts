@@ -529,7 +529,10 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
   if (tool.action === 'board_add_widget') {
     if (board.widgets.length >= BOARD_LIMITS.maxWidgets) return { ok: false, error: 'too-many-widgets' }
     const type = typeof tool.type === 'string' && WIDGET_TYPES.includes(tool.type as WidgetType) ? (tool.type as WidgetType) : null
-    if (!type) return { ok: false, error: 'unsupported-widget-type', supported: WIDGET_TYPES }
+    if (!type) return { ok: false, error: 'unsupported-widget-type', supported: WIDGET_TYPES.filter((item) => item !== 'reading-snapshot') }
+    // A model cannot fabricate an allegedly saved reading by supplying a
+    // well-shaped snapshot. Only the local reading-save flow creates these.
+    if (type === 'reading-snapshot') return { ok: false, error: 'snapshot-requires-reading' }
     const title = boundedString(tool.title, BOARD_LIMITS.maxWidgetTitleLength) ?? WIDGET_TITLE_ZH[type]
     const size = WIDGET_DEFAULT_SIZES[type]
     const slot = findFreeSlot(board.widgets, size.w, size.h)

@@ -24,12 +24,12 @@ export function ReadingDraftDialog({ title, language, value, copyState, localMap
       <h2 id={`${id}-title`} className="text-[16px] font-semibold text-cream">{title}</h2>
       <p id={`${id}-instructions`} className="mt-1 text-[12px] text-cream-faint">{zh ? '可先修改草稿，再复制并粘贴到聊天中。' : 'Edit the draft, copy it, then paste it into a chat when ready.'}</p>
       <textarea autoFocus aria-label={title} value={value} onChange={event => onChange(event.target.value)} className="mt-3 min-h-48 w-full rounded-lg border border-line bg-ink-900 p-3 text-[13px] text-cream" />
-      {localMappings.length > 0 && <section aria-label={zh ? '活动对应关系' : 'Campaign mapping'} className="mt-3 rounded-lg border border-line p-3 text-[12px] text-cream-dim">
-        <p className="font-medium text-cream">{zh ? '活动对应关系（仅本地显示，不会复制或发送）' : 'Campaign mapping (shown locally; not copied or sent)'}</p>
+      {localMappings.length > 0 && <section aria-label={zh ? '账户和活动对应关系' : 'Account and campaign mapping'} className="mt-3 rounded-lg border border-line p-3 text-[12px] text-cream-dim">
+        <p className="font-medium text-cream">{zh ? '账户和活动对应关系（仅本地显示，不会复制或发送）' : 'Account and campaign mapping (shown locally; not copied or sent)'}</p>
         <ul className="mt-1 max-h-32 space-y-1 overflow-y-auto">{localMappings.map((item, index) => <li key={`${item.label}-${index}`} className="break-words">{item.label}：{item.name}</li>)}</ul>
       </section>}
       {copyState && <p role="status" className="mt-2 text-[12px] text-cream-dim">{copyState === 'copied' ? (zh ? '已复制，可粘贴到聊天中继续。' : 'Copied. Paste it into a chat to continue.') : (zh ? '复制失败，请手动选择并复制文字。' : 'Could not copy. Select and copy the text manually.')}</p>}
-      <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={onClose} className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{zh ? '关闭' : 'Close'}</button><button type="button" onClick={onCopy} className="focus-ring rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white">{zh ? '复制草稿' : 'Copy draft'}</button></div>
+      <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={onClose} className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{zh ? '关闭' : 'Close'}</button><button type="button" onClick={onCopy} className="focus-ring rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))]">{zh ? '复制草稿' : 'Copy draft'}</button></div>
     </div>
   </div>
 }

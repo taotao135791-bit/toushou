@@ -27,4 +27,11 @@ describe('saved reading scope and analysis drafts', () => {
     expect(draft.mappings.join()).toContain('PRIVATE_TT_NAME')
     expect(draft.text).toContain('不调用工具')
   })
+  it('records platform discovery failures instead of silently omitting them', () => {
+    const snapshot = snapshotToday({ rangeLabel: 'last week', window, capturedAt: 2000, facebook: [], tiktok: null, facebookLoadError: true, tiktokFailure: { code: 'auth' } })
+    expect(validateReadingSnapshot(snapshot)).not.toBeNull()
+    expect(snapshot.accounts.map(a => [a.platform, a.status, a.spend, a.sourceAt])).toEqual([
+      ['facebook', 'failed', null, null], ['tiktok', 'failed', null, null]
+    ])
+  })
 })

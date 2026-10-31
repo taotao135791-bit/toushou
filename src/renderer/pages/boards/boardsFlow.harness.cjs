@@ -87,19 +87,20 @@ app.whenReady().then(async () => {
     const singleDateSwitch = await wc.executeJavaScript(`window.boardFixture.scenario.todayInputs.at(-1)`)
     await wc.executeJavaScript(`(() => {window.boardFixture.scenario.todayPending=true;[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Inspect all selected accounts').click()})()`)
     await wait()
-    await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;s.progress?.({requestId:s.todayRequest,completed:1,total:4,succeeded:1})})()`)
+    await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;const d=n=>{const x=new Date();x.setDate(x.getDate()-n);return [x.getFullYear(),String(x.getMonth()+1).padStart(2,'0'),String(x.getDate()).padStart(2,'0')].join('-')};const window={start:d(0),end:d(0)},previousWindow={start:d(1),end:d(1)},generatedAt=Date.now();const account={advertiserId:'7300000000000000001',name:'STREAM_A',currency:'USD',timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,window,previousWindow,spend:12,previousSpend:10,impressions:100,clicks:5,conversions:1,campaigns:[]};const partial={account,range:'today',window,previousWindow,source:'oauth',generatedAt};s.partialCancelResult={range:'today',window,previousWindow,source:'oauth',generatedAt,truncated:false,accounts:[account,{advertiserId:'7300000000000000002',name:null,currency:null,error:'api',detail:'account-batch-not-attempted'}],cancelled:true,datasetSync:{ok:false,error:'reading-cancelled'}};s.progress?.({requestId:s.todayRequest,completed:1,total:2,succeeded:1,today:partial})})()`)
     await wait()
-    const todayProgress = await wc.executeJavaScript(`document.body.innerText.includes('Processed 1 of 4 accounts.')`)
+    const todayProgress = await wc.executeJavaScript(`document.body.innerText.includes('Processed 1 of 2 accounts.')`)
+    const todayPartial = await wc.executeJavaScript(`(() => {const card=[...document.querySelectorAll('article')].find(e=>e.textContent.includes('STREAM_A'));return {visible:!!card,spend:card?.innerText.includes('12.00')??false,expired:card?.innerText.includes('no longer match')??false}})()`)
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Cancel reading').click()`)
     await wait()
-    const todayCancelled = await wc.executeJavaScript(`document.body.innerText.includes('Reading cancelled.')`)
-    await wc.executeJavaScript(`window.boardFixture.scenario.todayPending=false`)
+    const todayCancelled = await wc.executeJavaScript(`(() => {const text=document.body.innerText;return {notice:text.includes('Cancelled. Completed accounts are retained'),completed:text.includes('STREAM_A')&&text.includes('12.00'),unread:text.includes('Not read because an earlier request failed')}})()`)
+    await wc.executeJavaScript(`window.boardFixture.scenario.todayPending=false;window.boardFixture.scenario.partialCancelResult=null`)
     await wc.executeJavaScript(`(() => {
       const d=(days)=>{const x=new Date();x.setDate(x.getDate()-days);return [x.getFullYear(),String(x.getMonth()+1).padStart(2,'0'),String(x.getDate()).padStart(2,'0')].join('-')};
       const accountWindow={start:d(7),end:d(1)}, previousWindow={start:d(14),end:d(8)};
       const timezone=Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const a={advertiserId:'7300000000000000001',name:'PRIVATE_ACCOUNT_A',currency:'USD',timezone,spend:5,previousSpend:3,impressions:100,clicks:10,conversions:2,campaigns:[{name:'PRIVATE_CAMPAIGN https://example.test/secret',spend:5,previousSpend:3,delta:2}]};
-      const b={advertiserId:'7300000000000000002',name:'PRIVATE_ACCOUNT_B',currency:'EUR',timezone,spend:77,previousSpend:70,impressions:200,clicks:20,conversions:3,campaigns:[]};
+      const a={advertiserId:'7300000000000000001',name:'PRIVATE_ACCOUNT_A',currency:'USD',timezone,window:accountWindow,previousWindow,spend:5,previousSpend:3,impressions:100,clicks:10,conversions:2,campaigns:[{name:'PRIVATE_CAMPAIGN https://example.test/secret',spend:5,previousSpend:3,delta:2}]};
+      const b={advertiserId:'7300000000000000002',name:'PRIVATE_ACCOUNT_B',currency:'EUR',timezone,window:accountWindow,previousWindow,spend:77,previousSpend:70,impressions:200,clicks:20,conversions:3,campaigns:[]};
       const base={range:'last7',window:accountWindow,previousWindow,source:'oauth',generatedAt:Date.now(),truncated:false,datasetSync:{ok:true}};
       const s=window.boardFixture.scenario;s.todayResult={...base,accounts:[a,b]};s.singleResult={...base,accounts:[{...a,spend:15,window:accountWindow,previousWindow}]};
       [...document.querySelectorAll('[role=tab]')].find(e=>e.textContent.trim()==='Last 7 days').click()
@@ -219,7 +220,7 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(`(() => { [...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Google reading').click(); [...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Today').click() })()`)
     await wait()
     const switchedAway = await wc.executeJavaScript(`({today:!![...document.querySelectorAll('h1')].find(e=>e.textContent==="Today's readings"), focusedInConfig:!!document.activeElement?.closest('.widget-config')})`)
-    console.log('E2E_RESULT '+JSON.stringify({initial,initialTodayReads,created,verified,failedReload,noSuccessfulAccounts,progress,cancelled,unverified,connect,returned,returnedTodayReads,searchById,searchByName,keyboardActive,chosenAccountId,readsBeforeSubmit,singleScopeRetries,singleDateSwitch,todayProgress,todayCancelled,singleRefresh,failedSingle,overallDraft,singleDraft,copiedDraft,switchedSingle,firstCustom,latestCustom,customResult,resultFilter,chartInitially,failedSnapshot,savedSnapshot,exportedSnapshot,blank,composed,googleVisible:googleCheck.visible,googleDiagnostics:googleCheck.diagnostics,ttVisible:ttCheck.visible,ttDiagnostics:ttCheck.diagnostics,switchedAway}))
+    console.log('E2E_RESULT '+JSON.stringify({initial,initialTodayReads,created,verified,failedReload,noSuccessfulAccounts,progress,cancelled,unverified,connect,returned,returnedTodayReads,searchById,searchByName,keyboardActive,chosenAccountId,readsBeforeSubmit,singleScopeRetries,singleDateSwitch,todayProgress,todayPartial,todayCancelled,singleRefresh,failedSingle,overallDraft,singleDraft,copiedDraft,switchedSingle,firstCustom,latestCustom,customResult,resultFilter,chartInitially,failedSnapshot,savedSnapshot,exportedSnapshot,blank,composed,googleVisible:googleCheck.visible,googleDiagnostics:googleCheck.diagnostics,ttVisible:ttCheck.visible,ttDiagnostics:ttCheck.diagnostics,switchedAway}))
   } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error),phase})) }
   finally { if (win && !win.isDestroyed()) win.destroy(); app.exit(0) }
 }).catch(error => { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})); app.exit(1) })

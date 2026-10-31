@@ -7,12 +7,14 @@ export function snapshotToday(input: {
   rangeLabel: string; window: TodayWindow; capturedAt: number
   facebook: TodayFacebookRow[] | null; tiktok: TikTokTodayReading | null
   facebookLoadError?: boolean
+  tiktokFailure?: { code: string } | null
   facebookFailures?: Readonly<Record<string, string | null>>
   tiktokFailures?: Readonly<Record<string, { code: string } | null>>
   updatedAt?: Readonly<Record<string, number>>
 }): ReadingSnapshot {
   const accounts: ReadingSnapshotAccount[] = []
   if (input.facebookLoadError) accounts.push({ platform: 'facebook', accountId: null, name: 'Facebook', status: 'failed', statusDetail: 'account-list-unavailable', window: input.window, previousWindow: null, sourceAt: null, timezone: null, currency: null, spend: null, previousSpend: null, impressions: null, clicks: null, conversions: null })
+  if (input.tiktokFailure) accounts.push({ platform: 'tiktok', accountId: null, name: 'TikTok', status: 'failed', statusDetail: input.tiktokFailure.code, window: input.window, previousWindow: null, sourceAt: null, timezone: null, currency: null, spend: null, previousSpend: null, impressions: null, clicks: null, conversions: null })
   for (const row of input.facebook ?? []) {
     const failure = input.facebookFailures?.[row.account.act] ?? row.readError
     const status = failure ? 'failed' : row.spend === null ? 'unavailable' : 'ok'

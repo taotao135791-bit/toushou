@@ -131,6 +131,19 @@ describe('boards bridge dispatch', () => {
     expect((removed.board as { widgets: unknown[] }).widgets).toHaveLength(0)
   })
 
+  it('does not let model board tools fabricate reading snapshot widgets', async () => {
+    const created = await dispatch({ action: 'board_create', name: 'Fixture', template: 'blank' })
+    expect(created.ok).toBe(true)
+    const boardId = (created.board as { id: string }).id
+    const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'Test', window: { start: '2026-01-01', end: '2026-01-02' }, capturedAt: 1,
+      accounts: [{ platform: 'tiktok', accountId: '123', name: 'Fixture', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-02' }, previousWindow: null, sourceAt: 1, timezone: 'UTC', currency: 'USD', spend: 12, previousSpend: null, impressions: 1, clicks: 1, conversions: 0 }] }
+    const result = await dispatch({ action: 'board_add_widget', boardId, type: 'reading-snapshot', config: { snapshot, includeChart: false } })
+    expect(result).toEqual({ ok: false, error: 'snapshot-requires-reading' })
+    expect(listBoards().find(board => board.id === boardId)?.widgets).toHaveLength(0)
+    const unsupported = await dispatch({ action: 'board_add_widget', boardId, type: 'bad-type' })
+    expect(unsupported.supported).not.toContain('reading-snapshot')
+  })
+
   it('rejects an out-of-domain widget config without corrupting the board', async () => {
     await dispatch({ action: 'board_create', name: '看板B', template: 'blank' })
     const bad = await dispatch({

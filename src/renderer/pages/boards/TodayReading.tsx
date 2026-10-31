@@ -140,6 +140,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
   const facebookKey = `${dateWindow.start}|${dateWindow.end}`
   facebookContext.current = facebookKey
   const visibleFacebook = facebookLoadedKey === facebookKey ? facebook : null
+  const facebookPending = facebookLoading || facebookLoadedKey !== facebookKey
 
   const loadFacebook = useCallback(async () => {
     const expected = range === 'custom' ? customWindow : todayWindow(range)
@@ -390,18 +391,22 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
   const hasFigures = goodFacebook.some(row => row.spend !== null) || (draftTikTok?.accounts ?? []).some(account => !isTikTokTodayFailure(account))
   const rangeLabel = range === 'custom' ? (zh ? '自选日期' : 'Custom dates') : t(rangeKey(range))
   const currentSnapshot = () => snapshotToday({ rangeLabel, window: dateWindow, capturedAt: Date.now(), facebook: visibleFacebook,
-    tiktok: scopedTikTok(), facebookLoadError, facebookFailures: rowFailures, tiktokFailures: singleFailures, updatedAt: singleUpdatedAt })
+    tiktok: scopedTikTok(), facebookLoadError, tiktokFailure, facebookFailures: rowFailures, tiktokFailures: singleFailures, updatedAt: singleUpdatedAt })
   const ask = () => {
-    if (!hasFigures || tiktokBusy || facebookLoading || refreshingAct || singleActive) return
+    if (!hasFigures || tiktokBusy || facebookPending || refreshingAct || singleActive) return
     const draft = anonymousReadingDraft(snapshotToday({ rangeLabel, window: dateWindow, capturedAt: Date.now(),
-      facebook: goodFacebook, facebookLoadError, tiktok: scopeTikTokPageData(scopedTikTok(), ttPageScope, failedAccountIds) }), zh ? 'zh' : 'en')
+      facebook: goodFacebook, facebookLoadError, tiktokFailure, tiktok: scopeTikTokPageData(scopedTikTok(), ttPageScope, failedAccountIds) }), zh ? 'zh' : 'en')
     setLocalMappings(draft.mappings.map(text => { const [label, ...name] = text.split(' → '); return { label, name: name.join(' → ') } }))
     setSingleDraft(draft.text); setSingleDraftCopy(null)
   }
   const applyDates = () => {
     const next = parseTikTokCustomWindow(startInput, endInput)
     if (!next) { setDateError(true); return }
-    setDateError(false); setSingleDraft(null); setCustomWindow(next); setRange('custom')
+    setDateError(false); setSingleDraft(null)
+    if (range === 'custom' && customWindow.start === next.start && customWindow.end === next.end) {
+      void loadFacebook()
+      if (ttPageScopeRef.current) void loadTikTok(ttPageScopeRef.current)
+    } else { setCustomWindow(next); setRange('custom') }
   }
 
   return (
@@ -424,7 +429,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
               type="button"
               role="tab"
               aria-selected={range === value}
-              onClick={() => setRange(value)}
+              onClick={() => { const window = todayWindow(value); setStartInput(window.start); setEndInput(window.end); setDateError(false); setSingleDraft(null); setRange(value) }}
               className={`focus-ring rounded-full border px-3 py-1 text-[12px] leading-[18px] transition ${
                 range === value
                   ? 'border-accent/60 bg-accent-soft text-accent'
@@ -560,11 +565,11 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
       </section>
 
       <div className="flex flex-col items-start gap-2 pb-8">
-        <button type="button" onClick={() => setSaveSnapshot(currentSnapshot())} disabled={tiktokBusy || facebookLoading || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring rounded-full border border-line px-4 py-2 text-[13px] text-cream disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
+        <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) setSaveSnapshot(currentSnapshot()) }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring rounded-full border border-line px-4 py-2 text-[13px] text-cream disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
         <button
           type="button"
           onClick={ask}
-          disabled={!hasFigures || tiktokBusy || facebookLoading || refreshingAct !== null || singleActive !== null}
+          disabled={!hasFigures || tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null}
           className="focus-ring rounded-full bg-accent px-4 py-2 text-[13px] font-medium leading-5 text-[rgb(var(--bg-app))] disabled:opacity-40"
         >
           {zh ? '预览脱敏分析草稿' : 'Preview anonymized analysis'}
