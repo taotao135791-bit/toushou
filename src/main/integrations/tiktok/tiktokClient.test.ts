@@ -97,6 +97,19 @@ describe('oauth token exchange', () => {
 })
 
 describe('integrated report', () => {
+  it('rejects a supposedly nonempty report with an empty list and rejects an early empty page', async () => {
+    for (const page_info of [{ total_page: 1, total_number: 10 }, { total_page: 2 }]) {
+      const { fetch } = makeFetch(() => jsonResponse({ code: 0, data: { list: [], page_info } }))
+      await expect(fetchIntegratedReport(fetch, { accessToken: 'fake', advertiserId: BIG_ID, startDate: '2026-01-01', endDate: '2026-01-07' })).rejects.toThrow()
+    }
+  })
+
+  it('rejects a duplicate row across pages', async () => {
+    const record = { dimensions: { campaign_id: '1', stat_time_day: '2026-01-01' }, metrics: { campaign_name: 'A', spend: '1' } }
+    const { fetch } = makeFetch(() => jsonResponse({ code: 0, data: { list: [record], page_info: { total_page: 2 } } }))
+    await expect(fetchIntegratedReport(fetch, { accessToken: 'fake', advertiserId: BIG_ID, startDate: '2026-01-01', endDate: '2026-01-07' })).rejects.toThrow()
+  })
+
   it('sends a GET with the documented query params and the Access-Token header', async () => {
     const { fetch, calls } = makeFetch(emptyReport)
     await fetchIntegratedReport(fetch, {
@@ -194,12 +207,12 @@ describe('integrated report', () => {
     expect(rows[0].spend).toBeCloseTo(10.5)
   })
 
-  it('stops at the page cap even if total_page keeps growing', async () => {
+  it('rejects a report that exceeds the page cap', async () => {
     const { fetch, calls } = makeFetch(() =>
       jsonResponse({ code: 0, message: 'OK', data: { list: [], page_info: { total_page: 10_000 } } })
     )
-    await fetchIntegratedReport(fetch, { accessToken: 'tok', advertiserId: BIG_ID, startDate: '2026-01-01', endDate: '2026-01-07' })
-    expect(calls).toHaveLength(100)
+    await expect(fetchIntegratedReport(fetch, { accessToken: 'tok', advertiserId: BIG_ID, startDate: '2026-01-01', endDate: '2026-01-07' })).rejects.toThrow('分页超出安全范围')
+    expect(calls).toHaveLength(1)
   })
 
   it('surfaces the API return code when code !== 0', async () => {

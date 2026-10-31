@@ -31,7 +31,7 @@ function reportResponse(rows: Array<[string, string, string]>): Response {
     message: 'OK',
     data: {
       list: rows.map(([date, campaign, spend]) => ({
-        dimensions: { stat_time_day: date, campaign_name: campaign },
+        dimensions: { stat_time_day: date, campaign_name: campaign, campaign_id: '11' },
         metrics: { spend, impressions: '100', clicks: '5', ctr: '0.05', cpc: '2.1', conversion: '1', cost_per_conversion: '10.5' }
       })),
       page_info: { total_page: 1 }
@@ -89,7 +89,7 @@ function makeService(options: {
     settings: settingsAdapter,
     credentialsFile,
     datasetsFile,
-    now: options.now ?? (() => 1767000000000),
+    now: options.now ?? (() => 1767441600000),
     intervalMs: options.intervalMs,
     broadcast: (status) => statuses.push(status)
   })
@@ -164,6 +164,45 @@ describe('auto-refresh toggle', () => {
 })
 
 describe('refreshNow', () => {
+  it('checks authorization again immediately before writing after the report returns', async () => {
+    setTikTokCredentials({ accessToken: 'fake', advertiserIds: [7300001] }, credentialsFile)
+    writeFileSync(datasetsFile, '[]')
+    let allowed = true
+    const { service } = makeService({ reportPlan: () => { allowed = false; return reportResponse([['2026-01-02', 'C1', '10.5']]) } })
+    const outcome = await service.refreshNow({ beforeWrite: () => allowed })
+    expect(outcome).toMatchObject({ ok: false, error: 'permission-denied' })
+    expect(readFileSync(datasetsFile, 'utf8')).toBe('[]')
+  })
+
+  it('accepts only a granted string account ID and pulls only that account', async () => {
+    const id = '7300000000000000001'
+    const other = '7300000000000000002'
+    const calls: Array<{ name?: string; arguments?: Record<string, unknown> }> = []
+    const fetchImpl = async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } }
+      if (request.method === 'notifications/initialized') return new Response(null, { status: 202 })
+      let result: unknown
+      if (request.method === 'initialize') result = { protocolVersion: '2025-03-26' }
+      else if (request.method === 'tools/list') result = { tools: ['auth_advertiser_get', 'advertiser_info_get', 'report_integrated_get'].map((name) => ({ name })) }
+      else {
+        calls.push(request.params ?? {})
+        const name = request.params?.name
+        const args = request.params?.arguments ?? {}
+        const data = name === 'auth_advertiser_get' ? { list: [{ advertiser_id: id }, { advertiser_id: other }] } : name === 'advertiser_info_get' ? { list: [{ advertiser_id: id, timezone: 'UTC', currency: 'USD' }] } : { list: [{ dimensions: { campaign_id: '1', stat_time_day: args.start_date }, metrics: { campaign_name: 'Test', spend: '1', impressions: '1', clicks: '1', conversion: '1' } }], page_info: { total_page: 1 } }
+        result = { structuredContent: { code: 0, data } }
+      }
+      return jsonResponse({ jsonrpc: '2.0', id: request.id, result })
+    }
+    const service = new TikTokRefreshService({ fetchImpl, settings: { getAutoRefresh: () => false, setAutoRefresh: () => {} }, credentialsFile, datasetsFile, resolveToken: async () => ({ token: 'fake', source: 'oauth', advertiserIds: [id, other] }), now: () => 1767441600000, broadcast: () => {} })
+    expect(await service.refreshNow({ advertiserId: id })).toMatchObject({ ok: true })
+    expect(calls.find((call) => call.name === 'report_integrated_get')?.arguments?.advertiser_id).toBe(id)
+    expect(calls.filter((call) => call.name === 'report_integrated_get')).toHaveLength(1)
+    calls.length = 0
+    expect(await service.refreshNow({ advertiserId: '999' })).toMatchObject({ ok: false, error: 'advertiser-not-authorized' })
+    expect(calls.every((call) => call.name !== 'report_integrated_get')).toBe(true)
+    expect(await service.refreshNow({ advertiserId: Number(id) as unknown as string })).toMatchObject({ ok: false, error: 'invalid-advertiser' })
+  })
+
   it('refuses without credentials and surfaces the error state', async () => {
     const { service, statuses } = makeService()
     const outcome = await service.refreshNow()
@@ -190,7 +229,7 @@ describe('refreshNow', () => {
       { accessToken: 'tok-1', advertiserIds: [7300001] },
       credentialsFile
     )
-    const now = 1767000000000
+    const now = 1767441600000
     const localDate = (date: Date): string =>
       `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
     const endExpected = localDate(new Date(now))
@@ -217,7 +256,17 @@ describe('refreshNow', () => {
     const datasets = listDatasets(datasetsFile)
     expect(datasets).toHaveLength(1)
     expect(datasets[0].name).toBe('TikTok 报表')
-    expect(datasets[0].rows[0]).toEqual(['2026-01-02', '', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5, ''])
+    expect(datasets[0].rows[0]).toEqual(['2026-01-02', '7300001', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5, '', '7300001', '11', '', 'open-api'])
+  })
+
+  it('preserves existing dataset bytes when pagination claims rows but returns none', async () => {
+    setTikTokCredentials({ accessToken: 'fake', advertiserIds: [7300001] }, credentialsFile)
+    const { service } = makeService()
+    expect((await service.refreshNow()).ok).toBe(true)
+    const before = readFileSync(datasetsFile, 'utf8')
+    const broken = makeService({ reportPlan: () => jsonResponse({ code: 0, data: { list: [], page_info: { total_page: 1, total_number: 10 } } }) })
+    expect((await broken.service.refreshNow()).ok).toBe(false)
+    expect(readFileSync(datasetsFile, 'utf8')).toBe(before)
   })
 
   it('surfaces API failures through lastError without clobbering the dataset', async () => {
@@ -235,6 +284,27 @@ describe('refreshNow', () => {
     expect(readFileSync(datasetsFile, 'utf-8')).toBe('[]')
   })
 
+  it('prevents an older slow refresh from overwriting a newer successful refresh', async () => {
+    setTikTokCredentials({ accessToken: 'fake', advertiserIds: [7300001] }, credentialsFile)
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const started = new Promise<void>((resolve) => { entered = resolve })
+    const oldService = new TikTokRefreshService({
+      fetchImpl: async () => { entered(); await gate; return reportResponse([['2026-01-02', 'C1', '10']]) },
+      settings: { getAutoRefresh: () => false, setAutoRefresh: () => {} }, credentialsFile, datasetsFile,
+      now: () => 1767441600000, broadcast: () => {}
+    })
+    const oldRequest = oldService.refreshNow()
+    await started
+    const newer = makeService({ reportPlan: () => reportResponse([['2026-01-02', 'C1', '25']]) })
+    expect((await newer.service.refreshNow()).ok).toBe(true)
+    const saved = readFileSync(datasetsFile, 'utf8')
+    release()
+    expect(await oldRequest).toMatchObject({ ok: false, error: 'dataset-superseded' })
+    expect(readFileSync(datasetsFile, 'utf8')).toBe(saved)
+    expect(listDatasets(datasetsFile)[0].rows[0][3]).toBe(25)
+  })
+
   it('guards against overlapping refreshes', async () => {
     setTikTokCredentials({ accessToken: 'tok-1', advertiserIds: [7300001] }, credentialsFile)
     let release!: () => void
@@ -250,6 +320,7 @@ describe('refreshNow', () => {
       settings: { getAutoRefresh: () => false, setAutoRefresh: () => {} },
       credentialsFile,
       datasetsFile,
+      now: () => 1767441600000,
       broadcast: () => {}
     })
     const first = service.refreshNow()
@@ -282,17 +353,10 @@ describe('refreshNow', () => {
         result = { tools: ['auth_advertiser_get', 'advertiser_info_get', 'report_integrated_get'].map((name) => ({ name })) }
       } else {
         const args = request.params.arguments as Record<string, unknown>
-        result = {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                code: 0,
-                data: { list: [{ dimensions: { campaign_id: '11', stat_time_day: args.start_date }, metrics: { campaign_name: 'C1', spend: '10.5', impressions: '100', clicks: '2', conversion: '1' } }], page_info: { total_page: 1 } }
-              })
-            }
-          ]
-        }
+        const data = request.params.name === 'advertiser_info_get'
+          ? { list: [{ advertiser_id: '7300042', name: 'Account', currency: 'USD', timezone: 'UTC' }] }
+          : { list: [{ dimensions: { campaign_id: '11', stat_time_day: args.start_date }, metrics: { campaign_name: 'C1', spend: '10.5', impressions: '100', clicks: '2', conversion: '1' } }], page_info: { total_page: 1 } }
+        result = { content: [{ type: 'text', text: JSON.stringify({ code: 0, data }) }] }
       }
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }), {
         headers: { 'content-type': 'application/json', 'mcp-session-id': 'session' }
@@ -304,7 +368,7 @@ describe('refreshNow', () => {
       credentialsFile: path.join(dir, 'absent-credentials.json'),
       datasetsFile,
       resolveToken: async () => ({ token: 'oauth-token', source: 'oauth', advertiserIds: ['7300042'] }),
-      now: () => 1767000000000,
+      now: () => 1767441600000,
       broadcast: () => {}
     })
     const outcome = await service.refreshNow()
@@ -345,7 +409,7 @@ describe('refreshNow', () => {
       settings: { getAutoRefresh: () => false, setAutoRefresh: () => {} },
       credentialsFile,
       datasetsFile,
-      now: () => 1767000000000,
+      now: () => 1767441600000,
       broadcast: () => {}
     })
     const outcome = await service.refreshNow()
@@ -353,7 +417,7 @@ describe('refreshNow', () => {
     const stored = JSON.parse(readFileSync(credentialsFile, 'utf-8'))
     expect(stored.accessToken).toBe('fresh-token')
     expect(stored.refreshToken).toBe('rt-2')
-    expect(stored.expiresAt).toBe(1767000000000 + 86400 * 1000)
+    expect(stored.expiresAt).toBe(1767441600000 + 86400 * 1000)
     // The report call went out with the ROTATED token, not the expired one.
     expect(reportHeaders).toEqual(['fresh-token'])
   })

@@ -10,6 +10,7 @@ import {
   groupAggregate,
   datasetMoneyCurrencyList,
   filterDatasetRowsByWindow,
+  filterDatasetRowsByWindowWithStatus,
   inferColumnType,
   parseDateString,
   validateDataset
@@ -364,12 +365,19 @@ describe('filterDatasetRowsByWindow latestDay (今天 scope)', () => {
     ]
   }
 
-  it("keeps only the account's CURRENT stat day — the newest in the data", () => {
-    const filtered = filterDatasetRowsByWindow(dataset, { start: '2026-10-30', end: '2026-10-30' }, { latestDay: true })
-    expect(filtered.rows).toEqual([
-      ['2026-10-29', 200],
-      ['2026-10-29', 50]
-    ])
+  it('does not present stale unknown-timezone rows as today', () => {
+    const filtered = filterDatasetRowsByWindow(dataset, { start: '2026-10-30', end: '2026-10-30' }, { latestDay: true, now: Date.parse('2026-10-30T12:00:00Z') })
+    expect(filtered.rows).toEqual([])
+  })
+
+  it('uses each verified timezone and explicitly reports unknown rows', () => {
+    const scoped: BoardDataset = { ...dataset, columns: [{ name: '日期', type: 'date' }, { name: '消耗', type: 'number' }, { name: '账户时区', type: 'text' }], rows: [
+      ['2026-09-20', 1, 'Asia/Tokyo'], ['2026-09-19', 2, 'America/Los_Angeles'], ['2026-09-18', 3, 'America/Los_Angeles'], ['2026-09-19', 4, '']
+    ] }
+    const result = filterDatasetRowsByWindowWithStatus(scoped, { start: '2026-09-20', end: '2026-09-20' }, { latestDay: true, now: Date.parse('2026-09-20T00:30:00Z') })
+    expect(result.dataset.rows).toEqual([['2026-09-20', 1, 'Asia/Tokyo'], ['2026-09-19', 2, 'America/Los_Angeles']])
+    expect(result.excludedUnknownTimezone).toBe(1)
+    expect(result.missingTimezone).toBe(true)
   })
 
   it('yields no rows when the dataset has no dates at all', () => {

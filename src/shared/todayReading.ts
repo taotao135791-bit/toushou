@@ -29,6 +29,9 @@ export interface TodayChatRow {
 
 /** Morning TikTok row. previousSpend is 0 when the earlier window had no spend. */
 export interface TikTokTodayAccountReading extends TikTokReadingAdvertiser {
+  /** Today/previous day for this account when account timezone is known. */
+  window?: TodayWindow
+  previousWindow?: TodayWindow
   spend: number
   previousSpend: number
   impressions: number
@@ -58,6 +61,7 @@ export interface TikTokTodayReading {
   /** True when the token grant has more advertisers than this page queries. */
   truncated: boolean
   accounts: TikTokTodayAccount[]
+  datasetSync?: { ok: true; legacyBackups?: string[] } | { ok: false; error: string }
 }
 
 export type TikTokTodayReadingResult = TikTokTodayReading | ReadingFailure

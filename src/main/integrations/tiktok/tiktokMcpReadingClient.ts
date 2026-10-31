@@ -1,4 +1,5 @@
 import { normalizeTikTokAdvertiserId } from '../../../shared/tiktokReport'
+import { proxyFetchFor } from './proxyFetch'
 import { normalizeReportList, TikTokApiError, type TikTokApiFetch, type TikTokReportRow } from './tiktokClient'
 
 /** The application's own first-party MCP connection; no Open API fallback. */
@@ -15,7 +16,7 @@ export class TikTokMcpReadingClient {
   private version = PROTOCOL
   private id = 0
   private available = new Set<string>()
-  constructor(private readonly token: string, private readonly fetchImpl: TikTokApiFetch = (url, init) => fetch(url, init)) {}
+  constructor(private readonly token: string, private readonly fetchImpl: TikTokApiFetch = async (url, init) => (await proxyFetchFor(url, 'tiktok-api'))(url, init)) {}
 
   private async send(method: string, params: ObjectValue, notification = false): Promise<ObjectValue> {
     const id = ++this.id
@@ -95,14 +96,14 @@ export class TikTokMcpReadingClient {
     return [...new Set(ids)]
   }
 
-  async info(ids: string[]): Promise<Array<{ advertiserId: string; name: string | null; currency: string | null }>> {
-    const data = await this.call('advertiser_info_get', { advertiser_ids: ids, fields: ['advertiser_id', 'name', 'currency'] })
+  async info(ids: string[]): Promise<Array<{ advertiserId: string; name: string | null; currency: string | null; timezone?: string | null }>> {
+    const data = await this.call('advertiser_info_get', { advertiser_ids: ids, fields: ['advertiser_id', 'name', 'currency', 'timezone'] })
     if (!Array.isArray(data.list)) throw new TikTokApiError(-1, 'TikTok MCP 广告主信息无效')
     return data.list.flatMap((raw) => {
       const item = asObject(raw)
       const id = normalizeTikTokAdvertiserId(item?.advertiser_id)
       if (!id || !ids.includes(id)) return []
-      return [{ advertiserId: id, name: typeof item?.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 120) : null, currency: typeof item?.currency === 'string' && /^[A-Z]{3}$/.test(item.currency.trim()) ? item.currency.trim() : null }]
+      return [{ advertiserId: id, name: typeof item?.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 120) : null, currency: typeof item?.currency === 'string' && /^[A-Z]{3}$/.test(item.currency.trim()) ? item.currency.trim() : null, ...(typeof item?.timezone === 'string' && item.timezone.trim() && item.timezone.length <= 100 ? { timezone: item.timezone.trim() } : {}) }]
     })
   }
 
@@ -117,6 +118,9 @@ export class TikTokMcpReadingClient {
       const segmentEnd = Math.min(end, start + 29 * 86_400_000)
       const date = (ms: number) => new Date(ms).toISOString().slice(0, 10)
       let complete = false
+      let expectedPages: number | null = null
+      let expectedRows: number | null = null
+      let segmentRows = 0
       for (let page = 1; page <= 100; page++) {
         const data = await this.call('report_integrated_get', { advertiser_id: advertiserId, report_type: 'BASIC', data_level: 'AUCTION_CAMPAIGN', dimensions: ['campaign_id', 'stat_time_day'], metrics: ['campaign_name', 'spend', 'impressions', 'clicks', 'conversion'], start_date: date(start), end_date: date(segmentEnd), page, page_size: 200 })
         if (!Array.isArray(data.list)) throw new TikTokApiError(-1, 'TikTok MCP 报表列表无效')
@@ -134,12 +138,20 @@ export class TikTokMcpReadingClient {
           seenRows.add(key)
           rows.push({ ...row, advertiserId, campaignId })
         }
+        segmentRows += data.list.length
         const info = asObject(data.page_info)
         const total = info?.total_page === undefined ? null : Number(info.total_page)
         const totalRows = info?.total_number === undefined ? null : Number(info.total_number)
         if (totalRows !== null && (!Number.isSafeInteger(totalRows) || totalRows < 0 || totalRows > 20_000)) throw new TikTokApiError(-1, 'TikTok MCP 报表结果超过安全范围')
         if (total !== null && (!Number.isInteger(total) || total < 0)) throw new TikTokApiError(-1, 'TikTok MCP 报表分页无效')
-        if ((total !== null && page >= Math.max(1, total)) || (total === null && data.list.length < 200)) { complete = true; break }
+        if (info?.page !== undefined && Number(info.page) !== page) throw new TikTokApiError(-1, 'TikTok MCP 报表页码不一致')
+        if (page > 1 && (total !== expectedPages || totalRows !== expectedRows)) throw new TikTokApiError(-1, 'TikTok MCP 报表分页元数据不一致')
+        if (page === 1) { expectedPages = total; expectedRows = totalRows }
+        if (total !== null && data.list.length === 0 && (page < total || page > 1)) throw new TikTokApiError(-1, 'TikTok MCP 报表提前出现空页')
+        if ((total !== null && page >= Math.max(1, total)) || (total === null && data.list.length < 200)) {
+          if (expectedRows !== null && segmentRows !== expectedRows) throw new TikTokApiError(-1, 'TikTok MCP 报表行数不完整')
+          complete = true; break
+        }
       }
       if (!complete) throw new TikTokApiError(-1, 'TikTok MCP 报表超过分页上限')
       start = segmentEnd + 86_400_000

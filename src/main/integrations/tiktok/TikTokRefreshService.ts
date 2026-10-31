@@ -3,7 +3,8 @@ import { IPC_CHANNELS } from '../../../shared/constants'
 import {
   TikTokCredentialInfo,
   TikTokRefreshOutcome,
-  TikTokReportStatus
+  TikTokReportStatus,
+  tiktokAccountDate
 } from '../../../shared/tiktokReport'
 import { getStore, setStore } from '../../store'
 import {
@@ -16,7 +17,7 @@ import { resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokTok
 import { fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch, TikTokReportRow } from './tiktokClient'
 import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
 import { proxySessionFetch } from './proxyFetch'
-import { mergeReportRowsIntoDataset, writeReportToDataset } from './tiktokReportDataset'
+import { beginTikTokDatasetRead, mergeReportRowsIntoDataset, type TikTokDatasetScope, type TikTokAdvertiserDetail } from './tiktokReportDataset'
 
 /**
  * TikTok 报表自动刷新服务 — 一个轻量的 setInterval 驱动服务（默认每 30 分钟
@@ -83,6 +84,7 @@ export class TikTokRefreshService {
   private lastRefreshAt: number | undefined
   private lastError: string | undefined
   private lastRowCount: number | undefined
+  private legacyBackups: string[] = []
 
   constructor(options: TikTokRefreshServiceOptions = {}) {
     // Default fetch is proxy-aware (env vars → OS proxy, never forced direct):
@@ -123,6 +125,7 @@ export class TikTokRefreshService {
       ...(this.lastRefreshAt !== undefined ? { lastRefreshAt: this.lastRefreshAt } : {}),
       ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
       ...(this.lastRowCount !== undefined ? { lastRowCount: this.lastRowCount } : {}),
+      ...(this.legacyBackups.length ? { legacyBackups: this.legacyBackups } : {}),
       info
     }
   }
@@ -182,11 +185,15 @@ export class TikTokRefreshService {
    * first — it refreshes itself — paste store as fallback, keeping the
    * rotate-before-read branch alive).
    */
-  async refreshNow(): Promise<TikTokRefreshOutcome> {
+  async refreshNow(options: { advertiserId?: string; beforeWrite?: () => boolean } = {}): Promise<TikTokRefreshOutcome> {
     if (this.refreshing) {
       return { ok: false, error: 'refresh-in-progress', status: this.getStatus() }
     }
+    if (options.advertiserId !== undefined && (typeof options.advertiserId !== 'string' || !/^[1-9]\d{0,24}$/.test(options.advertiserId))) {
+      return { ok: false, error: 'invalid-advertiser', status: this.getStatus() }
+    }
     this.refreshing = true
+    const requestVersion = beginTikTokDatasetRead()
     this.emit()
     try {
       let resolved: ResolvedTikTokToken
@@ -206,31 +213,36 @@ export class TikTokRefreshService {
       // needed — and discovers the granted advertisers when the token
       // response omitted them (the paste-store path keeps Open API below).
       let rows: TikTokReportRow[]
-      let details: Map<string, { name: string | null; currency: string | null }> | undefined
+      let details: Map<string, TikTokAdvertiserDetail> | undefined
+      let scopes: TikTokDatasetScope[]
       if (resolved.source === 'oauth') {
-        const viaMcp = await this.fetchRowsViaMcp(resolved.token, resolved.advertiserIds)
+        const viaMcp = await this.fetchRowsViaMcp(resolved.token, resolved.advertiserIds, options.advertiserId)
         rows = viaMcp.rows
         details = viaMcp.details
+        scopes = viaMcp.scopes
       } else {
-        rows = await this.fetchRows(await this.accessTokenForReport(resolved), resolved.advertiserIds)
+        if (options.advertiserId && !resolved.advertiserIds.includes(options.advertiserId)) throw new Error('advertiser-not-authorized')
+        const direct = await this.fetchRows(await this.accessTokenForReport(resolved), options.advertiserId ? [options.advertiserId] : resolved.advertiserIds)
+        rows = direct.rows
+        scopes = direct.scopes
       }
-      // MERGE, not replace: a reading card may have merged a longer window
-      // (28/30 days); replacing with the 7-day refresh window would silently
-      // delete that history. Replace only when rows cannot be name-keyed
-      // (missing advertiser info), where a merge would be unsafe.
-      const canMerge = rows.every((row) => !row.advertiserId || Boolean(details?.get(row.advertiserId)?.name))
-      const written = canMerge && details && details.size > 0
-        ? mergeReportRowsIntoDataset(rows, details, this.datasetsFile)
-        : writeReportToDataset(rows, this.datasetsFile, details)
+      if (options.beforeWrite) {
+        let allowed = false
+        try { allowed = options.beforeWrite() === true } catch { /* deny */ }
+        if (!allowed) throw new Error('permission-denied')
+      }
+      const written = mergeReportRowsIntoDataset(rows, details, this.datasetsFile, scopes, requestVersion)
       if (!written.ok) throw new Error(`dataset-${written.error}`)
       this.lastRefreshAt = this.now()
       this.lastError = undefined
       this.lastRowCount = written.dataset.rows.length
+      this.legacyBackups = written.legacyBackups ?? []
       this.emit()
       return {
         ok: true,
         rowCount: written.dataset.rows.length,
         truncated: written.truncated,
+        ...(this.legacyBackups.length ? { legacyBackups: this.legacyBackups } : {}),
         status: this.getStatus()
       }
     } catch (error) {
@@ -290,59 +302,48 @@ export class TikTokRefreshService {
   /** One query per advertiser, merged. The report API has no token-wide query. */
   private async fetchRows(accessToken: string, advertiserIds: string[]) {
     if (advertiserIds.length === 0) throw new Error('no-advertiser')
+    if (advertiserIds.length > MAX_ADVERTISERS_PER_REFRESH) throw new Error('advertiser-limit')
     const nowDate = new Date(this.now())
     const end = formatLocalDate(nowDate)
     const startDate = new Date(nowDate)
     startDate.setDate(startDate.getDate() - (REPORT_RANGE_DAYS - 1))
     const start = formatLocalDate(startDate)
-    const rows = []
-    for (const advertiserId of advertiserIds.slice(0, MAX_ADVERTISERS_PER_REFRESH)) {
-      rows.push(
-        ...(await fetchIntegratedReport(this.fetchImpl, {
-          accessToken,
-          advertiserId,
-          startDate: start,
-          endDate: end
-        }))
-      )
+    const scopes: TikTokDatasetScope[] = []
+    const rows: TikTokReportRow[] = []
+    for (const advertiserId of advertiserIds) {
+      rows.push(...(await fetchIntegratedReport(this.fetchImpl, { accessToken, advertiserId, startDate: start, endDate: end })))
+      scopes.push({ advertiserId, startDate: start, endDate: end, source: 'open-api' })
     }
-    return sortRowsByDateDesc(rows)
+    return { rows: sortRowsByDateDesc(rows), scopes }
   }
 
-  /**
-   * OAuth grant → the official MCP report tool (report_integrated_get,
-   * daily campaign rows). Advertiser discovery rides the same MCP connection
-   * when neither the grant nor the Connections-page list names any.
-   */
-  private async fetchRowsViaMcp(
-    token: string,
-    advertiserIds: string[]
-  ): Promise<{ rows: TikTokReportRow[]; details: Map<string, { name: string | null; currency: string | null }> }> {
+  /** The MCP report uses each account's verified local calendar. */
+  private async fetchRowsViaMcp(token: string, advertiserIds: string[], selectedId?: string): Promise<{ rows: TikTokReportRow[]; details: Map<string, TikTokAdvertiserDetail>; scopes: TikTokDatasetScope[] }> {
     const client = new TikTokMcpReadingClient(token, this.fetchImpl)
     await client.initialize()
-    const ids = advertiserIds.length > 0 ? advertiserIds : await client.advertisers()
+    let ids: string[]
+    if (selectedId) {
+      const granted = await client.advertisers()
+      if (!granted.includes(selectedId)) throw new Error('advertiser-not-authorized')
+      ids = [selectedId]
+    } else {
+      ids = advertiserIds.length > 0 ? advertiserIds : await client.advertisers()
+    }
     if (ids.length === 0) throw new Error('no-advertiser')
-    // Per-advertiser name+currency for the dataset's 广告主/币种 columns (one
-    // board's cards filter to ONE advertiser; money widgets offer a USD
-    // conversion). Best-effort: info failing must not stop the pull.
-    const details = new Map<string, { name: string | null; currency: string | null }>()
-    try {
-      for (const info of await client.info(ids)) {
-        details.set(info.advertiserId, { name: info.name, currency: info.currency })
-      }
-    } catch {
-      // No advertiser detail this round — filtering/conversion stay hidden.
-    }
-    const nowDate = new Date(this.now())
-    const end = formatLocalDate(nowDate)
-    const startDate = new Date(nowDate)
-    startDate.setDate(startDate.getDate() - (REPORT_RANGE_DAYS - 1))
-    const start = formatLocalDate(startDate)
-    const rows = []
-    for (const advertiserId of ids.slice(0, MAX_ADVERTISERS_PER_REFRESH)) {
+    if (ids.length > MAX_ADVERTISERS_PER_REFRESH) throw new Error('advertiser-limit')
+    const details = new Map<string, TikTokAdvertiserDetail>()
+    for (const info of await client.info(ids)) details.set(info.advertiserId, { name: info.name, currency: info.currency, timezone: info.timezone })
+    const rows: TikTokReportRow[] = []
+    const scopes: TikTokDatasetScope[] = []
+    const now = this.now()
+    for (const advertiserId of ids) {
+      const end = tiktokAccountDate(now, details.get(advertiserId)?.timezone)
+      if (!end) throw new Error('account-timezone-unavailable')
+      const start = new Date(Date.parse(`${end}T00:00:00Z`) - (REPORT_RANGE_DAYS - 1) * 86_400_000).toISOString().slice(0, 10)
       rows.push(...(await client.report(advertiserId, start, end)))
+      scopes.push({ advertiserId, startDate: start, endDate: end, source: 'mcp' })
     }
-    return { rows: sortRowsByDateDesc(rows), details }
+    return { rows: sortRowsByDateDesc(rows), details, scopes }
   }
 
   /** Test-only: drop timers and module state so cases start clean. */
@@ -352,6 +353,7 @@ export class TikTokRefreshService {
     this.lastRefreshAt = undefined
     this.lastError = undefined
     this.lastRowCount = undefined
+    this.legacyBackups = []
   }
 }
 

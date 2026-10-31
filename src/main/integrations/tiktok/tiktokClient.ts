@@ -270,6 +270,10 @@ export async function fetchIntegratedReport(
   const advertiserId = normalizeTikTokAdvertiserId(query.advertiserId)
   if (!advertiserId) throw new TikTokApiError(-1, '报表接口需要广告主 ID（advertiser_id）')
   const rows: TikTokReportRow[] = []
+  const seen = new Set<string>()
+  let expectedPages: number | null = null
+  let expectedRows: number | null = null
+  let complete = false
   for (let page = 1; page <= MAX_PAGES; page++) {
     const url = new URL(INTEGRATED_REPORT_URL)
     url.searchParams.set('advertiser_id', advertiserId)
@@ -283,11 +287,35 @@ export async function fetchIntegratedReport(
     url.searchParams.set('page_size', String(PAGE_SIZE))
     const payload = await getJson(fetchImpl, url, query.accessToken, '报表接口')
     const data = assertEnvelope(payload, '拉取报表')
-    rows.push(...normalizeReportList(data))
+    if (!Array.isArray(data.list)) throw new TikTokApiError(-1, 'TikTok 报表列表无效')
+    for (const entry of data.list) {
+      if (!entry || typeof entry !== 'object') throw new TikTokApiError(-1, 'TikTok 报表行无效')
+      const item = entry as Record<string, unknown>
+      const dim = item.dimensions && typeof item.dimensions === 'object' ? item.dimensions as Record<string, unknown> : {}
+      const campaignId = typeof dim.campaign_id === 'string' ? dim.campaign_id : ''
+      const normalized = normalizeReportList({ list: [entry] })
+      if (!/^[1-9]\d{0,24}$/.test(campaignId) || normalized.length !== 1) throw new TikTokApiError(-1, 'TikTok 报表行缺少稳定标识或日期')
+      const key = `${campaignId}:${normalized[0].date}`
+      if (seen.has(key)) throw new TikTokApiError(-1, 'TikTok 报表存在重复行')
+      seen.add(key)
+      rows.push({ ...normalized[0], advertiserId, campaignId })
+    }
     const pageInfo = (data.page_info && typeof data.page_info === 'object' ? data.page_info : {}) as Record<string, unknown>
-    const totalPages = typeof pageInfo.total_page === 'number' ? pageInfo.total_page : 1
-    if (page >= Math.max(1, Math.min(totalPages, MAX_PAGES))) break
+    const totalPages = pageInfo.total_page === undefined ? null : Number(pageInfo.total_page)
+    const totalRows = pageInfo.total_number === undefined ? null : Number(pageInfo.total_number)
+    if (totalPages !== null && (!Number.isInteger(totalPages) || totalPages < 0 || totalPages > MAX_PAGES)) throw new TikTokApiError(-1, 'TikTok 报表分页超出安全范围')
+    if (totalRows !== null && (!Number.isSafeInteger(totalRows) || totalRows < 0 || totalRows > MAX_PAGES * PAGE_SIZE)) throw new TikTokApiError(-1, 'TikTok 报表行数超出安全范围')
+    if (pageInfo.page !== undefined && Number(pageInfo.page) !== page) throw new TikTokApiError(-1, 'TikTok 报表页码不一致')
+    if (page > 1 && (totalPages !== expectedPages || totalRows !== expectedRows)) throw new TikTokApiError(-1, 'TikTok 报表分页元数据不一致')
+    if (page === 1) { expectedPages = totalPages; expectedRows = totalRows }
+    if (totalPages !== null && data.list.length === 0 && (page < totalPages || page > 1)) throw new TikTokApiError(-1, 'TikTok 报表提前出现空页')
+    if ((totalPages !== null && page >= Math.max(1, totalPages)) || (totalPages === null && data.list.length < PAGE_SIZE)) {
+      if (expectedRows !== null && rows.length !== expectedRows) throw new TikTokApiError(-1, 'TikTok 报表行数不完整')
+      complete = true
+      break
+    }
   }
+  if (!complete) throw new TikTokApiError(-1, 'TikTok 报表超过分页上限')
   return sortRowsByDateDesc(rows)
 }
 
