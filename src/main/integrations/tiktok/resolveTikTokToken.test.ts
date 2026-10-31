@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/toushou-unused' } }))
 
 import { resolveTikTokToken } from './resolveTikTokToken'
+import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
 import type { TikTokStoredCredentials } from './TikTokCredentialStore'
 import type { TikTokReportCredentials } from './TikTokConnectionStore'
 
@@ -74,6 +75,12 @@ describe('resolveTikTokToken', () => {
     })
     expect(resolved.source).toBe('pasted')
     expect(resolved.token).toBe('pasted-token')
+  })
+
+  it('does not treat a locked existing OAuth credential as absent or use pasted credentials', async () => {
+    const loadPastedCredentials = vi.fn(() => pastedCredentials())
+    await expect(resolveTikTokToken({ loadOAuthCredentials: async () => { throw new TikTokCredentialStorageError() }, loadPastedCredentials })).rejects.toBeInstanceOf(TikTokCredentialStorageError)
+    expect(loadPastedCredentials).not.toHaveBeenCalled()
   })
 
   it('reports none when neither source holds a token', async () => {

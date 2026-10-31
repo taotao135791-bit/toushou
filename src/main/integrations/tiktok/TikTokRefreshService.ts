@@ -17,6 +17,7 @@ import { resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokTok
 import { fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch, TikTokReportRow } from './tiktokClient'
 import { TikTokMcpReadingClient } from './tiktokMcpReadingClient'
 import { proxySessionFetch } from './proxyFetch'
+import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
 import { beginTikTokDatasetRead, mergeReportRowsIntoDataset, type TikTokDatasetScope, type TikTokAdvertiserDetail } from './tiktokReportDataset'
 
 /**
@@ -199,7 +200,8 @@ export class TikTokRefreshService {
       let resolved: ResolvedTikTokToken
       try {
         resolved = await this.resolveTokenImpl()
-      } catch {
+      } catch (error) {
+        if (error instanceof TikTokCredentialStorageError) throw error
         resolved = { token: null, source: 'none' }
       }
       if (!resolved.token) {

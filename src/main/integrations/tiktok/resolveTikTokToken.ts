@@ -1,3 +1,4 @@
+import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
 import type { TikTokStoredCredentials } from './TikTokCredentialStore'
 import { loadTikTokCredentials, type TikTokReportCredentials } from './TikTokConnectionStore'
 import { listTikTokReadingAdvertisers } from './tiktokReadingAdvertisers'
@@ -48,7 +49,8 @@ async function defaultOAuthLoader(): Promise<TikTokStoredCredentials | null> {
   if (!oauthLoader) return null
   try {
     return await oauthLoader()
-  } catch {
+  } catch (error) {
+    if (error instanceof TikTokCredentialStorageError) throw error
     // A broken connector (e.g. unreadable safeStorage envelope) must not take
     // the reading modules down — the paste fallback stays usable.
     return null
@@ -79,7 +81,10 @@ export async function resolveTikTokToken(
   const loadOAuth = deps.loadOAuthCredentials ?? defaultOAuthLoader
   // Any OAuth-side failure (loader throw, unreadable envelope) degrades to
   // "no OAuth token" so the paste fallback stays reachable.
-  const credentials = await loadOAuth().catch(() => null)
+  const credentials = await loadOAuth().catch((error) => {
+    if (error instanceof TikTokCredentialStorageError) throw error
+    return null
+  })
   const loadPasted = deps.loadPastedCredentials ?? (() => loadTikTokCredentials())
   const resolved = fromOAuth(credentials) ?? fromPasted(loadPasted())
   if (!resolved) return { token: null, source: 'none' }
