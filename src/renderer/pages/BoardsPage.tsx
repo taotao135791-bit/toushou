@@ -141,7 +141,12 @@ const DATASET_ERROR_KEYS: Record<DatasetImportError, I18nKey> = {
   'write-failed': 'boards.datasets.error.writeFailed',
   // Main-internal writer path only (TikTok 报表 refresh) — never user-facing here.
   'invalid-name': 'boards.datasets.error.invalidName',
-  'incomplete-advertiser-info': 'boards.datasets.error.incompleteAdvertiserInfo'
+  'incomplete-advertiser-info': 'boards.datasets.error.incompleteAdvertiserInfo',
+  'legacy-dataset': 'boards.datasets.syncFailed',
+  'row-limit': 'boards.datasets.syncFailed',
+  'invalid-scope': 'boards.datasets.syncFailed',
+  'ambiguous-dataset': 'boards.datasets.syncFailed',
+  superseded: 'boards.datasets.syncSuperseded'
 }
 
 function hasFileDrag(e: DragEvent): boolean {
@@ -283,6 +288,7 @@ export default function BoardsPage() {
   const [saveFailed, setSaveFailed] = useState(false)
   const [datasets, setDatasets] = useState<BoardDataset[]>([])
   const [datasetsLoadFailed, setDatasetsLoadFailed] = useState(false)
+  const [ttSyncFailures, setTtSyncFailures] = useState<Record<string, boolean>>({})
   /** First snapshot not in yet: cards show skeletons, not "no data" flashes. */
   const [datasetsReady, setDatasetsReady] = useState(false)
   const [datasetsOpen, setDatasetsOpen] = useState(false)
@@ -299,6 +305,14 @@ export default function BoardsPage() {
   const boardSaveGeneration = useRef(new Map<string, number>())
 
   const current = boards?.find((b) => b.id === currentId) ?? null
+  const ttWidgets = current?.widgets.filter(widget => widget.type === 'tt-reading') ?? []
+  const hasCurrentTtDataset = current?.widgets.some(widget => {
+    const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
+    return id === 'TikTok 报表' || datasets.some(dataset => dataset.id === id && dataset.name === 'TikTok 报表')
+  }) ?? false
+  const fallbackStatus = current ? ttSyncFailures[`fallback:${current.id}`] : undefined
+  const ttFailed = fallbackStatus === true || ttWidgets.some(widget => ttSyncFailures[widget.id] === true)
+  const ttVerifiedThisSession = ttWidgets.length ? ttWidgets.every(widget => ttSyncFailures[widget.id] === false) : fallbackStatus === false
 
   useEffect(() => {
     let alive = true
@@ -353,8 +367,14 @@ export default function BoardsPage() {
         void refreshDatasets()
       }, 400)
     }
+    const onSyncStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{id?: string; failed?: boolean}>).detail
+      if (typeof detail?.id === 'string') setTtSyncFailures(current => ({ ...current, [detail.id!]: detail.failed === true }))
+    }
+    window.addEventListener('tt-reading:sync-status', onSyncStatus)
     window.addEventListener('tt-reading:refreshed', onTtRefreshed)
     return () => {
+      window.removeEventListener('tt-reading:sync-status', onSyncStatus)
       window.removeEventListener('tt-reading:refreshed', onTtRefreshed)
       if (datasetRepullTimer.current) clearTimeout(datasetRepullTimer.current)
     }
@@ -736,22 +756,35 @@ export default function BoardsPage() {
     const hasDatasetBound = current.widgets.some(
       (widget) => typeof widget.config.datasetId === 'string' && widget.config.datasetId !== ''
     )
+    const hasTtDatasetBound = current.widgets.some(widget => {
+      const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
+      return id === 'TikTok 报表' || datasets.some(dataset => dataset.id === id && dataset.name === 'TikTok 报表')
+    })
     if (widgets.length === 0 && !hasDatasetBound) return
     setBoardRefreshBusy(true)
     setBoardRefreshProgress({ done: 0, total: Math.max(widgets.length, 1) })
     // ONE pipeline: the TT reading itself writes the shared dataset. When the
     // board has dataset cards but no TT module to drive that read, run one
     // reading pull here so refresh-all updates every card in one pass.
-    if (hasDatasetBound && !widgets.some((widget) => widget.type === 'tt-reading')) {
+    if (hasTtDatasetBound && !widgets.some((widget) => widget.type === 'tt-reading')) {
       try {
-        const result = await window.electronAPI.ttReadingSummary({ range: '7' })
+        const scope = current.masterScope?.range
+        const range = scope === 'today' ? '1' : scope === 'yesterday' ? 'yd' : scope === 'last3' ? '3' : scope === 'last30' ? '30' : '7'
+        const result = await window.electronAPI.ttReadingSummary({ range })
         // A reading failure resolves with { ok:false } instead of throwing;
         // reporting success while the dataset stayed stale was misleading.
-        if (result && 'ok' in result && result.ok === false) flashToast(t('boards.datasetRefreshFailed'), false)
+        const superseded = !('ok' in result) && result.datasetSync?.ok === false && result.datasetSync.error === 'superseded'
+        const failed = 'ok' in result ? result.ok === false : (result.datasetSync?.ok === false && !superseded) || result.failed.length > 0 || result.truncated === true
+        setTtSyncFailures(current => ({ ...current, [`fallback:${currentId}`]: failed }))
+        if (failed) flashToast(t('boards.datasetRefreshFailed'), false)
+        else if (superseded) flashToast(t('boards.datasets.syncSuperseded'), true)
         await refreshDatasets()
       } catch {
+        setTtSyncFailures(current => ({ ...current, [`fallback:${currentId}`]: true }))
         flashToast(t('boards.datasetRefreshFailed'), false)
       }
+    } else if (hasDatasetBound && !hasTtDatasetBound) {
+      await refreshDatasets()
     }
     if (widgets.length === 0) {
       setBoardRefreshBusy(false)
@@ -1497,6 +1530,9 @@ export default function BoardsPage() {
           </div>
         )}
       </header>
+      {surface === 'board' && current && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
+      {surface === 'board' && current && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
+      {surface === 'board' && current && datasets.some(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')) && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names: datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name).join('、')})}</p>}
       {surface === 'board' && current && (
         <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 items-center gap-2 border-b border-line bg-ink-900/60 px-4">
           <span className="shrink-0 text-[12px] leading-[18px] text-cream-faint">{t('boards.master.label')}</span>

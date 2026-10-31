@@ -475,11 +475,11 @@
 /* Page swap: a new route fades + rises a hair instead of hard-cutting. */
 .page-enter {
   animation: page-enter var(--dur-3) var(--ease-out) both;
-  will-change: opacity, transform;
+  will-change: opacity;
 }
 @keyframes page-enter {
-  from { opacity: 0; transform: translateY(6px) scale(0.997); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Dialogs: backdrop fades, panel scales from 0.96. Exit reverses quickly. */

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -40,6 +40,8 @@ describe('validateAdsCopyModelInput', () => {
   })
   it('rejects bad names, non-https urls, bad protocols and empty keys', () => {
     expect(validateAdsCopyModelInput({ ...valid, baseUrl: 'http://insecure' })).toHaveProperty('error', 'invalid-base-url')
+    expect(validateAdsCopyModelInput({ ...valid, baseUrl: 'https://user:secret@example.com' })).toHaveProperty('error', 'invalid-base-url')
+    expect(validateAdsCopyModelInput({ ...valid, baseUrl: 'https://example.com/?key=secret' })).toHaveProperty('error', 'invalid-base-url')
     expect(validateAdsCopyModelInput({ ...valid, protocol: 'google' })).toHaveProperty('error', 'invalid-protocol')
     expect(validateAdsCopyModelInput({ ...valid, apiKey: '' })).toHaveProperty('error', 'invalid-api-key')
     expect(validateAdsCopyModelInput({ ...valid, name: '' })).toHaveProperty('error', 'invalid-name')
@@ -47,6 +49,34 @@ describe('validateAdsCopyModelInput', () => {
 })
 
 describe('AdsCopyModelStore', () => {
+  it('serializes simultaneous updates even across instances for the same file', async () => {
+    const file = path.join(dir, 'shared.bin')
+    const a = new AdsCopyModelStore({ filePath: file }), b = new AdsCopyModelStore({ filePath: file })
+    const input = { baseUrl: 'https://a.example.com', protocol: 'openai' as const, model: 'm', apiKey: 'k' }
+    await Promise.all([a.upsert({ ...input, name: 'one' }), b.upsert({ ...input, name: 'two' })])
+    expect((await a.load()).providers.map(p => p.name).sort()).toEqual(['one', 'two'])
+  })
+  it('preserves the previous encrypted file when encryption fails', async () => {
+    let fail = false
+    const backend = { isAvailable: () => true, encrypt: (s: string) => { if (fail) throw Error('failure'); return Buffer.from(s) }, decrypt: (b: Buffer) => b.toString() }
+    const file = path.join(dir, 'secure.bin')
+    const store = new AdsCopyModelStore({ filePath: file, backend })
+    await store.upsert({ name: 'old', baseUrl: 'https://a.example.com', protocol: 'openai', model: 'm', apiKey: 'k' })
+    const before = readFileSync(file)
+    fail = true
+    await expect(store.setMode('pool')).rejects.toThrow()
+    expect(readFileSync(file)).toEqual(before)
+  })
+  it('rejects corrupt provider records instead of silently erasing them', async () => {
+    const backend = { isAvailable: () => true, encrypt: (s: string) => Buffer.from(s), decrypt: (b: Buffer) => b.toString() }
+    const file = path.join(dir, 'corrupt.bin')
+    const data = Buffer.from(JSON.stringify({providers:[{id:'a',baseUrl:'https://x'}],pool:[],mode:'chat'})).toString('base64')
+    writeFileSync(file, data)
+    const store = new AdsCopyModelStore({filePath:file, backend})
+    await expect(store.setMode('pool')).rejects.toThrow('unreadable')
+    expect(readFileSync(file,'utf8')).toBe(data)
+  })
+
   it('round-trips providers and pool through the encrypted envelope, masks keys', async () => {
     const store = new AdsCopyModelStore()
     const saved = await store.upsert({ name: 'gpt-copy', baseUrl: 'https://api.example.com/v1', protocol: 'openai', model: 'gpt-4o-mini', apiKey: 'sk-secret' })

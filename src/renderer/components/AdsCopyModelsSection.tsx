@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ClipboardPaste, Loader2, PenLine, Plus, Trash2, Zap } from 'lucide-react'
 import { useT } from '../i18n'
 import { parseRelayBlock } from '../lib/relayBlockParse'
@@ -28,6 +28,7 @@ export default function AdsCopyModelsSection() {
   const t = useT()
   const [mode, setMode] = useState<'chat' | 'pool'>('chat')
   const [rows, setRows] = useState<AdsCopyModelRow[] | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [protocol, setProtocol] = useState<'openai' | 'anthropic'>('openai')
@@ -40,22 +41,30 @@ export default function AdsCopyModelsSection() {
   const [error, setError] = useState<string | null>(null)
   const [testing, setTesting] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; detail: string }>>({})
+  const mutationInFlight = useRef(false)
   const [pendingDelete, setPendingDelete] = useState<ConfirmDialogRequest | null>(null)
 
-  const refresh = useCallback(() => {
-    window.electronAPI
-      .adsCopyModelsList()
-      .then((snapshot) => {
-        setMode(snapshot.mode)
-        setRows(snapshot.providers)
-      })
-      .catch(() => setRows([]))
+  const refresh = useCallback(async () => {
+    try {
+      const snapshot = await window.electronAPI.adsCopyModelsList()
+      if (snapshot.storeUnavailable) { setLoadFailed(true); setError('load-failed'); return }
+      setLoadFailed(false)
+      setError(null)
+      setMode(snapshot.mode)
+      setRows(snapshot.providers)
+    } catch { setLoadFailed(true); setError('load-failed') }
   }, [])
 
   const switchMode = async (next: 'chat' | 'pool') => {
-    if (next === mode) return
-    await window.electronAPI.adsCopyModelsSetMode(next)
-    refresh()
+    if (next === mode || mutationInFlight.current || loadFailed || rows === null) return
+    mutationInFlight.current = true
+    setBusy(true)
+    try {
+      const result = await window.electronAPI.adsCopyModelsSetMode(next)
+      if (!result.ok) setError('save-failed')
+      else await refresh()
+    } catch { setError('save-failed') }
+    finally { mutationInFlight.current = false; setBusy(false) }
   }
 
   const discover = async () => {
@@ -66,7 +75,7 @@ export default function AdsCopyModelsSection() {
     try {
       const result = await window.electronAPI.adsCopyModelsDiscover({ baseUrl, protocol, apiKey })
       if (result.ok && result.models) setDiscovered(result.models)
-      else setDiscoverError(result.error ?? 'discover-failed')
+      else setDiscoverError('discover-failed')
     } catch {
       setDiscoverError('discover-failed')
     } finally {
@@ -93,11 +102,12 @@ export default function AdsCopyModelsSection() {
   }
 
   useEffect(() => {
-    refresh()
+    void refresh()
   }, [refresh])
 
   const add = async () => {
-    if (busy) return
+    if (mutationInFlight.current || loadFailed || rows === null) return
+    mutationInFlight.current = true
     setBusy(true)
     setError(null)
     try {
@@ -107,22 +117,27 @@ export default function AdsCopyModelsSection() {
         setBaseUrl('')
         setModel('')
         setApiKey('')
-        refresh()
+        await refresh()
       } else setError(result.error ?? 'save-failed')
     } catch {
       setError('save-failed')
     } finally {
+      mutationInFlight.current = false
       setBusy(false)
     }
   }
 
   const togglePool = async (row: AdsCopyModelRow) => {
+    if (mutationInFlight.current || loadFailed || rows === null) return
+    mutationInFlight.current = true
+    setBusy(true)
     const current = rows ?? []
     const poolIds = row.inPool
       ? current.filter((item) => item.inPool && item.id !== row.id).map((item) => item.id)
       : [...current.filter((item) => item.inPool).map((item) => item.id), row.id]
-    await window.electronAPI.adsCopyModelsSetPool(poolIds)
-    refresh()
+    try { const result = await window.electronAPI.adsCopyModelsSetPool(poolIds); if (!result.ok) setError('save-failed'); else await refresh() }
+    catch { setError('save-failed') }
+    finally { mutationInFlight.current = false; setBusy(false) }
   }
 
   const test = async (row: AdsCopyModelRow) => {
@@ -130,7 +145,7 @@ export default function AdsCopyModelsSection() {
     setTesting(row.id)
     try {
       const result = await window.electronAPI.adsCopyModelsTest(row.id)
-      setTestResult((prev) => ({ ...prev, [row.id]: { ok: result.ok, detail: result.ok ? '' : (result.error ?? '') } }))
+      setTestResult((prev) => ({ ...prev, [row.id]: { ok: result.ok, detail: result.ok ? '' : 'error' } }))
     } catch {
       setTestResult((prev) => ({ ...prev, [row.id]: { ok: false, detail: 'network' } }))
     } finally {
@@ -139,8 +154,12 @@ export default function AdsCopyModelsSection() {
   }
 
   const remove = async (id: string) => {
-    await window.electronAPI.adsCopyModelsRemove(id)
-    refresh()
+    if (mutationInFlight.current || loadFailed || rows === null) return
+    mutationInFlight.current = true
+    setBusy(true)
+    try { const result = await window.electronAPI.adsCopyModelsRemove(id); if (!result.ok) setError('save-failed'); else await refresh() }
+    catch { setError('save-failed') }
+    finally { mutationInFlight.current = false; setBusy(false) }
   }
 
   return (
@@ -156,6 +175,7 @@ export default function AdsCopyModelsSection() {
           <button
             key={option}
             type="button"
+            disabled={busy || loadFailed || rows === null}
             onClick={() => void switchMode(option)}
             className={`rounded-full px-3 py-1 transition ${
               mode === option ? 'bg-cream font-medium text-ink-950' : 'text-cream-dim hover:text-cream'
@@ -167,8 +187,9 @@ export default function AdsCopyModelsSection() {
       </div>
       {mode === 'chat' && <p className="mb-3 text-[11.5px] text-cream-faint">{t('adsCopy.mode.chatNote')}</p>}
 
+      {error === 'load-failed' && <p role="alert" className="mb-2 text-[12px] text-red-500">{t('adsCopy.error.load-failed')} <button type="button" onClick={() => void refresh()} className="underline">{t('adsCopy.retry')}</button></p>}
       {rows === null ? (
-        <Loader2 size={14} className="animate-spin text-cream-faint" />
+        error === 'load-failed' ? null : <Loader2 size={14} className="animate-spin text-cream-faint" />
       ) : (
         <>
           {rows.length === 0 && <p className="mb-3 text-[12px] text-cream-faint">{t('adsCopy.empty')}</p>}
@@ -178,6 +199,7 @@ export default function AdsCopyModelsSection() {
               <div key={row.id} className="mb-1.5 flex items-center gap-2 rounded-xl border border-line bg-ink-900/60 px-3 py-2.5">
                 <input
                   type="checkbox"
+                  disabled={busy || loadFailed}
                   checked={row.inPool}
                   onChange={() => void togglePool(row)}
                   aria-label={t('adsCopy.poolToggle')}
@@ -199,13 +221,14 @@ export default function AdsCopyModelsSection() {
                   )}
                   {last?.ok && <div className="text-[11px] text-emerald-500">{t('adsCopy.testOk')}</div>}
                 </div>
-                <button type="button" className={actionClass} disabled={testing !== null} onClick={() => void test(row)}>
+                <button type="button" className={actionClass} disabled={testing !== null || loadFailed} onClick={() => void test(row)}>
                   {testing === row.id ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
                   {t('adsCopy.test')}
                 </button>
                 <button
                   type="button"
                   className="rounded-md p-1 text-cream-faint transition hover:bg-red-500/10 hover:text-red-500"
+                  disabled={busy || loadFailed}
                   title={t('adsCopy.remove')}
                   onClick={() =>
                     setPendingDelete({
@@ -285,13 +308,13 @@ export default function AdsCopyModelsSection() {
             <button
               type="button"
               className="focus-ring inline-flex items-center justify-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
-              disabled={busy || !name.trim() || !baseUrl.trim() || !model.trim() || !apiKey.trim()}
+              disabled={busy || loadFailed || !name.trim() || !baseUrl.trim() || !model.trim() || !apiKey.trim()}
               onClick={() => void add()}
             >
               <Plus size={12} />
               {t('adsCopy.form.add')}
             </button>
-            {error && <p className="text-[11px] text-red-500 md:col-span-2">{t(`adsCopy.error.${error}` as Parameters<typeof t>[0])}</p>}
+            {error && error !== 'load-failed' && <p role="alert" className="text-[11px] text-red-500 md:col-span-2">{t(`adsCopy.error.${['invalid-name','invalid-base-url','invalid-protocol','invalid-model','invalid-api-key','provider-limit','not-found'].includes(error) ? error : 'save-failed'}` as Parameters<typeof t>[0])}</p>}
           </div>
         </>
       )}

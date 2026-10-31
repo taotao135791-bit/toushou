@@ -10,13 +10,11 @@ import { BOARD_LIMITS, TodoItem, isValidLinkUrl } from '@shared/boards'
 import {
   DATASET_OPS,
   DatasetOp,
-  aggregate,
   columnIndex,
-  datasetMoneyCurrencyList,
-  filterDatasetRowsByWindow,
-  groupAggregate
+  filterDatasetRowsByWindowWithStatus
 } from '@shared/datasets'
 import { usdHint, useFxRates } from '../../lib/fxRates'
+import { hasAmbiguousAdvertiserFilter, metricCurrencySafety, safeMetricGroups, safeMetricValue, uniformCurrency } from '../../lib/boardMetricSafety'
 import { useTweenNumber } from '../../lib/useTweenNumber'
 import { useAppStore } from '../../store'
 import { useT } from '../../i18n'
@@ -82,12 +80,9 @@ function datasetScopeLabel(
   if (dateIndex < 0) return null
   const short = (iso: string) => iso.slice(5)
   if (masterWindow.latestDay) {
-    let newest = ''
-    for (const row of dataset.rows) {
-      const value = row[dateIndex]
-      if (typeof value === 'string' && value > newest) newest = value
-    }
-    return newest ? `今天 · ${short(newest)}` : null
+    const days = dataset.rows.map(row => row[dateIndex]).filter((value): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)).sort()
+    if (!days.length) return null
+    return days[0] === days[days.length - 1] ? days[0] : `${days[0]} – ${days[days.length - 1]}`
   }
   return masterWindow.start === masterWindow.end
     ? short(masterWindow.start)
@@ -97,7 +92,7 @@ function datasetScopeLabel(
 /** Outcome of resolving a widget's dataset binding against the loaded datasets. */
 type Binding =
   | { kind: 'ok'; dataset: BoardDataset; metricIndex: number; dimIndex: number }
-  | { kind: 'missing-dataset' | 'missing-column' | 'incomplete' }
+  | { kind: 'missing-dataset' | 'missing-column' | 'incomplete' | 'ambiguous-account' | 'timezone-unavailable' }
 
 function resolveBinding(
   widget: BoardWidget,
@@ -124,6 +119,7 @@ function resolveBinding(
     ? widget.config.filterValues.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
     : []
   if (filterColumn && (filterValues.length > 0 || filterValue)) {
+    if (hasAmbiguousAdvertiserFilter(dataset, filterColumn, filterValues.length ? filterValues : [filterValue])) return { kind: 'ambiguous-account' }
     const filterIndex = columnIndex(dataset, filterColumn)
     if (filterIndex < 0) return { kind: 'missing-column' }
     // Multi-account boards: OR-match the set; single value stays a set of one.
@@ -133,7 +129,9 @@ function resolveBinding(
   // Master-scope window on top: dataset cards follow the board's range; the
   // 今天 scope shows the account's CURRENT stat day (latest among filtered rows).
   if (masterWindow) {
-    dataset = filterDatasetRowsByWindow(dataset, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
+    const scope = filterDatasetRowsByWindowWithStatus(dataset, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
+    if (scope.missingTimezone) return { kind: 'timezone-unavailable' }
+    dataset = scope.dataset
   }
   const metricIndex = columnIndex(dataset, metric)
   const dimIndex = needsDim ? columnIndex(dataset, dimension) : -1
@@ -168,6 +166,10 @@ function BindingPlaceholder({
         // dataset that does not exist YET (e.g. a fresh TikTok board before the
         // first report pull) — guide the user instead of crying "deleted".
         t('boards.datasets.datasetMissing', { name: configStr(widget.config.datasetId) })
+      : binding.kind === 'timezone-unavailable'
+        ? t('boards.datasets.timezoneUnavailable')
+      : binding.kind === 'ambiguous-account'
+        ? t('boards.datasets.ambiguousAccount')
       : binding.kind === 'missing-column'
         ? t('boards.datasets.columnMissing')
         : t('boards.datasets.incomplete')
@@ -222,8 +224,9 @@ function NoteBody({ widget }: { widget: BoardWidget }) {
 }
 
 /** The big KPI number: tweens toward its new value instead of snapping. */
-function CounterValue({ value, className }: { value: number | null; className: string }) {
-  const shown = useTweenNumber(value)
+function CounterValue({ value, className, animate = true }: { value: number | null; className: string; animate?: boolean }) {
+  const tween = useTweenNumber(animate ? value : null)
+  const shown = animate ? (value === null ? null : tween) : value
   return (
     <div className={className}>
       {shown === null ? '—' : shown.toLocaleString('en-US', { maximumFractionDigits: 2 })}
@@ -257,21 +260,14 @@ function CounterBody({
     // An empty window-filtered slice is "no data in this range", not zero.
     if (binding.dataset.rows.length === 0) value = null
     else {
-      value = aggregate(
-        binding.dataset.rows.map((r) => r[binding.metricIndex] ?? ''),
-        configOp(widget.config.op)
-      )
-      // Money metrics: uniform non-USD currency gets a badge + ≈$ conversion;
-      // MIXED currencies (multi-account boards) never sum money — MIX badge
-      // and "—" instead of a fake total (the established TT rule). Counts
-      // (clicks/impressions/…) are currency-free and always aggregate.
-      const currencyList = datasetMoneyCurrencyList(binding.dataset, configStr(widget.config.metric))
-      if (currencyList.length === 1 && currencyList[0] !== 'USD') {
-        currencyBadge = currencyList[0]
+      const safety = metricCurrencySafety(binding.dataset, configStr(widget.config.metric))
+      value = safety === 'mixed' || safety === 'unknown' ? null : safeMetricValue(binding.dataset, binding.dataset.rows, binding.metricIndex, configOp(widget.config.op))
+      const currency = uniformCurrency(binding.dataset)
+      if (safety === 'mixed') currencyBadge = 'MIX'
+      else if (safety === 'unknown') currencyBadge = '?'
+      else if (safety === 'safe' && currency && currency !== 'USD') {
+        currencyBadge = currency
         if (typeof value === 'number') usdHintText = usdHint(value, currencyBadge, fxRates)
-      } else if (currencyList.length > 1) {
-        currencyBadge = 'MIX'
-        value = null
       }
     }
   } else {
@@ -292,7 +288,7 @@ function CounterBody({
           {scopeLabel}
         </span>
       )}
-      <CounterValue value={value} className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream" />
+      <CounterValue value={value} animate={widget.config.source !== 'dataset'} className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream" />
       {usdHintText && (
         <div className="text-center text-[10.5px] leading-4 tabular-nums text-cream-faint">{usdHintText}</div>
       )}
@@ -453,18 +449,17 @@ function ChartBody({
   let labels: string[]
   let dimName = ''
   let chartScopeLabel: string | null = null
+  let chartCurrency: string | null = null
   let metricName = ''
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, true, masterWindow)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
     chartScopeLabel = datasetScopeLabel(binding.dataset, masterWindow)
-    const grouped = groupAggregate(
-      binding.dataset,
-      binding.dimIndex,
-      binding.metricIndex,
-      configOp(widget.config.op),
-      t('boards.datasets.other')
-    )
+    const currency = metricCurrencySafety(binding.dataset, configStr(widget.config.metric))
+    if (currency === 'safe') chartCurrency = uniformCurrency(binding.dataset)
+    if (currency === 'mixed' || currency === 'unknown') return <div role="status" className="flex h-full items-center justify-center px-2 text-center text-[11px] text-cream-faint">{t('boards.datasets.currencyUnavailable')}</div>
+    const grouped = safeMetricGroups(binding.dataset, binding.dimIndex, binding.metricIndex, configOp(widget.config.op), t('boards.datasets.other'))
+    if (!grouped) return <div role="status" className="flex h-full items-center justify-center px-2 text-center text-[11px] text-cream-faint">{t('boards.datasets.metricUnavailable')}</div>
     points = grouped.points.map(parseChartPoint).filter((p): p is ChartPoint => p !== null)
     labels = grouped.labels
     dimName = binding.dataset.columns[binding.dimIndex]?.name ?? ''
@@ -623,6 +618,7 @@ function ChartBody({
       onMouseMove={handleMove}
       onMouseLeave={() => setHover(null)}
     >
+      {chartCurrency && <span className="absolute right-0 top-0 z-10 text-[9px] text-cream-faint">{chartCurrency}</span>}
       {chartScopeLabel && (
         <span className="absolute left-0 top-0 z-10 text-[9px] leading-4 tabular-nums text-cream-faint/80" title={chartScopeLabel}>
           {chartScopeLabel}

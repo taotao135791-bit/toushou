@@ -1,6 +1,7 @@
 import { app, safeStorage } from 'electron'
-import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import type { SecretBackend } from '../feishu/FeishuCredentialStore'
 
 /**
@@ -60,13 +61,18 @@ export function validateAdsCopyModelInput(raw: {
   const model = typeof raw.model === 'string' ? raw.model.trim() : ''
   const apiKey = typeof raw.apiKey === 'string' ? raw.apiKey.trim() : ''
   if (!name || name.length > MAX_NAME) return { error: 'invalid-name' }
-  if (!/^https:\/\/[^\s]+$/i.test(baseUrl) || baseUrl.length > MAX_URL) return { error: 'invalid-base-url' }
+  try {
+    const parsed = new URL(baseUrl)
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash || baseUrl.length > MAX_URL) return { error: 'invalid-base-url' }
+  } catch { return { error: 'invalid-base-url' } }
   if (raw.protocol !== 'openai' && raw.protocol !== 'anthropic') return { error: 'invalid-protocol' }
   if (!model || model.length > MAX_MODEL) return { error: 'invalid-model' }
   if (!apiKey || apiKey.length > MAX_KEY) return { error: 'invalid-api-key' }
   return { name, baseUrl, protocol: raw.protocol, model, apiKey }
 }
 
+// All instances targeting one file serialize their complete read-modify-write.
+const writes = new Map<string, Promise<void>>()
 export class AdsCopyModelStore {
   private readonly filePathOverride?: string
   private readonly backend: SecretBackend
@@ -104,17 +110,17 @@ export class AdsCopyModelStore {
     }
     try {
       const raw = JSON.parse(this.backend.decrypt(Buffer.from(encoded, 'base64'))) as Record<string, unknown>
-      const providers: AdsCopyModelProvider[] = Array.isArray(raw.providers)
-        ? (raw.providers as Array<Record<string, unknown>>)
-            .map((item) => this.validateProvider(item))
-            .filter((item): item is AdsCopyModelProvider => item !== null)
-        : []
+      if (!Array.isArray(raw.providers) || !Array.isArray(raw.pool) || (raw.mode !== 'chat' && raw.mode !== 'pool')) throw new Error('invalid-envelope')
+      const parsedProviders = (raw.providers as Array<Record<string, unknown>>).map((item) => item && typeof item === 'object' ? this.validateProvider(item) : null)
+      if (parsedProviders.some((item) => item === null)) throw new Error('invalid-provider')
+      const providers = parsedProviders as AdsCopyModelProvider[]
+      if (providers.length > MAX_PROVIDERS || new Set(providers.map(provider => provider.id)).size !== providers.length) throw new Error('invalid-provider')
       const known = new Set(providers.map((provider) => provider.id))
-      const pool = Array.isArray(raw.pool)
-        ? (raw.pool as unknown[]).filter((id): id is string => typeof id === 'string' && known.has(id))
-        : []
+      const pool = raw.pool as unknown[]
+      if (pool.some(id => typeof id !== 'string' || !known.has(id)) || new Set(pool).size !== pool.length) throw new Error('invalid-pool')
+      const poolIds = pool as string[]
       const mode = raw.mode === 'pool' ? 'pool' : 'chat'
-      return { providers, pool, mode }
+      return { providers, pool: poolIds, mode }
     } catch (error) {
       if (error instanceof Error && error.message.includes('unreadable')) throw error
       // A corrupt envelope cannot prove the pool is empty — refuse instead of
@@ -144,71 +150,96 @@ export class AdsCopyModelStore {
     }
     await mkdir(path.dirname(this.filePath), { recursive: true })
     const encrypted = this.backend.encrypt(JSON.stringify(pool))
-    await writeFile(this.filePath, encrypted.toString('base64'), { mode: 0o600 })
-    await chmod(this.filePath, 0o600)
+    const tmp = `${this.filePath}.${randomUUID()}.tmp`
+    try {
+      await writeFile(tmp, encrypted.toString('base64'), { mode: 0o600, flag: 'wx' })
+      await chmod(tmp, 0o600)
+      await rename(tmp, this.filePath)
+    } finally {
+      await unlink(tmp).catch(() => undefined)
+    }
+  }
+
+  private async exclusive<T>(action: () => Promise<T>): Promise<T> {
+    const key = this.filePath
+    const previous = writes.get(key) ?? Promise.resolve()
+    const result = previous.catch(() => undefined).then(action)
+    const tail = result.then(() => undefined, () => undefined)
+    writes.set(key, tail)
+    try { return await result } finally { if (writes.get(key) === tail) writes.delete(key) }
   }
 
   async upsert(input: AdsCopyModelInput, id?: string): Promise<AdsCopyModelPool> {
-    const current = await this.load()
-    if (current.providers.length >= MAX_PROVIDERS && !id) {
-      throw new Error('provider-limit')
-    }
-    const now = Date.now()
-    if (id) {
-      const existing = current.providers.find((provider) => provider.id === id)
-      if (!existing) throw new Error('not-found')
+    const checked = validateAdsCopyModelInput(input)
+    if ('error' in checked) throw new Error(checked.error)
+    return this.exclusive(async () => {
+      const current = await this.load()
+      if (current.providers.length >= MAX_PROVIDERS && !id) {
+        throw new Error('provider-limit')
+      }
+      const now = Date.now()
+      if (id) {
+        const existing = current.providers.find((provider) => provider.id === id)
+        if (!existing) throw new Error('not-found')
+        const next: AdsCopyModelPool = {
+          providers: current.providers.map((provider) =>
+            provider.id === id ? { ...provider, ...checked, id, createdAt: existing.createdAt } : provider
+          ),
+          pool: current.pool,
+          mode: current.mode
+        }
+        await this.persist(next)
+        return next
+      }
+      const provider: AdsCopyModelProvider = { id: crypto.randomUUID(), ...checked, createdAt: now }
+      const next: AdsCopyModelPool = { providers: [...current.providers, provider], pool: current.pool, mode: current.mode }
+      await this.persist(next)
+      return next
+    })
+  }
+
+  async remove(id: string): Promise<AdsCopyModelPool> {
+    return this.exclusive(async () => {
+      const current = await this.load()
       const next: AdsCopyModelPool = {
-        providers: current.providers.map((provider) =>
-          provider.id === id ? { ...provider, ...input, id, createdAt: existing.createdAt } : provider
-        ),
-        pool: current.pool,
+        providers: current.providers.filter((provider) => provider.id !== id),
+        pool: current.pool.filter((poolId) => poolId !== id),
         mode: current.mode
       }
       await this.persist(next)
       return next
-    }
-    const provider: AdsCopyModelProvider = { id: crypto.randomUUID(), ...input, createdAt: now }
-    const next: AdsCopyModelPool = { providers: [...current.providers, provider], pool: current.pool, mode: current.mode }
-    await this.persist(next)
-    return next
-  }
-
-  async remove(id: string): Promise<AdsCopyModelPool> {
-    const current = await this.load()
-    const next: AdsCopyModelPool = {
-      providers: current.providers.filter((provider) => provider.id !== id),
-      pool: current.pool.filter((poolId) => poolId !== id),
-      mode: current.mode
-    }
-    await this.persist(next)
-    return next
+    })
   }
 
   async setPool(poolIds: string[]): Promise<AdsCopyModelPool> {
-    const current = await this.load()
-    const known = new Set(current.providers.map((provider) => provider.id))
-    const deduped: string[] = []
-    for (const id of poolIds) {
-      if (typeof id === 'string' && known.has(id) && !deduped.includes(id)) deduped.push(id)
-    }
-    const next: AdsCopyModelPool = { providers: current.providers, pool: deduped, mode: current.mode }
-    await this.persist(next)
-    return next
+    return this.exclusive(async () => {
+      const current = await this.load()
+      const known = new Set(current.providers.map((provider) => provider.id))
+      const deduped: string[] = []
+      for (const id of poolIds) {
+        if (typeof id === 'string' && known.has(id) && !deduped.includes(id)) deduped.push(id)
+      }
+      const next: AdsCopyModelPool = { providers: current.providers, pool: deduped, mode: current.mode }
+      await this.persist(next)
+      return next
+    })
   }
 
   async setMode(mode: 'chat' | 'pool'): Promise<AdsCopyModelPool> {
-    const current = await this.load()
-    const next: AdsCopyModelPool = { ...current, mode: mode === 'pool' ? 'pool' : 'chat' }
-    await this.persist(next)
-    return next
+    return this.exclusive(async () => {
+      const current = await this.load()
+      const next: AdsCopyModelPool = { ...current, mode: mode === 'pool' ? 'pool' : 'chat' }
+      await this.persist(next)
+      return next
+    })
   }
 
+
   async clear(): Promise<void> {
-    try {
-      await unlink(this.filePath)
-    } catch {
-      // Absent file is already empty.
-    }
+    return this.exclusive(async () => {
+      try { await unlink(this.filePath) }
+      catch (error) { if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error }
+    })
   }
 
   /** Renderer-safe projection: keys never cross the IPC boundary. */
@@ -225,7 +256,7 @@ export class AdsCopyModelStore {
     return pool.providers.map((provider) => ({
       id: provider.id,
       name: provider.name,
-      baseUrl: provider.baseUrl,
+      baseUrl: (() => { try { const url = new URL(provider.baseUrl); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString() } catch { return '' } })(),
       protocol: provider.protocol,
       model: provider.model,
       inPool: poolSet.has(provider.id),
