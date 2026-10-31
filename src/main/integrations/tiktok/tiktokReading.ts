@@ -97,7 +97,7 @@ function rowsInWindow(rows: TikTokReportRow[], window: { start: string; end: str
  * This does not change the board widget's own 1/7/28 summary.
  */
 export async function buildTikTokTodayReading(
-  input: { range?: unknown } = {},
+  input: { range?: unknown; advertiserId?: unknown } = {},
   deps: TikTokReadingDeps = {}
 ): Promise<TikTokTodayReadingResult> {
   const requestVersion = beginTikTokDatasetRead()
@@ -106,7 +106,9 @@ export async function buildTikTokTodayReading(
   const window = todayWindow(range, new Date(now))
   const previous = previousEqualWindow(window)
   if (!previous) return readingFailure('invalid-input')
-  const prepared = await prepareMcp(deps)
+  const single = input.advertiserId !== undefined
+  if (single && (typeof input.advertiserId !== 'string' || !/^[1-9]\d{0,24}$/.test(input.advertiserId))) return readingFailure('invalid-input', 'invalid-advertiser-id')
+  const prepared = await prepareMcp(deps, single ? [input.advertiserId as string] : [], single)
   if ('ok' in prepared) return prepared
   const { resolved, client, allAdvertisers } = prepared
   const advertiserIds = allAdvertisers
@@ -117,6 +119,8 @@ export async function buildTikTokTodayReading(
   const accounts: TikTokTodayAccount[] = []
   const rowsToPersist: TikTokReportRow[] = []
   let datasetOverflow = false
+  let resultWindow = window
+  let resultPreviousWindow = previous
   const scopes: TikTokDatasetScope[] = []
   const details = new Map<string, { name: string | null; currency: string | null; timezone?: string | null }>()
   for (let index = 0; index < advertiserIds.length; index++) {
@@ -140,6 +144,7 @@ export async function buildTikTokTodayReading(
       if (!prior) { accounts.push({ ...advertiser, error: 'api', detail: 'account-timezone-unavailable' }); continue }
       previousWindow = prior
     }
+    if (single) { resultWindow = currentWindow; resultPreviousWindow = previousWindow }
     let rows: TikTokReportRow[]
     try { rows = await client.report(advertiserId, previousWindow.start, currentWindow.end, MAX_ACCOUNT_REPORT_ROWS) }
     catch (error) {
@@ -158,7 +163,7 @@ export async function buildTikTokTodayReading(
     const previousTotals = summarizeTikTokReportRows(previousRows).totals
     accounts.push({
       ...advertiser,
-      ...(range === 'today' ? { window: currentWindow, previousWindow } : {}),
+      ...(range === 'today' || single ? { window: currentWindow, previousWindow } : {}),
       spend: currentTotals.spend,
       previousSpend: previousTotals.spend,
       impressions: currentTotals.impressions,
@@ -178,7 +183,7 @@ export async function buildTikTokTodayReading(
     if (result?.ok) { try { deps.onDatasetCommitted?.() } catch { /* notification is advisory */ } }
     datasetSync = !result || result.ok ? { ok: true, ...(result?.legacyBackups?.length ? { legacyBackups: result.legacyBackups } : {}) } : { ok: false, error: result.error }
   } catch { datasetSync = { ok: false, error: 'write-failed' } }
-  return { range, window, previousWindow: previous, source: resolved.source, generatedAt: now, truncated: false, accounts, datasetSync }
+  return { range, window: resultWindow, previousWindow: resultPreviousWindow, source: resolved.source, generatedAt: now, truncated: false, accounts, datasetSync }
 }
 
 function sumField(rows: TikTokReportRow[], key: 'spend' | 'impressions' | 'clicks' | 'conversion'): number {
@@ -268,13 +273,18 @@ export async function listTikTokMcpReadingAdvertisers(deps: TikTokReadingDeps = 
 }
 
 /** Only a managed OAuth grant can authenticate the app-owned MCP server. */
-async function prepareMcp(deps: TikTokReadingDeps, override: string[] = []) {
+async function prepareMcp(deps: TikTokReadingDeps, override: string[] = [], requireAuthorized = false) {
   try {
-    const resolved = await (deps.resolveToken ?? resolveTikTokMcpToken)()
+    const resolved = await (deps.resolveToken ? deps.resolveToken() : resolveTikTokMcpToken({ ignoreSelected: requireAuthorized }))
     if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
     if (!resolved.token || resolved.source !== 'oauth') return readingFailure('no-credentials')
     const client = new TikTokMcpReadingClient(resolved.token, deps.fetchImpl, deps.signal)
     await client.initialize()
+    if (requireAuthorized) {
+      const granted = await client.advertisers()
+      if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
+      if (!granted.includes(override[0])) return readingFailure('permission', 'advertiser-not-authorized')
+    }
     const allAdvertisers = override.length ? override : resolved.selectionExplicit === false ? await client.advertisers() : resolved.advertiserIds.length ? resolved.advertiserIds : await client.advertisers()
     if (!allAdvertisers.length) return readingFailure('no-advertiser')
     if (allAdvertisers.length > TIKTOK_DISCOVERED_ACCOUNT_LIMIT) return readingFailure('api', 'account-safety-limit-exceeded')

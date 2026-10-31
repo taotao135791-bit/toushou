@@ -7,7 +7,7 @@ import path from 'node:path'
 // electron-backed stores at module level — stub like the sibling suites.
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/toushou-unused' } }))
 
-import { isTikTokTodayFailure } from '../../../shared/todayReading'
+import { isTikTokTodayFailure, todayWindow, previousEqualWindow } from '../../../shared/todayReading'
 import { DATASET_LIMITS } from '../../../shared/datasets'
 import type { TikTokReportRow } from './tiktokClient'
 import {
@@ -20,6 +20,7 @@ import {
 } from './tiktokReading'
 import type { ResolvedTikTokToken } from './resolveTikTokToken'
 import { mergeReportRowsIntoDataset } from './tiktokReportDataset'
+import { listDatasets } from '../../boardDatasets'
 
 const ID_A = '7300000000000000001'
 const ID_B = '7300000000000000002'
@@ -532,6 +533,80 @@ describe('buildTikTokReadingSummary', () => {
 })
 
 describe('buildTikTokTodayReading', () => {
+  it('reads only the requested authorized account without changing the connection selection', async () => {
+    const now = Date.parse('2026-11-01T06:30:00Z')
+    const api = tiktokApi({ granted: [ID_A, ID_B], advertisers: { [ID_A]: { timezone: 'UTC', currency: 'USD' }, [ID_B]: { timezone: 'America/Los_Angeles', currency: 'USD' } }, report: () => reportResponse([]) })
+    const progress: Array<{ completed: number; total: number; succeeded: number }> = []
+    let writtenIds: string[] = []
+    const result = await buildTikTokTodayReading({ range: 'today', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: () => now, onProgress: value => progress.push(value), persistRows: (_rows, _details, scopes) => { writtenIds = scopes.map(scope => scope.advertiserId) } })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.window).toEqual({ start: '2026-10-31', end: '2026-10-31' })
+    expect(result.previousWindow).toEqual({ start: '2026-10-30', end: '2026-10-30' })
+    expect(result.accounts).toMatchObject([{ advertiserId: ID_B, window: result.window, previousWindow: result.previousWindow }])
+    expect(api.infoCalls).toEqual([[ID_B]])
+    expect(api.reports.map(item => [item.get('advertiser_id'), item.get('start_date'), item.get('end_date')])).toEqual([[ID_B, '2026-10-30', '2026-10-31']])
+    expect(writtenIds).toEqual([ID_B])
+    expect(progress).toEqual([{ completed: 0, total: 1, succeeded: 0 }, { completed: 1, total: 1, succeeded: 1 }])
+  })
+
+  it('returns the existing complete-day window for a single-account last-seven-days read', async () => {
+    const now = Date.parse('2026-11-01T06:30:00Z')
+    const api = tiktokApi({ granted: [ID_B], advertisers: { [ID_B]: { timezone: 'America/Los_Angeles', currency: 'USD' } }, report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ range: 'last7', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: () => now, persistRows: () => undefined })
+    if ('ok' in result) throw new Error(result.error)
+    const window = todayWindow('last7', new Date(now))
+    expect(result.window).toEqual(window)
+    expect(result.previousWindow).toEqual(previousEqualWindow(window))
+    expect(result.accounts).toMatchObject([{ advertiserId: ID_B, window, previousWindow: result.previousWindow }])
+  })
+
+  it('updates only the requested account window and preserves other accounts on disk', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'tt-single-account-'))
+    const file = path.join(dir, 'dataset.json')
+    try {
+      const windows = [ID_A, ID_B].map(advertiserId => ({ advertiserId, startDate: '2026-09-06', endDate: '2026-09-19' }))
+      const existing = [ID_A, ID_B].map(advertiserId => row({ advertiserId, campaignId: '100', date: '2026-09-15', spend: 10 }))
+      expect(mergeReportRowsIntoDataset(existing, undefined, file, windows).ok).toBe(true)
+      const api = tiktokApi({ granted: [ID_A, ID_B], advertisers: { [ID_B]: { currency: 'USD' } }, report: () => reportResponse([row({ date: '2026-09-15', spend: 99 })]) })
+      const result = await buildTikTokTodayReading({ range: 'last7', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20, persistRows: (rows, details, scopes) => mergeReportRowsIntoDataset(rows, details, file, scopes) })
+      if ('ok' in result) throw new Error(result.error)
+      expect(result.datasetSync?.ok).toBe(true)
+      const rows = listDatasets(file)[0].rows
+      expect(rows.filter(item => item[11] === ID_A).map(item => item[3])).toEqual([10])
+      expect(rows.filter(item => item[11] === ID_B).map(item => item[3])).toEqual([99])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('fails the selected today account when its timezone is unknown', async () => {
+    const api = tiktokApi({ granted: [ID_B], advertisers: { [ID_B]: { currency: 'USD' } }, report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ range: 'today', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.accounts).toMatchObject([{ advertiserId: ID_B, error: 'api', detail: 'account-timezone-unavailable' }])
+    expect(api.reports).toHaveLength(0)
+  })
+
+  it('rejects malformed or unauthorized single IDs without reading other accounts', async () => {
+    for (const advertiserId of ['', ' 7300001', '7300001\n', '0', 42, null, '9'.repeat(26)]) {
+      const resolveToken = vi.fn(token([ID_A]))
+      expect(await buildTikTokTodayReading({ advertiserId }, { resolveToken })).toMatchObject({ ok: false, error: 'invalid-input', detail: 'invalid-advertiser-id' })
+      expect(resolveToken).not.toHaveBeenCalled()
+    }
+    const api = tiktokApi({ granted: [ID_A], report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl })
+    expect(result).toEqual({ ok: false, error: 'permission', detail: 'advertiser-not-authorized' })
+    expect(api.infoCalls).toHaveLength(0)
+    expect(api.reports).toHaveLength(0)
+  })
+
+  it('cancels a single-account read before writing any data', async () => {
+    const controller = new AbortController()
+    const persistRows = vi.fn()
+    const api = tiktokApi({ granted: [ID_A], report: () => { controller.abort(); return reportResponse([]) } })
+    const result = await buildTikTokTodayReading({ advertiserId: ID_A }, { resolveToken: token([ID_B]), fetchImpl: api.fetchImpl, signal: controller.signal, persistRows })
+    expect(result).toEqual({ ok: false, error: 'api', detail: 'reading-cancelled' })
+    expect(persistRows).not.toHaveBeenCalled()
+    expect(api.reports).toHaveLength(1)
+  })
   it('saves complete successful account windows and reports dataset failures independently', async () => {
     const api = tiktokApi({ report: () => reportResponse([]), advertisers: { [ID_A]: { timezone: 'UTC', currency: 'USD' } } })
     const persistRows: NonNullable<import('./tiktokReading').TikTokReadingDeps['persistRows']> = vi.fn(() => ({ ok: false as const, error: 'write-failed' as const }))

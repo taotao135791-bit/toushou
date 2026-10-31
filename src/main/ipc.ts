@@ -902,9 +902,9 @@ export function registerIpc() {
     return runTtReading(event, input.requestId, (deps) => buildTikTokReadingSummary(input, deps))
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_TODAY, (event, raw: unknown) => {
-    const input = (raw ?? {}) as { range?: unknown; requestId?: unknown }
+    const input = (raw ?? {}) as { range?: unknown; advertiserId?: unknown; requestId?: unknown }
     const range = typeof input.range === 'string' ? input.range.slice(0, 8) : undefined
-    return runTtReading(event, input.requestId, (deps) => buildTikTokTodayReading({ range }, deps))
+    return runTtReading(event, input.requestId, (deps) => buildTikTokTodayReading({ range, ...(input.advertiserId !== undefined ? { advertiserId: input.advertiserId } : {}) }, deps))
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_LIST, async () => {
     return listTikTokMcpReadingAdvertisers()

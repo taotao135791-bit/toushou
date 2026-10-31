@@ -34,7 +34,7 @@ import type {
   TikTokReportStatus
 } from '../shared/tiktokReport'
 import { TIKTOK_ADVERTISER_LIST_MAX_LENGTH } from '../shared/tiktokReport'
-import type { TikTokTodayReadingResult } from '../shared/todayReading'
+import type { TikTokTodayReadingInput, TikTokTodayReadingResult } from '../shared/todayReading'
 import type { FbReportAutoFetchResult, FbReportImportResult, FbReportStoredReading } from '../shared/fbReportCsv'
 import type { GoogleReportReadingResult, GoogleReportImportResult, GoogleReportStoredReading } from '../shared/googleReport'
 import {
@@ -521,7 +521,7 @@ export interface ElectronAPI {
   /** TT 读数 board module: Main resolves the token + aggregates the report. */
   ttReadingSummary: (input: { advertiserIds?: string; range?: string; requestId?: string }) => Promise<TikTokReadingResult>
   /** Today page TikTok read: current window and the previous equal window. */
-  ttReadingToday: (input: { range?: string; requestId?: string }) => Promise<TikTokTodayReadingResult>
+  ttReadingToday: (input: TikTokTodayReadingInput) => Promise<TikTokTodayReadingResult>
   ttReadingCancel: (requestId: string) => Promise<boolean>
   onTtReadingProgress: (callback: (value: { requestId: string; completed: number; total: number; succeeded: number }) => void) => () => void
   onTtReadingDatasetChanged: (callback: () => void) => () => void
@@ -1006,9 +1006,10 @@ const api: ElectronAPI = {
       ...(input?.requestId !== undefined ? { requestId: bounded(input.requestId, 64) ?? '!' } : {})
     }) as Promise<TikTokReadingResult>
   },
-  ttReadingToday: (input: { range?: string; requestId?: string }) =>
+  ttReadingToday: (input: TikTokTodayReadingInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.TT_READING_TODAY, {
       range: typeof input?.range === 'string' ? input.range.slice(0, 8) : '',
+      ...(input?.advertiserId !== undefined ? { advertiserId: typeof input.advertiserId === 'string' && input.advertiserId.length <= 25 ? input.advertiserId : '!' } : {}),
       ...(input?.requestId !== undefined ? { requestId: typeof input.requestId === 'string' && input.requestId.length <= 64 ? input.requestId : '!' } : {})
     }) as Promise<TikTokTodayReadingResult>,
   ttReadingCancel: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.TT_READING_CANCEL, typeof requestId === 'string' && requestId.length <= 64 ? requestId : null) as Promise<boolean>,
