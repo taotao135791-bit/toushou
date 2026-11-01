@@ -47,7 +47,7 @@ describe('current OMP absolute project layout', () => {
     const [descriptor] = await manager.mintForWorkspace(rows, context)
     expect(descriptor).toBeDefined()
     expect(await manager.resolve(descriptor.id, otherContext)).toBeNull()
-    expect(await manager.withResolved(descriptor.id, context, async target => fs.realpathSync(target))).toBe(fs.realpathSync(file))
+    expect(await manager.withResolved(descriptor.id, context, async target => fs.realpathSync.native(target))).toBe(fs.realpathSync.native(file))
   })
 })
 
