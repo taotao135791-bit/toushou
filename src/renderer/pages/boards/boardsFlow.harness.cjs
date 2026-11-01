@@ -386,17 +386,34 @@ app.whenReady().then(async () => {
     const start = await wc.executeJavaScript(`(() => {const e=document.querySelector('[data-board-widget-id="${chartId}"] .widget-drag-handle');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`)
     wc.sendInputEvent({ type: 'mouseMove', x: start.x, y: start.y })
     wc.sendInputEvent({ type: 'mouseDown', x: start.x, y: start.y, button: 'left', clickCount: 1 })
-    wc.sendInputEvent({ type: 'mouseMove', x: start.x + 140, y: start.y + 70, button: 'left' })
+    await wait()
+    wc.sendInputEvent({ type: 'mouseMove', x: start.x + 140, y: start.y + 70, button: 'left', modifiers: ['leftButtonDown'] })
+    await wait()
     wc.sendInputEvent({ type: 'mouseUp', x: start.x + 140, y: start.y + 70, button: 'left', clickCount: 1 })
     await until(`JSON.stringify(window.boardFixture.saved.at(-1).widgets.map(w=>({id:w.id,layout:w.layout})))!==${JSON.stringify(oldGeometry)}`)
     const oldWidth = await wc.executeJavaScript(`window.boardFixture.saved.at(-1).widgets.find(w=>w.id===${JSON.stringify(chartId)}).layout.w`)
-    const resize = await wc.executeJavaScript(`(() => {const e=document.querySelector('[data-board-widget-id="${chartId}"] .react-resizable-handle');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`)
+    const resize = await wc.executeJavaScript(`(() => {const e=document.querySelector('[data-board-widget-id="${chartId}"] .react-resizable-handle');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect(),x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return {x,y,hit:document.elementFromPoint(x,y)?.className,width:r.width,height:r.height}})()`)
+    if (typeof resize.hit !== 'string' || !resize.hit.includes('react-resizable-handle')) throw new Error(`Resize handle not hit-testable: ${JSON.stringify(resize)}`)
+    await wc.executeJavaScript(`(() => {window.resizeTrace=[];for(const type of ['mousedown','mousemove','mouseup'])document.addEventListener(type,e=>{if(window.resizeTrace.length<25)window.resizeTrace.push({type,x:e.clientX,y:e.clientY,buttons:e.buttons,target:String(e.target?.className??''),resizing:!!document.querySelector('.react-grid-item.resizing')})},true)})()`)
     wc.sendInputEvent({ type: 'mouseMove', x: resize.x, y: resize.y })
     wc.sendInputEvent({ type: 'mouseDown', x: resize.x, y: resize.y, button: 'left', clickCount: 1 })
-    wc.sendInputEvent({ type: 'mouseMove', x: resize.x - 90, y: resize.y, button: 'left' })
-    wc.sendInputEvent({ type: 'mouseUp', x: resize.x - 90, y: resize.y, button: 'left', clickCount: 1 })
-    await until(`window.boardFixture.saved.at(-1).widgets.find(w=>w.id===${JSON.stringify(chartId)}).layout.w!==${JSON.stringify(oldWidth)}`)
+    await wait()
+    for (const offset of [40, 80, 120, 160]) { wc.sendInputEvent({ type: 'mouseMove', x: resize.x - offset, y: resize.y, button: 'left', modifiers: ['leftButtonDown'] }); await new Promise(resolve => setTimeout(resolve, 60)) }
+    wc.sendInputEvent({ type: 'mouseUp', x: resize.x - 160, y: resize.y, button: 'left', clickCount: 1 })
+    try { await until(`window.boardFixture.saved.at(-1).widgets.find(w=>w.id===${JSON.stringify(chartId)}).layout.w!==${JSON.stringify(oldWidth)}`) }
+    catch (error) { const details = await wc.executeJavaScript(`(() => {const e=document.querySelector('[data-board-widget-id="${chartId}"]'),r=e?.getBoundingClientRect();return {className:e?.className,width:r?.width,height:r?.height,layout:window.boardFixture.saved.at(-1).widgets.find(w=>w.id===${JSON.stringify(chartId)})?.layout,trace:window.resizeTrace}})()`); throw new Error(`${error.message}; resize=${JSON.stringify(resize)} state=${JSON.stringify(details)}`) }
     const modularManipulation = await wc.executeJavaScript(`(() => {const b=window.boardFixture.saved.at(-1);return {count:b.widgets.filter(w=>w.type==='reading-module').length,source:b.widgets.some(w=>w.type==='reading-snapshot'),resized:b.widgets.find(w=>w.id===${JSON.stringify(chartId)}).layout.w!==${JSON.stringify(oldWidth)}}})()`)
+    phase = 'modular-fast-resize'
+    const fastChart = await wc.executeJavaScript(`window.boardFixture.saved.at(-1).widgets.filter(w=>w.type==='reading-module'&&w.config.module.kind==='spend-chart')[1].id`)
+    const fastOldWidth = await wc.executeJavaScript(`window.boardFixture.saved.at(-1).widgets.find(w=>w.id===${JSON.stringify(fastChart)}).layout.w`)
+    const fastHandle = await wc.executeJavaScript(`(() => {const e=document.querySelector('[data-board-widget-id="${fastChart}"] .react-resizable-handle');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect(),x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2);return {x,y,hit:document.elementFromPoint(x,y)?.className}})()`)
+    if (typeof fastHandle.hit !== 'string' || !fastHandle.hit.includes('react-resizable-handle')) throw new Error(`Fast resize handle not hit-testable: ${JSON.stringify(fastHandle)}`)
+    wc.sendInputEvent({ type: 'mouseMove', x: fastHandle.x, y: fastHandle.y })
+    wc.sendInputEvent({ type: 'mouseDown', x: fastHandle.x, y: fastHandle.y, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseMove', x: fastHandle.x - 160, y: fastHandle.y, button: 'left', modifiers: ['leftButtonDown'] })
+    wc.sendInputEvent({ type: 'mouseUp', x: fastHandle.x - 160, y: fastHandle.y, button: 'left', clickCount: 1 })
+    await until(`window.boardFixture.saved.at(-1).widgets.find(w=>w.id===${JSON.stringify(fastChart)}).layout.w!==${JSON.stringify(fastOldWidth)}`)
+    const fastResize = await wc.executeJavaScript(`window.boardFixture.saved.at(-1).widgets.find(w=>w.id===${JSON.stringify(fastChart)}).layout.w!==${JSON.stringify(fastOldWidth)}`)
     phase = 'modular-exact-dimensions'
     await wc.executeJavaScript(`document.querySelector('[data-board-widget-id="${chartId}"] [title="Configure widget"]').click()`)
     await until(`!!document.querySelector('.widget-config input[aria-label="Width (grid units)"]')`)
@@ -417,7 +434,7 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(`[...document.querySelectorAll('[title="Click to open · drag to reorder tabs"]')].find(e=>e.textContent.includes('Modular fixture')).click()`)
     await until(`!!document.querySelector('[data-board-widget-id="${chartId}"]')`)
     const exactDimensions = await wc.executeJavaScript(`(() => {const b=window.boardFixture.saved.at(-1),w=b.widgets.find(w=>w.id===${JSON.stringify(chartId)});return {width:w.layout.w,height:w.layout.h,source:b.widgets.some(w=>w.type==='reading-snapshot')}})()`)
-    console.log('E2E_RESULT '+JSON.stringify({initial,initialTodayReads,created,verified,failedReload,noSuccessfulAccounts,progress,cancelled,unverified,connect,returned,returnedTodayReads,searchById,searchByName,keyboardActive,chosenAccountId,readsBeforeSubmit,singleScopeRetries,singleDateSwitch,todayProgress,todayPartial,todayCancelled,singleRefresh,failedSingle,overallDraft,singleDraft,switchedSingle,firstCustom,latestCustom,customResult,resultFilter,chartInitially,failedSnapshot,savedSnapshot,exportedSnapshot,editorInitiallyNoCode,aiFailure,aiCancel,aiClose,aiPreview,aiSaveFailed,aiSaved,staleLoadIgnored,editorial,operations,minimal,editorPreview,editorExport,editorReopen,savedLayoutVisible,savedCardExport,highlightDraft,malformedHighlight,staleHighlight,failedHighlight,highlightEvidenceLabel,appliedHighlight,highlightEvidenceNavigation,returnToLayout,blank,composed,googleVisible:googleCheck.visible,googleDiagnostics:googleCheck.diagnostics,ttVisible:ttCheck.visible,ttDiagnostics:ttCheck.diagnostics,switchedAway,aiBoardCreated,appendConflict,appendExisting,modularDefault,modularAiTarget,modularLayout,fullPreview,modularManipulation,dimensionsConflict,exactDimensions,chatPreview,previewNavigation}))
+    console.log('E2E_RESULT '+JSON.stringify({initial,initialTodayReads,created,verified,failedReload,noSuccessfulAccounts,progress,cancelled,unverified,connect,returned,returnedTodayReads,searchById,searchByName,keyboardActive,chosenAccountId,readsBeforeSubmit,singleScopeRetries,singleDateSwitch,todayProgress,todayPartial,todayCancelled,singleRefresh,failedSingle,overallDraft,singleDraft,switchedSingle,firstCustom,latestCustom,customResult,resultFilter,chartInitially,failedSnapshot,savedSnapshot,exportedSnapshot,editorInitiallyNoCode,aiFailure,aiCancel,aiClose,aiPreview,aiSaveFailed,aiSaved,staleLoadIgnored,editorial,operations,minimal,editorPreview,editorExport,editorReopen,savedLayoutVisible,savedCardExport,highlightDraft,malformedHighlight,staleHighlight,failedHighlight,highlightEvidenceLabel,appliedHighlight,highlightEvidenceNavigation,returnToLayout,blank,composed,googleVisible:googleCheck.visible,googleDiagnostics:googleCheck.diagnostics,ttVisible:ttCheck.visible,ttDiagnostics:ttCheck.diagnostics,switchedAway,aiBoardCreated,appendConflict,appendExisting,modularDefault,modularAiTarget,modularLayout,fullPreview,modularManipulation,fastResize,dimensionsConflict,exactDimensions,chatPreview,previewNavigation}))
   } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error),phase})) }
   finally { if (win && !win.isDestroyed()) win.destroy(); app.exit(0) }
 }).catch(error => { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})); app.exit(1) })

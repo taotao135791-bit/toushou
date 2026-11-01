@@ -692,6 +692,7 @@ button:hover svg.animate-spin {
   touch-action: none;
 }
 /* Keep a drag from losing mouseup to any embedded iframe in the same grid. */
+html.board-grid-resizing .react-grid-layout iframe,
 .react-grid-layout:has(.react-grid-item.resizing) iframe,
 .react-grid-layout:has(.react-grid-item.react-draggable-dragging) iframe {
   pointer-events: none;

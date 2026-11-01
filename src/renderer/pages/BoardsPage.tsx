@@ -79,7 +79,7 @@ import { WidgetBody } from './boards/WidgetBody'
 import { reloadLatestDataset, type DatasetReloadState } from '../lib/latestDatasetReload'
 import { combineTikTokScopes, nextTikTokScopeExpiry, tiktokScopeMatchesDataset, type VerifiedTikTokScope } from '../lib/tiktokDatasetScope'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
-import { resizeWidgetLayout } from './boards/widgetSizing'
+import { resizeWidgetLayout, resolveResizeStop, shouldRevealMovedWidget } from './boards/widgetSizing'
 import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
 import { TodayReading } from './boards/TodayReading'
@@ -263,6 +263,9 @@ export default function BoardsPage() {
   // Drag-to-reorder board tabs: the id rides the DOM event (no re-render churn).
   const dragBoardId = useRef<string | null>(null)
   const [surface, setSurface] = useState<'today' | 'board'>('today')
+  const activeView = useRef<{ boardId: string | null; surface: 'today' | 'board' }>({ boardId: currentId, surface })
+  activeView.current = { boardId: currentId, surface }
+  const lastResize = useRef<{ id: string; width: number; height: number } | null>(null)
   const [creating, setCreating] = useState(false)
   const [newBoardName, setNewBoardName] = useState('')
   const [createMenuOpen, setCreateMenuOpen] = useState(false)
@@ -332,6 +335,10 @@ export default function BoardsPage() {
   }
   useEffect(() => {
     void retryHtmlCleanup()
+    const stopResize = () => document.documentElement.classList.remove('board-grid-resizing')
+    window.addEventListener('mouseup', stopResize)
+    window.addEventListener('blur', stopResize)
+    return () => { window.removeEventListener('mouseup', stopResize); window.removeEventListener('blur', stopResize); stopResize() }
   }, [])
   useEffect(() => {
     const params = new URLSearchParams(location.search)
@@ -393,7 +400,7 @@ export default function BoardsPage() {
       })
     })
     return () => { cancelAnimationFrame(firstFrame); cancelAnimationFrame(secondFrame) }
-  }, [revealTarget, surface, currentId])
+  }, [revealTarget, surface, currentId, current])
   const ttWidgets = current?.widgets.filter(widget => widget.type === 'tt-reading') ?? []
   const hasCurrentTtDataset = current?.widgets.some(widget => {
     const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
@@ -1083,6 +1090,10 @@ export default function BoardsPage() {
       if (!result.ok) { setHtmlCleanupFailed(true); flashToast(language === 'zh' ? '看板已保存，但 HTML 副本清理失败。' : 'Board saved, but HTML cleanup failed.', false) }
       else if (moved) flashToast(language === 'zh' ? '模块已移动到空位，避免重叠。' : 'The card moved to an open space to avoid overlap.')
       setConfigWidgetId(id => id === widgetId ? null : id)
+      if (shouldRevealMovedWidget(activeView.current, base.id, !!moved)) {
+        const target = { boardId: base.id, widgetId }
+        revealTargetRef.current = target; setRevealTarget(target)
+      }
       return true
     } catch {
       flashToast(language === 'zh' ? '保存失败，设置草稿仍保留。' : 'Save failed. Your settings draft is preserved.', false)
@@ -1925,7 +1936,14 @@ export default function BoardsPage() {
                 draggableHandle=".widget-drag-handle"
                 draggableCancel="input, textarea, select, a, button, .widget-config"
                 onDragStop={handleLayoutStop}
-                onResizeStop={handleLayoutStop}
+                onResizeStart={() => { lastResize.current = null; document.documentElement.classList.add('board-grid-resizing') }}
+                onResize={(_layout, _oldItem, item) => { if (item) lastResize.current = { id: item.i, width: item.w, height: item.h } }}
+                onResizeStop={(layout) => {
+                  document.documentElement.classList.remove('board-grid-resizing')
+                  const base = boardsRef.current?.find(board => board.id === currentId)
+                  handleLayoutStop(base ? resolveResizeStop(base.widgets, layout, lastResize.current) : layout)
+                  lastResize.current = null
+                }}
               >
                 {current.widgets.map(renderWidget)}
               </Grid>

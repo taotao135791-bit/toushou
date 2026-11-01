@@ -10,3 +10,24 @@ export function resizeWidgetLayout(widget: BoardWidget, widgets: BoardWidget[], 
   if (!overlaps) return candidate
   return { ...findFreeSlot(others, width, height), w: width, h: height }
 }
+
+/** Recover the latest resize callback if RGL stop observes its previous state. */
+export function resolveResizeStop<T extends { i: string; x: number; y: number; w: number; h: number }>(
+  widgets: BoardWidget[], layout: T[], last: { id: string; width: number; height: number } | null
+): T[] {
+  if (!last) return layout
+  const entry = layout.find(item => item.i === last.id)
+  if (!entry || (entry.w === last.width && entry.h === last.height)) return layout
+  const projected = widgets.map(widget => {
+    const current = layout.find(item => item.i === widget.id)
+    return current ? { ...widget, layout: { x: current.x, y: current.y, w: current.w, h: current.h } } : widget
+  })
+  const target = projected.find(widget => widget.id === last.id)
+  const corrected = target && resizeWidgetLayout(target, projected, last.width, last.height)
+  return corrected ? layout.map(item => item.i === last.id ? { ...item, ...corrected } : item) : layout
+}
+
+/** Async saves must not pull the user back to a board they have left. */
+export function shouldRevealMovedWidget(view: { boardId: string | null; surface: 'today' | 'board' }, boardId: string, moved: boolean): boolean {
+  return moved && view.surface === 'board' && view.boardId === boardId
+}
