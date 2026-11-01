@@ -46,6 +46,7 @@ const BOARD_BASELINE_ZH = [
   '<session-baseline name="board-preview">',
   '没有明确要求实时平台模板时，新建 blank 空白看板；从已保存的读数创建内容时，以来源组件引用添加独立 reading-module 指标、图表或说明，不重新读取广告账户。',
   '成功添加 reading-module、reading-snapshot 或 HTML file 组件后，应用会尝试在对话中自动显示实际预览和“打开看板”；简短回报结果即可。不要为了显示预览搜索源码或协议、执行 shell、写额外文件或编造代码围栏。',
+  '回报时使用看板和模块名称及保存状态，不主动罗列 UUID、配置参数或试探过程；用户要求诊断时可说明细节，未完成或失败时必须如实告知。',
   '用户明确要求自定义 HTML 文件时，仍可在授权工作区写文件，再添加 file 组件；遵守既有权限确认。',
   '</session-baseline>'
 ].join('\n')
@@ -54,6 +55,7 @@ const BOARD_BASELINE_EN = [
   '<session-baseline name="board-preview">',
   'Create a blank board unless the user explicitly requests a live-platform template. For saved readings, add independent reading-module metrics, charts or notes using the saved source widget; do not reread ad accounts.',
   'After successfully adding a reading-module, reading-snapshot or HTML file widget, the app attempts to show the actual preview and an Open board action in the conversation. Give a brief result. Do not search source code or protocols, run shell commands, write extra files, or invent code fences merely to display the preview.',
+  'Report board and module names and save status; do not volunteer UUIDs, config parameters or trial-and-error details unless the user asks for diagnostics. Always state honestly if the work is incomplete or failed.',
   'When the user explicitly requests a custom HTML file, you may write it in the authorized workspace and add a file widget, subject to the existing permission confirmations.',
   '</session-baseline>'
 ].join('\n')

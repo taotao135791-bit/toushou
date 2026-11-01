@@ -21,6 +21,18 @@ describe('chat board preview', () => {
     expect(html).toContain("default-src 'none'")
   })
 
+  it('preserves safe root colors and CSS variables for static charts while rejecting resource values', () => {
+    const input = '<html><head><style>:root{--bg:#101010;--fg:#fff;--blue:#58f;--bad:url(https://bad.invalid/x);--escape:var(--x,url(https://bad.invalid/y))}html body{background:var(--bg);color:var(--fg)}.bar{background:var(--blue);height:80px;background-image:url(https://bad.invalid/z)}</style></head><body style="color:var(--fg)"><div class="bar" style="width:60%;background:var(--blue)">42</div></body></html>'
+    const html = staticFilePreview(input)!
+    expect(html).toContain('#html-board-custom-before{--bg:#101010;--fg:#fff;--blue:#58f}')
+    expect(html).toContain('#html-board-custom-before{background:var(--bg);color:var(--fg)}')
+    expect(html).toContain('#html-board-custom-before .bar{background:var(--blue);height:80px}')
+    expect(html).toContain('width:60%')
+    expect(html).toContain('background:var(--blue)')
+    expect(html).toContain("default-src 'none'")
+    expect(html).not.toMatch(/bad\.invalid|url\(|--bad|--escape|background-image/i)
+  })
+
   it('requires a live session, workspace authorization, existing board and exact saved widget', () => {
     const board = createBoard('Synthetic')
     const widget = createWidget('file', 'File', { x: 0, y: 0 }, { filePath: 'page.html' })

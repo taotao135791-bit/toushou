@@ -61,6 +61,9 @@ describe('boards bridge dispatch', () => {
     const board = listBoards().find(item => item.id === saved.board.id)!
     const module = board.widgets.find(widget => widget.id === id)!
     expect(module.layout).toMatchObject({ w: 4, h: 5 })
+    const read = await dispatch({ action: 'board_get', boardId: board.id })
+    const returned = (read.board as { widgets: Array<{ id: string; layout: unknown }> }).widgets.find(widget => widget.id === id)
+    expect(returned?.layout).toEqual(module.layout)
     expect(module.config.snapshot).toEqual(snapshot)
     expect(await dispatch({ action: 'board_update_widget', boardId: board.id, widgetId: id, config: { module: { kind: 'coverage' } } })).toMatchObject({ ok: false })
     const tampered = structuredClone(board)

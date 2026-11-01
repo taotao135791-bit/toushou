@@ -282,6 +282,7 @@ function boardSummary(board: KanbanBoard): Record<string, unknown> {
       id: widget.id,
       type: widget.type,
       title: widget.title,
+      layout: { ...widget.layout },
       config: widget.type === 'reading-snapshot' ? readingSnapshotSummary(board, widget.id, widget.config) : widget.type === 'reading-module' ? { accountCount: validateReadingSnapshot(widget.config.snapshot)?.accounts.length ?? 0, module: widget.config.module } : widget.config
     }))
   }

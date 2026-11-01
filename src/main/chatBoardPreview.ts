@@ -27,14 +27,34 @@ export function staticFilePreview(input: string): string | null {
       const root = postcss.parse(raw)
       for (const rule of root.nodes) {
         if (rule.type !== 'rule') continue
+        const selectors = rule.selector.split(',').map(part => {
+          let selector = part.trim()
+          let rootSelector = false
+          for (;;) {
+            const match = /^(?::root|html|body)(?=\s|>|$)/i.exec(selector)
+            if (!match) break
+            rootSelector = true
+            selector = selector.slice(match[0].length).trimStart()
+          }
+          if (selector.length > 200 || (selector && !/^[A-Za-z0-9_.*>\-\s]+$/.test(selector))) return null
+          if (!selector && !rootSelector) return null
+          return `#html-board-custom-before${selector ? ` ${selector}` : ''}`
+        })
+        if (selectors.some(selector => selector === null)) continue
         const accepted: string[] = []
         for (const declaration of rule.nodes ?? []) {
-          if (declaration.type !== 'decl') continue
-          try { scopedHtmlBoardCss(`${rule.selector}{${declaration.toString()}}`); accepted.push(declaration.toString()) } catch { /* discard unsupported syntax */ }
+          if (declaration.type !== 'decl' || declaration.important || declaration.value.length > 500) continue
+          const variable = /^--[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(declaration.prop)
+          const value = declaration.value.replace(/var\(\s*--[A-Za-z][A-Za-z0-9_-]{0,63}\s*(?:,\s*[A-Za-z0-9#.%\s-]+)?\)/gi, 'previewvar')
+          // Reuse the existing strict value/function/property validator, but
+          // only for this passive file preview: CSS variables are substituted
+          // with an inert token for validation and retained after it succeeds.
+          try {
+            scopedHtmlBoardCss(`.check{${variable ? 'color' : declaration.prop}:${value}}`)
+            accepted.push(`${declaration.prop}:${declaration.value}`)
+          } catch { /* discard unsupported syntax */ }
         }
-        if (accepted.length) {
-          try { css.push(scopedHtmlBoardCss(`${rule.selector}{${accepted.join(';')}}`)) } catch { /* discard rule */ }
-        }
+        if (accepted.length) css.push(`${selectors.join(',')}{${accepted.join(';')}}`)
       }
     } catch { /* malformed style is omitted */ }
   }
@@ -70,8 +90,10 @@ export function staticFilePreview(input: string): string | null {
     const head = html?.childNodes.find(node => 'tagName' in node && node.tagName === 'head') as Element | undefined
     const body = html?.childNodes.find(node => 'tagName' in node && node.tagName === 'body') as Element | undefined
     head?.childNodes.forEach(node => clean(node, 0))
+    const bodyStyle = body?.attrs.find(attr => attr.name === 'style' && !attr.namespace)?.value
+    if (bodyStyle && bodyStyle.length <= 2000) safeCss(`body{${bodyStyle}}`)
     const content = body?.childNodes.map(node => clean(node, 0)).join('') ?? ''
-    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'"><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;margin:16px}#html-board-custom-before{overflow-wrap:anywhere}${css.join('\n')}</style></head><body><div id="html-board-custom-before">${content}</div></body></html>`
+    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'"><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;margin:0}#html-board-custom-before{box-sizing:border-box;min-height:100vh;padding:16px;overflow-wrap:anywhere}${css.join('\n')}</style></head><body><div id="html-board-custom-before">${content}</div></body></html>`
   } catch { return null }
 }
 

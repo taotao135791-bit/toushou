@@ -14,5 +14,16 @@ describe('board toolkit prompt contract', () => {
     expect(add.description).toContain('自动尝试在对话显示实际预览')
     expect(add.description).toContain('无需搜索源码、协议、执行 shell')
     expect(add.description).toContain('明确要求自定义 HTML 文件时')
+    expect(add.description).toContain('{"filePath":"report.html"}')
+  })
+  it('provides the exact file widget path contract to the model', () => {
+    const registered: Array<{ name: string; parameters: unknown }> = []
+    registerBoardsTools({ registerTool: tool => { registered.push(tool) } })
+    const add = registered.find(tool => tool.name === 'toushou_board_add_widget')!
+    const params = add.parameters as { properties: { config: { description: string } } }
+    const hint = params.properties.config.description
+    expect(hint).toContain('{"filePath":"report.html"}')
+    expect(hint).toContain('已授权工作区内的相对路径')
+    expect(hint).toContain('不要使用 path、file 或 src')
   })
 })
