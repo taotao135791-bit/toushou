@@ -46,9 +46,9 @@ describe('custom HTML board isolation in Electron', () => {
       expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
       expect(data.monitorWorked).toBe(true)
       expect(data.direct).toMatchObject({ tableVisible: true, customHidden: true, anonymous: true, noSvg: true, noScripts: true })
-      expect(data.frame).toMatchObject({ tableVisible: true, customHidden: true, anonymous: true, noSvg: true, noScripts: true, parentBlocked: true, noNode: true })
-      expect(data.directFetchBlocked).toBe(true)
-      expect(data.frameFetchBlocked).toBe(true)
+      expect(data.frame).toEqual({ sandboxEmpty: true, sameContent: true })
+      expect(data.cspScriptBlocked).toBe(true)
+      expect(data.frameScriptBlocked).toBe(true)
       expect(data.networkRequests).toEqual([])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
