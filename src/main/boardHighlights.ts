@@ -6,7 +6,7 @@ import { previousEqualWindow } from '../shared/todayReading'
 import type { KanbanBoard } from '../shared/types'
 import { listBoards, saveBoard } from './boards'
 
-interface Deps { list?: () => KanbanBoard[]; save?: (board: KanbanBoard) => ReturnType<typeof saveBoard> }
+interface Deps { list?: () => KanbanBoard[]; save?: (board: KanbanBoard, file?: string, expectedUpdatedAt?: number | null) => ReturnType<typeof saveBoard> }
 interface Source { board: KanbanBoard; snapshot: ReadingSnapshot; evidence: BoardHighlightEvidence }
 
 /** Revision changes whenever the board identity, source widget or snapshot changes. */
@@ -121,7 +121,7 @@ export function applyBoardHighlights(raw: unknown, deps: Deps = {}): BoardHighli
   note.id = noteId
   const next = { ...board, widgets: [...board.widgets, note], updatedAt: Math.max(Date.now(), board.updatedAt + 1) }
   try {
-    const saved = (deps.save ?? saveBoard)(next)
+    const saved = (deps.save ?? saveBoard)(next, undefined, board.updatedAt)
     return saved.ok ? { ok: true, boardId: board.id, widgetId: proposal.widgetId, noteId } : { ok: false, error: 'write-failed' }
   } catch { return { ok: false, error: 'write-failed' } }
 }

@@ -52,9 +52,9 @@ Object.assign(window, {
       }
       return { ok: true, document: structuredClone(v2.document) }
     },
-    saveHtmlBoard: async (input: { id: string; expectedRevision: number; html: string; css: string }) => {
+    saveHtmlBoard: async (input: { id: string; expectedRevision: number; html: string; css: string; theme?: HtmlBoardDocument['theme'] }) => {
       if (!v2.document || v2.document.revision !== input.expectedRevision) return { ok: false, error: 'conflict' }
-      v2.document = { ...v2.document, html: input.html, css: input.css, revision: input.expectedRevision + 1 }
+      v2.document = { ...v2.document, html: input.html, css: input.css, theme: input.theme, revision: input.expectedRevision + 1 }
       return { ok: true, document: structuredClone(v2.document) }
     },
     exportHtmlBoard: async (input: { expectedRevision: number; anonymize: boolean; language: 'zh' | 'en' }) => {
