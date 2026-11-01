@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { app } from 'electron'
 import { McpAddInput, McpConnectionInfo } from '../../../shared/connections'
+import { proxyFetchFor } from '../tiktok/proxyFetch'
 
 /**
  * MCP connection store — 投手 is the configuration steward, not a bridge.
@@ -239,49 +240,27 @@ export function upsertManagedServer(
   return { ok: true }
 }
 
-/** Extract JSON-RPC payloads from a direct JSON or SSE (data: …) response body. */
+/** Extract JSON-RPC messages from JSON or multi-line SSE events. */
 function parseRpcResponses(text: string): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = []
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed.startsWith('data:')) continue
+  const parse = (value: string): Record<string, unknown> | null => {
     try {
-      const parsed = JSON.parse(trimmed.slice(5).trim())
-      if (parsed && typeof parsed === 'object') out.push(parsed as Record<string, unknown>)
-    } catch {
-      /* 忽略非 JSON 的 data 行 */
-    }
+      const item: unknown = JSON.parse(value)
+      return item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : null
+    } catch { return null }
   }
-  if (out.length === 0) {
-    try {
-      const parsed = JSON.parse(text)
-      if (parsed && typeof parsed === 'object') out.push(parsed as Record<string, unknown>)
-    } catch {
-      /* 非 JSON */
-    }
-  }
-  return out
-}
-
-async function rpcCall(
-  url: string,
-  headers: Record<string, string>,
-  id: number,
-  method: string,
-  params: Record<string, unknown>
-): Promise<Response> {
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
-    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-    signal: AbortSignal.timeout(8000)
+  const direct = parse(text)
+  if (direct) return [direct]
+  return text.split(/\r?\n\r?\n/).flatMap(event => {
+    const data = event.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n')
+    const parsed = data ? parse(data) : null
+    return parsed ? [parsed] : []
   })
 }
 
 /**
- * Live remote verification per the MCP spec: initialize, then tools/list.
- * Reports the discovered tool count so the user sees the service is actually
- * usable, not merely reachable. stdio servers are runtime-verified instead.
+ * Test a remote Streamable HTTP MCP session with no business-tool calls.
+ * A successful result requires a validated initialization and complete,
+ * bounded tool discovery; provider response text is never shown to users.
  */
 export async function testMcpConnection(
   name: string,
@@ -295,36 +274,65 @@ export async function testMcpConnection(
   }
   const url = String(entry.url)
   const headers = (entry.headers as Record<string, string>) ?? {}
+  const overall = AbortSignal.timeout(30_000)
+  let sessionId: string | null = null
+  let version = '2025-03-26'
+  let requestId = 0
   try {
-    const init = await rpcCall(url, headers, 1, 'initialize', {
-      protocolVersion: '2024-11-05',
+    const send = async (method: string, params: Record<string, unknown>, notification = false): Promise<Record<string, unknown>> => {
+      const id = ++requestId
+      const requestHeaders = new Headers(headers)
+      requestHeaders.set('content-type', 'application/json')
+      requestHeaders.set('accept', 'application/json, text/event-stream')
+      // These values belong to this handshake, never to stale saved headers.
+      requestHeaders.delete('Mcp-Session-Id')
+      requestHeaders.delete('MCP-Protocol-Version')
+      if (sessionId) requestHeaders.set('Mcp-Session-Id', sessionId)
+      if (method !== 'initialize') requestHeaders.set('MCP-Protocol-Version', version)
+      const fetch = await proxyFetchFor(url, 'mcp-probe')
+      const response = await fetch(url, {
+        method: 'POST', headers: requestHeaders,
+        body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }),
+        signal: AbortSignal.any([overall, AbortSignal.timeout(8000)])
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const currentSession = response.headers.get('mcp-session-id')
+      if (currentSession) sessionId = currentSession
+      if (notification) return {}
+      const payloads = parseRpcResponses(await response.text())
+      const message = payloads.find(item => item.jsonrpc === '2.0' && item.id === id)
+      if (!message || message.error || !message.result || typeof message.result !== 'object' || Array.isArray(message.result)) {
+        throw new Error('invalid-rpc-response')
+      }
+      return message.result as Record<string, unknown>
+    }
+    const init = await send('initialize', {
+      protocolVersion: version,
       capabilities: {},
       clientInfo: { name: 'toushou-probe', version: '1.0' }
     })
-    if (!init.ok) return { ok: false, detail: `握手失败：HTTP ${init.status}` }
-    const initText = await init.text()
-    if (!initText.includes('"jsonrpc"')) {
-      return { ok: false, detail: '响应不是 MCP 协议（检查地址是否为 MCP 端点）' }
+    if (typeof init.protocolVersion !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(init.protocolVersion)) throw new Error('invalid-protocol')
+    version = init.protocolVersion
+    await send('notifications/initialized', {}, true)
+    let cursor: string | undefined
+    const seen = new Set<string>()
+    let count = 0
+    for (let page = 0; page < 20; page++) {
+      const result = await send('tools/list', cursor ? { cursor } : {})
+      if (!Array.isArray(result.tools) || result.tools.some(tool => !tool || typeof tool !== 'object' || typeof (tool as Record<string, unknown>).name !== 'string')) throw new Error('invalid-tool-list')
+      count += result.tools.length
+      if (count > 10000) throw new Error('tool-limit')
+      if (result.nextCursor === undefined || result.nextCursor === null || result.nextCursor === '') return { ok: true, detail: `握手成功，发现 ${count} 个工具` }
+      if (typeof result.nextCursor !== 'string' || result.nextCursor.length > 2048 || seen.has(result.nextCursor)) throw new Error('invalid-cursor')
+      cursor = result.nextCursor
+      seen.add(cursor)
     }
-
-    let detail = '握手成功'
-    try {
-      const tools = await rpcCall(url, headers, 2, 'tools/list', {})
-      if (tools.ok) {
-        const payloads = parseRpcResponses(await tools.text())
-        const result = payloads.find((p) => p.result && typeof p.result === 'object')?.result as
-          | { tools?: unknown[] }
-          | undefined
-        if (result && Array.isArray(result.tools)) {
-          detail = `握手成功，发现 ${result.tools.length} 个工具`
-        }
-      }
-    } catch {
-      /* tools/list 失败不影响连接判定 */
-    }
-    return { ok: true, detail }
-  } catch (err) {
-    return { ok: false, detail: err instanceof Error ? err.message : '网络错误' }
+    throw new Error('page-limit')
+  } catch (error) {
+    // HTTP status is safe to expose; request URLs, headers, provider messages,
+    // network exceptions and response bodies may contain credentials.
+    const match = error instanceof Error ? /^HTTP (\d{3})$/.exec(error.message) : null
+    return { ok: false, detail: match ? `MCP 检测失败：HTTP ${match[1]}` : 'MCP 检测失败，请检查网络或服务配置' }
   }
 }
 

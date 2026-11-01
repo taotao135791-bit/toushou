@@ -13,7 +13,7 @@ import {
   mergeTikTokTokens,
   TikTokReportCredentials
 } from './TikTokConnectionStore'
-import { resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokToken'
+import { getTikTokOAuthConfigured, resolveTikTokToken, type ResolvedTikTokToken } from './resolveTikTokToken'
 import { classifyTikTokError, fetchIntegratedReport, refreshAccessToken, sortRowsByDateDesc, TikTokApiFetch, TikTokReportRow } from './tiktokClient'
 import { TikTokMcpReadingClient, TIKTOK_DISCOVERED_ACCOUNT_LIMIT, TIKTOK_METADATA_BATCH_SIZE } from './tiktokMcpReadingClient'
 import { proxySessionFetch } from './proxyFetch'
@@ -134,7 +134,7 @@ export class TikTokRefreshService {
   getStatus(): TikTokReportStatus {
     const info: TikTokCredentialInfo = listTikTokCredentials(this.credentialsFile)
     return {
-      configured: info.configured,
+      configured: info.configured || getTikTokOAuthConfigured(),
       autoRefresh: this.settings.getAutoRefresh(),
       refreshing: this.refreshing,
       ...(this.lastRefreshAt !== undefined ? { lastRefreshAt: this.lastRefreshAt } : {}),

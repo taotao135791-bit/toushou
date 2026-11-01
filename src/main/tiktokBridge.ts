@@ -7,7 +7,7 @@ import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 
 /**
  * Loopback bridge for the bundled TikTok toolkit: the OMP extension registers
- * touhou_tiktok_update/status and calls back into Main over this server.
+ * toushou_tiktok_update/status and calls back into Main over this server.
  * Main owns the credentials and the dataset write — the tool process never
  * touches tokens or files, and the report always lands in the shared
  * "TikTok 报表" dataset the boards bind to.
@@ -101,7 +101,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 type SessionAccess = { cwd: string; mode: PermissionMode; remoteReadonly: boolean }
 type BridgeDeps = {
   getAccess: (id: string) => SessionAccess | null
-  confirm: () => Promise<boolean>
+  confirm: () => Promise<boolean | 'unavailable'>
   refresh: typeof tiktokReportService.refreshNow
   status: typeof tiktokReportService.getStatus
 }
@@ -111,25 +111,50 @@ function safeRefreshError(error: unknown): string {
   return typeof error === 'string' && allowed.has(error) ? error : 'refresh-failed'
 }
 
+type PermissionDenialReason = 'readonly-session' | 'remote-readonly' | 'user-declined' | 'confirmation-unavailable' | 'session-permission-changed'
+
+const PERMISSION_HINTS: Record<PermissionDenialReason, string> = {
+  'readonly-session': '当前对话为只读模式，不能更新本地“TikTok 报表”数据集。请在桌面端新建允许本地写入的对话后重新发起；这不代表 TikTok 授权失效。',
+  'remote-readonly': '当前是远程只读会话，不能更新本地“TikTok 报表”数据集。请回到桌面端发起并按需确认；这不代表 TikTok 授权失效。',
+  'user-declined': '本次本地数据集更新未获用户批准，未写入数据。仅在用户重新提出请求并批准后重试；这不代表 TikTok 授权失效。',
+  'confirmation-unavailable': '当前无法显示本地更新确认窗口，未写入数据。请在投手桌面窗口中重新发起并确认；这不代表 TikTok 授权失效。',
+  'session-permission-changed': '读取期间对话权限、工作区或会话状态已改变，已阻止本地数据集写入。请在当前工作区重新发起并按需确认；这不代表 TikTok 授权失效。'
+}
+
+function updatePermissionBlock(access: SessionAccess): 'readonly-session' | 'remote-readonly' | null {
+  if (access.remoteReadonly) return 'remote-readonly'
+  return ['full', 'no-bash', 'ask'].includes(access.mode) ? null : 'readonly-session'
+}
+
+function permissionDenied(reason: PermissionDenialReason): Record<string, unknown> {
+  return { ok: false, error: 'permission-denied', reason, hint: PERMISSION_HINTS[reason] }
+}
+
 /** Enforce session authority in Main, including just before the dataset write. */
 export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBridgeRequest, deps?: BridgeDeps): Promise<Record<string, unknown>> {
   const getAccess = deps?.getAccess ?? (await import('./omp')).getSessionBridgeAccess
   const access = getAccess(sessionId)
-  if (!access) return { ok: false, error: 'no-session' }
+  if (!access) return { ok: false, error: 'no-session', hint: '当前本机会话已不可用，请恢复或新建对话后重试；这不代表 TikTok 授权失效。' }
+  const permissionBlock = updatePermissionBlock(access)
   if (tool.action === 'tiktok_status') {
     const { configured, autoRefresh, refreshing, lastRefreshAt, lastError, lastRowCount, legacyBackups } =
       (deps?.status ?? (() => tiktokReportService.getStatus()))()
     // Credential hints and account IDs are for the local settings UI only;
     // tool responses may be sent to the model provider.
-    return { ok: true, status: { configured, autoRefresh, refreshing, lastRefreshAt, ...(lastError ? { lastError: safeRefreshError(lastError) } : {}), lastRowCount, legacyBackups } }
+    return {
+      ok: true,
+      status: { configured, autoRefresh, refreshing, lastRefreshAt, ...(lastError ? { lastError: safeRefreshError(lastError) } : {}), lastRowCount, legacyBackups },
+      sessionAccess: { canUpdateDataset: !permissionBlock, requiresConfirmation: !permissionBlock && access.mode === 'ask', ...(permissionBlock ? { reason: permissionBlock } : {}) },
+      hint: permissionBlock ? PERMISSION_HINTS[permissionBlock] : '此处会话权限约束本地数据集写入；permission-denied 不代表 TikTok 授权失效。连接状态与本地写入权限应分别判断。'
+    }
   }
   if (tool.days !== undefined && tool.days !== 7) return { ok: false, error: 'unsupported-range', hint: '仅支持近 7 天。' }
   if (tool.advertiserId !== undefined && (typeof tool.advertiserId !== 'string' || !/^\d{1,30}$/.test(tool.advertiserId))) return { ok: false, error: 'invalid-advertiser-id', hint: '广告主 ID 必须为数字字符串。' }
-  if (access.remoteReadonly || !['full', 'no-bash', 'ask'].includes(access.mode)) return { ok: false, error: 'permission-denied' }
+  if (permissionBlock) return permissionDenied(permissionBlock)
   if (access.mode === 'ask') {
     const confirm = deps?.confirm ?? (async () => {
       const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(candidate => !candidate.isDestroyed())
-      if (!win || win.isDestroyed()) return false
+      if (!win || win.isDestroyed()) return 'unavailable' as const
       const answer = await dialog.showMessageBox(win, {
         type: 'question', title: '确认更新 TikTok 看板',
         message: '允许此会话读取 TikTok 报表并更新本地数据集？',
@@ -138,16 +163,20 @@ export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBrid
       })
       return answer.response === 1
     })
-    if (!(await confirm())) return { ok: false, error: 'permission-denied' }
+    let confirmation: boolean | 'unavailable'
+    try { confirmation = await confirm() } catch { confirmation = 'unavailable' }
+    if (confirmation === 'unavailable') return permissionDenied('confirmation-unavailable')
+    if (!confirmation) return permissionDenied('user-declined')
   }
   const beforeWrite = (): boolean => {
     const current = getAccess(sessionId)
     return Boolean(current && !current.remoteReadonly && ['full', 'no-bash', 'ask'].includes(current.mode) && current.cwd === access.cwd && (current.mode !== 'ask' || access.mode === 'ask'))
   }
-  if (!beforeWrite()) return { ok: false, error: 'permission-denied' }
+  if (!beforeWrite()) return permissionDenied('session-permission-changed')
   const refresh = deps?.refresh ?? ((options) => tiktokReportService.refreshNow(options))
   const outcome = await refresh({ ...(tool.advertiserId ? { advertiserId: tool.advertiserId as string } : {}), beforeWrite })
   if (!outcome.ok) {
+    if (outcome.error === 'permission-denied') return { ...permissionDenied('session-permission-changed'), dataset: 'TikTok 报表' }
     return { ok: false, error: safeRefreshError(outcome.error), dataset: 'TikTok 报表' }
   }
   return {

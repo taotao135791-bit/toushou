@@ -12,8 +12,8 @@ function fixture(mode: PermissionMode = 'full', remoteReadonly = false) {
     if (!options?.beforeWrite?.()) return { ok: false as const, error: 'permission-denied', status: {} as never }
     return { ok: true as const, status: {} as never, rowCount: 2, truncated: false, legacyBackups: ['历史备份'] }
   })
-  const deps = { getAccess: () => current, confirm: vi.fn(async () => true), refresh, status: () => ({} as never) }
-  return { deps, refresh, revoke: () => { current = null } }
+  const deps = { getAccess: () => current, confirm: vi.fn<() => Promise<boolean | 'unavailable'>>(async () => true), refresh, status: () => ({} as never) }
+  return { deps, refresh, revoke: () => { current = null }, changeAccess: (next: Partial<NonNullable<typeof current>>) => { if (current) current = { ...current, ...next } } }
 }
 
 describe('TikTok bridge session and scope', () => {
@@ -24,6 +24,8 @@ describe('TikTok bridge session and scope', () => {
     expect(result).toMatchObject({ ok: true, status: { configured: true } })
     expect(JSON.stringify(result)).not.toContain('secret-fragment')
     expect(JSON.stringify(result)).not.toContain('advertiserIds')
+    expect(result).toMatchObject({ sessionAccess: { canUpdateDataset: false, requiresConfirmation: false, reason: 'readonly-session' }, hint: expect.stringContaining('不代表 TikTok 授权失效') })
+    expect(f.refresh).not.toHaveBeenCalled()
   })
 
   it('forwards a string account ID and reports migration backups', async () => {
@@ -40,14 +42,50 @@ describe('TikTok bridge session and scope', () => {
     expect(f.refresh).not.toHaveBeenCalled()
   })
 
-  it('refuses readonly and remote sessions and asks for consent when required', async () => {
-    for (const f of [fixture('readonly'), fixture('full', true)]) {
-      expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ error: 'permission-denied' })
+  it('distinguishes readonly and remote sessions without attempting any report read', async () => {
+    for (const [f, reason] of [[fixture('readonly'), 'readonly-session'], [fixture('full', true), 'remote-readonly']] as const) {
+      expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ error: 'permission-denied', reason, hint: expect.stringContaining('不代表 TikTok 授权失效') })
       expect(f.refresh).not.toHaveBeenCalled()
     }
+  })
+
+  it('distinguishes user refusal and unavailable confirmation and does not refresh', async () => {
     const f = fixture('ask')
     f.deps.confirm.mockResolvedValueOnce(false)
-    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ error: 'permission-denied' })
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ error: 'permission-denied', reason: 'user-declined' })
+    f.deps.confirm.mockResolvedValueOnce('unavailable')
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ error: 'permission-denied', reason: 'confirmation-unavailable' })
+    f.deps.confirm.mockRejectedValueOnce(new Error('private UI details'))
+    const unavailable = await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)
+    expect(unavailable).toMatchObject({ error: 'permission-denied', reason: 'confirmation-unavailable' })
+    expect(JSON.stringify(unavailable)).not.toContain('private UI details')
+    expect(f.refresh).not.toHaveBeenCalled()
+  })
+
+  it('reports that ask mode can update only after approval and still enforces approval', async () => {
+    const f = fixture('ask')
+    const status = await authorizeTikTokRequest('s', { action: 'tiktok_status' }, f.deps)
+    expect(status).toMatchObject({ sessionAccess: { canUpdateDataset: true, requiresConfirmation: true } })
+    expect(f.deps.confirm).not.toHaveBeenCalled()
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ ok: true })
+    expect(f.deps.confirm).toHaveBeenCalledOnce()
+    expect(f.refresh).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a permission change while awaiting approval before reading any report', async () => {
+    const f = fixture('ask')
+    f.deps.confirm.mockImplementationOnce(async () => {
+      f.changeAccess({ mode: 'readonly' })
+      return true
+    })
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ ok: false, error: 'permission-denied', reason: 'session-permission-changed' })
+    expect(f.refresh).not.toHaveBeenCalled()
+  })
+
+  it('explains an unavailable local session without blaming TikTok credentials', async () => {
+    const f = fixture()
+    f.revoke()
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ ok: false, error: 'no-session', hint: expect.stringContaining('不代表 TikTok 授权失效') })
     expect(f.refresh).not.toHaveBeenCalled()
   })
 
@@ -59,6 +97,25 @@ describe('TikTok bridge session and scope', () => {
         ? { ok: true as const, status: {} as never, rowCount: 2, truncated: false, legacyBackups: [] }
         : { ok: false as const, error: 'permission-denied', status: {} as never }
     })
-    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ error: 'permission-denied' })
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toMatchObject({ error: 'permission-denied', reason: 'session-permission-changed', hint: expect.stringContaining('不代表 TikTok 授权失效') })
+  })
+
+  it.each([{ mode: 'readonly' as const }, { mode: 'ask' as const }, { remoteReadonly: true }, { cwd: '/other-workspace' }])('refuses a permission or workspace change during the report read: %j', async change => {
+    const f = fixture('full')
+    f.refresh.mockImplementationOnce(async options => {
+      f.changeAccess(change)
+      return options?.beforeWrite?.()
+        ? { ok: true as const, status: {} as never, rowCount: 2, truncated: false, legacyBackups: [] }
+        : { ok: false as const, error: 'permission-denied', status: {} as never }
+    })
+    const result = await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)
+    expect(result).toMatchObject({ ok: false, error: 'permission-denied', reason: 'session-permission-changed' })
+    expect(JSON.stringify(result)).not.toContain('/other-workspace')
+  })
+
+  it('does not misclassify credential errors as a session permission failure', async () => {
+    const f = fixture()
+    f.refresh.mockResolvedValueOnce({ ok: false as const, error: 'token-expired', status: {} as never })
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update' }, f.deps)).toEqual({ ok: false, error: 'token-expired', dataset: 'TikTok 报表' })
   })
 })
