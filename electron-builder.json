@@ -79,6 +79,7 @@
     ]
   },
   "win": {
+    "icon": "build/icon.ico",
     "target": "nsis"
   },
   "linux": {
