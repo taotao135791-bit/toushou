@@ -36,12 +36,12 @@ async function call(params: Record<string, unknown>): Promise<string> {
 
 const WIDGET_TYPES = [
   'clock', 'note', 'counter', 'fb-reading', 'fb-reading-summary', 'fb-report-reading',
-  'google-report-reading', 'tt-reading', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
+  'google-report-reading', 'tt-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
 ]
 
 const TEMPLATES = ['tiktok', 'fb-daily', 'fb-daily-v2', 'ads', 'daily', 'blank']
 
-/** 标准看板模板说明，教助手"没提要求也给出标配"。 */
+/** 标准看板模板，仅在用户明确要求时选择。 */
 const TEMPLATE_HELP = {
   tiktok: 'TikTok 投放全景：总消耗/总点击/平均点击率/总转化四个指标卡 + 近 30 天消耗趋势 + 分活动消耗对比 + 转化趋势 + TT 读数模块。指标卡与图表绑定「TikTok 报表」数据集。',
   'fb-daily': 'FB 投放日报：跨账户读数汇总 + 每账户明细卡（需要用户已登记 FB 账户）。',
@@ -66,7 +66,14 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_get',
     label: '查看看板',
-    description: '查看一块看板的完整结构：每个组件的类型、标题和配置（读数模块的账户/日期口径、图表的数据集绑定等）。',
+    description: '查看一块看板的结构。普通看板返回组件配置；读数快照看板返回有界的所选账户摘要和证据引用，包含账户名称及 ID。' +
+      '\n仅当用户要求从已保存快照提议对话高光时，读取 reading-snapshot 组件 config.evidence：boardId、widgetId、revision 与 accounts（最多50个账户及序号）。' +
+      '每条观察只能引用状态 ok 且 sourceAt 非空的账户和非空 metrics 值；金额须有币种，上期消耗须有对应前期窗口。失败、未知、已省略账户不得引用。' +
+      '同一观察不要跨平台、跨币种金额或不同日期比较；不要推断因果。' +
+      '\n用一个 ```board-highlights JSON 代码块提议：{"version":1,"boardId":"...","widgetId":"...","revision":"sha256:...","highlights":[{"text":"供人工审核的观察","evidence":[{"accountIndex":1,"metric":"spend","value":123}]}]}。' +
+      'accountIndex 使用 evidence.accounts 的 index，metric 仅可为 spend、previousSpend、impressions、clicks、conversions，value 必须与对应数字完全一致；示例 123 必须替换为实际证据。' +
+      '可包含账户名和账户 ID；不要包含网址或额外字段，不要编造空值；如果无证据则解释缺口，不输出该代码块。高光文本由用户审核，引用数字经应用校验但不代表自然语言结论已验证；禁止声称已自动应用或已修改广告。' +
+      '新快照只能由用户在读数界面保存，不能由模型凭空创建。',
     parameters: {
       type: 'object',
       properties: {
@@ -84,15 +91,15 @@ export default function boardsTools(api: ToolHostApi): void {
     label: '新建看板',
     description:
       '新建本机看板并回报结果；需要确认时等待用户批准，不触碰广告平台。\n' +
-      '用户没提具体要求时按模板标配建：\n' +
+      '默认创建空白看板；只有用户明确要求对应模板或平台时才选择模板。可选模板：\n' +
       Object.entries(TEMPLATE_HELP).map(([id, help]) => `- ${id}：${help}`).join('\n') +
       '\n用户指定 TikTok 广告主时，必须先通过 TikTok 连接信息查询其数字 ID，并以逗号分隔的字符串传 advertiserIds；不知道 ID 时先查明或请用户提供，不能留空代替指定范围。未指定账户时留空会读取连接页所选账户，未选择时读取授权账户。' +
-      '\n建板返回 datasetReady=false 时，立即调用 touhou_tiktok_update 拉取报表（需要已连接 TikTok），指标卡和趋势图会自动填充，然后如实向用户汇报。',
+      '\nTikTok 模板可能需要报表数据；只有用户明确要求读取时才调用 touhou_tiktok_update，不要因为新建看板而自动查询广告账户。',
     parameters: {
       type: 'object',
       properties: {
         name: { type: 'string', description: '看板名称，如 "miclip"；缺省用模板名' },
-        template: { type: 'string', enum: TEMPLATES, description: '标准模板，缺省 tiktok' },
+        template: { type: 'string', enum: TEMPLATES, description: '标准模板；默认 blank，用户明确要求时再选平台模板。' },
         description: { type: 'string', description: '可选看板说明' },
         advertiserIds: { type: 'string', description: '指定账户时必填：数字广告主 ID 字符串，多个 ID 用逗号分隔；读数与数据卡都按这些 ID 筛选。' },
         advertiserName: { type: 'string', description: '可选显示名称；提供名称时也必须提供对应 advertiserIds，数据卡按 ID 而不是名称筛选。' },
@@ -111,7 +118,7 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_add_widget',
     label: '看板加组件',
-    description: '向已有看板添加一个组件（自动找空位；配置不合法会被整体拒绝，不会弄坏看板）。',
+    description: '向已有看板添加一个组件（自动找空位；配置不合法会被整体拒绝，不会弄坏看板）。展示读数时使用独立 reading-module 指标、图表、说明组件，避免将整页挤入小卡。先 board_get 获取已保存的 reading-snapshot 或 reading-module 的 boardId 和 widgetId，再通过 source 引用；不能自己提供或伪造 snapshot。config 仅传 module：kind 为 metric、spend-chart、coverage 或 note；metric 必须传 metric（spend、impressions、clicks、conversions）及从 0 开始的 accountIndex；spend-chart 传 chart（bar、pie、donut）；note 传 text。数据是保存时的快照，不是实时数据；不要混合币种或伪造时间趋势。file 组件使用 config: {"filePath":"report.html"}，路径相对于已授权工作区，文件类型须受支持。layout 的 w 范围 1–12、h 范围 1–20。成功添加读数模块或 HTML file 后，应用会自动尝试在对话显示实际预览及“打开看板”；请简短回复，无需搜索源码、协议、执行 shell、写额外文件或编造围栏来展示预览。用户明确要求自定义 HTML 文件时，仍可在授权工作区写文件并添加 file 组件，遵守确认。',
     parameters: {
       type: 'object',
       properties: {
@@ -119,7 +126,9 @@ export default function boardsTools(api: ToolHostApi): void {
         name: { type: 'string', description: '看板名称（与 boardId 二选一）' },
         type: { type: 'string', enum: WIDGET_TYPES },
         title: { type: 'string', description: '可选：组件标题' },
-        config: { type: 'object', description: '可选：组件配置（与界面上手动配置的字段一致）' }
+        config: { type: 'object', description: '组件配置；reading-module 仅提供 module，不提供 snapshot。file 必须使用 config: {"filePath":"report.html"}，filePath 是已授权工作区内的相对路径，文件类型须受支持。不要使用 path、file 或 src 代替 filePath。' },
+        source: { type: 'object', properties: { boardId: { type: 'string' }, widgetId: { type: 'string' } }, required: ['boardId', 'widgetId'], description: 'reading-module 必填，现有保存的读数来源。' },
+        layout: { type: 'object', properties: { w: { type: 'integer', minimum: 1, maximum: 12 }, h: { type: 'integer', minimum: 1, maximum: 20 } }, required: ['w', 'h'], description: '可选网格尺寸。' }
       },
       required: ['type']
     },

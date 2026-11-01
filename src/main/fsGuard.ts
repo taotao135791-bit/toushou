@@ -1,5 +1,5 @@
-import fs from 'node:fs'
 import path from 'node:path'
+import { canonicalExistingPath } from './canonicalPath'
 
 /**
  * Path allowlist for fs:* IPC handlers. Pure logic, unit-testable.
@@ -19,7 +19,7 @@ export class FsGuard {
   private canonical(p: string): string {
     const resolved = path.resolve(p)
     try {
-      return fs.realpathSync(resolved)
+      return canonicalExistingPath(resolved)
     } catch {
       return resolved
     }
@@ -51,7 +51,7 @@ export class FsGuard {
   isAllowed(target: string): boolean {
     let real: string
     try {
-      real = fs.realpathSync(path.resolve(target))
+      real = canonicalExistingPath(target)
     } catch {
       return false
     }

@@ -25,7 +25,9 @@ import {
   boardReadingRangeDates,
   buildFbAccountOverviewUrlForRef,
   buildFbReadingUrlForRef,
+  buildFbReadingUrlForWindow,
   fbReadingMatchesWindow,
+  parseFbCustomWindow,
   isValidFbReadingAct,
   isValidFbReadingBusinessId
 } from '../shared/fbReading'
@@ -1522,9 +1524,11 @@ export function captureFbReadingAccountFromPanel(): {
 }
 
 /** One bounded refresh, serialized with chat browser tools; no background loop. */
-export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReadingRange): Promise<FbReadingRefreshResult> {
+export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReadingRange | 'custom', customWindow?: { start: string; end: string }): Promise<FbReadingRefreshResult> {
   const today = new Date()
-  const expected = boardReadingRangeDates(range, today)
+  if (range !== 'custom' && !['today', 'yesterday', 'last3', 'last7', 'last30'].includes(range)) return Promise.resolve({ ok: false, error: 'invalid-input' })
+  const expected = range === 'custom' ? parseFbCustomWindow(customWindow?.start, customWindow?.end, today) : boardReadingRangeDates(range, today)
+  if (!expected) return Promise.resolve({ ok: false, error: 'invalid-input' })
   const known = isValidFbReadingAct(ref.act) && isValidFbReadingBusinessId(ref.businessId) &&
     listFbReadingAccounts().some((entry) => entry.act === ref.act)
   if (!known) return Promise.resolve({ ok: false, error: 'invalid-input' })
@@ -1551,7 +1555,7 @@ export function refreshBoardFbReading(ref: FbReadingAccountRef, range: FbReading
       assertBoardReadActive(control)
       const nav = await runAction({
         action: 'navigate',
-        url: buildFbReadingUrlForRef(ref, range, today),
+        url: buildFbReadingUrlForWindow(ref, expected, today),
         keepRoute: true,
         background: true,
         // Bounded by loadBrowserPanelUrl's own stop() cleanup; never more

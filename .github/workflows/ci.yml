@@ -67,7 +67,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Board UI in Electron
-        run: pnpm exec vitest run src/renderer/pages/boards/boardsFlow.e2e.test.ts
+        run: pnpm exec vitest run src/renderer/pages/boards/boardsFlow.e2e.test.ts src/renderer/pages/boards/htmlBoardSecurity.e2e.test.ts
+      - name: Windows OMP command shim detection
+        run: pnpm exec vitest run src/main/__tests__/ompCliDetection.test.ts src/main/__tests__/command.test.ts
 
   secret-scan:
     name: Secret scan
@@ -138,18 +140,25 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      # Current OMP releases dispatch their CLI through Bun.
+      # Latest OMP requires Bun >= 1.4.4; pinned/release gates retain their
+      # separately tested runtime. Fail if the real executable cannot start.
       - name: Set up Bun for OMP
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.4
       - name: Install project dependencies
         run: pnpm install --frozen-lockfile
       - name: Install latest OMP
         run: npm install -g @oh-my-pi/pi-coding-agent@latest
       - name: Print OMP version
+        shell: bash
         run: |
+          set -euo pipefail
           command -v omp
-          echo "OMP latest version tested: $(omp --version)"
+          installed="$(omp --version)"
+          test -n "${installed}"
+          echo "OMP latest version tested: ${installed}"
       - name: Compatibility suite
+        env:
+          OMP_REQUIRED: omp
         run: pnpm test:omp

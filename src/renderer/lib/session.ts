@@ -13,7 +13,7 @@ import { useAppStore } from '../store'
  * picker choices for a retry.
  */
 export async function createSessionForCurrentProject(
-  extra?: { skillId?: string }
+  extra?: { skillId?: string; permissionMode?: 'readonly' }
 ): Promise<string | null> {
   const {
     currentWorkspace,

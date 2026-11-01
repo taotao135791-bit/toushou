@@ -16,6 +16,7 @@ import {
   sessionDirFor,
   currentSessionDirFor,
   listSessionHistory,
+  listAllSessions,
   deleteSessionFile,
   deleteSessionFileEverywhere,
   deleteSessionCopiesByUuid,
@@ -74,6 +75,27 @@ function writeSessionFile(name: string, lines: string[]): string {
   writeFileSync(filePath, lines.join('\n') + '\n')
   return filePath
 }
+
+describe('cross-project history paths', () => {
+  it('matches runtime project aliases to Main canonical recent-workspace paths', async () => {
+    const alias = path.join(agentDir, 'project-alias')
+    symlinkSync(projectDir, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    writeSessionFile('alias.jsonl', [JSON.stringify({ type: 'session', id: 'alias-history', timestamp: 1, cwd: alias }), userMessage('Synthetic alias history')])
+    const rows = await listAllSessions(agentDir)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].cwd).toBe(realpathSync.native(projectDir))
+    expect(rows[0].uuid).toBe('alias-history')
+  })
+
+  it('keeps missing project metadata without inventing a workspace or changing the transcript', async () => {
+    const missing = path.join(projectDir, 'missing')
+    const file = writeSessionFile('missing.jsonl', [JSON.stringify({ type: 'session', id: 'missing-history', timestamp: 1, cwd: missing })])
+    const rows = await listAllSessions(agentDir)
+    expect(rows[0].cwd).toBe(missing)
+    expect(rows[0].filePath).toBe(file)
+    expect(existsSync(missing)).toBe(false)
+  })
+})
 
 describe('sessionDirFor', () => {
   it('encodes the realpath of the project dir like pi does', () => {

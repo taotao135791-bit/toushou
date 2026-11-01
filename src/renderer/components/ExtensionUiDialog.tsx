@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { MessageCircleQuestion, X } from 'lucide-react'
 import { ExtensionUiAnswer } from '@shared/types'
 import { approvalToolNameFromTitle } from '@shared/toolNames'
+import { approvalDisplaySummary } from '../lib/approvalDisplay'
 import { UiRequest, useAppStore } from '../store'
 import { useT } from '../i18n'
 
@@ -23,6 +24,7 @@ export default function ExtensionUiDialog({
 }) {
   const t = useT()
   const resolveUiRequest = useAppStore((s) => s.resolveUiRequest)
+  const language = useAppStore((s) => s.language) === 'zh' ? 'zh' : 'en'
   const [text, setText] = useState(request.method === 'editor' ? request.prefill ?? '' : '')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState(false)
@@ -98,7 +100,7 @@ export default function ExtensionUiDialog({
       if (e.key === 'Tab') {
         const focusable = Array.from(
           dialogRef.current?.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [href]'
+            'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), summary, [href]'
           ) ?? []
         )
         if (focusable.length === 0) return
@@ -117,6 +119,8 @@ export default function ExtensionUiDialog({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [answer])
 
+  const display = approvalDisplaySummary(request.method, request.title, request.message, language)
+  const possiblyTruncated = request.title.length >= 2000 || (request.message?.length ?? 0) >= 16000
   const isTextual = request.method === 'input' || request.method === 'editor'
   // Runtime approval prompts for extension tools carry raw plumbing in the
   // title ("Allow tool: write Path: xd://browser_click"); show the real tool
@@ -132,15 +136,15 @@ export default function ExtensionUiDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
-        className="msg-in w-full max-w-[420px] rounded-[18px] border border-line bg-ink-850 shadow-pop"
+        className="msg-in max-h-[calc(100vh-3rem)] w-full max-w-[420px] overflow-y-auto rounded-[18px] border border-line bg-ink-850 shadow-pop"
       >
         <div className="flex items-start gap-3 border-b border-line px-5 py-4">
           <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent">
             <MessageCircleQuestion size={14} strokeWidth={1.8} />
           </span>
           <div className="min-w-0 flex-1">
-            <h3 id={titleId} className="truncate text-[14px] font-semibold text-cream">
-              {approvalToolName
+            <h3 id={titleId} className="max-h-16 overflow-y-auto whitespace-pre-wrap break-all text-[14px] font-semibold text-cream">
+              {display ? display.title : approvalToolName
                 ? t('uiDialog.extensionTool', { name: approvalToolName })
                 : request.title || t('uiDialog.untitled')}
             </h3>
@@ -160,17 +164,27 @@ export default function ExtensionUiDialog({
         </div>
 
         <div className="px-5 py-4">
+          {display && <div className="mb-3 max-h-24 overflow-y-auto rounded-lg border border-line bg-ink-800 px-3 py-2 text-[13px] text-cream">
+            <span className="text-cream-faint">{display.targetLabel}：</span><span className="break-all">{display.target}</span>
+          </div>}
+          {display && <details className="mb-3 text-[12px] text-cream-dim">
+            <summary className="cursor-pointer">{language === 'zh' ? '技术详情（收到的请求）' : 'Technical details (received request)'}</summary>
+            {possiblyTruncated && <p role="note" className="mt-2 text-amber-500">{language === 'zh' ? '收到的请求可能已被截断。' : 'The received request may have been truncated.'}</p>}
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-ink-800 p-3 font-mono text-[12px]">{request.title}</pre>
+            {request.message && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-ink-800 p-3 font-mono text-[12px]">{request.message}</pre>}
+          </details>}
+          {!display && possiblyTruncated && <p role="note" className="mb-3 text-[12px] text-amber-500">{language === 'zh' ? '收到的请求可能已被截断。' : 'The received request may have been truncated.'}</p>}
           {request.method === 'select' && (
             <div className="flex max-h-64 flex-col gap-1.5 overflow-y-auto">
               {/* Approval-style requests pack a command summary into a long
                   title; show it in full as a mono block the header can't fit. */}
-              {request.title.length > 48 && (
-                <div className="mb-1 whitespace-pre-wrap break-words rounded-lg bg-ink-800 p-3 font-mono text-[12px] leading-5 text-cream/85">
+              {!display && request.title.length > 48 && (
+                <div className="mb-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-ink-800 p-3 font-mono text-[12px] leading-5 text-cream/85">
                   {request.title}
                 </div>
               )}
-              {request.message && (
-                <p className="mb-1 whitespace-pre-wrap text-[13px] leading-6 text-cream-dim">
+              {!display && request.message && (
+                <p className="mb-1 max-h-32 overflow-auto whitespace-pre-wrap text-[13px] leading-6 text-cream-dim">
                   {request.message}
                 </p>
               )}
@@ -180,7 +194,7 @@ export default function ExtensionUiDialog({
                   onClick={() => answer({ value: option })}
                   disabled={sending}
                   data-dialog-autofocus={i === 0 ? true : undefined}
-                  className={`rounded-lg border px-3 py-2 text-left text-[13px] transition ${
+                  className={`max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded-lg border px-3 py-2 text-left text-[13px] transition ${
                     i === 0
                       ? 'border-accent/60 text-cream hover:bg-accent-soft'
                       : 'border-line text-cream hover:border-ink-600 hover:bg-overlay'
@@ -205,9 +219,9 @@ export default function ExtensionUiDialog({
 
           {request.method === 'confirm' && (
             <>
-              <p className="mb-4 whitespace-pre-wrap text-[13px] leading-6 text-cream-dim">
+              {!display && <p className="mb-4 max-h-32 overflow-auto whitespace-pre-wrap break-all text-[13px] leading-6 text-cream-dim">
                 {request.message}
-              </p>
+              </p>}
               <div className="flex justify-end gap-2">
                 <button
                   onClick={() => answer({ confirmed: false })}

@@ -7,7 +7,7 @@ import path from 'node:path'
 // electron-backed stores at module level — stub like the sibling suites.
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/toushou-unused' } }))
 
-import { isTikTokTodayFailure, todayWindow, previousEqualWindow } from '../../../shared/todayReading'
+import { isTikTokTodayFailure, previousEqualWindow } from '../../../shared/todayReading'
 import { DATASET_LIMITS } from '../../../shared/datasets'
 import type { TikTokReportRow } from './tiktokClient'
 import {
@@ -88,6 +88,7 @@ function tiktokApi(options: {
   infoErrorCode?: (ids: string[], index: number) => number | null
   extraInfo?: Array<{ advertiser_id: string; name: string }>
   granted?: string[]
+  defaultTimezone?: boolean
 }) {
   const reports: URLSearchParams[] = []
   const infoCalls: string[][] = []
@@ -107,7 +108,7 @@ function tiktokApi(options: {
       infoCalls.push(ids)
       const known = options.advertisers ?? {}
       const errorCode = options.infoErrorCode?.(ids, infoCalls.length - 1) ?? (options.infoFails ? 50000 : null)
-      const body = errorCode ? { code: errorCode } : { code: 0, data: { list: [...ids.filter((id) => known[id]).map((id) => ({ advertiser_id: id, name: known[id].name ?? '', currency: known[id].currency ?? '', timezone: known[id].timezone ?? '' })), ...(options.extraInfo ?? [])] } }
+      const body = errorCode ? { code: errorCode } : { code: 0, data: { list: [...ids.filter((id) => known[id] || options.defaultTimezone).map((id) => ({ advertiser_id: id, name: known[id]?.name ?? '', currency: known[id]?.currency ?? '', timezone: known[id]?.timezone ?? (options.defaultTimezone ? 'UTC' : '') })), ...(options.extraInfo ?? [])] } }
       return response({ structuredContent: body })
     }
     if (request.params.name !== 'report_integrated_get') throw new Error('unexpected tool')
@@ -431,17 +432,25 @@ describe('buildTikTokReadingSummary', () => {
   it.each(['summary', 'today'] as const)('cancels %s without touching remaining accounts or persisting partial scope', async (kind) => {
     const ids = Array.from({ length: 21 }, (_, index) => String(7300000000 + index))
     const controller = new AbortController()
-    const api = tiktokApi({ report: id => { if (id === ids[2]) controller.abort(); return reportResponse([]) } })
+    const api = tiktokApi({ defaultTimezone: true, report: id => { if (id === ids[2]) controller.abort(); return reportResponse([]) } })
     const progress: Array<{ completed: number; total: number; succeeded: number }> = []
     const persistRows = vi.fn()
     const onDatasetCommitted = vi.fn()
     const deps = { resolveToken: token(ids), fetchImpl: api.fetchImpl, signal: controller.signal, onProgress: (value: { completed: number; total: number; succeeded: number }) => progress.push(value), persistRows, onDatasetCommitted }
     const result = kind === 'summary' ? await buildTikTokReadingSummary({}, deps) : await buildTikTokTodayReading({}, deps)
-    expect(result).toEqual({ ok: false, error: 'api', detail: 'reading-cancelled' })
+    if (kind === 'summary') expect(result).toEqual({ ok: false, error: 'api', detail: 'reading-cancelled' })
+    else {
+      if ('ok' in result) throw new Error(result.error)
+      if (!('accounts' in result)) throw new Error('expected today result')
+      expect(result.cancelled).toBe(true)
+      expect(result.accounts.slice(0, 2).map(account => isTikTokTodayFailure(account))).toEqual([false, false])
+      expect(result.accounts.slice(2).every(account => isTikTokTodayFailure(account) && account.detail === 'account-batch-not-attempted')).toBe(true)
+      expect(result.datasetSync).toEqual({ ok: false, error: 'reading-cancelled' })
+    }
     expect(api.reports).toHaveLength(3)
     expect(persistRows).not.toHaveBeenCalled()
     expect(onDatasetCommitted).not.toHaveBeenCalled()
-    expect(progress).toEqual([{ completed: 0, total: 21, succeeded: 0 }, { completed: 1, total: 21, succeeded: 1 }, { completed: 2, total: 21, succeeded: 2 }])
+    expect(progress.map(({ completed, total, succeeded }) => ({ completed, total, succeeded }))).toEqual([{ completed: 0, total: 21, succeeded: 0 }, { completed: 1, total: 21, succeeded: 1 }, { completed: 2, total: 21, succeeded: 2 }])
   })
   it.each(['summary', 'today'] as const)('continues %s account reads after the dataset buffer limit without writing a partial table', async (kind) => {
     const limits = DATASET_LIMITS as unknown as { maxRows: number }
@@ -450,7 +459,7 @@ describe('buildTikTokReadingSummary', () => {
     try {
       const ids = [ID_A, ID_B, '7300000000000000003']
       const advertisers = Object.fromEntries(ids.map(id => [id, { currency: 'USD' }]))
-      const api = tiktokApi({ advertisers, report: () => reportResponse([row({ spend: 10 })]) })
+      const api = tiktokApi({ advertisers, defaultTimezone: true, report: () => reportResponse([row({ spend: 10 })]) })
       const persistRows = vi.fn()
       const deps = { resolveToken: token(ids), fetchImpl: api.fetchImpl, persistRows }
       if (kind === 'summary') {
@@ -587,6 +596,61 @@ describe('buildTikTokReadingSummary', () => {
 })
 
 describe('buildTikTokTodayReading', () => {
+  it.each(['last7', 'last28'] as const)('uses each account timezone for complete-day %s windows', async (range) => {
+    const api = tiktokApi({ advertisers: { [ID_A]: { timezone: 'Asia/Tokyo' }, [ID_B]: { timezone: 'America/Los_Angeles' } }, report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ range }, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-11-01T06:30:00Z'), persistRows: () => undefined })
+    if ('ok' in result) throw new Error(result.error)
+    const days = range === 'last7' ? 7 : 28
+    const ends = result.accounts.map(account => isTikTokTodayFailure(account) ? null : account.window?.end)
+    expect(ends).toEqual(['2026-10-31', '2026-10-30'])
+    for (const account of result.accounts) {
+      if (isTikTokTodayFailure(account)) throw new Error(account.error)
+      const current = account.window!, previous = account.previousWindow!
+      expect((Date.parse(current.end) - Date.parse(current.start)) / 86_400_000 + 1).toBe(days)
+      expect(previous).toEqual(previousEqualWindow(current))
+    }
+  })
+
+  it('reads a custom range and the equally long prior range without changing the selected account', async () => {
+    const api = tiktokApi({ granted: [ID_A, ID_B], advertisers: { [ID_B]: { timezone: 'America/Los_Angeles' } }, report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ range: 'custom', startDate: '2024-03-09', endDate: '2024-03-12', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-11-01T06:30:00Z'), persistRows: () => undefined })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.range).toBe('custom')
+    expect(result.window).toEqual({ start: '2024-03-09', end: '2024-03-12' })
+    expect(result.previousWindow).toEqual({ start: '2024-03-05', end: '2024-03-08' })
+    expect(api.reports.map(p => [p.get('advertiser_id'), p.get('start_date'), p.get('end_date')])).toEqual([[ID_B, '2024-03-05', '2024-03-12']])
+    expect(result.accounts).toMatchObject([{ advertiserId: ID_B, window: result.window, previousWindow: result.previousWindow }])
+  })
+
+  it('supports a 366-day custom window without silently shortening it', async () => {
+    const api = tiktokApi({ granted: [ID_A], defaultTimezone: true, report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ range: 'custom', startDate: '2024-01-01', endDate: '2024-12-31', advertiserId: ID_A }, { resolveToken: token([]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-11-01T06:30:00Z'), persistRows: () => undefined })
+    if ('ok' in result) throw new Error(result.error)
+    expect(result.previousWindow).toEqual({ start: '2022-12-31', end: '2023-12-31' })
+    expect(api.reports).toHaveLength(25)
+    expect(api.reports[0].get('start_date')).toBe('2022-12-31')
+    expect(api.reports.at(-1)?.get('end_date')).toBe('2024-12-31')
+  })
+
+  it('validates range and calendar dates before credentials or report requests', async () => {
+    const resolveToken = vi.fn(token([ID_A]))
+    for (const input of [
+      { range: '' }, { range: 'last7trailing' }, { range: 'custom' },
+      { range: 'custom', startDate: '2026-02-30', endDate: '2026-03-01' },
+      { range: 'custom', startDate: '2026-03-02', endDate: '2026-03-01' },
+      { range: 'custom', startDate: '2024-01-01', endDate: '2025-01-01' }
+    ]) expect(await buildTikTokTodayReading(input, { resolveToken })).toMatchObject({ ok: false, error: 'invalid-input' })
+    expect(resolveToken).not.toHaveBeenCalled()
+  })
+
+  it('rejects future custom end dates per account without reading that account', async () => {
+    const api = tiktokApi({ advertisers: { [ID_A]: { timezone: 'Asia/Tokyo' }, [ID_B]: { timezone: 'America/Los_Angeles' } }, report: () => reportResponse([]) })
+    const result = await buildTikTokTodayReading({ range: 'custom', startDate: '2026-11-01', endDate: '2026-11-01' }, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-11-01T06:30:00Z'), persistRows: () => undefined })
+    if ('ok' in result) throw new Error(result.error)
+    expect(api.reports.map(item => item.get('advertiser_id'))).toEqual([ID_A])
+    expect(result.accounts[1]).toMatchObject({ advertiserId: ID_B, error: 'invalid-input', detail: 'custom-window-future' })
+  })
+
   it('reads only the requested authorized account without changing the connection selection', async () => {
     const now = Date.parse('2026-11-01T06:30:00Z')
     const api = tiktokApi({ granted: [ID_A, ID_B], advertisers: { [ID_A]: { timezone: 'UTC', currency: 'USD' }, [ID_B]: { timezone: 'America/Los_Angeles', currency: 'USD' } }, report: () => reportResponse([]) })
@@ -600,15 +664,15 @@ describe('buildTikTokTodayReading', () => {
     expect(api.infoCalls).toEqual([[ID_B]])
     expect(api.reports.map(item => [item.get('advertiser_id'), item.get('start_date'), item.get('end_date')])).toEqual([[ID_B, '2026-10-30', '2026-10-31']])
     expect(writtenIds).toEqual([ID_B])
-    expect(progress).toEqual([{ completed: 0, total: 1, succeeded: 0 }, { completed: 1, total: 1, succeeded: 1 }])
+    expect(progress).toMatchObject([{ completed: 0, total: 1, succeeded: 0 }, { completed: 1, total: 1, succeeded: 1, today: { account: { advertiserId: ID_B } } }])
   })
 
-  it('returns the existing complete-day window for a single-account last-seven-days read', async () => {
+  it('ends the last-seven-days window at the account-local yesterday', async () => {
     const now = Date.parse('2026-11-01T06:30:00Z')
     const api = tiktokApi({ granted: [ID_B], advertisers: { [ID_B]: { timezone: 'America/Los_Angeles', currency: 'USD' } }, report: () => reportResponse([]) })
     const result = await buildTikTokTodayReading({ range: 'last7', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: () => now, persistRows: () => undefined })
     if ('ok' in result) throw new Error(result.error)
-    const window = todayWindow('last7', new Date(now))
+    const window = { start: '2026-10-24', end: '2026-10-30' }
     expect(result.window).toEqual(window)
     expect(result.previousWindow).toEqual(previousEqualWindow(window))
     expect(result.accounts).toMatchObject([{ advertiserId: ID_B, window, previousWindow: result.previousWindow }])
@@ -621,7 +685,7 @@ describe('buildTikTokTodayReading', () => {
       const windows = [ID_A, ID_B].map(advertiserId => ({ advertiserId, startDate: '2026-09-06', endDate: '2026-09-19' }))
       const existing = [ID_A, ID_B].map(advertiserId => row({ advertiserId, campaignId: '100', date: '2026-09-15', spend: 10 }))
       expect(mergeReportRowsIntoDataset(existing, undefined, file, windows).ok).toBe(true)
-      const api = tiktokApi({ granted: [ID_A, ID_B], advertisers: { [ID_B]: { currency: 'USD' } }, report: () => reportResponse([row({ date: '2026-09-15', spend: 99 })]) })
+      const api = tiktokApi({ granted: [ID_A, ID_B], advertisers: { [ID_B]: { currency: 'USD', timezone: 'UTC' } }, report: () => reportResponse([row({ date: '2026-09-15', spend: 99 })]) })
       const result = await buildTikTokTodayReading({ range: 'last7', advertiserId: ID_B }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20, persistRows: (rows, details, scopes) => mergeReportRowsIntoDataset(rows, details, file, scopes) })
       if ('ok' in result) throw new Error(result.error)
       expect(result.datasetSync?.ok).toBe(true)
@@ -655,9 +719,9 @@ describe('buildTikTokTodayReading', () => {
   it('cancels a single-account read before writing any data', async () => {
     const controller = new AbortController()
     const persistRows = vi.fn()
-    const api = tiktokApi({ granted: [ID_A], report: () => { controller.abort(); return reportResponse([]) } })
+    const api = tiktokApi({ granted: [ID_A], defaultTimezone: true, report: () => { controller.abort(); return reportResponse([]) } })
     const result = await buildTikTokTodayReading({ advertiserId: ID_A }, { resolveToken: token([ID_B]), fetchImpl: api.fetchImpl, signal: controller.signal, persistRows })
-    expect(result).toEqual({ ok: false, error: 'api', detail: 'reading-cancelled' })
+    expect(result).toMatchObject({ cancelled: true, accounts: [{ advertiserId: ID_A, error: 'api', detail: 'account-batch-not-attempted' }], datasetSync: { ok: false, error: 'reading-cancelled' } })
     expect(persistRows).not.toHaveBeenCalled()
     expect(api.reports).toHaveLength(1)
   })
@@ -696,7 +760,7 @@ describe('buildTikTokTodayReading', () => {
           row({ date: '2026-09-20', campaignName: 'A', spend: 4, impressions: 40, clicks: 2, conversion: 0 }),
           row({ date: '2026-09-20', campaignName: 'B', spend: 30, impressions: 10, clicks: 1, conversion: 0 })
         ]),
-      advertisers: { [ID_A]: { name: 'Main', currency: 'USD' } }
+      advertisers: { [ID_A]: { name: 'Main', currency: 'USD', timezone: 'UTC' } }
     })
     const result = await buildTikTokTodayReading(
       { range: 'last7' },
@@ -725,7 +789,7 @@ describe('buildTikTokTodayReading', () => {
 
   it('keeps a failed advertiser as its own row', async () => {
     const api = tiktokApi({
-      report: (id) => (id === ID_B ? apiError(40001, 'No permission to operate') : reportResponse([row({ date: '2026-09-19' })]))
+      defaultTimezone: true, report: (id) => (id === ID_B ? apiError(40001, 'No permission to operate') : reportResponse([row({ date: '2026-09-19' })]))
     })
     const result = await buildTikTokTodayReading({}, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl, now: SEP_20 })
     if ('ok' in result) throw new Error(result.error)
@@ -734,7 +798,7 @@ describe('buildTikTokTodayReading', () => {
   })
 
   it('fails the whole page when the token is rejected', async () => {
-    const api = tiktokApi({ report: () => apiError(40104, 'Access token is empty') })
+    const api = tiktokApi({ defaultTimezone: true, report: () => apiError(40104, 'Access token is empty') })
     const result = await buildTikTokTodayReading({}, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl })
     expect(result).toMatchObject({ accounts: [{ advertiserId: ID_A, error: 'auth' }, { advertiserId: ID_B, error: 'auth', detail: 'account-batch-not-attempted' }], datasetSync: { ok: false, error: 'no-successful-accounts' } })
     expect(api.reports).toHaveLength(1)
@@ -742,7 +806,7 @@ describe('buildTikTokTodayReading', () => {
 
   it('reads every advertiser in bounded metadata batches', async () => {
     const ids = Array.from({ length: TODAY_ADVERTISER_CAP + 1 }, (_, index) => String(7300000000 + index))
-    const api = tiktokApi({ report: () => reportResponse([]) })
+    const api = tiktokApi({ defaultTimezone: true, report: () => reportResponse([]) })
     const result = await buildTikTokTodayReading({}, { resolveToken: token(ids), fetchImpl: api.fetchImpl })
     if ('ok' in result) throw new Error(result.error)
     expect(api.reports).toHaveLength(ids.length)

@@ -84,6 +84,9 @@ const components = {
     // Rich blocks (mermaid, …) by fence language; unknown → CodeBlock
     const Renderer = raw.trim() ? richRenderers[lang] : undefined
     if (Renderer) return <Renderer raw={raw} />
+    // Model-authored markup is never executed. Keep it available for review
+    // without letting code dominate the conversation's visual result.
+    if (lang.toLowerCase() === 'html') return <details className="rounded-lg border border-line p-3"><summary className="cursor-pointer text-[12px] text-cream-dim">HTML · <span>高级详情 / Advanced details</span></summary><div className="mt-2"><CodeBlock>{children}</CodeBlock></div></details>
     return <CodeBlock>{children}</CodeBlock>
   }
 }

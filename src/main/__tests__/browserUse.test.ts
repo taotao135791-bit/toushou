@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getActiveBrowserPanel, loadBrowserPanelUrl } from '../browserPanel'
+import { listFbReadingAccounts } from '../fbReadingAccounts'
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('../browserPanel', () => ({
@@ -101,6 +102,28 @@ describe('board refresh admission and failures', () => {
     await vi.advanceTimersByTimeAsync(300)
     expect(await retry).toEqual({ ok: false, error: 'page-load-failed' })
     expect(loadBrowserPanelUrl).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses the explicit window for navigation and refuses invalid windows without touching the panel', async () => {
+    prepare()
+    const { alias, act, businessId } = listFbReadingAccounts()[0]
+    const ref = { alias, act, businessId }
+    const window = { start: '2024-02-28', end: '2024-03-01' }
+    const first = refreshBoardFbReading(ref, 'custom', window)
+    expect(refreshBoardFbReading(ref, 'custom', window)).toBe(first)
+    expect(await refreshBoardFbReading(ref, 'custom', { start: '2024-02-29', end: '2024-03-01' })).toEqual({ ok: false, error: 'browser-busy' })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await first).toEqual({ ok: false, error: 'page-load-failed' })
+    const calls = vi.mocked(loadBrowserPanelUrl).mock.calls
+    const target = calls.flat().find(value => typeof value === 'string' && value.startsWith('https://adsmanager.facebook.com/'))
+    expect(target).toBeDefined()
+    const url = new URL(target as string)
+    expect(url.searchParams.get('act')).toBe(ref.act)
+    expect(url.searchParams.get('date')).toBe('2024-02-28_2024-03-02')
+    expect(url.searchParams.get('insights_date')).toBe('2024-02-28_2024-03-02')
+    vi.mocked(loadBrowserPanelUrl).mockClear()
+    expect(await refreshBoardFbReading(ref, 'custom', { start: '2024-02-30', end: '2024-03-01' })).toEqual({ ok: false, error: 'invalid-input' })
+    expect(loadBrowserPanelUrl).not.toHaveBeenCalled()
   })
 
   it('returns a network failure without attempting a report or background retries', async () => {

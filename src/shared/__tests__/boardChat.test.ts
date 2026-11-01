@@ -40,6 +40,25 @@ const datasets: BoardDataset[] = [
 ]
 
 describe('buildBoardChatPrompt', () => {
+  it('includes the named snapshot and its bindings without unrelated dataset schemas', () => {
+    const snapshotBoard: KanbanBoard = {
+      ...board,
+      id: 'a5a5a5a5-1234-4a12-8b12-123456789abc', name: 'PRIVATE_BOARD', description: 'PRIVATE_DESCRIPTION',
+      widgets: [
+        { id: 'snapshot', type: 'reading-snapshot', title: 'PRIVATE_SNAPSHOT_TITLE', layout: { x: 0, y: 0, w: 4, h: 4 }, config: { snapshot: { accounts: [{ accountId: 'PRIVATE_ID', name: 'PRIVATE_ACCOUNT' }] }, includeChart: true } },
+        { id: 'other', type: 'counter', title: 'PRIVATE_OTHER_TITLE', layout: { x: 4, y: 0, w: 3, h: 3 }, config: { source: 'dataset', datasetId: 'PRIVATE_BINDING', metric: 'PRIVATE_METRIC' } }
+      ]
+    }
+    const privateDatasets: BoardDataset[] = [{ ...datasets[0], name: 'PRIVATE_DATASET', columns: [{ name: 'PRIVATE_COLUMN', type: 'text' }] }]
+    for (const language of ['zh', 'en'] as const) {
+      for (const prompt of [buildBoardChatPrompt(snapshotBoard, privateDatasets, language), buildBoardCardsPrompt(language, { board: snapshotBoard, datasets: privateDatasets })]) {
+        for (const text of ['PRIVATE_BOARD', 'PRIVATE_SNAPSHOT_TITLE', 'PRIVATE_OTHER_TITLE', 'PRIVATE_BINDING', 'PRIVATE_METRIC']) expect(prompt).toContain(text)
+        for (const text of ['PRIVATE_DATASET', 'PRIVATE_COLUMN']) expect(prompt).not.toContain(text)
+        expect(prompt).toContain(snapshotBoard.id)
+        expect(prompt).toContain('reading-snapshot')
+      }
+    }
+  })
   it('gives the agent a bounded board/schema summary without note contents or dataset rows', () => {
     const prompt = buildBoardChatPrompt(board, datasets)
     expect(prompt).toContain('Growth review')

@@ -1,15 +1,22 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
+import { canonicalExistingPath } from './canonicalPath'
+import { getChatBoardPreview } from './chatBoardPreview'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
+import { saveReadingSnapshot } from './readingSnapshots'
+import { exportReadingSnapshot } from './readingSnapshotExport'
+import { loadOrCreateHtmlBoard, findHtmlBoardForReading, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards } from './htmlBoards'
+import { getBoardHighlightEvidence, validateBoardHighlights, applyBoardHighlights } from './boardHighlights'
+import { requestHtmlBoardAiEdit, cancelHtmlBoardAiEdit, cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { parseFbReportReference } from '../shared/fbReportReference'
 import { validGoogleReportUrl } from '../shared/googleReport'
 import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
 import { importGoogleReportFile, readGoogleReportReadings } from './googleReportReadings'
 import { announceNamedTask, createSessionNamer } from './sessionNaming'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
-import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
+import { isValidFbReadingAct, isValidFbReadingBusinessId, parseFbCustomWindow } from '../shared/fbReading'
 import {
   captureFbReadingAccountFromPanel,
   discoverFbReadingAccounts,
@@ -81,7 +88,8 @@ import {
   markSessionTitle,
   resumeSession,
   getSubagents,
-  getSubagentMessages
+  getSubagentMessages,
+  getSessionBridgeAccess
 } from './omp'
 import {
   listPackages,
@@ -881,7 +889,7 @@ export function registerIpc() {
   // fallback) and the aggregation happens in Main. Input is bounded strings
   // only; failures return stable reading error codes (shared/readingError).
   const ttReadingRequests = new TikTokReadingRequests()
-  const runTtReading = async <T>(event: IpcMainInvokeEvent, requestId: unknown, run: (deps: { signal?: AbortSignal; onProgress?: (value: { completed: number; total: number; succeeded: number }) => void; onCommitting?: () => void; onDatasetCommitted?: () => void }) => Promise<T>): Promise<T | { ok: false; error: 'invalid-input' }> => {
+  const runTtReading = async <T>(event: IpcMainInvokeEvent, requestId: unknown, run: (deps: { signal?: AbortSignal; onProgress?: (value: { completed: number; total: number; succeeded: number; today?: import('../shared/todayReading').TikTokTodayProgressItem }) => void; onCommitting?: () => void; onDatasetCommitted?: () => void }) => Promise<T>): Promise<T | { ok: false; error: 'invalid-input' }> => {
     const onDestroyed = () => ttReadingRequests.cancelOwner(event.sender.id)
     event.sender.once('destroyed', onDestroyed)
     try {
@@ -902,9 +910,8 @@ export function registerIpc() {
     return runTtReading(event, input.requestId, (deps) => buildTikTokReadingSummary(input, deps))
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_TODAY, (event, raw: unknown) => {
-    const input = (raw ?? {}) as { range?: unknown; advertiserId?: unknown; requestId?: unknown }
-    const range = typeof input.range === 'string' ? input.range.slice(0, 8) : undefined
-    return runTtReading(event, input.requestId, (deps) => buildTikTokTodayReading({ range, ...(input.advertiserId !== undefined ? { advertiserId: input.advertiserId } : {}) }, deps))
+    const input = (raw ?? {}) as { range?: unknown; startDate?: unknown; endDate?: unknown; advertiserId?: unknown; requestId?: unknown }
+    return runTtReading(event, input.requestId, (deps) => buildTikTokTodayReading(input, deps))
   })
   ipcMain.handle(IPC_CHANNELS.TT_READING_ADVERTISERS_LIST, async () => {
     return listTikTokMcpReadingAdvertisers()
@@ -1023,13 +1030,14 @@ export function registerIpc() {
     async (
       _event: IpcMainInvokeEvent,
       grantId: string,
-      overrides?: { modelSelector?: unknown; thinkingLevel?: unknown; skillId?: unknown }
+      overrides?: { modelSelector?: unknown; thinkingLevel?: unknown; skillId?: unknown; permissionMode?: unknown }
     ) => {
       const resolved = requireGrant(grantId)
       if (!resolved) {
         throw new Error('createSession requires a valid WorkspaceGrant id')
       }
       const { realPath } = resolved
+      if (overrides?.permissionMode !== undefined && overrides.permissionMode !== 'readonly') throw new Error('Invalid analysis permission mode')
       // Next-session overrides: validated, spawn-arg scoped, one-shot.
       const modelSelector =
         typeof overrides?.modelSelector === 'string' &&
@@ -1056,6 +1064,7 @@ export function registerIpc() {
       return createSession(realPath, broadcastSessionEvent, {
         ...(modelSelector ? { modelSelector } : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(overrides?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
         ...(skillSystemPrompt ? { skillSystemPrompt } : {})
       })
     }
@@ -2539,8 +2548,41 @@ export function registerIpc() {
   })
   ipcMain.handle(IPC_CHANNELS.FX_RATES_GET, () => getUsdRates())
 
-  ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown) => {
-    return saveBoard(board)
+  ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_SAVE, (_event, input: unknown) => saveReadingSnapshot(input))
+  ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, (_event, input: unknown) => exportReadingSnapshot(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_OPEN, (_event, input: unknown) => loadOrCreateHtmlBoard(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_FIND, (_event, input: unknown) => findHtmlBoardForReading(input))
+  ipcMain.handle(IPC_CHANNELS.BOARD_CHAT_PREVIEW, (_event, input: unknown) => getChatBoardPreview(input, {
+    access: getSessionBridgeAccess,
+    authorized: cwd => {
+      try { const real = canonicalExistingPath(cwd); return grantManager.list().some(grant => grant.realPath === real) }
+      catch { return false }
+    }
+  }))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_SAVE, (_event, input: unknown) => saveHtmlBoard(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_EXPORT, (_event, input: unknown) => exportHtmlBoard(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_CLEANUP, () => pruneOrphanedHtmlBoards())
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_AI_GENERATE, async (event, input: unknown) => {
+    const owner = event.sender.id
+    const cancelOwner = () => cancelOwnerHtmlBoardAiEdits(owner)
+    event.sender.once('destroyed', cancelOwner)
+    try { return await requestHtmlBoardAiEdit(input, { owner }) }
+    finally { event.sender.removeListener('destroyed', cancelOwner) }
+  })
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_AI_CANCEL, (event, requestId: unknown) => cancelHtmlBoardAiEdit(requestId, event.sender.id))
+  ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_EVIDENCE, (_event, input: unknown) => getBoardHighlightEvidence(input))
+  ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_VALIDATE, (_event, input: unknown) => validateBoardHighlights(input))
+  ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_APPLY, (_event, input: unknown) => applyBoardHighlights(input))
+
+  ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown, expectedUpdatedAt: unknown) => {
+    const expected = expectedUpdatedAt === undefined ? null : expectedUpdatedAt
+    if (expected !== null && (typeof expected !== 'number' || !Number.isSafeInteger(expected) || expected < 0)) return { ok: false, error: 'invalid-input' }
+    const result = saveBoard(board, undefined, expected)
+    if (!result.ok) return result
+    const saved = listBoards().find(item => item.id === (board as { id: string }).id)
+    if (!saved) return { ok: false, error: 'board-store-unreadable' }
+    const cleanup = pruneHtmlBoardsForBoard({ boardId: saved.id, retainedWidgetIds: saved.widgets.filter(item => item.type === 'reading-snapshot' || item.type === 'reading-module').map(item => item.id) })
+    return cleanup.ok ? result : { ok: false, error: 'html-cleanup-failed' }
   })
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_REORDER, async (_event, ids: unknown) => {
@@ -2548,7 +2590,10 @@ export function registerIpc() {
   })
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_DELETE, async (_event, id: unknown) => {
-    return deleteBoard(id)
+    const result = deleteBoard(id)
+    if (!result.ok) return result
+    const cleanup = removeHtmlBoardsForBoard(id)
+    return cleanup.ok ? result : { ok: false, error: 'html-cleanup-failed' }
   })
 
   // Chat → board is intentionally a narrow Main-side append, never a
@@ -2601,18 +2646,21 @@ export function registerIpc() {
   ipcMain.handle(
     IPC_CHANNELS.FB_READING_REFRESH,
     async (_event, raw: unknown) => {
-      const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown; range?: unknown }
+      const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown; range?: unknown; startDate?: unknown; endDate?: unknown }
       const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
       const businessId = input.businessId ?? null
-      const range = input.range as FbReadingRange | undefined
+      const range = input.range as FbReadingRange | 'custom' | undefined
       const ref: FbReadingAccountRef | null =
         alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
           ? { alias, act: input.act, businessId }
           : null
-      if (!ref || (range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
+      if (!ref || (range !== 'custom' && range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
         return { ok: false, error: 'invalid-input' }
       }
-      return refreshBoardFbReading(ref, range)
+      if (range !== 'custom' && (input.startDate !== undefined || input.endDate !== undefined)) return { ok: false, error: 'invalid-input' }
+      const window = range === 'custom' ? parseFbCustomWindow(input.startDate, input.endDate) : null
+      if (range === 'custom' && !window) return { ok: false, error: 'invalid-input' }
+      return refreshBoardFbReading(ref, range, window ?? undefined)
     }
   )
 
@@ -2768,7 +2816,7 @@ export function registerIpc() {
     const picked = result.filePaths[0]
     let real: string
     try {
-      real = fs.realpathSync(picked)
+      real = canonicalExistingPath(picked)
     } catch {
       return { ok: false, error: 'outside-workspace' }
     }

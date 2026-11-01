@@ -1,6 +1,7 @@
 import {
   boardReadingRangeDates,
   fbReadingMatchesWindow,
+  parseFbCustomWindow,
   type FbReadingHistoryEntry,
   type FbReadingRange
 } from '@shared/fbReading'
@@ -89,13 +90,15 @@ function delayWithCancel(ms: number, isCurrent: () => boolean): Promise<boolean>
  * date window; anything else is a precise failure (never silent data).
  */
 export async function refreshAccountWithRetry(
-  params: { alias: string; act: string; businessId: string | null; range: FbReadingRange },
+  params: { alias: string; act: string; businessId: string | null; range: FbReadingRange | 'custom'; startDate?: string; endDate?: string },
   options: ReadingRetryOptions
 ): Promise<AccountReadingOutcome> {
   const invoke = options.invoke ?? window.electronAPI.refreshFbReading
+  if (params.range !== 'custom' && !['today', 'yesterday', 'last3', 'last7', 'last30'].includes(params.range)) return { kind: 'failed', error: 'invalid-input' }
   // The batch's window is fixed when the batch starts, so a refresh that
   // crosses midnight returns data for the window the user clicked on.
-  const expectedWindow = boardReadingRangeDates(params.range)
+  const expectedWindow = params.range === 'custom' ? parseFbCustomWindow(params.startDate, params.endDate) : boardReadingRangeDates(params.range)
+  if (!expectedWindow) return { kind: 'failed', error: 'invalid-input' }
   for (let attempt = 1; attempt <= READING_MAX_ATTEMPTS; attempt += 1) {
     if (!options.isCurrent()) return { kind: 'cancelled' }
     options.onProgress?.({ status: attempt === 1 ? 'reading' : 'retrying', attempt })

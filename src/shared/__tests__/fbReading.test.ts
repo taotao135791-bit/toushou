@@ -3,9 +3,11 @@ import type { FbAccountBalance } from '../fbBillingParser'
 import {
   boardReadingRangeDates,
   buildBoardReadingUrl,
+  buildFbReadingUrlForWindow,
   buildFbAccountOverviewUrlForRef,
   fbReadingMatchesWindow,
   parseFbReadingDateRange,
+  parseFbCustomWindow,
   summarizeFbReadings,
   type FbReadingHistoryEntry,
   type FbReadingHistoryRow
@@ -13,6 +15,21 @@ import {
 
 describe('FB reading date window', () => {
   const today = new Date(2026, 8, 17)
+  it('validates an explicit calendar window and pins both URL date parameters and account', () => {
+    const window = parseFbCustomWindow('2024-02-28', '2024-03-01', today)
+    expect(window).toEqual({ start: '2024-02-28', end: '2024-03-01' })
+    const ref = { alias: 'Fixture', act: '73000001', businessId: '73000002' }
+    const url = new URL(buildFbReadingUrlForWindow(ref, window!, today))
+    expect(url.searchParams.get('act')).toBe(ref.act)
+    expect(url.searchParams.get('business_id')).toBe(ref.businessId)
+    expect(url.searchParams.get('date')).toBe('2024-02-28_2024-03-02')
+    expect(url.searchParams.get('insights_date')).toBe('2024-02-28_2024-03-02')
+    for (const [start, end] of [['2024-02-30', '2024-03-01'], ['2024-03-02', '2024-03-01'], ['2024-01-01', '2025-01-01'], ['2026-09-17', '2026-09-18']]) {
+      expect(parseFbCustomWindow(start, end, today)).toBeNull()
+      expect(buildFbReadingUrlForWindow(ref, { start, end }, today)).toBe('')
+    }
+    expect(parseFbCustomWindow('2024-01-01', '2024-12-31', today)).not.toBeNull()
+  })
   const balance = (act: string, amount: number): FbAccountBalance => ({
     accountId: act,
     kind: 'available',

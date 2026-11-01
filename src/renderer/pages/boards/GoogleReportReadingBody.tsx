@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ExternalLink, FileSpreadsheet, RefreshCw } from 'lucide-react'
-import type { BoardWidget } from '@shared/types'
+import type { BoardWidget, KanbanBoard } from '@shared/types'
+import type { ReadingSnapshot } from '@shared/readingSnapshot'
+import { googleReadingSnapshot } from '@shared/googleReadingSnapshot'
+import { SaveReadingBoardDialog } from './SaveReadingBoardDialog'
 import type { GoogleReportImportResult, GoogleReportReadingResult, GoogleReportStoredReading } from '@shared/googleReport'
 import { useT, type I18nKey } from '../../i18n'
 import { googleReportReadingEvidence } from '@shared/readingEvidence'
@@ -23,13 +26,15 @@ const ERROR_KEYS: Record<string, I18nKey> = {
 }
 
 /** Shows only a verified snapshot. Failed reads leave the previous snapshot visible. */
-export function GoogleReportReadingBody({ widget }: { widget: BoardWidget }) {
+export function GoogleReportReadingBody({ widget, onSnapshotSaved }: { widget: BoardWidget; onSnapshotSaved?: (board: KanbanBoard, openAi?: boolean, widgetId?: string) => void }) {
   const t = useT()
+  const language = useAppStore(state => state.language) === 'en' ? 'en' : 'zh'
   const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
   const reportUrl = typeof widget.config.reportUrl === 'string' ? widget.config.reportUrl : ''
   const [reading, setReading] = useState<GoogleReportStoredReading | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [snapshotToSave, setSnapshotToSave] = useState<ReadingSnapshot | null>(null)
   const sourceChanged = !!reading?.sourceUrl && reading.sourceUrl !== reportUrl
   const inFlight = useRef(false)
   const generation = useRef(0)
@@ -97,12 +102,15 @@ export function GoogleReportReadingBody({ widget }: { widget: BoardWidget }) {
         <button type="button" className={actionClass} disabled={busy} onClick={() => void run(true)}>
           <FileSpreadsheet size={12} />{t('boards.fbReport.import')}
         </button>
+        <button type="button" className={actionClass} disabled={busy || !reading || !!error || sourceChanged || !onSnapshotSaved} onClick={() => { if (reading) { const snapshot = googleReadingSnapshot(reading, Date.now()); if (snapshot) setSnapshotToSave(snapshot); else setError('snapshot-invalid') } }}>
+          {language === 'zh' ? '保存为新看板' : 'Save as a new board'}
+        </button>
       </div>
       {!reportUrl && <p className="text-cream-faint">{t('boards.googleReport.needUrl')}</p>}
       {sourceChanged && <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{t('boards.googleReport.sourceChanged')}</p>}
       {error && (
         <div role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-red-700 dark:bg-red-950/30 dark:text-red-300">
-          <p>{t(ERROR_KEYS[error] ?? 'boards.googleReport.readFailed')}</p>
+          <p>{error === 'snapshot-invalid' ? (language === 'zh' ? '当前读数不满足保存条件，请核对报告日期和指标后重试。原读数已保留。' : 'These readings cannot be saved. Check report dates and metrics, then retry. The original readings were retained.') : t(ERROR_KEYS[error] ?? 'boards.googleReport.readFailed')}</p>
           {reading && <p>{t('boards.googleReport.previousKept')}</p>}
         </div>
       )}
@@ -134,6 +142,7 @@ export function GoogleReportReadingBody({ widget }: { widget: BoardWidget }) {
           {reading.warnings.some((warning) => warning !== 'report-scope-only') && <p className="text-amber-700 dark:text-amber-300">{t('boards.googleReport.warnings')}</p>}
         </>
       ) : !busy && <p className="m-auto px-4 text-center text-cream-faint">{t('boards.googleReport.empty')}</p>}
+      {snapshotToSave && <SaveReadingBoardDialog snapshot={snapshotToSave} language={language} onClose={() => setSnapshotToSave(null)} onSaved={(board, openAi, widgetId) => { setSnapshotToSave(null); onSnapshotSaved?.(board, openAi, widgetId) }} />}
     </div>
   )
 }

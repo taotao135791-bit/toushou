@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -14,6 +14,8 @@ vi.mock('electron', () => ({
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from '../boards'
 import { BOARD_LIMITS } from '../../shared/boards'
 import { KanbanBoard } from '../../shared/types'
+import { saveReadingSnapshot } from '../readingSnapshots'
+import { applyBoardHighlights, getBoardHighlightEvidence } from '../boardHighlights'
 
 let dir: string
 let file: string
@@ -178,12 +180,150 @@ describe('saveBoard', () => {
     expect(listBoards(file)).toHaveLength(BOARD_LIMITS.maxBoards)
   })
 
-  it('writes to userData/kanban-boards.json by default', () => {
+  it('writes a versioned isolated store by default', () => {
     expect(saveBoard(makeBoard('default-file'))).toEqual({ ok: true })
-    const target = path.join(userDataDir, 'kanban-boards.json')
+    const target = path.join(userDataDir, 'kanban-boards-v2.json')
     expect(existsSync(target)).toBe(true)
-    expect(JSON.parse(readFileSync(target, 'utf-8'))[0].id).toBe('default-file')
+    expect(JSON.parse(readFileSync(target, 'utf-8'))).toMatchObject({ schemaVersion: 2, boards: [{ id: 'default-file' }] })
     expect(listBoards()).toHaveLength(1)
+  })
+
+  it('copies valid legacy bytes privately and never syncs new changes back', () => {
+    const original = `  ${JSON.stringify([makeBoard('old')])}\n`
+    writeFileSync(file, original)
+    expect(listBoards()).toEqual([makeBoard('old')])
+    const isolated = path.join(dir, 'kanban-boards-v2.json')
+    const backup = path.join(dir, 'kanban-boards-pre-v2-backup.json')
+    expect(readFileSync(isolated, 'utf-8')).toBe(original)
+    expect(readFileSync(backup, 'utf-8')).toBe(original)
+    if (process.platform !== 'win32') expect(statSync(backup).mode & 0o777).toBe(0o600)
+    expect(saveBoard(makeBoard('new'))).toEqual({ ok: true })
+    expect(readFileSync(file, 'utf-8')).toBe(original)
+    writeFileSync(file, JSON.stringify([makeBoard('downgraded')]))
+    expect(listBoards().map(board => board.id)).toEqual(['old', 'new'])
+    expect(readFileSync(backup, 'utf-8')).toBe(original)
+  })
+
+  it('migrates old columns with deterministic IDs and preserves notes as separate widgets', () => {
+    const legacy = [{ id: 'v1', name: 'Old', template: 'task', description: 'desc', createdAt: 1, updatedAt: 2,
+      columns: [{ title: 'Todo', cards: [{ title: 'Do the work', note: 'Do not lose this', createdAt: 1 }] }] }]
+    const original = JSON.stringify(legacy)
+    writeFileSync(file, original)
+    const first = listBoards()[0]
+    expect(first.description).toBe('desc')
+    expect(first.widgets).toHaveLength(2)
+    expect(first.widgets[0].config.items).toMatchObject([{ text: 'Do the work' }])
+    expect(first.widgets[1]).toMatchObject({ type: 'note', config: { text: 'Do not lose this' } })
+    expect(listBoards()[0]).toEqual(first)
+    expect(saveBoard(first)).toEqual({ ok: true })
+    expect(readFileSync(file, 'utf-8')).toBe(original)
+    expect(listBoards()[0]).toEqual({ ...first, updatedAt: first.updatedAt + 1 })
+  })
+
+  it.each([
+    '{broken',
+    JSON.stringify([makeBoard('good'), { id: 'invalid' }]),
+    JSON.stringify([{ ...makeBoard('unknown-board-field'), future: true }]),
+    JSON.stringify([{ ...makeBoard('unknown-widget-field'), widgets: [{ ...makeBoard('x').widgets[0], future: true }] }]),
+    JSON.stringify([{ ...makeBoard('unknown-config-field'), widgets: [{ ...makeBoard('x').widgets[0], config: { items: [], future: true } }] }]),
+    JSON.stringify([makeBoard('duplicate'), makeBoard('duplicate')]),
+    JSON.stringify([{ id: 'v1', name: 'Old', createdAt: 1, updatedAt: 2, columns: [{ title: 'Todo', cards: [{ title: 'Task', future: true }] }] }])
+  ])('does not copy or overwrite legacy data with malformed or unknown fields', (original) => {
+    writeFileSync(file, original)
+    expect(() => listBoards()).toThrow()
+    expect(saveBoard(makeBoard('new'))).toEqual({ ok: false, error: 'board-store-unreadable' })
+    expect(readFileSync(file, 'utf-8')).toBe(original)
+    expect(existsSync(path.join(dir, 'kanban-boards-v2.json'))).toBe(false)
+  })
+
+  it('refuses to read or overwrite future store versions', () => {
+    const isolated = path.join(dir, 'kanban-boards-v2.json')
+    const future = JSON.stringify({ schemaVersion: 3, boards: [makeBoard('future')] })
+    writeFileSync(isolated, future)
+    expect(() => listBoards()).toThrow('Unsupported or invalid boards file version')
+    expect(saveBoard(makeBoard('new'))).toEqual({ ok: false, error: 'board-store-unreadable' })
+    expect(readFileSync(isolated, 'utf-8')).toBe(future)
+  })
+
+  it('rejects new unknown board data instead of reporting a lossy save', () => {
+    const board = { ...makeBoard('new'), future: { important: true } }
+    expect(saveBoard(board)).toEqual({ ok: false, error: 'invalid-board' })
+    expect(existsSync(path.join(dir, 'kanban-boards-v2.json'))).toBe(false)
+  })
+
+  it('allows clearing optional fields represented by undefined', () => {
+    const board = { ...makeBoard('clear'), description: 'old description' }
+    expect(saveBoard(board)).toEqual({ ok: true })
+    const next = { ...board, description: undefined, updatedAt: board.updatedAt + 1 }
+    expect(saveBoard(next, undefined, board.updatedAt)).toEqual({ ok: true })
+    expect(listBoards()[0].description).toBeUndefined()
+  })
+
+  it('rejects stale renderer saves after applying a real evidence-linked highlight', () => {
+    const snapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'test', window: { start: '2026-01-01', end: '2026-01-02' }, capturedAt: 100,
+      accounts: [{ platform: 'tiktok', accountId: '12345', name: 'Fixture', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-02' }, previousWindow: null, sourceAt: 90, timezone: null, currency: 'USD', spend: 42, previousSpend: null, impressions: 10, clicks: 2, conversions: 1 }] }
+    const saved = saveReadingSnapshot({ presentation: 'report', name: 'Example', snapshot, includeChart: false }, file)
+    if (!saved.ok) throw new Error(saved.error)
+    const old = saved.board
+    const widgetId = old.widgets[0].id
+    const deps = { list: () => listBoards(file), save: (board: KanbanBoard) => saveBoard(board, file) }
+    const result = getBoardHighlightEvidence({ boardId: old.id, widgetId }, deps)
+    if (!result.ok) throw new Error(result.error)
+    const proposal = { version: 1, boardId: old.id, widgetId, revision: result.evidence.revision,
+      highlights: [{ text: 'Inspect spending', evidence: [{ accountIndex: 1, metric: 'spend', value: 42 }] }] }
+    expect(applyBoardHighlights({ raw: JSON.stringify(proposal) }, deps).ok).toBe(true)
+    const after = listBoards(file)[0]
+    expect(after.updatedAt).toBeGreaterThan(old.updatedAt)
+    expect(after.widgets).toHaveLength(2)
+    const stale = { ...old, name: 'Stale edit', updatedAt: old.updatedAt + 1 }
+    expect(saveBoard(stale, file, old.updatedAt)).toEqual({ ok: false, error: 'conflict' })
+    expect(listBoards(file)[0]).toEqual(after)
+    const fresh = { ...after, name: 'Fresh edit', updatedAt: after.updatedAt + 1 }
+    expect(saveBoard(fresh, file, after.updatedAt)).toEqual({ ok: true })
+    expect(listBoards(file)[0]).toEqual(fresh)
+  })
+
+  it('checks create-only, exact prior time, and monotonic renderer timestamps', () => {
+    const board = makeBoard('cas')
+    expect(saveBoard(board, file, null)).toEqual({ ok: true })
+    expect(saveBoard(board, file, null)).toEqual({ ok: false, error: 'conflict' })
+    expect(saveBoard(board, file, board.updatedAt)).toEqual({ ok: false, error: 'conflict' })
+    expect(saveBoard({ ...board, updatedAt: board.updatedAt + 1 }, file, board.updatedAt)).toEqual({ ok: true })
+    expect(saveBoard({ ...board, updatedAt: board.updatedAt + 2 }, file, board.updatedAt)).toEqual({ ok: false, error: 'conflict' })
+    expect(saveBoard(makeBoard('missing'), file, board.updatedAt)).toEqual({ ok: false, error: 'conflict' })
+    expect(saveBoard({ ...board, updatedAt: Number.MAX_VALUE }, file)).toEqual({ ok: false, error: 'invalid-board' })
+  })
+
+  it('advances timestamp for internal updates even when the clock does not advance', () => {
+    const board = makeBoard('internal')
+    expect(saveBoard(board, file)).toEqual({ ok: true })
+    expect(saveBoard({ ...board, name: 'Changed' }, file)).toEqual({ ok: true })
+    expect(listBoards(file)[0].updatedAt).toBe(board.updatedAt + 1)
+  })
+
+  it('advances timestamps for both Main-owned append paths when the clock goes backward', () => {
+    const board = makeBoard('internal-append')
+    expect(saveBoard(board, file)).toEqual({ ok: true })
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1000)
+    try {
+      const note = appendBoardNote({ boardId: board.id, title: 'Summary', text: 'A note' }, file)
+      expect(note.ok).toBe(true)
+      expect(listBoards(file)[0].updatedAt).toBe(2001)
+      const proposal = JSON.stringify({ version: 1, cards: [{ type: 'note', title: 'Card', text: 'Result' }] })
+      expect(applyBoardCards({ boardId: board.id, raw: proposal }, { file }).ok).toBe(true)
+      expect(listBoards(file)[0].updatedAt).toBe(2002)
+    } finally { clock.mockRestore() }
+  })
+
+  it('does not replace a conflicting existing migration backup', () => {
+    const original = JSON.stringify([makeBoard('old')])
+    const backup = path.join(dir, 'kanban-boards-pre-v2-backup.json')
+    writeFileSync(file, original)
+    writeFileSync(backup, 'older-backup')
+    expect(() => listBoards()).toThrow('backup differs')
+    expect(readFileSync(backup, 'utf-8')).toBe('older-backup')
+    expect(readFileSync(file, 'utf-8')).toBe(original)
+    expect(existsSync(path.join(dir, 'kanban-boards-v2.json'))).toBe(false)
   })
 })
 

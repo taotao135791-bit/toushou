@@ -6,11 +6,12 @@ import { hashedSessionDirCandidatesFor, sessionDirCandidatesFor } from '../sessi
 import { homedir, tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
+import { realpathSync } from 'node:fs'
 
 describe('hashed session dir layout (OMP 17.2+)', () => {
   it('names home projects home-<basename>-<sha256(realpath)>', () => {
     // A path inside $HOME that does not exist: realpath falls back to resolve.
-    const project = path.join(homedir(), 'does-not-exist-toushou')
+    const project = path.join(realpathSync(homedir()), 'does-not-exist-toushou')
     const name = path.basename(hashedSessionDirCandidatesFor(project, '/mock/agent')[0])
     expect(name.startsWith('home-does-not-exist-toushou-')).toBe(true)
     const expectedHash = createHash('sha256').update(project).digest('hex')
@@ -30,7 +31,7 @@ describe('hashed session dir layout (OMP 17.2+)', () => {
   // `home-project-<sha256(realpath)>`. Without the sanitized candidate the GUI
   // cannot list, resume or authorize deletes for those workspaces at all.
   it('mirrors the runtime label sanitization for non-ASCII project names', () => {
-    const project = path.join(homedir(), '投手工作区-测试')
+    const project = path.join(realpathSync(homedir()), '投手工作区-测试')
     const hash = createHash('sha256').update(project).digest('hex')
     const candidates = hashedSessionDirCandidatesFor(project, '/mock/agent')
     expect(candidates).toHaveLength(2)
@@ -41,7 +42,7 @@ describe('hashed session dir layout (OMP 17.2+)', () => {
   })
 
   it('falls back to the project label when sanitization empties the basename', () => {
-    const project = path.join(homedir(), '投手工作区')
+    const project = path.join(realpathSync(homedir()), '投手工作区')
     const hash = createHash('sha256').update(project).digest('hex')
     const candidates = hashedSessionDirCandidatesFor(project, '/mock/agent')
     expect(candidates).toHaveLength(2)

@@ -10,6 +10,7 @@ export type ReadingNextStep =
   | 'edit-module'
   | 'pick-account'
   | 'open-browser'
+  | 'pick-date'
 
 export interface ReadingNotice {
   message: string
@@ -20,6 +21,7 @@ type Translate = (key: I18nKey, vars?: Record<string, string | number>) => strin
 
 const STEP_LABEL: Record<ReadingNextStep, I18nKey> = {
   retry: 'boards.reading.action.retry',
+  'pick-date': 'boards.today.chooseDates',
   connect: 'boards.tt.goConnect',
   reconnect: 'boards.reading.action.reconnect',
   'pick-advertiser': 'boards.reading.action.pickAdvertiser',
@@ -30,6 +32,9 @@ const STEP_LABEL: Record<ReadingNextStep, I18nKey> = {
 
 /** TikTok reading codes from Main, plus the renderer's own failed invoke. */
 export function tiktokReadingNotice(code: ReadingErrorCode | 'invoke-failed', t: Translate, detail?: string | null): ReadingNotice {
+  if (detail === 'custom-window-future') return { message: t('boards.today.futureDate'), step: 'pick-date' }
+  if (detail === 'custom-window-invalid') return { message: t('boards.today.invalidDates'), step: 'pick-date' }
+  if (detail === 'reading-window-expired') return { message: t('boards.today.expiredDates'), step: 'retry' }
   if (detail === 'report-row-limit') return { message: t('boards.tt.reportRowLimit'), step: 'pick-advertiser' }
   if (detail === 'tiktok-advertiser-selection-unavailable') return { message: t('boards.tt.selectionUnavailable'), step: 'pick-advertiser' }
   if (detail === 'reading-cancelled') return { message: t('boards.tt.cancelled'), step: 'retry' }

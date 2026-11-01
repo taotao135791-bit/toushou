@@ -4,6 +4,7 @@ import { ToolGroup, TurnChangesRow } from './TurnRow'
 import { MessageLike, useAppStore } from '../store'
 import { turnActivityFor, turnSummaryFor } from '../lib/execution'
 import { CheckpointInfo } from '@shared/types'
+import BoardChatPreview, { boardPreviewReference } from './BoardChatPreview'
 
 interface MessageListProps {
   messages: MessageLike[]
@@ -116,6 +117,10 @@ function MessageList({ messages, sessionId = null, onRetry }: MessageListProps) 
             activity={streaming && isLastRun && inCurrentTurn ? activity : undefined}
             summary={!streaming && isTurnsLastGroup ? summary : undefined}
           />
+          {sessionId && run.map(item => {
+            const ref = item.toolCall && boardPreviewReference(item.toolCall)
+            return ref ? <BoardChatPreview key={`${sessionId}-${item.id}-${ref.boardId}-${ref.widgetId}`} sessionId={sessionId} {...ref} /> : null
+          })}
         </div>
       )
       prev = messages[j - 1]

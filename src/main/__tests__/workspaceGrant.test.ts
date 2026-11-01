@@ -59,6 +59,29 @@ describe('WorkspaceGrantManager', () => {
     expect(g2?.source).toBe('recent-project')
   })
 
+  it('uses one exact identity for native and legacy path spellings', async () => {
+    const dir = path.join(base, 'workspace-alias')
+    fs.mkdirSync(dir)
+    const native = fs.realpathSync.native(dir)
+    const legacy = fs.realpathSync(dir)
+    const guard = new FsGuard()
+    const grants = new WorkspaceGrantManager({ fsGuard: guard })
+    const first = await grants.createGrant(legacy, 'dialog')
+    const second = await grants.createGrant(native, 'dialog')
+    expect(first?.realPath).toBe(native)
+    expect(second?.realPath).toBe(native)
+    expect(second?.id).toBe(first?.id)
+    const registry = new RecentWorkspaceRegistry(grants, { readPaths: () => [legacy], writePaths: () => {} })
+    const [recent] = await registry.list()
+    const activated = await registry.activate(recent.id)
+    expect(recent.displayPath).toBe(native)
+    expect(activated?.realPath).toBe(recent.displayPath)
+    fs.writeFileSync(path.join(dir, 'synthetic.txt'), 'fixture')
+    expect(guard.isAllowed(path.join(legacy, 'synthetic.txt'))).toBe(true)
+    expect(guard.isAllowed(path.join(native, 'synthetic.txt'))).toBe(true)
+    expect(guard.isAllowed(path.join(base, 'outside.txt'))).toBe(false)
+  })
+
   it('registers the real path with FsGuard', async () => {
     const dir = path.join(base, 'workspace')
     const real = path.join(base, 'real')
@@ -95,6 +118,9 @@ describe('WorkspaceGrantManager', () => {
     const grant = await registry.activate(descriptor.id)
     expect(grant).not.toBeNull()
     expect(grant?.source).toBe('recent-project')
+    // The renderer compares these identities exactly before restoring history.
+    // Filesystem-equivalent short/long paths are insufficient here.
+    expect(grant?.realPath).toBe(descriptor.displayPath)
     expectSamePath(grant?.realPath, fs.realpathSync(dir))
     await expect(registry.activate(dir)).resolves.toBeNull()
   })

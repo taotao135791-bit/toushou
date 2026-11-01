@@ -33,6 +33,7 @@ import { useT, modShortcut } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
 import { cleanSessionName } from '@shared/promptTitle'
 import { useModalBoundary } from '../lib/modalBoundary'
+import { finishHistoryResume, historyResumeGrant, openGlobalHistory } from '../lib/historyResume'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useFlip } from '../lib/useFlip'
 import { runLanguageTransition, runThemeTransition } from '../lib/themeTransition'
@@ -127,6 +128,8 @@ export default function Sidebar() {
   const [renameDraft, setRenameDraft] = useState('')
   const [projectsExpanded, setProjectsExpanded] = useState(false)
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null)
+  const resumingHistoryRef = useRef(false)
+  const resumingGlobalRef = useRef(false)
   const [resumingGlobalUuid, setResumingGlobalUuid] = useState<string | null>(null)
   const [removeRecentConfirm, setRemoveRecentConfirm] = useState<string | null>(null)
   const removeRecentTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -387,11 +390,17 @@ export default function Sidebar() {
     else handleArchiveSession(id, true)
   }
 
-  const handleResumeHistory = async (info: HistorySessionDescriptor) => {
+  const handleResumeHistory = async (info: HistorySessionDescriptor, expectedWorkspace?: string): Promise<boolean> => {
     // While the list is reloading for a new workspace its entries may still
     // belong to the previous project — resuming one would use the new grant.
-    if (resumingHistoryId || historyLoading || !currentWorkspace) return
-    const grant = currentWorkspace
+    if (resumingHistoryRef.current) { showNotice('history.loading'); return false }
+    const access = historyResumeGrant(useAppStore.getState(), info, expectedWorkspace)
+    if (!access.ok) {
+      showNotice(access.error === 'loading' ? 'history.loading' : access.error === 'project-not-added' ? 'sidebar.projectNotAdded' : 'history.restoreFailed')
+      return false
+    }
+    const grant = access.grant
+    resumingHistoryRef.current = true
     setResumingHistoryId(info.id)
     setRestoreFailedHistoryId(null)
     try {
@@ -402,16 +411,16 @@ export default function Sidebar() {
         // chat that reads as data loss.
         setRestoreFailedHistoryId(info.id)
         showNotice('history.transcriptUnavailable')
-        return
+        return false
       }
       if (!result) {
         setRestoreFailedHistoryId(info.id)
-        console.error('Failed to resume history session:', info.id)
+        showNotice('history.restoreFailed')
         // A dead row (file rewritten in place or removed) must not linger as
         // an unresumable, undeletable entry — rescan so it disappears.
-        void loadHistorySessions(currentWorkspace?.id ?? null)
+        void loadHistorySessions(grant.id)
         void loadAllHistorySessions()
-        return
+        return false
       }
       const { session, messages: restored, historicalAgents } = result
       // The main process titles a resumed session after the project dir;
@@ -423,17 +432,25 @@ export default function Sidebar() {
           : session.title
       // Opening is not interacting: the resumed row keeps the ORIGINAL
       // conversation's recency until the user actually sends something.
-      addSession({ ...session, title, lastActivityAt: info.timestamp })
-      setMessages(session.id, restored)
-      // A resumed session is now represented by its live row. Its old opaque
-      // history capability must not leave a duplicate historical row behind.
-      removeHistorySession(info.id)
-      // Fold durable historical agents into the projection — live roster is
-      // empty for these. Unknown stays unknown until durable data proves more.
-      useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
-      setCurrentSessionId(session.id)
-      navigate('/')
+      const selected = finishHistoryResume(grant, {
+        save: () => {
+          addSession({ ...session, title, lastActivityAt: info.timestamp }, false)
+          setMessages(session.id, restored)
+          // The live row replaces the old opaque history capability.
+          removeHistorySession(info.id)
+          useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
+        },
+        currentWorkspace: () => useAppStore.getState().currentWorkspace,
+        select: () => { setCurrentSessionId(session.id); navigate('/') }
+      })
+      if (!selected) showNotice('history.restoredInOtherProject')
+      return selected
+    } catch {
+      setRestoreFailedHistoryId(info.id)
+      showNotice('history.restoreFailed')
+      return false
     } finally {
+      resumingHistoryRef.current = false
       setResumingHistoryId(null)
     }
   }
@@ -482,52 +499,20 @@ export default function Sidebar() {
    * then resume. Everything else asks the user to add the folder first.
    */
   const handleOpenGlobal = async (row: (typeof globalHistory)[number]) => {
-    if (resumingHistoryId || historyLoading) return
-    const state = useAppStore.getState()
-    const resumeByUuid = async (): Promise<boolean> => {
-      // Re-read the store AFTER the (possible) workspace switch above — the
-      // captured `state` names the PREVIOUS workspace and would load/resume
-      // against the wrong grant, racing the Sidebar reload effect.
-      const fresh = useAppStore.getState()
-      await loadHistorySessions(fresh.currentWorkspace?.id ?? null)
-      const match = useAppStore
-        .getState()
-        .sessionRecords.find((r) => !r.isLive && r.history?.uuid === row.uuid)
-      if (!match?.history) return false
-      await handleResumeHistory(match.history)
-      return true
-    }
-    // Track which uuid is resuming so only that row greys (see renderGlobalRow).
-    const scopedResume = async (): Promise<boolean> => {
-      setResumingGlobalUuid(row.uuid)
-      try {
-        return await resumeByUuid()
-      } finally {
-        setResumingGlobalUuid(null)
-      }
-    }
-
-    if (state.currentWorkspace && row.cwd === state.currentWorkspace.realPath) {
-      if (await scopedResume()) return
-      showNotice('history.restoreFailed')
-      return
-    }
-
-    const target = state.recentWorkspaces.find(
-      (workspace) => basename(workspace.displayPath) === basename(row.cwd)
-    )
-    if (!target) {
-      showNotice('sidebar.projectNotAdded')
-      return
-    }
-    await activateRecentWorkspace(target.id)
-    const activated = useAppStore.getState().currentWorkspace
-    if (!activated || activated.realPath !== row.cwd) {
-      showNotice('sidebar.projectNotAdded')
-      return
-    }
-    if (await scopedResume()) return
-    showNotice('sidebar.projectSwitched')
+    if (resumingGlobalRef.current || resumingHistoryRef.current) { showNotice('history.loading'); return }
+    resumingGlobalRef.current = true
+    setResumingGlobalUuid(row.uuid)
+    try {
+      const result = await openGlobalHistory(row, {
+        getState: useAppStore.getState,
+        activateWorkspace: activateRecentWorkspace,
+        loadHistory: loadHistorySessions,
+        resume: handleResumeHistory
+      })
+      if (result === 'loading') showNotice('history.loading')
+      else if (result === 'project-not-added') showNotice('sidebar.projectNotAdded')
+      else if (result === 'history-unavailable') showNotice('history.restoreFailed')
+    } finally { resumingGlobalRef.current = false; setResumingGlobalUuid(null) }
   }
 
   // Modal delete confirmation (same centered-dialog pattern as rename): the

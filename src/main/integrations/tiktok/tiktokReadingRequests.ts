@@ -1,8 +1,11 @@
+import type { TikTokTodayProgressItem } from '../../../shared/todayReading'
+
 export interface TikTokReadingProgress {
   requestId: string
   completed: number
   total: number
   succeeded: number
+  today?: TikTokTodayProgressItem
 }
 interface ReadingDeps {
   signal?: AbortSignal
@@ -25,7 +28,7 @@ export class TikTokReadingRequests {
     try {
       return await work({ signal: controller.signal, onCommitting: () => { state.committing = true }, onProgress: (value) => {
         if (controller.signal.aborted) return
-        try { emit({ requestId: id, completed: value.completed, total: value.total, succeeded: value.succeeded }) } catch { /* closed renderer */ }
+        try { emit({ requestId: id, completed: value.completed, total: value.total, succeeded: value.succeeded, ...(value.today ? { today: value.today } : {}) }) } catch { /* closed renderer */ }
       } })
     } finally { this.active.delete(key) }
   }

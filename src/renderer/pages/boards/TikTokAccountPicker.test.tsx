@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { TikTokAccountOptions, TikTokAccountPicker, discoverPickerAccounts, filterPickerAccounts, parsePickerAccount, type TikTokAccountPickerLabels } from './TikTokAccountPicker'
+import { TikTokAccountOptions, TikTokAccountPicker, discoverPickerAccounts, filterPickerAccounts, parsePickerAccount, stepActiveAccountIndex, type TikTokAccountPickerLabels } from './TikTokAccountPicker'
 
 const labels: TikTokAccountPickerLabels = {
   title: 'Choose a scope', description: 'Choose one account or the connection scope.',
@@ -43,6 +43,18 @@ describe('TikTok account picker', () => {
   it('accepts a single numeric string and rejects malformed or multiple IDs', () => {
     expect(parsePickerAccount(' 7300001 ')).toBe('7300001')
     for (const input of ['', '0', '01', '7300001,7300002', '7300001\n7300002', '9'.repeat(26), '123x']) expect(parsePickerAccount(input)).toBeNull()
+  })
+  it('supports arrow selection without making every account a tab stop', () => {
+    expect(stepActiveAccountIndex(-1, 2, 1)).toBe(0)
+    expect(stepActiveAccountIndex(0, 2, 1)).toBe(1)
+    expect(stepActiveAccountIndex(1, 2, 1)).toBe(0)
+    expect(stepActiveAccountIndex(-1, 2, -1)).toBe(1)
+    expect(stepActiveAccountIndex(0, 0, 1)).toBe(-1)
+    const html = renderToStaticMarkup(createElement(TikTokAccountOptions, { accounts: [{ advertiserId: '101', name: 'Long account name' }], selectedId: null, busy: false, onSelect: () => {}, activeIndex: 0 }))
+    expect(html).toContain('role="listbox"')
+    expect(html).toContain('role="option"')
+    expect(html).toContain('tabindex="-1"')
+    expect(html).toContain('title="Long account name"')
   })
   it('renders distinct explicit actions without triggering discovery or either reading', () => {
     const discover = vi.fn(async () => ({ selected: [], granted: ['101'] }))

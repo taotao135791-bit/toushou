@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type SetStateAction } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout'
 import {
   Activity,
@@ -79,6 +79,7 @@ import { WidgetBody } from './boards/WidgetBody'
 import { reloadLatestDataset, type DatasetReloadState } from '../lib/latestDatasetReload'
 import { combineTikTokScopes, nextTikTokScopeExpiry, tiktokScopeMatchesDataset, type VerifiedTikTokScope } from '../lib/tiktokDatasetScope'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
+import { resizeWidgetLayout, resolveResizeStop, shouldRevealMovedWidget } from './boards/widgetSizing'
 import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
 import { TodayReading } from './boards/TodayReading'
@@ -242,16 +243,29 @@ function ToolButton({
 export default function BoardsPage() {
   const t = useT()
   const navigate = useNavigate()
+  const location = useLocation()
   const language = useAppStore((state) => state.language)
   const inChatView = useAppStore((state) => state.workspacePanel) === null
   const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
-  const [boards, setBoards] = useState<KanbanBoard[] | null>(null)
+  const [boards, setBoardsState] = useState<KanbanBoard[] | null>(null)
+  const boardsRef = useRef<KanbanBoard[] | null>(null)
+  // Advance the local base immediately, including two edits in one event batch.
+  const setBoards = (update: SetStateAction<KanbanBoard[] | null>) => {
+    const next = typeof update === 'function' ? update(boardsRef.current) : update
+    boardsRef.current = next
+    setBoardsState(next)
+  }
   const [boardsLoadFailed, setBoardsLoadFailed] = useState(false)
   const [boardsLoadGeneration, setBoardsLoadGeneration] = useState(0)
+  const [htmlCleanupFailed, setHtmlCleanupFailed] = useState(false)
   const [currentId, setCurrentId] = useState<string | null>(null)
+  const [autoEditWidgetId, setAutoEditWidgetId] = useState<string | null>(null)
   // Drag-to-reorder board tabs: the id rides the DOM event (no re-render churn).
   const dragBoardId = useRef<string | null>(null)
   const [surface, setSurface] = useState<'today' | 'board'>('today')
+  const activeView = useRef<{ boardId: string | null; surface: 'today' | 'board' }>({ boardId: currentId, surface })
+  activeView.current = { boardId: currentId, surface }
+  const lastResize = useRef<{ id: string; width: number; height: number } | null>(null)
   const [creating, setCreating] = useState(false)
   const [newBoardName, setNewBoardName] = useState('')
   const [createMenuOpen, setCreateMenuOpen] = useState(false)
@@ -306,8 +320,8 @@ export default function BoardsPage() {
   const [designOpen, setDesignOpen] = useState(false)
   const boardAreaRef = useRef<HTMLDivElement>(null)
   const boardScrollRef = useRef<HTMLDivElement>(null)
-  const revealTargetRef = useRef<{ boardId: string; widgetId: string } | null>(null)
-  const [revealTarget, setRevealTarget] = useState<{ boardId: string; widgetId: string } | null>(null)
+  const revealTargetRef = useRef<{ boardId: string; widgetId: string; index?: number } | null>(null)
+  const [revealTarget, setRevealTarget] = useState<{ boardId: string; widgetId: string; index?: number } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveFailedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileDragDepth = useRef(0)
@@ -315,6 +329,55 @@ export default function BoardsPage() {
   const boardSaveGeneration = useRef(new Map<string, number>())
 
   const current = boards?.find((b) => b.id === currentId) ?? null
+  const retryHtmlCleanup = async () => {
+    try { const result = await window.electronAPI.cleanupOrphanedHtmlBoards(); setHtmlCleanupFailed(!result.ok); if (result.ok && htmlCleanupFailed) setBoardsLoadGeneration(generation => generation + 1) }
+    catch { setHtmlCleanupFailed(true) }
+  }
+  useEffect(() => {
+    void retryHtmlCleanup()
+    const stopResize = () => document.documentElement.classList.remove('board-grid-resizing')
+    window.addEventListener('mouseup', stopResize)
+    window.addEventListener('blur', stopResize)
+    return () => { window.removeEventListener('mouseup', stopResize); window.removeEventListener('blur', stopResize); stopResize() }
+  }, [])
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const boardId = params.get('evidenceBoard'), widgetId = params.get('evidenceWidget')
+    const revision = params.get('evidenceRevision'), index = Number(params.get('evidenceIndex'))
+    if (!boardId || !widgetId || !revision || !Number.isSafeInteger(index) || index < 1 || index > 50) return
+    let alive = true
+    void (async () => {
+      const result = await window.electronAPI.getBoardHighlightEvidence({ boardId, widgetId })
+      if (!alive) return
+      if (!result.ok || result.evidence.revision !== revision || result.evidence.accounts[index - 1]?.status !== 'ok') {
+        setToast({ ok: false, text: language === 'zh' ? '证据已过期或不可用，请重新分析当前快照。' : 'Evidence is stale or unavailable. Analyze the current snapshot again.' })
+        return
+      }
+      const list = await window.electronAPI.listBoards()
+      if (!alive) return
+      setBoards(list); setCurrentId(boardId); setSurface('board')
+      const target = { boardId, widgetId, index }
+      revealTargetRef.current = target; setRevealTarget(target)
+    })().catch(() => { if (alive) setToast({ ok: false, text: language === 'zh' ? '无法核对证据，请重试。' : 'Could not verify evidence. Retry.' }) })
+    return () => { alive = false }
+  }, [location.search, language])
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const boardId = params.get('board'), widgetId = params.get('widget')
+    if (!boardId || !widgetId || params.has('evidenceBoard')) return
+    let alive = true
+    void window.electronAPI.listBoards().then(list => {
+      if (!alive) return
+      const board = list.find(item => item.id === boardId)
+      if (!board?.widgets.some(widget => widget.id === widgetId)) {
+        setToast({ ok: false, text: language === 'zh' ? '看板或模块已不存在。' : 'The board or module no longer exists.' }); return
+      }
+      setBoards(list); setCurrentId(boardId); setSurface('board')
+      const target = { boardId, widgetId }
+      revealTargetRef.current = target; setRevealTarget(target)
+    }).catch(() => { if (alive) setToast({ ok: false, text: language === 'zh' ? '无法打开看板，请重试。' : 'Could not open the board. Retry.' }) })
+    return () => { alive = false }
+  }, [location.search, language])
   useEffect(() => {
     if (!revealTarget || surface !== 'board' || currentId !== revealTarget.boardId) return
     // Let the grid commit its final position before measuring the card.
@@ -328,13 +391,16 @@ export default function BoardsPage() {
         if (!container || !card) return
         const top = container.scrollTop + card.getBoundingClientRect().top - container.getBoundingClientRect().top - 12
         container.scrollTo({ top: Math.max(0, top), behavior: 'auto' })
-        card.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select')?.focus({ preventScroll: true })
+        if (revealTarget.index) {
+          const row = card.querySelector<HTMLElement>(`[data-reading-account-index="${revealTarget.index}"]`)
+          row?.scrollIntoView({ block: 'nearest' }); row?.focus({ preventScroll: true })
+        } else (card.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select') ?? card).focus({ preventScroll: true })
         revealTargetRef.current = null
         setRevealTarget(null)
       })
     })
     return () => { cancelAnimationFrame(firstFrame); cancelAnimationFrame(secondFrame) }
-  }, [revealTarget, surface, currentId])
+  }, [revealTarget, surface, currentId, current])
   const ttWidgets = current?.widgets.filter(widget => widget.type === 'tt-reading') ?? []
   const hasCurrentTtDataset = current?.widgets.some(widget => {
     const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
@@ -512,13 +578,15 @@ export default function BoardsPage() {
     setBoardsLoadGeneration((generation) => generation + 1)
   }
 
-  const persist = (board: KanbanBoard) => {
+  const persist = (board: KanbanBoard, expectedUpdatedAt: number | null = null) => {
     const generation = (boardSaveGeneration.current.get(board.id) ?? 0) + 1
     boardSaveGeneration.current.set(board.id, generation)
     void window.electronAPI
-      .saveBoard(board)
+      .saveBoard(board, expectedUpdatedAt)
       .then((result) => {
         if (!result.ok && boardSaveGeneration.current.get(board.id) === generation) {
+          if (result.error === 'html-cleanup-failed') { setHtmlCleanupFailed(true); flashToast(language === 'zh' ? '看板已保存，但 HTML 副本清理失败，请重试。' : 'Board saved, but HTML copy cleanup failed. Retry.', false) }
+          else if (result.error === 'conflict') flashToast(language === 'zh' ? '看板已被更新，已重新载入；请核对后重试修改。' : 'The board changed. It was reloaded; review it before retrying.', false)
           flashSaveFailed()
           reloadBoards()
         }
@@ -533,11 +601,11 @@ export default function BoardsPage() {
 
   /** Apply a pure mutation to one board, update state and persist the whole board. */
   const mutateBoard = (boardId: string, fn: (board: KanbanBoard) => KanbanBoard) => {
-    const board = boards?.find((b) => b.id === boardId)
+    const board = boardsRef.current?.find((b) => b.id === boardId)
     if (!board) return
-    const next = { ...fn(board), updatedAt: Date.now() }
+    const next = { ...fn(board), updatedAt: Math.max(Date.now(), board.updatedAt + 1) }
     setBoards((prev) => (prev ?? []).map((b) => (b.id === boardId ? next : b)))
-    persist(next)
+    persist(next, board.updatedAt)
   }
 
   const closeMenus = () => {
@@ -708,6 +776,7 @@ export default function BoardsPage() {
         // The lock race (locked between the renderer check and the IPC)
         // deserves its own hint, not a generic save failure.
         if (result.error === 'board-locked') flashToast(t('boards.lockedNoDelete'), false)
+        else if (result.error === 'html-cleanup-failed') { setHtmlCleanupFailed(true); flashToast(language === 'zh' ? '看板已删除，但 HTML 副本清理失败，请重试清理。' : 'Board deleted, but HTML cleanup failed. Retry cleanup.', false) }
         else flashSaveFailed()
         return
       }
@@ -938,6 +1007,7 @@ export default function BoardsPage() {
     }))
   }
   const master = current?.masterScope ?? null
+  const snapshotIndependent = !!current?.widgets.some(widget => widget.type === 'reading-snapshot') && !current.widgets.some(widget => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type))
   const readingModuleCount = current
     ? current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)).length
     : 0
@@ -988,28 +1058,56 @@ export default function BoardsPage() {
     }))
   }
 
-  const saveWidgetConfig = (
+  const saveWidgetConfig = async (
     widgetId: string,
-    patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle }
-  ) => {
-    if (!currentId) return
-    setConfigWidgetId(null)
-    mutateBoard(currentId, (b) => ({
-      ...b,
-      widgets: b.widgets.map((w) => {
-        if (w.id !== widgetId) return w
-        const { style: _previousStyle, ...rest } = w
-        return { ...rest, title: patch.title, config: patch.config, ...(patch.style ? { style: patch.style } : {}) }
-      })
-    }))
+    patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle; dimensions?: { width: number; height: number }; expectedUpdatedAt: number }
+  ): Promise<boolean> => {
+    if (!currentId) return false
+    const base = boardsRef.current?.find(board => board.id === currentId)
+    const currentWidget = base?.widgets.find(widget => widget.id === widgetId)
+    if (!base || !currentWidget || base.updatedAt !== patch.expectedUpdatedAt) {
+      flashToast(language === 'zh' ? '看板已变化，请核对后重新打开设置。' : 'The board changed. Review it and reopen settings.', false)
+      return false
+    }
+    const layout = patch.dimensions ? resizeWidgetLayout(currentWidget, base.widgets, patch.dimensions.width, patch.dimensions.height) : null
+    if (patch.dimensions && !layout) { flashToast(language === 'zh' ? '尺寸无效，请输入范围内的整数。' : 'Invalid dimensions. Enter whole numbers in range.', false); return false }
+    const moved = layout && (layout.x !== currentWidget.layout.x || layout.y !== currentWidget.layout.y)
+    const widgets = base.widgets.map(w => {
+      if (w.id !== widgetId) return w
+      const { style: _previousStyle, ...rest } = w
+      return { ...rest, title: patch.title, config: patch.config, ...(layout ? { layout } : {}), ...(patch.style ? { style: patch.style } : {}) }
+    })
+    const next = { ...base, widgets, updatedAt: Math.max(Date.now(), base.updatedAt + 1) }
+    try {
+      const result = await window.electronAPI.saveBoard(next, patch.expectedUpdatedAt)
+      if (!result.ok && result.error !== 'html-cleanup-failed') {
+        flashToast(result.error === 'conflict' ? (language === 'zh' ? '看板已变化，设置草稿仍保留。' : 'The board changed. Your settings draft is preserved.') : (language === 'zh' ? '保存失败，设置草稿仍保留。' : 'Save failed. Your settings draft is preserved.'), false)
+        return false
+      }
+      const latest = boardsRef.current?.find(board => board.id === base.id)
+      if (latest?.updatedAt === base.updatedAt) setBoards(prev => (prev ?? []).map(board => board.id === base.id ? next : board))
+      else reloadBoards()
+      if (!result.ok) { setHtmlCleanupFailed(true); flashToast(language === 'zh' ? '看板已保存，但 HTML 副本清理失败。' : 'Board saved, but HTML cleanup failed.', false) }
+      else if (moved) flashToast(language === 'zh' ? '模块已移动到空位，避免重叠。' : 'The card moved to an open space to avoid overlap.')
+      setConfigWidgetId(id => id === widgetId ? null : id)
+      if (shouldRevealMovedWidget(activeView.current, base.id, !!moved)) {
+        const target = { boardId: base.id, widgetId }
+        revealTargetRef.current = target; setRevealTarget(target)
+      }
+      return true
+    } catch {
+      flashToast(language === 'zh' ? '保存失败，设置草稿仍保留。' : 'Save failed. Your settings draft is preserved.', false)
+      return false
+    }
   }
 
   /** RGL fires this with the full layout on drag/resize stop; persist only real changes. */
   const handleLayoutStop = (layout: Layout[]) => {
-    if (!current) return
+    const base = boardsRef.current?.find(board => board.id === currentId)
+    if (!base) return
     const byId = new Map(layout.map((l) => [l.i, l]))
     let changed = false
-    const widgets = current.widgets.map((w) => {
+    const widgets = base.widgets.map((w) => {
       const l = byId.get(w.id)
       if (!l) return w
       const x = Math.max(0, Math.min(GRID_COLS - 1, Math.floor(l.x)))
@@ -1023,9 +1121,9 @@ export default function BoardsPage() {
       return { ...w, layout: { x, y, w: width, h: height } }
     })
     if (!changed) return
-    const next = { ...current, widgets, updatedAt: Date.now() }
+    const next = { ...base, widgets, updatedAt: Math.max(Date.now(), base.updatedAt + 1) }
     setBoards((prev) => (prev ?? []).map((b) => (b.id === next.id ? next : b)))
-    persist(next)
+    persist(next, base.updatedAt)
   }
 
   // ----------------------------------------------------------------- toolbar
@@ -1288,6 +1386,7 @@ export default function BoardsPage() {
     <div
       key={widget.id}
       data-board-widget-id={widget.id}
+      tabIndex={-1}
       style={widgetCardStyle(effectiveStyle)}
       className="board-widget group/widget relative flex flex-col overflow-hidden border border-line bg-ink-850"
     >
@@ -1313,7 +1412,7 @@ export default function BoardsPage() {
           {widget.title || t(widgetNameKey(widget.type))}
         </span>
         <div
-          className="flex shrink-0 items-center gap-0.5 transition opacity-0 group-hover/widget:opacity-100"
+          className={`flex shrink-0 items-center gap-0.5 transition focus-within:opacity-100 ${widget.type === 'reading-module' || widget.type === 'file' ? 'opacity-100' : 'opacity-0 group-hover/widget:opacity-100'}`}
         >
           <button
             onClick={() => setConfigWidgetId(widget.id)}
@@ -1352,6 +1451,10 @@ export default function BoardsPage() {
           ttScopeRequired={ttWidgets.length > 0 || widget.config.requireVerifiedTtScope === true}
           boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
+          onSnapshotSaved={(board, openAi, widgetId) => { setBoards(prev => (prev ?? []).some(item => item.id === board.id) ? (prev ?? []).map(item => item.id === board.id ? board : item) : [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(widgetId ?? board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }}
+          autoOpenAi={autoEditWidgetId === widget.id}
+          onAiOpened={() => setAutoEditWidgetId(null)}
+          showReadingSource={revealTarget?.widgetId === widget.id && !!revealTarget.index}
           masterWindow={
             master
               ? master.range === 'today'
@@ -1368,6 +1471,7 @@ export default function BoardsPage() {
         <WidgetConfigPanel
           key={widget.id}
           widget={widget}
+          boardUpdatedAt={current?.updatedAt ?? 0}
           datasets={datasets}
           masterScope={master}
           onClose={() => setConfigWidgetId(null)}
@@ -1624,10 +1728,12 @@ export default function BoardsPage() {
           </div>
         )}
       </header>
-      {surface === 'board' && current && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
-      {surface === 'board' && current && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
-      {surface === 'board' && current && datasets.some(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')) && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names: datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name).join('、')})}</p>}
-      {surface === 'board' && current && (
+      {htmlCleanupFailed && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2 text-[12px] text-cream-dim"><p>{language === 'zh' ? '无法核对或清理已删除看板的 HTML 副本，请重试。' : 'Could not check or clean up HTML copies of deleted boards. Retry.'}</p><button type="button" className="focus-ring rounded-full border border-line px-3 py-1" onClick={() => void retryHtmlCleanup()}>{language === 'zh' ? '重试清理' : 'Retry cleanup'}</button></div>}
+      {surface === 'board' && current && !snapshotIndependent && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
+      {surface === 'board' && current && !snapshotIndependent && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
+      {surface === 'board' && current && !snapshotIndependent && datasets.some(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')) && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names: datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name).join('、')})}</p>}
+      {surface === 'board' && current && snapshotIndependent && <p className="border-b border-line px-4 py-2 text-[12px] text-cream-dim">{language === 'zh' ? '已保存的快照使用固定日期。可回到“今日”选择其他日期，再保存为新看板。' : 'Saved snapshots keep their original dates. Return to Today to choose dates and save a new board.'}</p>}
+      {surface === 'board' && current && !snapshotIndependent && (
         <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 items-center gap-2 border-b border-line bg-ink-900/60 px-4">
           <span className="shrink-0 text-[12px] leading-[18px] text-cream-faint">{t('boards.master.label')}</span>
           <div className="flex items-center gap-1">
@@ -1783,8 +1889,8 @@ export default function BoardsPage() {
         className="relative flex-1 overflow-hidden bg-ink-950"
       >
         <div ref={boardScrollRef} className="h-full overflow-y-auto">
-          {surface === 'today' ? (
-            <TodayReading />
+          {surface === 'today' && !boardsLoadFailed ? (
+            <TodayReading onSaved={(board, openAi, widgetId) => { setBoards(prev => (prev ?? []).some(item => item.id === board.id) ? (prev ?? []).map(item => item.id === board.id ? board : item) : [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(widgetId ?? board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }} />
           ) : boards === null ? (
             <div className="flex h-full items-center justify-center text-sm text-cream-faint">
               {t('app.loading')}
@@ -1793,6 +1899,7 @@ export default function BoardsPage() {
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
               <SquareKanban size={28} className="text-red-500" />
               <div className="text-sm text-cream-dim">{t('boards.loadFailed')}</div>
+              <p className="max-w-lg text-xs text-cream-faint">{language === 'zh' ? '本地看板文件无法读取或升级。原文件未被更改；请先备份数据，再检查文件格式或恢复备份。' : 'Local boards could not be read or upgraded. The source file was preserved. Back up your data, then check the format or restore a backup.'}</p>
               <button
                 onClick={retryBoardLoad}
                 className="flex items-center gap-1.5 rounded-full border border-line px-4 py-2 text-[12px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
@@ -1825,10 +1932,18 @@ export default function BoardsPage() {
                 compactType="vertical"
                 isDraggable
                 isResizable
+                resizeHandle={<span className="react-resizable-handle react-resizable-handle-se board-resize-handle" role="img" aria-label={language === 'zh' ? '拖动调整模块尺寸，也可在设置中输入尺寸' : 'Drag to resize; exact dimensions are available in settings'} title={language === 'zh' ? '拖动调整尺寸；也可在设置中输入' : 'Drag to resize; enter exact dimensions in settings'} />}
                 draggableHandle=".widget-drag-handle"
                 draggableCancel="input, textarea, select, a, button, .widget-config"
                 onDragStop={handleLayoutStop}
-                onResizeStop={handleLayoutStop}
+                onResizeStart={() => { lastResize.current = null; document.documentElement.classList.add('board-grid-resizing') }}
+                onResize={(_layout, _oldItem, item) => { if (item) lastResize.current = { id: item.i, width: item.w, height: item.h } }}
+                onResizeStop={(layout) => {
+                  document.documentElement.classList.remove('board-grid-resizing')
+                  const base = boardsRef.current?.find(board => board.id === currentId)
+                  handleLayoutStop(base ? resolveResizeStop(base.widgets, layout, lastResize.current) : layout)
+                  lastResize.current = null
+                }}
               >
                 {current.widgets.map(renderWidget)}
               </Grid>

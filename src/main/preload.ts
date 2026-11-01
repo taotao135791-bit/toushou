@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
+import type { SaveReadingSnapshotInput } from '../shared/readingSnapshot'
+import type { SaveReadingSnapshotResult } from './readingSnapshots'
+import type { ReadingSnapshotExportResult } from './readingSnapshotExport'
+import type { HtmlBoardOpenInput, HtmlBoardSaveInput, HtmlBoardExportInput, HtmlBoardDocumentResult, HtmlBoardExportResult } from '../shared/htmlBoard'
+import type { HtmlBoardAiInput, HtmlBoardAiResult } from '../shared/htmlBoardAi'
+import type { ChatBoardPreviewInput, ChatBoardPreviewResult } from '../shared/chatBoardPreview'
+import type { BoardHighlightsEvidenceResult, BoardHighlightsValidationResult, BoardHighlightsApplyResult } from '../shared/boardHighlights'
 import type {
   FbAccountBalanceRefreshResult,
   FbReadingAccountDiscoveryResult,
@@ -34,7 +41,7 @@ import type {
   TikTokReportStatus
 } from '../shared/tiktokReport'
 import { TIKTOK_ADVERTISER_LIST_MAX_LENGTH } from '../shared/tiktokReport'
-import type { TikTokTodayReadingInput, TikTokTodayReadingResult } from '../shared/todayReading'
+import type { TikTokTodayProgressItem, TikTokTodayReadingInput, TikTokTodayReadingResult } from '../shared/todayReading'
 import type { FbReportAutoFetchResult, FbReportImportResult, FbReportStoredReading } from '../shared/fbReportCsv'
 import type { GoogleReportReadingResult, GoogleReportImportResult, GoogleReportStoredReading } from '../shared/googleReport'
 import {
@@ -146,7 +153,7 @@ export interface ElectronAPI {
   /** Create a session under a Main-owned workspace grant. */
   createSession: (
     grantId: string,
-    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string }
+    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string; permissionMode?: 'readonly' }
   ) => Promise<Session>
   sendMessage: (
     sessionId: string,
@@ -252,7 +259,20 @@ export interface ElectronAPI {
   /** Kanban boards (local-only, validated in main on every read/write). */
   listBoards: () => Promise<KanbanBoard[]>
   /** Whole-board upsert; rejects structurally invalid boards. */
-  saveBoard: (board: KanbanBoard) => Promise<KanbanSaveResult>
+  saveReadingSnapshot: (input: SaveReadingSnapshotInput) => Promise<SaveReadingSnapshotResult>
+  exportReadingSnapshot: (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => Promise<ReadingSnapshotExportResult>
+  loadOrCreateHtmlBoard: (input: HtmlBoardOpenInput) => Promise<HtmlBoardDocumentResult>
+  findHtmlBoardForReading: (input: { boardId: string; widgetId: string; language?: 'zh' | 'en' }) => Promise<HtmlBoardDocumentResult>
+  getChatBoardPreview: (input: ChatBoardPreviewInput) => Promise<ChatBoardPreviewResult>
+  saveHtmlBoard: (input: HtmlBoardSaveInput) => Promise<HtmlBoardDocumentResult>
+  exportHtmlBoard: (input: HtmlBoardExportInput) => Promise<HtmlBoardExportResult>
+  cleanupOrphanedHtmlBoards: () => Promise<{ ok: true; removed: number } | { ok: false; error: string }>
+  generateHtmlBoardEdit: (input: HtmlBoardAiInput) => Promise<HtmlBoardAiResult>
+  cancelHtmlBoardEdit: (requestId: string) => Promise<boolean>
+  getBoardHighlightEvidence: (input: { boardId: string; widgetId: string }) => Promise<BoardHighlightsEvidenceResult>
+  validateBoardHighlights: (input: { raw: string }) => Promise<BoardHighlightsValidationResult>
+  applyBoardHighlights: (input: { raw: string }) => Promise<BoardHighlightsApplyResult>
+  saveBoard: (board: KanbanBoard, expectedUpdatedAt?: number | null) => Promise<KanbanSaveResult>
   reorderBoards: (ids: string[]) => Promise<KanbanSaveResult>
   /** Direct panel refresh of one FB reading module (no chat session). */
   refreshFbReading: (request: {
@@ -260,6 +280,8 @@ export interface ElectronAPI {
     act: string
     businessId: string | null
     range: string
+    startDate?: string
+    endDate?: string
   }) => Promise<FbReadingRefreshResult>
   /** Read one ad account's Account Overview available spend through Main. */
   refreshFbAccountBalance: (request: {
@@ -523,7 +545,7 @@ export interface ElectronAPI {
   /** Today page TikTok read: current window and the previous equal window. */
   ttReadingToday: (input: TikTokTodayReadingInput) => Promise<TikTokTodayReadingResult>
   ttReadingCancel: (requestId: string) => Promise<boolean>
-  onTtReadingProgress: (callback: (value: { requestId: string; completed: number; total: number; succeeded: number }) => void) => () => void
+  onTtReadingProgress: (callback: (value: { requestId: string; completed: number; total: number; succeeded: number; today?: TikTokTodayProgressItem }) => void) => () => void
   onTtReadingDatasetChanged: (callback: () => void) => () => void
   /** Advertisers the readings use: the user's own list wins over the authorization's. */
   ttReadingAdvertisers: () => Promise<TikTokReadingAdvertisers>
@@ -599,7 +621,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY) as Promise<HistorySessionRow[]>,
   createSession: (
     grantId: string,
-    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string }
+    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string; permissionMode?: 'readonly' }
   ) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_CREATE_SESSION, grantId, overrides),
   sendMessage: (
@@ -725,9 +747,22 @@ const api: ElectronAPI = {
   setStore: (key: keyof AppSettings, value: unknown) =>
     ipcRenderer.invoke(IPC_CHANNELS.STORE_SET, key, value),
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
-  saveBoard: (board: KanbanBoard) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE, board),
+  saveReadingSnapshot: (input: SaveReadingSnapshotInput) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_SAVE, input),
+  exportReadingSnapshot: (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, input),
+  loadOrCreateHtmlBoard: (input: HtmlBoardOpenInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_OPEN, input),
+  findHtmlBoardForReading: (input: { boardId: string; widgetId: string; language?: 'zh' | 'en' }) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_FIND, input),
+  getChatBoardPreview: (input: ChatBoardPreviewInput) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_CHAT_PREVIEW, input),
+  saveHtmlBoard: (input: HtmlBoardSaveInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_SAVE, input),
+  exportHtmlBoard: (input: HtmlBoardExportInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_EXPORT, input),
+  cleanupOrphanedHtmlBoards: () => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_CLEANUP),
+  generateHtmlBoardEdit: (input: HtmlBoardAiInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_AI_GENERATE, input),
+  cancelHtmlBoardEdit: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_AI_CANCEL, requestId),
+  getBoardHighlightEvidence: (input: { boardId: string; widgetId: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_EVIDENCE, input),
+  validateBoardHighlights: (input: { raw: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_VALIDATE, input),
+  applyBoardHighlights: (input: { raw: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_APPLY, input),
+  saveBoard: (board: KanbanBoard, expectedUpdatedAt?: number | null) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE, board, expectedUpdatedAt),
   reorderBoards: (ids: string[]) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REORDER, ids),
-  refreshFbReading: (request: { alias: string; act: string; businessId: string | null; range: string }) =>
+  refreshFbReading: (request: { alias: string; act: string; businessId: string | null; range: string; startDate?: string; endDate?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_READING_REFRESH, request),
   refreshFbAccountBalance: (request: { alias: string; act: string; businessId: string | null }) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_READING_BALANCE_REFRESH, request),
@@ -1008,13 +1043,15 @@ const api: ElectronAPI = {
   },
   ttReadingToday: (input: TikTokTodayReadingInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.TT_READING_TODAY, {
-      range: typeof input?.range === 'string' ? input.range.slice(0, 8) : '',
+      ...(input?.range !== undefined ? { range: typeof input.range === 'string' && input.range.length <= 8 ? input.range : '!' } : {}),
+      ...(input?.startDate !== undefined ? { startDate: typeof input.startDate === 'string' && input.startDate.length <= 10 ? input.startDate : '!' } : {}),
+      ...(input?.endDate !== undefined ? { endDate: typeof input.endDate === 'string' && input.endDate.length <= 10 ? input.endDate : '!' } : {}),
       ...(input?.advertiserId !== undefined ? { advertiserId: typeof input.advertiserId === 'string' && input.advertiserId.length <= 25 ? input.advertiserId : '!' } : {}),
       ...(input?.requestId !== undefined ? { requestId: typeof input.requestId === 'string' && input.requestId.length <= 64 ? input.requestId : '!' } : {})
     }) as Promise<TikTokTodayReadingResult>,
   ttReadingCancel: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.TT_READING_CANCEL, typeof requestId === 'string' && requestId.length <= 64 ? requestId : null) as Promise<boolean>,
-  onTtReadingProgress: (callback: (value: { requestId: string; completed: number; total: number; succeeded: number }) => void) => {
-    const handler = (_event: IpcRendererEvent, value: { requestId: string; completed: number; total: number; succeeded: number }) => callback(value)
+  onTtReadingProgress: (callback: (value: { requestId: string; completed: number; total: number; succeeded: number; today?: TikTokTodayProgressItem }) => void) => {
+    const handler = (_event: IpcRendererEvent, value: { requestId: string; completed: number; total: number; succeeded: number; today?: TikTokTodayProgressItem }) => callback(value)
     ipcRenderer.on(IPC_CHANNELS.TT_READING_PROGRESS, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.TT_READING_PROGRESS, handler)
   },

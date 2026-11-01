@@ -34,6 +34,19 @@ function invokeOf(results: InvokeResult[]): Invoke {
 describe('refreshAccountWithRetry (bounded renderer retry)', () => {
   afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })
 
+  it('requires an exact account and explicit custom window before accepting a read', async () => {
+    const params = { ...PARAMS, range: 'custom' as const, startDate: '2024-02-28', endDate: '2024-03-01' }
+    const matching = { ...entryFor(), dateRangeLabel: '2024年2月28日 – 2024年3月1日' }
+    const invoke = invokeOf([{ ok: true, entry: matching }])
+    expect(await refreshAccountWithRetry(params, { isCurrent: () => true, invoke })).toEqual({ kind: 'ok', entry: matching })
+    expect(invoke).toHaveBeenCalledWith(params)
+    const wrong = invokeOf([{ ok: true, entry: { ...matching, dateRangeLabel: '2024年2月28日 – 2024年2月29日' } }])
+    expect(await refreshAccountWithRetry(params, { isCurrent: () => true, invoke: wrong })).toEqual({ kind: 'failed', error: 'date-mismatch' })
+    const invalid = invokeOf([])
+    expect(await refreshAccountWithRetry({ ...params, endDate: '2024-02-30' }, { isCurrent: () => true, invoke: invalid })).toEqual({ kind: 'failed', error: 'invalid-input' })
+    expect(invalid).not.toHaveBeenCalled()
+  })
+
   it('retries a transient unparseable-page once and returns the verified entry', async () => {
     vi.useFakeTimers()
     const expected = entryFor()

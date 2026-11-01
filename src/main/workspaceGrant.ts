@@ -3,6 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { RecentWorkspaceDescriptor, WorkspaceGrant } from '../shared/types'
 import { FsGuard } from './fsGuard'
+import { canonicalExistingPath } from './canonicalPath'
 
 /**
  * Main-owned workspace authority.
@@ -97,7 +98,7 @@ export class RecentWorkspaceRegistry {
       const normalized = path.resolve(candidate)
       const stat = await fs.promises.stat(normalized)
       if (!stat.isDirectory()) return null
-      return await fs.promises.realpath(normalized)
+      return canonicalExistingPath(normalized)
     } catch {
       return null
     }
@@ -119,7 +120,7 @@ export class WorkspaceGrantManager {
     try {
       const st = await fs.promises.stat(normalized)
       if (!st.isDirectory()) return null
-      realPath = fs.realpathSync(normalized)
+      realPath = canonicalExistingPath(normalized)
     } catch {
       return null
     }

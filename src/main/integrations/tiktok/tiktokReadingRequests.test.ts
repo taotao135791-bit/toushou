@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { TikTokReadingRequests } from './tiktokReadingRequests'
 
 describe('reading request isolation', () => {
+  it('emits one account result only to the owning request', async () => {
+    const requests = new TikTokReadingRequests()
+    const ownerOne = vi.fn(), ownerTwo = vi.fn()
+    const today = { account: { advertiserId: '1', name: null, currency: null, error: 'api' as const }, range: 'last7' as const, window: { start: '2026-01-01', end: '2026-01-07' }, previousWindow: { start: '2025-12-25', end: '2025-12-31' }, source: 'oauth' as const, generatedAt: 1 }
+    await requests.run(2, 'request-other', async () => undefined, ownerTwo)
+    await requests.run(1, 'request-one', async deps => { deps.onProgress?.({ completed: 1, total: 2, succeeded: 0, today }) }, ownerOne)
+    expect(ownerOne).toHaveBeenCalledWith({ requestId: 'request-one', completed: 1, total: 2, succeeded: 0, today })
+    expect(ownerTwo).not.toHaveBeenCalled()
+  })
   it('scopes progress and cancellation to the owner and removes completed requests', async () => {
     const requests = new TikTokReadingRequests()
     const emit = vi.fn()

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { spawnCommand } from '../command'
 import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -57,7 +57,9 @@ export function executableSearchDirs(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env
 ): string[] {
-  const dirs = (env.PATH || '').split(path.delimiter).filter(Boolean)
+  // Ignore relative PATH entries, including '.', so auto-detection never picks up a project executable.
+  const canonical = (dir: string) => platform === 'win32' ? path.resolve(dir).toLowerCase() : path.resolve(dir)
+  const dirs = (env.PATH || '').split(path.delimiter).filter(dir => dir && path.isAbsolute(dir) && canonical(dir) !== canonical(process.cwd()))
   const home = homedir()
   dirs.push(
     '/opt/homebrew/bin',
@@ -81,15 +83,15 @@ export function executableSearchDirs(
 /**
  * File names tried for a command. On Windows an installed executable is
  * `omp.exe`, not `omp`, so the bare name alone never matches. Only extensions
- * spawn can launch directly (no shell) are tried — `.bat`/`.cmd` shims would
- * need `shell: true` and are deliberately not matched.
+ * are tried, including npm-generated `.cmd`/`.bat` shims on Windows; those
+ * are launched through the narrow cross-spawn command wrapper.
  */
 export function executableCandidateNames(
   cmd: string,
   platform: NodeJS.Platform = process.platform
 ): string[] {
   if (platform !== 'win32') return [cmd]
-  return [cmd, `${cmd}.exe`, `${cmd}.com`]
+  return [`${cmd}.exe`, `${cmd}.com`, `${cmd}.cmd`, `${cmd}.bat`, cmd]
 }
 
 /** Find `cmd` in `dirs`, trying the platform's candidate file names. */
@@ -120,22 +122,28 @@ function findExecutable(cmd: string): string | null {
 const VERSION_PROBE_TIMEOUT_MS = 10_000
 
 /** Run `<cli> --version` and parse the first semver-ish token from its output. */
-export function probeCliVersion(cli: CliInfo): Promise<string | null> {
+export function probeCliVersion(cli: CliInfo, run: typeof spawnCommand = spawnCommand): Promise<string | null> {
   if (!cli.available) return Promise.resolve(null)
   return new Promise((resolve) => {
-    execFile(
-      cli.path ?? cli.command,
-      ['--version'],
-      { timeout: VERSION_PROBE_TIMEOUT_MS, maxBuffer: 64 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          resolve(null)
-          return
-        }
-        const match = `${stdout}\n${stderr}`.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/)
-        resolve(match ? match[0] : null)
-      }
-    )
+    let settled = false, stdout = '', stderr = ''
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (value: string | null) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); resolve(value) }
+    let child: ReturnType<typeof spawnCommand>
+    try { child = run(cli.path ?? cli.command, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }) }
+    catch { finish(null); return }
+    timer = setTimeout(() => { finish(null); child.kill() }, VERSION_PROBE_TIMEOUT_MS)
+    const capture = (stream: 'stdout' | 'stderr', chunk: Buffer) => {
+      if (stream === 'stdout') stdout += chunk.toString('utf8')
+      else stderr += chunk.toString('utf8')
+      if (stdout.length + stderr.length > 64 * 1024) { finish(null); child.kill() }
+    }
+    child.stdout?.on('data', chunk => capture('stdout', chunk)); child.stderr?.on('data', chunk => capture('stderr', chunk))
+    child.once('error', () => finish(null))
+    child.once('close', (code) => {
+      if (code !== 0) { finish(null); return }
+      const match = `${stdout}\n${stderr}`.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/)
+      finish(match ? match[0] : null)
+    })
   })
 }
 

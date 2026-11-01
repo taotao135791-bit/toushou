@@ -7,7 +7,10 @@ import { DATASET_LIMITS } from '../shared/datasets'
 import type { PermissionMode } from '../shared/types'
 import { parseTikTokAdvertiserIdList } from '../shared/tiktokReport'
 import { serializeBoundedJson } from '../shared/boundedJson'
-import { listBoards, saveBoard } from './boards'
+import { validateReadingSnapshot } from '../shared/readingSnapshot'
+import { getBoardHighlightEvidence } from './boardHighlights'
+import { listBoards, peekBoardsForConfirmation, saveBoard } from './boards'
+import { pruneHtmlBoardsForBoard } from './htmlBoards'
 import { listDatasets } from './boardDatasets'
 import {
   BOARD_LIMITS,
@@ -100,6 +103,8 @@ const WIDGET_TITLE_ZH: Record<WidgetType, string> = {
   'fb-report-reading': 'FB 报表读数',
   'google-report-reading': 'Google 读数',
   'tt-reading': 'TT 读数',
+  'reading-snapshot': '读数快照',
+  'reading-module': '读数组件',
   gauge: '仪表',
   'chart-line': '折线图',
   'chart-bar': '柱状图',
@@ -120,7 +125,7 @@ export type BoardsBridgeRequest =
       advertiserName?: unknown
       advertiserNames?: unknown
     }
-  | { action: 'board_add_widget'; boardId?: unknown; name?: unknown; type?: unknown; title?: unknown; config?: unknown }
+  | { action: 'board_add_widget'; boardId?: unknown; name?: unknown; type?: unknown; title?: unknown; config?: unknown; source?: unknown; layout?: unknown }
   | { action: 'board_remove_widget'; boardId?: unknown; name?: unknown; widgetId?: unknown }
   | { action: 'board_update_widget'; boardId?: unknown; name?: unknown; widgetId?: unknown; title?: unknown; config?: unknown }
   | { action: 'board_rename'; boardId?: unknown; name?: unknown; newName?: unknown }
@@ -158,7 +163,9 @@ export function parseBoardsBridgeRequest(raw: unknown): BoardsBridgeRequest | nu
         name: value.name,
         type: value.type,
         title: value.title,
-        config: value.config
+        config: value.config,
+        source: value.source,
+        layout: value.layout
       }
     case 'board_remove_widget':
       return { action: 'board_remove_widget', boardId: value.boardId, name: value.name, widgetId: value.widgetId }
@@ -262,10 +269,12 @@ function findBoard(tool: { boardId?: unknown; name?: unknown }): KanbanBoard | n
   return boards.find((board) => board.name.toLowerCase() === lower) ?? null
 }
 
+function modelBoardName(board: KanbanBoard): string { return board.name }
+
 function boardSummary(board: KanbanBoard): Record<string, unknown> {
   return {
     id: board.id,
-    name: board.name,
+    name: modelBoardName(board),
     locked: board.locked === true,
     widgetCount: board.widgets.length,
     updatedAt: board.updatedAt,
@@ -273,9 +282,18 @@ function boardSummary(board: KanbanBoard): Record<string, unknown> {
       id: widget.id,
       type: widget.type,
       title: widget.title,
-      config: widget.config
+      layout: { ...widget.layout },
+      config: widget.type === 'reading-snapshot' ? readingSnapshotSummary(board, widget.id, widget.config) : widget.type === 'reading-module' ? { accountCount: validateReadingSnapshot(widget.config.snapshot)?.accounts.length ?? 0, module: widget.config.module } : widget.config
     }))
   }
+}
+
+/** Model-facing board reads use a bounded snapshot projection and omit provider errors. */
+function readingSnapshotSummary(board: KanbanBoard, widgetId: string, config: Record<string, unknown>): Record<string, unknown> {
+  const snapshot = validateReadingSnapshot(config.snapshot)
+  if (!snapshot) return { unavailable: true }
+  const result = getBoardHighlightEvidence({ boardId: board.id, widgetId }, { list: () => [board] })
+  return result.ok ? { accountCount: snapshot.accounts.length, evidence: result.evidence } : { unavailable: true }
 }
 
 function datasetsOverview(): Array<Record<string, unknown>> {
@@ -291,6 +309,19 @@ export interface BoardsSessionAccess { cwd: string; mode: PermissionMode; remote
 export interface BoardsAuthorizationDeps {
   getAccess: (sessionId: string) => BoardsSessionAccess | null
   confirm: (tool: BoardsBridgeRequest) => Promise<boolean>
+}
+
+/** Display-only lookup: boardId still controls the operation and is retained in details. */
+export function boardConfirmationDetails(request: BoardsBridgeRequest, readBoards: () => KanbanBoard[] = peekBoardsForConfirmation): string {
+  const details = Object.entries(request).filter(([key]) => ['boardId', 'name', 'newName', 'widgetId', 'title', 'type', 'filePath'].includes(key))
+    .flatMap(([key, value]) => typeof value === 'string' ? [`${key}: ${value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 240)}`] : [])
+  if (request.action === 'board_add_widget' && typeof request.boardId === 'string' && request.boardId) {
+    try {
+      const board = readBoards().find(item => item.id === request.boardId)
+      if (board) details.unshift(`看板: ${board.name.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 240)}`)
+    } catch { /* Never guess a name when the board store cannot be read. */ }
+  }
+  return details.join('\n')
 }
 
 /** Main enforces authority even if an extension bypasses its tool approval metadata. */
@@ -312,12 +343,10 @@ export async function authorizeAndDispatch(
         board_create: '新建看板', board_rename: '重命名看板', board_add_widget: '添加组件',
         board_update_widget: '修改组件', board_remove_widget: '移除组件', dataset_import: '导入数据集'
       }
-      const details = Object.entries(request).filter(([key]) => ['boardId', 'name', 'newName', 'widgetId', 'title', 'type', 'filePath'].includes(key))
-        .flatMap(([key, value]) => typeof value === 'string' ? [`${key}: ${value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 240)}`] : [])
       const result = await dialog.showMessageBox(win, {
         type: 'question', title: '确认看板操作',
         message: `允许此会话${labels[request.action] ?? '修改本地看板'}？`,
-        detail: details.join('\n'),
+        detail: boardConfirmationDetails(request),
         buttons: ['拒绝', '允许一次'], defaultId: 0, cancelId: 0, noLink: true
       })
       return result.response === 1
@@ -367,7 +396,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
   if (tool.action === 'boards_list') {
     return {
       ok: true,
-      boards: listBoards().map((board) => ({ id: board.id, name: board.name, widgetCount: board.widgets.length, locked: board.locked === true, updatedAt: board.updatedAt })),
+      boards: listBoards().map((board) => ({ id: board.id, name: modelBoardName(board), widgetCount: board.widgets.length, locked: board.locked === true, updatedAt: board.updatedAt })),
       datasets: datasetsOverview()
     }
   }
@@ -384,11 +413,11 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const template =
       typeof tool.template === 'string' && BOARD_TEMPLATES.includes(tool.template as BoardPresetId)
         ? (tool.template as BoardPresetId)
-        : 'tiktok'
+        : 'blank'
     const composed = composeBoard('', boardText, template)
     const name = boundedString(tool.name, BOARD_LIMITS.maxNameLength) ?? composed.name
     if (boards.some((board) => board.name.toLowerCase() === name.toLowerCase())) {
-      return { ok: false, error: 'name-exists', existingBoards: boards.map((board) => board.name).slice(0, 50) }
+      return { ok: false, error: 'name-exists', existingBoards: boards.map(modelBoardName).slice(0, 50) }
     }
     const description = boundedString(tool.description, BOARD_LIMITS.maxDescriptionLength)
     const board: KanbanBoard = {
@@ -458,7 +487,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     return {
       ok: true,
       board: boardSummary({ ...board }),
-      datasetReady,
+      ...(template === 'tiktok' ? { datasetReady } : {}),
       note:
         (ids.length > 0
           ? `已按 ${ids.length} 个广告主 ID 过滤数据卡并绑定 TT 读数模块；读数需要已连接的 TikTok 授权。`
@@ -468,9 +497,9 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
         (ids.length > 1
           ? '注意：这些账户币种不同时，金额合计卡会显示 — 并标 MIX（不同币种不可相加），计数类指标正常合计。'
           : '') +
-        (datasetReady
+        (template !== 'tiktok' ? '' : datasetReady
           ? '数据集「TikTok 报表」已有数据。'
-          : '数据集「TikTok 报表」还没有数据：调用 touhou_tiktok_update（走 TikTok MCP 连接）拉取即可自动填充；它失败就如实把错误转述给用户并停下，禁止 CSV/文件/computer use 绕路。')
+          : '数据集「TikTok 报表」还没有数据；仅在用户明确要求读取时调用 touhou_tiktok_update，失败后如实告知，不得绕路读取。')
     }
   }
 
@@ -500,18 +529,36 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
   if (tool.action === 'board_add_widget') {
     if (board.widgets.length >= BOARD_LIMITS.maxWidgets) return { ok: false, error: 'too-many-widgets' }
     const type = typeof tool.type === 'string' && WIDGET_TYPES.includes(tool.type as WidgetType) ? (tool.type as WidgetType) : null
-    if (!type) return { ok: false, error: 'unsupported-widget-type', supported: WIDGET_TYPES }
+    if (!type) return { ok: false, error: 'unsupported-widget-type', supported: WIDGET_TYPES.filter((item) => item !== 'reading-snapshot') }
+    // A model cannot fabricate an allegedly saved reading by supplying a
+    // well-shaped snapshot. Only the local reading-save flow creates these.
+    if (type === 'reading-snapshot') return { ok: false, error: 'snapshot-requires-reading' }
     const title = boundedString(tool.title, BOARD_LIMITS.maxWidgetTitleLength) ?? WIDGET_TITLE_ZH[type]
-    const size = WIDGET_DEFAULT_SIZES[type]
+    let size = type === 'file' ? { w: 12, h: 12 } : WIDGET_DEFAULT_SIZES[type]
+    if (tool.layout !== undefined) {
+      const layout = tool.layout as Record<string, unknown> | null
+      if (!layout || typeof layout !== 'object' || Array.isArray(layout) || Object.keys(layout).some(key => !['w', 'h'].includes(key)) || !Number.isInteger(layout.w) || !Number.isInteger(layout.h) || (layout.w as number) < 1 || (layout.w as number) > 12 || (layout.h as number) < 1 || (layout.h as number) > 20) return { ok: false, error: 'invalid-layout' }
+      size = { w: layout.w as number, h: layout.h as number }
+    }
     const slot = findFreeSlot(board.widgets, size.w, size.h)
-    const config =
+    let config =
       tool.config && typeof tool.config === 'object' && !Array.isArray(tool.config)
         ? (tool.config as Record<string, unknown>)
         : undefined
-    board.widgets = [...board.widgets, createWidget(type, title, slot, config)]
+    if (type === 'reading-module') {
+      const source = tool.source as Record<string, unknown> | null
+      if (!source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['boardId', 'widgetId'].includes(key)) || typeof source.boardId !== 'string' || typeof source.widgetId !== 'string' || !config || Object.keys(config).some(key => key !== 'module')) return { ok: false, error: 'snapshot-requires-reading' }
+      const sourceWidget = listBoards().find(entry => entry.id === source.boardId)?.widgets.find(entry => entry.id === source.widgetId && (entry.type === 'reading-snapshot' || entry.type === 'reading-module'))
+      const snapshot = validateReadingSnapshot(sourceWidget?.config.snapshot)
+      if (!snapshot) return { ok: false, error: 'snapshot-requires-reading' }
+      config = { snapshot: structuredClone(snapshot), module: config.module }
+    }
+    const widget = createWidget(type, title, slot, config)
+    widget.layout = { ...slot, ...size }
+    board.widgets = [...board.widgets, widget]
     const result = saveBoard(board)
     if (!result.ok) return { ok: false, error: 'invalid-widget-config' }
-    return { ok: true, board: boardSummary(board) }
+    return { ok: true, board: boardSummary(board), createdWidgetId: widget.id }
   }
 
   if (tool.action === 'board_remove_widget') {
@@ -522,6 +569,8 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     board.widgets = board.widgets.filter((widget) => widget.id !== widgetId)
     const result = saveBoard(board)
     if (!result.ok) return { ok: false, error: 'save-failed' }
+    const cleanup = pruneHtmlBoardsForBoard({ boardId: board.id, retainedWidgetIds: board.widgets.filter(widget => widget.type === 'reading-snapshot' || widget.type === 'reading-module').map(widget => widget.id) })
+    if (!cleanup.ok) return { ok: false, error: 'html-cleanup-failed', message: '组件已删除，但本地 HTML 副本清理失败；请在看板中重试清理。' }
     return { ok: true, board: boardSummary(board) }
   }
 
@@ -532,6 +581,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const title = boundedString(tool.title, BOARD_LIMITS.maxWidgetTitleLength)
     let config = target.config
     if (tool.config && typeof tool.config === 'object' && !Array.isArray(tool.config)) {
+      if (target.type === 'reading-module' || (target.type === 'reading-snapshot' && Object.hasOwn(tool.config, 'snapshot'))) return { ok: false, error: 'snapshot-requires-reading' }
       // Shallow merge: the agent patches fields, saveBoard's strict validator
       // whitelists the result atomically.
       config = { ...target.config, ...(tool.config as Record<string, unknown>) }
