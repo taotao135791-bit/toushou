@@ -4,17 +4,17 @@
 
 ## 下载与安装
 
-当前公开版本：**v1.4.12**。安装包和校验文件也可在 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v1.4.12) 查看。
+当前公开版本：**v2.0.0**。安装包和校验文件也可在 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.0.0) 查看。
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.12/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.12/TouShou-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.12/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.12/TouShou-x64.zip) |
-| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v1.4.12/TouShou-x64.exe) |
+| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.0/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.0/TouShou-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.0/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.0/TouShou-x64.zip) |
+| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.0/TouShou-x64.exe) |
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 
-**V2.0.0 尚未公开发布。**候选版支持自选日期、独立看板模块与对话内预览，仍在进行正式包验收；下方下载链接保持指向已发布版本。候选功能与限制见[多平台读数](docs/multi-platform-readings.md)和 [V2 看板说明](docs/v2-html-board-evaluation.md)。
+V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和 [HTML 看板说明](docs/v2-html-board-evaluation.md)。
 
 ## 快速上手
 
@@ -28,14 +28,14 @@ macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，�
 ## 使用限制
 
 - Google 真实账户验收暂缓；链接读取支持的页面和报表口径有限，详见[多平台读数](docs/multi-platform-readings.md)。
-- 候选版自选日期最长 366 天；AI 分析及布局生成最多发送所选范围内 50 个账户。快照和图表不会自动刷新，汇总数据不包含每日趋势。
+- 自选日期最长 366 天；AI 分析及布局生成最多发送所选范围内 50 个账户。快照和图表不会自动刷新，汇总数据不包含每日趋势。
 - 主动使用 AI 时，所选账户名称、ID、数值和用户描述可能发送给所选模型；请勿在描述中填写密钥。匿名导出会隐藏内置账户标识，但自定义文字和数值仍需检查。AI 编辑的首次格式修复可能产生额外用量。
-- 候选版看板使用独立存储并保留旧版文件与迁移备份；降级后两版后续修改不会自动合并。当前不提供托管分享链接。
+- 看板使用独立存储并保留旧版文件与迁移备份；降级后两版后续修改不会自动合并。当前不提供托管分享链接。
 - macOS 系统或内置浏览器仍可能显示钥匙串提示；遇到问题请先取消并检查系统设置，不要直接重置默认钥匙串。
 
 ## 最新发版
 
-**v1.4.12** 改善飞书和 TikTok 加密凭据的恢复，提供更明确的安全存储故障提示；支持 TikTok 多账户巡检、单账户选择和脱敏分析草稿。完整版本记录见[更新日志](CHANGELOG.md)。
+**v2.0.0** 支持自选日期、读数保存到新建或已有看板、独立 HTML 模块和自然语言 AI 编辑；对话直接显示看板重点画面。改善保存、关闭、尺寸调整和历史恢复，统一信号 Logo。完整版本记录见[更新日志](CHANGELOG.md)。
 
 ## 开发
 
