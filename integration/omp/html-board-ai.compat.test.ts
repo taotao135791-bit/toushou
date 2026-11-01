@@ -38,8 +38,8 @@ describe('AI runtime compatibility', () => {
       writeFileSync(path.join(root,'prompt.md'),'Return a short test response.',{mode:0o600})
       const result=await new Promise<{code:number|null;stderr:string;stdout:string}>((resolve,reject)=>{
         const child=spawnCommand(process.env.OMP_BIN || 'omp',['--mode','json','--print','--no-session','--no-tools','--no-extensions','--no-skills','--no-rules','--no-lsp','--no-pty','--no-title','--max-time=20','--thinking=low','--model','localtest/fake','@prompt.md'],{cwd:root,env,stdio:['ignore','pipe','pipe']})
-        let stderr='',stdout='';child.stdout?.on('data',chunk=>{stdout+=String(chunk)});child.stderr?.on('data',chunk=>{stderr+=String(chunk).slice(0,1000)})
-        child.on('error',reject);child.on('close',code=>resolve({code,stderr:stderr.slice(0,2000),stdout}))
+        let stderr='',stdout='';child.stdout?.on('data',chunk=>{stdout+=String(chunk)});child.stderr?.on('data',chunk=>{stderr=(stderr+String(chunk)).slice(-16384)})
+        child.on('error',reject);child.on('close',code=>resolve({code,stderr:stderr.slice(-16384),stdout}))
       })
       expect(result.code, result.stderr).toBe(0)
       expect(requests.length).toBeGreaterThan(0)
