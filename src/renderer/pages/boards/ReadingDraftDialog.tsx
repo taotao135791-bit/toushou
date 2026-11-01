@@ -1,4 +1,5 @@
 import { useId, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useModalBoundary } from '../../lib/modalBoundary'
 
 export interface LocalCampaignMapping { label: string; name: string }
@@ -19,7 +20,7 @@ export function ReadingDraftDialog({ title, language, value, copyState, localMap
   const id = useId()
   useModalBoundary(root, true, onClose)
   const zh = language === 'zh'
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+  const dialog = <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
     <div ref={root} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-instructions`} tabIndex={-1} className="max-h-[calc(100vh-2rem)] w-full max-w-xl overflow-y-auto rounded-2xl border border-line bg-ink-850 p-5 shadow-card">
       <h2 id={`${id}-title`} className="text-[16px] font-semibold text-cream">{title}</h2>
       <p id={`${id}-instructions`} className="mt-1 text-[12px] text-cream-faint">{zh ? '可先修改草稿，再复制并粘贴到聊天中。' : 'Edit the draft, copy it, then paste it into a chat when ready.'}</p>
@@ -32,4 +33,5 @@ export function ReadingDraftDialog({ title, language, value, copyState, localMap
       <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={onClose} className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{zh ? '关闭' : 'Close'}</button><button type="button" onClick={onCopy} className="focus-ring rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))]">{zh ? '复制草稿' : 'Copy draft'}</button></div>
     </div>
   </div>
+  return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body)
 }

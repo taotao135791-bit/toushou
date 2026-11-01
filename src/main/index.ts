@@ -5,6 +5,7 @@ import { getStore, setStore, applyFirstRunDefaults } from './store'
 import { ensureBundledPackages } from './bundledPackages'
 import { initBrowserUseBridge } from './browserUse'
 import { registerIpc, shutdownSessionsForQuit } from './ipc'
+import { pruneOrphanedHtmlBoards } from './htmlBoards'
 import { syncMachineSkills } from './piSettings'
 import { detectCli } from './omp'
 import { initUpdater } from './updater'
@@ -128,6 +129,9 @@ function createWindow() {
 app.whenReady().then(async () => {
   console.info(`[app] starting TouShou ${app.getVersion()} (${process.platform}, electron ${process.versions.electron})`)
   registerIpc()
+  try {
+    if (!pruneOrphanedHtmlBoards().ok) console.warn('[boards] HTML cleanup needs retry from the boards page')
+  } catch { console.warn('[boards] HTML cleanup deferred until local storage is readable') }
   applyFirstRunDefaults()
   // Keep pi's skill overrides in line with the GUI toggle — LEGACY pi loads
   // ~/.agents/skills (other agents' skills) into every session by default.

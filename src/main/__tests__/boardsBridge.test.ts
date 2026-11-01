@@ -14,6 +14,7 @@ import { authorizeAndDispatch, dispatch, parseBoardsBridgeRequest, readWorkspace
 import { listBoards } from '../boards'
 import { saveBoard } from '../boards'
 import { saveReadingSnapshot } from '../readingSnapshots'
+import { applyBoardHighlights, validateBoardHighlights } from '../boardHighlights'
 import type { ReadingSnapshot } from '../../shared/readingSnapshot'
 import { createWidget } from '../../shared/boards'
 
@@ -36,6 +37,22 @@ describe('parseBoardsBridgeRequest', () => {
 })
 
 describe('boards bridge dispatch', () => {
+  it('makes saved anonymous evidence available to a conversation without auto-applying a highlight', async () => {
+    const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'PRIVATE_RANGE', window: { start: '2026-01-01', end: '2026-01-07' }, capturedAt: 100,
+      accounts: [{ platform: 'tiktok', accountId: '7300000000000999999', name: 'PRIVATE_NAME', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-07' }, previousWindow: null, sourceAt: 90, timezone: 'UTC', currency: 'USD', spend: 42, previousSpend: null, impressions: 10, clicks: 1, conversions: 1 }] }
+    const created = saveReadingSnapshot({ name: 'PRIVATE_BOARD', snapshot, includeChart: false })
+    if (!created.ok) throw new Error(created.error)
+    const read = await dispatch({ action: 'board_get', boardId: created.board.id })
+    const output = JSON.stringify(read)
+    for (const secret of ['PRIVATE_NAME', 'PRIVATE_BOARD', 'PRIVATE_RANGE', '7300000000000999999']) expect(output).not.toContain(secret)
+    const config = (read.board as { widgets: Array<{ config: { evidence: { boardId: string; widgetId: string; revision: string } } }> }).widgets[0].config
+    const proposal = { version: 1, boardId: config.evidence.boardId, widgetId: config.evidence.widgetId, revision: config.evidence.revision, highlights: [{ text: 'Review this spending', evidence: [{ accountIndex: 1, metric: 'spend', value: 42 }] }] }
+    const raw = JSON.stringify(proposal)
+    expect(validateBoardHighlights({ raw })).toMatchObject({ ok: true })
+    expect(listBoards()[0].widgets).toHaveLength(1)
+    expect(applyBoardHighlights({ raw })).toMatchObject({ ok: true, boardId: created.board.id })
+    expect(listBoards()[0].widgets).toHaveLength(2)
+  })
   it('only exposes a bounded anonymized projection of reading snapshots to model board operations', async () => {
     const snapshot: ReadingSnapshot = {
       kind: 'reading-snapshot', version: 1, rangeLabel: 'PRIVATE_RANGE', window: { start: '2026-01-01', end: '2026-01-07' }, capturedAt: 10,
@@ -60,10 +77,11 @@ describe('boards bridge dispatch', () => {
     }
     const projected = await dispatch({ action: 'board_get', boardId: board.id })
     expect(projected.board).toMatchObject({ id: board.id, name: '读数快照看板' })
-    const config = (projected.board as { widgets: Array<{ config: { anonymized: boolean; accountCount: number; omittedCount: number; accounts: unknown[] } }> }).widgets[0].config
-    expect(config).toMatchObject({ anonymized: true, accountCount: 51, omittedCount: 1 })
-    expect(config.accounts).toHaveLength(50)
-    expect(config.accounts[0]).toMatchObject({ index: 1, platform: 'tiktok', status: 'ok', currency: 'USD', spend: 1 })
+    const config = (projected.board as { widgets: Array<{ config: { anonymized: boolean; accountCount: number; evidence: { boardId: string; widgetId: string; revision: string; omittedCount: number; accounts: unknown[] } } }> }).widgets[0].config
+    expect(config).toMatchObject({ anonymized: true, accountCount: 51, evidence: { boardId: board.id, widgetId: board.widgets[0].id, omittedCount: 1 } })
+    expect(config.evidence.revision).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(config.evidence.accounts).toHaveLength(50)
+    expect(config.evidence.accounts[0]).toMatchObject({ index: 1, platform: 'tiktok', status: 'ok', currency: 'USD', metrics: { spend: 1 } })
   })
   it('creates a standard TikTok board with a bound reading module', async () => {
     const created = await dispatch({
@@ -82,7 +100,7 @@ describe('boards bridge dispatch', () => {
     expect(reading?.config.advertiserIds).toBe('7300000000001, 7300000000002')
     expect(reading?.config.range).toBe('7')
     expect(listBoards()[0].masterScope).toMatchObject({ range: 'last7' })
-    expect(existsSync(path.join(dir, 'kanban-boards.json'))).toBe(true)
+    expect(existsSync(path.join(dir, 'kanban-boards-v2.json'))).toBe(true)
   })
 
   it('rejects duplicate board names and reports existing names', async () => {
@@ -268,7 +286,7 @@ describe('bridge access and workspace file authority', () => {
       expect(await authorizeAndDispatch('s', { action }, deps)).toEqual({ ok: false, error: 'permission-denied' })
     }
     expect(deps.confirm).not.toHaveBeenCalled()
-    expect(existsSync(path.join(dir, 'kanban-boards.json'))).toBe(false)
+    expect(existsSync(path.join(dir, 'kanban-boards-v2.json'))).toBe(false)
   })
 
   it('denies remote sessions even if their mode claims full', async () => {

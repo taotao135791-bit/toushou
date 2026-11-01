@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { ReadingSnapshot } from '@shared/readingSnapshot'
 import type { KanbanBoard } from '@shared/types'
 import { useModalBoundary } from '../../lib/modalBoundary'
@@ -22,7 +23,7 @@ export function SaveReadingBoardDialog({ snapshot, language, onClose, onSaved }:
       else { setError(true); setBusy(false) }
     } catch { setError(true); setBusy(false) }
   }
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+  const dialog = <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
     <div ref={ref} role="dialog" aria-modal="true" aria-labelledby="save-reading-title" className="w-full max-w-lg rounded-2xl border border-line bg-ink-850 p-5 shadow-card">
       <h2 id="save-reading-title" className="text-[16px] font-semibold text-cream">{zh ? '保存为新看板' : 'Save as a new board'}</h2>
       <p className="mt-2 text-[12px] leading-5 text-cream-dim">{zh ? '保存当前范围的读数、日期和读取状态。它是独立快照，之后刷新读数不会改写这份看板。' : 'Save this scope, dates and reading status as an independent snapshot. Later refreshes will not change this board.'}</p>
@@ -34,4 +35,5 @@ export function SaveReadingBoardDialog({ snapshot, language, onClose, onSaved }:
       <div className="mt-5 flex justify-end gap-2"><button disabled={busy} onClick={onClose} className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{zh ? '取消' : 'Cancel'}</button><button disabled={busy || !name.trim()} onClick={() => void save()} className="focus-ring rounded-full bg-accent px-4 py-1.5 text-[12px] text-[rgb(var(--bg-app))] disabled:opacity-40">{busy ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存并打开看板' : 'Save and open board')}</button></div>
     </div>
   </div>
+  return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body)
 }

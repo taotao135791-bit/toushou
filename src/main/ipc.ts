@@ -5,6 +5,8 @@ import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
 import { saveReadingSnapshot } from './readingSnapshots'
 import { exportReadingSnapshot } from './readingSnapshotExport'
+import { loadOrCreateHtmlBoard, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards } from './htmlBoards'
+import { getBoardHighlightEvidence, validateBoardHighlights, applyBoardHighlights } from './boardHighlights'
 import { parseFbReportReference } from '../shared/fbReportReference'
 import { validGoogleReportUrl } from '../shared/googleReport'
 import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
@@ -2542,9 +2544,23 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_SAVE, (_event, input: unknown) => saveReadingSnapshot(input))
   ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, (_event, input: unknown) => exportReadingSnapshot(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_OPEN, (_event, input: unknown) => loadOrCreateHtmlBoard(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_SAVE, (_event, input: unknown) => saveHtmlBoard(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_EXPORT, (_event, input: unknown) => exportHtmlBoard(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_CLEANUP, () => pruneOrphanedHtmlBoards())
+  ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_EVIDENCE, (_event, input: unknown) => getBoardHighlightEvidence(input))
+  ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_VALIDATE, (_event, input: unknown) => validateBoardHighlights(input))
+  ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_APPLY, (_event, input: unknown) => applyBoardHighlights(input))
 
-  ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown) => {
-    return saveBoard(board)
+  ipcMain.handle(IPC_CHANNELS.BOARDS_SAVE, async (_event, board: unknown, expectedUpdatedAt: unknown) => {
+    const expected = expectedUpdatedAt === undefined ? null : expectedUpdatedAt
+    if (expected !== null && (typeof expected !== 'number' || !Number.isSafeInteger(expected) || expected < 0)) return { ok: false, error: 'invalid-input' }
+    const result = saveBoard(board, undefined, expected)
+    if (!result.ok) return result
+    const saved = listBoards().find(item => item.id === (board as { id: string }).id)
+    if (!saved) return { ok: false, error: 'board-store-unreadable' }
+    const cleanup = pruneHtmlBoardsForBoard({ boardId: saved.id, retainedWidgetIds: saved.widgets.filter(item => item.type === 'reading-snapshot').map(item => item.id) })
+    return cleanup.ok ? result : { ok: false, error: 'html-cleanup-failed' }
   })
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_REORDER, async (_event, ids: unknown) => {
@@ -2552,7 +2568,10 @@ export function registerIpc() {
   })
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_DELETE, async (_event, id: unknown) => {
-    return deleteBoard(id)
+    const result = deleteBoard(id)
+    if (!result.ok) return result
+    const cleanup = removeHtmlBoardsForBoard(id)
+    return cleanup.ok ? result : { ok: false, error: 'html-cleanup-failed' }
   })
 
   // Chat → board is intentionally a narrow Main-side append, never a

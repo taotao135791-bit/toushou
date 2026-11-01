@@ -3,6 +3,8 @@ import { IPC_CHANNELS } from '../shared/constants'
 import type { SaveReadingSnapshotInput } from '../shared/readingSnapshot'
 import type { SaveReadingSnapshotResult } from './readingSnapshots'
 import type { ReadingSnapshotExportResult } from './readingSnapshotExport'
+import type { HtmlBoardOpenInput, HtmlBoardSaveInput, HtmlBoardExportInput, HtmlBoardDocumentResult, HtmlBoardExportResult } from '../shared/htmlBoard'
+import type { BoardHighlightsEvidenceResult, BoardHighlightsValidationResult, BoardHighlightsApplyResult } from '../shared/boardHighlights'
 import type {
   FbAccountBalanceRefreshResult,
   FbReadingAccountDiscoveryResult,
@@ -257,7 +259,14 @@ export interface ElectronAPI {
   /** Whole-board upsert; rejects structurally invalid boards. */
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => Promise<SaveReadingSnapshotResult>
   exportReadingSnapshot: (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => Promise<ReadingSnapshotExportResult>
-  saveBoard: (board: KanbanBoard) => Promise<KanbanSaveResult>
+  loadOrCreateHtmlBoard: (input: HtmlBoardOpenInput) => Promise<HtmlBoardDocumentResult>
+  saveHtmlBoard: (input: HtmlBoardSaveInput) => Promise<HtmlBoardDocumentResult>
+  exportHtmlBoard: (input: HtmlBoardExportInput) => Promise<HtmlBoardExportResult>
+  cleanupOrphanedHtmlBoards: () => Promise<{ ok: true; removed: number } | { ok: false; error: string }>
+  getBoardHighlightEvidence: (input: { boardId: string; widgetId: string }) => Promise<BoardHighlightsEvidenceResult>
+  validateBoardHighlights: (input: { raw: string }) => Promise<BoardHighlightsValidationResult>
+  applyBoardHighlights: (input: { raw: string }) => Promise<BoardHighlightsApplyResult>
+  saveBoard: (board: KanbanBoard, expectedUpdatedAt?: number | null) => Promise<KanbanSaveResult>
   reorderBoards: (ids: string[]) => Promise<KanbanSaveResult>
   /** Direct panel refresh of one FB reading module (no chat session). */
   refreshFbReading: (request: {
@@ -734,7 +743,14 @@ const api: ElectronAPI = {
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_SAVE, input),
   exportReadingSnapshot: (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, input),
-  saveBoard: (board: KanbanBoard) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE, board),
+  loadOrCreateHtmlBoard: (input: HtmlBoardOpenInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_OPEN, input),
+  saveHtmlBoard: (input: HtmlBoardSaveInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_SAVE, input),
+  exportHtmlBoard: (input: HtmlBoardExportInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_EXPORT, input),
+  cleanupOrphanedHtmlBoards: () => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_CLEANUP),
+  getBoardHighlightEvidence: (input: { boardId: string; widgetId: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_EVIDENCE, input),
+  validateBoardHighlights: (input: { raw: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_VALIDATE, input),
+  applyBoardHighlights: (input: { raw: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_APPLY, input),
+  saveBoard: (board: KanbanBoard, expectedUpdatedAt?: number | null) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_SAVE, board, expectedUpdatedAt),
   reorderBoards: (ids: string[]) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REORDER, ids),
   refreshFbReading: (request: { alias: string; act: string; businessId: string | null; range: string; startDate?: string; endDate?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.FB_READING_REFRESH, request),

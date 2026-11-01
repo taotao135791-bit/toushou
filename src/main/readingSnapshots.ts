@@ -17,6 +17,6 @@ export function saveReadingSnapshot(raw: unknown, file?: string): SaveReadingSna
   const snapshotCopy = structuredClone(snapshot)
   const board = createBoard(name)
   board.widgets = [createWidget('reading-snapshot', value.language === 'en' ? 'Reading snapshot' : '读数快照', { x: 0, y: 0 }, { snapshot: snapshotCopy, includeChart: value.includeChart })]
-  const saved = file === undefined ? saveBoard(board) : saveBoard(board, file)
+  const saved = saveBoard(board, file, null)
   return saved.ok ? { ok: true, board } : saved
 }

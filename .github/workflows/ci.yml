@@ -67,7 +67,7 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Board UI in Electron
-        run: pnpm exec vitest run src/renderer/pages/boards/boardsFlow.e2e.test.ts
+        run: pnpm exec vitest run src/renderer/pages/boards/boardsFlow.e2e.test.ts src/renderer/pages/boards/htmlBoardSecurity.e2e.test.ts
 
   secret-scan:
     name: Secret scan

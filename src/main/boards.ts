@@ -1,7 +1,7 @@
 import { app } from 'electron'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
   BoardCardsApplyResult,
@@ -22,21 +22,168 @@ import { cardsToWidgets, parseBoardCardsProposal } from '../shared/boardCards'
 
 /**
  * Widget board persistence — a single JSON document at
- * userData/kanban-boards.json, written atomically (tmp + rename, same as
+ * userData/kanban-boards-v2.json, written atomically (tmp + rename, same as
  * writePiSettings). Deliberately NOT the generic store:set IPC: board data
  * crosses the trust boundary as `unknown` and is re-validated on every read
  * and write here. A missing file is an empty list, but a corrupt or unreadable
  * existing file is surfaced to the renderer and is never overwritten by a
- * later save. Reads also run
- * v1 kanban entries (columns/cards) through migrateBoard, so old files show
- * up as v2 widget boards and are written back as v2 on the next save.
+ * later save. Explicit test/import paths retain legacy recovery behavior.
  */
 
 function defaultBoardsFile(): string {
-  return path.join(app.getPath('userData'), 'kanban-boards.json')
+  return path.join(app.getPath('userData'), 'kanban-boards-v2.json')
+}
+
+// Validation must not silently normalize away unknown metadata, even deeply
+// nested in a widget config. Defaults added by validators are harmless.
+function preservesInput(raw: unknown, validated: unknown): boolean {
+  if (Array.isArray(raw)) {
+    return Array.isArray(validated) && raw.length === validated.length && raw.every((item, i) => preservesInput(item, validated[i]))
+  }
+  if (raw !== null && typeof raw === 'object') {
+    if (validated === null || typeof validated !== 'object' || Array.isArray(validated)) return false
+    const output = validated as Record<string, unknown>
+    return Object.entries(raw as Record<string, unknown>).every(([key, value]) =>
+      value === undefined || (Object.prototype.hasOwnProperty.call(output, key) && preservesInput(value, output[key])))
+  }
+  return Object.is(raw, validated)
+}
+
+function migrateLegacyBoard(raw: Record<string, unknown>): KanbanBoard | null {
+  const allowed = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).every(key => keys.includes(key))
+  if (!allowed(raw, ['id', 'name', 'description', 'template', 'columns', 'createdAt', 'updatedAt']) ||
+      (raw.template !== undefined && typeof raw.template !== 'string') ||
+      !Array.isArray(raw.columns) || raw.columns.length > BOARD_LIMITS.maxWidgets) return null
+  const used = new Set<string>()
+  const stableId = (kind: string, index: string) => `legacy-${createHash('sha256').update(JSON.stringify([raw.id, kind, index])).digest('hex').slice(0, 32)}`
+  const normalizeId = (id: unknown, kind: string, index: string): string | null => {
+    const value = id === undefined ? stableId(kind, index) : id
+    if (typeof value !== 'string' || !value || value.length > BOARD_LIMITS.maxIdLength || /[\x00-\x1f\x7f]/.test(value) || used.has(value)) return null
+    used.add(value)
+    return value
+  }
+  const notes: Array<{ title: string; text: string; index: string }> = []
+  const columns: Array<Record<string, unknown>> = []
+  for (const [ci, input] of raw.columns.entries()) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+    const column = input as Record<string, unknown>
+    if (!allowed(column, ['id', 'title', 'cards']) || typeof column.title !== 'string' ||
+        !column.title || column.title.length > BOARD_LIMITS.maxWidgetTitleLength ||
+        !Array.isArray(column.cards) || column.cards.length > BOARD_LIMITS.maxTodoItems) return null
+    const columnId = normalizeId(column.id, 'column', String(ci))
+    if (!columnId) return null
+    const cards: Array<Record<string, unknown>> = []
+    for (const [ki, inputCard] of column.cards.entries()) {
+      if (!inputCard || typeof inputCard !== 'object' || Array.isArray(inputCard)) return null
+      const card = inputCard as Record<string, unknown>
+      if (!allowed(card, ['id', 'title', 'note', 'createdAt']) || typeof card.title !== 'string' ||
+          !card.title.trim() || card.title.length > BOARD_LIMITS.maxTodoTextLength ||
+          (card.note !== undefined && (typeof card.note !== 'string' || card.note.length > BOARD_LIMITS.maxNoteLength)) ||
+          (card.createdAt !== undefined && (typeof card.createdAt !== 'number' || !Number.isFinite(card.createdAt) || card.createdAt < 0))) return null
+      const index = `${ci}:${ki}`
+      const id = normalizeId(card.id, 'card', index)
+      if (!id) return null
+      cards.push({ ...card, id })
+      if (typeof card.note === 'string' && card.note.length) notes.push({ title: card.title, text: card.note, index })
+    }
+    columns.push({ ...column, id: columnId, cards })
+  }
+  const board = migrateBoard({ ...raw, columns })
+  if (!board || board.widgets.length + notes.length > BOARD_LIMITS.maxWidgets) return null
+  if (raw.description !== undefined) {
+    if (typeof raw.description !== 'string' || raw.description.length > BOARD_LIMITS.maxDescriptionLength) return null
+    board.description = raw.description
+  }
+  for (const note of notes) {
+    const id = normalizeId(undefined, 'note', note.index)
+    if (!id) return null
+    const size = WIDGET_DEFAULT_SIZES.note
+    const widget = createWidget('note', note.title.slice(0, BOARD_LIMITS.maxWidgetTitleLength), findFreeSlot(board.widgets, size.w, size.h), { text: note.text })
+    widget.id = id
+    board.widgets.push(widget)
+  }
+  return validateBoard(board, true)
+}
+
+function validateStore(raw: unknown): KanbanBoard[] {
+  let entries: unknown
+  if (Array.isArray(raw)) entries = raw
+  else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const envelope = raw as Record<string, unknown>
+    if (envelope.schemaVersion !== 2 || Object.keys(envelope).some(key => key !== 'schemaVersion' && key !== 'boards')) {
+      throw new Error('Unsupported or invalid boards file version; the original file was preserved.')
+    }
+    entries = envelope.boards
+  }
+  if (!Array.isArray(entries) || entries.length > BOARD_LIMITS.maxBoards) {
+    throw new Error('The local boards file has an invalid format; the original file was preserved.')
+  }
+  const ids = new Set<string>()
+  return entries.map(entry => {
+    const legacy = entry !== null && typeof entry === 'object' && !Array.isArray(entry) && Array.isArray((entry as Record<string, unknown>).columns)
+    const board = legacy ? migrateLegacyBoard(entry as Record<string, unknown>) : validateBoard(entry, true)
+    if (!board || !Number.isSafeInteger(board.updatedAt) || board.updatedAt >= Number.MAX_SAFE_INTEGER || (!legacy && !preservesInput(entry, board)) || ids.has(board.id)) {
+      throw new Error('A board contains unsupported or invalid data; the original file was preserved.')
+    }
+    ids.add(board.id)
+    return board
+  })
+}
+
+function initializeDefaultStore(file: string): void {
+  try {
+    readFileSync(file)
+    return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const legacy = path.join(path.dirname(file), 'kanban-boards.json')
+  let bytes: Buffer
+  try {
+    bytes = readFileSync(legacy)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw new Error('Could not read the original boards file; it was preserved.')
+  }
+  try {
+    const legacyData: unknown = JSON.parse(bytes.toString('utf8'))
+    if (!Array.isArray(legacyData)) throw new Error('The original boards file has an unsupported format; it was preserved.')
+    validateStore(legacyData)
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('The original boards file is not valid JSON; it was preserved.')
+    throw error
+  }
+  mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = `${file}.migration-${process.pid}-${randomUUID()}`
+  const backupTmp = `${file}.backup-${process.pid}-${randomUUID()}`
+  try {
+    writeFileSync(tmp, bytes, { mode: 0o600, flag: 'wx' })
+    // Keep backup and active store on independent inodes, including during
+    // the initial raw-array phase, so in-place edits cannot change both.
+    writeFileSync(backupTmp, bytes, { mode: 0o600, flag: 'wx' })
+    const backup = path.join(path.dirname(file), 'kanban-boards-pre-v2-backup.json')
+    try {
+      linkSync(backupTmp, backup)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      // Never overwrite an existing backup or silently trust unrelated bytes.
+      if (!readFileSync(backup).equals(bytes)) throw new Error('The existing board migration backup differs; all files were preserved.')
+    }
+    try {
+      // A competing initializer must never replace an already-created store.
+      linkSync(tmp, file)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+  } finally {
+    try { rmSync(tmp, { force: true }) } catch { /* best effort */ }
+    try { rmSync(backupTmp, { force: true }) } catch { /* best effort */ }
+  }
 }
 
 function readBoards(file: string): KanbanBoard[] {
+  const isolated = file === defaultBoardsFile()
+  if (isolated) initializeDefaultStore(file)
   let text: string
   try {
     text = readFileSync(file, 'utf-8')
@@ -50,6 +197,7 @@ function readBoards(file: string): KanbanBoard[] {
   } catch {
     throw new Error('The local boards file is not valid JSON.')
   }
+  if (isolated) return validateStore(raw)
   if (!Array.isArray(raw)) {
     throw new Error('The local boards file has an invalid format.')
   }
@@ -67,7 +215,8 @@ function writeBoards(file: string, boards: KanbanBoard[]): void {
   try {
     // Create a fresh private file: a leftover temp file must not cause a
     // brief write to a more permissive path containing account metrics.
-    writeFileSync(tmp, JSON.stringify(boards, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600, flag: 'wx' })
+    const payload = file === defaultBoardsFile() ? { schemaVersion: 2, boards } : boards
+    writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600, flag: 'wx' })
     renameSync(tmp, file)
   } finally {
     try { rmSync(tmp, { force: true }) } catch { /* best effort after failure */ }
@@ -110,9 +259,9 @@ export function reorderBoards(ids: unknown, file: string = defaultBoardsFile()):
 }
 
 /** Whole-board upsert, keyed by board id. Validates before touching disk. */
-export function saveBoard(raw: unknown, file: string = defaultBoardsFile()): KanbanSaveResult {
+export function saveBoard(raw: unknown, file: string = defaultBoardsFile(), expectedUpdatedAt?: number | null): KanbanSaveResult {
   const board = validateBoard(raw, true)
-  if (!board) return { ok: false, error: 'invalid-board' }
+  if (!board || !Number.isSafeInteger(board.updatedAt) || board.updatedAt >= Number.MAX_SAFE_INTEGER || (file === defaultBoardsFile() && !preservesInput(raw, board))) return { ok: false, error: 'invalid-board' }
   let boards: KanbanBoard[]
   try {
     boards = readBoards(file)
@@ -120,7 +269,16 @@ export function saveBoard(raw: unknown, file: string = defaultBoardsFile()): Kan
     return { ok: false, error: 'board-store-unreadable' }
   }
   const index = boards.findIndex((b) => b.id === board.id)
+  if (expectedUpdatedAt === null && index !== -1) return { ok: false, error: 'conflict' }
+  if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== null &&
+      (!Number.isSafeInteger(expectedUpdatedAt) || index === -1 || boards[index].updatedAt !== expectedUpdatedAt || board.updatedAt <= expectedUpdatedAt)) {
+    return { ok: false, error: 'conflict' }
+  }
   if (index !== -1) {
+    if (!Number.isSafeInteger(boards[index].updatedAt) || boards[index].updatedAt >= Number.MAX_SAFE_INTEGER - 1) return { ok: false, error: 'conflict' }
+    // Main-owned legacy callers may submit the old timestamp. Preserve their
+    // behavior while ensuring every mutation invalidates stale UI proposals.
+    board.updatedAt = Math.max(board.updatedAt, boards[index].updatedAt + 1)
     for (const previous of boards[index].widgets) {
       if (previous.type !== 'reading-snapshot') continue
       const next = board.widgets.find(widget => widget.id === previous.id)
@@ -205,7 +363,8 @@ export function appendBoardNote(raw: unknown, file: string = defaultBoardsFile()
   const size = WIDGET_DEFAULT_SIZES.note
   const note = createWidget('note', title.trim(), findFreeSlot(current.widgets, size.w, size.h))
   note.config = { text }
-  const next = { ...current, widgets: [...current.widgets, note], updatedAt: Date.now() }
+  if (!Number.isSafeInteger(current.updatedAt) || current.updatedAt >= Number.MAX_SAFE_INTEGER - 1) return { ok: false, error: 'write-failed' }
+  const next = { ...current, widgets: [...current.widgets, note], updatedAt: Math.max(Date.now(), current.updatedAt + 1) }
   boards[index] = next
   try {
     writeBoards(file, boards)
@@ -300,7 +459,8 @@ export function applyBoardCards(raw: unknown, opts: ApplyBoardCardsOptions = {})
   if (current.widgets.length + widgets.length > BOARD_LIMITS.maxWidgets) {
     return { ok: false, error: 'board-full', issues }
   }
-  const next: KanbanBoard = { ...current, widgets: [...current.widgets, ...widgets], updatedAt: Date.now() }
+  if (!Number.isSafeInteger(current.updatedAt) || current.updatedAt >= Number.MAX_SAFE_INTEGER - 1) return { ok: false, error: 'write-failed', issues }
+  const next: KanbanBoard = { ...current, widgets: [...current.widgets, ...widgets], updatedAt: Math.max(Date.now(), current.updatedAt + 1) }
   boards[index] = next
   try {
     writeBoards(opts.file ?? defaultBoardsFile(), boards)

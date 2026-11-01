@@ -37,7 +37,7 @@ export function ReadingSnapshotView({ snapshot, includeChart, language = 'zh', a
     <p className="mb-2 text-cream-faint">{zh ? '已保存的读数快照，不会自动刷新' : 'Saved reading snapshot; it does not refresh automatically'}{!anonymous && <> · {snapshot.rangeLabel}</>} · {dates(snapshot.window)} · {zh ? '保存于' : 'Saved'} {stamp(snapshot.capturedAt)}</p>
     <div className="overflow-x-auto"><table className="w-full border-collapse text-left">
       <thead><tr>{(zh ? ['平台', '账户', '状态', '报告日期', '来源时间', '币种', '消耗', '上期消耗', '展示', '点击', '结果'] : ['Platform', 'Account', 'Status', 'Report dates', 'Source time', 'Currency', 'Spend', 'Prior spend', 'Impressions', 'Clicks', 'Results']).map(title => <th key={title} scope="col" className="border-b border-line px-2 py-1 font-medium">{title}</th>)}</tr></thead>
-      <tbody>{snapshot.accounts.map((account, index) => <tr key={`${account.platform}-${index}`}>
+      <tbody>{snapshot.accounts.map((account, index) => <tr key={`${account.platform}-${index}`} data-reading-account-index={index + 1} tabIndex={-1}>
         <td className="border-b border-line px-2 py-1">{platform(account.platform)}</td>
         <td className="border-b border-line px-2 py-1"><span>{label(index, account, language, anonymous)}</span>{!anonymous && account.name && account.accountId && <span className="ml-1 text-cream-faint">({account.accountId})</span>}</td>
         <td className="border-b border-line px-2 py-1">{status(account.status, zh)}{!anonymous && account.statusDetail && <span className="block text-cream-faint">{account.statusDetail}</span>}</td>

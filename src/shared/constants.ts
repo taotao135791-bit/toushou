@@ -63,6 +63,13 @@ export const IPC_CHANNELS = {
   BOARDS_SAVE: 'boards:save',
   READING_SNAPSHOT_SAVE: 'readings:save-snapshot',
   READING_SNAPSHOT_EXPORT: 'readings:export-snapshot',
+  HTML_BOARD_OPEN: 'boards:html-open',
+  HTML_BOARD_SAVE: 'boards:html-save',
+  HTML_BOARD_EXPORT: 'boards:html-export',
+  HTML_BOARD_CLEANUP: 'boards:html-cleanup',
+  BOARD_HIGHLIGHTS_EVIDENCE: 'boards:highlights-evidence',
+  BOARD_HIGHLIGHTS_VALIDATE: 'boards:highlights-validate',
+  BOARD_HIGHLIGHTS_APPLY: 'boards:highlights-apply',
   /** Drag-to-reorder the board tabs; the id set must match the store. */
   BOARDS_REORDER: 'boards:reorder',
   FB_READING_REFRESH: 'fb-reading:refresh',

@@ -8,7 +8,9 @@ import type { PermissionMode } from '../shared/types'
 import { parseTikTokAdvertiserIdList } from '../shared/tiktokReport'
 import { serializeBoundedJson } from '../shared/boundedJson'
 import { validateReadingSnapshot } from '../shared/readingSnapshot'
+import { getBoardHighlightEvidence } from './boardHighlights'
 import { listBoards, saveBoard } from './boards'
+import { pruneHtmlBoardsForBoard } from './htmlBoards'
 import { listDatasets } from './boardDatasets'
 import {
   BOARD_LIMITS,
@@ -281,30 +283,17 @@ function boardSummary(board: KanbanBoard): Record<string, unknown> {
       id: widget.id,
       type: widget.type,
       title: widget.type === 'reading-snapshot' ? '读数快照' : isSnapshotBoard ? '组件' : widget.title,
-      config: widget.type === 'reading-snapshot' ? readingSnapshotSummary(widget.config) : isSnapshotBoard ? { withheld: true } : widget.config
+      config: widget.type === 'reading-snapshot' ? readingSnapshotSummary(board, widget.id, widget.config) : isSnapshotBoard ? { withheld: true } : widget.config
     }))
   }
 }
 
 /** Model-facing board reads use a bounded projection, not the private local snapshot. */
-function readingSnapshotSummary(config: Record<string, unknown>): Record<string, unknown> {
+function readingSnapshotSummary(board: KanbanBoard, widgetId: string, config: Record<string, unknown>): Record<string, unknown> {
   const snapshot = validateReadingSnapshot(config.snapshot)
   if (!snapshot) return { anonymized: true, unavailable: true }
-  const accounts = snapshot.accounts.slice(0, 50).map((account, index) => ({
-    index: index + 1,
-    platform: account.platform,
-    status: account.status,
-    window: account.window,
-    previousWindow: account.previousWindow,
-    sourceAt: account.sourceAt,
-    currency: account.currency,
-    spend: account.spend,
-    previousSpend: account.previousSpend,
-    impressions: account.impressions,
-    clicks: account.clicks,
-    conversions: account.conversions
-  }))
-  return { anonymized: true, window: snapshot.window, capturedAt: snapshot.capturedAt, accountCount: snapshot.accounts.length, omittedCount: snapshot.accounts.length - accounts.length, accounts }
+  const result = getBoardHighlightEvidence({ boardId: board.id, widgetId }, { list: () => [board] })
+  return result.ok ? { anonymized: true, accountCount: snapshot.accounts.length, evidence: result.evidence } : { anonymized: true, unavailable: true }
 }
 
 function datasetsOverview(): Array<Record<string, unknown>> {
@@ -554,6 +543,8 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     board.widgets = board.widgets.filter((widget) => widget.id !== widgetId)
     const result = saveBoard(board)
     if (!result.ok) return { ok: false, error: 'save-failed' }
+    const cleanup = pruneHtmlBoardsForBoard({ boardId: board.id, retainedWidgetIds: board.widgets.filter(widget => widget.type === 'reading-snapshot').map(widget => widget.id) })
+    if (!cleanup.ok) return { ok: false, error: 'html-cleanup-failed', message: '组件已删除，但本地 HTML 副本清理失败；请在看板中重试清理。' }
     return { ok: true, board: boardSummary(board) }
   }
 
