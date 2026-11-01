@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import type { ChildProcess, spawn } from 'node:child_process'
-import type { HtmlBoardDocument } from '../shared/htmlBoard'
+import { renderHtmlBoard, type HtmlBoardDocument } from '../shared/htmlBoard'
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' }, dialog: {} }))
 vi.mock('./omp', () => ({ detectCli: () => ({ command: 'omp', path: '/fake/omp', available: true }) }))
 import { fullAiSnapshot, requestHtmlBoardAiEdit, cancelHtmlBoardAiEdit, cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
@@ -12,7 +12,7 @@ const document = { schemaVersion:1, id:'doc', revision:1, source:{boardId:'board
 const input = { id:'doc', expectedRevision:1, instruction:'change the look', requestId:'req' }
 const cli = () => ({command:'omp' as const, path:'/fake/omp', available:true})
 const read = () => ({ok:true as const, document})
-function setup(reply: (layout: {html:string;css:string;theme:string}) => unknown, delayed = false) {
+function setup(reply: (layout: {html:string;css:string;theme:string}) => unknown, delayed = false, streamingEvents = 0) {
   let child: EventEmitter & {stdout:EventEmitter;stderr:EventEmitter;kill:ReturnType<typeof vi.fn>}
   let prompt = '', args: string[] = [], env: NodeJS.ProcessEnv = {}
   const fake = vi.fn((_cmd: unknown, received: unknown, options: unknown) => {
@@ -24,6 +24,10 @@ function setup(reply: (layout: {html:string;css:string;theme:string}) => unknown
       const layout = JSON.parse(prompt.split('Current layout: ')[1])
       const answer = reply(layout)
       const event = { type:'message_end',message:{role:'assistant',stopReason:'stop',content:[{type:'text',text:typeof answer === 'string' ? answer : JSON.stringify(answer)}]}}
+      if (streamingEvents) {
+        const updates = Buffer.from((JSON.stringify({type:'message_update',delta:'界'.repeat(40)})+'\n').repeat(streamingEvents))
+        for (let i=0;i<updates.length;i+=137) child.stdout.emit('data',updates.subarray(i,i+137))
+      }
       child.stdout.emit('data', Buffer.from(JSON.stringify(event)+'\n')); child.emit('close',0)
     })
     return child as unknown as ChildProcess
@@ -69,6 +73,13 @@ describe('AI layout privacy and proposals', () => {
     const bound=setup(layout=>({...layout,html:layout.html+'<p>Spend <span data-reading-value=\"1.spend\"></span></p><div data-reading-chart=\"spend\"></div>'}))
     const result=await requestHtmlBoardAiEdit({...input,modelSelector:'deepseek/deepseek-v4-flash'},{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:bound.fake})
     expect(result.ok).toBe(true)
+    if (result.ok) {
+      const before = structuredClone(document)
+      const html = renderHtmlBoard({...document,html:result.proposal.html,css:result.proposal.css,theme:result.proposal.theme},{anonymize:false})
+      expect(html).toContain('Private Account Name')
+      expect(html).toContain('42')
+      expect(document).toEqual(before)
+    }
     expect(bound.getArgs()).toEqual(expect.arrayContaining(['--model','deepseek/deepseek-v4-flash']))
     const unknown=setup(layout=>({...layout,html:layout.html+'<span data-reading-value=\"2.spend\"></span>'}))
     expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:unknown.fake})).toEqual({ok:false,error:'invalid-output'})
@@ -88,6 +99,12 @@ describe('AI layout privacy and proposals', () => {
     expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:commentary.fake})).toEqual({ok:false,error:'invalid-output'})
     expect(document).toEqual(savedBefore)
   })
+  it('ignores extra model fields and retains the current theme when omitted or unknown', async () => {
+    const s=setup(layout=>({html:layout.html,css:layout.css,theme:'custom',explanation:'extra'}))
+    const result=await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:s.fake})
+    expect(result).toMatchObject({ok:true,proposal:{theme:document.theme}})
+    if (result.ok) expect(Object.keys(result.proposal).sort()).toEqual(['baseRevision','css','html','theme'])
+  })
   it('rejects malformed output and changes made while the model was working', async () => {
     const bad=setup(layout=>({...layout,html:'<script>x</script><div data-reading-slot></div>'}))
     expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:bad.fake})).toEqual({ok:false,error:'invalid-output'})
@@ -102,6 +119,10 @@ describe('AI layout privacy and proposals', () => {
     await Promise.resolve()
     expect(await requestHtmlBoardAiEdit({...input,requestId:'other'},{owner:7,read,cli,spawn:s.fake})).toEqual({ok:false,error:'busy'})
     expect(await pending).toEqual({ok:false,error:'timeout'})
+  })
+  it('accepts a bounded final response after over 256 KB of streaming UTF-8 events', async () => {
+    const s=setup(layout=>layout,false,3000)
+    expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:s.fake})).toMatchObject({ok:true})
   })
   it('rejects an oversized provider response', async () => {
     const s=setup(layout=>({...layout,html:'x'.repeat(300_000)}))

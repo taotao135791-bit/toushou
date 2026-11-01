@@ -71,6 +71,22 @@ export function readHtmlBoardDocument(id: unknown, deps: Dependencies = {}): Htm
 /** Alias for Main callers; neither function is directly registered as IPC. */
 export const readHtmlBoard = readHtmlBoardDocument
 
+/** Read an existing customized document without creating one, bound to its saved source. */
+export function findHtmlBoardForReading(raw: unknown, deps: Dependencies = {}): HtmlBoardDocumentResult {
+  if (!record(raw) || !keys(raw, ['boardId', 'widgetId']) || !isSourceId(raw.boardId) || !isSourceId(raw.widgetId)) return { ok: false, error: 'invalid-input' }
+  let boards: KanbanBoard[], documents: HtmlBoardDocument[]
+  try { boards = (deps.boards ?? listBoards)(); documents = readDocuments(deps.file ?? defaultFile()) }
+  catch { return { ok: false, error: 'store-unreadable' } }
+  const widget = boards.find(board => board.id === raw.boardId)?.widgets.find(item => item.id === raw.widgetId && item.type === 'reading-snapshot')
+  if (!widget) return { ok: false, error: 'not-found' }
+  const snapshot = validateReadingSnapshot(widget.config.snapshot)
+  if (!snapshot) return { ok: false, error: 'invalid-snapshot' }
+  const document = documents.find(item => item.source.boardId === raw.boardId && item.source.widgetId === raw.widgetId)
+  if (!document) return { ok: false, error: 'not-found' }
+  if (document.source.snapshotHash !== hash(snapshot)) return { ok: false, error: 'conflict' }
+  return { ok: true, document: structuredClone(document) }
+}
+
 /** Load an existing document or create one from a saved immutable reading snapshot. */
 export function loadOrCreateHtmlBoard(raw: unknown, deps: Dependencies = {}): HtmlBoardDocumentResult {
   if (!record(raw) || !keys(raw, ['boardId', 'widgetId', 'template', 'language']) || !isSourceId(raw.boardId) || !isSourceId(raw.widgetId) || (raw.template !== undefined && (typeof raw.template !== 'string' || !['editorial', 'operations', 'minimal'].includes(raw.template))) || (raw.language !== undefined && raw.language !== 'zh' && raw.language !== 'en')) return { ok: false, error: 'invalid-input' }

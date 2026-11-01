@@ -52,6 +52,7 @@ export interface WidgetBodyProps {
   onSnapshotSaved?: (board: KanbanBoard, openAi?: boolean) => void
   autoOpenAi?: boolean
   onAiOpened?: () => void
+  showReadingSource?: boolean
   /** Board master-scope window: dataset-bound widgets filter rows to it, so
    *  switching the master range re-scopes every card instantly. latestDay
    *  marks the 今天 scope — the account's CURRENT stat day, not a calendar
@@ -658,7 +659,7 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   )
 }
 
-export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
+export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, showReadingSource, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -673,7 +674,7 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapsh
     case 'tt-reading':
       return <TTReadingBody widget={widget} />
     case 'reading-snapshot':
-      return <ReadingSnapshotBody widget={widget} boardId={boardId} autoOpenAi={autoOpenAi} onAiOpened={onAiOpened} />
+      return <ReadingSnapshotBody widget={widget} boardId={boardId} autoOpenAi={autoOpenAi} onAiOpened={onAiOpened} showReadingSource={showReadingSource} />
     case 'note':
       return <NoteBody widget={widget} />
     case 'counter':

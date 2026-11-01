@@ -64,6 +64,7 @@ export const IPC_CHANNELS = {
   READING_SNAPSHOT_SAVE: 'readings:save-snapshot',
   READING_SNAPSHOT_EXPORT: 'readings:export-snapshot',
   HTML_BOARD_OPEN: 'boards:html-open',
+  HTML_BOARD_FIND: 'boards:html-find',
   HTML_BOARD_SAVE: 'boards:html-save',
   HTML_BOARD_EXPORT: 'boards:html-export',
   HTML_BOARD_CLEANUP: 'boards:html-cleanup',

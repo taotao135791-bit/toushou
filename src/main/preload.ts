@@ -261,6 +261,7 @@ export interface ElectronAPI {
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => Promise<SaveReadingSnapshotResult>
   exportReadingSnapshot: (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => Promise<ReadingSnapshotExportResult>
   loadOrCreateHtmlBoard: (input: HtmlBoardOpenInput) => Promise<HtmlBoardDocumentResult>
+  findHtmlBoardForReading: (input: { boardId: string; widgetId: string }) => Promise<HtmlBoardDocumentResult>
   saveHtmlBoard: (input: HtmlBoardSaveInput) => Promise<HtmlBoardDocumentResult>
   exportHtmlBoard: (input: HtmlBoardExportInput) => Promise<HtmlBoardExportResult>
   cleanupOrphanedHtmlBoards: () => Promise<{ ok: true; removed: number } | { ok: false; error: string }>
@@ -747,6 +748,7 @@ const api: ElectronAPI = {
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_SAVE, input),
   exportReadingSnapshot: (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, input),
   loadOrCreateHtmlBoard: (input: HtmlBoardOpenInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_OPEN, input),
+  findHtmlBoardForReading: (input: { boardId: string; widgetId: string }) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_FIND, input),
   saveHtmlBoard: (input: HtmlBoardSaveInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_SAVE, input),
   exportHtmlBoard: (input: HtmlBoardExportInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_EXPORT, input),
   cleanupOrphanedHtmlBoards: () => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_CLEANUP),

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
 import { saveReadingSnapshot } from './readingSnapshots'
 import { exportReadingSnapshot } from './readingSnapshotExport'
-import { loadOrCreateHtmlBoard, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards } from './htmlBoards'
+import { loadOrCreateHtmlBoard, findHtmlBoardForReading, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards } from './htmlBoards'
 import { getBoardHighlightEvidence, validateBoardHighlights, applyBoardHighlights } from './boardHighlights'
 import { requestHtmlBoardAiEdit, cancelHtmlBoardAiEdit, cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { parseFbReportReference } from '../shared/fbReportReference'
@@ -2548,6 +2548,7 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_SAVE, (_event, input: unknown) => saveReadingSnapshot(input))
   ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, (_event, input: unknown) => exportReadingSnapshot(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_OPEN, (_event, input: unknown) => loadOrCreateHtmlBoard(input))
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_FIND, (_event, input: unknown) => findHtmlBoardForReading(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_SAVE, (_event, input: unknown) => saveHtmlBoard(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_EXPORT, (_event, input: unknown) => exportHtmlBoard(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_CLEANUP, () => pruneOrphanedHtmlBoards())

@@ -142,5 +142,7 @@ describe('offline HTML board templates', () => {
       '.x { content: "fake"; }', '.x { color: var(--private); }', '.x { color: red !important; }',
       '.x { color: red; } </style><script>x</script>', '.x { width: 1e100px; }'
     ]) expect(() => scopedHtmlBoardCss(css), css).toThrow()
+    expect(scopedHtmlBoardCss('.x { color: #e2e8f0; border: 1px solid #cbd5e1; background: #2e8; }')).toContain('color:#e2e8f0')
+    expect(() => scopedHtmlBoardCss('.x { width: 1e4px; }')).toThrow()
   })
 })

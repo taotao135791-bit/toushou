@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync 
 import path from 'node:path'
 import os from 'node:os'
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' }, dialog: { showSaveDialog: vi.fn() } }))
-import { loadOrCreateHtmlBoard, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards, readHtmlBoardDocument } from './htmlBoards'
+import { loadOrCreateHtmlBoard, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards, readHtmlBoardDocument, findHtmlBoardForReading } from './htmlBoards'
 import { deleteBoard, listBoards } from './boards'
 import { saveReadingSnapshot } from './readingSnapshots'
 import type { ReadingSnapshot } from '../shared/readingSnapshot'
@@ -48,6 +48,25 @@ describe('local HTML board documents', () => {
     expect(again.document.snapshot.accounts[0].spend).toBe(10)
     writeFileSync(f.file, '{bad')
     expect(readHtmlBoardDocument(opened.document.id, f.deps)).toEqual({ ok: false, error: 'store-unreadable' })
+  })
+  it('finds a saved customized board without creating one and verifies its source', () => {
+    const f = fixture(), key = { boardId: f.board.id, widgetId: f.widget.id }
+    expect(findHtmlBoardForReading(key, f.deps)).toEqual({ ok: false, error: 'not-found' })
+    expect(() => statSync(f.file)).toThrow()
+    const opened = loadOrCreateHtmlBoard(key, f.deps)
+    if (!opened.ok) throw Error('fixture failed')
+    const edited = saveHtmlBoard({ id: opened.document.id, expectedRevision: 1, html: '<p>Edited</p><div data-reading-slot></div>', css: '' }, f.deps)
+    if (!edited.ok) throw Error('save failed')
+    const found = findHtmlBoardForReading(key, f.deps)
+    expect(found.ok).toBe(true)
+    if (!found.ok) throw Error('find failed')
+    expect(found.document.html).toContain('Edited')
+    expect(found.document.revision).toBe(2)
+    const changed = structuredClone(f.board)
+    ;(changed.widgets[0].config.snapshot as ReadingSnapshot).accounts[0].spend = 999
+    expect(findHtmlBoardForReading(key, { ...f.deps, boards: () => [changed] })).toEqual({ ok: false, error: 'conflict' })
+    writeFileSync(f.deps.boardFile, '{bad')
+    expect(findHtmlBoardForReading(key, f.deps)).toEqual({ ok: false, error: 'store-unreadable' })
   })
   it('rejects stale edits, unsafe content and attempts to replace snapshot data', () => {
     const f = fixture(), opened = loadOrCreateHtmlBoard({ boardId: f.board.id, widgetId: f.widget.id }, f.deps)

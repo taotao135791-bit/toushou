@@ -3,17 +3,17 @@ import { spawn as nativeSpawn, spawnSync as nativeSpawnSync } from 'node:child_p
 import crossSpawn from 'cross-spawn'
 
 function isWindowsCmd(command: string): boolean {
-  return process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')
+  return process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(command)
 }
 
-/** npm `.cmd` shims create a cmd.exe parent; terminate its whole tree on close. */
+/** Windows `.cmd` and `.bat` shims create a cmd.exe parent; terminate its whole tree on close. */
 function withWindowsTreeKill(child: ChildProcess): ChildProcess {
   const kill = child.kill.bind(child)
   child.kill = ((signal?: NodeJS.Signals | number) => {
     if (child.pid && process.platform === 'win32') {
       try {
-        nativeSpawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' })
-        return true
+        const result = nativeSpawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' })
+        if (!result.error && result.status === 0) return true
       } catch {
         // Fall back to the normal kill if taskkill is unavailable or the process is gone.
       }
@@ -23,7 +23,7 @@ function withWindowsTreeKill(child: ChildProcess): ChildProcess {
   return child
 }
 
-/** Spawn a CLI without changing normal platform behavior; cross-spawn handles Windows cmd shims. */
+/** Spawn a CLI without changing normal platform behavior; cross-spawn handles Windows command shims. */
 export function spawnCommand(command: string, args: string[], options: SpawnOptions): ChildProcess {
   if (!isWindowsCmd(command)) return nativeSpawn(command, args, options)
   return withWindowsTreeKill(crossSpawn(command, args, options))

@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import type { ChildProcess, spawn } from 'node:child_process'
+import { spawnCommand } from './command'
 import { StringDecoder } from 'node:string_decoder'
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -48,7 +49,7 @@ export interface HtmlBoardAiDependencies {
   defaultModel?: () => Promise<string | null>
   sourceAgent?: string
 }
-const argsBase = ['--mode', 'json', '--print', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-rules', '--no-lsp', '--no-pty', '--no-title', '--max-time=180', '--thinking=low']
+const argsBase = ['--mode', 'json', '--print', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-rules', '--no-lsp', '--no-pty', '--no-title', '--max-time=180', '--thinking=off']
 const modelEnv = (home: string): NodeJS.ProcessEnv => {
   const allowed = new Set(['PATH','SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','LANG','LC_ALL','LC_CTYPE','OPENAI_API_KEY','DEEPSEEK_API_KEY','ANTHROPIC_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY','OPENROUTER_API_KEY','XAI_API_KEY','MISTRAL_API_KEY','GROQ_API_KEY'])
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())))
@@ -113,50 +114,78 @@ export async function requestHtmlBoardAiEdit(raw: unknown, deps: HtmlBoardAiDepe
     if (!sourceAgent) return { ok:false, error:'unavailable' }
     const isolatedHome = path.join(directory, 'home')
     const env = prepareIsolatedAiHome(isolatedHome, sourceAgent, selector)
-    const prompt = `You edit a static HTML report for an advertising optimizer. Return ONLY JSON with exactly html, css and theme; theme must be editorial, operations or minimal. Preserve data-reading-slot as a single empty top-level div. Never add scripts, links, remote resources or hidden data. HTML allowed tags: ${HTML_BOARD_ALLOWED_TAGS.join(', ')}. Only class, title, aria-label, colspan and rowspan attributes are permitted on ordinary elements; class names may contain letters, digits, underscores, hyphens and spaces. Do not use inline style attributes. Use plain CSS rules, no at-rules, pseudo classes/elements, IDs, attribute selectors, quoted values, escapes or !important. Selectors may contain only letters, digits, underscores, periods, asterisks, hyphens, spaces, > and commas separating selectors. Allowed CSS properties: ${HTML_BOARD_ALLOWED_CSS_PROPERTIES.join(', ')}. Values may contain only letters, digits, #, periods, commas, percent, parentheses, spaces, plus, hyphen and slash. Allowed functions: ${HTML_BOARD_ALLOWED_CSS_FUNCTIONS.join(', ')}. No negative numbers; each numeric value must be at most 10000. Avoid box-shadow, overflow, position, transform, animation and quoted font names. Example: .card { background: #fff; color: #253047; padding: 16px; border-radius: 8px; } Follow the user instruction, including requested edits to existing text. Use the saved snapshot data below to identify the correct account by name and ID, while treating missing values as unknown and avoiding invented claims or causal explanations.
+    const prompt = `You edit a static HTML report for an advertising optimizer. Return ONLY JSON with exactly html, css and theme; theme must be editorial, operations or minimal. Keep the output compact: html below 4000 characters and css below 2000 characters, with no explanations. A few concise KPI cards are sufficient. Preserve data-reading-slot as a single empty top-level div. Never add scripts, links, remote resources or hidden data. HTML allowed tags: ${HTML_BOARD_ALLOWED_TAGS.join(', ')}. Only class, title, aria-label, colspan and rowspan attributes are permitted on ordinary elements; class names may contain letters, digits, underscores, hyphens and spaces. Do not use inline style attributes. Use plain CSS rules, no at-rules, pseudo classes/elements, IDs, attribute selectors, quoted values, escapes or !important. Selectors may contain only letters, digits, underscores, periods, asterisks, hyphens, spaces, > and commas separating selectors. Allowed CSS properties: ${HTML_BOARD_ALLOWED_CSS_PROPERTIES.join(', ')}. Values may contain only letters, digits, #, periods, commas, percent, parentheses, spaces, plus, hyphen and slash. Allowed functions: ${HTML_BOARD_ALLOWED_CSS_FUNCTIONS.join(', ')}. No negative numbers; each numeric value must be at most 10000. Avoid box-shadow, overflow, position, transform, animation and quoted font names. Example: .card { background: #fff; color: #253047; padding: 16px; border-radius: 8px; } Follow the user instruction, including requested edits to existing text. Use the saved snapshot data below to identify the correct account by name and ID, while treating missing values as unknown and avoiding invented claims or causal explanations.
 Instruction: ${raw.instruction}
 Saved snapshot (only selected first 50 accounts; omittedCount indicates accounts not sent): ${JSON.stringify(summary)}
 For values use empty <span data-reading-value="1.spend"></span>, where 1 is a 1-based index and field is spend, previousSpend, impressions, clicks, conversions, currency, status, account, windowStart, or windowEnd. You may add class but no other attributes. Use bindings for account metric values and dates rather than copying numbers into custom text. Custom text is a suggestion that the user reviews. Render KPI cards around the full-report slot. For a data-driven spend chart use empty <div data-reading-chart="spend"></div> at most twice without extra attributes; the app renders the saved values grouped by platform and currency. Do not draw charts from hard-coded numbers. Use only indexes present above; failed and unavailable accounts have no metrics. Result definitions can differ: do not aggregate or compare conversions without evidence.
 Current layout: ${JSON.stringify(layout)}`
     writeFileSync(path.join(directory, 'prompt.md'), prompt, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-    const result = await new Promise<{ output?: string; error?: 'cancelled'|'timeout'|'failed'|'invalid-output' }>(resolve => {
-      let done = false, output = '', size = 0
+    const result = await new Promise<{ response?: string; error?: 'cancelled'|'timeout'|'failed'|'invalid-output' }>(resolve => {
+      let done = false, pending = '', response = '', size = 0
       const decoder = new StringDecoder('utf8')
       let timer: ReturnType<typeof setTimeout> | undefined
-      const finish = (value: { output?:string; error?: 'cancelled'|'timeout'|'failed'|'invalid-output' }) => { if (done) return; done = true; clearTimeout(timer); resolve(value) }
+      const finish = (value: { response?:string; error?: 'cancelled'|'timeout'|'failed'|'invalid-output' }) => { if (done) return; done = true; clearTimeout(timer); resolve(value) }
       let child: ChildProcess
-      try { child = (deps.spawn ?? spawn)(cli.path ?? cli.command, [...argsBase, ...(raw.modelSelector ? ['--model',raw.modelSelector] : []), '@prompt.md'], { cwd: directory, env, stdio: ['ignore','pipe','pipe'], windowsHide: true }) } catch { finish({error:'failed'}); return }
+      try { child = (deps.spawn ?? spawnCommand)(cli.path ?? cli.command, [...argsBase, ...(raw.modelSelector ? ['--model',raw.modelSelector] : []), '@prompt.md'], { cwd: directory, env, stdio: ['ignore','pipe','pipe'], windowsHide: true }) } catch { finish({error:'failed'}); return }
       entry.child = child
       if (entry.cancelled) child.kill()
       timer = setTimeout(() => { finish({error:'timeout'}); child.kill() }, deps.timeoutMs ?? 185_000)
-      child.stdout?.on('data', (chunk: Buffer) => { size += chunk.length; if (size > 256_000) { finish({error:'invalid-output'}); child.kill(); return } output += decoder.write(chunk) })
+      const failOutput = () => { finish({error:'invalid-output'}); child.kill() }
+      const consume = (line: string): boolean => {
+        if (!line.trim()) return true
+        if (line.length > 256_000) return false
+        let event: unknown
+        try { event = JSON.parse(line) } catch { return false }
+        if (!record(event) || event.type !== 'message_end' || !record(event.message) || event.message.role !== 'assistant') return true
+        if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') { finish({error:'failed'}); return true }
+        if (!Array.isArray(event.message.content)) return false
+        response = event.message.content.filter((part: unknown) => record(part) && part.type === 'text' && typeof part.text === 'string').map((part: {text:string}) => part.text).join('')
+        return response.length <= 200_000
+      }
+      const append = (text: string): boolean => {
+        pending += text
+        let newline: number
+        while ((newline = pending.indexOf('\n')) !== -1) {
+          const line = pending.slice(0,newline); pending = pending.slice(newline+1)
+          if (!consume(line)) return false
+          if (done) return true
+        }
+        return pending.length <= 256_000
+      }
+      child.stdout?.on('data', (chunk: Buffer) => {
+        if (done) return
+        size += chunk.length
+        // Streaming events may be numerous; bound their total without retaining them.
+        if (size > 32_000_000 || !append(decoder.write(chunk))) failOutput()
+      })
       child.stderr?.on('data', () => { /* never log provider or prompt contents */ })
       child.on('error', () => finish({error: entry.cancelled ? 'cancelled' : 'failed'}))
-      child.on('close', code => { output += decoder.end(); finish(entry.cancelled ? {error:'cancelled'} : code === 0 ? {output} : {error:'failed'}) })
+      child.on('close', code => {
+        if (done) return
+        if (entry.cancelled) { finish({error:'cancelled'}); return }
+        if (code !== 0) { finish({error:'failed'}); return }
+        if (!append(decoder.end()) || (pending && !consume(pending))) { finish({error:'invalid-output'}); return }
+        if (!response) { finish({error:'invalid-output'}); return }
+        finish({response})
+      })
     })
     if (result.error) return { ok:false, error:result.error }
-    let response = ''
+    const response = result.response ?? ''
     try {
-      for (const line of (result.output ?? '').split(/\r?\n/)) {
-        if (!line.trim()) continue
-        const event: unknown = JSON.parse(line)
-        if (!record(event) || event.type !== 'message_end' || !record(event.message) || event.message.role !== 'assistant') continue
-        if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') return {ok:false,error:'failed'}
-        if (!Array.isArray(event.message.content)) return {ok:false,error:'invalid-output'}
-        response = event.message.content.filter((part: unknown) => record(part) && part.type === 'text' && typeof part.text === 'string').map((part: {text:string}) => part.text).join('')
-      }
       const trimmed = response.trim()
       const fenced = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed)
       const json: unknown = JSON.parse(fenced ? fenced[1] : trimmed)
-      if (!record(json) || Object.keys(json).some(key => !['html','css','theme'].includes(key)) || !['html','css','theme'].every(key => key in json) || typeof json.html !== 'string' || json.html.length > HTML_BOARD_MAX_HTML || typeof json.css !== 'string' || json.css.length > HTML_BOARD_MAX_CSS || !['editorial','operations','minimal'].includes(String(json.theme))) return {ok:false,error:'invalid-output'}
+      if (!record(json) || typeof json.html !== 'string' || json.html.length > HTML_BOARD_MAX_HTML || typeof json.css !== 'string' || json.css.length > HTML_BOARD_MAX_CSS) return {ok:false,error:'invalid-output'}
+      // Only known output fields reach the proposal; an unknown or absent theme keeps the current style.
+      const theme: HtmlBoardTemplate = json.theme === 'editorial' || json.theme === 'operations' || json.theme === 'minimal' ? json.theme : layout.theme
       parseHtmlBoardTemplate(json.html); scopedHtmlBoardCss(json.css)
       const restored = { html:json.html, css:json.css }
-      if (!validateHtmlBoardDocument({ ...before.document, ...restored, theme:json.theme })) return {ok:false,error:'invalid-output'}
+      if (!validateHtmlBoardDocument({ ...before.document, ...restored, theme })) return {ok:false,error:'invalid-output'}
       const after = read(raw.id)
       if (!after.ok) return {ok:false,error:after.error === 'not-found' ? 'not-found' : 'store-unreadable'}
       if (after.document.revision !== raw.expectedRevision) return {ok:false,error:'conflict'}
       if (entry.cancelled) return {ok:false,error:'cancelled'}
-      return {ok:true,proposal:{...restored,theme:json.theme as HtmlBoardTemplate,baseRevision:raw.expectedRevision}}
+      return {ok:true,proposal:{...restored,theme,baseRevision:raw.expectedRevision}}
     } catch { return {ok:false,error:'invalid-output'} }
   } catch { return {ok:false,error:'failed'} }
   finally { active.delete(raw.requestId); if (directory) { try { rmSync(directory,{recursive:true,force:true}) } catch { /* best effort */ } } }

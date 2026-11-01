@@ -13,7 +13,7 @@ import { htmlBoardTemplate, renderHtmlBoard, type HtmlBoardDocument } from '@sha
 import { parseBoardHighlights, type BoardHighlightEvidence } from '@shared/boardHighlights'
 
 const saved: KanbanBoard[] = []
-const v2: { document: HtmlBoardDocument | null; exportHtml: string; evidence: BoardHighlightEvidence | null; applied: number; lastValidation: string | null; aiMode: 'fail' | 'pending' | 'success'; aiCalls: number; aiCancels: number; aiInput: unknown; chatPrompts: string[]; sessionModes: unknown[]; aiResolve?: (result: { ok: false; error: string }) => void; showProposal?: (raw: string) => void } = { document: null, exportHtml: '', evidence: null, applied: 0, lastValidation: null, aiMode: 'fail', aiCalls: 0, aiCancels: 0, aiInput: null, chatPrompts: [], sessionModes: [] }
+const v2: { document: HtmlBoardDocument | null; exportHtml: string; evidence: BoardHighlightEvidence | null; applied: number; lastValidation: string | null; aiMode: 'fail' | 'pending' | 'success'; aiCalls: number; aiCancels: number; aiInput: unknown; htmlSaveFail: boolean; chatPrompts: string[]; sessionModes: unknown[]; findDelayed?: boolean; findResolve?: () => void; aiResolve?: (result: { ok: false; error: string }) => void; showProposal?: (raw: string) => void } = { document: null, exportHtml: '', evidence: null, applied: 0, lastValidation: null, aiMode: 'fail', aiCalls: 0, aiCancels: 0, aiInput: null, htmlSaveFail: false, chatPrompts: [], sessionModes: [] }
 const revision = `sha256:${'a'.repeat(64)}`
 const pendingRequests = new Map<string, (value: unknown) => void>()
 const scenario: { summary: unknown; datasets: unknown[]; datasetFail: boolean; pending: boolean; todayPending: boolean; singlePending: boolean; denySingleCancel: boolean; lastRequest: string | null; todayRequest: string | null; todayResult: unknown; todayAlternateResult: unknown; customResult: unknown; partialCancelResult: unknown; singleResult: unknown; singleTodayResult: unknown; clipboard: string; todayInputs: Array<{range?: string; advertiserId?: string; requestId?: string; startDate?: string; endDate?: string}>; progress: ((value: { requestId: string; completed: number; total: number; succeeded: number }) => void) | null; cancelled: string[]; snapshotSaveFail: boolean; snapshotInput: SaveReadingSnapshotInput | null; exportInput: {boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en'} | null; exportedHtml: string } = { summary: { ok: false, error: 'no-credentials' }, datasets: [], datasetFail: false, pending: false, todayPending: false, singlePending: false, denySingleCancel: false, lastRequest: null, todayRequest: null, todayResult: null, todayAlternateResult: null, customResult: null, partialCancelResult: null, singleResult: null, singleTodayResult: null, clipboard: '', todayInputs: [], progress: null, cancelled: [], snapshotSaveFail: false, snapshotInput: null, exportInput: null, exportedHtml: '' }
@@ -45,6 +45,15 @@ Object.assign(window, {
     saveBoard: async (board: KanbanBoard) => { saved.push(board); return { ok: true } },
     saveReadingSnapshot: async (input: SaveReadingSnapshotInput) => { scenario.snapshotInput = structuredClone(input); if (scenario.snapshotSaveFail) return { ok: false, error: 'write-failed' }; const board = createBoard(input.name); board.widgets = [createWidget('reading-snapshot', 'Reading snapshot', { x: 0, y: 0 }, { snapshot: structuredClone(input.snapshot), includeChart: input.includeChart })]; saved.push(board); return { ok: true, board } },
     exportReadingSnapshot: async (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => { scenario.exportInput = input; const board = saved.find(item => item.id === input.boardId); const widget = board?.widgets.find(item => item.id === input.widgetId && item.type === 'reading-snapshot'); if (!widget) return { ok: false, error: 'not-found' }; scenario.exportedHtml = renderReadingSnapshotHtml(widget.config.snapshot, { anonymize: input.anonymize, includeChart: widget.config.includeChart === true, language: input.language, title: board?.name }); return { ok: true } },
+    findHtmlBoardForReading: async (input: { boardId: string; widgetId: string }) => {
+      const widget = saved.find(board => board.id === input.boardId)?.widgets.find(item => item.id === input.widgetId)
+      const existing = v2.document && v2.document.source.boardId === input.boardId && v2.document.source.widgetId === input.widgetId ? structuredClone(v2.document) : null
+      if (v2.findDelayed && widget) {
+        const old = existing ?? { schemaVersion: 1 as const, id: 'fixture-doc', revision: 1, source: { boardId: input.boardId, widgetId: input.widgetId, snapshotHash: 'a'.repeat(64) }, snapshot: structuredClone(widget.config.snapshot) as HtmlBoardDocument['snapshot'], includeChart: widget.config.includeChart === true, ...htmlBoardTemplate('editorial', 'en'), createdAt: 1, updatedAt: 1 }
+        return await new Promise(resolve => { v2.findResolve = () => resolve({ ok: true, document: old }) })
+      }
+      return existing ? { ok: true, document: existing } : { ok: false, error: 'not-found' }
+    },
     loadOrCreateHtmlBoard: async (input: { boardId: string; widgetId: string; language: 'en' | 'zh' }) => {
       if (!v2.document || v2.document.source.boardId !== input.boardId || v2.document.source.widgetId !== input.widgetId) {
         const widget = saved.find(board => board.id === input.boardId)?.widgets.find(item => item.id === input.widgetId)
@@ -54,6 +63,7 @@ Object.assign(window, {
       return { ok: true, document: structuredClone(v2.document) }
     },
     saveHtmlBoard: async (input: { id: string; expectedRevision: number; html: string; css: string; theme?: HtmlBoardDocument['theme'] }) => {
+      if (v2.htmlSaveFail) return { ok: false, error: 'write-failed' }
       if (!v2.document || v2.document.revision !== input.expectedRevision) return { ok: false, error: 'conflict' }
       v2.document = { ...v2.document, html: input.html, css: input.css, theme: input.theme, revision: input.expectedRevision + 1 }
       return { ok: true, document: structuredClone(v2.document) }

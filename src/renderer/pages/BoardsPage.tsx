@@ -1401,6 +1401,7 @@ export default function BoardsPage() {
           onSnapshotSaved={(board, openAi) => { setBoards(prev => [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }}
           autoOpenAi={autoEditWidgetId === widget.id}
           onAiOpened={() => setAutoEditWidgetId(null)}
+          showReadingSource={revealTarget?.widgetId === widget.id}
           masterWindow={
             master
               ? master.range === 'today'

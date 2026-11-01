@@ -178,7 +178,7 @@ export function scopedHtmlBoardCss(css: string): string {
       if (++total > 500) throw new Error('css-limit')
       if (declaration.type !== 'decl' || declaration.important || !cssProperties.has(declaration.prop.toLowerCase())) throw new Error('unsupported-css')
       const value = declaration.value.trim()
-      if (!value || value.length > 500 || !/^[A-Za-z0-9#.,%()\s+\-/]+$/.test(value) || /-\s*\d|\d[eE][+-]?\d/.test(value)) throw new Error('unsupported-css-value')
+      if (!value || value.length > 500 || !/^[A-Za-z0-9#.,%()\s+\-/]+$/.test(value) || (/-\s*\d/.test(value) || /(?:^|[^#A-Za-z0-9])(?:\d+(?:\.\d*)?|\.\d+)[eE][+-]?\d/.test(value))) throw new Error('unsupported-css-value')
       for (const match of value.matchAll(/([A-Za-z][A-Za-z0-9-]*)\s*\(/g)) if (!cssFunctions.has(match[1].toLowerCase())) throw new Error('unsupported-css-function')
       for (const match of value.matchAll(/(?:^|[^#A-Za-z0-9])([0-9]+(?:\.[0-9]+)?)/g)) if (Number(match[1]) > 10_000) throw new Error('css-value-limit')
       declarations.push(`${declaration.prop.toLowerCase()}:${value}`)
