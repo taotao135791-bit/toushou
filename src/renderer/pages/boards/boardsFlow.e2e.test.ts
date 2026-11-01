@@ -20,7 +20,9 @@ describe('board creation flow in Electron', () => {
       const cssPath = path.resolve(__dirname, '../../index.css')
       const css = await postcss([require_('tailwindcss')(), require_('autoprefixer')()]).process(readFileSync(cssPath, 'utf8'), { from: cssPath })
       writeFileSync(path.join(dir, 'fixture.css'), css.css)
-      const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
+      // Synthetic fixtures assert UTC account windows; keep the Electron
+      // process deterministic on developer machines in other timezones too.
+      const env = { ...process.env, TZ: 'UTC' }; delete env.ELECTRON_RUN_AS_NODE
       const result = spawnSync(electron, [path.resolve(__dirname, 'boardsFlow.harness.cjs'), dir], { encoding: 'utf8', timeout: 90000, env })
       const line = result.stdout?.split('\n').find(s => s.startsWith('E2E_RESULT '))
       expect(line, result.stderr).toBeDefined()
