@@ -90,10 +90,22 @@ describe('offline HTML board templates', () => {
     expect(identified).toContain('&lt;img src=x onerror=alert(1)&gt;')
     expect(identified).not.toContain('<img src=x')
   })
+  it('binds names and IDs independently while protecting anonymous output', () => {
+    const d = document()
+    d.html = '<span data-reading-value="1.accountName"></span><span data-reading-value="1.accountId"></span><div data-reading-slot></div>'
+    const anonymous = renderHtmlBoard(d, { language: 'en' })
+    expect(anonymous).toContain('<span>Account 1</span><span>—</span>')
+    expect(anonymous).not.toContain('Private Account')
+    expect(anonymous).not.toContain('999999999999999999')
+    const identified = renderHtmlBoard(d, { language: 'en', anonymize: false })
+    expect(identified).toContain('<span>Private Account</span><span>999999999999999999</span>')
+    d.html = '<span data-reading-value="2.accountId"></span><div data-reading-slot></div>'
+    expect(() => renderHtmlBoard(d)).toThrow()
+  })
   it('rejects invalid or forged bindings and out-of-range account references', () => {
     for (const html of [
       '<span data-reading-value="0.spend"></span>', '<span data-reading-value="01.spend"></span>',
-      '<span data-reading-value="1.accountId"></span>', '<span data-reading-value="1.spend">fake</span>',
+      '<span data-reading-value="1.password"></span>', '<span data-reading-value="1.spend">fake</span>',
       '<span data-reading-value="1.spend"><b></b></span>', '<span data-reading-value="1.spend" title="fake"></span>',
       '<div data-reading-value="1.spend"></div>', '<span data-reading-value="1.spend" onclick="x"></span>'
     ]) expect(() => parseHtmlBoardTemplate(html + '<div data-reading-slot></div>'), html).toThrow()
@@ -155,7 +167,9 @@ describe('offline HTML board templates', () => {
     expect(html).toContain('25.00%')
     expect(html).toContain('1 failed, unread or missing-spend accounts are excluded')
     expect(html).toContain('2026-10-02 – 2026-10-07')
-    expect(html).toContain('America/New_York')
+    expect(html).toContain('Timezone group 2')
+    expect(html).not.toContain('America/New_York')
+    expect(renderHtmlBoard(d, { language: 'en', anonymize: false })).toContain('America/New_York')
     expect(html).toContain('Currency unknown (one account)')
     expect(html).not.toContain('Private Account')
     expect(html).not.toMatch(/<(script|svg|iframe|img|link)\b/i)
@@ -175,6 +189,23 @@ describe('offline HTML board templates', () => {
       '<div data-reading-motion="animate"></div>', '<div data-reading-chart="spend-bar" data-reading-motion="animate" class="x"></div>', '<section data-chart-motion-active></section>'
     ]) expect(() => parseHtmlBoardTemplate(invalid + '<div data-reading-slot></div>'), invalid).toThrow()
   })
+  it('does not expose arbitrary timezone text in anonymous chart exports', () => {
+    const d = document()
+    d.snapshot = { ...snapshot, accounts: [
+      { ...snapshot.accounts[0], timezone: 'PRIVATE-TIMEZONE-ACCOUNT-123' },
+      { ...snapshot.accounts[0], name: 'Second', accountId: 'second', timezone: 'PRIVATE-TIMEZONE-ACCOUNT-123' },
+      { ...snapshot.accounts[0], name: 'Third', accountId: 'third', timezone: 'PRIVATE-OTHER-456' }
+    ] }
+    d.html = '<div data-reading-chart="spend-pie"></div><div data-reading-slot></div>'
+    const anonymous = renderHtmlBoard(d, { language: 'en' })
+    expect(anonymous).not.toContain('PRIVATE-TIMEZONE-ACCOUNT-123')
+    expect(anonymous).not.toContain('PRIVATE-OTHER-456')
+    expect(anonymous).toContain('Timezone group 1')
+    expect(anonymous).toContain('Timezone group 2')
+    expect(anonymous.match(/class="trusted-pie/g)).toHaveLength(2)
+    const named = renderHtmlBoard(d, { language: 'en', anonymize: false })
+    expect(named).toContain('PRIVATE-TIMEZONE-ACCOUNT-123')
+  })
   it('continues to render legacy spend and explicit bar bindings with the same data', () => {
     const d = document()
     d.includeChart = false
@@ -182,6 +213,23 @@ describe('offline HTML board templates', () => {
     const html = renderHtmlBoard(d)
     expect(html.match(/class="bar"/g)).toHaveLength(2)
     expect(html).not.toContain('data-reading-chart')
+  })
+  it('protects every chart subtree and its ancestors from authored hide or misleading styles', () => {
+    const d = document()
+    d.includeChart = false
+    d.html = '<section class="outer"><p class="note">Keep notes styled</p><div data-reading-chart="spend-bar"></div></section><div data-reading-slot></div>'
+    d.css = '.outer, .trusted-chart, .num, div { display: none; width: 1px; color: red; }'
+    const html = renderHtmlBoard(d)
+    const guard = ':not([data-trusted-chart-boundary]):not([data-trusted-chart-boundary] *):not(:has([data-trusted-chart-boundary]))'
+    for (const selector of ['.outer', '.trusted-chart', '.num', 'div']) {
+      expect(html).toContain(`#html-board-custom-before ${selector}${guard}`)
+      expect(html).toContain(`#html-board-custom-after ${selector}${guard}`)
+    }
+    expect(html).toContain('<div data-trusted-chart-boundary=""><section class="trusted-chart"')
+    expect(() => parseHtmlBoardTemplate('<div data-trusted-chart-boundary></div><div data-reading-slot></div>')).toThrow()
+    const withoutChart = scopedHtmlBoardCss('.note { color: red; }')
+    expect(withoutChart).toBe('#html-board-custom-before .note,#html-board-custom-after .note{color:red}')
+    expect(withoutChart).not.toContain('data-trusted-chart-boundary')
   })
   it('rejects CSS network access, escaping, out-of-scope selectors and layout overlays', () => {
     for (const css of [

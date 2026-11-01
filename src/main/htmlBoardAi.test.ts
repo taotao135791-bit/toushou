@@ -85,6 +85,16 @@ describe('AI layout privacy and proposals', () => {
     expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:unknown.fake})).toEqual({ok:false,error:'invalid-output'})
     expect(await requestHtmlBoardAiEdit({...input,modelSelector:'--bad'},{owner:1,read,cli})).toEqual({ok:false,error:'invalid-input'})
   })
+  it('accepts the synthetic model accountId and accountName bindings while rejecting invalid references', async () => {
+    const accepted=setup(layout=>({...layout,html:layout.html+'<p>Account ID <span data-reading-value=\"1.accountId\"></span></p><p>Name <span data-reading-value=\"1.accountName\"></span></p>'}))
+    const result=await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:accepted.fake})
+    expect(result.ok).toBe(true)
+    if(result.ok){expect(result.proposal.html).toContain('data-reading-value=\"1.accountId\"');expect(result.proposal.html).toContain('data-reading-value=\"1.accountName\"')}
+    for (const bad of ['<span data-reading-value=\"1.accountId\" title=\"no\"></span>', '<span data-reading-value=\"2.accountId\"></span>', '<span data-reading-value=\"1.accountId\">not empty</span>']) {
+      const invalid=setup(layout=>({...layout,html:layout.html+bad}))
+      expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:invalid.fake})).toEqual({ok:false,error:'invalid-output'})
+    }
+  })
   it('accepts one pure JSON fence as a review-only proposal but rejects unsupported styles and commentary', async () => {
     const savedBefore = structuredClone(document)
     const fenced=setup(layout=>'```json\n'+JSON.stringify({...layout,html:layout.html+'<p>Updated</p>'})+'\n```')

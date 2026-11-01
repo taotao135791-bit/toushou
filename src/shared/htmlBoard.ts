@@ -62,7 +62,7 @@ export const HTML_BOARD_ALLOWED_TAGS = ['div', 'section', 'article', 'header', '
 const tags: Set<string> = new Set(HTML_BOARD_ALLOWED_TAGS)
 
 /** Parse HTML as a tree; reject unsafe nodes/attributes rather than guessing. */
-export function parseHtmlBoardTemplate(html: string, accountCount?: number): { before: string; after: string } {
+export function parseHtmlBoardTemplate(html: string, accountCount?: number): { before: string; after: string; hasCharts: boolean } {
   if (typeof html !== 'string' || html.length > HTML_BOARD_MAX_HTML) throw new Error('invalid-html')
   let parseError = false
   const fragment = parseFragment(html, { onParseError: () => { parseError = true } })
@@ -89,7 +89,7 @@ export function parseHtmlBoardTemplate(html: string, accountCount?: number): { b
       if (!chart && element.attrs.some(attribute => attribute.name === 'data-reading-motion')) throw new Error('invalid-chart-motion')
       const binding = element.attrs.find(attribute => attribute.name === 'data-reading-value')
       if (binding) {
-        const match = /^(?:([1-9][0-9]{0,3}))\.(spend|previousSpend|impressions|clicks|conversions|currency|status|account|windowStart|windowEnd)$/.exec(binding.value)
+        const match = /^(?:([1-9][0-9]{0,3}))\.(spend|previousSpend|impressions|clicks|conversions|currency|status|account|accountId|accountName|windowStart|windowEnd)$/.exec(binding.value)
         if (element.tagName !== 'span' || element.childNodes.length !== 0 || !match || (accountCount !== undefined && Number(match[1]) > accountCount) || element.attrs.some(attribute => !['data-reading-value', 'class'].includes(attribute.name))) throw new Error('invalid-binding')
       }
       for (const attribute of element.attrs) {
@@ -103,7 +103,7 @@ export function parseHtmlBoardTemplate(html: string, accountCount?: number): { b
   }
   fragment.childNodes.forEach((node, index) => visit(node, 0, true, index))
   if (count !== 1 || slot < 0) throw new Error('invalid-slot')
-  return { before: fragment.childNodes.slice(0, slot).map(node => serializeOuter(node)).join(''), after: fragment.childNodes.slice(slot + 1).map(node => serializeOuter(node)).join('') }
+  return { before: fragment.childNodes.slice(0, slot).map(node => serializeOuter(node)).join(''), after: fragment.childNodes.slice(slot + 1).map(node => serializeOuter(node)).join(''), hasCharts: charts > 0 }
 }
 
 export interface HtmlBoardBasicFields { title: string; summary: string; nextSteps: string }
@@ -162,7 +162,7 @@ export const HTML_BOARD_ALLOWED_CSS_FUNCTIONS = ['rgb', 'rgba', 'hsl', 'hsla', '
 const cssFunctions: Set<string> = new Set(HTML_BOARD_ALLOWED_CSS_FUNCTIONS)
 
 /** Parse CSS rules and reconstruct a restricted stylesheet scoped outside trusted data. */
-export function scopedHtmlBoardCss(css: string): string {
+export function scopedHtmlBoardCss(css: string, protectCharts = false): string {
   if (typeof css !== 'string' || css.length > HTML_BOARD_MAX_CSS || /[\\<>@\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(css)) throw new Error('invalid-css')
   let root: postcss.Root
   try { root = postcss.parse(css) } catch { throw new Error('invalid-css') }
@@ -184,7 +184,11 @@ export function scopedHtmlBoardCss(css: string): string {
       for (const match of value.matchAll(/(?:^|[^#A-Za-z0-9])([0-9]+(?:\.[0-9]+)?)/g)) if (Number(match[1]) > 10_000) throw new Error('css-value-limit')
       declarations.push(`${declaration.prop.toLowerCase()}:${value}`)
     }
-    const scope = ['#html-board-custom-before', '#html-board-custom-after'].flatMap(prefix => selectors.map(selector => `${prefix} ${selector}`)).join(',')
+    // Exclude chart boundaries, their descendants, and every ancestor that
+    // contains one: otherwise a rule on an ancestor could hide the chart.
+    // Browsers without :has fail closed by ignoring the whole authored rule.
+    const guard = protectCharts ? ':not([data-trusted-chart-boundary]):not([data-trusted-chart-boundary] *):not(:has([data-trusted-chart-boundary]))' : ''
+    const scope = ['#html-board-custom-before', '#html-board-custom-after'].flatMap(prefix => selectors.map(selector => `${prefix} ${selector}${guard}`)).join(',')
     output.push(`${scope}{${declarations.join(';')}}`)
   }
   return output.join('\n')
@@ -206,10 +210,12 @@ const escapeChart = (value: string) => value.replace(/[&<>"']/g, character => ({
 /** Snapshot-backed chart; only comparable platform, currency, date and timezone share a scale. */
 function renderTrustedSpendChart(snapshot: ReadingSnapshot, kind: TrustedChartKind, animate: boolean, anonymous: boolean, zh: boolean): string {
   const groups = new Map<string, Array<{ account: ReadingSnapshot['accounts'][number]; index: number }>>()
+  const timezoneGroups = new Map<string, number>()
   snapshot.accounts.forEach((account, index) => {
     if (account.status !== 'ok' || account.spend === null) return
     // Unknown currency or timezone must never imply comparability with another account.
-    const key = JSON.stringify([account.platform, account.currency ?? `unknown-currency-${index}`, account.window.start, account.window.end, account.timezone ?? `unknown-timezone-${index}`])
+    if (account.timezone && !timezoneGroups.has(account.timezone)) timezoneGroups.set(account.timezone, timezoneGroups.size + 1)
+    const key = JSON.stringify([account.platform, account.currency ?? `unknown-currency-${index}`, account.window.start, account.window.end, account.timezone || `unknown-timezone-${index}`])
     const entries = groups.get(key) ?? []
     entries.push({ account, index }); groups.set(key, entries)
   })
@@ -223,7 +229,7 @@ function renderTrustedSpendChart(snapshot: ReadingSnapshot, kind: TrustedChartKi
   const groupHtml = [...groups.values()].map(entries => {
     const first = entries[0].account
     const currency = first.currency ?? (zh ? '币种未知（单账户）' : 'Currency unknown (one account)')
-    const timezone = first.timezone ?? (zh ? '时区未知（单账户）' : 'Timezone unknown (one account)')
+    const timezone = first.timezone ? (anonymous ? `${zh ? '时区组' : 'Timezone group'} ${timezoneGroups.get(first.timezone)}` : first.timezone) : (zh ? '时区未知（单账户）' : 'Timezone unknown (one account)')
     const heading = `${labels[first.platform]} · ${currency} · ${first.window.start} – ${first.window.end} · ${timezone}`
     const max = Math.max(0, ...entries.map(entry => entry.account.spend!))
     const scaledTotal = max > 0 ? entries.reduce((sum, entry) => sum + entry.account.spend! / max, 0) : 0
@@ -259,7 +265,7 @@ function fillReadingValues(html: string, snapshot: ReadingSnapshot, anonymous: b
     if (chartMarker) {
       const animate = node.attrs.some(attr => attr.name === 'data-reading-motion' && attr.value === 'animate')
       const kind = chartMarker.value as TrustedChartKind
-      node.attrs = []
+      node.attrs = [{ name: 'data-trusted-chart-boundary', value: '' }]
       const trustedChart = parseFragment(renderTrustedSpendChart(snapshot, kind, animate, anonymous, zh))
       for (const child of [...trustedChart.childNodes]) defaultTreeAdapter.appendChild(node, child)
       return
@@ -270,7 +276,9 @@ function fillReadingValues(html: string, snapshot: ReadingSnapshot, anonymous: b
       const index = Number(indexText) - 1
       const account = snapshot.accounts[index]
       let value: string
-      if (field === 'account') value = anonymous ? `${zh ? '账户' : 'Account'} ${index + 1}` : `${account.name || account.accountId || '—'}${account.name && account.accountId ? ` (${account.accountId})` : ''}`
+      if (field === 'accountId') value = anonymous ? '—' : account.accountId || '—'
+      else if (field === 'accountName') value = anonymous ? `${zh ? '账户' : 'Account'} ${index + 1}` : account.name || '—'
+      else if (field === 'account') value = anonymous ? `${zh ? '账户' : 'Account'} ${index + 1}` : `${account.name || account.accountId || '—'}${account.name && account.accountId ? ` (${account.accountId})` : ''}`
       else if (field === 'currency') value = account.currency ?? (zh ? '未知' : 'Unknown')
       else if (field === 'status') value = ({ ok: zh ? '成功' : 'Read', failed: zh ? '失败' : 'Failed', unattempted: zh ? '未尝试' : 'Not attempted', unavailable: zh ? '不可用' : 'Unavailable' })[account.status]
       else if (field === 'windowStart' || field === 'windowEnd') value = field === 'windowStart' ? account.window.start : account.window.end
@@ -292,7 +300,7 @@ export function renderHtmlBoard(raw: unknown, options: { anonymize?: boolean; la
   const document = validateHtmlBoardDocument(raw)
   if (!document) throw new Error('invalid-document')
   const template = parseHtmlBoardTemplate(document.html, document.snapshot.accounts.length)
-  const customCss = scopedHtmlBoardCss(document.css)
+  const customCss = scopedHtmlBoardCss(document.css, template.hasCharts)
   const snapshotHtml = renderReadingSnapshotHtml(document.snapshot, { anonymize: options.anonymize !== false, includeChart: document.includeChart, language: options.language })
   const parsed = parse(snapshotHtml)
   const find = (nodes: Child[], tag: string): Element | undefined => {
