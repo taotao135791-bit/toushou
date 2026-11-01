@@ -1,6 +1,6 @@
 /* CI only: run the actual staged packaged executable against a synthetic profile. */
 const { spawn, spawnSync } = require('node:child_process')
-const { mkdtempSync, mkdirSync, existsSync, rmSync, statSync } = require('node:fs')
+const { mkdtempSync, mkdirSync, existsSync, rmSync, statSync, writeFileSync } = require('node:fs')
 const { createServer } = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
@@ -114,10 +114,16 @@ async function launch(port) {
   await until(() => evaluate(cdp, `typeof window.electronAPI?.saveReadingSnapshot === 'function' && !!document.body`), 15_000, 'Preload and page')
 }
 async function run() {
+  // electron-store reads this file when Main starts. Seed only the two values
+  // this synthetic profile needs, before the renderer can hydrate them. The
+  // exclusive create prevents overwriting an unexpected existing profile file.
+  writeFileSync(path.join(profile, 'omp-gui-settings.json'), JSON.stringify({ setupComplete: true, language: 'en' }), { flag: 'wx', mode: 0o600 })
   const firstPort = await freePort()
   await launch(firstPort)
-  const setup = await evaluate(cdp, `(async () => {const setup=await window.electronAPI.setStore('setupComplete',true),language=await window.electronAPI.setStore('language','en');return {setup,language,setupRead:await window.electronAPI.getStore('setupComplete'),languageRead:await window.electronAPI.getStore('language')}})()`)
-  if (!setup?.setup || !setup?.language || setup.setupRead !== true || setup.languageRead !== 'en') throw new Error('Could not persist isolated first-run preferences')
+  const setup = await evaluate(cdp, `(async () => ({setupComplete:await window.electronAPI.getStore('setupComplete'),language:await window.electronAPI.getStore('language')}))()`)
+  if (setup?.setupComplete !== true || setup?.language !== 'en') {
+    throw new Error(`Could not read isolated first-run preferences: ${JSON.stringify({ setupComplete: setup?.setupComplete === true, languageIsEnglish: setup?.language === 'en' })}`)
+  }
   const seed = await evaluate(cdp, `(async () => {
     const windowRange={start:'2026-01-01',end:'2026-01-02'};
     const snapshot={kind:'reading-snapshot',version:1,rangeLabel:'Synthetic range',window:windowRange,capturedAt:1000,accounts:[{platform:'tiktok',accountId:'SYNTHETIC_ID',name:'Synthetic account',status:'ok',statusDetail:null,window:windowRange,previousWindow:null,sourceAt:900,timezone:'UTC',currency:'USD',spend:42,previousSpend:null,impressions:100,clicks:3,conversions:1}]};
