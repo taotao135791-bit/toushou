@@ -90,11 +90,14 @@ describe('board creation flow in Electron', () => {
       expect(data.chartInitially).toBe(true)
       expect(data.failedSnapshot).toEqual({ error: true, dialog: true, a: true, b: true, chart: true })
       expect(data.savedSnapshot).toMatchObject({ activeBoard: 'Snapshot fixture', chart: true, accountCount: 2, table: true, svg: false, fixedDateNote: true, masterToolbar: false, noModulesNotice: false, cachedNotice: false })
-      expect(data.savedSnapshot.groupHeadings).toEqual(expect.arrayContaining(['TikTok · USD', 'TikTok · EUR']))
+      expect(data.savedSnapshot.groupHeadings).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^TikTok · USD · \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2} · UTC$/),
+        expect.stringMatching(/^TikTok · EUR · \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2} · UTC$/)
+      ]))
       expect(data.exportedSnapshot).toMatchObject({ anonymized: true, table: true, svg: false, script: false, containsPrivate: false })
       expect(data.exportedSnapshot.groups).toEqual(expect.arrayContaining([
-        { heading: 'TikTok · USD', accounts: ['Account 1'] },
-        { heading: 'TikTok · EUR', accounts: ['Account 2'] }
+        { heading: expect.stringMatching(/^TikTok · USD · \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2} · Timezone group \d+$/), accounts: ['Account 1'] },
+        { heading: expect.stringMatching(/^TikTok · EUR · \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2} · Timezone group \d+$/), accounts: ['Account 2'] }
       ]))
       expect(data.exportedSnapshot.groups).toHaveLength(2)
       expect(data.editorial).toContain('Weekly report')

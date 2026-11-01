@@ -5,7 +5,7 @@ import { htmlBoardTemplate, type HtmlBoardDocument } from '@shared/htmlBoard'
 
 vi.mock('../../lib/modalBoundary', () => ({ useModalBoundary: vi.fn() }))
 vi.mock('react-dom', async (original) => ({ ...(await original<typeof import('react-dom')>()), createPortal: (element: unknown) => element }))
-import { HtmlBoardEditor } from './HtmlBoardEditor'
+import { HtmlBoardEditor, htmlBoardGenerationError } from './HtmlBoardEditor'
 
 afterEach(() => vi.unstubAllGlobals())
 const fixture: HtmlBoardDocument = {
@@ -23,6 +23,8 @@ describe('offline HTML board editor', () => {
     expect(html).toContain('aria-label="Change description"')
     expect(html).toContain('Your description, current layout and selected readings')
     expect(html).toContain('Generate suggestion')
+    expect(html).toContain('Report style')
+    expect(html).toContain('Apply layout template')
     expect(html).toContain('aria-label="Board title"')
     expect(html).toContain('aria-label="Period summary"')
     expect(html).toContain('aria-label="Next steps"')
@@ -34,6 +36,27 @@ describe('offline HTML board editor', () => {
     expect(html).toContain('Custom content and values may still be sensitive')
     expect(html).not.toContain('Private Account')
     expect(html).not.toContain('999999999999999999')
+  })
+  it('explains unsupported model output without misreporting a connection failure', () => {
+    const message = htmlBoardGenerationError('invalid-output', true)
+    expect(message).toContain('格式暂不支持')
+    expect(message).toContain('原内容和说明已保留')
+    expect(message).not.toContain('连接')
+    expect(htmlBoardGenerationError('invalid-output', false)).toContain('unsupported format')
+    expect(htmlBoardGenerationError('cancelled', true)).toContain('已取消')
+    expect(htmlBoardGenerationError('conflict', true)).toContain('其他窗口')
+    expect(htmlBoardGenerationError('sensitive-content', true)).toContain('密钥')
+  })
+  it('keeps natural-language editing while hiding report-only controls for an independent module', () => {
+    vi.stubGlobal('document', { body: {} })
+    const module = { ...fixture, mode: 'module' as const, html: '<p>Metric</p><div data-reading-slot></div>', css: '' }
+    const html = renderToStaticMarkup(createElement(HtmlBoardEditor, { document: module, language: 'en', onSave: async () => ({ ok: false, error: 'write-failed' } as const), onExport: async () => ({ ok: false, error: 'cancelled' } as const), onGenerate: async () => ({ ok: false, error: 'unavailable' } as const), onCancel: async () => true, onClose: () => {} }))
+    expect(html).toContain('Change description')
+    expect(html).toContain('Generate suggestion')
+    expect(html).toContain('Advanced: HTML / CSS')
+    expect(html).toContain('Offline preview')
+    expect(html).not.toContain('Report style')
+    expect(html).not.toContain('Apply layout template')
   })
   it('keeps non-template custom structures without forcing advanced editing', () => {
     vi.stubGlobal('document', { body: {} })
