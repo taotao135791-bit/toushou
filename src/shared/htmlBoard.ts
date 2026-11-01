@@ -216,8 +216,9 @@ function renderTrustedSpendChart(snapshot: ReadingSnapshot, kind: TrustedChartKi
   snapshot.accounts.forEach((account, index) => {
     if (account.status !== 'ok' || account.spend === null) return
     // Unknown currency or timezone must never imply comparability with another account.
-    if (account.timezone && !timezoneGroups.has(account.timezone)) timezoneGroups.set(account.timezone, timezoneGroups.size + 1)
-    const key = JSON.stringify([account.platform, account.currency ?? `unknown-currency-${index}`, account.window.start, account.window.end, account.timezone || `unknown-timezone-${index}`])
+    const timezone = account.timezone?.trim() || null
+    if (timezone && !timezoneGroups.has(timezone)) timezoneGroups.set(timezone, timezoneGroups.size + 1)
+    const key = JSON.stringify([account.platform, account.currency ?? `unknown-currency-${index}`, account.window.start, account.window.end, timezone || `unknown-timezone-${index}`])
     const entries = groups.get(key) ?? []
     entries.push({ account, index }); groups.set(key, entries)
   })
@@ -231,7 +232,8 @@ function renderTrustedSpendChart(snapshot: ReadingSnapshot, kind: TrustedChartKi
   const groupHtml = [...groups.values()].map(entries => {
     const first = entries[0].account
     const currency = first.currency ?? (zh ? '币种未知（单账户）' : 'Currency unknown (one account)')
-    const timezone = first.timezone ? (anonymous ? `${zh ? '时区组' : 'Timezone group'} ${timezoneGroups.get(first.timezone)}` : first.timezone) : (zh ? '时区未知（单账户）' : 'Timezone unknown (one account)')
+    const zone = first.timezone?.trim() || null
+    const timezone = zone ? (anonymous ? `${zh ? '时区组' : 'Timezone group'} ${timezoneGroups.get(zone)}` : zone) : (zh ? '时区未知（单账户）' : 'Timezone unknown (one account)')
     const heading = `${labels[first.platform]} · ${currency} · ${first.window.start} – ${first.window.end} · ${timezone}`
     const max = Math.max(0, ...entries.map(entry => entry.account.spend!))
     const scaledTotal = max > 0 ? entries.reduce((sum, entry) => sum + entry.account.spend! / max, 0) : 0

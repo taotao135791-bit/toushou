@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Check, FilePlus2, X } from 'lucide-react'
 import { BoardDataset, BoardMasterScope, BoardWidget, BoardWidgetStyle } from '@shared/types'
-import { MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRange } from '@shared/boards'
+import { GRID_COLS, GRID_MAX_H, MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRange } from '@shared/boards'
 import { fbReadingMetricLabel, fbReadingRangeLabel, ttReadingRangeLabel } from './metricLabel'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
@@ -35,11 +35,12 @@ import { FbReadingAccountManager } from './FbReadingAccountManager'
 
 interface WidgetConfigPanelProps {
   widget: BoardWidget
+  boardUpdatedAt: number
   datasets: BoardDataset[]
   /** Board master scope, when set — divergent saves become "independent". */
   masterScope?: BoardMasterScope | null
   onClose: () => void
-  onSave: (patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle }) => void
+  onSave: (patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle; dimensions?: { width: number; height: number }; expectedUpdatedAt: number }) => Promise<boolean>
 }
 
 const inputClass =
@@ -74,9 +75,18 @@ function configString(widget: BoardWidget, key: string): string {
   return typeof value === 'string' ? value : ''
 }
 
-export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClose, onSave }: WidgetConfigPanelProps) {
+export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScope = null, onClose, onSave }: WidgetConfigPanelProps) {
   const t = useT()
+  const language = useAppStore(state => state.language)
+  const openedVersion = useRef(boardUpdatedAt)
+  const saving = useRef(false)
+  const [saveBusy, setSaveBusy] = useState(false)
+  const [saveError, setSaveError] = useState(false)
   const [title, setTitle] = useState(widget.title)
+  const [width, setWidth] = useState(String(widget.layout.w))
+  const [height, setHeight] = useState(String(widget.layout.h))
+  const [sizeDirty, setSizeDirty] = useState(false)
+  const [sizeError, setSizeError] = useState(false)
   const [showSeconds, setShowSeconds] = useState(widget.config.showSeconds !== false)
   const [text, setText] = useState(configString(widget, 'text'))
   const [numValue, setNumValue] = useState(() => {
@@ -243,8 +253,10 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
     return config
   }
 
-  const handleSave = () => {
-    if (datasetIncomplete) return
+  const handleSave = async () => {
+    if (datasetIncomplete || saving.current) return
+    const w = Number(width), h = Number(height)
+    if (sizeDirty && (!Number.isSafeInteger(w) || w < 2 || w > GRID_COLS || !Number.isSafeInteger(h) || h < 2 || h > GRID_MAX_H)) { setSizeError(true); return }
     let config: Record<string, unknown>
     switch (widget.type) {
       case 'reading-module':
@@ -401,11 +413,18 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
     for (const key of ['filterColumn', 'filterValue', 'filterValues'] as const) {
       if (widget.config[key] !== undefined) config[key] = widget.config[key]
     }
-    onSave({
-      title: title.trim() || widget.title,
-      config,
-      ...(Object.keys(style).length > 0 ? { style } : {})
-    })
+    saving.current = true; setSaveBusy(true); setSaveError(false)
+    try {
+      const ok = await onSave({
+        title: title.trim() || widget.title,
+        config,
+        expectedUpdatedAt: openedVersion.current,
+        ...(sizeDirty ? { dimensions: { width: w, height: h } } : {}),
+        ...(Object.keys(style).length > 0 ? { style } : {})
+      })
+      if (!ok) setSaveError(true)
+    } catch { setSaveError(true) }
+    finally { saving.current = false; setSaveBusy(false) }
   }
 
   return (
@@ -434,6 +453,13 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
             className={inputClass}
           />
         </Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label={language === 'zh' ? '宽度（网格）' : 'Width (grid units)'}><input aria-label={language === 'zh' ? '宽度（网格）' : 'Width (grid units)'} type="number" min={2} max={GRID_COLS} step={1} value={width} onChange={event => { setWidth(event.target.value); setSizeDirty(true); setSizeError(false) }} className={inputClass} /></Field>
+          <Field label={language === 'zh' ? '高度（网格）' : 'Height (grid units)'}><input aria-label={language === 'zh' ? '高度（网格）' : 'Height (grid units)'} type="number" min={2} max={GRID_MAX_H} step={1} value={height} onChange={event => { setHeight(event.target.value); setSizeDirty(true); setSizeError(false) }} className={inputClass} /></Field>
+        </div>
+        <p className="text-[10.5px] text-cream-faint">{language === 'zh' ? '宽 2–12、高 2–20；为避免重叠，模块可能自动移动。' : 'Width 2–12, height 2–20. The card may move to avoid overlap.'}</p>
+        {saveError && <p role="alert" className="text-[11px] text-red-500">{language === 'zh' ? '保存失败或看板已变化，草稿仍保留。请核对后重新打开。' : 'Save failed or the board changed. Your draft is preserved; review and reopen.'}</p>}
+        {sizeError && <p role="alert" className="text-[11px] text-red-500">{language === 'zh' ? '请输入范围内的整数尺寸。' : 'Enter whole-number dimensions in range.'}</p>}
         {widget.type === 'clock' && (
           <label className="flex cursor-pointer items-center gap-2 text-[12px] text-cream-dim">
             <input
@@ -1020,13 +1046,14 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
       <div className="mt-2 flex shrink-0 justify-end gap-1.5">
         <button
           onClick={onClose}
+          disabled={saveBusy}
           className="rounded-full border border-line px-2.5 py-1 text-[11px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
         >
           {t('boards.cancel')}
         </button>
         <button
-          onClick={handleSave}
-          disabled={datasetIncomplete || (widget.type === 'tt-reading' && (parseTikTokAdvertiserIdList(ttAdvertiserIds) === null || /[\x00-\x1f\x7f]/.test(ttAdvertiserIds) || (ttAdvertiserIds.trim() !== '' && parseTikTokAdvertiserIdList(ttAdvertiserIds)?.length === 0)))}
+          onClick={() => void handleSave()}
+          disabled={saveBusy || datasetIncomplete || (widget.type === 'tt-reading' && (parseTikTokAdvertiserIdList(ttAdvertiserIds) === null || /[\x00-\x1f\x7f]/.test(ttAdvertiserIds) || (ttAdvertiserIds.trim() !== '' && parseTikTokAdvertiserIdList(ttAdvertiserIds)?.length === 0)))}
           className="flex items-center gap-1 rounded-full bg-cream px-2.5 py-1 text-[11px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
         >
           <Check size={10} />

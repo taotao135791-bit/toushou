@@ -40,6 +40,22 @@ describe('buildAgentArgs', () => {
     const args = buildAgentArgs('zh', '   ')
     expect(args[1]).not.toContain('<team-skill')
   })
+
+  it('teaches both languages saved-source modules and automatic previews without extra tools', () => {
+    const zh = buildAgentArgs('zh')[1]
+    const en = buildAgentArgs('en')[1]
+    expect(zh).toContain('blank 空白看板')
+    expect(zh).toContain('不重新读取广告账户')
+    expect(zh).toContain('自动显示实际预览')
+    expect(zh).toContain('不要为了显示预览搜索源码或协议')
+    expect(zh).toContain('明确要求自定义 HTML 文件时')
+    expect(zh).not.toContain('用户没提具体要求时按模板标配建')
+    expect(en).toContain('Create a blank board unless')
+    expect(en).toContain('do not reread ad accounts')
+    expect(en).toContain('Open board action')
+    expect(en).toContain('Do not search source code or protocols')
+    expect(en).toContain('explicitly requests a custom HTML file')
+  })
 })
 
 describe('data-source priority baseline', () => {

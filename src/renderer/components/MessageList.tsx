@@ -119,7 +119,7 @@ function MessageList({ messages, sessionId = null, onRetry }: MessageListProps) 
           />
           {sessionId && run.map(item => {
             const ref = item.toolCall && boardPreviewReference(item.toolCall)
-            return ref ? <BoardChatPreview key={`${item.id}-${ref.boardId}-${ref.widgetId}`} sessionId={sessionId} {...ref} /> : null
+            return ref ? <BoardChatPreview key={`${sessionId}-${item.id}-${ref.boardId}-${ref.widgetId}`} sessionId={sessionId} {...ref} /> : null
           })}
         </div>
       )

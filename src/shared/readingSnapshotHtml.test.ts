@@ -31,6 +31,21 @@ describe('standalone reading snapshot export', () => {
     expect(html).toContain('币种未知（单账户）')
   })
 
+  it('separates different reporting windows and timezones, including individual unknown timezone scales', () => {
+    const snapshot = make([row(), row({ spend: 11 }), row({ window: { start: '2026-10-02', end: '2026-10-08' } }), row({ timezone: 'OtherSyntheticTimezone' }), row({ timezone: null }), row({ timezone: null }), row({ timezone: '  ' })])
+    const groups = readingSnapshotHtmlChartGroups(snapshot)
+    expect(groups.map(group => group.entries.length)).toEqual([2, 1, 1, 1, 1, 1])
+    const anonymous = renderReadingSnapshotHtml(snapshot, { includeChart: true, language: 'en' })
+    expect(anonymous).toContain('Timezone group 1')
+    expect(anonymous).toContain('Timezone unknown (one account)')
+    expect(anonymous).toContain('2026-10-02 – 2026-10-08')
+    expect(anonymous).not.toContain('PrivateTimezone')
+    expect(anonymous).not.toContain('OtherSyntheticTimezone')
+    const identified = renderReadingSnapshotHtml(snapshot, { includeChart: true, anonymize: false, language: 'en' })
+    expect(identified).toContain('PrivateTimezone')
+    expect(identified).toContain('OtherSyntheticTimezone')
+  })
+
   it('escapes untrusted names, titles and details in explicitly identified exports', () => {
     const html = renderReadingSnapshotHtml(make([row({ name: '<script>alert("x")</script>', statusDetail: '<img src=x onerror=alert(1)>' })]), { anonymize: false, title: '<unsafe title>', language: 'en' })
     expect(html).toContain('&lt;script&gt;')

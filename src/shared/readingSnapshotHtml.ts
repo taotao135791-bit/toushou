@@ -38,15 +38,18 @@ export function resultTypeLabel(account: ReadingSnapshotAccount, anonymous: bool
   return known ? (zh ? known.zh : known.en) : (zh ? '结果类型未知' : 'Result type unknown')
 }
 
-interface ChartGroup { platform: ReadingSnapshotAccount['platform']; currency: string | null; entries: Array<{ account: ReadingSnapshotAccount; index: number }> }
+export interface ReadingSnapshotHtmlChartGroup { platform: ReadingSnapshotAccount['platform']; currency: string | null; window: ReadingSnapshotAccount['window']; timezone: string | null; timezoneGroup: number | null; entries: Array<{ account: ReadingSnapshotAccount; index: number }> }
 
-/** A single unknown-currency account always has a separate scale. */
-export function readingSnapshotHtmlChartGroups(snapshot: ReadingSnapshot): ChartGroup[] {
-  const groups = new Map<string, ChartGroup>()
+/** Amounts only share a scale for matching platform, currency, date and timezone. */
+export function readingSnapshotHtmlChartGroups(snapshot: ReadingSnapshot): ReadingSnapshotHtmlChartGroup[] {
+  const groups = new Map<string, ReadingSnapshotHtmlChartGroup>()
+  const timezoneGroups = new Map<string, number>()
   snapshot.accounts.forEach((account, index) => {
     if (account.status !== 'ok' || account.spend === null) return
-    const key = `${account.platform}:${account.currency ?? `unknown-${index}`}`
-    const group = groups.get(key) ?? { platform: account.platform, currency: account.currency, entries: [] }
+    const timezone = account.timezone?.trim() || null
+    if (timezone && !timezoneGroups.has(timezone)) timezoneGroups.set(timezone, timezoneGroups.size + 1)
+    const key = JSON.stringify([account.platform, account.currency, account.currency ? null : index, account.window.start, account.window.end, timezone, timezone ? null : index])
+    const group = groups.get(key) ?? { platform: account.platform, currency: account.currency, window: account.window, timezone, timezoneGroup: timezone ? timezoneGroups.get(timezone)! : null, entries: [] }
     group.entries.push({ account, index })
     groups.set(key, group)
   })
@@ -73,13 +76,14 @@ export function renderReadingSnapshotHtml(raw: unknown, options: ReadingSnapshot
     return `<tr><td>${platform(account.platform)}</td><td>${escapeHtml(label(account, index))}</td><td>${status(account.status, zh)}${details}</td><td>${period(account.window)}${timezone}${prior}</td><td>${dateTime(account.sourceAt)}</td><td>${account.currency ?? (zh ? '未知' : 'Unknown')}</td>${metrics}</tr>`
   }).join('\n')
   const groups = options.includeChart ? readingSnapshotHtmlChartGroups(snapshot) : []
-  const charts = options.includeChart ? `<section><h2>${zh ? '账户消耗（按平台和币种分别展示）' : 'Account spend (separate platform and currency groups)'}</h2>${groups.length ? groups.map(group => {
+  const charts = options.includeChart ? `<section><h2>${zh ? '账户消耗（按平台、币种、日期和时区分别展示）' : 'Account spend (separate platform, currency, date and timezone groups)'}</h2>${groups.length ? groups.map(group => {
     const max = Math.max(...group.entries.map(({ account }) => account.spend!), 0)
     const bars = group.entries.map(({ account, index }) => {
       const width = max > 0 ? Math.min(100, account.spend! / max * 100) : 0
       return `<li><span>${escapeHtml(label(account, index))}</span><span class="track"><span class="bar" style="width:${width.toFixed(2)}%"></span></span><span class="num">${number(account.spend)}</span></li>`
     }).join('')
-    return `<div class="group"><h3>${platform(group.platform)} · ${group.currency ?? (zh ? '币种未知（单账户）' : 'Currency unknown (one account)')}</h3><ul>${bars}</ul></div>`
+    const timezone = group.timezone ? (anonymous ? `${zh ? '时区组' : 'Timezone group'} ${group.timezoneGroup}` : group.timezone) : (zh ? '时区未知（单账户）' : 'Timezone unknown (one account)')
+    return `<div class="group"><h3>${platform(group.platform)} · ${group.currency ?? (zh ? '币种未知（单账户）' : 'Currency unknown (one account)')} · ${period(group.window)} · ${escapeHtml(timezone)}</h3><ul>${bars}</ul></div>`
   }).join('') : `<p>${zh ? '没有可绘制的成功读数。' : 'No successful readings to chart.'}</p>`}</section>` : ''
   const labelText = !anonymous ? ` · ${escapeHtml(snapshot.rangeLabel)}` : ''
   return `<!doctype html><html lang="${zh ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>${escapeHtml(title)}</title><style>

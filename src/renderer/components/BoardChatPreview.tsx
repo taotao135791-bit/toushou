@@ -8,15 +8,28 @@ type PreviewApi = { getChatBoardPreview(input: { sessionId: string; boardId: str
 
 /** Tool output is only a reference. Main independently authorizes and renders it. */
 export function boardPreviewReference(call: ToolCallRecord): { boardId: string; widgetId: string } | null {
-  if (call.tool !== 'toushou_board_add_widget' || call.isError || call.output === undefined) return null
-  let value: unknown = call.output
+  const parseObject = (value: unknown): unknown => {
+    if (typeof value !== 'string') return value
+    try { return JSON.parse(value) } catch { return null }
+  }
+  const raw = call as ToolCallRecord & { name?: unknown; args?: unknown; arguments?: unknown; result?: unknown }
+  const tool = call.tool ?? raw.name
+  const proxyInput = parseObject(call.input ?? raw.args ?? raw.arguments)
+  const isProxy = tool === 'write' && !!proxyInput && typeof proxyInput === 'object' && (proxyInput as { path?: unknown }).path === 'xd://toushou_board_add_widget'
+  const output = call.output ?? raw.result
+  if ((tool !== 'toushou_board_add_widget' && !isProxy) || call.isError || output === undefined) return null
+  let value: unknown = output
   try {
-    if (typeof value === 'object' && value !== null && 'content' in value) {
-      const content = (value as { content?: unknown }).content
-      if (!Array.isArray(content) || content.length !== 1 || content[0]?.type !== 'text') return null
-      value = content[0].text
+    for (let depth = 0; depth < 3; depth++) {
+      if (typeof value === 'string') { value = JSON.parse(value); continue }
+      if (typeof value === 'object' && value !== null && 'content' in value) {
+        const content = (value as { content?: unknown }).content
+        if (!Array.isArray(content) || content.length !== 1 || content[0]?.type !== 'text') return null
+        value = content[0].text
+        continue
+      }
+      break
     }
-    if (typeof value === 'string') value = JSON.parse(value)
   } catch { return null }
   if (!value || typeof value !== 'object') return null
   const result = value as { ok?: unknown; board?: { id?: unknown }; createdWidgetId?: unknown }

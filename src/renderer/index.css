@@ -677,3 +677,22 @@ button:hover svg.animate-spin {
   button:hover svg.lucide,
   button:active svg.lucide { transform: none !important; }
 }
+
+/* A large, visible handle stays above iframe content and inside rounded cards. */
+.react-grid-item > .board-resize-handle {
+  right: 3px;
+  bottom: 3px;
+  width: 28px;
+  height: 28px;
+  z-index: 40;
+  border: 1px solid rgb(var(--text-faint) / 0.35);
+  border-radius: 8px;
+  background-color: rgb(var(--bg-elev) / 0.92);
+  cursor: se-resize;
+  touch-action: none;
+}
+/* Keep a drag from losing mouseup to any embedded iframe in the same grid. */
+.react-grid-layout:has(.react-grid-item.resizing) iframe,
+.react-grid-layout:has(.react-grid-item.react-draggable-dragging) iframe {
+  pointer-events: none;
+}

@@ -133,6 +133,8 @@ describe('board creation flow in Electron', () => {
       expect(data.fullPreview.width).toBeGreaterThan(600)
       expect(data.fullPreview.height).toBeGreaterThan(500)
       expect(data.modularManipulation).toMatchObject({ count: data.modularLayout.count, source: true, resized: true })
+      expect(data.dimensionsConflict).toEqual({ width: '3', height: '7', visible: true })
+      expect(data.exactDimensions).toEqual({ width: 3, height: 7, source: true })
       expect(data.chatPreview).toMatchObject({ sandbox: '', content: true, hasOpen: true, notice: true, outsideToolGroup: true })
       expect(data.chatPreview.width).toBeGreaterThan(200)
       expect(data.chatPreview.height).toBeGreaterThanOrEqual(400)

@@ -15,6 +15,7 @@ import { parseBoardHighlights, type BoardHighlightEvidence } from '@shared/board
 import { createReadingModuleWidgets, readingModuleTemplate, type ReadingModuleSpec } from '@shared/readingModules'
 
 const saved: KanbanBoard[] = []
+let failNextBoardSave = false
 const v2: { document: HtmlBoardDocument | null; exportHtml: string; evidence: BoardHighlightEvidence | null; applied: number; lastValidation: string | null; aiMode: 'fail' | 'pending' | 'success'; aiCalls: number; aiCancels: number; aiInput: unknown; htmlSaveFail: boolean; chatPrompts: string[]; sessionModes: unknown[]; findDelayed?: boolean; findResolve?: () => void; aiResolve?: (result: { ok: false; error: string }) => void; showProposal?: (raw: string) => void } = { document: null, exportHtml: '', evidence: null, applied: 0, lastValidation: null, aiMode: 'fail', aiCalls: 0, aiCancels: 0, aiInput: null, htmlSaveFail: false, chatPrompts: [], sessionModes: [] }
 const revision = `sha256:${'a'.repeat(64)}`
 const pendingRequests = new Map<string, (value: unknown) => void>()
@@ -44,7 +45,7 @@ Object.assign(window, {
     fxRatesGet: async () => null,
     getBoardDesign: async () => ({ spec: null }),
     onBoardDesignChanged: () => () => {},
-    saveBoard: async (board: KanbanBoard) => { saved.push(board); return { ok: true } },
+    saveBoard: async (board: KanbanBoard) => { if (failNextBoardSave) { failNextBoardSave = false; return { ok: false, error: 'conflict' } }; saved.push(board); return { ok: true } },
     saveReadingSnapshot: async (input: SaveReadingSnapshotInput) => {
       scenario.snapshotInput = structuredClone(input)
       if (scenario.snapshotSaveFail) return { ok: false, error: 'write-failed' }
@@ -127,6 +128,7 @@ Object.assign(window, {
     checkpointList: async () => []
   },
   boardFixture: { saved, scenario, v2, buildTikTokDatasetProofs, store: useAppStore,
+    conflictNextBoardSave: () => { failNextBoardSave = true },
     setupChat: () => useAppStore.setState({ currentWorkspace: { id: 'synthetic-workspace', realPath: '/synthetic', displayPath: '/synthetic', source: 'default', createdAt: 1 }, addSession: () => {}, setCurrentSessionId: () => {}, enqueueQueuedMessage: (_id, message) => { v2.chatPrompts.push(message.text) }, drainQueuedMessage: () => true }),
     resolvePending: (id: string, value: unknown) => { const resolve = pendingRequests.get(id); pendingRequests.delete(id); resolve?.(value) } }
 })
@@ -136,6 +138,6 @@ function Fixture() {
   const [chat, setChat] = useState(false)
   Object.assign((window as unknown as { boardFixture: object }).boardFixture, { showChat: () => setChat(true) })
   v2.showProposal = setProposal
-  return <><div id="fixture-route">{location.pathname}</div><div id="fixture-chat"><Markdown content={proposal} />{chat && <MessageList sessionId="synthetic-chat" messages={[{ id: 'preview-tool', role: 'assistant', content: '', toolCall: { tool: 'toushou_board_add_widget', input: {}, output: JSON.stringify({ ok: true, board: { id: 'fixture-existing' }, createdWidgetId: 'fixture-clock-0' }) } }]} />}</div><BoardsPage /></>
+  return <><div id="fixture-route">{location.pathname}</div><div id="fixture-chat"><Markdown content={proposal} />{chat && <MessageList sessionId="synthetic-chat" messages={[{ id: 'preview-tool', role: 'assistant', content: '', toolCall: { tool: 'write', input: { path: 'xd://toushou_board_add_widget', content: JSON.stringify({ boardId: 'fixture-existing', type: 'file' }) }, output: { content: [{ type: 'text', text: JSON.stringify({ ok: true, board: { id: 'fixture-existing' }, createdWidgetId: 'fixture-clock-0' }) }] } } }]} />}</div><BoardsPage /></>
 }
 createRoot(document.getElementById('root')!).render(<MemoryRouter><Fixture /></MemoryRouter>)

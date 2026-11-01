@@ -32,13 +32,29 @@ const FB_READING_BASELINE_PROMPT = [
   '- browser_report 拒报（incomplete-view / totals-mismatch / unstable-page / unparseable-page）时如实转述错误码，不输出数字、不出看板提议。',
   '- URL 日期参数未生效时禁止改用页面点击切换日期/视图：按当前口径读数，并在卡片标题与汇报里注明口径，同时告知未生效的参数。',
   '- 广告平台永远只读：未经用户明确手动操作，禁止通过 MCP、浏览器或任何手段调整、新增或删除广告、预算、出价等实际投放内容；此类请求一律拒绝并说明需要用户手动操作。',
-  '- 本机看板是投手画布：查看/新建/调整看板一律用 toushou_boards_* 工具直接执行并回报结果（用户没提具体要求时按模板标配建，如 TikTok 广告主看板含指标卡+趋势图+读数模块）；对话内容转卡片仍走 board-cards 围栏提议，禁止用写文件绕过。',
+  '- 本机看板是投手画布：查看/新建/调整看板用 toushou_boards_* 工具执行并回报结果；对话内容转卡片仍走 board-cards 围栏提议。',
   '</session-baseline>',
   '<session-baseline name="data-source-priority">',
   '数据获取优先级（不可绕过）：',
   '- 广告与看板数据只走专用工具：TikTok 用 toushou_tiktok_* / tiktok-ads 技能的 MCP 工具，FB 读数用 browser_report / fb_history，Google 用报表链接管线，看板与数据集用 toushou_boards_*。',
   '- 专用工具报错时：如实转述错误与修复建议（如需要重连授权），然后停下等用户；禁止改用 computer use、浏览器导出、本地文件翻找等任何绕路方式获取同类数据。',
   '- computer use 仅限"没有专用工具覆盖且必须操作本机界面"的任务；数据读取、报表获取、看板更新一律不属于此类。',
+  '</session-baseline>'
+].join('\n')
+
+const BOARD_BASELINE_ZH = [
+  '<session-baseline name="board-preview">',
+  '没有明确要求实时平台模板时，新建 blank 空白看板；从已保存的读数创建内容时，以来源组件引用添加独立 reading-module 指标、图表或说明，不重新读取广告账户。',
+  '成功添加 reading-module、reading-snapshot 或 HTML file 组件后，应用会尝试在对话中自动显示实际预览和“打开看板”；简短回报结果即可。不要为了显示预览搜索源码或协议、执行 shell、写额外文件或编造代码围栏。',
+  '用户明确要求自定义 HTML 文件时，仍可在授权工作区写文件，再添加 file 组件；遵守既有权限确认。',
+  '</session-baseline>'
+].join('\n')
+
+const BOARD_BASELINE_EN = [
+  '<session-baseline name="board-preview">',
+  'Create a blank board unless the user explicitly requests a live-platform template. For saved readings, add independent reading-module metrics, charts or notes using the saved source widget; do not reread ad accounts.',
+  'After successfully adding a reading-module, reading-snapshot or HTML file widget, the app attempts to show the actual preview and an Open board action in the conversation. Give a brief result. Do not search source code or protocols, run shell commands, write extra files, or invent code fences merely to display the preview.',
+  'When the user explicitly requests a custom HTML file, you may write it in the authorized workspace and add a file widget, subject to the existing permission confirmations.',
   '</session-baseline>'
 ].join('\n')
 
@@ -51,6 +67,7 @@ const FB_READING_BASELINE_PROMPT = [
 export function buildAgentArgs(language: Language, skillSystemPrompt?: string): string[] {
   const persona = language === 'zh' ? ZH_PERSONA_PROMPT : EN_PERSONA_PROMPT
   const skill = skillSystemPrompt?.trim()
-  const base = `${persona}\n\n${FB_READING_BASELINE_PROMPT}`
+  const board = language === 'zh' ? BOARD_BASELINE_ZH : BOARD_BASELINE_EN
+  const base = `${persona}\n\n${FB_READING_BASELINE_PROMPT}\n\n${board}`
   return ['--append-system-prompt', skill ? `${base}\n\n${skill}` : base]
 }

@@ -79,6 +79,7 @@ import { WidgetBody } from './boards/WidgetBody'
 import { reloadLatestDataset, type DatasetReloadState } from '../lib/latestDatasetReload'
 import { combineTikTokScopes, nextTikTokScopeExpiry, tiktokScopeMatchesDataset, type VerifiedTikTokScope } from '../lib/tiktokDatasetScope'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
+import { resizeWidgetLayout } from './boards/widgetSizing'
 import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
 import { TodayReading } from './boards/TodayReading'
@@ -1050,20 +1051,43 @@ export default function BoardsPage() {
     }))
   }
 
-  const saveWidgetConfig = (
+  const saveWidgetConfig = async (
     widgetId: string,
-    patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle }
-  ) => {
-    if (!currentId) return
-    setConfigWidgetId(null)
-    mutateBoard(currentId, (b) => ({
-      ...b,
-      widgets: b.widgets.map((w) => {
-        if (w.id !== widgetId) return w
-        const { style: _previousStyle, ...rest } = w
-        return { ...rest, title: patch.title, config: patch.config, ...(patch.style ? { style: patch.style } : {}) }
-      })
-    }))
+    patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle; dimensions?: { width: number; height: number }; expectedUpdatedAt: number }
+  ): Promise<boolean> => {
+    if (!currentId) return false
+    const base = boardsRef.current?.find(board => board.id === currentId)
+    const currentWidget = base?.widgets.find(widget => widget.id === widgetId)
+    if (!base || !currentWidget || base.updatedAt !== patch.expectedUpdatedAt) {
+      flashToast(language === 'zh' ? '看板已变化，请核对后重新打开设置。' : 'The board changed. Review it and reopen settings.', false)
+      return false
+    }
+    const layout = patch.dimensions ? resizeWidgetLayout(currentWidget, base.widgets, patch.dimensions.width, patch.dimensions.height) : null
+    if (patch.dimensions && !layout) { flashToast(language === 'zh' ? '尺寸无效，请输入范围内的整数。' : 'Invalid dimensions. Enter whole numbers in range.', false); return false }
+    const moved = layout && (layout.x !== currentWidget.layout.x || layout.y !== currentWidget.layout.y)
+    const widgets = base.widgets.map(w => {
+      if (w.id !== widgetId) return w
+      const { style: _previousStyle, ...rest } = w
+      return { ...rest, title: patch.title, config: patch.config, ...(layout ? { layout } : {}), ...(patch.style ? { style: patch.style } : {}) }
+    })
+    const next = { ...base, widgets, updatedAt: Math.max(Date.now(), base.updatedAt + 1) }
+    try {
+      const result = await window.electronAPI.saveBoard(next, patch.expectedUpdatedAt)
+      if (!result.ok && result.error !== 'html-cleanup-failed') {
+        flashToast(result.error === 'conflict' ? (language === 'zh' ? '看板已变化，设置草稿仍保留。' : 'The board changed. Your settings draft is preserved.') : (language === 'zh' ? '保存失败，设置草稿仍保留。' : 'Save failed. Your settings draft is preserved.'), false)
+        return false
+      }
+      const latest = boardsRef.current?.find(board => board.id === base.id)
+      if (latest?.updatedAt === base.updatedAt) setBoards(prev => (prev ?? []).map(board => board.id === base.id ? next : board))
+      else reloadBoards()
+      if (!result.ok) { setHtmlCleanupFailed(true); flashToast(language === 'zh' ? '看板已保存，但 HTML 副本清理失败。' : 'Board saved, but HTML cleanup failed.', false) }
+      else if (moved) flashToast(language === 'zh' ? '模块已移动到空位，避免重叠。' : 'The card moved to an open space to avoid overlap.')
+      setConfigWidgetId(id => id === widgetId ? null : id)
+      return true
+    } catch {
+      flashToast(language === 'zh' ? '保存失败，设置草稿仍保留。' : 'Save failed. Your settings draft is preserved.', false)
+      return false
+    }
   }
 
   /** RGL fires this with the full layout on drag/resize stop; persist only real changes. */
@@ -1377,7 +1401,7 @@ export default function BoardsPage() {
           {widget.title || t(widgetNameKey(widget.type))}
         </span>
         <div
-          className="flex shrink-0 items-center gap-0.5 transition opacity-0 group-hover/widget:opacity-100"
+          className={`flex shrink-0 items-center gap-0.5 transition focus-within:opacity-100 ${widget.type === 'reading-module' || widget.type === 'file' ? 'opacity-100' : 'opacity-0 group-hover/widget:opacity-100'}`}
         >
           <button
             onClick={() => setConfigWidgetId(widget.id)}
@@ -1436,6 +1460,7 @@ export default function BoardsPage() {
         <WidgetConfigPanel
           key={widget.id}
           widget={widget}
+          boardUpdatedAt={current?.updatedAt ?? 0}
           datasets={datasets}
           masterScope={master}
           onClose={() => setConfigWidgetId(null)}
@@ -1896,6 +1921,7 @@ export default function BoardsPage() {
                 compactType="vertical"
                 isDraggable
                 isResizable
+                resizeHandle={<span className="react-resizable-handle react-resizable-handle-se board-resize-handle" role="img" aria-label={language === 'zh' ? '拖动调整模块尺寸，也可在设置中输入尺寸' : 'Drag to resize; exact dimensions are available in settings'} title={language === 'zh' ? '拖动调整尺寸；也可在设置中输入' : 'Drag to resize; enter exact dimensions in settings'} />}
                 draggableHandle=".widget-drag-handle"
                 draggableCancel="input, textarea, select, a, button, .widget-config"
                 onDragStop={handleLayoutStop}

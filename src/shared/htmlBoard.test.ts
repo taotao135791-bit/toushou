@@ -243,3 +243,19 @@ describe('offline HTML board templates', () => {
     expect(() => scopedHtmlBoardCss('.x { width: 1e4px; }')).toThrow()
   })
 })
+
+describe('blank timezone safety', () => {
+  it('never groups whitespace-only timezones into a comparable pie', () => {
+    const d = document()
+    d.includeChart = false
+    d.snapshot = { ...snapshot, accounts: [
+      { ...snapshot.accounts[0], timezone: '  ', spend: 30 },
+      { ...snapshot.accounts[0], accountId: 'synthetic-second', timezone: '  ', spend: 10 }
+    ] }
+    d.html = '<div data-reading-chart="spend-pie"></div><div data-reading-slot></div>'
+    const html = renderHtmlBoard(d, { language: 'en' })
+    expect(html.match(/Timezone unknown \(one account\)/g)).toHaveLength(2)
+    expect(html.match(/100\.00%/g)).toHaveLength(2)
+    expect(html).not.toContain('75.00%')
+  })
+})

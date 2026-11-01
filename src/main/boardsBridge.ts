@@ -412,7 +412,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const template =
       typeof tool.template === 'string' && BOARD_TEMPLATES.includes(tool.template as BoardPresetId)
         ? (tool.template as BoardPresetId)
-        : 'tiktok'
+        : 'blank'
     const composed = composeBoard('', boardText, template)
     const name = boundedString(tool.name, BOARD_LIMITS.maxNameLength) ?? composed.name
     if (boards.some((board) => board.name.toLowerCase() === name.toLowerCase())) {
@@ -486,7 +486,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     return {
       ok: true,
       board: boardSummary({ ...board }),
-      datasetReady,
+      ...(template === 'tiktok' ? { datasetReady } : {}),
       note:
         (ids.length > 0
           ? `已按 ${ids.length} 个广告主 ID 过滤数据卡并绑定 TT 读数模块；读数需要已连接的 TikTok 授权。`
@@ -496,9 +496,9 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
         (ids.length > 1
           ? '注意：这些账户币种不同时，金额合计卡会显示 — 并标 MIX（不同币种不可相加），计数类指标正常合计。'
           : '') +
-        (datasetReady
+        (template !== 'tiktok' ? '' : datasetReady
           ? '数据集「TikTok 报表」已有数据。'
-          : '数据集「TikTok 报表」还没有数据：调用 touhou_tiktok_update（走 TikTok MCP 连接）拉取即可自动填充；它失败就如实把错误转述给用户并停下，禁止 CSV/文件/computer use 绕路。')
+          : '数据集「TikTok 报表」还没有数据；仅在用户明确要求读取时调用 touhou_tiktok_update，失败后如实告知，不得绕路读取。')
     }
   }
 

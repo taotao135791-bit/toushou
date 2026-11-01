@@ -37,6 +37,14 @@ describe('parseBoardsBridgeRequest', () => {
 })
 
 describe('boards bridge dispatch', () => {
+  it('creates an empty board by default without adding a live platform reader or requesting a report', async () => {
+    const created = await dispatch({ action: 'board_create', name: 'Synthetic' })
+    expect(created.ok).toBe(true)
+    expect(created.board).toMatchObject({ name: 'Synthetic', widgets: [] })
+    expect(created.note).toBe('看板已创建。')
+    expect(created).not.toHaveProperty('datasetReady')
+    expect(listBoards()[0].widgets).toEqual([])
+  })
   it('creates immutable reading modules only from an existing saved source and validates layout', async () => {
     const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'Synthetic', window: { start: '2026-01-01', end: '2026-01-01' }, capturedAt: 100,
       accounts: [{ platform: 'tiktok', accountId: 'synthetic', name: 'Synthetic', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-01' }, previousWindow: null, sourceAt: 90, timezone: 'UTC', currency: 'USD', spend: 42, previousSpend: null, impressions: 10, clicks: 1, conversions: 1 }] }

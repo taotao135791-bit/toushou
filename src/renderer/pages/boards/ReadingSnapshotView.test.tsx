@@ -33,4 +33,17 @@ describe('snapshot view', () => {
     expect(html).toContain('&lt;script&gt;private&lt;/script&gt;')
     expect(html).not.toContain('<script>')
   })
+
+  it('uses the same safe window and timezone groups and hides custom result labels in anonymous mode', () => {
+    const snapshot = make([row({ timezone: 'PRIVATE_ZONE', resultType: 'PRIVATE_RESULT' }), row({ timezone: 'PRIVATE_ZONE' }), row({ timezone: 'OTHER_ZONE' }), row({ timezone: 'PRIVATE_ZONE', window: { start: '2026-01-02', end: '2026-01-08' } }), row(), row()])
+    expect(snapshotChartGroups(snapshot).map(group => group.rows.length)).toEqual([2, 1, 1, 1, 1])
+    const anonymous = renderToStaticMarkup(<ReadingSnapshotView snapshot={snapshot} includeChart language="en" anonymous />)
+    expect(anonymous).toContain('Timezone group 1')
+    expect(anonymous).toContain('Timezone unknown (one account)')
+    expect(anonymous).toContain('2026-01-02 – 2026-01-08')
+    expect(anonymous).not.toContain('PRIVATE_ZONE')
+    expect(anonymous).not.toContain('OTHER_ZONE')
+    expect(anonymous).not.toContain('PRIVATE_RESULT')
+    expect(anonymous).toContain('Result type unknown')
+  })
 })
