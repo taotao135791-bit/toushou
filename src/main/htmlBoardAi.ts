@@ -53,7 +53,7 @@ const argsBase = ['--mode', 'json', '--print', '--no-session', '--no-tools', '--
 const modelEnv = (home: string): NodeJS.ProcessEnv => {
   const allowed = new Set(['PATH','SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','LANG','LC_ALL','LC_CTYPE','OPENAI_API_KEY','DEEPSEEK_API_KEY','ANTHROPIC_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY','OPENROUTER_API_KEY','XAI_API_KEY','MISTRAL_API_KEY','GROQ_API_KEY'])
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())))
-  Object.assign(env, { HOME: home, USERPROFILE: home, APPDATA: path.join(home,'appdata'), LOCALAPPDATA: path.join(home,'localappdata'), XDG_CONFIG_HOME: path.join(home,'xdg-config'), XDG_DATA_HOME: path.join(home,'xdg-data'), XDG_CACHE_HOME: path.join(home,'xdg-cache'), XDG_STATE_HOME: path.join(home,'xdg-state'), PI_CONFIG_DIR: path.join(home,'.omp'), PI_CODING_AGENT_DIR: path.join(home,'.omp','agent'), TMPDIR: path.join(home,'tmp'), TEMP: path.join(home,'tmp'), TMP: path.join(home,'tmp') })
+  Object.assign(env, { HOME: home, USERPROFILE: home, APPDATA: path.join(home,'appdata'), LOCALAPPDATA: path.join(home,'localappdata'), XDG_CONFIG_HOME: path.join(home,'xdg-config'), XDG_DATA_HOME: path.join(home,'xdg-data'), XDG_CACHE_HOME: path.join(home,'xdg-cache'), XDG_STATE_HOME: path.join(home,'xdg-state'), PI_CODING_AGENT_DIR: path.join(home,'.omp','agent'), TMPDIR: path.join(home,'tmp'), TEMP: path.join(home,'tmp'), TMP: path.join(home,'tmp') })
   return env
 }
 const safeFile = (file: string) => { try { const s = lstatSync(file); return s.isFile() && !s.isSymbolicLink() && s.size <= 1_000_000 } catch { return false } }
