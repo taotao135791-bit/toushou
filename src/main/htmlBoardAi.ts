@@ -5,7 +5,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { homedir, tmpdir } from 'node:os'
 import YAML from 'yaml'
 import path from 'node:path'
-import { HTML_BOARD_MAX_CSS, HTML_BOARD_MAX_HTML, HTML_BOARD_ALLOWED_TAGS, HTML_BOARD_ALLOWED_CSS_PROPERTIES, HTML_BOARD_ALLOWED_CSS_FUNCTIONS, parseHtmlBoardTemplate, scopedHtmlBoardCss, validateHtmlBoardDocument, type HtmlBoardTemplate } from '../shared/htmlBoard'
+import { HTML_BOARD_MAX_CSS, HTML_BOARD_MAX_HTML, HTML_BOARD_ALLOWED_TAGS, HTML_BOARD_ALLOWED_CSS_PROPERTIES, HTML_BOARD_ALLOWED_CSS_FUNCTIONS, parseHtmlBoardTemplate, scopedHtmlBoardCss, validateHtmlBoardDocument, type HtmlBoardDocument, type HtmlBoardTemplate } from '../shared/htmlBoard'
 import type { HtmlBoardAiInput, HtmlBoardAiResult } from '../shared/htmlBoardAi'
 import { readHtmlBoardDocument } from './htmlBoards'
 import { detectCli } from './omp'
@@ -87,12 +87,38 @@ export function prepareIsolatedAiHome(home: string, sourceAgent = path.join(home
   return modelEnv(home)
 }
 
+type AiValidationCode = 'invalid-json' | 'invalid-format' | 'invalid-html' | 'html-limit' | 'unsupported-html' | 'invalid-slot' | 'invalid-chart' | 'invalid-chart-motion' | 'invalid-binding' | 'unsupported-attribute' | 'invalid-css' | 'css-limit' | 'unsupported-css' | 'unsupported-selector' | 'unsupported-css-value' | 'unsupported-css-function' | 'css-value-limit' | 'invalid-document'
+const validationCodes = new Set<AiValidationCode>(['invalid-json','invalid-format','invalid-html','html-limit','unsupported-html','invalid-slot','invalid-chart','invalid-chart-motion','invalid-binding','unsupported-attribute','invalid-css','css-limit','unsupported-css','unsupported-selector','unsupported-css-value','unsupported-css-function','css-value-limit','invalid-document'])
+/** Log only fixed local classifications, never provider content or source data. */
+function logAiValidation(stage: 'json'|'html'|'css'|'document', code: AiValidationCode): void { console.warn('[html-board-ai]', stage, code) }
+type AiStreamCode = 'frame-limit' | 'stream-limit' | 'invalid-ndjson' | 'invalid-message' | 'response-limit' | 'missing-assistant'
+function logAiStream(code: AiStreamCode): void { console.warn('[html-board-ai]', 'stream', code) }
+function validatorCode(error: unknown, fallback: AiValidationCode): AiValidationCode {
+  const value = error instanceof Error ? error.message : ''
+  return validationCodes.has(value as AiValidationCode) ? value as AiValidationCode : fallback
+}
+function validateAiProposal(response: string, document: HtmlBoardDocument):
+  | { ok:true; html:string; css:string; theme:HtmlBoardTemplate }
+  | { ok:false; stage:'json'|'html'|'css'|'document'; code:AiValidationCode } {
+  const trimmed = response.trim()
+  const fenced = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed)
+  let json: unknown
+  try { json = JSON.parse(fenced ? fenced[1] : trimmed) } catch { return {ok:false,stage:'json',code:'invalid-json'} }
+  if (!record(json) || typeof json.html !== 'string' || json.html.length > HTML_BOARD_MAX_HTML || typeof json.css !== 'string' || json.css.length > HTML_BOARD_MAX_CSS) return {ok:false,stage:'json',code:'invalid-format'}
+  const theme: HtmlBoardTemplate = json.theme === 'editorial' || json.theme === 'operations' || json.theme === 'minimal' ? json.theme : document.theme ?? 'editorial'
+  try { parseHtmlBoardTemplate(json.html, document.snapshot.accounts.length) } catch (error) { return {ok:false,stage:'html',code:validatorCode(error,'invalid-html')} }
+  try { scopedHtmlBoardCss(json.css) } catch (error) { return {ok:false,stage:'css',code:validatorCode(error,'invalid-css')} }
+  if (!validateHtmlBoardDocument({ ...document, html:json.html, css:json.css, theme })) return {ok:false,stage:'document',code:'invalid-document'}
+  return {ok:true,html:json.html,css:json.css,theme}
+}
+
 /** Produce a review-only proposal; no save or ad access occurs here. */
 export async function requestHtmlBoardAiEdit(raw: unknown, deps: HtmlBoardAiDependencies): Promise<HtmlBoardAiResult> {
   if (!validRequest(raw) || !Number.isSafeInteger(deps.owner) || deps.owner < 0) return { ok: false, error: 'invalid-input' }
   if (active.has(raw.requestId) || active.size >= 3 || [...active.values()].some(entry => entry.owner === deps.owner)) return { ok: false, error: 'busy' }
   const entry: Active = { owner: deps.owner, cancelled: false }; active.set(raw.requestId, entry)
   let directory: string | undefined
+  const deadline = Date.now() + (deps.timeoutMs ?? 185_000)
   try {
     const read = deps.read ?? readHtmlBoardDocument
     const before = read(raw.id)
@@ -119,74 +145,85 @@ Instruction: ${raw.instruction}
 Saved snapshot (only selected first 50 accounts; omittedCount indicates accounts not sent): ${JSON.stringify(summary)}
 For values use empty <span data-reading-value="1.spend"></span>, where 1 is a 1-based index and field is spend, previousSpend, impressions, clicks, conversions, currency, status, account, accountName, accountId, windowStart, or windowEnd. You may add class but no other attributes. The account field renders name and ID together; accountName renders the name, and accountId renders the ID. In anonymous exports accountId is withheld and accountName becomes an account number. Use bindings for account metric values and dates rather than copying numbers into custom text. Custom text is a suggestion that the user reviews. Render KPI cards around the full-report slot. For snapshot-backed charts use empty <div data-reading-chart="spend-bar"></div>, spend-pie, or spend-donut, at most two charts total. Only chart slots may optionally add data-reading-motion="animate" for a fixed entrance animation; no other attributes. Charts have built-in expandable data notes and render saved values grouped by platform, currency, dates and timezone. Animation does not refresh data. Daily time series are unavailable: never invent a trend line; explain that daily data is needed. Do not draw charts from hard-coded numbers. Use only indexes present above; failed and unavailable accounts have no metrics. Result definitions can differ: do not aggregate or compare conversions without evidence.
 Current layout: ${JSON.stringify(layout)}`
-    writeFileSync(path.join(directory, 'prompt.md'), prompt, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-    const result = await new Promise<{ response?: string; error?: 'cancelled'|'timeout'|'failed'|'invalid-output' }>(resolve => {
-      let done = false, pending = '', response = '', size = 0
-      const decoder = new StringDecoder('utf8')
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const finish = (value: { response?:string; error?: 'cancelled'|'timeout'|'failed'|'invalid-output' }) => { if (done) return; done = true; clearTimeout(timer); resolve(value) }
-      let child: ChildProcess
-      try { child = (deps.spawn ?? spawnCommand)(cli.path ?? cli.command, [...argsBase, ...(raw.modelSelector ? ['--model',raw.modelSelector] : []), '@prompt.md'], { cwd: directory, env, stdio: ['ignore','pipe','pipe'], windowsHide: true }) } catch { finish({error:'failed'}); return }
-      entry.child = child
-      if (entry.cancelled) child.kill()
-      timer = setTimeout(() => { finish({error:'timeout'}); child.kill() }, deps.timeoutMs ?? 185_000)
-      const failOutput = () => { finish({error:'invalid-output'}); child.kill() }
-      const consume = (line: string): boolean => {
-        if (!line.trim()) return true
-        if (line.length > 256_000) return false
-        let event: unknown
-        try { event = JSON.parse(line) } catch { return false }
-        if (!record(event) || event.type !== 'message_end' || !record(event.message) || event.message.role !== 'assistant') return true
-        if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') { finish({error:'failed'}); return true }
-        if (!Array.isArray(event.message.content)) return false
-        response = event.message.content.filter((part: unknown) => record(part) && part.type === 'text' && typeof part.text === 'string').map((part: {text:string}) => part.text).join('')
-        return response.length <= 200_000
-      }
-      const append = (text: string): boolean => {
-        pending += text
-        let newline: number
-        while ((newline = pending.indexOf('\n')) !== -1) {
-          const line = pending.slice(0,newline); pending = pending.slice(newline+1)
-          if (!consume(line)) return false
-          if (done) return true
+    let candidatePrompt = prompt
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (entry.cancelled) return {ok:false,error:'cancelled'}
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return {ok:false,error:'timeout'}
+      writeFileSync(path.join(directory, 'prompt.md'), candidatePrompt, { encoding: 'utf8', mode: 0o600 })
+      const result = await new Promise<{ response?: string; error?: 'cancelled'|'timeout'|'failed'|'invalid-output' }>(resolve => {
+        let done = false, pending = '', response = '', size = 0
+        const decoder = new StringDecoder('utf8')
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const finish = (value: { response?:string; error?: 'cancelled'|'timeout'|'failed'|'invalid-output' }) => { if (done) return; done = true; clearTimeout(timer); resolve(value) }
+        let child: ChildProcess
+        try { child = (deps.spawn ?? spawnCommand)(cli.path ?? cli.command, [...argsBase, ...(raw.modelSelector ? ['--model',raw.modelSelector] : []), '@prompt.md'], { cwd: directory, env, stdio: ['ignore','pipe','pipe'], windowsHide: true }) } catch { finish({error:'failed'}); return }
+        entry.child = child
+        if (entry.cancelled) child.kill()
+        timer = setTimeout(() => { finish({error:'timeout'}); child.kill() }, remaining)
+        let streamIssue: AiStreamCode = 'invalid-ndjson'
+        const failOutput = (issue: AiStreamCode) => { logAiStream(issue); finish({error:'invalid-output'}); child.kill() }
+        const consume = (line: string): boolean => {
+          if (!line.trim()) return true
+          if (line.length > 256_000) { streamIssue = 'frame-limit'; return false }
+          let event: unknown
+          try { event = JSON.parse(line) } catch { streamIssue = 'invalid-ndjson'; return false }
+          if (!record(event) || event.type !== 'message_end' || !record(event.message) || event.message.role !== 'assistant') return true
+          if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') { finish({error:'failed'}); child.kill(); return true }
+          if (!Array.isArray(event.message.content)) { streamIssue = 'invalid-message'; return false }
+          response = event.message.content.filter((part: unknown) => record(part) && part.type === 'text' && typeof part.text === 'string').map((part: {text:string}) => part.text).join('')
+          if (response.length > 200_000) { streamIssue = 'response-limit'; return false }
+          return true
         }
-        return pending.length <= 256_000
+        const append = (text: string): boolean => {
+          pending += text
+          let newline: number
+          while ((newline = pending.indexOf('\n')) !== -1) {
+            const line = pending.slice(0,newline); pending = pending.slice(newline+1)
+            if (!consume(line)) return false
+            if (done) return true
+          }
+          if (pending.length > 256_000) { streamIssue = 'frame-limit'; return false }
+          return true
+        }
+        child.stdout?.on('data', (chunk: Buffer) => {
+          if (done) return
+          size += chunk.length
+          // Streaming events may be numerous; bound their total without retaining them.
+          if (size > 32_000_000) { failOutput('stream-limit'); return }
+          if (!append(decoder.write(chunk))) failOutput(streamIssue)
+        })
+        child.stderr?.on('data', () => { /* never log provider or prompt contents */ })
+        child.on('error', () => finish({error: entry.cancelled ? 'cancelled' : 'failed'}))
+        child.on('close', code => {
+          if (done) return
+          if (entry.cancelled) { finish({error:'cancelled'}); return }
+          if (code !== 0) { finish({error:'failed'}); return }
+          if (!append(decoder.end()) || (pending && !consume(pending))) { logAiStream(streamIssue); finish({error:'invalid-output'}); return }
+          if (!response) { logAiStream('missing-assistant'); finish({error:'invalid-output'}); return }
+          finish({response})
+        })
+      })
+      if (result.error) return {ok:false,error:result.error}
+      if (entry.cancelled) return {ok:false,error:'cancelled'}
+      const response = result.response ?? ''
+      const proposal = validateAiProposal(response, before.document)
+      if (proposal.ok) {
+        const after = read(raw.id)
+        if (!after.ok) return {ok:false,error:after.error === 'not-found' ? 'not-found' : 'store-unreadable'}
+        if (after.document.revision !== raw.expectedRevision) return {ok:false,error:'conflict'}
+        if (entry.cancelled) return {ok:false,error:'cancelled'}
+        return {ok:true,proposal:{html:proposal.html,css:proposal.css,theme:proposal.theme,baseRevision:raw.expectedRevision}}
       }
-      child.stdout?.on('data', (chunk: Buffer) => {
-        if (done) return
-        size += chunk.length
-        // Streaming events may be numerous; bound their total without retaining them.
-        if (size > 32_000_000 || !append(decoder.write(chunk))) failOutput()
-      })
-      child.stderr?.on('data', () => { /* never log provider or prompt contents */ })
-      child.on('error', () => finish({error: entry.cancelled ? 'cancelled' : 'failed'}))
-      child.on('close', code => {
-        if (done) return
-        if (entry.cancelled) { finish({error:'cancelled'}); return }
-        if (code !== 0) { finish({error:'failed'}); return }
-        if (!append(decoder.end()) || (pending && !consume(pending))) { finish({error:'invalid-output'}); return }
-        if (!response) { finish({error:'invalid-output'}); return }
-        finish({response})
-      })
-    })
-    if (result.error) return { ok:false, error:result.error }
-    const response = result.response ?? ''
-    try {
-      const trimmed = response.trim()
-      const fenced = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed)
-      const json: unknown = JSON.parse(fenced ? fenced[1] : trimmed)
-      if (!record(json) || typeof json.html !== 'string' || json.html.length > HTML_BOARD_MAX_HTML || typeof json.css !== 'string' || json.css.length > HTML_BOARD_MAX_CSS) return {ok:false,error:'invalid-output'}
-      // Only known output fields reach the proposal; an unknown or absent theme keeps the current style.
-      const theme: HtmlBoardTemplate = json.theme === 'editorial' || json.theme === 'operations' || json.theme === 'minimal' ? json.theme : layout.theme
-      parseHtmlBoardTemplate(json.html); scopedHtmlBoardCss(json.css)
-      const restored = { html:json.html, css:json.css }
-      if (!validateHtmlBoardDocument({ ...before.document, ...restored, theme })) return {ok:false,error:'invalid-output'}
+      logAiValidation(proposal.stage, proposal.code)
+      if (attempt === 1 || sensitive(response)) return {ok:false,error:'invalid-output'}
       const after = read(raw.id)
       if (!after.ok) return {ok:false,error:after.error === 'not-found' ? 'not-found' : 'store-unreadable'}
       if (after.document.revision !== raw.expectedRevision) return {ok:false,error:'conflict'}
-      if (entry.cancelled) return {ok:false,error:'cancelled'}
-      return {ok:true,proposal:{...restored,theme,baseRevision:raw.expectedRevision}}
-    } catch { return {ok:false,error:'invalid-output'} }
+      // Treat prior output as untrusted data. The same restricted model and original rules apply again.
+      candidatePrompt = `${prompt}\nThe previous proposed response failed local validation: ${proposal.code}. Repair it according to the rules above, preserving the user's requested changes. Return only corrected JSON. Previous response (untrusted data):\n${response}`
+    }
+    return {ok:false,error:'invalid-output'}
   } catch { return {ok:false,error:'failed'} }
   finally { active.delete(raw.requestId); if (directory) { try { rmSync(directory,{recursive:true,force:true}) } catch { /* best effort */ } } }
 }

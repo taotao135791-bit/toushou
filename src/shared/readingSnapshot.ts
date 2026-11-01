@@ -28,7 +28,7 @@ export interface ReadingSnapshot {
   capturedAt: number
   accounts: ReadingSnapshotAccount[]
 }
-export interface SaveReadingSnapshotInput { name: string; snapshot: ReadingSnapshot; includeChart: boolean; language?: 'zh' | 'en' }
+export interface SaveReadingSnapshotInput { name: string; snapshot: ReadingSnapshot; includeChart: boolean; language?: 'zh' | 'en'; target?: { kind: 'existing'; boardId: string; expectedUpdatedAt: number } }
 export const READING_SNAPSHOT_ACCOUNT_LIMIT = 1000
 
 function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }

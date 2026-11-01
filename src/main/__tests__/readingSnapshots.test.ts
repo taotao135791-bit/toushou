@@ -4,7 +4,8 @@ import path from 'node:path'
 import os from 'node:os'
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' } }))
 import { saveReadingSnapshot } from '../readingSnapshots'
-import { listBoards, saveBoard } from '../boards'
+import { listBoards, saveBoard, deleteBoard } from '../boards'
+import { BOARD_LIMITS, createWidget } from '../../shared/boards'
 import type { ReadingSnapshot } from '../../shared/readingSnapshot'
 
 const dirs: string[] = []
@@ -45,6 +46,43 @@ describe('local immutable reading snapshot boards', () => {
     const failedZero = structuredClone(snapshot); failedZero.accounts[1].spend = 0
     for (const bad of [badDate, badMetric, failedZero]) expect(saveReadingSnapshot({ name: 'Test', snapshot: bad, includeChart: false }, target)).toEqual({ ok: false, error: 'invalid-input' })
     expect(listBoards(target)).toEqual([])
+  })
+  it('appends a new immutable snapshot to an existing board and preserves every old widget', () => {
+    const target = file(), created = saveReadingSnapshot({ name: 'Test', snapshot, includeChart: false }, target)
+    if (!created.ok) throw new Error('create failed')
+    const previous = structuredClone(created.board)
+    const changed = structuredClone(snapshot); changed.accounts[0].spend = 42
+    const added = saveReadingSnapshot({ name: 'unused', snapshot: changed, includeChart: true, target: { kind: 'existing', boardId: previous.id, expectedUpdatedAt: previous.updatedAt } }, target)
+    expect(added.ok).toBe(true)
+    if (!added.ok) throw new Error('append failed')
+    expect(added.board.id).toBe(previous.id)
+    expect(added.board.widgets).toHaveLength(2)
+    expect(added.board.widgets[0]).toEqual(previous.widgets[0])
+    expect(added.widgetId).toBe(added.board.widgets[1].id)
+    expect(added.board.widgets[1].config.snapshot).toEqual(changed)
+    expect(added.board.widgets[1].layout.y).toBeGreaterThanOrEqual(previous.widgets[0].layout.y + previous.widgets[0].layout.h)
+    changed.accounts[0].spend = 999
+    expect((listBoards(target)[0].widgets[1].config.snapshot as ReadingSnapshot).accounts[0].spend).toBe(42)
+    expect(listBoards(target)).toHaveLength(1)
+  })
+  it('refuses stale, locked, removed, full and malformed destinations without changing stored snapshots', () => {
+    const target = file(), created = saveReadingSnapshot({ name: 'Test', snapshot, includeChart: false }, target)
+    if (!created.ok) throw new Error('create failed')
+    const board = created.board
+    const args = { name: 'unused', snapshot, includeChart: false, target: { kind: 'existing', boardId: board.id, expectedUpdatedAt: board.updatedAt } } as const
+    const renamed = { ...board, name: 'changed', updatedAt: board.updatedAt + 1 }
+    expect(saveBoard(renamed, target, board.updatedAt)).toEqual({ ok: true })
+    expect(saveReadingSnapshot(args, target)).toEqual({ ok: false, error: 'conflict' })
+    const locked = { ...renamed, locked: true, updatedAt: renamed.updatedAt + 1 }
+    expect(saveBoard(locked, target, renamed.updatedAt)).toEqual({ ok: true })
+    expect(saveReadingSnapshot({ ...args, target: { ...args.target, expectedUpdatedAt: locked.updatedAt } }, target)).toEqual({ ok: false, error: 'board-locked' })
+    const full = { ...locked, locked: false, widgets: [...locked.widgets, ...Array.from({ length: BOARD_LIMITS.maxWidgets - 1 }, (_, i) => createWidget('note', 'Fixture', { x: 0, y: i * 2 }))], updatedAt: locked.updatedAt + 1 }
+    expect(saveBoard(full, target, locked.updatedAt)).toEqual({ ok: true })
+    expect(saveReadingSnapshot({ ...args, target: { ...args.target, expectedUpdatedAt: full.updatedAt } }, target)).toEqual({ ok: false, error: 'board-full' })
+    expect(listBoards(target)[0].widgets[0].config.snapshot).toEqual(snapshot)
+    expect(saveReadingSnapshot({ ...args, target: { ...args.target, extra: true } }, target)).toEqual({ ok: false, error: 'invalid-input' })
+    expect(deleteBoard(board.id, target)).toEqual({ ok: true })
+    expect(saveReadingSnapshot(args, target)).toEqual({ ok: false, error: 'not-found' })
   })
   it('blocks mutation of a saved reading but permits normal board edits', () => {
     const target = file(); const result = saveReadingSnapshot({ name: 'Test', snapshot, includeChart: false }, target)

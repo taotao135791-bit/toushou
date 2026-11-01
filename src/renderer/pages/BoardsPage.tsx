@@ -1398,7 +1398,7 @@ export default function BoardsPage() {
           ttScopeRequired={ttWidgets.length > 0 || widget.config.requireVerifiedTtScope === true}
           boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
-          onSnapshotSaved={(board, openAi) => { setBoards(prev => [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }}
+          onSnapshotSaved={(board, openAi, widgetId) => { setBoards(prev => (prev ?? []).some(item => item.id === board.id) ? (prev ?? []).map(item => item.id === board.id ? board : item) : [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(widgetId ?? board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }}
           autoOpenAi={autoEditWidgetId === widget.id}
           onAiOpened={() => setAutoEditWidgetId(null)}
           showReadingSource={revealTarget?.widgetId === widget.id}
@@ -1836,7 +1836,7 @@ export default function BoardsPage() {
       >
         <div ref={boardScrollRef} className="h-full overflow-y-auto">
           {surface === 'today' && !boardsLoadFailed ? (
-            <TodayReading onSaved={(board, openAi) => { setBoards(prev => [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }} />
+            <TodayReading onSaved={(board, openAi, widgetId) => { setBoards(prev => (prev ?? []).some(item => item.id === board.id) ? (prev ?? []).map(item => item.id === board.id ? board : item) : [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(widgetId ?? board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }} />
           ) : boards === null ? (
             <div className="flex h-full items-center justify-center text-sm text-cream-faint">
               {t('app.loading')}

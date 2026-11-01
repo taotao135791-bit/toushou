@@ -630,6 +630,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // the activity time or every push would reset recency to createdAt.
       const guarded = {
         ...merged,
+        ...(previous?.readonly === true ? { readonly: true } : {}),
         title,
         lastActivityAt: previous?.lastActivityAt ?? merged.lastActivityAt,
         // Renderer-owned pending stamp must also survive registry re-reports.
@@ -646,6 +647,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous.resumedHistoryId === guarded.resumedHistoryId &&
         previous.origin === guarded.origin &&
         previous.remoteReadonly === guarded.remoteReadonly &&
+        previous.readonly === guarded.readonly &&
         previous.lastActivityAt === guarded.lastActivityAt &&
         previous.pendingActivityAt === guarded.pendingActivityAt
       const nextCurrentSessionId = select ? guarded.id : state.currentSessionId
@@ -692,6 +694,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Only Feishu rows are remote-readonly; task rows run with the user's
         // own default permission profile.
         remoteReadonly: descriptor.origin === 'feishu',
+        ...(previous?.readonly === true ? { readonly: true } : {}),
         ...(previous?.resumeFrom ? { resumeFrom: previous.resumeFrom } : {}),
         ...(previous?.sessionFile ? { sessionFile: previous.sessionFile } : {}),
         ...(previous?.resumedHistoryId ? { resumedHistoryId: previous.resumedHistoryId } : {})
@@ -704,6 +707,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous.status === session.status &&
         previous.origin === session.origin &&
         previous.remoteReadonly === session.remoteReadonly &&
+        previous.readonly === session.readonly &&
         previous.resumeFrom === session.resumeFrom &&
         previous.sessionFile === session.sessionFile &&
         previous.resumedHistoryId === session.resumedHistoryId

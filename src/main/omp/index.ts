@@ -223,6 +223,7 @@ export function createSession(
     status: 'idle',
     ...(opts?.resumeSessionPath ? { resumeFrom: opts.resumeSessionPath } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {}),
+    ...(permissionMode === 'readonly' ? { readonly: true } : {}),
     // Remote-channel sessions stay readonly even when the spawn path is
     // re-entered through resume; the renderer uses this to lock the picker.
     // Only an EXPLICIT readonly downgrade locks — a GUI-resumed Feishu fork
@@ -464,7 +465,7 @@ export async function setThinkingLevel(sessionId: string, level: SessionThinking
  */
 export function updateApprovalConfig(sessionId: string, mode: PermissionMode): boolean {
   const entry = sessions.get(sessionId)
-  if (!entry) return false
+  if (!entry || entry.session.readonly === true || entry.session.remoteReadonly === true) return false
   if (mode !== 'ask' && mode !== 'full') return false
   const { approval } = resolvePermissionMode(mode)
   writeApprovalConfig(sessionId, approval)

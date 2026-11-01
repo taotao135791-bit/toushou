@@ -285,7 +285,9 @@ export interface Session {
    * plain local one.
    */
   origin?: 'feishu' | 'task'
-  /** True when Main spawned the session with downgraded (readonly) permissions. */
+  /** True when Main spawned this live session with a fixed read-only profile. */
+  readonly?: boolean
+  /** True when Main spawned a remote session with downgraded permissions. */
   remoteReadonly?: boolean
 }
 

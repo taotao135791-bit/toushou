@@ -11,11 +11,27 @@ const metricLabels: Record<BoardHighlightMetric, [string, string]> = {
   spend: ['消耗', 'Spend'], previousSpend: ['上期消耗', 'Prior spend'], impressions: ['展示', 'Impressions'], clicks: ['点击', 'Clicks'], conversions: ['结果', 'Results']
 }
 
+/** Queue a user-requested repair in the same live conversation without touching its draft. */
+export function queueHighlightRegeneration(sessionId: string, language: 'zh' | 'en'): boolean {
+  const state = useAppStore.getState()
+  if (!sessionId || state.currentSessionId !== sessionId || state.busy[sessionId]) return false
+  const text = language === 'zh'
+    ? '请根据本会话前面提供的同一份快照重新生成看板高光，沿用原 boardId、widgetId 和 revision。最多 8 条，每条引用 1–2 项有效证据；证据必须来自原快照且数值完全一致。缺失视为未知，不编造，不推断因果，不调用工具或修改广告。请按先前要求输出 board-highlights 格式，供我审核。'
+    : 'Please regenerate board highlights from the same snapshot already provided in this conversation, retaining its original boardId, widgetId and revision. Provide at most 8 highlights, each with 1–2 valid evidence references, using exact values from the original snapshot. Treat missing data as unknown; do not invent facts, infer causes, call tools or modify ads. Use the requested board-highlights format for my review.'
+  state.enqueueQueuedMessage(sessionId, { id: crypto.randomUUID(), text })
+  if (!useAppStore.getState().busy[sessionId]) useAppStore.getState().drainQueuedMessage(sessionId)
+  return true
+}
+
 /** Human review surface for an untrusted, evidence-bound model proposal. */
 export default function BoardHighlightsProposalBlock({ raw }: { raw: string }) {
   const navigate = useNavigate()
   const idPrefix = useId()
   const zh = useAppStore(state => state.language) === 'zh'
+  const currentSessionId = useAppStore(state => state.currentSessionId)
+  const sessionBusy = useAppStore(state => !!(state.currentSessionId && state.busy[state.currentSessionId]))
+  const [regenerationRequested, setRegenerationRequested] = useState(false)
+  const regenerationLock = useRef(false)
   const initial = useMemo(() => parseBoardHighlights(raw), [raw])
   const [draftState, setDraftState] = useState<{ source: string; value: BoardHighlightsProposal | null }>({ source: raw, value: initial })
   const [checked, setChecked] = useState<{ raw: string; result: BoardHighlightsValidationResult } | null>(null)
@@ -82,7 +98,12 @@ export default function BoardHighlightsProposalBlock({ raw }: { raw: string }) {
       navigate(`/boards?${query.toString()}`)
     } catch { if (mounted.current) setActionError(true) } finally { if (mounted.current) setBusy(false) }
   }
-  if (!draft) return <div role="status" className="rounded-lg border border-line p-3 text-[12px] text-cream-dim">{zh ? '高光提议格式不完整，无法验证或应用。' : 'Incomplete highlight proposal; it cannot be verified or applied.'}</div>
+  if (!draft) return <div role="status" className="rounded-lg border border-line p-3 text-[12px] text-cream-dim"><p>{zh ? '高光提议格式不完整，无法验证或应用。' : 'Incomplete highlight proposal; it cannot be verified or applied.'}</p><button type="button" disabled={!currentSessionId || sessionBusy || regenerationRequested} onClick={() => {
+    if (!currentSessionId || regenerationLock.current) return
+    regenerationLock.current = true
+    if (queueHighlightRegeneration(currentSessionId, zh ? 'zh' : 'en')) setRegenerationRequested(true)
+    else regenerationLock.current = false
+  }} className="focus-ring mt-2 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream disabled:opacity-40">{regenerationRequested ? (zh ? '已加入对话' : 'Added to conversation') : (zh ? '让 AI 重新生成' : 'Ask AI to regenerate')}</button>{sessionBusy && !regenerationRequested && <p className="mt-1">{zh ? '请等待当前回复完成。' : 'Wait for the current response to finish.'}</p>}</div>
   return <section aria-label={zh ? '高光提议' : 'Highlight proposal'} className="rounded-xl border border-line bg-ink-850 p-4 text-[13px] text-cream">
     <h3 className="font-semibold">{zh ? '高光提议 · 人工审核' : 'Highlight proposal · review required'}</h3>
     <p className="mt-1 text-[12px] text-cream-faint">{zh ? '引用数字与快照核对；自然语言解释不自动保证正确。编辑后需重新核验。' : 'Cited numbers are checked against the snapshot; prose is not automatically verified. Edits are checked again.'}</p>

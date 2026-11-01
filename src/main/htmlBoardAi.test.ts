@@ -12,17 +12,18 @@ const document = { schemaVersion:1, id:'doc', revision:1, source:{boardId:'board
 const input = { id:'doc', expectedRevision:1, instruction:'change the look', requestId:'req' }
 const cli = () => ({command:'omp' as const, path:'/fake/omp', available:true})
 const read = () => ({ok:true as const, document})
-function setup(reply: (layout: {html:string;css:string;theme:string}) => unknown, delayed = false, streamingEvents = 0) {
+function setup(reply: (layout: {html:string;css:string;theme:string}, attempt: number) => unknown, delayed = false, streamingEvents = 0, delayedAttempt = 0) {
   let child: EventEmitter & {stdout:EventEmitter;stderr:EventEmitter;kill:ReturnType<typeof vi.fn>}
-  let prompt = '', args: string[] = [], env: NodeJS.ProcessEnv = {}
+  let prompt = '', args: string[] = [], env: NodeJS.ProcessEnv = {}, attempt = 0
   const fake = vi.fn((_cmd: unknown, received: unknown, options: unknown) => {
+    attempt++
     args = received as string[]
     const opts = options as {cwd:string;env:NodeJS.ProcessEnv}; env = opts.env
     prompt = readFileSync(`${opts.cwd}/prompt.md`,'utf8')
     child = Object.assign(new EventEmitter(), {stdout:new EventEmitter(), stderr:new EventEmitter(), kill:vi.fn(() => { child.emit('close', null); return true })})
-    if (!delayed) queueMicrotask(() => {
-      const layout = JSON.parse(prompt.split('Current layout: ')[1])
-      const answer = reply(layout)
+    if (!delayed && attempt !== delayedAttempt) queueMicrotask(() => {
+      const layout = JSON.parse(prompt.split('Current layout: ')[1].split('\n')[0])
+      const answer = reply(layout,attempt)
       const event = { type:'message_end',message:{role:'assistant',stopReason:'stop',content:[{type:'text',text:typeof answer === 'string' ? answer : JSON.stringify(answer)}]}}
       if (streamingEvents) {
         const updates = Buffer.from((JSON.stringify({type:'message_update',delta:'界'.repeat(40)})+'\n').repeat(streamingEvents))
@@ -122,6 +123,58 @@ describe('AI layout privacy and proposals', () => {
     const stale=setup(layout=>layout)
     const staleRead = () => ({ok:true as const,document:{...document,revision:++count === 1 ? 1 : 2}})
     expect(await requestHtmlBoardAiEdit(input,{owner:1,read:staleRead,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:stale.fake})).toEqual({ok:false,error:'conflict'})
+  })
+  it('repairs one invalid proposal with the same instructions, then returns a review-only validated result', async () => {
+    const warning=vi.spyOn(console,'warn').mockImplementation(()=>{})
+    try {
+      const s=setup((layout,attempt)=>attempt===1 ? {...layout,html:layout.html+'<span data-reading-value=\"2.spend\"></span>'} : {...layout,html:layout.html+'<p>Corrected</p>'})
+      const before=structuredClone(document)
+      const result=await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:s.fake})
+      expect(result.ok).toBe(true); expect(s.fake).toHaveBeenCalledTimes(2)
+      expect(s.getPrompt()).toContain('invalid-binding');expect(s.getPrompt()).toContain('Previous response (untrusted data)')
+      expect(document).toEqual(before)
+      expect(warning).toHaveBeenCalledWith('[html-board-ai]','html','invalid-binding')
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('Private Account')
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('999999999999')
+    } finally { warning.mockRestore() }
+  })
+  it('does not retry on a stale snapshot and performs at most one repair', async () => {
+    const invalid=setup(layout=>({...layout,html:layout.html+'<span data-reading-value=\"2.spend\"></span>'}))
+    expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:invalid.fake})).toEqual({ok:false,error:'invalid-output'})
+    expect(invalid.fake).toHaveBeenCalledTimes(2)
+    let reads=0
+    const staleRead=()=>({ok:true as const,document:{...document,revision:++reads===1?1:2}})
+    const stale=setup(layout=>({...layout,html:layout.html+'<span data-reading-value=\"2.spend\"></span>'}))
+    expect(await requestHtmlBoardAiEdit(input,{owner:1,read:staleRead,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:stale.fake})).toEqual({ok:false,error:'conflict'})
+    expect(stale.fake).toHaveBeenCalledTimes(1)
+  })
+  it('does not retry provider failure or expose provider error details in logs', async () => {
+    const warning=vi.spyOn(console,'warn').mockImplementation(()=>{})
+    try {
+      const kill=vi.fn()
+      const fake=vi.fn(()=>{
+        const child=Object.assign(new EventEmitter(),{stdout:new EventEmitter(),stderr:new EventEmitter(),kill})
+        queueMicrotask(()=>{child.stdout.emit('data',Buffer.from(JSON.stringify({type:'message_end',message:{role:'assistant',stopReason:'error',errorMessage:'synthetic-secret-provider-body',content:[]}})+'\n'));child.emit('close',0)})
+        return child as unknown as ChildProcess
+      }) as unknown as typeof spawn
+      expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:fake})).toEqual({ok:false,error:'failed'})
+      expect(fake).toHaveBeenCalledTimes(1)
+      expect(kill).toHaveBeenCalledOnce()
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('synthetic-secret-provider-body')
+    } finally { warning.mockRestore() }
+  })
+  it('can cancel while the repair is running without accepting a partial result', async () => {
+    const s=setup(layout=>({...layout,html:layout.html+'<span data-reading-value=\"2.spend\"></span>'}),false,0,2)
+    const pending=requestHtmlBoardAiEdit(input,{owner:9,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:s.fake})
+    for(let i=0;i<10 && vi.mocked(s.fake).mock.calls.length<2;i++) await Promise.resolve()
+    expect(s.fake).toHaveBeenCalledTimes(2)
+    expect(cancelHtmlBoardAiEdit(input.requestId,9)).toBe(true)
+    expect(await pending).toEqual({ok:false,error:'cancelled'})
+  })
+  it('enforces one shared timeout across a stalled repair', async () => {
+    const s=setup(layout=>({...layout,html:layout.html+'<span data-reading-value=\"2.spend\"></span>'}),false,0,2)
+    expect(await requestHtmlBoardAiEdit(input,{owner:1,read,cli,sourceAgent:'/nonexistent-test-model-dir',defaultModel:async()=>'',spawn:s.fake,timeoutMs:25})).toEqual({ok:false,error:'timeout'})
+    expect(s.fake).toHaveBeenCalledTimes(2)
   })
   it('limits concurrent requests and times out a stalled child', async () => {
     const s=setup(layout=>layout,true)

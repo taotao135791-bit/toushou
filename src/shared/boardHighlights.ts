@@ -80,7 +80,7 @@ export function buildBoardHighlightsPrompt(evidence: BoardHighlightEvidence, lan
   const zh = language === 'zh'
   return [
     zh ? '只根据以下已保存快照提出高光。不要调用工具或修改广告；不确定的信息写未知，不推断因果。不同平台结果定义可能不同，不混合汇总或比较；快照不保证实时。每条高光必须引用有来源时间、状态 ok 的账户中非空的指标，数值必须完全相同；不要引用失败、未知或省略的账户。文字仅供人工审核。' : 'Propose highlights only from this saved snapshot. Do not call tools or modify ads. Treat missing information as unknown and do not infer causality. Result definitions can differ across platforms; do not combine or compare them. The snapshot may not be live. Each highlight must cite a non-null value from an ok account with a source time, exactly matching the number; never cite failed, unknown or omitted accounts. Text is subject to human review.',
-    zh ? '请返回恰好一个 board-highlights JSON 代码块；可以使用账户名称和 ID，不要包含网址或额外字段。格式：' : 'Return exactly one board-highlights JSON code block, account names and IDs are allowed; omit URLs and extra fields. Format:',
+    zh ? '请返回恰好一个 board-highlights JSON 代码块，最多 8 条高光，每条必须有 1–2 个证据；多账户观察需要拆成多条，不得把超过 2 个引用放进一条。可以使用账户名称和 ID，不要包含网址或额外字段。格式：' : 'Return exactly one board-highlights JSON code block with at most 8 highlights and exactly 1–2 evidence references per highlight. Split multi-account observations into separate highlights; never include more than 2 references in one. Account names and IDs are allowed; omit URLs and extra fields. Format:',
     '```board-highlights',
     JSON.stringify({ version: 1, boardId: evidence.boardId, widgetId: evidence.widgetId, revision: evidence.revision, highlights: [{ text: zh ? '供审核的观察' : 'Observation for review', evidence: [{ accountIndex: 1, metric: 'spend', value: 0 }] }] }, null, 2),
     '```',

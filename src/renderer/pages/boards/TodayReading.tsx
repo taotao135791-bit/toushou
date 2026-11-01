@@ -68,7 +68,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openAi?: boolean) => void } = {}) {
+export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openAi?: boolean, widgetId?: string) => void } = {}) {
   const t = useT()
   const navigate = useNavigate()
   const language = useAppStore((state) => state.language)
@@ -412,7 +412,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
 
   return (
     <div className="mx-auto flex h-full w-full max-w-[880px] flex-col gap-6 overflow-y-auto px-8 py-8">
-      {saveSnapshot && <SaveReadingBoardDialog snapshot={saveSnapshot} language={zh ? 'zh' : 'en'} initialAi={saveWithAi} onClose={() => setSaveSnapshot(null)} onSaved={(board, openAi) => { setSaveSnapshot(null); onSaved?.(board, openAi) }} />}
+      {saveSnapshot && <SaveReadingBoardDialog snapshot={saveSnapshot} language={zh ? 'zh' : 'en'} initialAi={saveWithAi} onClose={() => setSaveSnapshot(null)} onSaved={(board, openAi, widgetId) => { setSaveSnapshot(null); onSaved?.(board, openAi, widgetId) }} />}
       {analysisError && <p role="alert" className="text-[13px] text-red-500">{zh ? '无法开始分析，请检查模型连接后重试。当前读数仍在。' : 'Could not start analysis. Check the model connection and retry; your readings remain available.'}</p>}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>

@@ -26,7 +26,7 @@ const ERROR_KEYS: Record<string, I18nKey> = {
 }
 
 /** Shows only a verified snapshot. Failed reads leave the previous snapshot visible. */
-export function GoogleReportReadingBody({ widget, onSnapshotSaved }: { widget: BoardWidget; onSnapshotSaved?: (board: KanbanBoard, openAi?: boolean) => void }) {
+export function GoogleReportReadingBody({ widget, onSnapshotSaved }: { widget: BoardWidget; onSnapshotSaved?: (board: KanbanBoard, openAi?: boolean, widgetId?: string) => void }) {
   const t = useT()
   const language = useAppStore(state => state.language) === 'en' ? 'en' : 'zh'
   const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
@@ -142,7 +142,7 @@ export function GoogleReportReadingBody({ widget, onSnapshotSaved }: { widget: B
           {reading.warnings.some((warning) => warning !== 'report-scope-only') && <p className="text-amber-700 dark:text-amber-300">{t('boards.googleReport.warnings')}</p>}
         </>
       ) : !busy && <p className="m-auto px-4 text-center text-cream-faint">{t('boards.googleReport.empty')}</p>}
-      {snapshotToSave && <SaveReadingBoardDialog snapshot={snapshotToSave} language={language} onClose={() => setSnapshotToSave(null)} onSaved={(board, openAi) => { setSnapshotToSave(null); onSnapshotSaved?.(board, openAi) }} />}
+      {snapshotToSave && <SaveReadingBoardDialog snapshot={snapshotToSave} language={language} onClose={() => setSnapshotToSave(null)} onSaved={(board, openAi, widgetId) => { setSnapshotToSave(null); onSnapshotSaved?.(board, openAi, widgetId) }} />}
     </div>
   )
 }

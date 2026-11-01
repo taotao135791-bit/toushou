@@ -49,7 +49,7 @@ export interface WidgetBodyProps {
   /** Owning board id; file widgets need it to address Main's read channel. */
   boardId: string
   onConfigChange: (config: Record<string, unknown>) => void
-  onSnapshotSaved?: (board: KanbanBoard, openAi?: boolean) => void
+  onSnapshotSaved?: (board: KanbanBoard, openAi?: boolean, widgetId?: string) => void
   autoOpenAi?: boolean
   onAiOpened?: () => void
   showReadingSource?: boolean

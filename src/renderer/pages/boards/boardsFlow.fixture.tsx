@@ -6,7 +6,7 @@ import Markdown from '../../components/Markdown'
 import type { KanbanBoard } from '@shared/types'
 import { buildTikTokDatasetProofs } from '@shared/tiktokDatasetProof'
 import { useAppStore } from '../../store'
-import { createBoard, createWidget } from '@shared/boards'
+import { createBoard, createWidget, findFreeSlot, WIDGET_DEFAULT_SIZES } from '@shared/boards'
 import { renderReadingSnapshotHtml } from '@shared/readingSnapshotHtml'
 import type { SaveReadingSnapshotInput } from '@shared/readingSnapshot'
 import { htmlBoardTemplate, renderHtmlBoard, type HtmlBoardDocument } from '@shared/htmlBoard'
@@ -16,7 +16,7 @@ const saved: KanbanBoard[] = []
 const v2: { document: HtmlBoardDocument | null; exportHtml: string; evidence: BoardHighlightEvidence | null; applied: number; lastValidation: string | null; aiMode: 'fail' | 'pending' | 'success'; aiCalls: number; aiCancels: number; aiInput: unknown; htmlSaveFail: boolean; chatPrompts: string[]; sessionModes: unknown[]; findDelayed?: boolean; findResolve?: () => void; aiResolve?: (result: { ok: false; error: string }) => void; showProposal?: (raw: string) => void } = { document: null, exportHtml: '', evidence: null, applied: 0, lastValidation: null, aiMode: 'fail', aiCalls: 0, aiCancels: 0, aiInput: null, htmlSaveFail: false, chatPrompts: [], sessionModes: [] }
 const revision = `sha256:${'a'.repeat(64)}`
 const pendingRequests = new Map<string, (value: unknown) => void>()
-const scenario: { summary: unknown; datasets: unknown[]; datasetFail: boolean; pending: boolean; todayPending: boolean; singlePending: boolean; denySingleCancel: boolean; lastRequest: string | null; todayRequest: string | null; todayResult: unknown; todayAlternateResult: unknown; customResult: unknown; partialCancelResult: unknown; singleResult: unknown; singleTodayResult: unknown; clipboard: string; todayInputs: Array<{range?: string; advertiserId?: string; requestId?: string; startDate?: string; endDate?: string}>; progress: ((value: { requestId: string; completed: number; total: number; succeeded: number }) => void) | null; cancelled: string[]; snapshotSaveFail: boolean; snapshotInput: SaveReadingSnapshotInput | null; exportInput: {boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en'} | null; exportedHtml: string } = { summary: { ok: false, error: 'no-credentials' }, datasets: [], datasetFail: false, pending: false, todayPending: false, singlePending: false, denySingleCancel: false, lastRequest: null, todayRequest: null, todayResult: null, todayAlternateResult: null, customResult: null, partialCancelResult: null, singleResult: null, singleTodayResult: null, clipboard: '', todayInputs: [], progress: null, cancelled: [], snapshotSaveFail: false, snapshotInput: null, exportInput: null, exportedHtml: '' }
+const scenario: { summary: unknown; datasets: unknown[]; datasetFail: boolean; pending: boolean; todayPending: boolean; singlePending: boolean; denySingleCancel: boolean; lastRequest: string | null; todayRequest: string | null; todayResult: unknown; todayAlternateResult: unknown; customResult: unknown; partialCancelResult: unknown; singleResult: unknown; singleTodayResult: unknown; clipboard: string; todayInputs: Array<{range?: string; advertiserId?: string; requestId?: string; startDate?: string; endDate?: string}>; progress: ((value: { requestId: string; completed: number; total: number; succeeded: number }) => void) | null; cancelled: string[]; snapshotSaveFail: boolean; appendConflict: boolean; snapshotInput: SaveReadingSnapshotInput | null; exportInput: {boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en'} | null; exportedHtml: string } = { summary: { ok: false, error: 'no-credentials' }, datasets: [], datasetFail: false, pending: false, todayPending: false, singlePending: false, denySingleCancel: false, lastRequest: null, todayRequest: null, todayResult: null, todayAlternateResult: null, customResult: null, partialCancelResult: null, singleResult: null, singleTodayResult: null, clipboard: '', todayInputs: [], progress: null, cancelled: [], snapshotSaveFail: false, appendConflict: false, snapshotInput: null, exportInput: null, exportedHtml: '' }
 const existing: KanbanBoard = {
   id: 'fixture-existing', name: 'Existing board', createdAt: 1, updatedAt: 1,
   widgets: Array.from({ length: 5 }, (_, index) => ({
@@ -43,7 +43,20 @@ Object.assign(window, {
     getBoardDesign: async () => ({ spec: null }),
     onBoardDesignChanged: () => () => {},
     saveBoard: async (board: KanbanBoard) => { saved.push(board); return { ok: true } },
-    saveReadingSnapshot: async (input: SaveReadingSnapshotInput) => { scenario.snapshotInput = structuredClone(input); if (scenario.snapshotSaveFail) return { ok: false, error: 'write-failed' }; const board = createBoard(input.name); board.widgets = [createWidget('reading-snapshot', 'Reading snapshot', { x: 0, y: 0 }, { snapshot: structuredClone(input.snapshot), includeChart: input.includeChart })]; saved.push(board); return { ok: true, board } },
+    saveReadingSnapshot: async (input: SaveReadingSnapshotInput) => {
+      scenario.snapshotInput = structuredClone(input)
+      if (scenario.snapshotSaveFail) return { ok: false, error: 'write-failed' }
+      const prior = input.target ? [...saved].reverse().find(board => board.id === input.target!.boardId) : undefined
+      if (input.target && !prior) return { ok: false, error: 'not-found' }
+      if (input.target && (scenario.appendConflict || prior!.updatedAt !== input.target.expectedUpdatedAt)) return { ok: false, error: 'conflict' }
+      const board = prior ? structuredClone(prior) : createBoard(input.name)
+      const size = WIDGET_DEFAULT_SIZES['reading-snapshot']
+      const widget = createWidget('reading-snapshot', 'Reading snapshot', prior ? findFreeSlot(board.widgets, size.w, size.h) : { x: 0, y: 0 }, { snapshot: structuredClone(input.snapshot), includeChart: input.includeChart })
+      board.widgets.push(widget)
+      if (prior) { board.updatedAt = Math.max(Date.now(), prior.updatedAt + 1); const index = saved.lastIndexOf(prior); saved[index] = board }
+      else saved.push(board)
+      return { ok: true, board, widgetId: widget.id }
+    },
     exportReadingSnapshot: async (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => { scenario.exportInput = input; const board = saved.find(item => item.id === input.boardId); const widget = board?.widgets.find(item => item.id === input.widgetId && item.type === 'reading-snapshot'); if (!widget) return { ok: false, error: 'not-found' }; scenario.exportedHtml = renderReadingSnapshotHtml(widget.config.snapshot, { anonymize: input.anonymize, includeChart: widget.config.includeChart === true, language: input.language, title: board?.name }); return { ok: true } },
     findHtmlBoardForReading: async (input: { boardId: string; widgetId: string }) => {
       const widget = saved.find(board => board.id === input.boardId)?.widgets.find(item => item.id === input.widgetId)

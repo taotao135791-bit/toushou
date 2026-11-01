@@ -34,6 +34,13 @@ afterEach(() => {
 })
 
 describe('session activity', () => {
+  it('preserves a Main-owned readonly lock across live registry refreshes', () => {
+    const store = useAppStore.getState()
+    store.addSession(session('analysis', { readonly: true }), true)
+    store.addSession(session('analysis'), false)
+    expect(useAppStore.getState().sessions.find(item => item.id === 'analysis')?.readonly).toBe(true)
+  })
+
   it('accepts an original history timestamp even when the live registry row already exists', () => {
     const restored = session('a', { lastActivityAt: 50 })
     useAppStore.getState().addSession(restored, false)
