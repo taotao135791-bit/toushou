@@ -20,6 +20,7 @@ import { parseFbReportReference } from './fbReportReference'
 import { validGoogleReportUrl } from './googleReport'
 import { parseTikTokAdvertiserIdList, TIKTOK_ADVERTISER_ID_LIMIT, TIKTOK_ADVERTISER_LIST_MAX_LENGTH } from './tiktokReport'
 import { validateReadingSnapshot } from './readingSnapshot'
+import { validateReadingModuleSpec } from './readingModules'
 import {
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   FB_READING_SUMMARY_METRICS,
@@ -68,6 +69,7 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'google-report-reading',
   'tt-reading',
   'reading-snapshot',
+  'reading-module',
   'gauge',
   'chart-line',
   'chart-bar',
@@ -98,12 +100,13 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   'google-report-reading': { w: 8, h: 8 },
   'tt-reading': { w: 6, h: 5 },
   'reading-snapshot': { w: 12, h: 12 },
+  'reading-module': { w: 6, h: 8 },
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
   'chart-bar': { w: 6, h: 4 },
   todo: { w: 4, h: 5 },
   link: { w: 3, h: 2 },
-  file: { w: 4, h: 4 }
+  file: { w: 12, h: 12 }
 }
 
 export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
@@ -131,6 +134,7 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
       // the connected TikTok token's grant covers); range in days.
       return { advertiserIds: '', range: '7' }
     case 'reading-snapshot':
+    case 'reading-module':
       return {}
     case 'google-report-reading':
       return { reportUrl: '' }
@@ -807,6 +811,12 @@ function validateWidgetConfig(
   raw: Record<string, unknown>
 ): Record<string, unknown> | null {
   switch (type) {
+    case 'reading-module': {
+      const snapshot = validateReadingSnapshot(raw.snapshot)
+      if (!snapshot || Object.keys(raw).some(key => !['snapshot', 'module'].includes(key))) return null
+      const module = validateReadingModuleSpec(raw.module, snapshot)
+      return module ? { snapshot, module } : null
+    }
     case 'reading-snapshot': {
       if (Object.keys(raw).some(key => key !== 'snapshot' && key !== 'includeChart')) return null
       const snapshot = validateReadingSnapshot(raw.snapshot)

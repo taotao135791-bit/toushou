@@ -20,7 +20,7 @@ describe('export saved reading snapshot', () => {
     const dir = temp(), boardFile = path.join(dir, 'boards.json'), target = path.join(dir, 'out.html')
     const created = saveReadingSnapshot({ name: 'Private board', snapshot, includeChart: true }, boardFile)
     if (!created.ok) throw new Error('fixture failed')
-    const result = await exportReadingSnapshot({ boardId: created.board.id, widgetId: created.board.widgets[0].id }, { listBoards: () => listBoards(boardFile), chooseFile: async () => ({ canceled: false, filePath: target }) })
+    const result = await exportReadingSnapshot({ boardId: created.board.id, widgetId: created.widgetId }, { listBoards: () => listBoards(boardFile), chooseFile: async () => ({ canceled: false, filePath: target }) })
     expect(result).toEqual({ ok: true })
     const html = readFileSync(target, 'utf8')
     expect(html).toContain('账户 1')
@@ -33,7 +33,7 @@ describe('export saved reading snapshot', () => {
     const dir = temp(), boardFile = path.join(dir, 'boards.json'), target = path.join(dir, 'out.html')
     const created = saveReadingSnapshot({ name: 'Example board', snapshot, includeChart: false }, boardFile)
     if (!created.ok) throw new Error('fixture failed')
-    const base = { boardId: created.board.id, widgetId: created.board.widgets[0].id }
+    const base = { boardId: created.board.id, widgetId: created.widgetId }
     const deps = { listBoards: () => listBoards(boardFile), chooseFile: async () => ({ canceled: false, filePath: target }) }
     expect(await exportReadingSnapshot({ ...base, html: '<script>x</script>' }, deps)).toEqual({ ok: false, error: 'invalid-input' })
     expect(await exportReadingSnapshot({ ...base, anonymize: false }, deps)).toEqual({ ok: true })
@@ -48,7 +48,7 @@ describe('export saved reading snapshot', () => {
     const write = vi.fn(async () => {})
     const choose = vi.fn(async () => ({ canceled: true }))
     const deps = { listBoards: () => listBoards(boardFile), chooseFile: choose, writeHtml: write }
-    expect(await exportReadingSnapshot({ boardId: created.board.id, widgetId: created.board.widgets[0].id }, deps)).toEqual({ ok: false, error: 'cancelled' })
+    expect(await exportReadingSnapshot({ boardId: created.board.id, widgetId: created.widgetId }, deps)).toEqual({ ok: false, error: 'cancelled' })
     expect(write).not.toHaveBeenCalled()
     choose.mockClear()
     expect(await exportReadingSnapshot({ boardId: created.board.id, widgetId: 'missing' }, deps)).toEqual({ ok: false, error: 'not-found' })
@@ -61,7 +61,7 @@ describe('export saved reading snapshot', () => {
     const dir = temp(), boardFile = path.join(dir, 'boards.json')
     const created = saveReadingSnapshot({ name: 'Example', snapshot, includeChart: true }, boardFile)
     if (!created.ok) throw new Error('fixture failed')
-    const result = await exportReadingSnapshot({ boardId: created.board.id, widgetId: created.board.widgets[0].id }, { listBoards: () => listBoards(boardFile), chooseFile: async () => ({ canceled: false, filePath: '/not-used' }), writeHtml: async () => { throw Error('private path') } })
+    const result = await exportReadingSnapshot({ boardId: created.board.id, widgetId: created.widgetId }, { listBoards: () => listBoards(boardFile), chooseFile: async () => ({ canceled: false, filePath: '/not-used' }), writeHtml: async () => { throw Error('private path') } })
     expect(result).toEqual({ ok: false, error: 'write-failed' })
   })
 })

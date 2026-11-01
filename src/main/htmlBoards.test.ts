@@ -4,7 +4,7 @@ import path from 'node:path'
 import os from 'node:os'
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' }, dialog: { showSaveDialog: vi.fn() } }))
 import { loadOrCreateHtmlBoard, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards, readHtmlBoardDocument, findHtmlBoardForReading } from './htmlBoards'
-import { deleteBoard, listBoards } from './boards'
+import { deleteBoard, listBoards, saveBoard } from './boards'
 import { saveReadingSnapshot } from './readingSnapshots'
 import type { ReadingSnapshot } from '../shared/readingSnapshot'
 
@@ -14,7 +14,7 @@ const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeL
 function fixture() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'html-board-test-')); dirs.push(dir)
   const boardFile = path.join(dir, 'boards.json'), file = path.join(dir, 'custom.json')
-  const created = saveReadingSnapshot({ name: 'Private board', snapshot, includeChart: true }, boardFile)
+  const created = saveReadingSnapshot({ presentation: 'report', name: 'Private board', snapshot, includeChart: true }, boardFile)
   if (!created.ok) throw new Error('fixture failed')
   const board = created.board, widget = board.widgets[0]
   const deps = { file, boardFile, boards: () => listBoards(boardFile) }
@@ -107,7 +107,7 @@ describe('local HTML board documents', () => {
   })
   it('removes only documents for a deleted board or removed snapshot widget', () => {
     const f = fixture(), boardFile = path.join(f.dir, 'boards.json')
-    const second = saveReadingSnapshot({ name: 'Another', snapshot, includeChart: false }, boardFile)
+    const second = saveReadingSnapshot({ presentation: 'report', name: 'Another', snapshot, includeChart: false }, boardFile)
     if (!second.ok) throw Error('fixture failed')
     const first = loadOrCreateHtmlBoard({ boardId: f.board.id, widgetId: f.widget.id }, f.deps)
     const other = loadOrCreateHtmlBoard({ boardId: second.board.id, widgetId: second.board.widgets[0].id }, f.deps)
@@ -135,7 +135,7 @@ describe('local HTML board documents', () => {
   })
   it('retries orphan cleanup without removing other boards or guessing when the source store is missing or corrupted', () => {
     const f = fixture(), boardFile = f.deps.boardFile
-    const second = saveReadingSnapshot({ name: 'Another', snapshot, includeChart: false }, boardFile)
+    const second = saveReadingSnapshot({ presentation: 'report', name: 'Another', snapshot, includeChart: false }, boardFile)
     if (!second.ok) throw Error('fixture failed')
     const first = loadOrCreateHtmlBoard({ boardId: f.board.id, widgetId: f.widget.id }, f.deps)
     const other = loadOrCreateHtmlBoard({ boardId: second.board.id, widgetId: second.board.widgets[0].id }, f.deps)
@@ -154,5 +154,39 @@ describe('local HTML board documents', () => {
     const remaining = readFileSync(f.file, 'utf8')
     expect(remaining).not.toContain(first.document.id)
     expect(remaining).toContain(other.document.id)
+  })
+})
+
+
+describe('compact module documents', () => {
+  it('finds a deterministic module preview without writing, then persists edits and keeps its compact mode on export', async () => {
+    const f = fixture()
+    const modular = saveReadingSnapshot({ name: 'Modules', snapshot, includeChart: true }, f.deps.boardFile)
+    if (!modular.ok) throw Error(modular.error)
+    const key = { boardId: modular.board.id, widgetId: modular.focusWidgetId, language: 'en' as const }
+    const found = findHtmlBoardForReading(key, f.deps)
+    if (!found.ok) throw Error(found.error)
+    expect(found.document.mode).toBe('module')
+    expect(found.document.html).toContain('Spend')
+    expect(() => statSync(f.file)).toThrow()
+    const opened = loadOrCreateHtmlBoard(key, f.deps)
+    if (!opened.ok) throw Error(opened.error)
+    expect(opened.document.id).toBe(found.document.id)
+    const { renderHtmlBoard } = await import('../shared/htmlBoard')
+    const preview = renderHtmlBoard(opened.document, { anonymize: false, language: 'en' })
+    expect(preview).toContain('10')
+    expect(preview).toContain('Fixed snapshot')
+    expect(preview).not.toContain('<table>')
+    expect(preview).not.toContain('<script')
+    expect(saveHtmlBoard({ id: opened.document.id, expectedRevision: 1, html: '<p>Revised</p><div data-reading-slot></div>', css: '' }, f.deps).ok).toBe(true)
+    let exported = ''
+    expect(await exportHtmlBoard({ id: opened.document.id, expectedRevision: 2, language: 'en' }, { ...f.deps, chooseFile: async () => ({ canceled: false, filePath: path.join(f.dir, 'module.html') }), writeExport: (_p, html) => { exported = html } })).toEqual({ ok: true })
+    expect(exported).toContain('Revised')
+    expect(exported).not.toContain('<table>')
+    expect(exported).not.toContain('Private Account')
+    expect(pruneOrphanedHtmlBoards(f.deps)).toEqual({ ok: true, removed: 0 })
+    const removed = { ...modular.board, widgets: modular.board.widgets.filter(widget => widget.id !== modular.focusWidgetId) }
+    expect(saveBoard(removed, f.deps.boardFile)).toEqual({ ok: true })
+    expect(pruneOrphanedHtmlBoards(f.deps)).toEqual({ ok: true, removed: 1 })
   })
 })

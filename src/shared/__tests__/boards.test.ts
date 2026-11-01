@@ -345,7 +345,7 @@ describe('factories', () => {
   })
 
   it('createWidget produces a valid default widget for types without required snapshot data', () => {
-    for (const type of WIDGET_TYPES.filter((entry) => entry !== 'reading-snapshot')) {
+    for (const type of WIDGET_TYPES.filter((entry) => entry !== 'reading-snapshot' && entry !== 'reading-module')) {
       const widget = createWidget(type, type, { x: 0, y: 0 })
       expect(widget.layout).toEqual({ x: 0, y: 0, ...WIDGET_DEFAULT_SIZES[type] })
       expect(widget.config).toEqual(defaultWidgetConfig(type))

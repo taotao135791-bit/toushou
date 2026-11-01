@@ -6,7 +6,9 @@ import { FbReadingSummaryBody } from './FbReadingSummaryBody'
 import { TTReadingBody } from './TTReadingBody'
 import { GoogleReportReadingBody } from './GoogleReportReadingBody'
 import { ReadingSnapshotBody } from './ReadingSnapshotBody'
+import { ReadingModuleBody } from './ReadingModuleBody'
 import { HtmlChart } from './HtmlChart'
+import { HtmlFilePreview } from './HtmlFilePreview'
 import { BoardDataset, BoardWidget, KanbanBoard } from '@shared/types'
 import { BOARD_LIMITS, TodoItem, isValidLinkUrl } from '@shared/boards'
 import {
@@ -584,6 +586,7 @@ type FileBodyState =
  */
 function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string }) {
   const t = useT()
+  const language = useAppStore(state => state.language)
   const filePath = configStr(widget.config.filePath)
   const [state, setState] = useState<FileBodyState>({ kind: 'idle' })
   const [reloadTick, setReloadTick] = useState(0)
@@ -647,16 +650,7 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
       </div>
     )
   }
-  return (
-    <iframe
-      title={`${widget.title} preview`}
-      srcDoc={state.html}
-      // allow-scripts WITHOUT allow-same-origin: the page runs with an opaque
-      // origin — no app storage, no same-origin DOM access, no top navigation.
-      sandbox="allow-scripts"
-      className="h-full w-full rounded border-0 bg-white"
-    />
-  )
+  return <HtmlFilePreview html={state.html} title={widget.title} language={language === 'en' ? 'en' : 'zh'} />
 }
 
 export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, showReadingSource, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
@@ -673,6 +667,8 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapsh
       return <GoogleReportReadingBody widget={widget} onSnapshotSaved={onSnapshotSaved} />
     case 'tt-reading':
       return <TTReadingBody widget={widget} />
+    case 'reading-module':
+      return <ReadingModuleBody widget={widget} boardId={boardId} autoOpenAi={autoOpenAi} onAiOpened={onAiOpened} />
     case 'reading-snapshot':
       return <ReadingSnapshotBody widget={widget} boardId={boardId} autoOpenAi={autoOpenAi} onAiOpened={onAiOpened} showReadingSource={showReadingSource} />
     case 'note':

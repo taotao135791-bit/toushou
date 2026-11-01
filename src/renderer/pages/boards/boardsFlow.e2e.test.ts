@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 const require_ = createRequire(import.meta.url)
 describe('board creation flow in Electron', () => {
-  it('opens boards and preserves scoped, anonymized readings', { timeout: 75000 }, () => {
+  it('opens boards and preserves scoped, anonymized readings', { timeout: 120000 }, async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'boards-flow-'))
     try {
       const root = path.dirname(require_.resolve('electron/package.json'))
@@ -16,8 +16,12 @@ describe('board creation flow in Electron', () => {
       let build: { buildSync: (opts: Record<string, unknown>) => unknown }
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
       build.buildSync({ entryPoints: [path.resolve(__dirname, 'boardsFlow.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.css': 'empty' }, alias: { '@shared': path.resolve(__dirname, '../../../shared') } })
+      const postcss = require_('postcss')
+      const cssPath = path.resolve(__dirname, '../../index.css')
+      const css = await postcss([require_('tailwindcss')(), require_('autoprefixer')()]).process(readFileSync(cssPath, 'utf8'), { from: cssPath })
+      writeFileSync(path.join(dir, 'fixture.css'), css.css)
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
-      const result = spawnSync(electron, [path.resolve(__dirname, 'boardsFlow.harness.cjs'), dir], { encoding: 'utf8', timeout: 60000, env })
+      const result = spawnSync(electron, [path.resolve(__dirname, 'boardsFlow.harness.cjs'), dir], { encoding: 'utf8', timeout: 90000, env })
       const line = result.stdout?.split('\n').find(s => s.startsWith('E2E_RESULT '))
       expect(line, result.stderr).toBeDefined()
       const data = JSON.parse(line!.slice('E2E_RESULT '.length))
@@ -83,7 +87,7 @@ describe('board creation flow in Electron', () => {
       expect(data.customResult.b).toContain('88.00')
       expect(data.customResult.a).not.toContain('999.00')
       expect(data.resultFilter).toEqual({ a: true, b: false, scopeNotice: true })
-      expect(data.chartInitially).toBe(false)
+      expect(data.chartInitially).toBe(true)
       expect(data.failedSnapshot).toEqual({ error: true, dialog: true, a: true, b: true, chart: true })
       expect(data.savedSnapshot).toMatchObject({ activeBoard: 'Snapshot fixture', chart: true, accountCount: 2, table: true, svg: false, fixedDateNote: true, masterToolbar: false, noModulesNotice: false, cachedNotice: false })
       expect(data.savedSnapshot.groupHeadings).toEqual(expect.arrayContaining(['TikTok · USD', 'TikTok · EUR']))
@@ -111,6 +115,28 @@ describe('board creation flow in Electron', () => {
       expect(data.appendConflict).toEqual({ dialog: true, widgets: 1 })
       expect(data.appendExisting).toMatchObject({ boards: 1, tabs: 1, widgets: 2, originalPreserved: true })
       expect(data.appendExisting.newWidget).toBe(data.appendExisting.editorWidget)
+      expect(data.modularDefault).toBe(true)
+      expect(data.modularAiTarget.source).toBe(data.modularAiTarget.expected)
+      expect(data.modularAiTarget.source).toBeTruthy()
+      expect(data.modularLayout.types).toContain('reading-snapshot')
+      expect(data.modularLayout.kinds).toEqual(expect.arrayContaining(['coverage', 'spend-chart', 'note']))
+      expect(data.modularLayout.count).toBeGreaterThanOrEqual(4)
+      expect(data.modularLayout.unique).toBe(data.modularLayout.count)
+      expect(data.modularLayout.sideBySide).toBe(true)
+      expect(data.modularLayout.firstWidth / data.modularLayout.gridWidth).toBeGreaterThan(0.4)
+      expect(data.modularLayout.secondWidth / data.modularLayout.gridWidth).toBeGreaterThan(0.4)
+      expect(data.modularLayout.frameWidth).toBeGreaterThan(100)
+      expect(data.modularLayout.frameHeight).toBeGreaterThan(100)
+      expect(data.modularLayout.sandbox).toBe('')
+      expect(data.modularLayout.tailwind).toBe('flex')
+      expect(data.fullPreview).toMatchObject({ sandbox: '', noScript: true, hasClose: true })
+      expect(data.fullPreview.width).toBeGreaterThan(600)
+      expect(data.fullPreview.height).toBeGreaterThan(500)
+      expect(data.modularManipulation).toMatchObject({ count: data.modularLayout.count, source: true, resized: true })
+      expect(data.chatPreview).toMatchObject({ sandbox: '', content: true, hasOpen: true, notice: true, outsideToolGroup: true })
+      expect(data.chatPreview.width).toBeGreaterThan(200)
+      expect(data.chatPreview.height).toBeGreaterThanOrEqual(400)
+      expect(data.previewNavigation).toBe('Existing board')
       expect(data.staleLoadIgnored).toBe(true)
       expect(data.editorPreview).toEqual({ html: true, table: true, anonymous: true, unsavedExportBlocked: true, unsavedGenerateBlocked: true })
       expect(data.editorExport).toEqual({ revision: 3, html: true, anonymous: true, css: true })

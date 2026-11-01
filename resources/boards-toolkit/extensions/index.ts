@@ -36,7 +36,7 @@ async function call(params: Record<string, unknown>): Promise<string> {
 
 const WIDGET_TYPES = [
   'clock', 'note', 'counter', 'fb-reading', 'fb-reading-summary', 'fb-report-reading',
-  'google-report-reading', 'tt-reading', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
+  'google-report-reading', 'tt-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
 ]
 
 const TEMPLATES = ['tiktok', 'fb-daily', 'fb-daily-v2', 'ads', 'daily', 'blank']
@@ -118,7 +118,7 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_add_widget',
     label: '看板加组件',
-    description: '向已有看板添加一个组件（自动找空位；配置不合法会被整体拒绝，不会弄坏看板）。',
+    description: '向已有看板添加一个组件（自动找空位；配置不合法会被整体拒绝，不会弄坏看板）。展示读数时使用独立 reading-module 指标、图表、说明组件，避免将整页挤入小卡。先 board_get 获取已保存的 reading-snapshot 或 reading-module 的 boardId 和 widgetId，再通过 source 引用；不能自己提供或伪造 snapshot。config 仅传 module：kind 为 metric、spend-chart、coverage 或 note；metric 必须传 metric（spend、impressions、clicks、conversions）及从 0 开始的 accountIndex；spend-chart 传 chart（bar、pie、donut）；note 传 text。数据是保存时的快照，不是实时数据；不要混合币种或伪造时间趋势。layout 的 w 范围 1–12、h 范围 1–20。',
     parameters: {
       type: 'object',
       properties: {
@@ -126,7 +126,9 @@ export default function boardsTools(api: ToolHostApi): void {
         name: { type: 'string', description: '看板名称（与 boardId 二选一）' },
         type: { type: 'string', enum: WIDGET_TYPES },
         title: { type: 'string', description: '可选：组件标题' },
-        config: { type: 'object', description: '可选：组件配置（与界面上手动配置的字段一致）' }
+        config: { type: 'object', description: '可选：组件配置；reading-module 仅提供 module，不提供 snapshot。' },
+        source: { type: 'object', properties: { boardId: { type: 'string' }, widgetId: { type: 'string' } }, required: ['boardId', 'widgetId'], description: 'reading-module 必填，现有保存的读数来源。' },
+        layout: { type: 'object', properties: { w: { type: 'integer', minimum: 1, maximum: 12 }, h: { type: 'integer', minimum: 1, maximum: 20 } }, required: ['w', 'h'], description: '可选网格尺寸。' }
       },
       required: ['type']
     },

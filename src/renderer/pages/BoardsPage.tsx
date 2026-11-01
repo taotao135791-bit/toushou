@@ -354,6 +354,23 @@ export default function BoardsPage() {
     return () => { alive = false }
   }, [location.search, language])
   useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const boardId = params.get('board'), widgetId = params.get('widget')
+    if (!boardId || !widgetId || params.has('evidenceBoard')) return
+    let alive = true
+    void window.electronAPI.listBoards().then(list => {
+      if (!alive) return
+      const board = list.find(item => item.id === boardId)
+      if (!board?.widgets.some(widget => widget.id === widgetId)) {
+        setToast({ ok: false, text: language === 'zh' ? '看板或模块已不存在。' : 'The board or module no longer exists.' }); return
+      }
+      setBoards(list); setCurrentId(boardId); setSurface('board')
+      const target = { boardId, widgetId }
+      revealTargetRef.current = target; setRevealTarget(target)
+    }).catch(() => { if (alive) setToast({ ok: false, text: language === 'zh' ? '无法打开看板，请重试。' : 'Could not open the board. Retry.' }) })
+    return () => { alive = false }
+  }, [location.search, language])
+  useEffect(() => {
     if (!revealTarget || surface !== 'board' || currentId !== revealTarget.boardId) return
     // Let the grid commit its final position before measuring the card.
     let secondFrame = 0
@@ -369,7 +386,7 @@ export default function BoardsPage() {
         if (revealTarget.index) {
           const row = card.querySelector<HTMLElement>(`[data-reading-account-index="${revealTarget.index}"]`)
           row?.scrollIntoView({ block: 'nearest' }); row?.focus({ preventScroll: true })
-        } else card.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select')?.focus({ preventScroll: true })
+        } else (card.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select') ?? card).focus({ preventScroll: true })
         revealTargetRef.current = null
         setRevealTarget(null)
       })
@@ -1334,6 +1351,7 @@ export default function BoardsPage() {
     <div
       key={widget.id}
       data-board-widget-id={widget.id}
+      tabIndex={-1}
       style={widgetCardStyle(effectiveStyle)}
       className="board-widget group/widget relative flex flex-col overflow-hidden border border-line bg-ink-850"
     >
@@ -1401,7 +1419,7 @@ export default function BoardsPage() {
           onSnapshotSaved={(board, openAi, widgetId) => { setBoards(prev => (prev ?? []).some(item => item.id === board.id) ? (prev ?? []).map(item => item.id === board.id ? board : item) : [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(widgetId ?? board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }}
           autoOpenAi={autoEditWidgetId === widget.id}
           onAiOpened={() => setAutoEditWidgetId(null)}
-          showReadingSource={revealTarget?.widgetId === widget.id}
+          showReadingSource={revealTarget?.widgetId === widget.id && !!revealTarget.index}
           masterWindow={
             master
               ? master.range === 'today'

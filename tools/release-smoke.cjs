@@ -121,16 +121,23 @@ async function run() {
   const seed = await evaluate(cdp, `(async () => {
     const windowRange={start:'2026-01-01',end:'2026-01-02'};
     const snapshot={kind:'reading-snapshot',version:1,rangeLabel:'Synthetic range',window:windowRange,capturedAt:1000,accounts:[{platform:'tiktok',accountId:'SYNTHETIC_ID',name:'Synthetic account',status:'ok',statusDetail:null,window:windowRange,previousWindow:null,sourceAt:900,timezone:'UTC',currency:'USD',spend:42,previousSpend:null,impressions:100,clicks:3,conversions:1}]};
-    const board=await window.electronAPI.saveReadingSnapshot({name:'Synthetic package board',snapshot,includeChart:true,language:'en'});
+    const board=await window.electronAPI.saveReadingSnapshot({name:'Synthetic package board',snapshot,includeChart:true,presentation:'report',language:'en'});
     if(!board.ok) return {stage:'snapshot',error:board.error};
-    const widgetId=board.board.widgets[0].id, boardId=board.board.id;
+    const widgetId=board.widgetId, boardId=board.board.id;
     const opened=await window.electronAPI.loadOrCreateHtmlBoard({boardId,widgetId,language:'en'});
     if(!opened.ok) return {stage:'open',error:opened.error};
     const saved=await window.electronAPI.saveHtmlBoard({id:opened.document.id,expectedRevision:opened.document.revision,html:'<h1>Packaged smoke layout</h1><div data-reading-slot></div>',css:'h1 { color: #123456; }',theme:'minimal'});
     if(!saved.ok) return {stage:'save',error:saved.error};
     const found=await window.electronAPI.findHtmlBoardForReading({boardId,widgetId});
+    const modular=await window.electronAPI.saveReadingSnapshot({name:'Synthetic modular board',snapshot,includeChart:true,language:'en'});
+    if(!modular.ok) return {stage:'modular-save',error:modular.error};
+    const modules=modular.board.widgets.filter(w=>w.type==='reading-module');
+    const charts=modules.filter(w=>w.config.module?.kind==='spend-chart');
+    const focused=modules.find(w=>w.id===modular.focusWidgetId);
+    const source=modular.board.widgets.find(w=>w.id===modular.widgetId);
+    const moduleDoc=await window.electronAPI.findHtmlBoardForReading({boardId:modular.board.id,widgetId:modular.focusWidgetId,language:'en'});
     const all=await window.electronAPI.listBoards();
-    return {ok:found.ok && found.document.revision===saved.document.revision && found.document.html===saved.document.html && all.some(b=>b.id===boardId),boardId,widgetId};
+    return {ok:found.ok && found.document.revision===saved.document.revision && found.document.html===saved.document.html && all.some(b=>b.id===boardId) && modules.length>=4 && charts.length===2 && !!focused && source?.type==='reading-snapshot' && moduleDoc.ok && moduleDoc.document.mode==='module',boardId,widgetId,modularBoardId:modular.board.id,focusWidgetId:modular.focusWidgetId,sourceWidgetId:modular.widgetId,chartIds:charts.map(w=>w.id)};
   })()`)
   if (!seed?.ok) throw new Error(`Packaged persistence failed at ${seed?.stage ?? 'read-back'}`)
   // Restart the actual packaged process and verify the saved data again.
@@ -141,7 +148,7 @@ async function run() {
   const restartPort = await freePort()
   if (restartPort === firstPort) throw new Error('Could not allocate a fresh restart port')
   await launch(restartPort)
-  const reopened = await evaluate(cdp, `(async () => {const r=await window.electronAPI.findHtmlBoardForReading({boardId:${JSON.stringify(seed.boardId)},widgetId:${JSON.stringify(seed.widgetId)}});return await window.electronAPI.getStore('setupComplete')===true && await window.electronAPI.getStore('language')==='en' && r.ok&&r.document.html.includes('Packaged smoke layout')})()`)
+  const reopened = await evaluate(cdp, `(async () => {const r=await window.electronAPI.findHtmlBoardForReading({boardId:${JSON.stringify(seed.boardId)},widgetId:${JSON.stringify(seed.widgetId)}});const all=await window.electronAPI.listBoards();const b=all.find(x=>x.id===${JSON.stringify(seed.modularBoardId)});return await window.electronAPI.getStore('setupComplete')===true && await window.electronAPI.getStore('language')==='en' && r.ok&&r.document.html.includes('Packaged smoke layout') && b?.widgets.some(w=>w.id===${JSON.stringify(seed.focusWidgetId)}&&w.type==='reading-module') && b.widgets.some(w=>w.id===${JSON.stringify(seed.sourceWidgetId)}&&w.type==='reading-snapshot') && ${JSON.stringify(seed.chartIds)}.every(id=>b.widgets.some(w=>w.id===id&&w.config.module?.kind==='spend-chart'))})()`)
   if (!reopened) throw new Error('Saved HTML did not survive application restart')
   // Reload the unmodified renderer to exercise persisted data through its UI.
   await evaluate(cdp, `window.location.hash='#/boards'; true`)
@@ -155,7 +162,11 @@ async function run() {
   await until(() => evaluate(cdp, `document.body.textContent.includes('Synthetic account') && !!document.querySelector('[data-reading-account-index="1"]')`), 10_000, 'Source reading')
   await evaluate(cdp, `(() => {const b=[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Show saved layout');if(!b)throw Error('missing saved-layout control');b.click();return true})()`)
   await until(() => evaluate(cdp, `!!document.querySelector('iframe[title="Saved board"]')?.srcdoc.includes('Packaged smoke layout')`), 10_000, 'Return to saved layout')
-  console.log('Packaged app smoke passed: private profile, snapshot persistence, saved HTML, and source navigation.')
+  await evaluate(cdp, `(() => {const tab=[...document.querySelectorAll('[title="Click to open · drag to reorder tabs"]')].find(e=>e.textContent.includes('Synthetic modular board'));if(!tab)throw Error('missing modular board tab');tab.click();return true})()`)
+  await until(() => evaluate(cdp, `${JSON.stringify(seed.chartIds)}.every(id=>!!document.querySelector('[data-board-widget-id="'+id+'"] iframe'))`), 15_000, 'Modular charts rendered')
+  const modules = await evaluate(cdp, `(() => {const ids=${JSON.stringify(seed.chartIds)},grid=document.querySelector('.react-grid-layout').getBoundingClientRect();const rows=ids.map(id=>{const card=document.querySelector('[data-board-widget-id="'+id+'"]'),frame=card.querySelector('iframe'),r=card.getBoundingClientRect(),f=frame.getBoundingClientRect(),doc=new DOMParser().parseFromString(frame.srcdoc,'text/html');return {x:r.x,y:r.y,right:r.right,width:r.width,frameWidth:f.width,frameHeight:f.height,sandbox:frame.getAttribute('sandbox'),fullTable:!!doc.querySelector('.table-wrap'),footer:!!doc.querySelector('.module-source'),script:!!doc.querySelector('script')}});return {gridWidth:grid.width,rows}})()`)
+  if (modules.rows.length !== 2 || modules.rows.some(row => row.sandbox !== '' || row.fullTable || !row.footer || row.script || row.width < modules.gridWidth * 0.4 || row.frameWidth < 100 || row.frameHeight < 100) || Math.abs(modules.rows[0].y - modules.rows[1].y) > 2 || modules.rows[0].right > modules.rows[1].x + 1) throw new Error('Modular chart layout or compact source preview is invalid')
+  console.log('Packaged app smoke passed: private profile, full report and modular snapshot persistence, separate chart layouts, and source navigation.')
 }
 let timer
 Promise.race([run(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Packaged smoke exceeded 90 seconds')), 90_000) })]).catch(error => { process.exitCode = 1; console.error(`Packaged app smoke failed: ${error.message}`); if (output) console.error(output) }).finally(async () => {

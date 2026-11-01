@@ -10,7 +10,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => userDataDir }
 }))
 
-import { authorizeAndDispatch, dispatch, parseBoardsBridgeRequest, readWorkspaceDataset } from '../boardsBridge'
+import { authorizeAndDispatch, boardConfirmationDetails, dispatch, parseBoardsBridgeRequest, readWorkspaceDataset } from '../boardsBridge'
 import { listBoards } from '../boards'
 import { saveBoard } from '../boards'
 import { saveReadingSnapshot } from '../readingSnapshots'
@@ -37,6 +37,29 @@ describe('parseBoardsBridgeRequest', () => {
 })
 
 describe('boards bridge dispatch', () => {
+  it('creates immutable reading modules only from an existing saved source and validates layout', async () => {
+    const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'Synthetic', window: { start: '2026-01-01', end: '2026-01-01' }, capturedAt: 100,
+      accounts: [{ platform: 'tiktok', accountId: 'synthetic', name: 'Synthetic', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-01' }, previousWindow: null, sourceAt: 90, timezone: 'UTC', currency: 'USD', spend: 42, previousSpend: null, impressions: 10, clicks: 1, conversions: 1 }] }
+    const saved = saveReadingSnapshot({ name: 'Synthetic', snapshot, includeChart: false })
+    if (!saved.ok) throw new Error(saved.error)
+    const original = saved.board.widgets.find(widget => widget.type === 'reading-snapshot')!
+    const request = { action: 'board_add_widget' as const, boardId: saved.board.id, type: 'reading-module', source: { boardId: saved.board.id, widgetId: original.id }, config: { module: { kind: 'metric', metric: 'spend', accountIndex: 0 } }, layout: { w: 4, h: 5 } }
+    expect(await dispatch({ ...request, source: { ...request.source, widgetId: 'missing' } })).toMatchObject({ ok: false })
+    expect(await dispatch({ ...request, config: { ...request.config, snapshot } })).toMatchObject({ ok: false })
+    expect(await dispatch({ ...request, layout: { w: 13, h: 5 } })).toMatchObject({ ok: false, error: 'invalid-layout' })
+    const added = await dispatch(request)
+    expect(added.ok).toBe(true)
+    const id = added.createdWidgetId as string
+    const board = listBoards().find(item => item.id === saved.board.id)!
+    const module = board.widgets.find(widget => widget.id === id)!
+    expect(module.layout).toMatchObject({ w: 4, h: 5 })
+    expect(module.config.snapshot).toEqual(snapshot)
+    expect(await dispatch({ action: 'board_update_widget', boardId: board.id, widgetId: id, config: { module: { kind: 'coverage' } } })).toMatchObject({ ok: false })
+    const tampered = structuredClone(board)
+    tampered.widgets.find(widget => widget.id === id)!.config.module = { kind: 'coverage' }
+    expect(saveBoard(tampered)).toMatchObject({ ok: false, error: 'snapshot-immutable' })
+    expect(await dispatch({ ...request, source: { boardId: board.id, widgetId: id }, config: { module: { kind: 'coverage' } } })).toMatchObject({ ok: true })
+  })
   it('makes saved account evidence available to a conversation without auto-applying a highlight', async () => {
     const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'PRIVATE_RANGE', window: { start: '2026-01-01', end: '2026-01-07' }, capturedAt: 100,
       accounts: [{ platform: 'tiktok', accountId: '7300000000000999999', name: 'PRIVATE_NAME', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-07' }, previousWindow: null, sourceAt: 90, timezone: 'UTC', currency: 'USD', spend: 42, previousSpend: null, impressions: 10, clicks: 1, conversions: 1 }] }
@@ -46,13 +69,13 @@ describe('boards bridge dispatch', () => {
     const output = JSON.stringify(read)
     for (const value of ['PRIVATE_NAME', 'PRIVATE_BOARD', '7300000000000999999']) expect(output).toContain(value)
     expect(output).not.toContain('PRIVATE_RANGE')
-    const config = (read.board as { widgets: Array<{ config: { evidence: { boardId: string; widgetId: string; revision: string } } }> }).widgets[0].config
+    const config = (read.board as { widgets: Array<{ type: string; config: { evidence: { boardId: string; widgetId: string; revision: string } } }> }).widgets.find(widget => widget.type === 'reading-snapshot')!.config
     const proposal = { version: 1, boardId: config.evidence.boardId, widgetId: config.evidence.widgetId, revision: config.evidence.revision, highlights: [{ text: 'Review this spending', evidence: [{ accountIndex: 1, metric: 'spend', value: 42 }] }] }
     const raw = JSON.stringify(proposal)
     expect(validateBoardHighlights({ raw })).toMatchObject({ ok: true })
-    expect(listBoards()[0].widgets).toHaveLength(1)
+    expect(listBoards()[0].widgets).toHaveLength(created.board.widgets.length)
     expect(applyBoardHighlights({ raw })).toMatchObject({ ok: true, boardId: created.board.id })
-    expect(listBoards()[0].widgets).toHaveLength(2)
+    expect(listBoards()[0].widgets).toHaveLength(created.board.widgets.length + 1)
   })
   it('exposes a bounded account projection of reading snapshots to model board operations', async () => {
     const snapshot: ReadingSnapshot = {
@@ -67,18 +90,19 @@ describe('boards bridge dispatch', () => {
     const saved = saveReadingSnapshot({ name: 'PRIVATE_BOARD_NAME', snapshot, includeChart: true })
     if (!saved.ok) throw new Error(saved.error)
     const board = saved.board
-    board.widgets[0].title = 'PRIVATE_WIDGET_TITLE'
+    const snapshotWidget = board.widgets.find(widget => widget.type === 'reading-snapshot')!
+    snapshotWidget.title = 'PRIVATE_WIDGET_TITLE'
     board.widgets.push(createWidget('note', 'PRIVATE_OTHER_TITLE', { x: 0, y: 12 }, { text: 'PRIVATE_OTHER_BODY' }))
     expect(saveBoard(board)).toEqual({ ok: true })
-    const raw = listBoards()[0].widgets[0].config.snapshot as ReadingSnapshot
+    const raw = listBoards()[0].widgets.find(widget => widget.type === 'reading-snapshot')!.config.snapshot as ReadingSnapshot
     expect(raw.accounts[0].name).toBe('PRIVATE_NAME_0')
     const projected = await dispatch({ action: 'board_get', boardId: board.id })
     expect(projected.board).toMatchObject({ id: board.id, name: 'PRIVATE_BOARD_NAME' })
     const output = JSON.stringify(projected)
     for (const field of ['PRIVATE_ID_0','PRIVATE_NAME_0','PRIVATE_RESULT','PRIVATE_WIDGET_TITLE','PRIVATE_OTHER_BODY']) expect(output).toContain(field)
     for (const omitted of ['PRIVATE_ID_50','PRIVATE_NAME_50','PRIVATE_DETAIL','PRIVATE_RANGE','PRIVATE_TIMEZONE']) expect(output).not.toContain(omitted)
-    const config = (projected.board as { widgets: Array<{ config: { accountCount: number; evidence: { boardId: string; widgetId: string; revision: string; omittedCount: number; accounts: unknown[] } } }> }).widgets[0].config
-    expect(config).toMatchObject({ accountCount: 51, evidence: { boardId: board.id, widgetId: board.widgets[0].id, omittedCount: 1 } })
+    const config = (projected.board as { widgets: Array<{ type: string; config: { accountCount: number; evidence: { boardId: string; widgetId: string; revision: string; omittedCount: number; accounts: unknown[] } } }> }).widgets.find(widget => widget.type === 'reading-snapshot')!.config
+    expect(config).toMatchObject({ accountCount: 51, evidence: { boardId: board.id, widgetId: snapshotWidget.id, omittedCount: 1 } })
     expect(config.evidence.revision).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(config.evidence.accounts).toHaveLength(50)
     expect(config.evidence.accounts[0]).toMatchObject({ index: 1, platform: 'tiktok', status: 'ok', currency: 'USD', metrics: { spend: 1 } })
@@ -277,6 +301,34 @@ describe('dispatch board_create cross-account', () => {
   })
 })
 
+
+describe('native board approval details', () => {
+  it('resolves the target name without changing or replacing the board ID', async () => {
+    const created = await dispatch({action:'board_create',name:'合成看板',template:'blank'})
+    const board = created.board as {id:string}
+    const request = {action:'board_add_widget' as const,boardId:board.id,name:'其他名称',type:'file',title:'合成文件'}
+    const details=boardConfirmationDetails(request)
+    expect(details).toContain('看板: 合成看板')
+    expect(details).toContain(`boardId: ${board.id}`)
+    expect(details).toContain('name: 其他名称')
+    expect(request).toEqual({action:'board_add_widget',boardId:board.id,name:'其他名称',type:'file',title:'合成文件'})
+  })
+  it('does not create or migrate a board store merely to display a prompt', () => {
+    writeFileSync(path.join(dir,'kanban-boards.json'),'[]')
+    const details=boardConfirmationDetails({action:'board_add_widget',boardId:'missing',type:'note'})
+    expect(details).not.toContain('看板:')
+    expect(existsSync(path.join(dir,'kanban-boards-v2.json'))).toBe(false)
+    expect(existsSync(path.join(dir,'kanban-boards-pre-v2-backup.json'))).toBe(false)
+  })
+  it('does not guess a board name for missing IDs, read failures, or unrelated actions', () => {
+    const missing={action:'board_add_widget' as const,boardId:'missing',type:'note'}
+    expect(boardConfirmationDetails(missing,()=>[])).not.toContain('看板:')
+    expect(boardConfirmationDetails(missing,()=>{throw Error('unreadable')})).not.toContain('看板:')
+    const read=vi.fn(()=>[])
+    expect(boardConfirmationDetails({action:'board_create',name:'新看板',template:'blank'},read)).toContain('name: 新看板')
+    expect(read).not.toHaveBeenCalled()
+  })
+})
 
 describe('bridge access and workspace file authority', () => {
   it('allows readonly sessions to list, but denies all board writes and dataset imports', async () => {

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { htmlBoardTemplate, parseHtmlBoardTemplate, renderHtmlBoard, scopedHtmlBoardCss, validateHtmlBoardDocument, type HtmlBoardDocument, type HtmlBoardDocumentResult, type HtmlBoardExportResult, type HtmlBoardLanguage, type HtmlBoardTemplate } from '../shared/htmlBoard'
+import { readingModuleTemplate, validateReadingModuleSpec } from '../shared/readingModules'
 import { validateReadingSnapshot } from '../shared/readingSnapshot'
 import { listBoards } from './boards'
 import type { KanbanBoard } from '../shared/types'
@@ -71,18 +72,33 @@ export function readHtmlBoardDocument(id: unknown, deps: Dependencies = {}): Htm
 /** Alias for Main callers; neither function is directly registered as IPC. */
 export const readHtmlBoard = readHtmlBoardDocument
 
+
+function defaultModuleDocument(boardId: string, widget: KanbanBoard['widgets'][number], language: HtmlBoardLanguage = 'zh'): HtmlBoardDocument | null {
+  const snapshot = validateReadingSnapshot(widget.config.snapshot)
+  const module = snapshot && validateReadingModuleSpec(widget.config.module, snapshot)
+  if (!snapshot || !module) return null
+  const template = readingModuleTemplate(module, snapshot, language)
+  return { schemaVersion: 1, id: `module-${hash([boardId, widget.id]).slice(0, 64)}`, revision: 1,
+    source: { boardId, widgetId: widget.id, snapshotHash: hash(snapshot) }, snapshot: structuredClone(snapshot),
+    mode: 'module', includeChart: false, theme: 'minimal', ...template, createdAt: snapshot.capturedAt, updatedAt: snapshot.capturedAt }
+}
+
 /** Read an existing customized document without creating one, bound to its saved source. */
 export function findHtmlBoardForReading(raw: unknown, deps: Dependencies = {}): HtmlBoardDocumentResult {
-  if (!record(raw) || !keys(raw, ['boardId', 'widgetId']) || !isSourceId(raw.boardId) || !isSourceId(raw.widgetId)) return { ok: false, error: 'invalid-input' }
+  if (!record(raw) || !keys(raw, ['boardId', 'widgetId', 'language']) || !isSourceId(raw.boardId) || !isSourceId(raw.widgetId) || (raw.language !== undefined && raw.language !== 'zh' && raw.language !== 'en')) return { ok: false, error: 'invalid-input' }
   let boards: KanbanBoard[], documents: HtmlBoardDocument[]
   try { boards = (deps.boards ?? listBoards)(); documents = readDocuments(deps.file ?? defaultFile()) }
   catch { return { ok: false, error: 'store-unreadable' } }
-  const widget = boards.find(board => board.id === raw.boardId)?.widgets.find(item => item.id === raw.widgetId && item.type === 'reading-snapshot')
+  const widget = boards.find(board => board.id === raw.boardId)?.widgets.find(item => item.id === raw.widgetId && (item.type === 'reading-snapshot' || item.type === 'reading-module'))
   if (!widget) return { ok: false, error: 'not-found' }
   const snapshot = validateReadingSnapshot(widget.config.snapshot)
   if (!snapshot) return { ok: false, error: 'invalid-snapshot' }
   const document = documents.find(item => item.source.boardId === raw.boardId && item.source.widgetId === raw.widgetId)
-  if (!document) return { ok: false, error: 'not-found' }
+  if (!document) {
+    const fallback = widget.type === 'reading-module' ? defaultModuleDocument(raw.boardId, widget, raw.language === 'en' ? 'en' : 'zh') : null
+    return fallback ? { ok: true, document: fallback } : { ok: false, error: 'not-found' }
+  }
+  if ((document.mode === 'module') !== (widget.type === 'reading-module')) return { ok: false, error: 'conflict' }
   if (document.source.snapshotHash !== hash(snapshot)) return { ok: false, error: 'conflict' }
   return { ok: true, document: structuredClone(document) }
 }
@@ -93,7 +109,7 @@ export function loadOrCreateHtmlBoard(raw: unknown, deps: Dependencies = {}): Ht
   let boards: KanbanBoard[]
   try { boards = (deps.boards ?? listBoards)() } catch { return { ok: false, error: 'store-unreadable' } }
   const board = boards.find(item => item.id === raw.boardId)
-  const widget = board?.widgets.find(item => item.id === raw.widgetId && item.type === 'reading-snapshot')
+  const widget = board?.widgets.find(item => item.id === raw.widgetId && (item.type === 'reading-snapshot' || item.type === 'reading-module'))
   if (!board || !widget) return { ok: false, error: 'not-found' }
   const snapshot = validateReadingSnapshot(widget.config.snapshot)
   if (!snapshot) return { ok: false, error: 'invalid-snapshot' }
@@ -101,11 +117,12 @@ export function loadOrCreateHtmlBoard(raw: unknown, deps: Dependencies = {}): Ht
   let documents: HtmlBoardDocument[]
   try { documents = readDocuments(file) } catch { return { ok: false, error: 'store-unreadable' } }
   const existing = documents.find(item => item.source.boardId === raw.boardId && item.source.widgetId === raw.widgetId)
-  if (existing) return existing.source.snapshotHash === hash(snapshot) ? { ok: true, document: structuredClone(existing) } : { ok: false, error: 'conflict' }
+  if (existing) return existing.source.snapshotHash === hash(snapshot) && (existing.mode === 'module') === (widget.type === 'reading-module') ? { ok: true, document: structuredClone(existing) } : { ok: false, error: 'conflict' }
   if (documents.length >= MAX_DOCUMENTS) return { ok: false, error: 'limit' }
+  const moduleDocument = widget.type === 'reading-module' ? defaultModuleDocument(raw.boardId, widget, (raw.language ?? 'zh') as HtmlBoardLanguage) : null
   const template = htmlBoardTemplate((raw.template ?? 'editorial') as HtmlBoardTemplate, (raw.language ?? 'zh') as HtmlBoardLanguage)
   const now = Date.now()
-  const document: HtmlBoardDocument = {
+  const document: HtmlBoardDocument = moduleDocument ?? {
     schemaVersion: 1, id: randomUUID(), revision: 1,
     source: { boardId: raw.boardId, widgetId: raw.widgetId, snapshotHash: hash(snapshot) },
     snapshot: structuredClone(snapshot), includeChart: widget.config.includeChart === true, theme: (raw.template ?? 'editorial') as HtmlBoardTemplate,
@@ -193,7 +210,7 @@ export function pruneOrphanedHtmlBoards(deps: Dependencies = {}): HtmlBoardClean
     const source = deps.boardFile ?? path.join(app.getPath('userData'), 'kanban-boards-v2.json')
     if (!statSync(source).isFile()) return { ok: false, error: 'store-unreadable' }
   } catch { return { ok: false, error: 'store-unreadable' } }
-  const retained = new Map(boards.map(board => [board.id, new Set(board.widgets.filter(widget => widget.type === 'reading-snapshot').map(widget => widget.id))]))
+  const retained = new Map(boards.map(board => [board.id, new Set(board.widgets.filter(widget => (widget.type === 'reading-snapshot' || widget.type === 'reading-module')).map(widget => widget.id))]))
   const remaining = documents.filter(document => retained.get(document.source.boardId)?.has(document.source.widgetId))
   const removed = documents.length - remaining.length
   if (!removed) return { ok: true, removed: 0 }

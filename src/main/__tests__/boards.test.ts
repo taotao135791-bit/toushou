@@ -262,7 +262,7 @@ describe('saveBoard', () => {
   it('rejects stale renderer saves after applying a real evidence-linked highlight', () => {
     const snapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'test', window: { start: '2026-01-01', end: '2026-01-02' }, capturedAt: 100,
       accounts: [{ platform: 'tiktok', accountId: '12345', name: 'Fixture', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-02' }, previousWindow: null, sourceAt: 90, timezone: null, currency: 'USD', spend: 42, previousSpend: null, impressions: 10, clicks: 2, conversions: 1 }] }
-    const saved = saveReadingSnapshot({ name: 'Example', snapshot, includeChart: false }, file)
+    const saved = saveReadingSnapshot({ presentation: 'report', name: 'Example', snapshot, includeChart: false }, file)
     if (!saved.ok) throw new Error(saved.error)
     const old = saved.board
     const widgetId = old.widgets[0].id

@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import BoardsPage from '../BoardsPage'
 import Markdown from '../../components/Markdown'
+import MessageList from '../../components/MessageList'
 import type { KanbanBoard } from '@shared/types'
 import { buildTikTokDatasetProofs } from '@shared/tiktokDatasetProof'
 import { useAppStore } from '../../store'
@@ -11,6 +12,7 @@ import { renderReadingSnapshotHtml } from '@shared/readingSnapshotHtml'
 import type { SaveReadingSnapshotInput } from '@shared/readingSnapshot'
 import { htmlBoardTemplate, renderHtmlBoard, type HtmlBoardDocument } from '@shared/htmlBoard'
 import { parseBoardHighlights, type BoardHighlightEvidence } from '@shared/boardHighlights'
+import { createReadingModuleWidgets, readingModuleTemplate, type ReadingModuleSpec } from '@shared/readingModules'
 
 const saved: KanbanBoard[] = []
 const v2: { document: HtmlBoardDocument | null; exportHtml: string; evidence: BoardHighlightEvidence | null; applied: number; lastValidation: string | null; aiMode: 'fail' | 'pending' | 'success'; aiCalls: number; aiCancels: number; aiInput: unknown; htmlSaveFail: boolean; chatPrompts: string[]; sessionModes: unknown[]; findDelayed?: boolean; findResolve?: () => void; aiResolve?: (result: { ok: false; error: string }) => void; showProposal?: (raw: string) => void } = { document: null, exportHtml: '', evidence: null, applied: 0, lastValidation: null, aiMode: 'fail', aiCalls: 0, aiCancels: 0, aiInput: null, htmlSaveFail: false, chatPrompts: [], sessionModes: [] }
@@ -50,12 +52,16 @@ Object.assign(window, {
       if (input.target && !prior) return { ok: false, error: 'not-found' }
       if (input.target && (scenario.appendConflict || prior!.updatedAt !== input.target.expectedUpdatedAt)) return { ok: false, error: 'conflict' }
       const board = prior ? structuredClone(prior) : createBoard(input.name)
+      const modules = input.presentation === 'report' ? [] : createReadingModuleWidgets(input.snapshot, input.includeChart, input.language)
+      const offset = board.widgets.reduce((end, item) => Math.max(end, item.layout.y + item.layout.h), 0)
+      for (const module of modules) module.layout.y += offset
+      board.widgets.push(...modules)
       const size = WIDGET_DEFAULT_SIZES['reading-snapshot']
-      const widget = createWidget('reading-snapshot', 'Reading snapshot', prior ? findFreeSlot(board.widgets, size.w, size.h) : { x: 0, y: 0 }, { snapshot: structuredClone(input.snapshot), includeChart: input.includeChart })
+      const widget = createWidget('reading-snapshot', 'Full source snapshot', board.widgets.length ? findFreeSlot(board.widgets, size.w, size.h) : { x: 0, y: 0 }, { snapshot: structuredClone(input.snapshot), includeChart: input.includeChart })
       board.widgets.push(widget)
       if (prior) { board.updatedAt = Math.max(Date.now(), prior.updatedAt + 1); const index = saved.lastIndexOf(prior); saved[index] = board }
       else saved.push(board)
-      return { ok: true, board, widgetId: widget.id }
+      return { ok: true, board, widgetId: widget.id, focusWidgetId: modules[0]?.id ?? widget.id }
     },
     exportReadingSnapshot: async (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => { scenario.exportInput = input; const board = saved.find(item => item.id === input.boardId); const widget = board?.widgets.find(item => item.id === input.widgetId && item.type === 'reading-snapshot'); if (!widget) return { ok: false, error: 'not-found' }; scenario.exportedHtml = renderReadingSnapshotHtml(widget.config.snapshot, { anonymize: input.anonymize, includeChart: widget.config.includeChart === true, language: input.language, title: board?.name }); return { ok: true } },
     findHtmlBoardForReading: async (input: { boardId: string; widgetId: string }) => {
@@ -65,13 +71,16 @@ Object.assign(window, {
         const old = existing ?? { schemaVersion: 1 as const, id: 'fixture-doc', revision: 1, source: { boardId: input.boardId, widgetId: input.widgetId, snapshotHash: 'a'.repeat(64) }, snapshot: structuredClone(widget.config.snapshot) as HtmlBoardDocument['snapshot'], includeChart: widget.config.includeChart === true, ...htmlBoardTemplate('editorial', 'en'), createdAt: 1, updatedAt: 1 }
         return await new Promise(resolve => { v2.findResolve = () => resolve({ ok: true, document: old }) })
       }
-      return existing ? { ok: true, document: existing } : { ok: false, error: 'not-found' }
+      if (existing) return { ok: true, document: existing }
+      if (widget?.type === 'reading-module') return { ok: true, document: { schemaVersion: 1, id: `fixture-${widget.id}`, revision: 1, source: { boardId: input.boardId, widgetId: input.widgetId, snapshotHash: 'a'.repeat(64) }, snapshot: structuredClone(widget.config.snapshot), includeChart: false, mode: 'module', ...readingModuleTemplate(widget.config.module as ReadingModuleSpec, widget.config.snapshot as HtmlBoardDocument['snapshot'], 'en'), theme: 'minimal', createdAt: 1, updatedAt: 1 } }
+      return { ok: false, error: 'not-found' }
     },
     loadOrCreateHtmlBoard: async (input: { boardId: string; widgetId: string; language: 'en' | 'zh' }) => {
       if (!v2.document || v2.document.source.boardId !== input.boardId || v2.document.source.widgetId !== input.widgetId) {
         const widget = saved.find(board => board.id === input.boardId)?.widgets.find(item => item.id === input.widgetId)
         if (!widget) return { ok: false, error: 'not-found' }
-        v2.document = { schemaVersion: 1, id: 'fixture-doc', revision: 1, source: { boardId: input.boardId, widgetId: input.widgetId, snapshotHash: 'a'.repeat(64) }, snapshot: structuredClone(widget.config.snapshot) as HtmlBoardDocument['snapshot'], includeChart: widget.config.includeChart === true, ...htmlBoardTemplate('editorial', input.language), createdAt: 1, updatedAt: 1 }
+        const template = widget.type === 'reading-module' ? { ...readingModuleTemplate(widget.config.module as ReadingModuleSpec, widget.config.snapshot as HtmlBoardDocument['snapshot'], input.language), mode: 'module' as const, theme: 'minimal' as const } : htmlBoardTemplate('editorial', input.language)
+        v2.document = { schemaVersion: 1, id: 'fixture-doc', revision: 1, source: { boardId: input.boardId, widgetId: input.widgetId, snapshotHash: 'a'.repeat(64) }, snapshot: structuredClone(widget.config.snapshot) as HtmlBoardDocument['snapshot'], includeChart: widget.config.includeChart === true, ...template, createdAt: 1, updatedAt: 1 }
       }
       return { ok: true, document: structuredClone(v2.document) }
     },
@@ -113,7 +122,9 @@ Object.assign(window, {
       v2.lastValidation = 'ok'
       return { ok: true, proposal, evidence: v2.evidence }
     },
-    applyBoardHighlights: async () => { v2.applied++; return { ok: true } }
+    applyBoardHighlights: async () => { v2.applied++; return { ok: true } },
+    getChatBoardPreview: async (_input: { sessionId: string; boardId: string; widgetId: string }) => ({ ok: true, source: 'file', boardName: 'Synthetic board', widgetTitle: 'Synthetic preview', html: '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><h1>Saved synthetic visual</h1><p>42 USD</p>' }),
+    checkpointList: async () => []
   },
   boardFixture: { saved, scenario, v2, buildTikTokDatasetProofs, store: useAppStore,
     setupChat: () => useAppStore.setState({ currentWorkspace: { id: 'synthetic-workspace', realPath: '/synthetic', displayPath: '/synthetic', source: 'default', createdAt: 1 }, addSession: () => {}, setCurrentSessionId: () => {}, enqueueQueuedMessage: (_id, message) => { v2.chatPrompts.push(message.text) }, drainQueuedMessage: () => true }),
@@ -122,7 +133,9 @@ Object.assign(window, {
 function Fixture() {
   const location = useLocation()
   const [proposal, setProposal] = useState('')
+  const [chat, setChat] = useState(false)
+  Object.assign((window as unknown as { boardFixture: object }).boardFixture, { showChat: () => setChat(true) })
   v2.showProposal = setProposal
-  return <><div id="fixture-route">{location.pathname}</div><div id="fixture-chat"><Markdown content={proposal} /></div><BoardsPage /></>
+  return <><div id="fixture-route">{location.pathname}</div><div id="fixture-chat"><Markdown content={proposal} />{chat && <MessageList sessionId="synthetic-chat" messages={[{ id: 'preview-tool', role: 'assistant', content: '', toolCall: { tool: 'toushou_board_add_widget', input: {}, output: JSON.stringify({ ok: true, board: { id: 'fixture-existing' }, createdWidgetId: 'fixture-clock-0' }) } }]} />}</div><BoardsPage /></>
 }
 createRoot(document.getElementById('root')!).render(<MemoryRouter><Fixture /></MemoryRouter>)

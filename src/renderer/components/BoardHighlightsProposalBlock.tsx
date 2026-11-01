@@ -112,14 +112,17 @@ export default function BoardHighlightsProposalBlock({ raw }: { raw: string }) {
     {draft.highlights.map((item, index) => <div key={index} className="mt-3 rounded-lg border border-line p-3">
       <label className="block text-[12px] text-cream-dim" htmlFor={`${idPrefix}-highlight-${index}`}>{zh ? `观察 ${index + 1}` : `Observation ${index + 1}`}</label>
       <textarea id={`${idPrefix}-highlight-${index}`} value={item.text} maxLength={280} disabled={busy || applied} onChange={event => updateText(index, event.target.value)} className="mt-1 w-full rounded border border-line bg-ink-900 p-2 text-[13px] text-cream" />
-      <div className="mt-2 flex flex-wrap gap-2">{item.evidence.map((ref, i) => {
+      {valid && <div className="mt-2 grid gap-2 sm:grid-cols-2">{item.evidence.map((ref, i) => {
         const account = result?.ok ? result.evidence.accounts.find(a => a.index === ref.accountIndex) : undefined
         const period = ref.metric === 'previousSpend' ? account?.previousWindow : account?.window
         const unit = ref.metric === 'spend' || ref.metric === 'previousSpend' ? ` ${account?.currency ?? ''}` : ''
-        return <button type="button" key={`${ref.accountIndex}-${ref.metric}-${i}`} disabled={!valid || busy} onClick={() => void reveal(ref.accountIndex)} className="focus-ring rounded border border-line px-2 py-1 text-[12px] disabled:opacity-40">
-          {account?.platform ?? '—'} · {zh ? '账户' : 'Account'} {ref.accountIndex}{account?.name ? ` · ${account.name}` : ''}{account?.accountId ? ` (${account.accountId})` : ''} · {metricLabels[ref.metric][zh ? 0 : 1]}{ref.metric === 'conversions' && account?.resultType ? `（${account.resultType}）` : ''} {ref.value}{unit}{period ? ` · ${period.start} – ${period.end}` : ''} ↗
+        return <button type="button" key={`${ref.accountIndex}-${ref.metric}-${i}`} disabled={busy} onClick={() => void reveal(ref.accountIndex)} className="focus-ring rounded-lg border border-line bg-ink-900 p-3 text-left text-[12px] disabled:opacity-40">
+          <span className="block text-cream-faint">{account?.platform ?? '—'} · {zh ? '账户' : 'Account'} {ref.accountIndex}{account?.name ? ` · ${account.name}` : ''}{account?.accountId ? ` (${account.accountId})` : ''}</span>
+          <span className="mt-1 block text-cream-dim">{metricLabels[ref.metric][zh ? 0 : 1]}{ref.metric === 'conversions' && account?.resultType ? `（${account.resultType}）` : ''}</span>
+          <strong className="mt-0.5 block text-[18px] text-cream">{ref.value}{unit}</strong>
+          {period && <span className="mt-1 block text-cream-faint">{period.start} – {period.end} ↗</span>}
         </button>
-      })}</div>
+      })}</div>}
     </div>)}
     {actionError && <p role="alert" className="mt-2 text-[12px] text-red-500">{zh ? '操作未完成，请重新核验。' : 'Action failed; check the evidence again.'}</p>}
     <div className="mt-3 flex items-center gap-3"><button type="button" disabled={!valid || busy || applied} onClick={() => void apply()} className="focus-ring rounded-full bg-accent px-3 py-1.5 text-[12px] text-white disabled:opacity-40">{applied ? (zh ? '已加入看板' : 'Added to board') : (zh ? '确认并加入看板' : 'Confirm and add to board')}</button><span role="status" className="text-[12px] text-cream-faint">{valid ? (zh ? '数字引用已核对' : 'Cited values checked') : ''}</span></div>

@@ -1,5 +1,6 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
+import { getChatBoardPreview } from './chatBoardPreview'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
@@ -86,7 +87,8 @@ import {
   markSessionTitle,
   resumeSession,
   getSubagents,
-  getSubagentMessages
+  getSubagentMessages,
+  getSessionBridgeAccess
 } from './omp'
 import {
   listPackages,
@@ -2549,6 +2551,13 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, (_event, input: unknown) => exportReadingSnapshot(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_OPEN, (_event, input: unknown) => loadOrCreateHtmlBoard(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_FIND, (_event, input: unknown) => findHtmlBoardForReading(input))
+  ipcMain.handle(IPC_CHANNELS.BOARD_CHAT_PREVIEW, (_event, input: unknown) => getChatBoardPreview(input, {
+    access: getSessionBridgeAccess,
+    authorized: cwd => {
+      try { const real = fs.realpathSync(cwd); return grantManager.list().some(grant => grant.realPath === real) }
+      catch { return false }
+    }
+  }))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_SAVE, (_event, input: unknown) => saveHtmlBoard(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_EXPORT, (_event, input: unknown) => exportHtmlBoard(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_CLEANUP, () => pruneOrphanedHtmlBoards())
@@ -2571,7 +2580,7 @@ export function registerIpc() {
     if (!result.ok) return result
     const saved = listBoards().find(item => item.id === (board as { id: string }).id)
     if (!saved) return { ok: false, error: 'board-store-unreadable' }
-    const cleanup = pruneHtmlBoardsForBoard({ boardId: saved.id, retainedWidgetIds: saved.widgets.filter(item => item.type === 'reading-snapshot').map(item => item.id) })
+    const cleanup = pruneHtmlBoardsForBoard({ boardId: saved.id, retainedWidgetIds: saved.widgets.filter(item => item.type === 'reading-snapshot' || item.type === 'reading-module').map(item => item.id) })
     return cleanup.ok ? result : { ok: false, error: 'html-cleanup-failed' }
   })
 

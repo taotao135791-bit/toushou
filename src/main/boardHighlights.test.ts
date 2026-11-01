@@ -103,7 +103,7 @@ describe('evidence-linked board highlights', () => {
       const f = fixture()
       const saved = saveReadingSnapshot({ name: 'Fixture', snapshot: f.snapshot, includeChart: false }, file)
       if (!saved.ok) throw new Error(saved.error)
-      const widgetId = saved.board.widgets[0].id
+      const widgetId = saved.widgetId
       const deps = { list: () => listBoards(file), save: (board: KanbanBoard) => saveBoard(board, file) }
       const evidence = getBoardHighlightEvidence({ boardId: saved.board.id, widgetId }, deps)
       if (!evidence.ok) throw new Error(evidence.error)
@@ -111,9 +111,10 @@ describe('evidence-linked board highlights', () => {
       const result = applyBoardHighlights({ raw: JSON.stringify(proposal) }, deps)
       expect(result.ok).toBe(true)
       const loaded = listBoards(file)[0]
-      expect(loaded.widgets).toHaveLength(2)
-      expect(loaded.widgets[0].config.snapshot).toEqual(f.snapshot)
-      expect(String(loaded.widgets[1].config.text)).toContain('42 USD')
+      expect(loaded.widgets).toHaveLength(saved.board.widgets.length + 1)
+      expect(loaded.widgets.find(widget => widget.id === saved.widgetId)?.config.snapshot).toEqual(f.snapshot)
+      expect(loaded.widgets.slice(0, -1)).toEqual(saved.board.widgets)
+      expect(String(loaded.widgets.at(-1)?.config.text)).toContain('42 USD')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

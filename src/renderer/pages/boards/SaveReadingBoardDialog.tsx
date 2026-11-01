@@ -17,7 +17,8 @@ export function SaveReadingBoardDialog({ snapshot, language, onClose, onSaved, i
   const [boardId, setBoardId] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
-  const [chart, setChart] = useState(false)
+  const [chart, setChart] = useState(true)
+  const [presentation, setPresentation] = useState<'modular' | 'report'>('modular')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   useModalBoundary(ref, true, () => { if (!busy) onClose() })
@@ -37,9 +38,9 @@ export function SaveReadingBoardDialog({ snapshot, language, onClose, onSaved, i
     saving.current = true
     setBusy(true); setError(null)
     try {
-      const result = await window.electronAPI.saveReadingSnapshot({ name: name.trim() || (zh ? '读数快照' : 'Reading snapshot'), snapshot, includeChart: chart, language,
+      const result = await window.electronAPI.saveReadingSnapshot({ name: name.trim() || (zh ? '读数快照' : 'Reading snapshot'), snapshot, includeChart: chart, presentation, language,
         ...(destination === 'existing' && selected ? { target: { kind: 'existing' as const, boardId: selected.id, expectedUpdatedAt: selected.updatedAt } } : {}) })
-      if (result.ok) onSaved(result.board, initialAi, result.widgetId)
+      if (result.ok) onSaved(result.board, initialAi, result.focusWidgetId ?? result.widgetId)
       else { setError(result.error); setBusy(false) }
     } catch { setError('write-failed'); setBusy(false) }
     finally { saving.current = false }
@@ -64,6 +65,11 @@ export function SaveReadingBoardDialog({ snapshot, language, onClose, onSaved, i
         {!loading && !loadFailed && boards?.length === 0 && <p className="mt-2 text-[12px] text-cream-faint">{zh ? '暂无已有看板，可新建看板。' : 'No existing boards. Create a new one.'}</p>}
         <button type="button" onClick={() => void loadBoards()} disabled={busy || loading} className="focus-ring mt-2 rounded-full border border-line px-3 py-1 text-[12px] text-cream-dim disabled:opacity-40">{zh ? '刷新看板列表' : 'Refresh boards'}</button>
       </div>}
+      <fieldset className="mt-4 flex flex-wrap gap-4 text-[13px] text-cream"><legend className="mb-2 text-[12px] text-cream-dim">{zh ? '看板形式' : 'Board layout'}</legend>
+        <label className="flex items-center gap-2"><input type="radio" name="reading-presentation" checked={presentation === 'modular'} disabled={busy} onChange={() => setPresentation('modular')} />{zh ? '模块化看板' : 'Modular board'}</label>
+        <label className="flex items-center gap-2"><input type="radio" name="reading-presentation" checked={presentation === 'report'} disabled={busy} onChange={() => setPresentation('report')} />{zh ? '整页报告' : 'Full report'}</label>
+      </fieldset>
+      <p className="mt-1 text-[12px] text-cream-faint">{presentation === 'modular' ? (zh ? '指标、说明和图表可分别拖动、调整大小与编辑；保留完整读数。' : 'Move, resize and edit metrics, notes and charts separately; the full snapshot is retained.') : (zh ? '以一个完整读数报告展示。' : 'Show one complete reading report.')}</p>
       <label className="mt-3 flex items-center gap-2 text-[13px] text-cream"><input type="checkbox" checked={chart} onChange={e => setChart(e.target.checked)} disabled={busy} />{zh ? '同时添加账户消耗可视化（可选）' : 'Include account spend visualization (optional)'}</label>
       <p className="mt-1 text-[12px] text-cream-faint">{zh ? '按平台和币种分别展示。失败或未知读数不会作为零计算。' : 'Grouped by platform and currency. Failed or unknown readings are not zero.'}</p>
       {error && <p role="alert" className="mt-3 text-[12px] text-red-600">{errorText}</p>}

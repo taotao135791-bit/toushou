@@ -181,9 +181,9 @@ function initializeDefaultStore(file: string): void {
   }
 }
 
-function readBoards(file: string): KanbanBoard[] {
+function readBoards(file: string, initialize = true): KanbanBoard[] {
   const isolated = file === defaultBoardsFile()
-  if (isolated) initializeDefaultStore(file)
+  if (isolated && initialize) initializeDefaultStore(file)
   let text: string
   try {
     text = readFileSync(file, 'utf-8')
@@ -225,6 +225,11 @@ function writeBoards(file: string, boards: KanbanBoard[]): void {
 
 export function listBoards(file: string = defaultBoardsFile()): KanbanBoard[] {
   return readBoards(file)
+}
+
+/** Inspect the existing v2 store without creating or migrating files. */
+export function peekBoardsForConfirmation(): KanbanBoard[] {
+  return readBoards(defaultBoardsFile(), false)
 }
 
 /**
@@ -280,10 +285,10 @@ export function saveBoard(raw: unknown, file: string = defaultBoardsFile(), expe
     // behavior while ensuring every mutation invalidates stale UI proposals.
     board.updatedAt = Math.max(board.updatedAt, boards[index].updatedAt + 1)
     for (const previous of boards[index].widgets) {
-      if (previous.type !== 'reading-snapshot') continue
+      if (previous.type !== 'reading-snapshot' && previous.type !== 'reading-module') continue
       const next = board.widgets.find(widget => widget.id === previous.id)
       // Removing a widget is allowed; silently rewriting a saved reading is not.
-      if (next && (next.type !== 'reading-snapshot' || !isDeepStrictEqual(previous.config.snapshot, next.config.snapshot))) {
+      if (next && (next.type !== previous.type || !isDeepStrictEqual(previous.config.snapshot, next.config.snapshot) || (previous.type === 'reading-module' && !isDeepStrictEqual(previous.config, next.config)))) {
         return { ok: false, error: 'snapshot-immutable' }
       }
     }

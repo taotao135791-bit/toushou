@@ -4,6 +4,13 @@ import { extensionExternalLinkMessage } from '../../main/omp/extensionLinks'
 import Markdown from './Markdown'
 
 describe('Markdown links', () => {
+  it('folds model HTML as escaped code without creating a preview or executing it', () => {
+    const html = renderToStaticMarkup(<Markdown content={'```html\n<img src=x onerror=alert(1)>\n```'} />)
+    expect(html).toContain('<details')
+    expect(html).not.toContain('<iframe')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img')
+  })
   it('render as external-browser links rather than in-window navigation', () => {
     const html = renderToStaticMarkup(<Markdown content="[Open docs](https://example.com/docs)" />)
 

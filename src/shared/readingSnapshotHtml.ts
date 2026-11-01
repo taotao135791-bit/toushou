@@ -31,7 +31,7 @@ const safeResultTypes = new Map<string, { zh: string; en: string }>([
   ['Website purchases', { zh: '网站购买', en: 'Website purchases' }]
 ])
 
-function resultTypeLabel(account: ReadingSnapshotAccount, anonymous: boolean, zh: boolean): string {
+export function resultTypeLabel(account: ReadingSnapshotAccount, anonymous: boolean, zh: boolean): string {
   const value = account.resultType?.trim() ?? ''
   if (!anonymous && value) return value
   const known = safeResultTypes.get(value)

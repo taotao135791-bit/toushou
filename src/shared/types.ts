@@ -1105,6 +1105,7 @@ export type WidgetType =
   | 'google-report-reading'
   | 'tt-reading'
   | 'reading-snapshot'
+  | 'reading-module'
   | 'gauge'
   | 'chart-line'
   | 'chart-bar'

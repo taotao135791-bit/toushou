@@ -1,7 +1,7 @@
 import { defaultTreeAdapter, parse, parseFragment, serialize, serializeOuter, type DefaultTreeAdapterTypes } from 'parse5'
 import postcss from 'postcss'
 import { validateReadingSnapshot, type ReadingSnapshot } from './readingSnapshot'
-import { renderReadingSnapshotHtml } from './readingSnapshotHtml'
+import { renderReadingSnapshotHtml, resultTypeLabel } from './readingSnapshotHtml'
 
 export type HtmlBoardTemplate = 'editorial' | 'operations' | 'minimal'
 export type HtmlBoardLanguage = 'zh' | 'en'
@@ -12,6 +12,8 @@ export interface HtmlBoardDocument {
   source: { boardId: string; widgetId: string; snapshotHash: string }
   snapshot: ReadingSnapshot
   includeChart: boolean
+  /** Main derives compact mode from an independently saved reading module. */
+  mode?: 'module'
   /** Bounded trusted-report style; missing on older local documents. */
   theme?: HtmlBoardTemplate
   html: string
@@ -89,7 +91,7 @@ export function parseHtmlBoardTemplate(html: string, accountCount?: number): { b
       if (!chart && element.attrs.some(attribute => attribute.name === 'data-reading-motion')) throw new Error('invalid-chart-motion')
       const binding = element.attrs.find(attribute => attribute.name === 'data-reading-value')
       if (binding) {
-        const match = /^(?:([1-9][0-9]{0,3}))\.(spend|previousSpend|impressions|clicks|conversions|currency|status|account|accountId|accountName|windowStart|windowEnd)$/.exec(binding.value)
+        const match = /^(?:([1-9][0-9]{0,3}))\.(spend|previousSpend|impressions|clicks|conversions|resultType|currency|status|account|accountId|accountName|windowStart|windowEnd)$/.exec(binding.value)
         if (element.tagName !== 'span' || element.childNodes.length !== 0 || !match || (accountCount !== undefined && Number(match[1]) > accountCount) || element.attrs.some(attribute => !['data-reading-value', 'class'].includes(attribute.name))) throw new Error('invalid-binding')
       }
       for (const attribute of element.attrs) {
@@ -197,9 +199,9 @@ export function scopedHtmlBoardCss(css: string, protectCharts = false): string {
 export function validateHtmlBoardDocument(raw: unknown): HtmlBoardDocument | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const value = raw as Record<string, unknown>
-  if (Object.keys(value).some(key => !['schemaVersion', 'id', 'revision', 'source', 'snapshot', 'includeChart', 'theme', 'html', 'css', 'createdAt', 'updatedAt'].includes(key))) return null
+  if (Object.keys(value).some(key => !['schemaVersion', 'id', 'revision', 'source', 'snapshot', 'includeChart', 'mode', 'theme', 'html', 'css', 'createdAt', 'updatedAt'].includes(key))) return null
   const source = value.source as Record<string, unknown> | null
-  if (value.schemaVersion !== 1 || typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value.id) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1 || !source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['boardId', 'widgetId', 'snapshotHash'].includes(key)) || typeof source.boardId !== 'string' || !source.boardId || source.boardId.length > 100 || /[\x00-\x1f\x7f]/.test(source.boardId) || typeof source.widgetId !== 'string' || !source.widgetId || source.widgetId.length > 100 || /[\x00-\x1f\x7f]/.test(source.widgetId) || typeof source.snapshotHash !== 'string' || !/^[a-f0-9]{64}$/.test(source.snapshotHash) || !validateReadingSnapshot(value.snapshot) || typeof value.includeChart !== 'boolean' || (value.theme !== undefined && value.theme !== 'editorial' && value.theme !== 'operations' && value.theme !== 'minimal') || typeof value.html !== 'string' || typeof value.css !== 'string' || !Number.isSafeInteger(value.createdAt) || !Number.isSafeInteger(value.updatedAt) || (value.createdAt as number) < 0 || (value.updatedAt as number) < (value.createdAt as number)) return null
+  if (value.schemaVersion !== 1 || typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value.id) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1 || !source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['boardId', 'widgetId', 'snapshotHash'].includes(key)) || typeof source.boardId !== 'string' || !source.boardId || source.boardId.length > 100 || /[\x00-\x1f\x7f]/.test(source.boardId) || typeof source.widgetId !== 'string' || !source.widgetId || source.widgetId.length > 100 || /[\x00-\x1f\x7f]/.test(source.widgetId) || typeof source.snapshotHash !== 'string' || !/^[a-f0-9]{64}$/.test(source.snapshotHash) || !validateReadingSnapshot(value.snapshot) || typeof value.includeChart !== 'boolean' || (value.mode !== undefined && value.mode !== 'module') || (value.theme !== undefined && value.theme !== 'editorial' && value.theme !== 'operations' && value.theme !== 'minimal') || typeof value.html !== 'string' || typeof value.css !== 'string' || !Number.isSafeInteger(value.createdAt) || !Number.isSafeInteger(value.updatedAt) || (value.createdAt as number) < 0 || (value.updatedAt as number) < (value.createdAt as number)) return null
   try { parseHtmlBoardTemplate(value.html, (value.snapshot as ReadingSnapshot).accounts.length); scopedHtmlBoardCss(value.css) } catch { return null }
   return value as unknown as HtmlBoardDocument
 }
@@ -280,6 +282,7 @@ function fillReadingValues(html: string, snapshot: ReadingSnapshot, anonymous: b
       else if (field === 'accountName') value = anonymous ? `${zh ? '账户' : 'Account'} ${index + 1}` : account.name || '—'
       else if (field === 'account') value = anonymous ? `${zh ? '账户' : 'Account'} ${index + 1}` : `${account.name || account.accountId || '—'}${account.name && account.accountId ? ` (${account.accountId})` : ''}`
       else if (field === 'currency') value = account.currency ?? (zh ? '未知' : 'Unknown')
+      else if (field === 'resultType') value = resultTypeLabel(account, anonymous, zh)
       else if (field === 'status') value = ({ ok: zh ? '成功' : 'Read', failed: zh ? '失败' : 'Failed', unattempted: zh ? '未尝试' : 'Not attempted', unavailable: zh ? '不可用' : 'Unavailable' })[account.status]
       else if (field === 'windowStart' || field === 'windowEnd') value = field === 'windowStart' ? account.window.start : account.window.end
       else {
@@ -314,7 +317,7 @@ export function renderHtmlBoard(raw: unknown, options: { anonymize?: boolean; la
   const main = find(parsed.childNodes, 'main')
   if (!headStyle || !main) throw new Error('invalid-snapshot-template')
   const zh = options.language !== 'en'
-  if (document.includeChart) {
+  if (document.includeChart && document.mode !== 'module') {
     const original = find(main.childNodes, 'section')
     if (!original) throw new Error('invalid-snapshot-chart')
     const replacement = parseFragment(renderTrustedSpendChart(document.snapshot, 'spend-bar', false, options.anonymize !== false, zh)).childNodes[0]
@@ -330,5 +333,10 @@ export function renderHtmlBoard(raw: unknown, options: { anonymize?: boolean; la
     minimal: 'main{font-family:system-ui,sans-serif;color:#181818}main h1{color:#181818}main th{background:#efefef;color:#181818}main td{border-bottom-color:#d9d9d9}main .bar{background:#333333}'
   }
   const reportStyle = reportThemes[document.theme ?? 'editorial']
+  if (document.mode === 'module') {
+    const dates = `${document.snapshot.window.start} — ${document.snapshot.window.end}`
+    const captured = new Date(document.snapshot.capturedAt).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')
+    return `<!doctype html><html lang="${zh ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>${zh ? '读数模块' : 'Reading module'}</title><style>${style}\n${customCss}\n${trustedChartStyles}\nbody{background:#fff;overflow-wrap:anywhere}#html-board-custom-before,#html-board-custom-after{padding:0 8px}.group{padding:10px;margin-top:6px}.group li{grid-template-columns:minmax(70px,1fr) minmax(40px,2fr) auto}.trusted-legend li{grid-template-columns:1fr auto}.trusted-pie{width:128px;height:128px}.module-source{border-top:1px solid #e2e7ed;padding:8px 12px;margin:4px 0;color:#59677a;font:10px/1.5 system-ui,sans-serif}section{margin:8px 0}h2{font-size:16px}.module-source p{margin:2px 0}</style></head><body><div id="html-board-custom-before">${fillReadingValues(template.before, document.snapshot, options.anonymize !== false, zh)}</div><footer class="module-source"><p>${zh ? '固定快照' : 'Fixed snapshot'} · ${dates}</p><p>${zh ? '保存于' : 'Saved'} ${captured}</p><p>${zh ? '自定义文字及 AI 结论请人工复核。' : 'Review custom text and AI conclusions.'}</p></footer><div id="html-board-custom-after">${fillReadingValues(template.after, document.snapshot, options.anonymize !== false, zh)}</div></body></html>`
+  }
   return `<!doctype html><html lang="${zh ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>${zh ? '自定义读数看板' : 'Custom reading board'}</title><style>${style}\n${reportStyle}\n${customCss}\n${trustedChartStyles}\n.html-board-note{max-width:1280px;margin:12px auto;padding:8px 28px;color:#59677a;font-size:12px}#html-board-custom-before,#html-board-custom-after{max-width:1280px;margin:0 auto;padding:0 28px}</style></head><body><p class="html-board-note">${zh ? '自定义文字和 AI 结论未经系统核验，也不会自动脱敏；请核对后分享。' : 'Custom text and AI conclusions are not verified or automatically anonymized. Review before sharing.'}</p><div id="html-board-custom-before">${fillReadingValues(template.before, document.snapshot, options.anonymize !== false, zh)}</div><main>${serialize(main)}</main><div id="html-board-custom-after">${fillReadingValues(template.after, document.snapshot, options.anonymize !== false, zh)}</div></body></html>`
 }

@@ -247,6 +247,7 @@ export function WidgetConfigPanel({ widget, datasets, masterScope = null, onClos
     if (datasetIncomplete) return
     let config: Record<string, unknown>
     switch (widget.type) {
+      case 'reading-module':
       case 'reading-snapshot':
         // Saved snapshots are immutable. Editing a title or appearance must
         // never discard or rewrite the underlying reading.
