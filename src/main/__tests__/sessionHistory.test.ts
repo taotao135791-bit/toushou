@@ -83,7 +83,7 @@ describe('cross-project history paths', () => {
     writeSessionFile('alias.jsonl', [JSON.stringify({ type: 'session', id: 'alias-history', timestamp: 1, cwd: alias }), userMessage('Synthetic alias history')])
     const rows = await listAllSessions(agentDir)
     expect(rows).toHaveLength(1)
-    expect(rows[0].cwd).toBe(realpathSync(projectDir))
+    expect(rows[0].cwd).toBe(realpathSync.native(projectDir))
     expect(rows[0].uuid).toBe('alias-history')
   })
 

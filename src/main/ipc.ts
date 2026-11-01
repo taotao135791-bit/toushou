@@ -1,5 +1,6 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
+import { canonicalExistingPath } from './canonicalPath'
 import { getChatBoardPreview } from './chatBoardPreview'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -2554,7 +2555,7 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.BOARD_CHAT_PREVIEW, (_event, input: unknown) => getChatBoardPreview(input, {
     access: getSessionBridgeAccess,
     authorized: cwd => {
-      try { const real = fs.realpathSync(cwd); return grantManager.list().some(grant => grant.realPath === real) }
+      try { const real = canonicalExistingPath(cwd); return grantManager.list().some(grant => grant.realPath === real) }
       catch { return false }
     }
   }))
@@ -2815,7 +2816,7 @@ export function registerIpc() {
     const picked = result.filePaths[0]
     let real: string
     try {
-      real = fs.realpathSync(picked)
+      real = canonicalExistingPath(picked)
     } catch {
       return { ok: false, error: 'outside-workspace' }
     }

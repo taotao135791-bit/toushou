@@ -1,9 +1,10 @@
-import { open, readdir, realpath, stat, unlink } from 'node:fs/promises'
+import { open, readdir, stat, unlink } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { defaultPiAgentDir } from './piSettings'
+import { canonicalExistingPath } from './canonicalPath'
 
 /**
  * Main-only record discovered from a durable session file.
@@ -64,10 +65,10 @@ export function sessionsRoot(agentDir: string = defaultPiAgentDir()): string {
 }
 
 /** pi's session directory for a project cwd (see header for the encoding). */
-export function sessionDirFor(projectDir: string, agentDir: string = defaultPiAgentDir()): string {
+export function sessionDirFor(projectDir: string, agentDir: string = defaultPiAgentDir(), resolveRealPath: (target: string) => string = realpathSync): string {
   let resolved: string
   try {
-    resolved = realpathSync(projectDir)
+    resolved = resolveRealPath(projectDir)
   } catch {
     resolved = path.resolve(projectDir)
   }
@@ -86,11 +87,12 @@ export function sessionDirFor(projectDir: string, agentDir: string = defaultPiAg
  */
 export function currentSessionDirFor(
   projectDir: string,
-  agentDir: string = defaultPiAgentDir()
+  agentDir: string = defaultPiAgentDir(),
+  resolveRealPath: (target: string) => string = realpathSync
 ): string {
   let resolved: string
   try {
-    resolved = realpathSync(projectDir)
+    resolved = resolveRealPath(projectDir)
   } catch {
     resolved = path.resolve(projectDir)
   }
@@ -101,7 +103,7 @@ export function currentSessionDirFor(
   if (process.platform === 'darwin' && resolved.startsWith('/private/')) {
     const withoutPrivate = resolved.slice('/private'.length)
     try {
-      if (realpathSync(resolved) === realpathSync(withoutPrivate)) resolved = withoutPrivate
+      if (resolveRealPath(resolved) === resolveRealPath(withoutPrivate)) resolved = withoutPrivate
     } catch {
       // Keep the validated realpath when the alias cannot be checked.
     }
@@ -109,7 +111,7 @@ export function currentSessionDirFor(
 
   const home = (() => {
     try {
-      return realpathSync(homedir())
+      return resolveRealPath(homedir())
     } catch {
       return path.resolve(homedir())
     }
@@ -127,11 +129,22 @@ export function sessionDirCandidatesFor(
   projectDir: string,
   agentDir: string = defaultPiAgentDir()
 ): string[] {
+  // Windows Node's JS and native realpath implementations can retain different
+  // short/long spellings. Keep layouts from both for the same trusted workspace;
+  // a runtime upgrade must not hide its existing transcripts.
+  const native = (target: string) => realpathSync.native(target)
   return Array.from(
     new Set([
       ...hashedSessionDirCandidatesFor(projectDir, agentDir),
+      ...ompSessionDirCandidatesFor(projectDir, agentDir, realpathSync),
       currentSessionDirFor(projectDir, agentDir),
-      sessionDirFor(projectDir, agentDir)
+      sessionDirFor(projectDir, agentDir),
+      ...(process.platform === 'win32' ? [
+        ...hashedSessionDirCandidatesFor(projectDir, agentDir, native),
+        ...ompSessionDirCandidatesFor(projectDir, agentDir, native),
+        currentSessionDirFor(projectDir, agentDir, native),
+        sessionDirFor(projectDir, agentDir, native)
+      ] : [])
     ])
   )
 }
@@ -163,18 +176,19 @@ function hashLabelCandidates(rawLabel: string): string[] {
  */
 export function hashedSessionDirCandidatesFor(
   projectDir: string,
-  agentDir: string = defaultPiAgentDir()
+  agentDir: string = defaultPiAgentDir(),
+  resolveRealPath: (target: string) => string = realpathSync
 ): string[] {
   let resolved: string
   try {
-    resolved = realpathSync(projectDir)
+    resolved = resolveRealPath(projectDir)
   } catch {
     resolved = path.resolve(projectDir)
   }
   const hash = createHash('sha256').update(resolved).digest('hex')
   const home = (() => {
     try {
-      return realpathSync(homedir())
+      return resolveRealPath(homedir())
     } catch {
       return path.resolve(homedir())
     }
@@ -189,6 +203,41 @@ export function hashedSessionDirCandidatesFor(
   return [...labels].map((label) =>
     path.join(sessionsRoot(agentDir), `${zone}-${label}-${hash}`)
   )
+}
+
+/** OMP 17.2.12 default and its 17.2.5–17.2.8 hashed migration source. */
+function ompSessionDirCandidatesFor(
+  projectDir: string,
+  agentDir: string,
+  resolveRealPath: (target: string) => string
+): string[] {
+  const resolve = (target: string): string => {
+    const absolute = path.resolve(target)
+    try { return resolveRealPath(absolute) } catch { return absolute }
+  }
+  const cwd = resolve(projectDir)
+  const homeRelative = path.relative(resolve(homedir()), cwd)
+  const tempRelative = path.relative(resolve(tmpdir()), cwd)
+  const inside = (relative: string): boolean => relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+  let scope: 'home' | 'tmp' | 'abs'
+  let encoded: string
+  const encodeRelative = (prefix: string, relative: string): string => {
+    const slug = relative.replace(/[/\\:]/g, '-')
+    return slug ? (prefix.endsWith('-') ? `${prefix}${slug}` : `${prefix}-${slug}`) : prefix
+  }
+  if (inside(homeRelative)) {
+    scope = 'home'
+    encoded = encodeRelative('-', homeRelative)
+  } else if (inside(tempRelative)) {
+    scope = 'tmp'
+    encoded = encodeRelative('-tmp', tempRelative)
+  } else {
+    scope = 'abs'
+    encoded = `--${cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`
+  }
+  const label = path.basename(cwd).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(-80) || 'project'
+  const hash = createHash('sha256').update(cwd.replaceAll('\\', '/')).digest('hex')
+  return [path.join(sessionsRoot(agentDir), encoded), path.join(sessionsRoot(agentDir), `${scope}-${label}-${hash}`)]
 }
 
 /**
@@ -229,16 +278,18 @@ export async function listAllSessions(
   // display metadata here so the renderer can match the exact project without
   // guessing paths. This does not mint authority: resume still revalidates the
   // workspace grant and its session capability in Main.
-  const paths = new Map<string, Promise<string>>()
-  return Promise.all(out.slice(0, limit).map(async entry => {
+  const paths = new Map<string, string>()
+  return out.slice(0, limit).map(entry => {
     if (!path.isAbsolute(entry.cwd)) return entry
     let canonical = paths.get(entry.cwd)
     if (!canonical) {
-      canonical = realpath(entry.cwd).catch(() => entry.cwd)
+      // Match the native canonical path used by workspace grants, including
+      // Windows short/long aliases. Missing directories keep their metadata.
+      try { canonical = canonicalExistingPath(entry.cwd) } catch { canonical = entry.cwd }
       paths.set(entry.cwd, canonical)
     }
-    return { ...entry, cwd: await canonical }
-  }))
+    return { ...entry, cwd: canonical }
+  })
 }
 
 /**
