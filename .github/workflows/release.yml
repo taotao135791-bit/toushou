@@ -414,6 +414,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: TouShou-${{ github.run_id }}-macos
@@ -430,13 +431,23 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+          version="$(node -p 'require("./package.json").version')"
+          test "${tag}" = "v${version}"
+          notes="docs/releases/v${version}.md"
           if gh release view "${tag}" >/dev/null 2>&1; then
             test "$(gh release view "${tag}" --json isDraft --jq .isDraft)" = true || {
               echo "Release already published; refusing to overwrite its assets."
               exit 1
             }
+            if [[ -f "${notes}" ]]; then
+              gh release edit "${tag}" --notes-file "${notes}"
+            fi
           else
-            gh release create "${tag}" --title "投手 ${tag}" --generate-notes --draft
+            if [[ -f "${notes}" ]]; then
+              gh release create "${tag}" --title "投手 ${tag}" --notes-file "${notes}" --draft
+            else
+              gh release create "${tag}" --title "投手 ${tag}" --generate-notes --draft
+            fi
           fi
           assets=()
           while IFS= read -r asset; do assets+=("${asset}"); done < <(find artifacts/mac artifacts/windows -maxdepth 1 -type f -print | LC_ALL=C sort)

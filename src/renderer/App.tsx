@@ -1,4 +1,4 @@
-import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect, useState } from 'react'
+import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect, useRef, useState } from 'react'
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { HistorySessionDescriptor, SessionEvent } from '@shared/types'
@@ -7,6 +7,7 @@ import { translate, useT } from './i18n'
 import { useWindowDropGuard } from './lib/useWindowDropGuard'
 import { basename } from './lib/path'
 import { showNotice } from './lib/notice'
+import { finishHistoryResume, historyResumeGrant, openGlobalHistory } from './lib/historyResume'
 import Layout from './components/Layout'
 import CommandPalette, { type CommandPaletteHandlers } from './components/CommandPalette'
 import ChatPage from './pages/ChatPage'
@@ -302,6 +303,7 @@ function App() {
   // ⌘N goes home with a clean composer from anywhere. No session is created
   // up front — the first sent message creates it (same as the 对话 nav row).
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const openingHistory = useRef(false)
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -338,10 +340,14 @@ function App() {
    * project-dir title Main assigns, fold historical agents into the
    * projection, and retire the opaque history row once a live row exists.
    */
-  const resumeHistoryDescriptor = async (info: HistorySessionDescriptor): Promise<boolean> => {
+  const resumeHistoryDescriptor = async (info: HistorySessionDescriptor, expectedWorkspace: string): Promise<boolean> => {
     const state = useAppStore.getState()
-    const grant = state.currentWorkspace
-    if (!grant || state.historyLoading) return false
+    const access = historyResumeGrant(state, info, expectedWorkspace)
+    if (!access.ok) {
+      showNotice(access.error === 'loading' ? 'history.loading' : access.error === 'project-not-added' ? 'sidebar.projectNotAdded' : 'history.restoreFailed')
+      return false
+    }
+    const grant = access.grant
     const result = await window.electronAPI.resumeSession(grant.id, info.id)
     if (result && 'error' in result) {
       // Transcript could not be loaded — the row is not dead; keep it and
@@ -362,13 +368,18 @@ function App() {
       (!session.title || session.title === projectName) && info.title !== 'Untitled'
         ? info.title
         : session.title
-    state.addSession({ ...session, title, lastActivityAt: info.timestamp })
-    state.setMessages(session.id, restored)
-    state.removeHistorySession(info.id)
-    state.applyHistoricalAgents(session.id, historicalAgents ?? [])
-    state.setCurrentSessionId(session.id)
-    navigate('/')
-    return true
+    const selected = finishHistoryResume(grant, {
+      save: () => {
+        state.addSession({ ...session, title, lastActivityAt: info.timestamp }, false)
+        state.setMessages(session.id, restored)
+        state.removeHistorySession(info.id)
+        state.applyHistoricalAgents(session.id, historicalAgents ?? [])
+      },
+      currentWorkspace: () => useAppStore.getState().currentWorkspace,
+      select: () => { state.setCurrentSessionId(session.id); navigate('/') }
+    })
+    if (!selected) showNotice('history.restoredInOtherProject')
+    return selected
   }
 
   /**
@@ -378,41 +389,19 @@ function App() {
    * grant source) and resume there.
    */
   const openHistoryRecord = async (target: { uuid: string; cwd: string }) => {
-    const state = useAppStore.getState()
-    if (state.historyLoading) return
-    const resumeByUuid = async (): Promise<boolean> => {
-      // Re-read AFTER any workspace switch — the captured `state` names the
-      // previous workspace and would load the wrong grant's history.
-      const fresh = useAppStore.getState()
-      await fresh.loadHistorySessions(fresh.currentWorkspace?.id ?? null)
-      const match = useAppStore
-        .getState()
-        .sessionRecords.find((r) => !r.isLive && r.history?.uuid === target.uuid)
-      if (!match?.history) return false
-      return resumeHistoryDescriptor(match.history)
-    }
-
-    if (state.currentWorkspace && target.cwd === state.currentWorkspace.realPath) {
-      if (await resumeByUuid()) return
-      showNotice('history.restoreFailed')
-      return
-    }
-
-    const workspace = state.recentWorkspaces.find(
-      (entry) => basename(entry.displayPath) === basename(target.cwd)
-    )
-    if (!workspace) {
-      showNotice('sidebar.projectNotAdded')
-      return
-    }
-    await state.activateRecentWorkspace(workspace.id)
-    const activated = useAppStore.getState().currentWorkspace
-    if (!activated || activated.realPath !== target.cwd) {
-      showNotice('sidebar.projectNotAdded')
-      return
-    }
-    if (await resumeByUuid()) return
-    showNotice('sidebar.projectSwitched')
+    if (openingHistory.current) { showNotice('history.loading'); return }
+    openingHistory.current = true
+    try {
+      const result = await openGlobalHistory(target, {
+        getState: useAppStore.getState,
+        activateWorkspace: id => useAppStore.getState().activateRecentWorkspace(id),
+        loadHistory: id => useAppStore.getState().loadHistorySessions(id),
+        resume: resumeHistoryDescriptor
+      })
+      if (result === 'loading') showNotice('history.loading')
+      else if (result === 'project-not-added') showNotice('sidebar.projectNotAdded')
+      else if (result === 'history-unavailable') showNotice('history.restoreFailed')
+    } finally { openingHistory.current = false }
   }
 
   const paletteHandlers: CommandPaletteHandlers = {

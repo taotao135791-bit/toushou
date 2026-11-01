@@ -175,6 +175,8 @@ const en = {
   'history.delete': 'Delete session file',
   'history.deleteConfirm': 'Confirm?',
   'history.restoreFailed': 'Failed to restore session',
+  'history.loading': 'Conversation history is loading. Please try again shortly.',
+  'history.restoredInOtherProject': 'The conversation was restored in its project. Switch back to open it.',
   'history.transcriptUnavailable': "Couldn't load this conversation. Try again in a moment — the session was not modified.",
 
   // Browser panel
@@ -2052,6 +2054,8 @@ const zh: Record<I18nKey, string> = {
   'history.delete': '删除会话记录',
   'history.deleteConfirm': '确认删除？',
   'history.restoreFailed': '恢复会话失败',
+  'history.loading': '会话记录正在加载，请稍后再试。',
+  'history.restoredInOtherProject': '会话已在原项目恢复，请切回该项目查看。',
   'history.transcriptUnavailable': '对话内容暂时加载不出来，请稍后重试——会话本身没有丢失。',
 
   // Browser panel

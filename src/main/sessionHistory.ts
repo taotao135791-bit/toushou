@@ -1,4 +1,4 @@
-import { open, readdir, stat, unlink } from 'node:fs/promises'
+import { open, readdir, realpath, stat, unlink } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -152,8 +152,9 @@ function hashLabelCandidates(rawLabel: string): string[] {
 /**
  * Current OMP layout (verified against 17.2.x on-disk state): directories are
  * named `<zone>-<label>-<sha256(realpath)>` where zone is `home` (project
- * inside $HOME, label = basename) or `abs` (label = relative path with
- * separators dashed). Example:
+ * inside $HOME) or `abs` (outside $HOME). Current runtimes label both zones
+ * with the project basename; retain the earlier relative-path label too.
+ * Example:
  *   /Users/me/…/toushou → home-toushou-4072a02833…
  * The label is ASCII-sanitized by the runtime (see hashLabelCandidates), so
  * both the raw and the sanitized form are returned as candidates.
@@ -184,7 +185,8 @@ export function hashedSessionDirCandidatesFor(
     ? path.basename(resolved)
     : (relative === '' ? path.basename(resolved) : relative).replace(/^[/\\]/, '')
   const zone = inHome ? 'home' : 'abs'
-  return hashLabelCandidates(rawLabel).map((label) =>
+  const labels = new Set([...hashLabelCandidates(rawLabel), ...hashLabelCandidates(path.basename(resolved))])
+  return [...labels].map((label) =>
     path.join(sessionsRoot(agentDir), `${zone}-${label}-${hash}`)
   )
 }
@@ -222,7 +224,21 @@ export async function listAllSessions(
     }
   }
   out.sort((a, b) => b.timestamp - a.timestamp)
-  return out.slice(0, limit)
+  // Runtime headers may use an alias (/tmp versus /private/tmp, or a project
+  // symlink), while recent workspaces use Main's canonical path. Normalize
+  // display metadata here so the renderer can match the exact project without
+  // guessing paths. This does not mint authority: resume still revalidates the
+  // workspace grant and its session capability in Main.
+  const paths = new Map<string, Promise<string>>()
+  return Promise.all(out.slice(0, limit).map(async entry => {
+    if (!path.isAbsolute(entry.cwd)) return entry
+    let canonical = paths.get(entry.cwd)
+    if (!canonical) {
+      canonical = realpath(entry.cwd).catch(() => entry.cwd)
+      paths.set(entry.cwd, canonical)
+    }
+    return { ...entry, cwd: await canonical }
+  }))
 }
 
 /**
