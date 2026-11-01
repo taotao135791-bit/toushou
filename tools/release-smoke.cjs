@@ -114,8 +114,8 @@ async function launch(port) {
   await until(() => evaluate(cdp, `typeof window.electronAPI?.saveReadingSnapshot === 'function' && !!document.body`), 15_000, 'Preload and page')
 }
 async function run() {
-  const port = await freePort()
-  await launch(port)
+  const firstPort = await freePort()
+  await launch(firstPort)
   const setup = await evaluate(cdp, `(async () => {const setup=await window.electronAPI.setStore('setupComplete',true),language=await window.electronAPI.setStore('language','en');return {setup,language,setupRead:await window.electronAPI.getStore('setupComplete'),languageRead:await window.electronAPI.getStore('language')}})()`)
   if (!setup?.setup || !setup?.language || setup.setupRead !== true || setup.languageRead !== 'en') throw new Error('Could not persist isolated first-run preferences')
   const seed = await evaluate(cdp, `(async () => {
@@ -136,7 +136,11 @@ async function run() {
   // Restart the actual packaged process and verify the saved data again.
   cdp.close(); cdp = null
   await stopChild()
-  await launch(port)
+  // Windows can keep the first listener's port unavailable after the process
+  // exits. Allocate a fresh loopback port for the restarted packaged app.
+  const restartPort = await freePort()
+  if (restartPort === firstPort) throw new Error('Could not allocate a fresh restart port')
+  await launch(restartPort)
   const reopened = await evaluate(cdp, `(async () => {const r=await window.electronAPI.findHtmlBoardForReading({boardId:${JSON.stringify(seed.boardId)},widgetId:${JSON.stringify(seed.widgetId)}});return await window.electronAPI.getStore('setupComplete')===true && await window.electronAPI.getStore('language')==='en' && r.ok&&r.document.html.includes('Packaged smoke layout')})()`)
   if (!reopened) throw new Error('Saved HTML did not survive application restart')
   // Reload the unmodified renderer to exercise persisted data through its UI.
