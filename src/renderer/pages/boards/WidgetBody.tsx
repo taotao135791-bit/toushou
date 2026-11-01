@@ -49,7 +49,9 @@ export interface WidgetBodyProps {
   /** Owning board id; file widgets need it to address Main's read channel. */
   boardId: string
   onConfigChange: (config: Record<string, unknown>) => void
-  onSnapshotSaved?: (board: KanbanBoard) => void
+  onSnapshotSaved?: (board: KanbanBoard, openAi?: boolean) => void
+  autoOpenAi?: boolean
+  onAiOpened?: () => void
   /** Board master-scope window: dataset-bound widgets filter rows to it, so
    *  switching the master range re-scopes every card instantly. latestDay
    *  marks the 今天 scope — the account's CURRENT stat day, not a calendar
@@ -656,7 +658,7 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   )
 }
 
-export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
+export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -671,7 +673,7 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapsh
     case 'tt-reading':
       return <TTReadingBody widget={widget} />
     case 'reading-snapshot':
-      return <ReadingSnapshotBody widget={widget} boardId={boardId} />
+      return <ReadingSnapshotBody widget={widget} boardId={boardId} autoOpenAi={autoOpenAi} onAiOpened={onAiOpened} />
     case 'note':
       return <NoteBody widget={widget} />
     case 'counter':

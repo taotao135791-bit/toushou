@@ -13,7 +13,7 @@ import { htmlBoardTemplate, renderHtmlBoard, type HtmlBoardDocument } from '@sha
 import { parseBoardHighlights, type BoardHighlightEvidence } from '@shared/boardHighlights'
 
 const saved: KanbanBoard[] = []
-const v2: { document: HtmlBoardDocument | null; exportHtml: string; evidence: BoardHighlightEvidence | null; applied: number; lastValidation: string | null; showProposal?: (raw: string) => void } = { document: null, exportHtml: '', evidence: null, applied: 0, lastValidation: null }
+const v2: { document: HtmlBoardDocument | null; exportHtml: string; evidence: BoardHighlightEvidence | null; applied: number; lastValidation: string | null; aiMode: 'fail' | 'pending' | 'success'; aiCalls: number; aiCancels: number; aiInput: unknown; chatPrompts: string[]; sessionModes: unknown[]; aiResolve?: (result: { ok: false; error: string }) => void; showProposal?: (raw: string) => void } = { document: null, exportHtml: '', evidence: null, applied: 0, lastValidation: null, aiMode: 'fail', aiCalls: 0, aiCancels: 0, aiInput: null, chatPrompts: [], sessionModes: [] }
 const revision = `sha256:${'a'.repeat(64)}`
 const pendingRequests = new Map<string, (value: unknown) => void>()
 const scenario: { summary: unknown; datasets: unknown[]; datasetFail: boolean; pending: boolean; todayPending: boolean; singlePending: boolean; denySingleCancel: boolean; lastRequest: string | null; todayRequest: string | null; todayResult: unknown; todayAlternateResult: unknown; customResult: unknown; partialCancelResult: unknown; singleResult: unknown; singleTodayResult: unknown; clipboard: string; todayInputs: Array<{range?: string; advertiserId?: string; requestId?: string; startDate?: string; endDate?: string}>; progress: ((value: { requestId: string; completed: number; total: number; succeeded: number }) => void) | null; cancelled: string[]; snapshotSaveFail: boolean; snapshotInput: SaveReadingSnapshotInput | null; exportInput: {boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en'} | null; exportedHtml: string } = { summary: { ok: false, error: 'no-credentials' }, datasets: [], datasetFail: false, pending: false, todayPending: false, singlePending: false, denySingleCancel: false, lastRequest: null, todayRequest: null, todayResult: null, todayAlternateResult: null, customResult: null, partialCancelResult: null, singleResult: null, singleTodayResult: null, clipboard: '', todayInputs: [], progress: null, cancelled: [], snapshotSaveFail: false, snapshotInput: null, exportInput: null, exportedHtml: '' }
@@ -29,6 +29,7 @@ Object.assign(window, {
   electronAPI: {
     cleanupOrphanedHtmlBoards: async () => ({ ok: true, removed: 0 }),
     listBoards: async () => [...new Map([existing, ...saved].map(board => [board.id, board])).values()],
+    createSession: async (_workspaceId: string, options: unknown) => { v2.sessionModes.push(options); return { id: `synthetic-chat-${v2.sessionModes.length}` } },
     listBoardDatasets: async () => { if (scenario.datasetFail) throw new Error('synthetic dataset failure'); return scenario.datasets },
     listFbReadingAccounts: async () => [],
     ttReadingAdvertisers: async () => ({ selected: [], granted: ['7300000000000000001', '7300000000000000002'], accounts: [{ advertiserId: '7300000000000000001', name: 'Fixture Shared' }, { advertiserId: '7300000000000000002', name: 'Fixture Shared' }], namesIncomplete: false }),
@@ -45,7 +46,7 @@ Object.assign(window, {
     saveReadingSnapshot: async (input: SaveReadingSnapshotInput) => { scenario.snapshotInput = structuredClone(input); if (scenario.snapshotSaveFail) return { ok: false, error: 'write-failed' }; const board = createBoard(input.name); board.widgets = [createWidget('reading-snapshot', 'Reading snapshot', { x: 0, y: 0 }, { snapshot: structuredClone(input.snapshot), includeChart: input.includeChart })]; saved.push(board); return { ok: true, board } },
     exportReadingSnapshot: async (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => { scenario.exportInput = input; const board = saved.find(item => item.id === input.boardId); const widget = board?.widgets.find(item => item.id === input.widgetId && item.type === 'reading-snapshot'); if (!widget) return { ok: false, error: 'not-found' }; scenario.exportedHtml = renderReadingSnapshotHtml(widget.config.snapshot, { anonymize: input.anonymize, includeChart: widget.config.includeChart === true, language: input.language, title: board?.name }); return { ok: true } },
     loadOrCreateHtmlBoard: async (input: { boardId: string; widgetId: string; language: 'en' | 'zh' }) => {
-      if (!v2.document) {
+      if (!v2.document || v2.document.source.boardId !== input.boardId || v2.document.source.widgetId !== input.widgetId) {
         const widget = saved.find(board => board.id === input.boardId)?.widgets.find(item => item.id === input.widgetId)
         if (!widget) return { ok: false, error: 'not-found' }
         v2.document = { schemaVersion: 1, id: 'fixture-doc', revision: 1, source: { boardId: input.boardId, widgetId: input.widgetId, snapshotHash: 'a'.repeat(64) }, snapshot: structuredClone(widget.config.snapshot) as HtmlBoardDocument['snapshot'], includeChart: widget.config.includeChart === true, ...htmlBoardTemplate('editorial', input.language), createdAt: 1, updatedAt: 1 }
@@ -62,11 +63,20 @@ Object.assign(window, {
       v2.exportHtml = renderHtmlBoard(v2.document, { anonymize: input.anonymize, language: input.language })
       return { ok: true }
     },
+    generateHtmlBoardEdit: async (input: { id: string; expectedRevision: number; instruction: string; requestId: string }) => {
+      v2.aiCalls++; v2.aiInput = structuredClone(input)
+      if (v2.aiMode === 'fail') return { ok: false, error: 'failed' }
+      if (v2.aiMode === 'pending') return new Promise(resolve => { v2.aiResolve = resolve })
+      if (!v2.document || v2.document.revision !== input.expectedRevision) return { ok: false, error: 'conflict' }
+      const html = v2.document.html.replace('Weekly report', 'AI fixture title').replace('<div data-reading-slot></div>', '<p class="ai-kpi">AI KPI <span data-reading-value="1.spend"></span></p><div data-reading-chart="spend"></div><div data-reading-slot></div>')
+      return { ok: true, proposal: { html, css: v2.document.css, theme: 'operations', baseRevision: input.expectedRevision } }
+    },
+    cancelHtmlBoardEdit: async (_requestId: string) => { v2.aiCancels++; if (!v2.aiResolve) return false; const resolve = v2.aiResolve; v2.aiResolve = undefined; resolve({ ok: false, error: 'cancelled' }); return true },
     getBoardHighlightEvidence: async (input: { boardId: string; widgetId: string }) => {
       const widget = saved.find(board => board.id === input.boardId)?.widgets.find(item => item.id === input.widgetId)
       const snapshot = widget?.config.snapshot as HtmlBoardDocument['snapshot'] | undefined
       if (!snapshot) return { ok: false, error: 'not-found' }
-      v2.evidence = { boardId: input.boardId, widgetId: input.widgetId, revision, capturedAt: snapshot.capturedAt, omittedCount: 0, accounts: snapshot.accounts.map((account, index) => ({ index: index + 1, platform: account.platform, status: account.status, window: account.window, previousWindow: account.previousWindow, sourceAt: account.sourceAt, currency: account.currency, metrics: { spend: account.spend, previousSpend: account.previousSpend, impressions: account.impressions, clicks: account.clicks, conversions: account.conversions } })) }
+      v2.evidence = { boardId: input.boardId, widgetId: input.widgetId, revision, capturedAt: snapshot.capturedAt, omittedCount: 0, accounts: snapshot.accounts.map((account, index) => ({ index: index + 1, name: account.name, accountId: account.accountId, resultType: account.resultType ?? null, platform: account.platform, status: account.status, window: account.window, previousWindow: account.previousWindow, sourceAt: account.sourceAt, currency: account.currency, metrics: { spend: account.spend, previousSpend: account.previousSpend, impressions: account.impressions, clicks: account.clicks, conversions: account.conversions } })) }
       return { ok: true, evidence: v2.evidence }
     },
     validateBoardHighlights: async (input: { raw: string }) => {
@@ -82,7 +92,9 @@ Object.assign(window, {
     },
     applyBoardHighlights: async () => { v2.applied++; return { ok: true } }
   },
-  boardFixture: { saved, scenario, v2, buildTikTokDatasetProofs, store: useAppStore, resolvePending: (id: string, value: unknown) => { const resolve = pendingRequests.get(id); pendingRequests.delete(id); resolve?.(value) } }
+  boardFixture: { saved, scenario, v2, buildTikTokDatasetProofs, store: useAppStore,
+    setupChat: () => useAppStore.setState({ currentWorkspace: { id: 'synthetic-workspace', realPath: '/synthetic', displayPath: '/synthetic', source: 'default', createdAt: 1 }, addSession: () => {}, setCurrentSessionId: () => {}, enqueueQueuedMessage: (_id, message) => { v2.chatPrompts.push(message.text) }, drainQueuedMessage: () => true }),
+    resolvePending: (id: string, value: unknown) => { const resolve = pendingRequests.get(id); pendingRequests.delete(id); resolve?.(value) } }
 })
 function Fixture() {
   const location = useLocation()

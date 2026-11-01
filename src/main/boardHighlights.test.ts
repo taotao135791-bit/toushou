@@ -26,11 +26,11 @@ function fixture() {
 }
 
 describe('evidence-linked board highlights', () => {
-  it('exposes only bounded anonymous evidence and omits names, ids, free text and unknown metrics', () => {
+  it('exposes bounded account evidence and omits provider error details', () => {
     const f = fixture()
     const json = JSON.stringify(f.found)
-    for (const secret of ['7300000000000000001', 'PRIVATE_ACCOUNT', 'PRIVATE_FAILED', 'PRIVATE_RANGE', 'PRIVATE_ZONE', 'PRIVATE_BOARD', 'PRIVATE_TITLE', 'private failure']) expect(json).not.toContain(secret)
-    expect(f.found.evidence.accounts).toMatchObject([{ index: 1, metrics: { spend: 42 } }, { index: 2, status: 'failed', metrics: { spend: null } }])
+    for (const secret of ['PRIVATE_RANGE', 'PRIVATE_ZONE', 'PRIVATE_BOARD', 'PRIVATE_TITLE', 'private failure']) expect(json).not.toContain(secret)
+    expect(f.found.evidence.accounts).toMatchObject([{ index: 1, name: 'PRIVATE_ACCOUNT', accountId: '7300000000000000001', metrics: { spend: 42 } }, { index: 2, status: 'failed', metrics: { spend: null } }])
   })
   it('rejects wrong, stale, failed, unknown and mismatching evidence', () => {
     const f = fixture()
@@ -40,7 +40,7 @@ describe('evidence-linked board highlights', () => {
     expect(check({ ...f.proposal, revision: `sha256:${'0'.repeat(64)}` })).toEqual({ ok: false, error: 'stale-evidence' })
     expect(check({ ...f.proposal, highlights: [{ text: 'Review', evidence: [{ accountIndex: 1, metric: 'spend', value: 999 }] }] })).toEqual({ ok: false, error: 'invalid-evidence' })
     expect(check({ ...f.proposal, highlights: [{ text: 'Review', evidence: [{ accountIndex: 2, metric: 'spend', value: 0 }] }] })).toEqual({ ok: false, error: 'invalid-evidence' })
-    expect(check({ ...f.proposal, highlights: [{ text: 'PRIVATE_ACCOUNT is good', evidence: [{ accountIndex: 1, metric: 'spend', value: 42 }] }] })).toEqual({ ok: false, error: 'private-text' })
+    expect(check({ ...f.proposal, highlights: [{ text: 'PRIVATE_ACCOUNT spending', evidence: [{ accountIndex: 1, metric: 'spend', value: 42 }] }] })).toMatchObject({ ok: true })
     f.snapshot.accounts[0].spend = 43
     expect(check(f.proposal)).toEqual({ ok: false, error: 'stale-evidence' })
     expect(f.save).not.toHaveBeenCalled()
@@ -78,7 +78,7 @@ describe('evidence-linked board highlights', () => {
     if (!shifted.ok) throw new Error(shifted.error)
     expect(validateBoardHighlights({ raw: JSON.stringify({ ...proposal, revision: shifted.evidence.revision }) }, f.deps)).toEqual({ ok: false, error: 'invalid-evidence' })
   })
-  it('requires review/apply, rechecks proof, writes an anonymous note once and keeps the source intact', () => {
+  it('requires review/apply, rechecks proof, writes a reviewed note once and keeps the source intact', () => {
     const f = fixture(), raw = JSON.stringify(f.proposal)
     expect(f.save).not.toHaveBeenCalled()
     const applied = applyBoardHighlights({ raw }, f.deps)

@@ -4,6 +4,7 @@ import type { SaveReadingSnapshotInput } from '../shared/readingSnapshot'
 import type { SaveReadingSnapshotResult } from './readingSnapshots'
 import type { ReadingSnapshotExportResult } from './readingSnapshotExport'
 import type { HtmlBoardOpenInput, HtmlBoardSaveInput, HtmlBoardExportInput, HtmlBoardDocumentResult, HtmlBoardExportResult } from '../shared/htmlBoard'
+import type { HtmlBoardAiInput, HtmlBoardAiResult } from '../shared/htmlBoardAi'
 import type { BoardHighlightsEvidenceResult, BoardHighlightsValidationResult, BoardHighlightsApplyResult } from '../shared/boardHighlights'
 import type {
   FbAccountBalanceRefreshResult,
@@ -151,7 +152,7 @@ export interface ElectronAPI {
   /** Create a session under a Main-owned workspace grant. */
   createSession: (
     grantId: string,
-    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string }
+    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string; permissionMode?: 'readonly' }
   ) => Promise<Session>
   sendMessage: (
     sessionId: string,
@@ -263,6 +264,8 @@ export interface ElectronAPI {
   saveHtmlBoard: (input: HtmlBoardSaveInput) => Promise<HtmlBoardDocumentResult>
   exportHtmlBoard: (input: HtmlBoardExportInput) => Promise<HtmlBoardExportResult>
   cleanupOrphanedHtmlBoards: () => Promise<{ ok: true; removed: number } | { ok: false; error: string }>
+  generateHtmlBoardEdit: (input: HtmlBoardAiInput) => Promise<HtmlBoardAiResult>
+  cancelHtmlBoardEdit: (requestId: string) => Promise<boolean>
   getBoardHighlightEvidence: (input: { boardId: string; widgetId: string }) => Promise<BoardHighlightsEvidenceResult>
   validateBoardHighlights: (input: { raw: string }) => Promise<BoardHighlightsValidationResult>
   applyBoardHighlights: (input: { raw: string }) => Promise<BoardHighlightsApplyResult>
@@ -615,7 +618,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY) as Promise<HistorySessionRow[]>,
   createSession: (
     grantId: string,
-    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string }
+    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string; permissionMode?: 'readonly' }
   ) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_CREATE_SESSION, grantId, overrides),
   sendMessage: (
@@ -747,6 +750,8 @@ const api: ElectronAPI = {
   saveHtmlBoard: (input: HtmlBoardSaveInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_SAVE, input),
   exportHtmlBoard: (input: HtmlBoardExportInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_EXPORT, input),
   cleanupOrphanedHtmlBoards: () => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_CLEANUP),
+  generateHtmlBoardEdit: (input: HtmlBoardAiInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_AI_GENERATE, input),
+  cancelHtmlBoardEdit: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_AI_CANCEL, requestId),
   getBoardHighlightEvidence: (input: { boardId: string; widgetId: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_EVIDENCE, input),
   validateBoardHighlights: (input: { raw: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_VALIDATE, input),
   applyBoardHighlights: (input: { raw: string }) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_HIGHLIGHTS_APPLY, input),

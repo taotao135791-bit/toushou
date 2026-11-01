@@ -59,6 +59,18 @@ function writeDocuments(file: string, documents: HtmlBoardDocument[]): void {
   writePrivate(file, content)
 }
 
+/** Main-only read for scoped services; never exposed as an arbitrary renderer read. */
+export function readHtmlBoardDocument(id: unknown, deps: Dependencies = {}): HtmlBoardDocumentResult {
+  if (!isId(id)) return { ok: false, error: 'invalid-input' }
+  let documents: HtmlBoardDocument[]
+  try { documents = readDocuments(deps.file ?? defaultFile()) } catch { return { ok: false, error: 'store-unreadable' } }
+  const document = documents.find(item => item.id === id)
+  return document ? { ok: true, document: structuredClone(document) } : { ok: false, error: 'not-found' }
+}
+
+/** Alias for Main callers; neither function is directly registered as IPC. */
+export const readHtmlBoard = readHtmlBoardDocument
+
 /** Load an existing document or create one from a saved immutable reading snapshot. */
 export function loadOrCreateHtmlBoard(raw: unknown, deps: Dependencies = {}): HtmlBoardDocumentResult {
   if (!record(raw) || !keys(raw, ['boardId', 'widgetId', 'template', 'language']) || !isSourceId(raw.boardId) || !isSourceId(raw.widgetId) || (raw.template !== undefined && (typeof raw.template !== 'string' || !['editorial', 'operations', 'minimal'].includes(raw.template))) || (raw.language !== undefined && raw.language !== 'zh' && raw.language !== 'en')) return { ok: false, error: 'invalid-input' }

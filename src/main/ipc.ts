@@ -7,6 +7,7 @@ import { saveReadingSnapshot } from './readingSnapshots'
 import { exportReadingSnapshot } from './readingSnapshotExport'
 import { loadOrCreateHtmlBoard, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards } from './htmlBoards'
 import { getBoardHighlightEvidence, validateBoardHighlights, applyBoardHighlights } from './boardHighlights'
+import { requestHtmlBoardAiEdit, cancelHtmlBoardAiEdit, cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { parseFbReportReference } from '../shared/fbReportReference'
 import { validGoogleReportUrl } from '../shared/googleReport'
 import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
@@ -1026,13 +1027,14 @@ export function registerIpc() {
     async (
       _event: IpcMainInvokeEvent,
       grantId: string,
-      overrides?: { modelSelector?: unknown; thinkingLevel?: unknown; skillId?: unknown }
+      overrides?: { modelSelector?: unknown; thinkingLevel?: unknown; skillId?: unknown; permissionMode?: unknown }
     ) => {
       const resolved = requireGrant(grantId)
       if (!resolved) {
         throw new Error('createSession requires a valid WorkspaceGrant id')
       }
       const { realPath } = resolved
+      if (overrides?.permissionMode !== undefined && overrides.permissionMode !== 'readonly') throw new Error('Invalid analysis permission mode')
       // Next-session overrides: validated, spawn-arg scoped, one-shot.
       const modelSelector =
         typeof overrides?.modelSelector === 'string' &&
@@ -1059,6 +1061,7 @@ export function registerIpc() {
       return createSession(realPath, broadcastSessionEvent, {
         ...(modelSelector ? { modelSelector } : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(overrides?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
         ...(skillSystemPrompt ? { skillSystemPrompt } : {})
       })
     }
@@ -2548,6 +2551,14 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_SAVE, (_event, input: unknown) => saveHtmlBoard(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_EXPORT, (_event, input: unknown) => exportHtmlBoard(input))
   ipcMain.handle(IPC_CHANNELS.HTML_BOARD_CLEANUP, () => pruneOrphanedHtmlBoards())
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_AI_GENERATE, async (event, input: unknown) => {
+    const owner = event.sender.id
+    const cancelOwner = () => cancelOwnerHtmlBoardAiEdits(owner)
+    event.sender.once('destroyed', cancelOwner)
+    try { return await requestHtmlBoardAiEdit(input, { owner }) }
+    finally { event.sender.removeListener('destroyed', cancelOwner) }
+  })
+  ipcMain.handle(IPC_CHANNELS.HTML_BOARD_AI_CANCEL, (event, requestId: unknown) => cancelHtmlBoardAiEdit(requestId, event.sender.id))
   ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_EVIDENCE, (_event, input: unknown) => getBoardHighlightEvidence(input))
   ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_VALIDATE, (_event, input: unknown) => validateBoardHighlights(input))
   ipcMain.handle(IPC_CHANNELS.BOARD_HIGHLIGHTS_APPLY, (_event, input: unknown) => applyBoardHighlights(input))

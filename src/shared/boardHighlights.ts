@@ -9,7 +9,7 @@ export interface BoardHighlightRef { accountIndex: number; metric: BoardHighligh
 export interface BoardHighlight { text: string; evidence: BoardHighlightRef[] }
 export interface BoardHighlightsProposal { version: 1; boardId: string; widgetId: string; revision: string; highlights: BoardHighlight[] }
 export interface BoardHighlightAccountEvidence {
-  index: number; platform: 'facebook' | 'tiktok' | 'google'; status: 'ok' | 'failed' | 'unattempted' | 'unavailable'
+  index: number; name: string | null; accountId: string | null; resultType: string | null; platform: 'facebook' | 'tiktok' | 'google'; status: 'ok' | 'failed' | 'unattempted' | 'unavailable'
   window: { start: string; end: string }; previousWindow: { start: string; end: string } | null
   sourceAt: number | null; currency: string | null
   metrics: Record<BoardHighlightMetric, number | null>
@@ -73,13 +73,14 @@ export function buildBoardHighlightsPrompt(evidence: BoardHighlightEvidence, lan
       const value = a.metrics[metric]
       if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && (!(metric === 'spend' || metric === 'previousSpend') || currency) && (metric !== 'previousSpend' || previousMatches)) metrics[metric] = value
     }
-    return [{ index: a.index, platform: a.platform, status: a.status, window, previousWindow, sourceAt, currency, metrics }]
+    const bounded = (v: unknown, limit: number) => typeof v === 'string' && v.length <= limit && !/[\x00-\x1f\x7f]/.test(v) ? v : null
+    return [{ index: a.index, name: bounded(a.name, 200), accountId: bounded(a.accountId, 128), resultType: bounded(a.resultType, 100), platform: a.platform, status: a.status, window, previousWindow, sourceAt, currency, metrics }]
   })
   const projection = { boardId: evidence.boardId, widgetId: evidence.widgetId, revision: evidence.revision, capturedAt: evidence.capturedAt, accounts, omittedCount: Math.max(0, Math.min(1000, Number.isSafeInteger(evidence.omittedCount) ? evidence.omittedCount : 0)) }
   const zh = language === 'zh'
   return [
-    zh ? '只根据以下脱敏快照提出高光。不要调用工具或修改广告；不确定的信息写未知，不推断因果。不同平台结果定义可能不同，不混合汇总或比较；快照不保证实时。每条高光必须引用有来源时间、状态 ok 的账户中非空的指标，数值必须完全相同；不要引用失败、未知或省略的账户。文字仅供人工审核。' : 'Propose highlights only from this anonymous snapshot. Do not call tools or modify ads. Treat missing information as unknown and do not infer causality. Result definitions can differ across platforms; do not combine or compare them. The snapshot may not be live. Each highlight must cite a non-null value from an ok account with a source time, exactly matching the number; never cite failed, unknown or omitted accounts. Text is subject to human review.',
-    zh ? '请返回恰好一个 board-highlights JSON 代码块；不得包含账户实名、ID、网址或额外字段。格式：' : 'Return exactly one board-highlights JSON code block, without account names, IDs, URLs or extra fields. Format:',
+    zh ? '只根据以下已保存快照提出高光。不要调用工具或修改广告；不确定的信息写未知，不推断因果。不同平台结果定义可能不同，不混合汇总或比较；快照不保证实时。每条高光必须引用有来源时间、状态 ok 的账户中非空的指标，数值必须完全相同；不要引用失败、未知或省略的账户。文字仅供人工审核。' : 'Propose highlights only from this saved snapshot. Do not call tools or modify ads. Treat missing information as unknown and do not infer causality. Result definitions can differ across platforms; do not combine or compare them. The snapshot may not be live. Each highlight must cite a non-null value from an ok account with a source time, exactly matching the number; never cite failed, unknown or omitted accounts. Text is subject to human review.',
+    zh ? '请返回恰好一个 board-highlights JSON 代码块；可以使用账户名称和 ID，不要包含网址或额外字段。格式：' : 'Return exactly one board-highlights JSON code block, account names and IDs are allowed; omit URLs and extra fields. Format:',
     '```board-highlights',
     JSON.stringify({ version: 1, boardId: evidence.boardId, widgetId: evidence.widgetId, revision: evidence.revision, highlights: [{ text: zh ? '供审核的观察' : 'Observation for review', evidence: [{ accountIndex: 1, metric: 'spend', value: 0 }] }] }, null, 2),
     '```',

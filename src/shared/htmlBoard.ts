@@ -1,4 +1,4 @@
-import { parse, parseFragment, serialize, serializeOuter, type DefaultTreeAdapterTypes } from 'parse5'
+import { defaultTreeAdapter, parse, parseFragment, serialize, serializeOuter, type DefaultTreeAdapterTypes } from 'parse5'
 import postcss from 'postcss'
 import { validateReadingSnapshot, type ReadingSnapshot } from './readingSnapshot'
 import { renderReadingSnapshotHtml } from './readingSnapshotHtml'
@@ -58,15 +58,16 @@ export function htmlBoardTemplate(id: HtmlBoardTemplate, language: HtmlBoardLang
 
 type Child = DefaultTreeAdapterTypes.ChildNode
 type Element = DefaultTreeAdapterTypes.Element
-const tags = new Set(['div', 'section', 'article', 'header', 'footer', 'aside', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'strong', 'em', 'b', 'i', 'small', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'caption', 'br', 'hr'])
+export const HTML_BOARD_ALLOWED_TAGS = ['div', 'section', 'article', 'header', 'footer', 'aside', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'strong', 'em', 'b', 'i', 'small', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'caption', 'br', 'hr'] as const
+const tags: Set<string> = new Set(HTML_BOARD_ALLOWED_TAGS)
 
 /** Parse HTML as a tree; reject unsafe nodes/attributes rather than guessing. */
-export function parseHtmlBoardTemplate(html: string): { before: string; after: string } {
+export function parseHtmlBoardTemplate(html: string, accountCount?: number): { before: string; after: string } {
   if (typeof html !== 'string' || html.length > HTML_BOARD_MAX_HTML) throw new Error('invalid-html')
   let parseError = false
   const fragment = parseFragment(html, { onParseError: () => { parseError = true } })
   if (parseError) throw new Error('invalid-html')
-  let count = 0, slot = -1, nodes = 0
+  let count = 0, slot = -1, nodes = 0, charts = 0
   const visit = (node: Child, depth: number, top: boolean, index: number) => {
     if (++nodes > 2000 || depth > 32) throw new Error('html-limit')
     if (node.nodeName === '#text') return
@@ -80,8 +81,18 @@ export function parseHtmlBoardTemplate(html: string): { before: string; after: s
       if (!top || element.tagName !== 'div' || element.attrs.length !== 1 || marker.value !== '' || element.childNodes.some(child => child.nodeName !== '#text' || ('value' in child && child.value.trim()))) throw new Error('invalid-slot')
       slot = index
     } else {
+      const chart = element.attrs.find(attribute => attribute.name === 'data-reading-chart')
+      if (chart) {
+        charts++
+        if (charts > 2 || element.tagName !== 'div' || chart.value !== 'spend' || element.childNodes.length !== 0 || element.attrs.some(attribute => attribute.name !== 'data-reading-chart')) throw new Error('invalid-chart')
+      }
+      const binding = element.attrs.find(attribute => attribute.name === 'data-reading-value')
+      if (binding) {
+        const match = /^(?:([1-9][0-9]{0,3}))\.(spend|previousSpend|impressions|clicks|conversions|currency|status|account|windowStart|windowEnd)$/.exec(binding.value)
+        if (element.tagName !== 'span' || element.childNodes.length !== 0 || !match || (accountCount !== undefined && Number(match[1]) > accountCount) || element.attrs.some(attribute => !['data-reading-value', 'class'].includes(attribute.name))) throw new Error('invalid-binding')
+      }
       for (const attribute of element.attrs) {
-        if (attribute.namespace || !['class', 'title', 'aria-label', 'colspan', 'rowspan'].includes(attribute.name)) throw new Error('unsupported-attribute')
+        if (attribute.namespace || !['class', 'title', 'aria-label', 'colspan', 'rowspan', 'data-reading-value', 'data-reading-chart'].includes(attribute.name)) throw new Error('unsupported-attribute')
         if (attribute.value.length > 200 || /[\x00-\x1f\x7f]/.test(attribute.value)) throw new Error('unsupported-attribute')
         if (attribute.name === 'class' && !/^[A-Za-z0-9_\- ]*$/.test(attribute.value)) throw new Error('unsupported-attribute')
         if ((attribute.name === 'colspan' || attribute.name === 'rowspan') && !/^[1-9][0-9]?$/.test(attribute.value)) throw new Error('unsupported-attribute')
@@ -94,8 +105,60 @@ export function parseHtmlBoardTemplate(html: string): { before: string; after: s
   return { before: fragment.childNodes.slice(0, slot).map(node => serializeOuter(node)).join(''), after: fragment.childNodes.slice(slot + 1).map(node => serializeOuter(node)).join('') }
 }
 
-const cssProperties = new Set(['color', 'background', 'background-color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing', 'text-align', 'text-decoration', 'text-transform', 'white-space', 'display', 'flex', 'flex-direction', 'flex-wrap', 'align-items', 'justify-content', 'gap', 'row-gap', 'column-gap', 'grid-template-columns', 'grid-template-rows', 'grid-column', 'grid-row', 'width', 'max-width', 'min-width', 'height', 'max-height', 'min-height', 'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'border', 'border-top', 'border-right', 'border-bottom', 'border-left', 'border-radius', 'border-color', 'border-width', 'border-style'])
-const cssFunctions = new Set(['rgb', 'rgba', 'hsl', 'hsla', 'linear-gradient', 'repeat', 'minmax', 'calc', 'min', 'max', 'clamp'])
+export interface HtmlBoardBasicFields { title: string; summary: string; nextSteps: string }
+type BasicField = keyof HtmlBoardBasicFields
+type BasicNodes = Record<BasicField, Element>
+
+/** Only plainly editable, unambiguous built-in layout nodes qualify for basic mode. */
+function basicNodes(fragment: DefaultTreeAdapterTypes.DocumentFragment): BasicNodes | null {
+  const elements = (nodes: Child[]): Element[] => nodes.filter((node): node is Element => 'tagName' in node)
+  const hasClass = (node: Element, name: string) => (node.attrs.find(attr => attr.name === 'class')?.value ?? '').split(/\s+/).includes(name)
+  const heroes = elements(fragment.childNodes).filter(node => node.tagName === 'header' && hasClass(node, 'hero'))
+  const notes = elements(fragment.childNodes).filter(node => node.tagName === 'section' && hasClass(node, 'notes'))
+  if (heroes.length !== 1 || notes.length !== 1) return null
+  const headerChildren = elements(heroes[0].childNodes)
+  const titles = headerChildren.filter(node => node.tagName === 'h1')
+  const summaries = headerChildren.filter(node => node.tagName === 'p' && !hasClass(node, 'eyebrow') && !hasClass(node, 'tag'))
+  const noteChildren = elements(notes[0].childNodes)
+  const candidates = noteChildren.flatMap(node => node.tagName === 'p' ? [node] : node.tagName === 'ul' || node.tagName === 'ol' ? elements(node.childNodes).filter(child => child.tagName === 'li') : [])
+  if (titles.length !== 1 || summaries.length !== 1 || candidates.length !== 1) return null
+  const nodes = { title: titles[0], summary: summaries[0], nextSteps: candidates[0] }
+  if (Object.values(nodes).some(node => node.childNodes.some(child => child.nodeName !== '#text'))) return null
+  return nodes
+}
+
+/** Return null for custom or complex layouts; never normalize them silently. */
+export function readHtmlBoardBasicFields(html: string): HtmlBoardBasicFields | null {
+  try {
+    parseHtmlBoardTemplate(html)
+    const nodes = basicNodes(parseFragment(html))
+    if (!nodes) return null
+    const text = (node: Element) => node.childNodes.map(child => child.nodeName === '#text' && 'value' in child ? child.value : '').join('')
+    return { title: text(nodes.title), summary: text(nodes.summary), nextSteps: text(nodes.nextSteps) }
+  } catch { return null }
+}
+
+/** Replace only one text node through the HTML AST; markup typed as text stays text. */
+export function updateHtmlBoardBasicField(html: string, field: BasicField, value: string): string | null {
+  if (!['title', 'summary', 'nextSteps'].includes(field) || typeof value !== 'string' || value.length > 2000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) return null
+  try {
+    parseHtmlBoardTemplate(html)
+    const fragment = parseFragment(html)
+    const nodes = basicNodes(fragment)
+    if (!nodes) return null
+    const target = nodes[field]
+    target.childNodes = []
+    defaultTreeAdapter.insertText(target, value)
+    const updated = fragment.childNodes.map(node => serializeOuter(node)).join('')
+    parseHtmlBoardTemplate(updated)
+    return updated
+  } catch { return null }
+}
+
+export const HTML_BOARD_ALLOWED_CSS_PROPERTIES = ['color', 'background', 'background-color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing', 'text-align', 'text-decoration', 'text-transform', 'white-space', 'display', 'flex', 'flex-direction', 'flex-wrap', 'align-items', 'justify-content', 'gap', 'row-gap', 'column-gap', 'grid-template-columns', 'grid-template-rows', 'grid-column', 'grid-row', 'width', 'max-width', 'min-width', 'height', 'max-height', 'min-height', 'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'border', 'border-top', 'border-right', 'border-bottom', 'border-left', 'border-radius', 'border-color', 'border-width', 'border-style'] as const
+const cssProperties: Set<string> = new Set(HTML_BOARD_ALLOWED_CSS_PROPERTIES)
+export const HTML_BOARD_ALLOWED_CSS_FUNCTIONS = ['rgb', 'rgba', 'hsl', 'hsla', 'linear-gradient', 'repeat', 'minmax', 'calc', 'min', 'max', 'clamp'] as const
+const cssFunctions: Set<string> = new Set(HTML_BOARD_ALLOWED_CSS_FUNCTIONS)
 
 /** Parse CSS rules and reconstruct a restricted stylesheet scoped outside trusted data. */
 export function scopedHtmlBoardCss(css: string): string {
@@ -132,15 +195,50 @@ export function validateHtmlBoardDocument(raw: unknown): HtmlBoardDocument | nul
   if (Object.keys(value).some(key => !['schemaVersion', 'id', 'revision', 'source', 'snapshot', 'includeChart', 'theme', 'html', 'css', 'createdAt', 'updatedAt'].includes(key))) return null
   const source = value.source as Record<string, unknown> | null
   if (value.schemaVersion !== 1 || typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value.id) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1 || !source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['boardId', 'widgetId', 'snapshotHash'].includes(key)) || typeof source.boardId !== 'string' || !source.boardId || source.boardId.length > 100 || /[\x00-\x1f\x7f]/.test(source.boardId) || typeof source.widgetId !== 'string' || !source.widgetId || source.widgetId.length > 100 || /[\x00-\x1f\x7f]/.test(source.widgetId) || typeof source.snapshotHash !== 'string' || !/^[a-f0-9]{64}$/.test(source.snapshotHash) || !validateReadingSnapshot(value.snapshot) || typeof value.includeChart !== 'boolean' || (value.theme !== undefined && value.theme !== 'editorial' && value.theme !== 'operations' && value.theme !== 'minimal') || typeof value.html !== 'string' || typeof value.css !== 'string' || !Number.isSafeInteger(value.createdAt) || !Number.isSafeInteger(value.updatedAt) || (value.createdAt as number) < 0 || (value.updatedAt as number) < (value.createdAt as number)) return null
-  try { parseHtmlBoardTemplate(value.html); scopedHtmlBoardCss(value.css) } catch { return null }
+  try { parseHtmlBoardTemplate(value.html, (value.snapshot as ReadingSnapshot).accounts.length); scopedHtmlBoardCss(value.css) } catch { return null }
   return value as unknown as HtmlBoardDocument
+}
+
+/** Populate validated binding spans with plain text from the immutable snapshot. */
+function fillReadingValues(html: string, snapshot: ReadingSnapshot, anonymous: boolean, zh: boolean, chart: string): string {
+  const fragment = parseFragment(html)
+  const visit = (node: Child) => {
+    if (!('tagName' in node)) return
+    const chartMarker = node.attrs.find(attr => attr.name === 'data-reading-chart')
+    if (chartMarker) {
+      node.attrs = []
+      const trustedChart = parseFragment(chart)
+      for (const child of [...trustedChart.childNodes]) defaultTreeAdapter.appendChild(node, child)
+      return
+    }
+    const binding = node.attrs.find(attr => attr.name === 'data-reading-value')
+    if (binding) {
+      const [indexText, field] = binding.value.split('.')
+      const index = Number(indexText) - 1
+      const account = snapshot.accounts[index]
+      let value: string
+      if (field === 'account') value = anonymous ? `${zh ? '账户' : 'Account'} ${index + 1}` : `${account.name || account.accountId || '—'}${account.name && account.accountId ? ` (${account.accountId})` : ''}`
+      else if (field === 'currency') value = account.currency ?? (zh ? '未知' : 'Unknown')
+      else if (field === 'status') value = ({ ok: zh ? '成功' : 'Read', failed: zh ? '失败' : 'Failed', unattempted: zh ? '未尝试' : 'Not attempted', unavailable: zh ? '不可用' : 'Unavailable' })[account.status]
+      else if (field === 'windowStart' || field === 'windowEnd') value = field === 'windowStart' ? account.window.start : account.window.end
+      else {
+        const metric = account[field as 'spend' | 'previousSpend' | 'impressions' | 'clicks' | 'conversions']
+        value = account.status !== 'ok' || metric === null ? '—' : metric.toLocaleString('en-US', { maximumFractionDigits: 2 })
+      }
+      node.attrs = node.attrs.filter(attr => attr.name !== 'data-reading-value')
+      defaultTreeAdapter.insertText(node, value)
+    }
+    for (const child of node.childNodes) visit(child)
+  }
+  fragment.childNodes.forEach(visit)
+  return fragment.childNodes.map(node => serializeOuter(node)).join('')
 }
 
 /** Isolate user-authored content around a trusted immutable report slot. */
 export function renderHtmlBoard(raw: unknown, options: { anonymize?: boolean; language?: HtmlBoardLanguage } = {}): string {
   const document = validateHtmlBoardDocument(raw)
   if (!document) throw new Error('invalid-document')
-  const template = parseHtmlBoardTemplate(document.html)
+  const template = parseHtmlBoardTemplate(document.html, document.snapshot.accounts.length)
   const customCss = scopedHtmlBoardCss(document.css)
   const snapshotHtml = renderReadingSnapshotHtml(document.snapshot, { anonymize: options.anonymize !== false, includeChart: document.includeChart, language: options.language })
   const parsed = parse(snapshotHtml)
@@ -151,6 +249,11 @@ export function renderHtmlBoard(raw: unknown, options: { anonymize?: boolean; la
     }
     return undefined
   }
+  // Custom chart slots are explicit and work independently of the full report's chart toggle.
+  const chartDocument = document.includeChart ? parsed : parse(renderReadingSnapshotHtml(document.snapshot, { anonymize: options.anonymize !== false, includeChart: true, language: options.language }))
+  const chart = find(chartDocument.childNodes, 'section')
+  if (!chart) throw new Error('invalid-snapshot-chart')
+  const chartHtml = serializeOuter(chart)
   const headStyle = find(parsed.childNodes, 'style')
   const main = find(parsed.childNodes, 'main')
   if (!headStyle || !main) throw new Error('invalid-snapshot-template')
@@ -164,5 +267,5 @@ export function renderHtmlBoard(raw: unknown, options: { anonymize?: boolean; la
     minimal: 'main{font-family:system-ui,sans-serif;color:#181818}main h1{color:#181818}main th{background:#efefef;color:#181818}main td{border-bottom-color:#d9d9d9}main .bar{background:#333333}'
   }
   const reportStyle = reportThemes[document.theme ?? 'editorial']
-  return `<!doctype html><html lang="${zh ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>${zh ? '自定义读数看板' : 'Custom reading board'}</title><style>${style}\n${reportStyle}\n${customCss}\n.html-board-note{max-width:1280px;margin:12px auto;padding:8px 28px;color:#59677a;font-size:12px}#html-board-custom-before,#html-board-custom-after{max-width:1280px;margin:0 auto;padding:0 28px}</style></head><body><p class="html-board-note">${zh ? '自定义 HTML/CSS（包括文本、属性及注释）由作者填写，不会自动脱敏或核验，请检查后分享。' : 'Custom HTML/CSS, including text, attributes and comments, is authored by the editor and is not anonymized or verified. Review before sharing.'}</p><div id="html-board-custom-before">${template.before}</div><main>${serialize(main)}</main><div id="html-board-custom-after">${template.after}</div></body></html>`
+  return `<!doctype html><html lang="${zh ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>${zh ? '自定义读数看板' : 'Custom reading board'}</title><style>${style}\n${reportStyle}\n${customCss}\n.html-board-note{max-width:1280px;margin:12px auto;padding:8px 28px;color:#59677a;font-size:12px}#html-board-custom-before,#html-board-custom-after{max-width:1280px;margin:0 auto;padding:0 28px}</style></head><body><p class="html-board-note">${zh ? '自定义文字和 AI 结论未经系统核验，也不会自动脱敏；请核对后分享。' : 'Custom text and AI conclusions are not verified or automatically anonymized. Review before sharing.'}</p><div id="html-board-custom-before">${fillReadingValues(template.before, document.snapshot, options.anonymize !== false, zh, chartHtml)}</div><main>${serialize(main)}</main><div id="html-board-custom-after">${fillReadingValues(template.after, document.snapshot, options.anonymize !== false, zh, chartHtml)}</div></body></html>`
 }

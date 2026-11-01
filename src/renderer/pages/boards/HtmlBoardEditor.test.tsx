@@ -16,16 +16,32 @@ const fixture: HtmlBoardDocument = {
 }
 
 describe('offline HTML board editor', () => {
-  it('renders actual HTML/CSS editors and an anonymous, sandboxed preview', () => {
+  it('starts with plain-language editing and an anonymous, sandboxed preview', () => {
     vi.stubGlobal('document', { body: {} })
-    const html = renderToStaticMarkup(createElement(HtmlBoardEditor, { document: fixture, language: 'en', onSave: async () => ({ ok: false, error: 'write-failed' } as const), onExport: async () => ({ ok: false, error: 'cancelled' } as const), onClose: () => {} }))
+    const html = renderToStaticMarkup(createElement(HtmlBoardEditor, { document: fixture, language: 'en', onSave: async () => ({ ok: false, error: 'write-failed' } as const), onExport: async () => ({ ok: false, error: 'cancelled' } as const), onGenerate: async () => ({ ok: false, error: 'unavailable' } as const), onCancel: async () => true, onClose: () => {} }))
     expect(html).toContain('role="dialog"')
-    expect(html).toContain('aria-label="HTML"')
-    expect(html).toContain('aria-label="CSS"')
+    expect(html).toContain('aria-label="Change description"')
+    expect(html).toContain('Your description, current layout and selected readings')
+    expect(html).toContain('Generate suggestion')
+    expect(html).toContain('aria-label="Board title"')
+    expect(html).toContain('aria-label="Period summary"')
+    expect(html).toContain('aria-label="Next steps"')
+    expect(html).toContain('Advanced: HTML / CSS')
+    expect(html).not.toContain('aria-label="HTML"')
+    expect(html).not.toContain('aria-label="CSS"')
     expect(html).toContain('sandbox=""')
     expect(html).toContain('Anonymize account data')
-    expect(html).toContain('attributes, comments, and values')
+    expect(html).toContain('Custom content and values may still be sensitive')
     expect(html).not.toContain('Private Account')
     expect(html).not.toContain('999999999999999999')
+  })
+  it('keeps non-template custom structures without forcing advanced editing', () => {
+    vi.stubGlobal('document', { body: {} })
+    const custom = { ...fixture, html: '<p class="custom">Keep this</p><div data-reading-slot></div>' }
+    const html = renderToStaticMarkup(createElement(HtmlBoardEditor, { document: custom, language: 'en', onSave: async () => ({ ok: false, error: 'write-failed' } as const), onExport: async () => ({ ok: false, error: 'cancelled' } as const), onGenerate: async () => ({ ok: false, error: 'unavailable' } as const), onCancel: async () => true, onClose: () => {} }))
+    expect(html).toContain('Your custom layout is preserved')
+    expect(html).not.toContain('aria-label="HTML"')
+    expect(html).toContain('Keep this')
+    expect(html).not.toContain('aria-label="Board title"')
   })
 })

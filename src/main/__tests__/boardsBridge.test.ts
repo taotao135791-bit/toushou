@@ -37,14 +37,15 @@ describe('parseBoardsBridgeRequest', () => {
 })
 
 describe('boards bridge dispatch', () => {
-  it('makes saved anonymous evidence available to a conversation without auto-applying a highlight', async () => {
+  it('makes saved account evidence available to a conversation without auto-applying a highlight', async () => {
     const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'PRIVATE_RANGE', window: { start: '2026-01-01', end: '2026-01-07' }, capturedAt: 100,
       accounts: [{ platform: 'tiktok', accountId: '7300000000000999999', name: 'PRIVATE_NAME', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-07' }, previousWindow: null, sourceAt: 90, timezone: 'UTC', currency: 'USD', spend: 42, previousSpend: null, impressions: 10, clicks: 1, conversions: 1 }] }
     const created = saveReadingSnapshot({ name: 'PRIVATE_BOARD', snapshot, includeChart: false })
     if (!created.ok) throw new Error(created.error)
     const read = await dispatch({ action: 'board_get', boardId: created.board.id })
     const output = JSON.stringify(read)
-    for (const secret of ['PRIVATE_NAME', 'PRIVATE_BOARD', 'PRIVATE_RANGE', '7300000000000999999']) expect(output).not.toContain(secret)
+    for (const value of ['PRIVATE_NAME', 'PRIVATE_BOARD', '7300000000000999999']) expect(output).toContain(value)
+    expect(output).not.toContain('PRIVATE_RANGE')
     const config = (read.board as { widgets: Array<{ config: { evidence: { boardId: string; widgetId: string; revision: string } } }> }).widgets[0].config
     const proposal = { version: 1, boardId: config.evidence.boardId, widgetId: config.evidence.widgetId, revision: config.evidence.revision, highlights: [{ text: 'Review this spending', evidence: [{ accountIndex: 1, metric: 'spend', value: 42 }] }] }
     const raw = JSON.stringify(proposal)
@@ -53,7 +54,7 @@ describe('boards bridge dispatch', () => {
     expect(applyBoardHighlights({ raw })).toMatchObject({ ok: true, boardId: created.board.id })
     expect(listBoards()[0].widgets).toHaveLength(2)
   })
-  it('only exposes a bounded anonymized projection of reading snapshots to model board operations', async () => {
+  it('exposes a bounded account projection of reading snapshots to model board operations', async () => {
     const snapshot: ReadingSnapshot = {
       kind: 'reading-snapshot', version: 1, rangeLabel: 'PRIVATE_RANGE', window: { start: '2026-01-01', end: '2026-01-07' }, capturedAt: 10,
       accounts: Array.from({ length: 51 }, (_, index) => ({
@@ -71,14 +72,13 @@ describe('boards bridge dispatch', () => {
     expect(saveBoard(board)).toEqual({ ok: true })
     const raw = listBoards()[0].widgets[0].config.snapshot as ReadingSnapshot
     expect(raw.accounts[0].name).toBe('PRIVATE_NAME_0')
-    for (const result of [await dispatch({ action: 'board_get', boardId: board.id }), await dispatch({ action: 'boards_list' }), await dispatch({ action: 'board_create', name: 'PRIVATE_BOARD_NAME', template: 'blank' }), await dispatch({ action: 'board_rename', boardId: board.id, newName: 'PRIVATE_RENAMED' })]) {
-      const output = JSON.stringify(result)
-      for (const secret of ['PRIVATE_ID_', 'PRIVATE_NAME_', 'PRIVATE_DETAIL', 'PRIVATE_RANGE', 'PRIVATE_TIMEZONE', 'PRIVATE_RESULT', 'PRIVATE_WIDGET_TITLE', 'PRIVATE_OTHER_TITLE', 'PRIVATE_OTHER_BODY', 'PRIVATE_BOARD_NAME', 'PRIVATE_RENAMED']) expect(output).not.toContain(secret)
-    }
     const projected = await dispatch({ action: 'board_get', boardId: board.id })
-    expect(projected.board).toMatchObject({ id: board.id, name: '读数快照看板' })
-    const config = (projected.board as { widgets: Array<{ config: { anonymized: boolean; accountCount: number; evidence: { boardId: string; widgetId: string; revision: string; omittedCount: number; accounts: unknown[] } } }> }).widgets[0].config
-    expect(config).toMatchObject({ anonymized: true, accountCount: 51, evidence: { boardId: board.id, widgetId: board.widgets[0].id, omittedCount: 1 } })
+    expect(projected.board).toMatchObject({ id: board.id, name: 'PRIVATE_BOARD_NAME' })
+    const output = JSON.stringify(projected)
+    for (const field of ['PRIVATE_ID_0','PRIVATE_NAME_0','PRIVATE_RESULT','PRIVATE_WIDGET_TITLE','PRIVATE_OTHER_BODY']) expect(output).toContain(field)
+    for (const omitted of ['PRIVATE_ID_50','PRIVATE_NAME_50','PRIVATE_DETAIL','PRIVATE_RANGE','PRIVATE_TIMEZONE']) expect(output).not.toContain(omitted)
+    const config = (projected.board as { widgets: Array<{ config: { accountCount: number; evidence: { boardId: string; widgetId: string; revision: string; omittedCount: number; accounts: unknown[] } } }> }).widgets[0].config
+    expect(config).toMatchObject({ accountCount: 51, evidence: { boardId: board.id, widgetId: board.widgets[0].id, omittedCount: 1 } })
     expect(config.evidence.revision).toMatch(/^sha256:[a-f0-9]{64}$/)
     expect(config.evidence.accounts).toHaveLength(50)
     expect(config.evidence.accounts[0]).toMatchObject({ index: 1, platform: 'tiktok', status: 'ok', currency: 'USD', metrics: { spend: 1 } })

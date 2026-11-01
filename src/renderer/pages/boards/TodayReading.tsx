@@ -26,9 +26,9 @@ import { useT, type I18nKey } from '../../i18n'
 import { useAppStore } from '../../store'
 import { refreshAccountWithRetry } from './fbReadingRefresh'
 import { loadTodayFacebookAccounts, type TodayFacebookRow as FacebookRow } from './todayFacebook'
-import { ReadingDraftDialog } from './ReadingDraftDialog'
 import { SaveReadingBoardDialog } from './SaveReadingBoardDialog'
-import { snapshotToday, anonymousReadingDraft } from './todaySnapshot'
+import { snapshotToday, readingAnalysisPrompt } from './todaySnapshot'
+import { startReadingAnalysis } from '../../lib/readingAnalysis'
 import { isTikTokAccountCurrent } from './readingFreshness'
 import { TTReadingProgress, type TTProgress } from './TTReadingProgress'
 import { TikTokAccountPicker } from './TikTokAccountPicker'
@@ -68,7 +68,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => void } = {}) {
+export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openAi?: boolean) => void } = {}) {
   const t = useT()
   const navigate = useNavigate()
   const language = useAppStore((state) => state.language)
@@ -83,7 +83,10 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
   const [facebookLoading, setFacebookLoading] = useState(true)
   const [facebookLoadError, setFacebookLoadError] = useState(false)
   const [saveSnapshot, setSaveSnapshot] = useState<ReadingSnapshot | null>(null)
-  const [localMappings, setLocalMappings] = useState<{ label: string; name: string }[]>([])
+  const [saveWithAi, setSaveWithAi] = useState(false)
+  const [analysisBusy, setAnalysisBusy] = useState(false)
+  const analysisRequest = useRef(false)
+  const [analysisError, setAnalysisError] = useState(false)
   const [facebook, setFacebook] = useState<FacebookRow[] | null>(null)
   const [tiktok, setTiktok] = useState<TikTokTodayReading | null>(null)
   const [tiktokFailure, setTiktokFailure] = useState<TikTokFailure | null>(null)
@@ -113,8 +116,6 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
   const [singleFailures, setSingleFailures] = useState<Record<string, TikTokFailure | null>>({})
   const [singleUpdatedAt, setSingleUpdatedAt] = useState<Record<string, number>>({})
   const [singleSyncError, setSingleSyncError] = useState<Record<string, string | null>>({})
-  const [singleDraft, setSingleDraft] = useState<string | null>(null)
-  const [singleDraftCopy, setSingleDraftCopy] = useState<'copied' | 'failed' | null>(null)
 
   useEffect(() => window.electronAPI.onTtReadingProgress?.((event) => {
     if (event.requestId === tiktokRequest.current) {
@@ -336,26 +337,29 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
     if (cancelled && singleRequest.current?.requestId === request.requestId) setSingleCancelling(true)
   }
 
+  const sendAnalysis = async (prompt: string) => {
+    if (analysisRequest.current) return
+    analysisRequest.current = true
+    setAnalysisBusy(true); setAnalysisError(false)
+    try {
+      const sessionId = await startReadingAnalysis(prompt)
+      if (sessionId) navigate('/')
+      else setAnalysisError(true)
+    } catch { setAnalysisError(true) }
+    finally { analysisRequest.current = false; setAnalysisBusy(false) }
+  }
+
   const analyzeTikTokAccount = (account: TikTokTodayAccountReading) => {
-    if (!tiktok || tiktok.range !== range || singleFailures[account.advertiserId] || singleActive === account.advertiserId) return
+    if (!tiktok || tiktok.range !== range || singleFailures[account.advertiserId] || singleActive === account.advertiserId || analysisBusy) return
     const currentWindow = account.window ?? tiktok.window
     const previousWindow = account.previousWindow ?? tiktok.previousWindow
     const accountDay = tiktokAccountDate(Date.now(), account.timezone)
     const expected = range === 'custom' ? customWindow : accountDay ? todayWindowForAccountDate(range, accountDay) : null
-    const current = !!expected && currentWindow.start === expected.start && currentWindow.end === expected.end
-    if (!current) {
+    if (!expected || currentWindow.start !== expected.start || currentWindow.end !== expected.end) {
       setSingleFailures((old) => ({ ...old, [account.advertiserId]: { code: 'api', detail: 'reading-window-expired' } }))
       return
     }
-    setLocalMappings([{ label: zh ? '所选 TikTok 账户' : 'Selected TikTok account', name: account.name ?? account.advertiserId }, ...account.campaigns.slice(0, 3).map((move, i) => ({ label: `${zh ? '活动' : 'Campaign'} ${String.fromCharCode(65 + i)}`, name: move.name }))])
-    setSingleDraft(buildTikTokAccountDraft(language === 'zh' ? 'zh' : 'en', account, currentWindow, previousWindow, singleUpdatedAt[account.advertiserId] ?? tiktok.generatedAt))
-    setSingleDraftCopy(null)
-  }
-
-  const copySingleDraft = async () => {
-    if (singleDraft === null) return
-    try { await navigator.clipboard.writeText(singleDraft); setSingleDraftCopy('copied') }
-    catch { setSingleDraftCopy('failed') }
+    void sendAnalysis(buildTikTokAccountDraft(language === 'zh' ? 'zh' : 'en', account, currentWindow, previousWindow, singleUpdatedAt[account.advertiserId] ?? tiktok.generatedAt))
   }
 
   const chooseTikTokScope = (scope: TikTokPageScope) => {
@@ -393,16 +397,13 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
   const currentSnapshot = () => snapshotToday({ rangeLabel, window: dateWindow, capturedAt: Date.now(), facebook: visibleFacebook,
     tiktok: scopedTikTok(), facebookLoadError, tiktokFailure, facebookFailures: rowFailures, tiktokFailures: singleFailures, updatedAt: singleUpdatedAt })
   const ask = () => {
-    if (!hasFigures || tiktokBusy || facebookPending || refreshingAct || singleActive) return
-    const draft = anonymousReadingDraft(snapshotToday({ rangeLabel, window: dateWindow, capturedAt: Date.now(),
-      facebook: goodFacebook, facebookLoadError, tiktokFailure, tiktok: scopeTikTokPageData(scopedTikTok(), ttPageScope, failedAccountIds) }), zh ? 'zh' : 'en')
-    setLocalMappings(draft.mappings.map(text => { const [label, ...name] = text.split(' → '); return { label, name: name.join(' → ') } }))
-    setSingleDraft(draft.text); setSingleDraftCopy(null)
+    if (!hasFigures || tiktokBusy || facebookPending || refreshingAct || singleActive || analysisBusy) return
+    void sendAnalysis(readingAnalysisPrompt(currentSnapshot(), zh ? 'zh' : 'en'))
   }
   const applyDates = () => {
     const next = parseTikTokCustomWindow(startInput, endInput)
     if (!next) { setDateError(true); return }
-    setDateError(false); setSingleDraft(null)
+    setDateError(false)
     if (range === 'custom' && customWindow.start === next.start && customWindow.end === next.end) {
       void loadFacebook()
       if (ttPageScopeRef.current) void loadTikTok(ttPageScopeRef.current)
@@ -411,8 +412,8 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
 
   return (
     <div className="mx-auto flex h-full w-full max-w-[880px] flex-col gap-6 overflow-y-auto px-8 py-8">
-      {singleDraft !== null && <ReadingDraftDialog title={t('boards.today.singleDraftTitle')} language={zh ? 'zh' : 'en'} value={singleDraft} copyState={singleDraftCopy} localMappings={localMappings} onChange={(value) => { setSingleDraft(value); setSingleDraftCopy(null) }} onClose={() => setSingleDraft(null)} onCopy={() => void copySingleDraft()} />}
-      {saveSnapshot && <SaveReadingBoardDialog snapshot={saveSnapshot} language={zh ? 'zh' : 'en'} onClose={() => setSaveSnapshot(null)} onSaved={(board) => { setSaveSnapshot(null); onSaved?.(board) }} />}
+      {saveSnapshot && <SaveReadingBoardDialog snapshot={saveSnapshot} language={zh ? 'zh' : 'en'} initialAi={saveWithAi} onClose={() => setSaveSnapshot(null)} onSaved={(board, openAi) => { setSaveSnapshot(null); onSaved?.(board, openAi) }} />}
+      {analysisError && <p role="alert" className="text-[13px] text-red-500">{zh ? '无法开始分析，请检查模型连接后重试。当前读数仍在。' : 'Could not start analysis. Check the model connection and retry; your readings remain available.'}</p>}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[24px] font-semibold leading-[34px] text-cream">{t('boards.today.title')}</h1>
@@ -429,7 +430,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
               type="button"
               role="tab"
               aria-selected={range === value}
-              onClick={() => { const window = todayWindow(value); setStartInput(window.start); setEndInput(window.end); setDateError(false); setSingleDraft(null); setRange(value) }}
+              onClick={() => { const window = todayWindow(value); setStartInput(window.start); setEndInput(window.end); setDateError(false); setRange(value) }}
               className={`focus-ring rounded-full border px-3 py-1 text-[12px] leading-[18px] transition ${
                 range === value
                   ? 'border-accent/60 bg-accent-soft text-accent'
@@ -552,6 +553,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
                 onCancel={() => void cancelSingleTikTok()}
                 onRefresh={() => void refreshTikTokAccount(account.advertiserId)}
                 onAnalyze={() => { if (!isTikTokTodayFailure(account)) analyzeTikTokAccount(account) }}
+                analysisBusy={analysisBusy}
                 onToggle={() => setOpenTikTok((current) => current === account.advertiserId ? null : account.advertiserId)}
                 onStep={(step) => step === 'retry' ? void refreshTikTokAccount(account.advertiserId) : tiktokStep(step)}
                 t={t}
@@ -565,17 +567,18 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard) => vo
       </section>
 
       <div className="flex flex-col items-start gap-2 pb-8">
-        <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) setSaveSnapshot(currentSnapshot()) }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring rounded-full border border-line px-4 py-2 text-[13px] text-cream disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
+        <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) { setSaveWithAi(false); setSaveSnapshot(currentSnapshot()) } }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring rounded-full border border-line px-4 py-2 text-[13px] text-cream disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
+        <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) { setSaveWithAi(true); setSaveSnapshot(currentSnapshot()) } }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring rounded-full bg-accent px-4 py-2 text-[13px] font-medium text-white disabled:opacity-40">{zh ? '用 AI 生成看板' : 'Create board with AI'}</button>
         <button
           type="button"
           onClick={ask}
-          disabled={!hasFigures || tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null}
+          disabled={!hasFigures || tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || analysisBusy}
           className="focus-ring rounded-full bg-accent px-4 py-2 text-[13px] font-medium leading-5 text-[rgb(var(--bg-app))] disabled:opacity-40"
         >
-          {zh ? '预览脱敏分析草稿' : 'Preview anonymized analysis'}
+          {analysisBusy ? (zh ? '正在开始分析…' : 'Starting analysis…') : (zh ? 'AI 分析当前读数' : 'Analyze readings with AI')}
         </button>
         <p className="text-[12px] leading-[18px] text-cream-faint">
-          {hasFigures ? (zh ? '先预览、编辑并复制，不覆盖已有对话草稿。' : 'Preview, edit and copy without replacing an existing chat draft.') : t('boards.today.askDisabled')}
+          {hasFigures ? (zh ? '将当前范围最多 50 个账户的读数发送给所选模型，开始只读分析。' : 'Send up to 50 accounts in the current scope to the selected model for read-only analysis.') : t('boards.today.askDisabled')}
         </p>
         <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.currencyNote')}</p>
       </div>
@@ -628,6 +631,7 @@ function TikTokAccount({
   onCancel,
   onRefresh,
   onAnalyze,
+  analysisBusy,
   onToggle,
   onStep,
   t
@@ -644,6 +648,7 @@ function TikTokAccount({
   onCancel: () => void
   onRefresh: () => void
   onAnalyze: () => void
+  analysisBusy: boolean
   onToggle: () => void
   onStep: (step: ReadingNextStep) => void
   t: Translate
@@ -697,7 +702,7 @@ function TikTokAccount({
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {refreshButton}
-        <button type="button" onClick={onAnalyze} disabled={busy || !!failure || refreshDisabled} title={t('boards.today.singleDraftHint')} className="focus-ring rounded-full bg-accent px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">{t('boards.today.analyzeThisTt')}</button>
+        <button type="button" onClick={onAnalyze} disabled={busy || !!failure || refreshDisabled || analysisBusy} className="focus-ring rounded-full bg-accent px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">{t('boards.today.analyzeThisTt')}</button>
       </div>
       {progressNotice}
       {failure && <div role="status" className="mt-2 text-[12px] text-amber-700 dark:text-amber-300">
@@ -705,7 +710,6 @@ function TikTokAccount({
         {failure.detail !== 'reading-window-expired' && failure.detail !== 'single-result-invalid' && <p>{tiktokReadingNotice(failure.code, t, failure.detail).message}</p>}
       </div>}
       {syncError && <p role="status" className="mt-2 text-[12px] text-amber-700 dark:text-amber-300">{t(syncError === 'row-limit' ? 'boards.datasets.ttRowLimit' : syncError === 'proof-failed' ? 'boards.datasets.proofFailed' : 'boards.datasets.syncFailed')}</p>}
-      <p className="mt-1 text-[11px] text-cream-faint">{t('boards.today.singleDraftHint')}</p>
       <button
         type="button"
         onClick={onToggle}

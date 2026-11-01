@@ -266,13 +266,9 @@ function findBoard(tool: { boardId?: unknown; name?: unknown }): KanbanBoard | n
   return boards.find((board) => board.name.toLowerCase() === lower) ?? null
 }
 
-/** Do not expose a user-chosen snapshot board name to a model. */
-function modelBoardName(board: KanbanBoard): string {
-  return board.widgets.some((widget) => widget.type === 'reading-snapshot') ? '读数快照看板' : board.name
-}
+function modelBoardName(board: KanbanBoard): string { return board.name }
 
 function boardSummary(board: KanbanBoard): Record<string, unknown> {
-  const isSnapshotBoard = board.widgets.some((widget) => widget.type === 'reading-snapshot')
   return {
     id: board.id,
     name: modelBoardName(board),
@@ -282,18 +278,18 @@ function boardSummary(board: KanbanBoard): Record<string, unknown> {
     widgets: board.widgets.map((widget) => ({
       id: widget.id,
       type: widget.type,
-      title: widget.type === 'reading-snapshot' ? '读数快照' : isSnapshotBoard ? '组件' : widget.title,
-      config: widget.type === 'reading-snapshot' ? readingSnapshotSummary(board, widget.id, widget.config) : isSnapshotBoard ? { withheld: true } : widget.config
+      title: widget.title,
+      config: widget.type === 'reading-snapshot' ? readingSnapshotSummary(board, widget.id, widget.config) : widget.config
     }))
   }
 }
 
-/** Model-facing board reads use a bounded projection, not the private local snapshot. */
+/** Model-facing board reads use a bounded snapshot projection and omit provider errors. */
 function readingSnapshotSummary(board: KanbanBoard, widgetId: string, config: Record<string, unknown>): Record<string, unknown> {
   const snapshot = validateReadingSnapshot(config.snapshot)
-  if (!snapshot) return { anonymized: true, unavailable: true }
+  if (!snapshot) return { unavailable: true }
   const result = getBoardHighlightEvidence({ boardId: board.id, widgetId }, { list: () => [board] })
-  return result.ok ? { anonymized: true, accountCount: snapshot.accounts.length, evidence: result.evidence } : { anonymized: true, unavailable: true }
+  return result.ok ? { accountCount: snapshot.accounts.length, evidence: result.evidence } : { unavailable: true }
 }
 
 function datasetsOverview(): Array<Record<string, unknown>> {

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync 
 import path from 'node:path'
 import os from 'node:os'
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' }, dialog: { showSaveDialog: vi.fn() } }))
-import { loadOrCreateHtmlBoard, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards } from './htmlBoards'
+import { loadOrCreateHtmlBoard, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards, readHtmlBoardDocument } from './htmlBoards'
 import { deleteBoard, listBoards } from './boards'
 import { saveReadingSnapshot } from './readingSnapshots'
 import type { ReadingSnapshot } from '../shared/readingSnapshot'
@@ -34,6 +34,20 @@ describe('local HTML board documents', () => {
     expect(second.document.id).toBe(first.document.id)
     expect(second.document.snapshot.accounts[0].spend).toBe(10)
     if (process.platform !== 'win32') expect(statSync(f.file).mode & 0o777).toBe(0o600)
+  })
+  it('reads only validated documents for the main-process AI service', () => {
+    const f = fixture(), opened = loadOrCreateHtmlBoard({ boardId: f.board.id, widgetId: f.widget.id }, f.deps)
+    if (!opened.ok) throw Error('fixture failed')
+    expect(readHtmlBoardDocument('bad\u0000id', f.deps)).toEqual({ ok: false, error: 'invalid-input' })
+    const read = readHtmlBoardDocument(opened.document.id, f.deps)
+    expect(read.ok).toBe(true)
+    if (!read.ok) return
+    read.document.snapshot.accounts[0].spend = 999
+    const again = readHtmlBoardDocument(opened.document.id, f.deps)
+    if (!again.ok) throw Error('read failed')
+    expect(again.document.snapshot.accounts[0].spend).toBe(10)
+    writeFileSync(f.file, '{bad')
+    expect(readHtmlBoardDocument(opened.document.id, f.deps)).toEqual({ ok: false, error: 'store-unreadable' })
   })
   it('rejects stale edits, unsafe content and attempts to replace snapshot data', () => {
     const f = fixture(), opened = loadOrCreateHtmlBoard({ boardId: f.board.id, widgetId: f.widget.id }, f.deps)

@@ -66,13 +66,13 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_get',
     label: '查看看板',
-    description: '查看一块看板的结构。普通看板返回组件配置；读数快照看板只返回匿名、有界摘要及证据引用，不含真实账户名称或 ID。' +
-      '\n仅当用户要求从已保存快照提议对话高光时，读取 reading-snapshot 组件 config.evidence：boardId、widgetId、revision 与 accounts（最多50个匿名序号）。' +
+    description: '查看一块看板的结构。普通看板返回组件配置；读数快照看板返回有界的所选账户摘要和证据引用，包含账户名称及 ID。' +
+      '\n仅当用户要求从已保存快照提议对话高光时，读取 reading-snapshot 组件 config.evidence：boardId、widgetId、revision 与 accounts（最多50个账户及序号）。' +
       '每条观察只能引用状态 ok 且 sourceAt 非空的账户和非空 metrics 值；金额须有币种，上期消耗须有对应前期窗口。失败、未知、已省略账户不得引用。' +
       '同一观察不要跨平台、跨币种金额或不同日期比较；不要推断因果。' +
       '\n用一个 ```board-highlights JSON 代码块提议：{"version":1,"boardId":"...","widgetId":"...","revision":"sha256:...","highlights":[{"text":"供人工审核的观察","evidence":[{"accountIndex":1,"metric":"spend","value":123}]}]}。' +
       'accountIndex 使用 evidence.accounts 的 index，metric 仅可为 spend、previousSpend、impressions、clicks、conversions，value 必须与对应数字完全一致；示例 123 必须替换为实际证据。' +
-      '不要包含账户实名、账户 ID、网址或额外字段，不要编造空值；如果无证据则解释缺口，不输出该代码块。高光文本由用户审核，引用数字经应用校验但不代表自然语言结论已验证；禁止声称已自动应用或已修改广告。' +
+      '可包含账户名和账户 ID；不要包含网址或额外字段，不要编造空值；如果无证据则解释缺口，不输出该代码块。高光文本由用户审核，引用数字经应用校验但不代表自然语言结论已验证；禁止声称已自动应用或已修改广告。' +
       '新快照只能由用户在读数界面保存，不能由模型凭空创建。',
     parameters: {
       type: 'object',

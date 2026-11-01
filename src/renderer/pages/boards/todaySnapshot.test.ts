@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { anonymousReadingDraft, snapshotToday } from './todaySnapshot'
+import { anonymousReadingDraft, readingAnalysisPrompt, snapshotToday } from './todaySnapshot'
 import { validateReadingSnapshot } from '@shared/readingSnapshot'
 import type { TodayFacebookRow } from './todayFacebook'
 import type { TikTokTodayReading } from '@shared/todayReading'
@@ -26,6 +26,17 @@ describe('saved reading scope and analysis drafts', () => {
     expect(draft.text).toContain('币种未知')
     expect(draft.mappings.join()).toContain('PRIVATE_TT_NAME')
     expect(draft.text).toContain('不调用工具')
+  })
+  it('prepares full selected account context and preserves failure status for read-only analysis', () => {
+    const snapshot = snapshotToday({ rangeLabel: 'last week', window, capturedAt: 2000, facebook: [facebook], tiktok })
+    const prompt = readingAnalysisPrompt(snapshot, 'zh')
+    expect(prompt).toContain('PRIVATE_FB_NAME')
+    expect(prompt).toContain('PRIVATE_TT_NAME')
+    expect(prompt).toContain('7777777777777777777')
+    expect(prompt).toContain('"status":"unattempted"')
+    expect(prompt).toContain('"spend":null')
+    expect(prompt).not.toContain('account-batch-not-attempted')
+    expect(prompt).toContain('不调用工具、不修改广告')
   })
   it('records platform discovery failures instead of silently omitting them', () => {
     const snapshot = snapshotToday({ rangeLabel: 'last week', window, capturedAt: 2000, facebook: [], tiktok: null, facebookLoadError: true, tiktokFailure: { code: 'auth' } })

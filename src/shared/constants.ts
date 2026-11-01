@@ -67,6 +67,8 @@ export const IPC_CHANNELS = {
   HTML_BOARD_SAVE: 'boards:html-save',
   HTML_BOARD_EXPORT: 'boards:html-export',
   HTML_BOARD_CLEANUP: 'boards:html-cleanup',
+  HTML_BOARD_AI_GENERATE: 'boards:html-ai-generate',
+  HTML_BOARD_AI_CANCEL: 'boards:html-ai-cancel',
   BOARD_HIGHLIGHTS_EVIDENCE: 'boards:highlights-evidence',
   BOARD_HIGHLIGHTS_VALIDATE: 'boards:highlights-validate',
   BOARD_HIGHLIGHTS_APPLY: 'boards:highlights-apply',

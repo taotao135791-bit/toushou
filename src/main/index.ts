@@ -6,6 +6,7 @@ import { ensureBundledPackages } from './bundledPackages'
 import { initBrowserUseBridge } from './browserUse'
 import { registerIpc, shutdownSessionsForQuit } from './ipc'
 import { pruneOrphanedHtmlBoards } from './htmlBoards'
+import { cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { syncMachineSkills } from './piSettings'
 import { detectCli } from './omp'
 import { initUpdater } from './updater'
@@ -189,6 +190,7 @@ app.whenReady().then(async () => {
 // No OMP child should outlive the GUI — a remote or task turn running on
 // after quit keeps consuming provider quota with nobody watching.
 app.on('before-quit', () => {
+  for (const window of BrowserWindow.getAllWindows()) cancelOwnerHtmlBoardAiEdits(window.webContents.id)
   shutdownSessionsForQuit()
 })
 

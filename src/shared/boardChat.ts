@@ -70,13 +70,13 @@ function widgetSummary(widget: BoardWidget): string {
   return `- ${title} (${widget.type}): ${detail}`
 }
 
-/** Snapshot boards default to no free-form titles, bindings or dataset names. */
+/** Snapshot identity lets the agent retrieve the saved source through board_get. */
 function snapshotBoardContext(board: KanbanBoard): { name: string; widgets: string[] } | null {
   if (!board.widgets.some((widget) => widget.type === 'reading-snapshot')) return null
   const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(board.id) ? ` (${board.id})` : ''
   return {
-    name: `Reading snapshot${id}`,
-    widgets: board.widgets.slice(0, MAX_WIDGETS).map((widget) => widget.type === 'reading-snapshot' ? '- Reading snapshot (reading-snapshot)' : `- Widget (${widget.type})`)
+    name: `${compact(board.name, 200)}${id}`,
+    widgets: board.widgets.slice(0, MAX_WIDGETS).map((widget) => widget.type === 'reading-snapshot' ? `- ${compact(widget.title, 100)} (reading-snapshot, id: ${widget.id}); use board_get for its saved account readings` : widgetSummary(widget))
   }
 }
 

@@ -24,7 +24,7 @@ function findSource(boardId: unknown, widgetId: unknown, deps: Deps): Source | {
   const snapshot = validateReadingSnapshot(widget.config.snapshot)
   if (!snapshot) return { error: 'invalid-snapshot' }
   const accounts = snapshot.accounts.slice(0, BOARD_HIGHLIGHTS_LIMITS.maxAccounts).map((a, index) => ({
-    index: index + 1, platform: a.platform, status: a.status, window: a.window, previousWindow: a.previousWindow,
+    index: index + 1, name: a.name, accountId: a.accountId, resultType: a.resultType ?? null, platform: a.platform, status: a.status, window: a.window, previousWindow: a.previousWindow,
     sourceAt: a.sourceAt, currency: a.currency,
     metrics: { spend: a.spend, previousSpend: a.previousSpend, impressions: a.impressions, clicks: a.clicks, conversions: a.conversions }
   }))
@@ -39,16 +39,6 @@ export function getBoardHighlightEvidence(raw: unknown, deps: Deps = {}): BoardH
   return 'error' in source ? { ok: false, error: source.error } : { ok: true, evidence: source.evidence }
 }
 
-/** Account identifiers and names stay on this machine, even if a model guessed one. */
-function hasPrivateText(proposal: BoardHighlightsProposal, snapshot: ReadingSnapshot): boolean {
-  const text = proposal.highlights.map(item => item.text.toLocaleLowerCase()).join('\n')
-  return snapshot.accounts.some(account => [account.accountId, account.name].some(raw => {
-    const value = raw?.trim().toLocaleLowerCase()
-    if (!value || ['tiktok', 'facebook', 'google'].includes(value)) return false
-    return text.includes(value)
-  }))
-}
-
 function verify(raw: unknown, deps: Deps): (Source & { proposal: BoardHighlightsProposal }) | { error: BoardHighlightsError } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'invalid-input' }
   const value = raw as Record<string, unknown>
@@ -58,7 +48,6 @@ function verify(raw: unknown, deps: Deps): (Source & { proposal: BoardHighlights
   const source = findSource(proposal.boardId, proposal.widgetId, deps)
   if ('error' in source) return source
   if (proposal.revision !== source.evidence.revision) return { error: 'stale-evidence' }
-  if (hasPrivateText(proposal, source.snapshot)) return { error: 'private-text' }
   for (const item of proposal.highlights) {
     const verified: Array<{ account: BoardHighlightEvidence['accounts'][number]; metric: typeof item.evidence[number]['metric']; window: { start: string; end: string } }> = []
     for (const ref of item.evidence) {

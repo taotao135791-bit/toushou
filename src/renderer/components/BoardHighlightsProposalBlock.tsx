@@ -87,7 +87,7 @@ export default function BoardHighlightsProposalBlock({ raw }: { raw: string }) {
     <h3 className="font-semibold">{zh ? '高光提议 · 人工审核' : 'Highlight proposal · review required'}</h3>
     <p className="mt-1 text-[12px] text-cream-faint">{zh ? '引用数字与快照核对；自然语言解释不自动保证正确。编辑后需重新核验。' : 'Cited numbers are checked against the snapshot; prose is not automatically verified. Edits are checked again.'}</p>
     {!result && <p role="status" className="mt-2 text-[12px] text-cream-faint">{zh ? '正在核验证据…' : 'Checking evidence…'}</p>}
-    {result && !result.ok && <p role="alert" className="mt-2 text-[12px] text-red-500">{zh ? '证据已变化、缺失、不可用或文本包含账户标识；请重新生成或编辑。' : 'Evidence is stale, missing or unavailable, or text contains an account identifier. Regenerate or edit.'}</p>}
+    {result && !result.ok && <p role="alert" className="mt-2 text-[12px] text-red-500">{zh ? '证据已变化、缺失或不可用；请重新生成或编辑。' : 'Evidence is stale, missing or unavailable. Regenerate or edit.'}</p>}
     {draft.highlights.map((item, index) => <div key={index} className="mt-3 rounded-lg border border-line p-3">
       <label className="block text-[12px] text-cream-dim" htmlFor={`${idPrefix}-highlight-${index}`}>{zh ? `观察 ${index + 1}` : `Observation ${index + 1}`}</label>
       <textarea id={`${idPrefix}-highlight-${index}`} value={item.text} maxLength={280} disabled={busy || applied} onChange={event => updateText(index, event.target.value)} className="mt-1 w-full rounded border border-line bg-ink-900 p-2 text-[13px] text-cream" />
@@ -96,7 +96,7 @@ export default function BoardHighlightsProposalBlock({ raw }: { raw: string }) {
         const period = ref.metric === 'previousSpend' ? account?.previousWindow : account?.window
         const unit = ref.metric === 'spend' || ref.metric === 'previousSpend' ? ` ${account?.currency ?? ''}` : ''
         return <button type="button" key={`${ref.accountIndex}-${ref.metric}-${i}`} disabled={!valid || busy} onClick={() => void reveal(ref.accountIndex)} className="focus-ring rounded border border-line px-2 py-1 text-[12px] disabled:opacity-40">
-          {account?.platform ?? '—'} · {zh ? '账户' : 'Account'} {ref.accountIndex} · {metricLabels[ref.metric][zh ? 0 : 1]} {ref.value}{unit}{period ? ` · ${period.start} – ${period.end}` : ''} ↗
+          {account?.platform ?? '—'} · {zh ? '账户' : 'Account'} {ref.accountIndex}{account?.name ? ` · ${account.name}` : ''}{account?.accountId ? ` (${account.accountId})` : ''} · {metricLabels[ref.metric][zh ? 0 : 1]}{ref.metric === 'conversions' && account?.resultType ? `（${account.resultType}）` : ''} {ref.value}{unit}{period ? ` · ${period.start} – ${period.end}` : ''} ↗
         </button>
       })}</div>
     </div>)}

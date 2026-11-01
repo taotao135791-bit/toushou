@@ -258,6 +258,7 @@ export default function BoardsPage() {
   const [boardsLoadGeneration, setBoardsLoadGeneration] = useState(0)
   const [htmlCleanupFailed, setHtmlCleanupFailed] = useState(false)
   const [currentId, setCurrentId] = useState<string | null>(null)
+  const [autoEditWidgetId, setAutoEditWidgetId] = useState<string | null>(null)
   // Drag-to-reorder board tabs: the id rides the DOM event (no re-render churn).
   const dragBoardId = useRef<string | null>(null)
   const [surface, setSurface] = useState<'today' | 'board'>('today')
@@ -1397,7 +1398,9 @@ export default function BoardsPage() {
           ttScopeRequired={ttWidgets.length > 0 || widget.config.requireVerifiedTtScope === true}
           boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
-          onSnapshotSaved={(board) => { setBoards(prev => [...(prev ?? []), board]); switchBoard(board.id) }}
+          onSnapshotSaved={(board, openAi) => { setBoards(prev => [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }}
+          autoOpenAi={autoEditWidgetId === widget.id}
+          onAiOpened={() => setAutoEditWidgetId(null)}
           masterWindow={
             master
               ? master.range === 'today'
@@ -1832,7 +1835,7 @@ export default function BoardsPage() {
       >
         <div ref={boardScrollRef} className="h-full overflow-y-auto">
           {surface === 'today' && !boardsLoadFailed ? (
-            <TodayReading onSaved={(board) => { setBoards(prev => [...(prev ?? []), board]); switchBoard(board.id) }} />
+            <TodayReading onSaved={(board, openAi) => { setBoards(prev => [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }} />
           ) : boards === null ? (
             <div className="flex h-full items-center justify-center text-sm text-cream-faint">
               {t('app.loading')}
