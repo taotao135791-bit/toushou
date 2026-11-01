@@ -244,7 +244,10 @@ const sessionOriginIndex = new SessionOriginIndex()
 const tiktokAdsConnectionManager = new TikTokAdsConnectionManager()
 // Reading paths (TT 读数 widget, report auto-refresh) pull their token from
 // this connector through the shared resolver — registered once, lazily used.
-setTikTokOAuthCredentialLoader(() => tiktokAdsConnectionManager.loadFreshCredentials())
+setTikTokOAuthCredentialLoader(
+  () => tiktokAdsConnectionManager.loadFreshCredentials(),
+  () => tiktokAdsConnectionManager.hasOAuthCredentials()
+)
 /** Figma Dev Mode MCP connector — local loopback endpoint, zero credentials. */
 const figmaConnectionManager = new FigmaConnectionManager()
 const packageActionGrantManager = new PackageActionGrantManager()

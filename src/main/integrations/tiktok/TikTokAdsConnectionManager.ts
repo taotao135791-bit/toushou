@@ -65,6 +65,7 @@ interface PendingFlow {
   redirectUri: string
   server: ReturnType<typeof createServer>
   timeout: ReturnType<typeof setTimeout>
+  exchanging?: boolean
 }
 
 export interface TikTokFetch {
@@ -82,6 +83,8 @@ export class TikTokAdsConnectionManager {
   private flow: PendingFlow | null = null
   private refreshTimer: ReturnType<typeof setTimeout> | null = null
   private refreshPending: Promise<boolean> | null = null
+  private authorizationSavePending: Promise<void> | null = null
+  private disconnectPending: Promise<TikTokAdsConnectionSnapshot> | null = null
   private credentialGeneration = 0
   private state: 'idle' | 'discovering' | 'waiting_for_user' | 'connected' | 'degraded' | 'failed' = 'idle'
   private lastError: string | undefined
@@ -167,6 +170,11 @@ export class TikTokAdsConnectionManager {
     }
   }
 
+  /** Configuration evidence only: never decrypt or refresh just to query status. */
+  hasOAuthCredentials(): boolean {
+    return Boolean(this.credentials?.accessToken)
+  }
+
   private snapshotStatus(): ConnectionStatus {
     switch (this.state) {
       case 'idle':
@@ -190,7 +198,10 @@ export class TikTokAdsConnectionManager {
     const generation = ++this.credentialGeneration
     const retryNewAuthorizationEpoch = this.credentialStore.sharedStorageBlockedEpoch()
     const recoveringStorage = this.storageBlocked
+    if (this.disconnectPending) await this.disconnectPending
+    if (generation !== this.credentialGeneration) return this.getSnapshot()
     if (this.refreshPending) await this.refreshPending
+    if (this.authorizationSavePending) await this.authorizationSavePending.catch(() => {})
     if (generation !== this.credentialGeneration) return this.getSnapshot()
     try {
       if (this.storageBlocked || !this.credentials) {
@@ -224,12 +235,16 @@ export class TikTokAdsConnectionManager {
     this.state = 'discovering'
     this.lastError = undefined
     this.emitState()
+    let startedFlow: PendingFlow | null = null
     try {
       const endpoints = await this.discover()
+      if (generation !== this.credentialGeneration) return this.getSnapshot()
       const registration = await this.registerClient(endpoints)
+      if (generation !== this.credentialGeneration) return this.getSnapshot()
       const { verifier, challenge } = pkcePair()
       const state = base64url(randomBytes(24))
       const loopback = await this.listenForCallback()
+      if (generation !== this.credentialGeneration) { loopback.server.close(); return this.getSnapshot() }
       const redirectUri = `http://127.0.0.1:${loopback.port}/callback`
       const url = new URL(endpoints.authorizationEndpoint)
       url.searchParams.set('response_type', 'code')
@@ -251,17 +266,20 @@ export class TikTokAdsConnectionManager {
         server: loopback.server,
         timeout: setTimeout(() => void this.failFlow('授权超时，请重试'), FLOW_TIMEOUT_MS)
       }
+      startedFlow = this.flow
       this.authorizationUrl = url.toString()
       this.state = 'waiting_for_user'
       this.emitState()
       await this.openExternal(this.authorizationUrl)
     } catch (error) {
+      if (generation !== this.credentialGeneration || (startedFlow && this.flow !== startedFlow)) return this.getSnapshot()
       this.failFlowFlowSafe(error)
     }
     return this.getSnapshot()
   }
 
   cancel(): TikTokAdsConnectionSnapshot {
+    ++this.credentialGeneration
     this.closeFlow()
     this.state = this.storageBlocked ? 'degraded' : this.credentials ? 'connected' : 'idle'
     this.emitState()
@@ -271,11 +289,19 @@ export class TikTokAdsConnectionManager {
   async disconnect(): Promise<TikTokAdsConnectionSnapshot> {
     ++this.credentialGeneration
     this.closeFlow()
+    if (this.disconnectPending) return this.disconnectPending
+    const pending = this.finishDisconnect()
+    this.disconnectPending = pending
+    try { return await pending } finally { if (this.disconnectPending === pending) this.disconnectPending = null }
+  }
+
+  private async finishDisconnect(): Promise<TikTokAdsConnectionSnapshot> {
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer)
       this.refreshTimer = null
     }
     if (this.refreshPending) await this.refreshPending
+    if (this.authorizationSavePending) await this.authorizationSavePending.catch(() => {})
     await this.credentialStore.clear()
     this.credentials = null
     this.storageBlocked = false
@@ -503,31 +529,59 @@ export class TikTokAdsConnectionManager {
   }
 
   private handleCallback(request: IncomingMessage, response: ServerResponse): void {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    // Browsers may request a favicon or preflight the loopback listener.
+    // Such requests must not consume or cancel a pending authorization.
+    if (url.pathname !== '/callback') {
+      response.writeHead(url.pathname === '/favicon.ico' ? 204 : 404)
+      response.end()
+      return
+    }
+    if (request.method !== 'GET') {
+      response.writeHead(405, { allow: 'GET' })
+      response.end()
+      return
+    }
     const flow = this.flow
     if (!flow) {
       response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
       response.end('<h3>没有进行中的 TikTok 授权流程</h3>')
       return
     }
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     const error = url.searchParams.get('error')
     const code = url.searchParams.get('code')
     const state = url.searchParams.get('state')
-    const stateMatches = !!state && safeEqual(state, flow.state)
-    if (error || !code || !stateMatches) {
-      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
-      response.end('<h3>授权失败</h3><p>请回到投手重新发起连接。</p>')
-      this.failFlow(error ? `TikTok 授权被拒绝（${error}）` : '回调缺少授权码或 state 校验失败')
+    const stateMatches = url.searchParams.getAll('state').length === 1 && !!state && safeEqual(state, flow.state)
+    // A stale tab, unrelated local request or mismatched callback cannot
+    // invalidate the current flow. State verification remains mandatory.
+    if (!stateMatches) {
+      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      response.end('<h3>授权回调不匹配</h3><p>请使用投手本次打开的授权页面。当前连接仍在等待，不需要重复授权。</p>')
       return
     }
-    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    response.end('<h3>授权成功</h3><p>请回到投手继续。</p>')
+    if (flow.exchanging) {
+      response.writeHead(202, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      response.end('<h3>正在完成连接</h3><p>请回到投手查看连接结果。</p>')
+      return
+    }
+    if (error || !code || url.searchParams.getAll('code').length !== 1) {
+      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
+      response.end('<h3>授权失败</h3><p>请回到投手重新发起连接。</p>')
+      this.failFlow(error ? 'TikTok 未完成本次授权，请重试' : '本次授权回调缺少唯一授权码，请重试')
+      return
+    }
+    flow.exchanging = true
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+    response.end('<h3>已收到授权回调</h3><p>正在完成连接，请回到投手查看最终结果。</p>')
     void this.exchangeCode(code)
   }
 
   private async exchangeCode(code: string): Promise<void> {
     const flow = this.flow
     if (!flow) return
+    const generation = this.credentialGeneration
+    const isCurrent = () => this.flow === flow && this.credentialGeneration === generation
+    let committed = false
     try {
       const body = new URLSearchParams({
         grant_type: 'authorization_code',
@@ -538,8 +592,7 @@ export class TikTokAdsConnectionManager {
       })
       if (flow.clientSecret) body.set('client_secret', flow.clientSecret)
       const tokens = await this.tokenRequest(flow.endpoints.tokenEndpoint, body)
-      if (this.flow !== flow) return
-      this.closeFlow()
+      if (!isCurrent()) return
       const nextCredentials = {
         clientId: flow.clientId,
         clientSecret: flow.clientSecret,
@@ -551,9 +604,16 @@ export class TikTokAdsConnectionManager {
         ...(tokens.advertiserIds ? { advertiserIds: tokens.advertiserIds } : {}),
         savedAt: 0
       }
-      await this.credentialStore.save(nextCredentials, { retryNewAuthorizationEpoch: flow.retryNewAuthorizationEpoch })
-      this.credentials = nextCredentials
+      const saving = this.credentialStore.save(nextCredentials, {
+        retryNewAuthorizationEpoch: flow.retryNewAuthorizationEpoch,
+        beforeCommit: isCurrent,
+        onCommitted: () => { committed = true; this.credentials = nextCredentials; this.closeFlow() }
+      })
+      this.authorizationSavePending = saving
+      try { await saving } finally { if (this.authorizationSavePending === saving) this.authorizationSavePending = null }
+      if (generation !== this.credentialGeneration) return
       if (!(await this.applyMcpEntry())) return
+      if (generation !== this.credentialGeneration) return
       this.installSkill()
       this.state = 'connected'
       this.lastError = undefined
@@ -561,6 +621,7 @@ export class TikTokAdsConnectionManager {
       this.scheduleNextRefresh()
       this.emitState()
     } catch (error) {
+      if (generation !== this.credentialGeneration || (!committed && this.flow !== flow)) return
       if (error instanceof TikTokCredentialStorageError) { this.closeFlow(); this.markStorageBlocked(error); return }
       this.failFlow(`授权码交换失败：${friendlyError(error)}`)
     }

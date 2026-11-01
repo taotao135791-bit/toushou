@@ -295,6 +295,7 @@ describe('TikTokAdsConnectionManager connect flow', () => {
 
     const snapshot = await manager.begin()
     expect(snapshot.status).toBe('waiting_for_user')
+    expect(manager.hasOAuthCredentials()).toBe(false)
     expect(openedUrls).toHaveLength(1)
 
     const authorize = new URL(openedUrls[0])
@@ -311,6 +312,7 @@ describe('TikTokAdsConnectionManager connect flow', () => {
 
     const connected = manager.getSnapshot()
     expect(connected.connected).toBe(true)
+    expect(manager.hasOAuthCredentials()).toBe(true)
     expect(connected.tokenExpiresAt).toBeGreaterThan(0)
 
     // Token exchange carried the verifier + redirect_uri + client_id.
@@ -346,17 +348,176 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     expect(raw).not.toContain('rt-1')
   })
 
-  it('rejects a callback whose state does not match (no token exchange)', async () => {
+  it('rejects mismatched state without cancelling the valid pending authorization', async () => {
     const { fetch, log } = makeFetch({})
     const { manager, openedUrls } = makeManager({ fetch })
     await manager.begin()
 
     const response = await driveCallback(openedUrls[0], { state: 'tampered-state' })
     expect(response.status).toBe(400)
-    await new Promise((resolve) => setTimeout(resolve, 50))
-
-    expect(manager.getSnapshot().status).toBe('failed')
+    expect(manager.getSnapshot().status).toBe('waiting_for_user')
     expect(log.some((entry) => entry.url === `${ISSUER}/token`)).toBe(false)
+    expect((await driveCallback(openedUrls[0])).status).toBe(200)
+    await vi.waitFor(() => expect(manager.getSnapshot().connected).toBe(true))
+    await manager.disconnect()
+    expect(manager.hasOAuthCredentials()).toBe(false)
+  })
+
+  it('ignores favicon, unrelated paths and invalid methods before the real callback', async () => {
+    const fixture = makeFetch({})
+    const { manager, openedUrls } = makeManager({ fetch: fixture.fetch })
+    await manager.begin()
+    const redirect = new URL(new URL(openedUrls[0]).searchParams.get('redirect_uri')!)
+    expect((await fetch(`${redirect.origin}/favicon.ico`)).status).toBe(204)
+    expect((await fetch(`${redirect.origin}/`)).status).toBe(404)
+    expect((await fetch(redirect, { method: 'POST', body: 'unrelated' })).status).toBe(405)
+    expect((await fetch(redirect)).status).toBe(400)
+    expect(manager.getSnapshot().status).toBe('waiting_for_user')
+    expect(fixture.log.some(entry => entry.url === `${ISSUER}/token`)).toBe(false)
+    expect((await driveCallback(openedUrls[0])).status).toBe(200)
+    await vi.waitFor(() => expect(manager.getSnapshot().connected).toBe(true))
+    await manager.disconnect()
+  })
+
+  it('does not consume a flow on duplicate state parameters or a stale denial', async () => {
+    const fixture = makeFetch({})
+    const { manager, openedUrls } = makeManager({ fetch: fixture.fetch })
+    await manager.begin()
+    const authorize = new URL(openedUrls[0])
+    const redirect = new URL(authorize.searchParams.get('redirect_uri')!)
+    redirect.search = new URLSearchParams({ code: 'valid-code', state: authorize.searchParams.get('state')! }).toString()
+    redirect.searchParams.append('state', 'stale-state')
+    expect((await fetch(redirect)).status).toBe(400)
+    redirect.search = new URLSearchParams({ error: 'access_denied', state: 'stale-state' }).toString()
+    expect((await fetch(redirect)).status).toBe(400)
+    expect(manager.getSnapshot().status).toBe('waiting_for_user')
+    expect(fixture.log.some(entry => entry.url === `${ISSUER}/token`)).toBe(false)
+    await driveCallback(openedUrls[0])
+    await vi.waitFor(() => expect(manager.getSnapshot().connected).toBe(true))
+    await manager.disconnect()
+  })
+
+  it('exchanges a valid callback only once while a duplicate arrives in flight', async () => {
+    const fixture = makeFetch({})
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let exchanges = 0
+    const { manager, openedUrls } = makeManager({ fetch: async (url, init) => {
+      if (url === `${ISSUER}/token`) { exchanges++; await gate }
+      return fixture.fetch(url, init)
+    } })
+    await manager.begin()
+    expect((await driveCallback(openedUrls[0])).status).toBe(200)
+    expect((await driveCallback(openedUrls[0])).status).toBe(202)
+    expect(exchanges).toBe(1)
+    release()
+    await vi.waitFor(() => expect(manager.getSnapshot().connected).toBe(true))
+    await manager.disconnect()
+  })
+
+  it.each(['cancel', 'disconnect'] as const)('does not commit an in-flight OAuth save after %s', async action => {
+    const file = path.join(paths.userData, 'oauth-save-race.bin')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'old', accessToken: 'old-token' })
+    const original = await readFile(file, 'utf8')
+    const fixture = makeFetch({})
+    const openedUrls: string[] = []
+    const manager = new TikTokAdsConnectionManager({ credentialStore: store, fetchImpl: fixture.fetch, openExternal: async url => { openedUrls.push(url) }, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    await manager.initialize()
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const realSave = store.save.bind(store)
+    const save = vi.spyOn(store, 'save').mockImplementation(async (credentials, options) => { entered(); await gate; return realSave(credentials, options) })
+    await manager.begin()
+    await driveCallback(openedUrls[0])
+    await started
+    const stopping = action === 'disconnect' ? manager.disconnect() : Promise.resolve(manager.cancel())
+    release()
+    await stopping
+    await expect(save.mock.results[0].value).rejects.toThrow('authorization-cancelled')
+    if (action === 'disconnect') {
+      expect(manager.getSnapshot().status).toBe('disconnected')
+      await expect(readFile(file, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      const mcp = JSON.parse(await readFile(path.join(paths.userData, 'mcp.json'), 'utf8')) as { mcpServers: Record<string, unknown> }
+      expect(mcp.mcpServers['tiktok-ads']).toBeUndefined()
+    } else {
+      expect(manager.getSnapshot().status).toBe('connected')
+      expect(await readFile(file, 'utf8')).toBe(original)
+      expect((await store.load())?.accessToken).toBe('old-token')
+      await manager.disconnect()
+    }
+  })
+
+  it('waits for the entire disconnect before starting a new authorization', async () => {
+    const file = path.join(paths.userData, 'disconnect-reconnect.bin')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'old', accessToken: 'old-token' })
+    const fixture = makeFetch({})
+    const openedUrls: string[] = []
+    const manager = new TikTokAdsConnectionManager({ credentialStore: store, fetchImpl: fixture.fetch, openExternal: async url => { openedUrls.push(url) }, mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') } })
+    await manager.initialize()
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const realClear = store.clear.bind(store)
+    vi.spyOn(store, 'clear').mockImplementationOnce(async () => { entered(); await gate; await realClear() })
+    const stopping = manager.disconnect()
+    await started
+    const beginning = manager.begin()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(fixture.log).toHaveLength(0)
+    expect(openedUrls).toHaveLength(0)
+    release()
+    expect((await stopping).status).toBe('disconnected')
+    expect((await beginning).status).toBe('waiting_for_user')
+    await driveCallback(openedUrls[0])
+    await vi.waitFor(() => expect(manager.getSnapshot().connected).toBe(true))
+    expect((await store.load())?.accessToken).toBe('at-1')
+    const mcp = JSON.parse(await readFile(path.join(paths.userData, 'mcp.json'), 'utf8')) as { mcpServers: Record<string, unknown> }
+    expect(mcp.mcpServers['tiktok-ads']).toBeDefined()
+    await manager.disconnect()
+  })
+
+  it('ignores a cancelled token exchange rejection after a newer authorization begins', async () => {
+    const fixture = makeFetch({})
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    let requests = 0
+    const { manager, openedUrls } = makeManager({ fetch: async (url, init) => {
+      if (url === `${ISSUER}/token` && ++requests === 1) { entered(); await gate; throw new Error('old exchange failed') }
+      return fixture.fetch(url, init)
+    } })
+    await manager.begin()
+    await driveCallback(openedUrls[0])
+    await started
+    manager.cancel()
+    expect((await manager.begin()).status).toBe('waiting_for_user')
+    release()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(manager.getSnapshot().status).toBe('waiting_for_user')
+    await driveCallback(openedUrls[1])
+    await vi.waitFor(() => expect(manager.getSnapshot().connected).toBe(true))
+    await manager.disconnect()
+  })
+
+  it('does not reopen a cancelled flow when discovery finishes late', async () => {
+    const fixture = makeFetch({})
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const { manager, openedUrls } = makeManager({ fetch: async (url, init) => {
+      if (url.includes('oauth-protected-resource')) { entered(); await gate }
+      return fixture.fetch(url, init)
+    } })
+    const beginning = manager.begin()
+    await started
+    manager.cancel()
+    release()
+    expect((await beginning).status).toBe('disconnected')
+    expect(openedUrls).toEqual([])
+    expect(fixture.log.some(entry => entry.url === `${ISSUER}/register`)).toBe(false)
   })
 
   it('surfaces a discovery failure instead of hanging', async () => {

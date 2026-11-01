@@ -34,15 +34,23 @@ export interface ResolveTikTokTokenDeps {
 // Registered from ipc.ts; a lazy indirection so importing this module never
 // constructs electron-backed stores (keeps the service singleton test-safe).
 let oauthLoader: (() => Promise<TikTokStoredCredentials | null>) | null = null
+let oauthConfiguredSnapshot: (() => boolean) | null = null
 
 /**
  * Wire the app-wide OAuth connector accessor. Called once from ipc.ts when
  * the manager instance is created; later calls simply replace it.
  */
 export function setTikTokOAuthCredentialLoader(
-  loader: () => Promise<TikTokStoredCredentials | null>
+  loader: () => Promise<TikTokStoredCredentials | null>,
+  configuredSnapshot?: () => boolean
 ): void {
   oauthLoader = loader
+  oauthConfiguredSnapshot = configuredSnapshot ?? null
+}
+
+/** Read a secret-free in-memory status without loading or refreshing credentials. */
+export function getTikTokOAuthConfigured(): boolean {
+  try { return oauthConfiguredSnapshot?.() === true } catch { return false }
 }
 
 async function defaultOAuthLoader(): Promise<TikTokStoredCredentials | null> {

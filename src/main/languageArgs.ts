@@ -37,6 +37,8 @@ const FB_READING_BASELINE_PROMPT = [
   '<session-baseline name="data-source-priority">',
   '数据获取优先级（不可绕过）：',
   '- 广告与看板数据只走专用工具：TikTok 用 toushou_tiktok_* / tiktok-ads 技能的 MCP 工具，FB 读数用 browser_report / fb_history，Google 用报表链接管线，看板与数据集用 toushou_boards_*。',
+  '- TikTok 对话工具与看板读数共用官方授权；旧会话的 touhou_tiktok_* 是兼容别名。permission-denied 只说明本地数据集写入被会话权限或确认阻止，按 reason/hint 解释，不得宣称 TikTok 授权失败或臆测两套独立授权；只有真实授权错误才建议重连。',
+  '- 从“今日读数→AI分析”进入的会话为只读，可以分析已有读数、提议高光，由用户在界面确认加入看板。若用户改要求工具写入本地看板，请指引在桌面端新建允许本地写入的对话后重新发起，不要要求重连 TikTok；限制属于本次会话权限，不能宣称所有 MCP 读数都不能用于本地看板。',
   '- 专用工具报错时：如实转述错误与修复建议（如需要重连授权），然后停下等用户；禁止改用 computer use、浏览器导出、本地文件翻找等任何绕路方式获取同类数据。',
   '- computer use 仅限"没有专用工具覆盖且必须操作本机界面"的任务；数据读取、报表获取、看板更新一律不属于此类。',
   '</session-baseline>'

@@ -16,6 +16,7 @@ import { TikTokReportStatus } from '../../../shared/tiktokReport'
 import type { TikTokApiFetch } from './tiktokClient'
 import { listDatasets } from '../../boardDatasets'
 import { setTikTokCredentials } from './TikTokConnectionStore'
+import { setTikTokOAuthCredentialLoader } from './resolveTikTokToken'
 import {
   DEFAULT_REFRESH_INTERVAL_MS,
   TikTokRefreshService,
@@ -471,5 +472,42 @@ describe('refreshNow', () => {
     expect(stored.expiresAt).toBe(1767441600000 + 86400 * 1000)
     // The report call went out with the ROTATED token, not the expired one.
     expect(reportHeaders).toEqual(['fresh-token'])
+  })
+})
+
+describe('secret-free OAuth status', () => {
+  it('reports the in-memory OAuth connection without loading or refreshing its credentials', () => {
+    const loader = vi.fn(async () => { throw new Error('must not load credentials for status') })
+    let connected = true
+    setTikTokOAuthCredentialLoader(loader, () => connected)
+    try {
+      const { service } = makeService()
+      const status = service.getStatus()
+      expect(status.configured).toBe(true)
+      // The legacy paste-store info retains its own meaning and no OAuth
+      // token, account identifiers, or masked hints are added to the result.
+      expect(status.info).toEqual({ configured: false, mode: 'none', tokenMasked: '', hasRefreshToken: false, advertiserIds: [] })
+      expect(loader).not.toHaveBeenCalled()
+      connected = false
+      expect(service.getStatus().configured).toBe(false)
+      expect(loader).not.toHaveBeenCalled()
+    } finally { setTikTokOAuthCredentialLoader(async () => null) }
+  })
+
+  it('fails closed when the snapshot is unavailable without trying to load credentials', () => {
+    const loader = vi.fn(async () => { throw new Error('must not load credentials for status') })
+    setTikTokOAuthCredentialLoader(loader, () => { throw new Error('snapshot unavailable') })
+    try {
+      expect(makeService().service.getStatus().configured).toBe(false)
+      expect(loader).not.toHaveBeenCalled()
+    } finally { setTikTokOAuthCredentialLoader(async () => null) }
+  })
+
+  it('continues reporting a configured legacy paste connection independently', () => {
+    setTikTokOAuthCredentialLoader(async () => null, () => false)
+    try {
+      setTikTokCredentials({ accessToken: 'synthetic-token', advertiserIds: ['123'] }, credentialsFile)
+      expect(makeService().service.getStatus().configured).toBe(true)
+    } finally { setTikTokOAuthCredentialLoader(async () => null) }
   })
 })

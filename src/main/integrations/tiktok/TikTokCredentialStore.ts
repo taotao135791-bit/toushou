@@ -1,5 +1,6 @@
 import { app, safeStorage } from 'electron'
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { renameSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
 import { SecureStorageCoordinator, secureStorageCoordinator } from '../secureStorageCoordinator'
@@ -67,7 +68,9 @@ export class TikTokCredentialStore {
     return this.load()
   }
 
-  async save(credentials: Omit<TikTokStoredCredentials, 'savedAt'>, options: { retryNewAuthorizationEpoch?: number | null } = {}): Promise<void> {
+  async save(credentials: Omit<TikTokStoredCredentials, 'savedAt'>, options: { retryNewAuthorizationEpoch?: number | null; beforeCommit?: () => boolean; onCommitted?: () => void } = {}): Promise<void> {
+    const assertCurrent = () => { if (options.beforeCommit && !options.beforeCommit()) throw new Error('authorization-cancelled') }
+    assertCurrent()
     if (this.failure) throw this.failure
     // Never replace an existing envelope until it has been decrypted successfully.
     if (!this.verified) await this.load()
@@ -80,6 +83,7 @@ export class TikTokCredentialStore {
       current = null
     }
     if (current !== this.verifiedEnvelope) { this.verified = false; await this.load() }
+    assertCurrent()
     let encrypted: Buffer
     try {
       // A completed user-initiated first OAuth grant may try the shared gate
@@ -97,9 +101,13 @@ export class TikTokCredentialStore {
       await mkdir(path.dirname(this.filePath), { recursive: true })
       await writeFile(temporary, encrypted.toString('base64'), { mode: 0o600 })
       await chmod(temporary, 0o600)
-      await rename(temporary, this.filePath)
+      // The last validity check and atomic replacement must occur in the same
+      // main-thread turn: an async rename leaves a cancellation window.
+      assertCurrent()
+      renameSync(temporary, this.filePath)
       this.verified = true
       this.verifiedEnvelope = encrypted.toString('base64')
+      options.onCommitted?.()
     } catch (error) {
       await unlink(temporary).catch(() => {})
       throw error

@@ -68,4 +68,26 @@ describe('data-source priority baseline', () => {
     const en = buildAgentArgs('en')
     expect(en[1]).toContain('data-source-priority')
   })
+
+  it('distinguishes local dataset permissions from TikTok authorization in both languages', () => {
+    for (const language of ['zh', 'en'] as const) {
+      const prompt = buildAgentArgs(language)[1]
+      expect(prompt).toContain('toushou_tiktok_*')
+      expect(prompt).toContain('touhou_tiktok_* 是兼容别名')
+      expect(prompt).toContain('permission-denied 只说明本地数据集写入')
+      expect(prompt).toContain('不得宣称 TikTok 授权失败或臆测两套独立授权')
+      expect(prompt).toContain('按 reason/hint 解释')
+    }
+  })
+
+  it('keeps Today analysis readonly while explaining the supported board workflow', () => {
+    for (const language of ['zh', 'en'] as const) {
+      const prompt = buildAgentArgs(language)[1]
+      expect(prompt).toContain('从“今日读数→AI分析”进入的会话为只读')
+      expect(prompt).toContain('可以分析已有读数、提议高光，由用户在界面确认加入看板')
+      expect(prompt).toContain('新建允许本地写入的对话后重新发起')
+      expect(prompt).toContain('不要要求重连 TikTok')
+      expect(prompt).toContain('不能宣称所有 MCP 读数都不能用于本地看板')
+    }
+  })
 })

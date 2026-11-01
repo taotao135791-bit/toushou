@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFile } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFile } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -35,6 +35,24 @@ afterEach(() => {
 })
 
 describe('TikTokCredentialStore advertiserIds persistence', () => {
+  it('preserves existing encrypted bytes and cleans temporary files when authorization is cancelled before commit', async () => {
+    const file = path.join(dir, 'creds.bin')
+    const backend = passthroughBackend()
+    const store = new TikTokCredentialStore({ filePath: file, backend })
+    await store.save({ clientId: 'old', accessToken: 'old-token' })
+    const original = readFileSync(file, 'utf8')
+    let checks = 0
+    const committed = vi.fn()
+    await expect(store.save({ clientId: 'new', accessToken: 'new-token' }, {
+      beforeCommit: () => ++checks < 3,
+      onCommitted: committed
+    })).rejects.toThrow('authorization-cancelled')
+    expect(readFileSync(file, 'utf8')).toBe(original)
+    expect(readdirSync(dir)).toEqual(['creds.bin'])
+    expect(committed).not.toHaveBeenCalled()
+    expect((await store.load())?.accessToken).toBe('old-token')
+  })
+
   it('does not touch secure storage when no credential file exists', async () => {
     const isAvailable = vi.fn(() => { throw Error('Keychain must not be touched') })
     const backend = { isAvailable, encrypt: vi.fn(), decrypt: vi.fn() } as unknown as SecretBackend
