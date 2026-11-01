@@ -9,6 +9,7 @@ import { prepareIsolatedAiHome } from './htmlBoardAi'
 
 describe('isolated AI runtime', () => {
   it('copies only permitted model settings and does not copy other user files', () => {
+    vi.stubEnv('PI_CONFIG_DIR','unsafe-synthetic-override')
     const root=mkdtempSync(path.join(tmpdir(),'board-isolation-test-'))
     try {
       const source=path.join(root,'source'), home=path.join(root,'isolated'); mkdirSync(source); mkdirSync(home)
@@ -22,6 +23,8 @@ describe('isolated AI runtime', () => {
       expect(models).toContain('synthetic-key'); expect(models).not.toContain('unsafe'); expect(models).not.toContain('secret')
       expect(existsSync(path.join(home,'.omp','agent','mcp.json'))).toBe(false)
       expect(env.HOME).toBe(home); expect(env.PI_CODING_AGENT_DIR).toBe(path.join(home,'.omp','agent'))
-    } finally { rmSync(root,{recursive:true,force:true}) }
+      // OMP joins PI_CONFIG_DIR to HOME; an absolute value creates invalid doubled drive paths on Windows.
+      expect(env.PI_CONFIG_DIR).toBeUndefined()
+    } finally { rmSync(root,{recursive:true,force:true}); vi.unstubAllEnvs() }
   })
 })
