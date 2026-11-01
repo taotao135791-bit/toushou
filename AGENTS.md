@@ -117,6 +117,21 @@ pnpm test:omp
 Use `pnpm test:omp:live` only with explicit approval: it can consume provider
 tokens. Do not run it against a contributor's real credentials by default.
 
+## Release documentation
+
+- Maintain `CHANGELOG.md` with each user-visible change under the appropriate
+  version; use an unreleased candidate entry until publication. Preserve older
+  version history there rather than deleting it.
+- Keep `README.md` concise: product overview, downloads, getting started,
+  important limitations, and only the latest publicly released version's
+  release note. During candidate work, the README download links and latest
+  release note remain on the published version even if the package version is
+  already bumped.
+- When publishing, update the changelog entry, README's latest release note and
+  download links, and any affected usage/limitation docs together. Record only
+  synthetic examples or properly anonymized evidence; never commit credentials,
+  private paths, or real account identifiers and raw readings.
+
 ## Handoff standard
 
 Every pull request or agent handoff states:
