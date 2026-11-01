@@ -101,7 +101,10 @@ describe('board creation flow in Electron', () => {
       expect(data.aiCancel).toEqual({ instruction: 'Make the report clear', cancels: 1, calls: 2 })
       expect(data.aiClose).toEqual({ instruction: 'Make the report clear', cancels: 2, calls: 3 })
       expect(data.aiPreview).toMatchObject({ visible: true, boundValue: true, noSvg: true, savedUnchanged: true, revision: 1, saveDisabled: true, exportDisabled: true })
-      expect(data.aiPreview.chartGroups).toEqual(expect.arrayContaining(['TikTok · USD', 'TikTok · EUR']))
+      expect(data.aiPreview.chartGroups).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^TikTok · USD · \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2} · .+$/),
+        expect.stringMatching(/^TikTok · EUR · \d{4}-\d{2}-\d{2} – \d{4}-\d{2}-\d{2} · .+$/)
+      ]))
       expect(data.aiPreview.chartGroups).toHaveLength(2)
       expect(data.aiSaveFailed).toEqual({ savedUnchanged: true, revision: 1, previewStillVisible: true, canRetry: true, calls: 4 })
       expect(data.aiSaved).toEqual({ saved: true, revision: 2 })

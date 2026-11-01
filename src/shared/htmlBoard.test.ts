@@ -134,6 +134,55 @@ describe('offline HTML board templates', () => {
       '<div data-reading-chart="spend"></div>'.repeat(3)
     ]) expect(() => parseHtmlBoardTemplate(html + '<div data-reading-slot></div>'), html).toThrow()
   })
+  it('renders grouped bar, pie and donut from trusted snapshots with optional accessible motion', () => {
+    const d = document()
+    d.includeChart = false
+    d.snapshot = { ...snapshot, accounts: [
+      { ...snapshot.accounts[0], timezone: 'Etc/UTC', spend: 30 },
+      { ...snapshot.accounts[0], accountId: 'B', name: 'Second', timezone: 'Etc/UTC', spend: 10 },
+      { ...snapshot.accounts[0], accountId: 'C', name: 'Different dates', timezone: 'Etc/UTC', window: { start: '2026-10-02', end: '2026-10-07' }, spend: 5 },
+      { ...snapshot.accounts[0], accountId: 'D', timezone: 'America/New_York', spend: 4 },
+      { ...snapshot.accounts[0], accountId: 'E', timezone: 'Etc/UTC', currency: null, spend: 3 },
+      { ...snapshot.accounts[0], accountId: 'F', timezone: 'Etc/UTC', status: 'failed', spend: null, previousSpend: null, impressions: null, clicks: null, conversions: null }
+    ] }
+    d.html = '<div data-reading-chart="spend-pie" data-reading-motion="animate"></div><div data-reading-slot></div><div data-reading-chart="spend-donut"></div>'
+    const html = renderHtmlBoard(d, { language: 'en' })
+    expect(html.match(/class="trusted-chart" data-chart-motion-active=""/g)).toHaveLength(1)
+    expect(html).toContain('@media(prefers-reduced-motion:reduce){[data-chart-motion-active]{animation:none}}')
+    expect(html).toContain('conic-gradient(')
+    expect(html).toContain('radial-gradient(circle,#fff')
+    expect(html).toContain('75.00%')
+    expect(html).toContain('25.00%')
+    expect(html).toContain('1 failed, unread or missing-spend accounts are excluded')
+    expect(html).toContain('2026-10-02 – 2026-10-07')
+    expect(html).toContain('America/New_York')
+    expect(html).toContain('Currency unknown (one account)')
+    expect(html).not.toContain('Private Account')
+    expect(html).not.toMatch(/<(script|svg|iframe|img|link)\b/i)
+    expect(html).toContain('<details><summary>Data notes</summary>')
+  })
+  it('never invents percentages for zero totals and rejects untrusted motion or chart kinds', () => {
+    expect(() => parseHtmlBoardTemplate('<div data-reading-slot></div>')).not.toThrow()
+    const d = document()
+    d.includeChart = false
+    d.snapshot = { ...snapshot, accounts: [{ ...snapshot.accounts[0], spend: 0 }] }
+    d.html = '<div data-reading-chart="spend-pie"></div><div data-reading-slot></div>'
+    const html = renderHtmlBoard(d, { language: 'en' })
+    expect(html).toContain('Total is zero; shares are unavailable.')
+    expect(html).not.toContain('conic-gradient(')
+    for (const invalid of [
+      '<div data-reading-chart="line"></div>', '<div data-reading-chart="spend-pie" data-reading-motion="forever"></div>',
+      '<div data-reading-motion="animate"></div>', '<div data-reading-chart="spend-bar" data-reading-motion="animate" class="x"></div>', '<section data-chart-motion-active></section>'
+    ]) expect(() => parseHtmlBoardTemplate(invalid + '<div data-reading-slot></div>'), invalid).toThrow()
+  })
+  it('continues to render legacy spend and explicit bar bindings with the same data', () => {
+    const d = document()
+    d.includeChart = false
+    d.html = '<div data-reading-chart="spend"></div><div data-reading-slot></div><div data-reading-chart="spend-bar"></div>'
+    const html = renderHtmlBoard(d)
+    expect(html.match(/class="bar"/g)).toHaveLength(2)
+    expect(html).not.toContain('data-reading-chart')
+  })
   it('rejects CSS network access, escaping, out-of-scope selectors and layout overlays', () => {
     for (const css of [
       '@import "https://example.invalid/x";', '.x { background: url(https://example.invalid); }',

@@ -84,15 +84,16 @@ export function parseHtmlBoardTemplate(html: string, accountCount?: number): { b
       const chart = element.attrs.find(attribute => attribute.name === 'data-reading-chart')
       if (chart) {
         charts++
-        if (charts > 2 || element.tagName !== 'div' || chart.value !== 'spend' || element.childNodes.length !== 0 || element.attrs.some(attribute => attribute.name !== 'data-reading-chart')) throw new Error('invalid-chart')
+        if (charts > 2 || element.tagName !== 'div' || !['spend', 'spend-bar', 'spend-pie', 'spend-donut'].includes(chart.value) || element.childNodes.length !== 0 || element.attrs.some(attribute => !['data-reading-chart', 'data-reading-motion'].includes(attribute.name)) || element.attrs.some(attribute => attribute.name === 'data-reading-motion' && attribute.value !== 'animate')) throw new Error('invalid-chart')
       }
+      if (!chart && element.attrs.some(attribute => attribute.name === 'data-reading-motion')) throw new Error('invalid-chart-motion')
       const binding = element.attrs.find(attribute => attribute.name === 'data-reading-value')
       if (binding) {
         const match = /^(?:([1-9][0-9]{0,3}))\.(spend|previousSpend|impressions|clicks|conversions|currency|status|account|windowStart|windowEnd)$/.exec(binding.value)
         if (element.tagName !== 'span' || element.childNodes.length !== 0 || !match || (accountCount !== undefined && Number(match[1]) > accountCount) || element.attrs.some(attribute => !['data-reading-value', 'class'].includes(attribute.name))) throw new Error('invalid-binding')
       }
       for (const attribute of element.attrs) {
-        if (attribute.namespace || !['class', 'title', 'aria-label', 'colspan', 'rowspan', 'data-reading-value', 'data-reading-chart'].includes(attribute.name)) throw new Error('unsupported-attribute')
+        if (attribute.namespace || !['class', 'title', 'aria-label', 'colspan', 'rowspan', 'data-reading-value', 'data-reading-chart', 'data-reading-motion'].includes(attribute.name)) throw new Error('unsupported-attribute')
         if (attribute.value.length > 200 || /[\x00-\x1f\x7f]/.test(attribute.value)) throw new Error('unsupported-attribute')
         if (attribute.name === 'class' && !/^[A-Za-z0-9_\- ]*$/.test(attribute.value)) throw new Error('unsupported-attribute')
         if ((attribute.name === 'colspan' || attribute.name === 'rowspan') && !/^[1-9][0-9]?$/.test(attribute.value)) throw new Error('unsupported-attribute')
@@ -199,15 +200,67 @@ export function validateHtmlBoardDocument(raw: unknown): HtmlBoardDocument | nul
   return value as unknown as HtmlBoardDocument
 }
 
+type TrustedChartKind = 'spend' | 'spend-bar' | 'spend-pie' | 'spend-donut'
+const escapeChart = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
+
+/** Snapshot-backed chart; only comparable platform, currency, date and timezone share a scale. */
+function renderTrustedSpendChart(snapshot: ReadingSnapshot, kind: TrustedChartKind, animate: boolean, anonymous: boolean, zh: boolean): string {
+  const groups = new Map<string, Array<{ account: ReadingSnapshot['accounts'][number]; index: number }>>()
+  snapshot.accounts.forEach((account, index) => {
+    if (account.status !== 'ok' || account.spend === null) return
+    // Unknown currency or timezone must never imply comparability with another account.
+    const key = JSON.stringify([account.platform, account.currency ?? `unknown-currency-${index}`, account.window.start, account.window.end, account.timezone ?? `unknown-timezone-${index}`])
+    const entries = groups.get(key) ?? []
+    entries.push({ account, index }); groups.set(key, entries)
+  })
+  const excluded = snapshot.accounts.length - [...groups.values()].reduce((sum, entries) => sum + entries.length, 0)
+  const isBar = kind === 'spend' || kind === 'spend-bar'
+  const labels = { facebook: 'Facebook', tiktok: 'TikTok', google: 'Google' }
+  const name = (entry: { account: ReadingSnapshot['accounts'][number]; index: number }) => anonymous
+    ? `${zh ? '账户' : 'Account'} ${entry.index + 1}`
+    : `${entry.account.name || entry.account.accountId || '—'}${entry.account.name && entry.account.accountId ? ` (${entry.account.accountId})` : ''}`
+  const amount = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 2 })
+  const groupHtml = [...groups.values()].map(entries => {
+    const first = entries[0].account
+    const currency = first.currency ?? (zh ? '币种未知（单账户）' : 'Currency unknown (one account)')
+    const timezone = first.timezone ?? (zh ? '时区未知（单账户）' : 'Timezone unknown (one account)')
+    const heading = `${labels[first.platform]} · ${currency} · ${first.window.start} – ${first.window.end} · ${timezone}`
+    const max = Math.max(0, ...entries.map(entry => entry.account.spend!))
+    const scaledTotal = max > 0 ? entries.reduce((sum, entry) => sum + entry.account.spend! / max, 0) : 0
+    const color = (index: number) => `hsl(${Math.round(index * 137.508) % 360},60%,45%)`
+    let position = 0
+    const stops = entries.map((entry, i) => {
+      const start = position
+      position += scaledTotal ? (entry.account.spend! / max) / scaledTotal * 100 : 0
+      return `${color(i)} ${start.toFixed(5)}% ${position.toFixed(5)}%`
+    })
+    const pie = !isBar && scaledTotal ? `<div class="trusted-pie ${kind === 'spend-donut' ? 'trusted-donut' : ''}" role="img" aria-label="${zh ? '账户消耗占比，详见下方数据' : 'Account spend shares; see values below'}" style="background:${kind === 'spend-donut' ? 'radial-gradient(circle,#fff 0 49%,transparent 50%),' : ''}conic-gradient(${stops.join(',')})"></div>` : ''
+    const items = entries.map((entry, i) => {
+      const label = escapeChart(name(entry)), spend = amount(entry.account.spend!)
+      const width = max > 0 ? Math.min(100, entry.account.spend! / max * 100) : 0
+      if (isBar) return `<li><span>${label}</span><span class="track"><span class="bar" style="width:${width.toFixed(2)}%"></span></span><span class="num">${spend}</span></li>`
+      const share = scaledTotal ? `${((entry.account.spend! / max) / scaledTotal * 100).toFixed(2)}%` : '—'
+      return `<li><span><span class="trusted-swatch" style="background:${color(i)}"></span>${label}</span><span class="num">${spend} · ${share}</span></li>`
+    }).join('')
+    return `<div class="group"><h3>${escapeChart(heading)}</h3>${pie}${!isBar && !scaledTotal ? `<p>${zh ? '合计为零，无法计算占比。' : 'Total is zero; shares are unavailable.'}</p>` : ''}<ul${isBar ? '' : ' class="trusted-legend"'}>${items}</ul></div>`
+  }).join('')
+  const title = zh ? '账户消耗（按平台和币种分别展示）' : 'Account spend (separate platform and currency groups)'
+  const detail = zh ? `按平台、币种、日期和时区分组；${excluded} 个失败、未读取或缺失消耗的账户未计入。未知币种或时区单独展示。` : `Grouped by platform, currency, dates and timezone; ${excluded} failed, unread or missing-spend accounts are excluded. Unknown currencies or timezones are shown separately.`
+  return `<section class="trusted-chart"${animate ? ' data-chart-motion-active=""' : ''}><h2>${title}</h2><details><summary>${zh ? '数据说明' : 'Data notes'}</summary><p>${detail}</p></details>${groupHtml || `<p>${zh ? '没有可绘制的成功读数。' : 'No successful readings to chart.'}</p>`}</section>`
+}
+const trustedChartStyles = `.trusted-pie{width:160px;height:160px;border-radius:50%;margin:12px auto}.trusted-swatch{display:inline-block;width:10px;height:10px;margin-right:6px}.trusted-legend li{grid-template-columns:1fr auto}[data-chart-motion-active]{animation:reading-chart-intro .45s ease-out}@keyframes reading-chart-intro{from{opacity:.2}to{opacity:1}}@media(prefers-reduced-motion:reduce){[data-chart-motion-active]{animation:none}}`
+
 /** Populate validated binding spans with plain text from the immutable snapshot. */
-function fillReadingValues(html: string, snapshot: ReadingSnapshot, anonymous: boolean, zh: boolean, chart: string): string {
+function fillReadingValues(html: string, snapshot: ReadingSnapshot, anonymous: boolean, zh: boolean): string {
   const fragment = parseFragment(html)
   const visit = (node: Child) => {
     if (!('tagName' in node)) return
     const chartMarker = node.attrs.find(attr => attr.name === 'data-reading-chart')
     if (chartMarker) {
+      const animate = node.attrs.some(attr => attr.name === 'data-reading-motion' && attr.value === 'animate')
+      const kind = chartMarker.value as TrustedChartKind
       node.attrs = []
-      const trustedChart = parseFragment(chart)
+      const trustedChart = parseFragment(renderTrustedSpendChart(snapshot, kind, animate, anonymous, zh))
       for (const child of [...trustedChart.childNodes]) defaultTreeAdapter.appendChild(node, child)
       return
     }
@@ -249,16 +302,18 @@ export function renderHtmlBoard(raw: unknown, options: { anonymize?: boolean; la
     }
     return undefined
   }
-  // Custom chart slots are explicit and work independently of the full report's chart toggle.
-  const chartDocument = document.includeChart ? parsed : parse(renderReadingSnapshotHtml(document.snapshot, { anonymize: options.anonymize !== false, includeChart: true, language: options.language }))
-  const chart = find(chartDocument.childNodes, 'section')
-  if (!chart) throw new Error('invalid-snapshot-chart')
-  const chartHtml = serializeOuter(chart)
   const headStyle = find(parsed.childNodes, 'style')
   const main = find(parsed.childNodes, 'main')
   if (!headStyle || !main) throw new Error('invalid-snapshot-template')
-  const style = headStyle.childNodes.map(node => node.nodeName === '#text' && 'value' in node ? node.value : '').join('')
   const zh = options.language !== 'en'
+  if (document.includeChart) {
+    const original = find(main.childNodes, 'section')
+    if (!original) throw new Error('invalid-snapshot-chart')
+    const replacement = parseFragment(renderTrustedSpendChart(document.snapshot, 'spend-bar', false, options.anonymize !== false, zh)).childNodes[0]
+    defaultTreeAdapter.insertBefore(main, replacement, original)
+    defaultTreeAdapter.detachNode(original)
+  }
+  const style = headStyle.childNodes.map(node => node.nodeName === '#text' && 'value' in node ? node.value : '').join('')
   // Only these fixed styles can affect the report; authored CSS remains scoped
   // to the before/after content and cannot hide or replace source figures.
   const reportThemes: Record<HtmlBoardTemplate, string> = {
@@ -267,5 +322,5 @@ export function renderHtmlBoard(raw: unknown, options: { anonymize?: boolean; la
     minimal: 'main{font-family:system-ui,sans-serif;color:#181818}main h1{color:#181818}main th{background:#efefef;color:#181818}main td{border-bottom-color:#d9d9d9}main .bar{background:#333333}'
   }
   const reportStyle = reportThemes[document.theme ?? 'editorial']
-  return `<!doctype html><html lang="${zh ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>${zh ? '自定义读数看板' : 'Custom reading board'}</title><style>${style}\n${reportStyle}\n${customCss}\n.html-board-note{max-width:1280px;margin:12px auto;padding:8px 28px;color:#59677a;font-size:12px}#html-board-custom-before,#html-board-custom-after{max-width:1280px;margin:0 auto;padding:0 28px}</style></head><body><p class="html-board-note">${zh ? '自定义文字和 AI 结论未经系统核验，也不会自动脱敏；请核对后分享。' : 'Custom text and AI conclusions are not verified or automatically anonymized. Review before sharing.'}</p><div id="html-board-custom-before">${fillReadingValues(template.before, document.snapshot, options.anonymize !== false, zh, chartHtml)}</div><main>${serialize(main)}</main><div id="html-board-custom-after">${fillReadingValues(template.after, document.snapshot, options.anonymize !== false, zh, chartHtml)}</div></body></html>`
+  return `<!doctype html><html lang="${zh ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>${zh ? '自定义读数看板' : 'Custom reading board'}</title><style>${style}\n${reportStyle}\n${customCss}\n${trustedChartStyles}\n.html-board-note{max-width:1280px;margin:12px auto;padding:8px 28px;color:#59677a;font-size:12px}#html-board-custom-before,#html-board-custom-after{max-width:1280px;margin:0 auto;padding:0 28px}</style></head><body><p class="html-board-note">${zh ? '自定义文字和 AI 结论未经系统核验，也不会自动脱敏；请核对后分享。' : 'Custom text and AI conclusions are not verified or automatically anonymized. Review before sharing.'}</p><div id="html-board-custom-before">${fillReadingValues(template.before, document.snapshot, options.anonymize !== false, zh)}</div><main>${serialize(main)}</main><div id="html-board-custom-after">${fillReadingValues(template.after, document.snapshot, options.anonymize !== false, zh)}</div></body></html>`
 }
