@@ -24,7 +24,15 @@ import { IPC_CHANNELS } from '../shared/constants'
  * chain stays acyclic.
  */
 
-const CHECK_INTERVAL_MS = 60_000
+const CHECK_INTERVAL_MS = 15 * 60_000
+/**
+ * Interval schedules shorter than the default tick pull the cadence down to
+ * half their period (floor 15 s), so a 2-minute "watch" task is not silently
+ * served once every quarter hour. Daily/weekly tasks keep the cheap default:
+ * firing a couple of minutes after the requested time is acceptable for a
+ * report, and each tick costs microseconds (an in-memory filter).
+ */
+const MIN_TICK_MS = 15_000
 /** Fallback guard lifetime if the session's terminal event never arrives. */
 export const MAX_RUN_MS = 6 * 60 * 60 * 1000
 /** Consecutive spawn failures before a task disables itself. */
@@ -124,6 +132,7 @@ export function saveTask(task: ScheduledTask): ScheduledTask {
   }
   saveTasks(tasks)
   broadcastTasksChanged()
+  rescheduleScheduler()
   return task
 }
 
@@ -133,6 +142,7 @@ export function deleteTask(id: string): boolean {
   if (next.length === tasks.length) return false
   saveTasks(next)
   broadcastTasksChanged()
+  rescheduleScheduler()
   return true
 }
 
@@ -197,6 +207,7 @@ export function toggleTask(id: string, enabled: boolean): ScheduledTask | null {
   if (enabled) task.consecutiveFailures = 0
   saveTasks(tasks)
   broadcastTasksChanged()
+  rescheduleScheduler()
   return task
 }
 
@@ -607,6 +618,38 @@ function checkAndFireTasks(): void {
 }
 
 let schedulerStarted = false
+let tickTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Tick cadence: 15 min by default, tightened while short interval tasks exist. */
+function effectiveTickMs(): number {
+  let tick = CHECK_INTERVAL_MS
+  for (const task of getTasks()) {
+    if (!task.enabled || task.schedule.type !== 'interval') continue
+    const period = typeof task.schedule.minutes === 'number'
+      ? task.schedule.minutes * 60_000
+      : (task.schedule.hours ?? 0) * 3_600_000
+    if (period > 0) tick = Math.min(tick, Math.max(MIN_TICK_MS, Math.floor(period / 2)))
+  }
+  return tick
+}
+
+function scheduleNextTick(): void {
+  if (!schedulerStarted) return
+  if (tickTimer) clearTimeout(tickTimer)
+  tickTimer = setTimeout(() => {
+    try {
+      checkAndFireTasks()
+    } catch (error) {
+      console.error('[scheduled-tasks] scheduler tick crashed:', error)
+    }
+    scheduleNextTick()
+  }, effectiveTickMs())
+}
+
+/** Re-arm after the task list changes: new interval tasks change the cadence. */
+export function rescheduleScheduler(): void {
+  scheduleNextTick()
+}
 
 export function startScheduler(): void {
   if (schedulerStarted) return
@@ -615,16 +658,20 @@ export function startScheduler(): void {
   // Close any durable open rows before the first due-task check so history
   // never presents a run as permanently active.
   reconcileInterruptedTaskRuns()
+  // One early pass so a task that came due while the app was closed catches up
+  // right after launch instead of waiting a whole tick.
   setTimeout(checkAndFireTasks, 10_000)
-  setInterval(() => {
-    try {
-      checkAndFireTasks()
-    } catch (error) {
-      // The interval callback must never take the main process down.
-      console.error('[scheduled-tasks] scheduler tick crashed:', error)
-    }
-  }, CHECK_INTERVAL_MS)
+  scheduleNextTick()
   console.info('[scheduled-tasks] scheduler started')
+}
+
+/** Test-only: stop the ticker so a suite can start it again cleanly. */
+export function stopSchedulerForTest(): void {
+  schedulerStarted = false
+  if (tickTimer) {
+    clearTimeout(tickTimer)
+    tickTimer = null
+  }
 }
 
 export type RunNowResult = 'ok' | 'running' | 'not-found' | 'failed'

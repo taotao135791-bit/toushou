@@ -24,6 +24,7 @@ import {
   setTaskOutcomeSinkResetForTest,
   resetRunningGuardsForTest,
   startScheduler,
+  stopSchedulerForTest,
   reconcileInterruptedTaskRuns
 } from '../scheduledTasks'
 
@@ -56,9 +57,12 @@ beforeEach(() => {
   })
   setTaskOutcomeSinkResetForTest()
   resetRunningGuardsForTest()
+  stopSchedulerForTest()
 })
 
 afterEach(() => {
+  stopSchedulerForTest()
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -283,6 +287,30 @@ describe('scheduler tick safety', () => {
     const saved = saveTask(task)
     expect(saved.id).toBe('t2')
     expect(tasks).toHaveLength(1)
+  })
+})
+
+describe('scheduler cadence', () => {
+  it('tightens the tick for short interval tasks instead of serving them 15 minutes late', async () => {
+    vi.useFakeTimers()
+    const start = new Date('2026-11-03T10:00:00')
+    vi.setSystemTime(start)
+    const fired: string[] = []
+    setTaskSpawnFn(async (_cwd, title) => {
+      fired.push(title)
+      return { sessionId: 'sess-tick' }
+    })
+    tasks.push(baseTask({ schedule: { type: 'interval', minutes: 2 }, createdAt: start.getTime() }))
+    startScheduler()
+    // Startup pass at +10s: the task is due at +2min.
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fired).toHaveLength(0)
+    // Adaptive tick is half the period (1 min): still not due.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fired).toHaveLength(0)
+    // +2min: due, and the ticker is fast enough to catch it now.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fired).toHaveLength(1)
   })
 })
 
