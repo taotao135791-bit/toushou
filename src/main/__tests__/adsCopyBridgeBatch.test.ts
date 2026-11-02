@@ -208,6 +208,78 @@ describe('dispatch copy_generate_batch', () => {
     expect(aborted).toBe(true)
   })
 
+  it('never substitutes another model when the caller names one', async () => {
+    const members = [provider('a', 'model-a'), provider('b', 'model-b')]
+    let bCalls = 0
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        if (model === 'model-b') {
+          bCalls++
+          return okFetch('{"short":["Discover fast transfers","Get low fees today","Try instant transfers now"]}')()
+        }
+        // The named model returns nothing usable; the run must fail rather
+        // than deliver model-b's copy under model-a's name.
+        return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [] }) }
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    const result = await dispatch(
+      { action: 'copy_generate_batch', request: { ...baseRequest, model: 'a', maxAttempts: 3 } },
+      deps
+    )
+    expect(result.ok).toBe(false)
+    expect(bCalls).toBe(0)
+  })
+
+  it('does not let duplicated lines fake a covered quota', async () => {
+    const members = [provider('a', 'model-a'), provider('b', 'model-b')]
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        if (model === 'model-a') {
+          // The same accepted line five times: one unique candidate, not five.
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify({ short: Array(5).fill('Discover fast transfers') }) } }] })
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        return okFetch('{"short":["Get low fees today","Try instant transfers now","Join free transfers now"]}')()
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    const result = await dispatch(
+      {
+        action: 'copy_generate_batch',
+        request: { product: { language: 'en', benefits: ['fast transfers', 'low fees'] }, categories: [{ type: 'short', qty: 3 }] }
+      },
+      deps
+    )
+    expect(result.fulfilled).toBe(true)
+    expect((result.results as { short: { items: unknown[] } }).short.items).toHaveLength(3)
+  })
+
+  it('reports fulfilled=false plus a diagnosis when delivery is short', async () => {
+    const members = [provider('a', 'model-a')]
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: okFetch('{"short":["Discover fast transfers"]}'),
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    const result = await dispatch(
+      {
+        action: 'copy_generate_batch',
+        request: { product: { language: 'en', benefits: ['fast transfers'] }, categories: [{ type: 'short', qty: 3 }], maxAttempts: 1 }
+      },
+      deps
+    )
+    expect(result.ok).toBe(true)
+    expect(result.fulfilled).toBe(false)
+    expect(result.incomplete).toEqual({ short: 2, long: 0 })
+    expect(result.diagnosis).toBeTruthy()
+  })
+
   it('respects chat mode and empty pools with actionable errors', async () => {
     const deps: AdsCopyDispatchDeps = { fetchImpl: okFetch('{}'), pool: poolOf([], [], 'chat') }
     const chatMode = await dispatch({ action: 'copy_generate_batch', request: baseRequest }, deps)

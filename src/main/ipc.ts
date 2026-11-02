@@ -149,7 +149,7 @@ import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from './boards'
-import { AdsCopyModelStore, validateAdsCopyModelInput, type AdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
+import { AdsCopyModelStore, MAX_PROVIDERS, validateAdsCopyModelInput, type AdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
 import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
@@ -2518,7 +2518,9 @@ export function registerIpc() {
   // and the provider cap applied inside the store; this layer validates shape
   // and maps the store's error codes back to the renderer.
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_ADD_MANY, async (_event, raw: unknown) => {
-    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100) return { ok: false, error: 'invalid-model' }
+    // Discovery can offer up to 500 ids; the store applies the real provider
+    // cap and reports `limitReached`, so only the shape is bounded here.
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 500) return { ok: false, error: 'invalid-model' }
     const inputs: AdsCopyModelInput[] = []
     for (const item of raw) {
       const checked = validateAdsCopyModelInput((item ?? {}) as Record<string, unknown>)
@@ -2544,7 +2546,7 @@ export function registerIpc() {
     }
   })
   ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_SET_POOL, async (_event, raw: unknown) => {
-    if (!Array.isArray(raw) || raw.length > 20 || !raw.every((id): id is string => typeof id === 'string')) {
+    if (!Array.isArray(raw) || raw.length > MAX_PROVIDERS || !raw.every((id): id is string => typeof id === 'string')) {
       return { ok: false }
     }
     try {

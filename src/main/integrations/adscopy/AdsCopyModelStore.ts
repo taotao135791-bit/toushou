@@ -44,7 +44,7 @@ const MAX_KEY = 400
  * model needs headroom — 100 entries cost ~40 KB encrypted and keep a whole
  * relay importable in one go.
  */
-const MAX_PROVIDERS = 100
+export const MAX_PROVIDERS = 100
 
 const electronBackend: SecretBackend = {
   isAvailable: () => safeStorage.isEncryptionAvailable(),

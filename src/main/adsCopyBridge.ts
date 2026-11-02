@@ -472,6 +472,18 @@ async function dispatchBatch(
   const failedCounts = new Map<string, number>()
   let stickyFallback = false
   const failureCounts: Record<string, number> = {}
+  /**
+   * Accepted lines are counted by unique text — a model repeating the same
+   * line must not look like a covered quota (selection de-dupes later, so the
+   * count and the delivered list would otherwise disagree).
+   */
+  const acceptedKeys = new Set<string>()
+  const acceptUnique = (type: 'short' | 'long', text: string): boolean => {
+    const key = `${type}::${text.trim().toLowerCase()}`
+    if (acceptedKeys.has(key)) return false
+    acceptedKeys.add(key)
+    return true
+  }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // computeShortfall floors at 1 by design (the factory worker always asks
@@ -482,12 +494,15 @@ async function dispatchBatch(
     const fulfilledLong = wantLong === 0 || acceptedLong >= wantLong
     if (fulfilledShort && fulfilledLong) break
     const shortfall = computeShortfall(acceptedShort, acceptedLong, categories)
-    // A pinned (agentId) provider that keeps failing must not sink the whole
-    // job — drop it back into the pool rotation instead of repeating the same
-    // dead call until every attempt is spent.
+    // A pinned provider that keeps failing must not sink the whole job — drop
+    // it back into the pool rotation instead of repeating the same dead call
+    // until every attempt is spent. An explicit `model=` request is different:
+    // the caller asked for THAT model, so we never silently deliver another
+    // one; it either succeeds or the run reports the failure.
+    const isNamed = strategy === 'named'
     const healthy = members.filter((member) => (failedCounts.get(member.id) ?? 0) < 2)
     const usable = healthy.length > 0 ? healthy : members
-    const sticky = fixed && (failedCounts.get(fixed[0].id) ?? 0) === 0 ? fixed : null
+    const sticky = fixed && (isNamed || (failedCounts.get(fixed[0].id) ?? 0) === 0) ? fixed : null
     if (fixed && !sticky) stickyFallback = true
     const roundProviders = sticky ?? Array.from({ length: Math.min(usable.length, shortfall) }, (_, i) =>
       usable[providerRotationIndex(usable.length, 0, attempt, i)]
@@ -495,10 +510,13 @@ async function dispatchBatch(
     const uniqueProviders = [...new Map(roundProviders.map((provider) => [provider.id, provider])).values()]
     // Oversample just enough to absorb rejected candidates. The old 3× ask
     // meant one pinned model had to emit 60 lines (short+long) per call, and
-    // that output length — not the pool — dominated the wall clock. Cap the
-    // buffer at +50% (min +2, max +8).
+    // that output length — not the pool — dominated the wall clock. The buffer
+    // still grows with candidateMultiplier (2→0.5×, 3→1× up to +16, 4→1.5×)
+    // but saturates at +8 per type.
     const perProviderNeed = Math.max(1, Math.ceil(shortfall / uniqueProviders.length))
-    const buffer = multiplier <= 1 ? 0 : Math.min(8, Math.max(2, Math.ceil(perProviderNeed * 0.5)))
+    const buffer = multiplier <= 1
+      ? 0
+      : Math.min(8 * (multiplier - 1), Math.max(2, Math.ceil(perProviderNeed * (multiplier - 1) * 0.5)))
     const perCallQty = Math.min(50, perProviderNeed + buffer)
     // Thinking-capable models (opus-5 / sonnet-5.5) can spend the default
     // budget on reasoning and return no text at all; scale the budget with the
@@ -565,8 +583,9 @@ async function dispatchBatch(
         for (const text of normalized.shorts) {
           const item = scoreCopyItem(text, { type: 'short', maxBytes: SHORT_MAX_BYTES, language, benefits, brandTerms, targets })
           shortPool.push(item)
-          if (item.accepted) roundShort++
-          else {
+          if (item.accepted) {
+            if (acceptUnique('short', text)) roundShort++
+          } else {
             noteFailure(failureCounts, item, targets)
             if (rejectedSamples.length < 12) rejectedSamples.push(`[short] ${text.slice(0, 80)}`)
           }
@@ -574,8 +593,9 @@ async function dispatchBatch(
         for (const text of normalized.longs) {
           const item = scoreCopyItem(text, { type: 'long', maxBytes: LONG_MAX_BYTES, language, benefits, brandTerms, targets })
           longPool.push(item)
-          if (item.accepted) roundLong++
-          else {
+          if (item.accepted) {
+            if (acceptUnique('long', text)) roundLong++
+          } else {
             noteFailure(failureCounts, item, targets)
             if (rejectedSamples.length < 12) rejectedSamples.push(`[long] ${text.slice(0, 80)}`)
           }
@@ -605,19 +625,21 @@ async function dispatchBatch(
   const missingShort = Math.max(0, wantShort - shortSelection.selected.length)
   const missingLong = Math.max(0, wantLong - longSelection.selected.length)
   const incomplete = missingShort > 0 || missingLong > 0
+  const fulfilled = !incomplete
   const dominant = dominantFailure(failureCounts)
+  // The caller (skill/tool docs) branches on `fulfilled` and reads `diagnosis`
+  // whenever anything is short — including a partial success, where the old
+  // payload carried neither field.
+  const diagnosis = { dominant, failures: failureCounts, providerErrors: providerErrors.length, stagnated }
   return {
     ok: anyOk,
-    ...(anyOk
-      ? {}
-      : {
-          error: 'no-copy-passed',
-          diagnosis: { dominant, failures: failureCounts, providerErrors: providerErrors.length, stagnated }
-        }),
+    fulfilled,
+    ...(anyOk ? {} : { error: 'no-copy-passed' }),
     ...(incomplete
       ? {
           incomplete: { short: missingShort, long: missingLong },
           next_steps: nextStepsFor(dominant),
+          diagnosis,
           hint: '缺口部分不要用对话模型补写：如实说明还差几条，并按 next_steps 调整后再次调用本工具。'
         }
       : {}),

@@ -312,6 +312,22 @@ describe('scheduler cadence', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(fired).toHaveLength(1)
   })
+  it('stops the startup catch-up pass along with the ticker', async () => {
+    vi.useFakeTimers()
+    const start = new Date('2026-11-03T10:00:00')
+    vi.setSystemTime(start)
+    const fired: string[] = []
+    setTaskSpawnFn(async (_cwd, title) => {
+      fired.push(title)
+      return { sessionId: 'sess-stop' }
+    })
+    // Already due: only a surviving 10s startup timer could fire it.
+    tasks.push(baseTask({ schedule: { type: 'interval', minutes: 60 }, createdAt: start.getTime() - 2 * 3600_000 }))
+    startScheduler()
+    stopSchedulerForTest()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fired).toHaveLength(0)
+  })
 })
 
 describe('edit-and-ledger loop closures', () => {

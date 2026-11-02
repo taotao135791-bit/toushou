@@ -619,6 +619,7 @@ function checkAndFireTasks(): void {
 
 let schedulerStarted = false
 let tickTimer: ReturnType<typeof setTimeout> | null = null
+let startupTimer: ReturnType<typeof setTimeout> | null = null
 
 /** Tick cadence: 15 min by default, tightened while short interval tasks exist. */
 function effectiveTickMs(): number {
@@ -660,7 +661,7 @@ export function startScheduler(): void {
   reconcileInterruptedTaskRuns()
   // One early pass so a task that came due while the app was closed catches up
   // right after launch instead of waiting a whole tick.
-  setTimeout(checkAndFireTasks, 10_000)
+  startupTimer = setTimeout(checkAndFireTasks, 10_000)
   scheduleNextTick()
   console.info('[scheduled-tasks] scheduler started')
 }
@@ -671,6 +672,10 @@ export function stopSchedulerForTest(): void {
   if (tickTimer) {
     clearTimeout(tickTimer)
     tickTimer = null
+  }
+  if (startupTimer) {
+    clearTimeout(startupTimer)
+    startupTimer = null
   }
 }
 

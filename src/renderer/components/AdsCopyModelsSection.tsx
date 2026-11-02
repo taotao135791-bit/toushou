@@ -139,12 +139,16 @@ export default function AdsCopyModelsSection() {
     setError(null)
     setBatchResult(null)
     try {
-      const inputs = selected.map((modelId) => ({ name: modelId, baseUrl, protocol, model: modelId, apiKey }))
+      // The provider name is capped at 60 chars and the model id at 120;
+      // slicing the name keeps a long relay id from failing the whole batch,
+      // and ids longer than the model cap are dropped rather than sent.
+      const usable = selected.filter((modelId) => modelId.length <= 120)
+      const inputs = usable.map((modelId) => ({ name: modelId.slice(0, 60), baseUrl, protocol, model: modelId, apiKey }))
       const result = await window.electronAPI.adsCopyModelsAddMany(inputs)
       if (result.ok) {
         setBatchResult({
           added: result.added ?? 0,
-          skipped: result.skipped ?? 0,
+          skipped: (result.skipped ?? 0) + (selected.length - usable.length),
           limitReached: result.limitReached === true
         })
         setSelected([])
