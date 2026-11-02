@@ -889,9 +889,12 @@ describe('master scope', () => {
     expect(board?.masterScope).toBeUndefined()
   })
 
-  it('validateBoard keeps locked only when explicitly true', () => {
+  it('validateBoard round-trips the lock flag exactly as given', () => {
     expect(validateBoard({ ...validBoard(), locked: true })?.locked).toBe(true)
-    expect(validateBoard({ ...validBoard(), locked: false })?.locked).toBeUndefined()
+    // An explicit false must survive: the strict save path compares the
+    // validated board to the renderer payload, so dropping it made every
+    // unlock fail as invalid-board.
+    expect(validateBoard({ ...validBoard(), locked: false })?.locked).toBe(false)
     expect(validateBoard({ ...validBoard(), locked: 'yes' })?.locked).toBeUndefined()
     expect(validateBoard(validBoard())?.locked).toBeUndefined()
   })
