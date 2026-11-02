@@ -130,6 +130,7 @@ export const IPC_CHANNELS = {
   /** Ads-copy model pool (Connections page section; keys stay in Main). */
   ADS_COPY_MODELS_LIST: 'ads-copy-models:list',
   ADS_COPY_MODELS_UPSERT: 'ads-copy-models:upsert',
+  ADS_COPY_MODELS_ADD_MANY: 'ads-copy-models:add-many',
   ADS_COPY_MODELS_REMOVE: 'ads-copy-models:remove',
   ADS_COPY_MODELS_SET_POOL: 'ads-copy-models:set-pool',
   ADS_COPY_MODELS_TEST: 'ads-copy-models:test',

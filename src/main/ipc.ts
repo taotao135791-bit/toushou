@@ -149,7 +149,7 @@ import { HistorySessionGrantManager } from './historySessionGrant'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from './boards'
-import { AdsCopyModelStore, validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
+import { AdsCopyModelStore, validateAdsCopyModelInput, type AdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
 import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
@@ -2511,6 +2511,26 @@ export function registerIpc() {
     } catch (error) {
       const code = error instanceof SecureStorageUnavailableError ? 'secure-storage-unavailable'
         : error instanceof Error && ['provider-limit', 'not-found'].includes(error.message) ? error.message : 'save-failed'
+      return { ok: false, error: code }
+    }
+  })
+  // Batch add for a whole relay's model list: one write, duplicates skipped
+  // and the provider cap applied inside the store; this layer validates shape
+  // and maps the store's error codes back to the renderer.
+  ipcMain.handle(IPC_CHANNELS.ADS_COPY_MODELS_ADD_MANY, async (_event, raw: unknown) => {
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100) return { ok: false, error: 'invalid-model' }
+    const inputs: AdsCopyModelInput[] = []
+    for (const item of raw) {
+      const checked = validateAdsCopyModelInput((item ?? {}) as Record<string, unknown>)
+      if ('error' in checked) return { ok: false, error: checked.error }
+      inputs.push(checked)
+    }
+    try {
+      const result = await adsCopyModelStore.addMany(inputs)
+      return { ok: true, added: result.added, skipped: result.skipped, limitReached: result.limitReached }
+    } catch (error) {
+      const code = error instanceof SecureStorageUnavailableError ? 'secure-storage-unavailable'
+        : error instanceof Error && ['provider-limit', 'invalid-name', 'invalid-base-url', 'invalid-protocol', 'invalid-model', 'invalid-api-key'].includes(error.message) ? error.message : 'save-failed'
       return { ok: false, error: code }
     }
   })

@@ -101,6 +101,113 @@ describe('dispatch copy_generate_batch', () => {
     expect(history.length).toBeLessThanOrEqual(3)
   })
 
+  it('stops after two fruitless rounds instead of burning every attempt', async () => {
+    const members = [provider('a', 'model-a')]
+    let calls = 0
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async () => {
+        calls++
+        return okFetch('{"short":["ok"]}')()
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    const result = await dispatch(
+      { action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 5 } },
+      deps
+    )
+    expect(calls).toBe(2)
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('no-copy-passed')
+    expect((result.score_control as { stagnated: boolean }).stagnated).toBe(true)
+    expect((result.diagnosis as { dominant: string }).dominant).toBeTruthy()
+    expect(Array.isArray(result.next_steps)).toBe(true)
+  })
+
+  it('gives the model the real scoring rubric and changes direction on retry', async () => {
+    const members = [provider('a', 'model-a')]
+    const prompts: string[] = []
+    let call = 0
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> }
+        prompts.push(body.messages[body.messages.length - 1].content)
+        call++
+        if (call === 1) return okFetch('{"short":["Transfer money fast"]}')()
+        return okFetch('{"short":["Discover fast transfers now","Get low fees today","Try instant transfers now"]}')()
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 2 } }, deps)
+    // The first prompt states the exact floors and the lexicon the scorer uses.
+    expect(prompts[0]).toContain('钩子 Hook ≥6 分')
+    expect(prompts[0]).toContain('discover')
+    expect(prompts[0]).toContain('19–25 字节')
+    expect(prompts[0]).toContain('达标')
+    // The retry must switch angle and be told what already failed.
+    expect(prompts[1]).toContain('换角度')
+    expect(prompts[1]).toContain('已被淘汰')
+    expect(prompts[1]).toContain('Transfer money fast')
+  })
+
+  it('drops a pinned provider that keeps failing and finishes on the rest of the pool', async () => {
+    const members = [provider('a', 'model-a'), provider('b', 'model-b')]
+    let aCalls = 0
+    let bCalls = 0
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        if (model === 'model-a') {
+          aCalls++
+          // 200 with no content block — what thinking-only truncation looks like.
+          return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [] }) }
+        }
+        bCalls++
+        return okFetch('{"short":["Discover fast transfers","Get low fees today","Try instant transfers now"]}')()
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    // agentId pins the job to model-a (members[0]); the fallback must move on.
+    const result = await dispatch(
+      { action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 3 } },
+      deps
+    )
+    expect(result.ok).toBe(true)
+    expect(bCalls).toBeGreaterThan(0)
+    expect(aCalls).toBeLessThanOrEqual(2)
+    expect((result.provider_pool as { strategy: string }).strategy).toContain('fallback')
+  })
+
+  it('cancels slow models as soon as the quota is covered', async () => {
+    const members = [provider('slow', 'model-slow'), provider('fast', 'model-fast')]
+    let aborted = false
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        if (model === 'model-slow') {
+          return new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => {
+              aborted = true
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            })
+          })
+        }
+        return Promise.resolve(okFetch('{"short":["Discover fast transfers","Get low fees today","Try instant transfers now"]}')())
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    // No agentId: the whole pool runs concurrently, so the fast model can
+    // finish the quota and cancel the slow one.
+    const result = await dispatch(
+      {
+        action: 'copy_generate_batch',
+        request: { product: { language: 'en', benefits: ['fast transfers', 'low fees'] }, categories: [{ type: 'short', qty: 3 }] }
+      },
+      deps
+    )
+    expect(result.ok).toBe(true)
+    expect(aborted).toBe(true)
+  })
+
   it('respects chat mode and empty pools with actionable errors', async () => {
     const deps: AdsCopyDispatchDeps = { fetchImpl: okFetch('{}'), pool: poolOf([], [], 'chat') }
     const chatMode = await dispatch({ action: 'copy_generate_batch', request: baseRequest }, deps)

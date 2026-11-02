@@ -35,6 +35,8 @@ export default function AdsCopyModelsSection() {
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [discovered, setDiscovered] = useState<string[]>([])
+  const [selected, setSelected] = useState<string[]>([])
+  const [batchResult, setBatchResult] = useState<{ added: number; skipped: number; limitReached: boolean } | null>(null)
   const [discovering, setDiscovering] = useState(false)
   const [discoverError, setDiscoverError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -72,6 +74,8 @@ export default function AdsCopyModelsSection() {
     setDiscovering(true)
     setDiscoverError(null)
     setDiscovered([])
+    setSelected([])
+    setBatchResult(null)
     try {
       const result = await window.electronAPI.adsCopyModelsDiscover({ baseUrl, protocol, apiKey })
       if (result.ok && result.models) setDiscovered(result.models)
@@ -117,6 +121,33 @@ export default function AdsCopyModelsSection() {
         setBaseUrl('')
         setModel('')
         setApiKey('')
+        await refresh()
+      } else setError(result.error ?? 'save-failed')
+    } catch {
+      setError('save-failed')
+    } finally {
+      mutationInFlight.current = false
+      setBusy(false)
+    }
+  }
+
+  /** One relay, many models: add every ticked model with this endpoint + key. */
+  const addSelected = async () => {
+    if (mutationInFlight.current || loadFailed || rows === null || selected.length === 0) return
+    mutationInFlight.current = true
+    setBusy(true)
+    setError(null)
+    setBatchResult(null)
+    try {
+      const inputs = selected.map((modelId) => ({ name: modelId, baseUrl, protocol, model: modelId, apiKey }))
+      const result = await window.electronAPI.adsCopyModelsAddMany(inputs)
+      if (result.ok) {
+        setBatchResult({
+          added: result.added ?? 0,
+          skipped: result.skipped ?? 0,
+          limitReached: result.limitReached === true
+        })
+        setSelected([])
         await refresh()
       } else setError(result.error ?? 'save-failed')
     } catch {
@@ -262,7 +293,15 @@ export default function AdsCopyModelsSection() {
               <option value="openai">OpenAI 兼容</option>
               <option value="anthropic">Anthropic</option>
             </select>
-            <div className="flex gap-1.5">
+            <input
+              className={inputClass}
+              type="password"
+              placeholder={t('adsCopy.form.apiKey')}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              maxLength={400}
+            />
+            <div className="flex gap-1.5 md:col-span-2">
               <input
                 className={inputClass}
                 placeholder={t('adsCopy.form.model')}
@@ -287,9 +326,6 @@ export default function AdsCopyModelsSection() {
                 <option key={id} value={id} />
               ))}
             </datalist>
-            {discovered.length > 0 && (
-              <p className="text-[11px] text-cream-faint md:col-span-2">{t('adsCopy.discoveredCount', { count: discovered.length })}</p>
-            )}
             {discoverError && (
               <p className="text-[11px] text-red-500 md:col-span-2">
                 {discoverError === 'parse-failed'
@@ -297,17 +333,68 @@ export default function AdsCopyModelsSection() {
                   : t('adsCopy.testFailed', { detail: discoverError })}
               </p>
             )}
-            <input
-              className={inputClass}
-              type="password"
-              placeholder={t('adsCopy.form.apiKey')}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              maxLength={400}
-            />
+            {discovered.length > 0 && (
+              <div className="rounded-xl border border-line bg-ink-900/60 p-2.5 md:col-span-2">
+                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11.5px] text-cream-faint">
+                    {t('adsCopy.batch.found', { count: discovered.length })}
+                  </span>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      className={actionClass}
+                      disabled={busy || selected.length === discovered.length}
+                      onClick={() => setSelected(discovered)}
+                    >
+                      {t('adsCopy.batch.selectAll')}
+                    </button>
+                    <button
+                      type="button"
+                      className={actionClass}
+                      disabled={busy || selected.length === 0}
+                      onClick={() => setSelected([])}
+                    >
+                      {t('adsCopy.batch.clear')}
+                    </button>
+                  </div>
+                </div>
+                <div className="max-h-44 overflow-auto rounded-lg border border-line bg-ink-850/40 p-1 md:grid md:grid-cols-2 md:gap-x-2">
+                  {discovered.map((id) => (
+                    <label key={id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11.5px] text-cream-dim transition hover:bg-overlay">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 accent-[var(--accent)]"
+                        checked={selected.includes(id)}
+                        onChange={() =>
+                          setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))
+                        }
+                      />
+                      <span className="truncate">{id}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="focus-ring inline-flex items-center justify-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+                    disabled={busy || loadFailed || selected.length === 0 || !baseUrl.trim() || !apiKey.trim()}
+                    onClick={() => void addSelected()}
+                  >
+                    <Plus size={12} />
+                    {t('adsCopy.batch.add', { count: selected.length })}
+                  </button>
+                  {batchResult && (
+                    <span className="text-[11px] text-emerald-500">
+                      {t('adsCopy.batch.result', { added: batchResult.added, skipped: batchResult.skipped })}
+                      {batchResult.limitReached && ` · ${t('adsCopy.batch.limit')}`}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
             <button
               type="button"
-              className="focus-ring inline-flex items-center justify-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+              className="focus-ring inline-flex items-center justify-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40 md:col-span-2"
               disabled={busy || loadFailed || !name.trim() || !baseUrl.trim() || !model.trim() || !apiKey.trim()}
               onClick={() => void add()}
             >

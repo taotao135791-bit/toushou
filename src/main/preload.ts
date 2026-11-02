@@ -327,6 +327,7 @@ export interface ElectronAPI {
   /** Ads-copy model pool management (Connections page; keys never return). */
   adsCopyModelsList: (retry?: boolean) => Promise<{ mode: 'chat' | 'pool'; providers: Array<{ id: string; name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; inPool: boolean; createdAt: number }>; storeUnavailable?: boolean }>
   adsCopyModelsUpsert: (input: { name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; apiKey: string }) => Promise<{ ok: boolean; error?: string }>
+  adsCopyModelsAddMany: (inputs: Array<{ name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; apiKey: string }>) => Promise<{ ok: boolean; error?: string; added?: number; skipped?: number; limitReached?: boolean }>
   adsCopyModelsRemove: (id: string) => Promise<{ ok: boolean }>
   adsCopyModelsSetPool: (poolIds: string[]) => Promise<{ ok: boolean }>
   adsCopyModelsTest: (id: string) => Promise<{ ok: boolean; error?: string }>
@@ -827,6 +828,8 @@ const api: ElectronAPI = {
   adsCopyModelsList: (retry) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_LIST, retry === true),
   adsCopyModelsUpsert: (input: { name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; apiKey: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_UPSERT, input),
+  adsCopyModelsAddMany: (inputs: Array<{ name: string; baseUrl: string; protocol: 'openai' | 'anthropic'; model: string; apiKey: string }>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_ADD_MANY, inputs),
   adsCopyModelsRemove: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_REMOVE, id),
   adsCopyModelsSetPool: (poolIds: string[]) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_SET_POOL, poolIds),
   adsCopyModelsTest: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ADS_COPY_MODELS_TEST, id),

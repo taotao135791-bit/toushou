@@ -9,6 +9,7 @@ import {
   providerRotationIndex,
   resolveTargets,
   scoreCopyItem,
+  scoringLexiconBrief,
   selectTopN,
   targetedFixLines,
   type ScoredCopyItem
@@ -233,6 +234,19 @@ describe('retry helpers (W:759-822, 893-936)', () => {
     expect(lines[2]).toContain('Shorten first')
     expect(targetedFixLines({})).toEqual([])
     expect(targetedFixLines({ space: 0 })).toEqual([])
+  })
+})
+
+describe('scoringLexiconBrief', () => {
+  it('exposes the rewarded words per language, falling back to English', () => {
+    expect(scoringLexiconBrief('es-MX').hook).toContain('descubre')
+    expect(scoringLexiconBrief('es-MX').cta).toContain('descarga')
+    expect(scoringLexiconBrief('zh-CN').forbidden).toContain('保证')
+    expect(scoringLexiconBrief('xx').hook).toEqual(scoringLexiconBrief('en').hook)
+    // A caller must not be able to mutate the scorer's own list.
+    const brief = scoringLexiconBrief('en')
+    brief.hook.push('mutated')
+    expect(scoringLexiconBrief('en').hook).not.toContain('mutated')
   })
 })
 

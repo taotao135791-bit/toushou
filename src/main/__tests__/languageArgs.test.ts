@@ -60,6 +60,28 @@ describe('buildAgentArgs', () => {
   })
 })
 
+describe('ad-copy model pool baseline', () => {
+  it('forbids writing copy with the chat model in pool mode', () => {
+    for (const language of ['zh', 'en'] as const) {
+      const prompt = buildAgentArgs(language)[1]
+      expect(prompt).toContain('ads-copy-model-pool')
+      expect(prompt).toContain('禁止用对话模型撰写')
+      expect(prompt).toContain('不得用对话模型代写')
+    }
+  })
+
+  it('separates deliverable languages from reference translations', () => {
+    const prompt = buildAgentArgs('zh')[1]
+    // Every language that will be delivered is generated natively by the tool…
+    expect(prompt).toContain('都必须各自调用一次 toushou_copy_generate_batch')
+    expect(prompt).toContain('语言之间不得用翻译顶替')
+    // …while a translation made only for reading may use the chat model.
+    expect(prompt).toContain('参考译文（不用于投放）')
+    expect(prompt).toContain('不调用文案模型')
+    expect(prompt).toContain('先问一句')
+  })
+})
+
 describe('data-source priority baseline', () => {
   it('injects the no-computer-use rule for tooled data into every session', () => {
     const args = buildAgentArgs('zh')
