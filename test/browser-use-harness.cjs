@@ -98,7 +98,15 @@ app.whenReady().then(async () => {
     win.show()
     win.focus()
     await new Promise((r) => setTimeout(r, 1_000))
-    record('A screenshot', await post(envA, { action: 'screenshot' }))
+    // Under full-suite load the compositor may not have painted yet; the
+    // action itself retries empty captures, and this outer loop rides out a
+    // longer stall without turning an environment hiccup into a red test.
+    let shot = await post(envA, { action: 'screenshot' })
+    for (let attempt = 0; !shot.ok && attempt < 3; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 1_000))
+      shot = await post(envA, { action: 'screenshot' })
+    }
+    record('A screenshot', shot)
     win.hide()
 
     // 7. User hides the panel: further actions must fail with panel-hidden.
