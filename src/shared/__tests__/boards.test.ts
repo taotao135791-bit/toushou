@@ -488,10 +488,10 @@ describe('composeBoard + presets', () => {
     }
   })
 
-  it('routes reading/summary descriptions to the FB daily preset before ads', () => {
+  it('routes reading/summary descriptions to the FB report preset before ads', () => {
     for (const text of ['fb 读数', '三国 账户日报', '读数看板', '产品汇总', 'fb 汇总', '多账户汇总', '投放日报']) {
-      expect(detectPreset(text), text).toBe('fb-daily')
-      expect(composeBoard(text, t).name).toBe('boards.preset.fbDaily')
+      expect(detectPreset(text), text).toBe('fb-daily-v2')
+      expect(composeBoard(text, t).name).toBe('boards.preset.fbDaily2')
     }
     // Generic ads keywords keep their existing meaning.
     expect(detectPreset('fb 广告')).toBe('ads')

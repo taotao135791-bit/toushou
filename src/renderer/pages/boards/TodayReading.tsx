@@ -24,7 +24,8 @@ import {
 import { formatTikTokAmount, formatTikTokCostPerConversion, formatTikTokCount, formatTikTokRate, tiktokAccountDate } from '@shared/tiktokReport'
 import { useT, type I18nKey } from '../../i18n'
 import { useAppStore } from '../../store'
-import { refreshAccountWithRetry } from './fbReadingRefresh'
+import { FacebookAccountPicker } from './FacebookAccountPicker'
+import { readingBlockKind, refreshAccountWithRetry } from './fbReadingRefresh'
 import { loadTodayFacebookAccounts, type TodayFacebookRow as FacebookRow } from './todayFacebook'
 import { SaveReadingBoardDialog } from './SaveReadingBoardDialog'
 import { snapshotToday, readingAnalysisPrompt } from './todaySnapshot'
@@ -51,12 +52,6 @@ type Translate = (key: I18nKey, vars?: Record<string, string | number>) => strin
 interface TikTokFailure {
   code: ReadingErrorCode | 'invoke-failed'
   detail?: string
-}
-
-function captureFailure(error: string | undefined, t: (key: I18nKey) => string): string {
-  if (error === 'not-on-adsmanager') return t('boards.today.notOnAds')
-  if (error === 'panel-hidden' || error === 'panel-not-open') return t('boards.today.openBrowserFirst')
-  return t('boards.today.captureFailed')
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -93,8 +88,10 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
   const [tiktokBusy, setTiktokBusy] = useState(false)
   const [refreshingAct, setRefreshingAct] = useState<string | null>(null)
   const [rowFailures, setRowFailures] = useState<Record<string, string | null>>({})
-  const [captureError, setCaptureError] = useState<string | null>(null)
-  const [captureBusy, setCaptureBusy] = useState(false)
+  const [facebookScope, setFacebookScope] = useState<string[]>([])
+  const [fbBatch, setFbBatch] = useState<{ done: number; total: number; account: string; stopped: boolean } | null>(null)
+  const fbRunning = useRef(false)
+  const fbStop = useRef(false)
   const [openAct, setOpenAct] = useState<string | null>(null)
   const [resultQuery, setResultQuery] = useState('')
   const [onlyFailed, setOnlyFailed] = useState(false)
@@ -137,10 +134,10 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
   const zh = language === 'zh'
   const dateWindow = range === 'custom' ? customWindow : todayWindow(range)
   const previous = previousEqualWindow(dateWindow)
-  const preset = range === 'custom' ? null : fbPresetForTodayRange(range)
   const facebookKey = `${dateWindow.start}|${dateWindow.end}`
   facebookContext.current = facebookKey
-  const visibleFacebook = facebookLoadedKey === facebookKey ? facebook : null
+  const facebookAccounts = facebook ?? []
+  const visibleFacebook = facebookLoadedKey === facebookKey ? (facebook ?? []).filter(row => facebookScope.includes(row.account.act)) : null
   const facebookPending = facebookLoading || facebookLoadedKey !== facebookKey
 
   const loadFacebook = useCallback(async () => {
@@ -211,7 +208,9 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
   useEffect(() => {
     let active = true
     facebookRefresh.current += 1
-    setRefreshingAct(null)
+    setFacebookScope([])
+    setFbBatch(null)
+    fbStop.current = true
     setRowFailures({})
     void loadFacebook().catch(() => {
       if (active) setFacebook([])
@@ -227,59 +226,46 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
     }
   }, [loadFacebook, loadTikTok])
 
-  const refreshFacebook = async (row: FacebookRow) => {
-    if (refreshingAct) return
+  const readFacebook = async (acts: string[], replaceScope = true) => {
+    if (fbRunning.current || inChat) return
+    const rows = facebookAccounts.filter(row => acts.includes(row.account.act))
+    if (!rows.length) return
+    fbRunning.current = true
+    fbStop.current = false
     const key = facebookContext.current
     const refreshId = ++facebookRefresh.current
     const isCurrent = () => alive.current && key === facebookContext.current && refreshId === facebookRefresh.current
-    if (inChat) {
-      setWorkspacePanel({ kind: 'browser' })
-      return
-    }
-    setRefreshingAct(row.account.act)
-    setRowFailures((old) => ({ ...old, [row.account.act]: null }))
+    if (replaceScope) setFacebookScope(rows.map(row => row.account.act))
+    setRowFailures(old => ({ ...old, ...Object.fromEntries(rows.map(row => [row.account.act, 'not-read'])) }))
+    setFbBatch({ done: 0, total: rows.length, account: rows[0].account.alias, stopped: false })
+    let done = 0
     try {
-      const outcome = await refreshAccountWithRetry({
-        alias: row.account.alias,
-        act: row.account.act,
-        businessId: row.account.businessId,
-        range: preset ?? 'custom',
-        ...(!preset ? { startDate: dateWindow.start, endDate: dateWindow.end } : {})
-      }, {
-        isCurrent
-      })
-      if (!isCurrent()) return
-      if (outcome.kind === 'failed') setRowFailures((old) => ({ ...old, [row.account.act]: outcome.error }))
-      await loadFacebook()
+      for (const row of rows) {
+        if (!isCurrent() || fbStop.current) break
+        setRefreshingAct(row.account.act)
+        setFbBatch({ done, total: rows.length, account: row.account.alias, stopped: false })
+        const outcome = await refreshAccountWithRetry({
+          alias: row.account.alias, act: row.account.act, businessId: row.account.businessId,
+          // Freeze the requested window, including if a batch crosses midnight.
+          range: 'custom', startDate: dateWindow.start, endDate: dateWindow.end
+        }, { isCurrent })
+        if (!isCurrent()) break
+        if (outcome.kind === 'cancelled') break
+        done += 1
+        setRowFailures(old => ({ ...old, [row.account.act]: outcome.kind === 'failed' ? outcome.error : null }))
+        await loadFacebook()
+        if (outcome.kind === 'failed' && readingBlockKind(outcome.error)) break
+      }
     } finally {
-      if (isCurrent()) setRefreshingAct(null)
+      fbRunning.current = false
+      if (alive.current) setRefreshingAct(null)
+      if (isCurrent()) setFbBatch({ done, total: rows.length, account: '', stopped: done < rows.length })
     }
   }
 
-  const captureAccount = async () => {
-    setCaptureBusy(true)
-    setCaptureError(null)
-    try {
-      const captured = await window.electronAPI.captureFbReadingAccount()
-      if (!captured.ok || !captured.account) {
-        setCaptureError(captureFailure(captured.error, t))
-        return
-      }
-      const added = await window.electronAPI.addFbReadingAccounts({
-        accounts: [{
-          alias: captured.account.act,
-          act: captured.account.act,
-          businessId: captured.account.businessId
-        }]
-      })
-      if (!added.ok) {
-        setCaptureError(t('boards.today.captureFailed'))
-        return
-      }
-      await loadFacebook()
-    } finally {
-      setCaptureBusy(false)
-    }
+  const refreshFacebook = (row: FacebookRow) => {
+    if (inChat) { setWorkspacePanel({ kind: 'browser' }); return }
+    return readFacebook([row.account.act], false)
   }
 
   const cancelTikTok = async () => {
@@ -453,48 +439,25 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
       {range === 'today' && <p role="note" className="text-[12px] text-amber-700 dark:text-amber-300">{zh ? '今天的数据截至读取时，比较项为昨天全天，两者不是等时段。' : 'Today is measured at read time; the comparison is the whole of yesterday. These are not equal elapsed periods.'}</p>}
       <section className="flex flex-col gap-2">
         <h2 className="text-[16px] font-semibold leading-[26px] text-cream">{t('boards.today.facebook')}</h2>
-        {facebookLoadError ? <div role="alert" className="rounded-xl border border-line p-4 text-[13px] text-cream"><p>{zh ? '无法加载 Facebook 账户或历史读数。' : 'Could not load Facebook accounts or history.'}</p><button onClick={() => void loadFacebook()} className="focus-ring mt-2 rounded-full border border-line px-3 py-1">{zh ? '重试' : 'Retry'}</button></div> : visibleFacebook === null ? (
-          <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.loading')}</p>
-        ) : visibleFacebook.length === 0 ? (
-          <div className="rounded-2xl border border-line bg-ink-850 px-4 py-4">
-            <p className="text-[14px] leading-[22px] text-cream">{t('boards.today.noFacebook')}</p>
-            <p className="mt-1 max-w-[52ch] text-[12px] leading-[18px] text-cream-faint">{t('boards.today.noFacebookHint')}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setWorkspacePanel({ kind: 'browser' })}
-                className="focus-ring rounded-full bg-accent px-3 py-1.5 text-[12px] leading-[18px] font-medium text-[rgb(var(--bg-app))]"
-              >
-                {t('boards.today.openBrowser')}
-              </button>
-              <button
-                type="button"
-                onClick={() => void captureAccount()}
-                disabled={captureBusy}
-                className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] leading-[18px] text-cream-dim hover:text-cream disabled:opacity-40"
-              >
-                {t('boards.today.capture')}
-              </button>
-            </div>
-            {captureError && <p role="alert" className="mt-2 text-[12px] leading-[18px] text-red-600 dark:text-red-400">{captureError}</p>}
-          </div>
-        ) : (
-          visibleFacebook.map((row) => (
-            <FacebookAccount
-              key={row.account.id}
-              row={row}
-              open={openAct === row.account.act}
-              busy={refreshingAct === row.account.act}
-              needsBrowser={inChat}
-              refreshDisabled={refreshingAct !== null}
-              failure={rowFailures[row.account.act] ?? row.readError}
-              onToggle={() => setOpenAct((current) => current === row.account.act ? null : row.account.act)}
-              onRefresh={() => void refreshFacebook(row)}
-              onStep={(step) => row.readError ? void loadFacebook() : facebookStep(step, row)}
-              t={t}
-            />
-          ))
-        )}
+        <FacebookAccountPicker
+          accounts={facebookAccounts.map(row => row.account)} busy={refreshingAct !== null}
+          loading={facebookLoading} error={facebookLoadError} zh={zh} needsBrowser={inChat}
+          onRead={acts => void readFacebook(acts)} onReload={() => void loadFacebook()}
+          onOpenBrowser={() => setWorkspacePanel({ kind: 'browser' })}
+        />
+        {fbBatch && <div role="status" className="flex flex-wrap items-center gap-3 text-[12px] text-cream-dim">
+          <span>{zh ? `已处理 ${fbBatch.done} / ${fbBatch.total} 个账户` : `Processed ${fbBatch.done} / ${fbBatch.total} accounts`}{refreshingAct ? ` · ${fbBatch.account}` : fbBatch.stopped ? (zh ? ' · 已停止，未读取账户单独标记' : ' · Stopped; unread accounts are marked') : ''}</span>
+          {refreshingAct && <button type="button" onClick={() => { fbStop.current = true }} className="focus-ring rounded-full border border-line px-3 py-1">{zh ? '停止后续读取' : 'Stop after this account'}</button>}
+        </div>}
+        {!facebookScope.length && <p className="text-[12px] text-cream-faint">{zh ? '选择范围并点击读取后，结果将显示在这里。' : 'Choose a scope and start reading to see results here.'}</p>}
+        {visibleFacebook?.map(row => <FacebookAccount
+          key={row.account.id} row={row} open={openAct === row.account.act}
+          busy={refreshingAct === row.account.act} needsBrowser={inChat}
+          refreshDisabled={refreshingAct !== null} failure={rowFailures[row.account.act] ?? row.readError}
+          onToggle={() => setOpenAct(current => current === row.account.act ? null : row.account.act)}
+          onRefresh={() => void refreshFacebook(row)}
+          onStep={step => row.readError ? void loadFacebook() : facebookStep(step, row)} t={t}
+        />)}
       </section>
 
       <section className="flex flex-col gap-2">
@@ -760,7 +723,7 @@ function FacebookAccount({
 }) {
   const delta = formatSpendDelta(row.spend, row.previousSpend)
   const lang = useAppStore(state => state.language)
-  const notice: ReadingNotice | null = failure ? fbReadingNotice(failure, t, 'boards.today.refreshFailed') : null
+  const notice: ReadingNotice | null = failure && failure !== 'not-read' ? fbReadingNotice(failure, t, 'boards.today.refreshFailed') : null
   return (
     <article className="rounded-2xl border border-line bg-ink-850 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -783,6 +746,7 @@ function FacebookAccount({
           </p>
         </div>
       </div>
+      {failure === 'not-read' && <p role="status" className="mt-2 text-[12px] text-cream-faint">{lang === 'zh' ? '本次尚未读取；已有数字仅为该日期的历史读数。' : 'Not read in this run; any figures shown are historical readings for this date.'}</p>}
       {row.readError && <p role="alert" className="mt-2 text-[12px] text-red-600">{lang === 'zh' ? '历史读数加载失败，账户仍已保留；请重试。' : 'History could not be loaded. The account is preserved; retry.'}</p>}
       {notice && failure && (
         <ReadingErrorNotice className="mt-2" notice={notice} detail={failure} onAction={onStep} busy={busy} />

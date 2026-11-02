@@ -119,7 +119,6 @@ const DEFAULT_MASTER_METRICS: readonly string[] = ['spend', 'cpi', 'cpm']
 
 /** New-board template menu: blank keeps the inline name input, presets pre-lay-out widgets. */
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
-  { preset: 'fb-daily', labelKey: 'boards.template.fbDaily' },
   { preset: 'fb-daily-v2', labelKey: 'boards.template.fbDaily2' },
   { preset: 'tiktok', labelKey: 'boards.template.tiktok' },
   { preset: 'blank', labelKey: 'boards.template.blank' },
@@ -2485,7 +2484,7 @@ export default function BoardsPage() {
             <div className="mt-3 flex flex-wrap gap-1.5">
               {(
                 [
-                  { preset: 'fb-daily', label: t('boards.preset.fbDaily') },
+                  { preset: 'fb-daily-v2', label: t('boards.preset.fbDaily2') },
                   { preset: 'ads', label: t('boards.preset.ads') },
                   { preset: 'daily', label: t('boards.preset.daily') },
                   { preset: 'blank', label: t('boards.compose.chipBlank') }

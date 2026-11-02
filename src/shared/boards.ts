@@ -17,6 +17,7 @@ import {
 } from './types'
 import { DATASET_LIMITS, DATASET_OPS, DatasetOp } from './datasets'
 import { parseFbReportReference } from './fbReportReference'
+import { parseFbReportProducts } from './fbReportProducts'
 import { validGoogleReportUrl } from './googleReport'
 import { parseTikTokAdvertiserIdList, TIKTOK_ADVERTISER_ID_LIMIT, TIKTOK_ADVERTISER_LIST_MAX_LENGTH } from './tiktokReport'
 import { validateReadingSnapshot } from './readingSnapshot'
@@ -228,7 +229,7 @@ function matchesKeyword(text: string, keyword: string): boolean {
 /** Pick a preset from a free-form description; anything unknown falls back to daily. */
 export function detectPreset(description: string): BoardPresetId {
   const text = description.toLowerCase()
-  if (FB_DAILY_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'fb-daily'
+  if (FB_DAILY_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'fb-daily-v2'
   if (ADS_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'ads'
   if (FINANCE_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'finance'
   return 'daily'
@@ -363,7 +364,7 @@ export function fbDailyPreset(t: BoardText, accounts: readonly FbReadingAccountR
 }
 
 /**
- * 「Facebook 投放日报（2）」— the report-import path. One module imports a
+ * 「FB 投放日报」— the report-import path. One module imports a
  * Facebook Ads Reporting CSV (any structure the shared contract accepts),
  * verifies it against Facebook's own totals row in Main, and renders the
  * per-account rows plus the FB totals. Deliberately separate from fb-daily:
@@ -830,11 +831,18 @@ function validateWidgetConfig(
       // Google exports use their page's actual window, never the board's preset.
       return { reportUrl }
     }
-    case 'fb-report-reading':
-      // v2: one bounded string — the saved report to open for auto export.
-      // Everything else lives in Main's per-widget reading store.
-      {
-        const config: Record<string, unknown> = {}
+    case 'fb-report-reading': {
+      // Product bindings share the existing Main verified-reading store;
+      // legacy single-report widgets remain readable until edited.
+      const config: Record<string, unknown> = {}
+      if (raw.products !== undefined) {
+        const products = parseFbReportProducts(raw.products)
+        if (!products) return null
+        const selected = raw.selectedProductId ?? ''
+        if (typeof selected !== 'string' || (selected !== '' && !products.some((p) => p.id === selected))) return null
+        config.products = products
+        config.selectedProductId = selected
+      }
       if (raw.reportName !== undefined) {
         const reportName = cleanString(raw.reportName, 80)
         if (reportName === null) return null
@@ -849,15 +857,15 @@ function validateWidgetConfig(
           config.reportId = reference.url ?? reference.reportId
         }
       }
-      // Master-scope range (today / last7 / last30) — drives the FB date
-      // picker during auto-fetch. last3 has no FB quick option and is skipped.
+      // Unsupported presets are retained for explicit UI rejection, never remapped.
+      if (raw.independent === true) config.independent = true
       if (raw.range !== undefined) {
         const range = cleanString(raw.range, 8)
         if (range === null) return null
-        if (range === 'today' || range === 'last7' || range === 'last30') config.range = range
+        if (range === 'today' || range === 'yesterday' || range === 'last3' || range === 'last7' || range === 'last30') config.range = range
       }
       return config
-      }
+    }
     case 'clock': {
       const config: Record<string, unknown> = {}
       if (raw.showSeconds !== undefined) {

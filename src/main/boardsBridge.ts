@@ -70,7 +70,7 @@ const BOARD_TEXT: Record<string, string> = {
   'boards.preset.finance.trend': '价格走势',
   'boards.preset.daily': '日常通用',
   'boards.preset.fbDaily': 'FB 投放日报',
-  'boards.preset.fbDaily2': 'Facebook 投放日报（2）',
+  'boards.preset.fbDaily2': 'FB 投放日报',
   'boards.preset.tiktok': 'TikTok 投放全景',
   'boards.preset.tiktok.kpiSpend': '总消耗',
   'boards.preset.tiktok.kpiClicks': '总点击',
@@ -87,7 +87,6 @@ const boardText: BoardText = (key) => BOARD_TEXT[key] ?? key
 
 export const BOARD_TEMPLATES: readonly BoardPresetId[] = [
   'tiktok',
-  'fb-daily',
   'fb-daily-v2',
   'ads',
   'daily',

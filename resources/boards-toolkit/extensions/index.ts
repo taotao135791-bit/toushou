@@ -39,13 +39,12 @@ const WIDGET_TYPES = [
   'google-report-reading', 'tt-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
 ]
 
-const TEMPLATES = ['tiktok', 'fb-daily', 'fb-daily-v2', 'ads', 'daily', 'blank']
+const TEMPLATES = ['tiktok', 'fb-daily-v2', 'ads', 'daily', 'blank']
 
 /** 标准看板模板，仅在用户明确要求时选择。 */
 const TEMPLATE_HELP = {
   tiktok: 'TikTok 投放全景：总消耗/总点击/平均点击率/总转化四个指标卡 + 近 30 天消耗趋势 + 分活动消耗对比 + 转化趋势 + TT 读数模块。指标卡与图表绑定「TikTok 报表」数据集。',
-  'fb-daily': 'FB 投放日报：跨账户读数汇总 + 每账户明细卡（需要用户已登记 FB 账户）。',
-  'fb-daily-v2': 'FB 报表读数：导入 Facebook 报表 CSV 并核验。',
+  'fb-daily-v2': 'FB 投放日报：按产品关联已保存报表，自动获取并核验报表读数。',
   ads: '海外广告投放（占位演示数据）：KPI 行 + 趋势 + 渠道对比 + 预算 + 清单。',
   daily: '日常通用：时钟 + 便签 + 待办。',
   blank: '空白看板。'

@@ -17,7 +17,7 @@ export function snapshotToday(input: {
   if (input.tiktokFailure) accounts.push({ platform: 'tiktok', accountId: null, name: 'TikTok', status: 'failed', statusDetail: input.tiktokFailure.code, window: input.window, previousWindow: null, sourceAt: null, timezone: null, currency: null, spend: null, previousSpend: null, impressions: null, clicks: null, conversions: null })
   for (const row of input.facebook ?? []) {
     const failure = input.facebookFailures?.[row.account.act] ?? row.readError
-    const status = failure ? 'failed' : row.spend === null ? 'unavailable' : 'ok'
+    const status = failure === 'not-read' ? 'unattempted' : failure ? 'failed' : row.spend === null ? 'unavailable' : 'ok'
     accounts.push({ platform: 'facebook', accountId: row.account.act, name: row.account.alias, status,
       statusDetail: failure ?? (status === 'unavailable' ? 'no-reading-for-window' : null), window: input.window,
       previousWindow: row.previousSpend !== null ? previousEqualWindow(input.window) : null, sourceAt: row.capturedAt ? Date.parse(row.capturedAt) : null, timezone: null,

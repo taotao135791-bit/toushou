@@ -1,19 +1,16 @@
-import { useCallback, useEffect, useState } from 'react'
-import { FileSpreadsheet, RefreshCw, Sparkles } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { BoardWidget } from '@shared/types'
 import type {
   FbReportAutoFetchResult,
-  FbReportImportResult,
   FbReportIssue,
   FbReportStoredReading
 } from '@shared/fbReportCsv'
 import { fbReportReadingEvidence } from '@shared/readingEvidence'
 import { ReadingEvidenceLine } from './ReadingEvidenceLine'
-import { buildFbReportAnalysisPrompt } from '@shared/fbReportChat'
 import { useT } from '../../i18n'
-import { useAppStore } from '../../store'
-import { createSessionForCurrentProject } from '../../lib/session'
+import { selectedFbReportProduct } from '@shared/fbReportProducts'
+import { FbReportProductSelector } from './FbReportProductSelector'
 
 const fmtMoney = (value: number | null): string => (value === null ? '—' : value.toFixed(2))
 const fmtCount = (value: number | null): string => (value === null ? '—' : String(Math.round(value)))
@@ -69,104 +66,85 @@ function fetchErrorText(t: ReturnType<typeof useT>, code: string, detail?: strin
   return detail ? base + ' — ' + detail : base
 }
 
-/**
- * FB 报表读数模块：渲染最近一次 verified 导入。导入由 Main 的文件对话框
- * 发起，解析与 verified 校验都在 Main；未通过校验的导入在这里展示人话
- * 原因，旧读数保持不动。
- */
-export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
+/** Switching products reads local verified data only; exporting requires an explicit refresh. */
+export function FbReportReadingBody({ widget, onConfigChange }: {
+  widget: BoardWidget
+  onConfigChange: (config: Record<string, unknown>) => void
+}) {
   const t = useT()
-  const navigate = useNavigate()
-  const [reading, setReading] = useState<FbReportStoredReading | null>(null)
+  const product = selectedFbReportProduct(widget.config, widget.id)
+  const readingId = product?.id ?? ''
+  const loadVersion = useRef(0)
+  const activeId = useRef(readingId)
+  activeId.current = readingId
+  const [stored, setStored] = useState<{ id: string; reading: FbReportStoredReading | null } | null>(null)
+  const reading = stored?.id === readingId ? stored.reading : null
   const [busy, setBusy] = useState(false)
+  const inFlight = useRef<Promise<void> | null>(null)
   const [rejected, setRejected] = useState<FbReportIssue[] | null>(null)
   const [unavailable, setUnavailable] = useState(false)
-  const [canceled, setCanceled] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
-  const reportName = typeof widget.config.reportName === 'string' ? widget.config.reportName.trim() : ''
-  const reportId = typeof widget.config.reportId === 'string' ? widget.config.reportId.trim() : ''
+  const reportName = product?.reportName ?? ''
+  const reportId = product?.reportId ?? ''
   const range = typeof widget.config.range === 'string' ? widget.config.range : ''
+  // Main marks unsupported master presets independent and retains the old range.
+  // Do not export that old range after the user has chosen yesterday / last3.
+  const dateUnavailable = widget.config.independent === true || !['today', 'last7', 'last30'].includes(range)
 
-  const load = useCallback(async () => {
-    const stored = await window.electronAPI.fbReportReadingGet(widget.id).catch(() => null)
-    setReading(stored ?? null)
-  }, [widget.id])
+  useEffect(() => {
+    let canceled = false
+    const version = ++loadVersion.current
+    setRejected(null)
+    setUnavailable(false)
+    setFetchError(null)
+    if (readingId) {
+      void window.electronAPI.fbReportReadingGet(readingId).then((value) => {
+        if (!canceled && version === loadVersion.current) setStored({ id: readingId, reading: value })
+      }).catch(() => { if (!canceled) setUnavailable(true) })
+    }
+    return () => { canceled = true }
+  }, [readingId])
 
-  // Board-level refresh: run auto-fetch when this module's turn comes.
+  const runAutoFetch = useCallback((): Promise<void> => {
+    // Both the module button and refresh-all share one operation, even on rapid clicks.
+    if (inFlight.current) return inFlight.current
+    if (!readingId || !reportName || dateUnavailable) return Promise.resolve()
+    ++loadVersion.current
+    setBusy(true)
+    setRejected(null)
+    setUnavailable(false)
+    setFetchError(null)
+    const task = Promise.resolve().then(async () => {
+      try {
+        const result: FbReportAutoFetchResult = await window.electronAPI.fbReportAutoFetch(readingId, reportName, reportId || undefined, range || undefined)
+        if (activeId.current !== readingId) return
+        if (result.fetchError) setFetchError(fetchErrorText(t, result.fetchError, result.detail))
+        else if (result.ok && result.outcome && !result.outcome.verification.verified) setRejected(result.outcome.verification.fatal)
+        else if (!result.ok) setUnavailable(true)
+        const value = await window.electronAPI.fbReportReadingGet(readingId)
+        if (activeId.current === readingId) setStored({ id: readingId, reading: value })
+      } catch {
+        if (activeId.current === readingId) setUnavailable(true)
+      } finally {
+        setBusy(false)
+        inFlight.current = null
+      }
+    })
+    inFlight.current = task
+    return task
+  }, [readingId, reportName, reportId, range, dateUnavailable, t])
+
   useEffect(() => {
     const onRefresh = (event: Event): void => {
       const detail = (event as CustomEvent).detail as { widgetId?: string }
       if (detail?.widgetId !== widget.id) return
-      void (async () => {
-        try {
-      if (reportName) await window.electronAPI.fbReportAutoFetch(widget.id, reportName, reportId || undefined, range || undefined)
-        } catch {
-          // fail-closed: the reading store keeps the last verified data
-        } finally {
-          await load()
-          window.dispatchEvent(new CustomEvent('fb-report-reading:module-done', { detail: { widgetId: widget.id } }))
-        }
-      })()
+      void runAutoFetch().finally(() => {
+        window.dispatchEvent(new CustomEvent('fb-report-reading:module-done', { detail: { widgetId: widget.id } }))
+      })
     }
     window.addEventListener('fb-report-reading:board-refresh', onRefresh)
     return () => window.removeEventListener('fb-report-reading:board-refresh', onRefresh)
-  }, [widget.id, reportName, reportId, load])
-
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  const runImport = async () => {
-    if (busy) return
-    setBusy(true)
-    setRejected(null)
-    setUnavailable(false)
-    setCanceled(false)
-    setFetchError(null)
-    let result: FbReportImportResult | null = null
-    try {
-      result = await window.electronAPI.fbReportImport(widget.id)
-    } catch {
-      result = null
-    }
-    setBusy(false)
-    if (!result) {
-      setUnavailable(true)
-      return
-    }
-    if (result.ok && result.outcome && !result.outcome.verification.verified) {
-      setRejected(result.outcome.verification.fatal)
-    } else if (!result.ok && result.canceled) {
-      setCanceled(true)
-    }
-    await load()
-  }
-
-  const runAutoFetch = async () => {
-    if (busy || !reportName) return
-    setBusy(true)
-    setRejected(null)
-    setUnavailable(false)
-    setCanceled(false)
-    setFetchError(null)
-    let result: FbReportAutoFetchResult | null = null
-    try {
-      result = await window.electronAPI.fbReportAutoFetch(widget.id, reportName, reportId || undefined, range || undefined)
-    } catch {
-      result = null
-    }
-    setBusy(false)
-    if (!result) {
-      setUnavailable(true)
-      return
-    }
-    if (result.fetchError) {
-      setFetchError(fetchErrorText(t, result.fetchError, result.detail))
-    } else if (result.ok && result.outcome && !result.outcome.verification.verified) {
-      setRejected(result.outcome.verification.fatal)
-    }
-    await load()
-  }
+  }, [widget.id, runAutoFetch])
 
   const summary = reading?.summary ?? null
   // Dynamic columns: every metric the file actually had, in file order.
@@ -174,49 +152,15 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
   const th = 'px-2 py-1 text-left font-medium text-neutral-500'
   const td = 'px-2 py-1 tabular-nums'
 
-  const sendToAi = async () => {
-    if (!reading || !summary) return
-    const prompt = buildFbReportAnalysisPrompt(reading.fileName, summary, reading.warnings)
-    try {
-      const sessionId = await createSessionForCurrentProject()
-      if (!sessionId) return
-      const store = useAppStore.getState()
-      store.setComposerPrefill(prompt)
-      store.setComposerAutosend(true)
-      store.setCurrentSessionId(sessionId)
-      navigate('/')
-    } catch {
-      setUnavailable(true)
-    }
-  }
-
   return (
     <div className="flex h-full flex-col gap-2 overflow-auto p-3 text-xs">
+      <FbReportProductSelector widget={widget} disabled={busy} onConfigChange={onConfigChange} />
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={runImport}
-          disabled={busy}
-          className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-neutral-300 px-2.5 py-1 hover:bg-neutral-50 disabled:opacity-50"
-        >
-          <FileSpreadsheet size={13} aria-hidden="true" />
-          {busy ? t('boards.fbReport.importing') : t('boards.fbReport.import')}
-        </button>
-        {summary && (
-          <button
-            type="button"
-            onClick={sendToAi}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-neutral-300 px-2.5 py-1 hover:bg-neutral-50"
-          >
-            <Sparkles size={13} aria-hidden="true" />
-            {t('boards.fbReport.analyze')}
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={runAutoFetch}
-          disabled={busy || !reportName}
-          title={reportName ? undefined : t('boards.fbReport.needReportName')}
+          onClick={() => void runAutoFetch()}
+          disabled={busy || !reportName || dateUnavailable}
+          title={reportName ? undefined : t('boards.fbReport.products.choose')}
           className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-neutral-300 px-2.5 py-1 hover:bg-neutral-50 disabled:opacity-50"
         >
           <RefreshCw size={13} aria-hidden="true" />
@@ -231,10 +175,9 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
         )}
       </div>
 
-      {canceled && <p className="text-neutral-500">{t('boards.fbReport.canceled')}</p>}
       {unavailable && <p className="text-red-600">{t('boards.fbReport.unavailable')}</p>}
       {fetchError && <p className="text-red-600">{fetchError}</p>}
-      {range === 'last3' && reading && (
+      {dateUnavailable && (
         <p className="text-neutral-400">{t('boards.fbReport.rangeHint')}</p>
       )}
       {rejected && (
@@ -248,8 +191,11 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
         </div>
       )}
 
+      {product && <p className="text-neutral-500">{t('boards.fbReport.products.report')}: {product.reportName}</p>}
+      {!product && <p className="text-neutral-500">{t('boards.fbReport.products.first')}</p>}
       {summary ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
+          <p className="text-neutral-500">{t('boards.fbReport.products.cached')}</p>
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-neutral-200">
@@ -299,7 +245,7 @@ export function FbReportReadingBody({ widget }: { widget: BoardWidget }) {
           <p className="text-neutral-400">{t('boards.fbReport.note')}</p>
         </div>
       ) : (
-        !rejected && <p className="text-neutral-500">{t('boards.fbReport.empty')}</p>
+        product && !rejected && <p className="text-neutral-500">{t('boards.fbReport.empty')}</p>
       )}
     </div>
   )

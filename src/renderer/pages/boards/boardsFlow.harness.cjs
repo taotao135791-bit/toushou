@@ -77,7 +77,7 @@ app.whenReady().then(async () => {
     await wait()
     const chosenAccountId = await wc.executeJavaScript(`document.querySelector('[placeholder="Search by name or enter advertiser ID"]').value`)
     const readsBeforeSubmit = await wc.executeJavaScript(`window.boardFixture.scenario.todayInputs.length`)
-    await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Read this account').click()`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('section[aria-label="Choose TikTok reading scope"] button')].find(e=>e.textContent.trim()==='Read this account').click()`)
     await wait()
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Retry').click()`)
     await wait()

@@ -12,6 +12,11 @@ const tiktok: TikTokTodayReading = { range: 'last7', window, previousWindow: { s
 ] }
 
 describe('saved reading scope and analysis drafts', () => {
+  it('marks FB accounts skipped by a stopped batch as unattempted without cached amounts', () => {
+    const snapshot = snapshotToday({ rangeLabel: 'last week', window, capturedAt: 2000, facebook: [facebook], tiktok: null, facebookFailures: { '123456789': 'not-read' } })
+    expect(validateReadingSnapshot(snapshot)).not.toBeNull()
+    expect(snapshot.accounts[0]).toMatchObject({ status: 'unattempted', spend: null, previousSpend: null, impressions: null })
+  })
   it('keeps failed/unknown readings explicit and preserves each account window', () => {
     const snapshot = snapshotToday({ rangeLabel: 'last week', window, capturedAt: 2000, facebook: [facebook], tiktok, facebookFailures: { '123456789': 'network' } })
     expect(validateReadingSnapshot(snapshot)).not.toBeNull()
