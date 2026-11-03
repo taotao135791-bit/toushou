@@ -5,7 +5,6 @@ import { GRID_COLS, GRID_MAX_H, MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRan
 import { fbReadingMetricLabel, fbReadingRangeLabel, ttReadingRangeLabel } from './metricLabel'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
-import { parseFbReportReference } from '@shared/fbReportReference'
 import { validGoogleReportUrl } from '@shared/googleReport'
 import { parseTikTokAdvertiserIdList } from '@shared/tiktokReport'
 import {
@@ -115,9 +114,6 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
   const [urlInvalid, setUrlInvalid] = useState(false)
   const [googleReportUrl, setGoogleReportUrl] = useState(configString(widget, 'reportUrl'))
   const [googleUrlInvalid, setGoogleUrlInvalid] = useState(false)
-  const [reportName, setReportName] = useState(configString(widget, 'reportName'))
-  const [reportId, setReportId] = useState(configString(widget, 'reportId'))
-  const [reportReferenceInvalid, setReportReferenceInvalid] = useState(false)
   const [labelsInvalid, setLabelsInvalid] = useState(false)
   const [style, setStyle] = useState<BoardWidgetStyle>(widget.style ?? {})
 
@@ -331,19 +327,9 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
         config = { reportUrl }
         break
       }
-      case 'fb-report-reading': {
-        const reference = reportId.trim() ? parseFbReportReference(reportId) : null
-        if (reportId.trim() && !reference) {
-          setReportReferenceInvalid(true)
-          return
-        }
-        config = {
-          ...(reportName.trim() ? { reportName: reportName.trim().slice(0, 80) } : {}),
-          ...(reference ? { reportId: reference.url ?? reference.reportId } : {}),
-          ...(typeof widget.config.range === 'string' ? { range: widget.config.range } : {})
-        }
+      case 'fb-report-reading':
+        config = { ...widget.config }
         break
-      }
       case 'fb-reading':
         {
           const ref = selectedAccount ?? resolveFbReadingWidgetAccount(widget.config)
@@ -904,27 +890,7 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
           </>
         )}
         {widget.type === 'fb-report-reading' && (
-          <>
-            <Field label={t('boards.fbReport.config.reportName')}>
-              <input
-                value={reportName}
-                onChange={(e) => setReportName(e.target.value)}
-                placeholder={t('boards.fbReport.config.reportNamePlaceholder')}
-                className={inputClass}
-              />
-            </Field>
-            <p className="text-[11px] leading-4 text-cream-faint">{t('boards.fbReport.config.reportNameHint')}</p>
-            <Field label={t('boards.fbReport.config.reportId')}>
-              <input
-                value={reportId}
-                onChange={(e) => { setReportId(e.target.value); setReportReferenceInvalid(false) }}
-                placeholder="selected_report_id"
-                className={inputClass}
-              />
-            </Field>
-            <p className="text-[11px] leading-4 text-cream-faint">{t('boards.fbReport.config.reportIdHint')}</p>
-            {reportReferenceInvalid && <p className="text-[11px] text-red-500">{t('boards.fbReport.config.invalidReference')}</p>}
-          </>
+          <p className="text-xs text-cream-faint">{t('boards.fbReport.products.configHint')}</p>
         )}
         {widget.type === 'file' && (
           <>

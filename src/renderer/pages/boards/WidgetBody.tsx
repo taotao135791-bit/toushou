@@ -662,7 +662,7 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapsh
     case 'fb-reading-summary':
       return <FbReadingSummaryBody widget={widget} />
     case 'fb-report-reading':
-      return <FbReportReadingBody widget={widget} />
+      return <FbReportReadingBody widget={widget} onConfigChange={onConfigChange} />
     case 'google-report-reading':
       return <GoogleReportReadingBody widget={widget} onSnapshotSaved={onSnapshotSaved} />
     case 'tt-reading':
