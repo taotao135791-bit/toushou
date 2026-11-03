@@ -240,10 +240,18 @@ Promise.race([run(), new Promise((_, reject) => { timer = setTimeout(() => rejec
   try { await stopChild('final') } catch (error) { process.exitCode = 1; console.error(error.message) }
   try {
     await Promise.race([
-      rm(root, { recursive: true, force: true }),
-      sleep(4000).then(() => { throw new Error('Synthetic profile cleanup timed out') })
+      // Windows can briefly retain a killed Chromium process's file handles.
+      // Retry only filesystem-defined transient errors, within the same strict
+      // cleanup deadline; a persistent lock still fails the smoke.
+      rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
+      sleep(8000).then(() => { throw new Error('Synthetic profile cleanup timed out') })
     ])
-  } catch (error) { process.exitCode = 1; console.error(`[smoke-cleanup] phase=profile error=${error.code || error.message}`) }
+  } catch (error) {
+    process.exitCode = 1
+    const relative = typeof error.path === 'string' ? path.relative(root, error.path) : ''
+    const target = relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) ? relative : '.'
+    console.error(`[smoke-cleanup] phase=profile error=${error.code || error.message} target=${JSON.stringify(target)}`)
+  }
   child?.stdout?.destroy()
   child?.stderr?.destroy()
   if (!process.exitCode) console.log('Packaged app smoke passed (including process cleanup).')
