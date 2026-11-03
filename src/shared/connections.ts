@@ -168,6 +168,18 @@ export interface TikTokAdsConnectionSnapshot {
   authorizationUrl?: string
 }
 
+/** AppsFlyer official OAuth connection. Credentials remain in Main. */
+export interface AppsFlyerConnectionSnapshot {
+  definition: ConnectionDefinition
+  status: ConnectionStatus
+  connected: boolean
+  lastError?: string
+  lastConnectedAt?: number
+  tokenExpiresAt?: number
+  authorizationUrl?: string
+  appCount?: number
+}
+
 /* ---------- Figma Dev Mode MCP 连接（本地端点，零凭据，只花代码 token） ---------- */
 
 /**

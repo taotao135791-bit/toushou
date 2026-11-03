@@ -44,7 +44,7 @@ export default function McpConnectionsSection() {
   const refresh = useCallback(() => {
     window.electronAPI
       .mcpList()
-      .then(setEntries)
+      .then((value) => setEntries(value.filter((entry) => !(entry.managed && entry.name === 'appsflyer'))))
       .catch(() => setEntries([]))
   }, [])
 

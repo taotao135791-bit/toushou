@@ -8,6 +8,7 @@ import { useT, I18nKey } from '../i18n'
 import McpConnectionsSection from '../components/McpConnectionsSection'
 import AdsCopyModelsSection from '../components/AdsCopyModelsSection'
 import TikTokAdsConnectionCard from '../components/TikTokAdsConnectionCard'
+import AppsFlyerConnectionCard from '../components/AppsFlyerConnectionCard'
 import FigmaConnectionCard from '../components/FigmaConnectionCard'
 
 const emptySnapshot: FeishuConnectionSnapshot = {
@@ -426,6 +427,7 @@ export default function ConnectionsPage() {
           </section>
 
           <TikTokAdsConnectionCard />
+          <AppsFlyerConnectionCard />
           <FigmaConnectionCard />
           <McpConnectionsSection />
           <AdsCopyModelsSection />

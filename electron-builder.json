@@ -47,6 +47,10 @@
       "to": "tiktok-toolkit"
     },
     {
+      "from": "resources/appsflyer-toolkit",
+      "to": "appsflyer-toolkit"
+    },
+    {
       "from": "resources/tasks-toolkit",
       "to": "tasks-toolkit"
     },

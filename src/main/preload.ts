@@ -28,6 +28,7 @@ import {
   McpMutationResult,
   McpTestOutcome,
   TikTokAdsConnectionSnapshot,
+  AppsFlyerConnectionSnapshot,
   FigmaConnectionSnapshot
 } from '../shared/connections'
 import type {
@@ -543,6 +544,13 @@ export interface ElectronAPI {
   tiktokDisconnect: () => Promise<TikTokAdsConnectionSnapshot>
   tiktokOpenUrl: (url: string) => Promise<boolean>
   onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => () => void
+  /** AppsFlyer official connection; only secret-free snapshots cross IPC. */
+  appsflyerStatus: () => Promise<AppsFlyerConnectionSnapshot>
+  appsflyerBegin: () => Promise<AppsFlyerConnectionSnapshot>
+  appsflyerCancel: () => Promise<AppsFlyerConnectionSnapshot>
+  appsflyerDisconnect: () => Promise<AppsFlyerConnectionSnapshot>
+  appsflyerOpenUrl: (url: string) => Promise<boolean>
+  onAppsFlyerStatus: (callback: (snapshot: AppsFlyerConnectionSnapshot) => void) => () => void
   /** TikTok 报表接入（Open API v1.3）：凭据 Main 侧 0600 JSON，渲染层只见脱敏投影。 */
   tiktokReportSetCredentials: (input: TikTokCredentialInput) => Promise<TikTokCredentialsSetResult>
   tiktokReportListCredentials: () => Promise<TikTokCredentialInfo>
@@ -1020,6 +1028,17 @@ const api: ElectronAPI = {
   tiktokCancel: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_CANCEL),
   tiktokDisconnect: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_DISCONNECT),
   tiktokOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_OPEN_URL, url),
+  appsflyerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_STATUS),
+  appsflyerBegin: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_BEGIN),
+  appsflyerCancel: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_CANCEL),
+  appsflyerDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_DISCONNECT),
+  appsflyerOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_OPEN_URL,
+    typeof url === 'string' && url.length <= 16384 ? url : null),
+  onAppsFlyerStatus: (callback: (snapshot: AppsFlyerConnectionSnapshot) => void) => {
+    const handler = (_event: IpcRendererEvent, snapshot: AppsFlyerConnectionSnapshot) => callback(snapshot)
+    ipcRenderer.on(IPC_CHANNELS.APPSFLYER_STATUS, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.APPSFLYER_STATUS, handler)
+  },
   onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => {
     const handler = (_event: IpcRendererEvent, snapshot: TikTokAdsConnectionSnapshot) => callback(snapshot)
     ipcRenderer.on(IPC_CHANNELS.TIKTOK_STATUS, handler)
