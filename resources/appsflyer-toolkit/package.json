@@ -1,0 +1,12 @@
+{
+  "name": "toushou-appsflyer-toolkit",
+  "version": "0.1.0",
+  "description": "投手 AppsFlyer 只读查询工具",
+  "displayName": "AppsFlyer 只读工具",
+  "author": "投手团队",
+  "license": "MIT",
+  "keywords": ["pi-package", "appsflyer", "readonly"],
+  "pi": { "extensions": ["extensions/index.ts"] },
+  "omp": { "extensions": ["extensions/index.ts"] },
+  "files": ["extensions"]
+}

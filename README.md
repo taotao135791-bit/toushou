@@ -51,3 +51,5 @@ pnpm build
 ```
 
 运行时兼容性测试使用 `pnpm test:omp`；带凭据的 `pnpm test:omp:live` 不属于默认发布流程。安全边界见[安全模型](docs/security-model.md)，贡献与发版约定见 [AGENTS.md](AGENTS.md)。
+
+开发分支中的 AppsFlyer 官方连接、只读事件查询与 TikTok 关联口径见[接入说明](docs/appsflyer-connection.md)；尚未包含在上述公开版本中。

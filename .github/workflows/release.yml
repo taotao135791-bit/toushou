@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/release.yml'
       - 'tools/release-smoke.cjs'
+      - 'tools/release-smoke-processes.cjs'
   workflow_dispatch:
 
 # Build/preflight jobs do not get a release-writing token. Only tag staging
@@ -181,6 +182,8 @@ jobs:
             test -x "${app_bin}"
             if [[ -f "${app_bin}.bin" ]]; then app_bin="${app_bin}.bin"; fi
             test -s "${app_path}/Contents/Resources/session-topic/index.ts"
+            test -s "${app_path}/Contents/Resources/appsflyer-toolkit/package.json"
+            test -s "${app_path}/Contents/Resources/appsflyer-toolkit/extensions/index.ts"
             case "${staged}" in
               release/mac-arm64) file "${app_bin}" | grep -Eq 'arm64|arm64e' ;;
               release/mac) file "${app_bin}" | grep -Eq 'x86_64|x86-64' ;;
@@ -357,6 +360,8 @@ jobs:
           app_bin="release/win-unpacked/投手.exe"
           test -s "${app_bin}"
           test -s "release/win-unpacked/resources/session-topic/index.ts"
+          test -s "release/win-unpacked/resources/appsflyer-toolkit/package.json"
+          test -s "release/win-unpacked/resources/appsflyer-toolkit/extensions/index.ts"
           node tools/release-smoke.cjs "${app_bin}"
 
       - name: Generate SHA-256 checksums

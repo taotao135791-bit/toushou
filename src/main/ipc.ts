@@ -235,6 +235,15 @@ import { setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTik
 import { importFbReportFile, readFbReportReadings } from './fbReportReadings'
 import { autoFetchFbReportCsv, FbReportFetchRange } from './fbReportAutoFetch'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
+import {
+  initializeAppsFlyerConnection,
+  getAppsFlyerConnectionSnapshot,
+  beginAppsFlyerConnection,
+  cancelAppsFlyerConnection,
+  disconnectAppsFlyerConnection,
+  openAppsFlyerAuthorizationUrl,
+  shutdownAppsFlyerConnection
+} from './appsflyerConnection'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
 import { SessionOriginIndex } from './sessionOrigins'
@@ -707,6 +716,7 @@ function redactScaffoldOutputLog(value: unknown, canonicalDir: string): string {
  * outlive the GUI burning provider quota in the dark.
  */
 export function shutdownSessionsForQuit(): void {
+  void shutdownAppsFlyerConnection().catch(() => {})
   try {
     killAllSessions()
   } catch {
@@ -722,6 +732,7 @@ export function registerIpc() {
   // Restore a stored TikTok Ads connection (self-heals the mcp.json entry and
   // the refresh schedule); never opens anything without a stored credential.
   void tiktokAdsConnectionManager.initialize()
+  void initializeAppsFlyerConnection()
   // Restore the Figma Dev Mode MCP entry and probe whether the Figma desktop
   // app is currently serving (the endpoint is loopback, no secrets involved).
   void figmaConnectionManager.initialize()
@@ -892,6 +903,20 @@ export function registerIpc() {
     // Only the URL Main itself minted for the in-flight flow may be opened.
     if (typeof url !== 'string') return false
     return tiktokAdsConnectionManager.openAuthorizationUrl(url)
+  })
+
+  // AppsFlyer uses the same Main-owned grant for its card and read-only tools.
+  // Neither official OAuth credentials nor arbitrary tool calls cross this IPC.
+  ipcMain.handle(IPC_CHANNELS.APPSFLYER_STATUS, async () => {
+    await initializeAppsFlyerConnection()
+    return getAppsFlyerConnectionSnapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.APPSFLYER_BEGIN, () => beginAppsFlyerConnection())
+  ipcMain.handle(IPC_CHANNELS.APPSFLYER_CANCEL, () => cancelAppsFlyerConnection())
+  ipcMain.handle(IPC_CHANNELS.APPSFLYER_DISCONNECT, () => disconnectAppsFlyerConnection())
+  ipcMain.handle(IPC_CHANNELS.APPSFLYER_OPEN_URL, (_event, url: unknown) => {
+    if (typeof url !== 'string' || url.length > 16384) return false
+    return openAppsFlyerAuthorizationUrl(url)
   })
 
   // --- TikTok 报表接入（Open API v1.3 → "TikTok 报表" 数据集） -------------

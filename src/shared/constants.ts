@@ -218,6 +218,11 @@ export const IPC_CHANNELS = {
   TIKTOK_CANCEL: 'tiktok:cancel',
   TIKTOK_DISCONNECT: 'tiktok:disconnect',
   TIKTOK_OPEN_URL: 'tiktok:open-url',
+  APPSFLYER_STATUS: 'appsflyer:status',
+  APPSFLYER_BEGIN: 'appsflyer:begin',
+  APPSFLYER_CANCEL: 'appsflyer:cancel',
+  APPSFLYER_DISCONNECT: 'appsflyer:disconnect',
+  APPSFLYER_OPEN_URL: 'appsflyer:open-url',
   /** TikTok Ads 后台报表接入（Open API v1.3 → "TikTok 报表" 看板数据集）。
    *  TIKTOK_STATUS 已被上方 MCP 连接快照占用，报表接入单独使用
    *  tiktok-report: 命名空间，两条通路互不干扰。 */

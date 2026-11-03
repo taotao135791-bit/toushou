@@ -13,6 +13,7 @@ import { browserUseEnv } from '../browserUse'
 import { feishuBridgeEnv } from '../integrations/feishu/feishuBridge'
 import { tasksBridgeEnv } from '../tasksBridge'
 import { tiktokBridgeEnv } from '../tiktokBridge'
+import { appsFlyerToolEnv } from '../appsflyerConnection'
 import { boardsBridgeEnv } from '../boardsBridge'
 import { adsCopyBridgeEnv } from '../adsCopyBridge'
 import { sessionTopicBridgeEnv } from '../sessionTopicBridge'
@@ -224,6 +225,7 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       ...feishuBridgeEnv(sessionId),
       ...tasksBridgeEnv(sessionId),
       ...tiktokBridgeEnv(sessionId),
+      ...appsFlyerToolEnv(),
       ...boardsBridgeEnv(sessionId),
       ...adsCopyBridgeEnv(sessionId),
       ...sessionTopicBridgeEnv(sessionId)

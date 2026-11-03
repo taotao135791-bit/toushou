@@ -5,6 +5,7 @@ const { rm } = require('node:fs/promises')
 const { createServer } = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
+const { enumerateWindowsProcesses, captureProcessTree, processesGone } = require('./release-smoke-processes.cjs')
 
 if (process.env.CI !== 'true' || process.env.GITHUB_ACTIONS !== 'true') {
   throw new Error('Packaged smoke is restricted to GitHub Actions runners.')
@@ -100,15 +101,12 @@ async function killWindowsTree(pid) {
     const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT
     const command = systemRoot ? path.join(systemRoot, 'System32', 'taskkill.exe') : 'taskkill.exe'
     let killer
-    let detail = ''
-    const collect = chunk => { if (detail.length < 1024) detail += String(chunk).slice(0, 1024 - detail.length) }
     let settled = false
     const finish = result => {
       if (settled) return
       settled = true
       clearTimeout(timeout)
       console.log(`[smoke-cleanup] phase=taskkill pid=${pid} status=${result.status ?? 'none'} error=${result.error ?? 'none'} elapsedMs=${Date.now() - started}`)
-      if ((result.status !== 0 || result.error) && detail) console.error(`[smoke-cleanup] phase=taskkill-output detail=${JSON.stringify(detail)}`)
       resolve(result)
     }
     const timeout = setTimeout(() => {
@@ -117,11 +115,9 @@ async function killWindowsTree(pid) {
       killer?.stderr?.destroy()
       killer?.unref()
       finish({ status: null, error: 'timeout' })
-    }, 8000)
+    }, 4000)
     try {
-      killer = spawn(command, ['/pid', String(pid), '/t', '/f'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
-      killer.stdout?.on('data', collect)
-      killer.stderr?.on('data', collect)
+      killer = spawn(command, ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true })
       killer.once('error', error => finish({ status: null, error: error.code || 'spawn-failed' }))
       killer.once('close', (status, signal) => finish({ status, error: signal ? 'signal' : null }))
     } catch (error) { finish({ status: null, error: error.code || 'spawn-failed' }) }
@@ -130,24 +126,37 @@ async function killWindowsTree(pid) {
 async function stopChild(phase = 'stop') {
   const target = child
   console.log(`[smoke-cleanup] phase=${phase}-begin ${processState(target)}`)
-  if (!running(target)) return
+  if (!target) return
+  if (!running(target)) {
+    if (process.platform === 'win32') throw new Error('Packaged app exited before its process tree could be verified')
+    return
+  }
   const stopped = new Promise(resolve => target.once('exit', resolve))
-  let treeFailure = false
+  let tracked = null, captureError = false
   if (process.platform === 'win32' && target.pid) {
-    const result = await killWindowsTree(target.pid)
-    treeFailure = result.status !== 0 || !!result.error
+    try { tracked = captureProcessTree(await enumerateWindowsProcesses(), target.pid, executable) }
+    catch { captureError = true }
+    // Never tree-kill a PID whose current process identity was not verified.
+    // The ChildProcess handle remains the bounded fallback below.
+    if (!captureError && running(target)) await killWindowsTree(target.pid)
   } else {
     try { target.kill('SIGTERM') } catch { /* checked against real exit below */ }
   }
-  await Promise.race([stopped, sleep(3000)])
+  await Promise.race([stopped, sleep(2000)])
   if (running(target)) {
     console.log(`[smoke-cleanup] phase=${phase}-fallback ${processState(target)}`)
     try { target.kill('SIGKILL') } catch { /* checked against real exit below */ }
-    await Promise.race([stopped, sleep(2000)])
+    await Promise.race([stopped, sleep(1500)])
   }
   console.log(`[smoke-cleanup] phase=${phase}-end ${processState(target)}`)
   if (running(target)) throw new Error('Packaged app did not exit')
-  if (treeFailure) throw new Error('Packaged app process tree termination could not be confirmed')
+  if (process.platform === 'win32') {
+    if (captureError || !tracked) throw new Error('Packaged app process tree could not be captured')
+    let gone = false
+    try { gone = processesGone(tracked, await enumerateWindowsProcesses(), executable) } catch { /* fail closed */ }
+    if (!gone) throw new Error('Packaged app process tree termination could not be confirmed')
+    console.log(`[smoke-cleanup] phase=${phase}-verified count=${tracked.length}`)
+  }
 }
 async function launch(port) {
   child = spawn(executable, [`--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'], { env: environment, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false })

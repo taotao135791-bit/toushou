@@ -150,6 +150,11 @@ describe('ensureBundledPackages', () => {
 })
 
 describe('packaged toolkit resource layout', () => {
+  it('registers the AppsFlyer read-only toolkit for fresh installs', () => {
+    expect(BUNDLED_PACKAGES).toContainEqual({ name: 'toushou-appsflyer-toolkit', resourceDir: 'appsflyer-toolkit' })
+    expect(readBundledPackageVersion('appsflyer-toolkit')).toBe('0.1.0')
+  })
+
   it('places every registered toolkit at the external path used by the runtime', async () => {
     const { mkdtempSync, cpSync, readFileSync, existsSync, rmSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')
