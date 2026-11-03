@@ -8,8 +8,8 @@ import { IPC_CHANNELS } from '../shared/constants'
 /**
  * Scheduled task engine.
  *
- * Tasks are stored in the settings store under `scheduledTasks`. A 60 s
- * interval checks for due tasks; when one fires, it creates a session in the
+ * Tasks are stored in the settings store under `scheduledTasks`. A timer
+ * checks the next due task; when one fires, it creates a session in the
  * task's project directory via the injected `spawnFn`, sends the prompt, and
  * the session's own events drive completion (see noteTaskSessionEvent).
  *
@@ -24,7 +24,9 @@ import { IPC_CHANNELS } from '../shared/constants'
  * chain stays acyclic.
  */
 
-const CHECK_INTERVAL_MS = 60_000
+/** Periodically recompute even distant deadlines to account for clock changes. */
+const CHECK_INTERVAL_MS = 15 * 60_000
+const STARTUP_CATCHUP_MS = 10_000
 /** Fallback guard lifetime if the session's terminal event never arrives. */
 export const MAX_RUN_MS = 6 * 60 * 60 * 1000
 /** Consecutive spawn failures before a task disables itself. */
@@ -124,6 +126,7 @@ export function saveTask(task: ScheduledTask): ScheduledTask {
   }
   saveTasks(tasks)
   broadcastTasksChanged()
+  rescheduleScheduler()
   return task
 }
 
@@ -133,6 +136,7 @@ export function deleteTask(id: string): boolean {
   if (next.length === tasks.length) return false
   saveTasks(next)
   broadcastTasksChanged()
+  rescheduleScheduler()
   return true
 }
 
@@ -197,6 +201,7 @@ export function toggleTask(id: string, enabled: boolean): ScheduledTask | null {
   if (enabled) task.consecutiveFailures = 0
   saveTasks(tasks)
   broadcastTasksChanged()
+  rescheduleScheduler()
   return task
 }
 
@@ -275,9 +280,10 @@ export function nextRunAt(schedule: TaskSchedule, after: number): number {
 
 /** True when a task should fire now. */
 export function isDue(task: ScheduledTask, now: number): boolean {
-  if (!task.enabled) return false
+  if (!task || !task.enabled || !isValidSchedule(task.schedule)) return false
   if (runningTasks.has(task.id)) return false
   const anchor = task.lastRunAt ?? task.createdAt
+  if (typeof anchor !== 'number' || !Number.isFinite(anchor)) return false
   const due = nextRunAt(task.schedule, anchor)
   return Number.isFinite(due) && due <= now
 }
@@ -324,6 +330,7 @@ function releaseFiring(taskId: string): void {
   clearTimeout(running.fallbackTimer)
   runningTasks.delete(taskId)
   if (running.sessionId) taskBySession.delete(running.sessionId)
+  rescheduleScheduler()
 }
 
 /**
@@ -560,8 +567,9 @@ export function reconcileInterruptedTaskRuns(now = Date.now()): void {
   const tasks = getTasks()
   let changed = false
   for (const task of tasks) {
-    for (const run of task.runs ?? []) {
-      if (run.finishedAt !== undefined) continue
+    if (!task || typeof task !== 'object' || !Array.isArray(task.runs)) continue
+    for (const run of task.runs) {
+      if (!run || typeof run !== 'object' || run.finishedAt !== undefined) continue
       run.finishedAt = now
       run.outcome = 'failed'
       run.status = 'interrupted'
@@ -577,54 +585,95 @@ export function reconcileInterruptedTaskRuns(now = Date.now()): void {
   }
 }
 
-let firingChain: Promise<void> = Promise.resolve()
+let dispatchPending = false
 
-/**
- * Fire due tasks SEQUENTIALLY. A weekend offline can leave many tasks due at
- * once; spawning them all in the same tick would stampede the machine with
- * OMP processes. Serial dispatch also keeps failures attributable.
- */
+/** Dispatch due tasks serially, without queueing duplicate checks while spawning. */
 function checkAndFireTasks(): void {
-  let due: ScheduledTask[] = []
+  if (dispatchPending) return
   try {
-    const now = Date.now()
-    due = getTasks().filter((task) => isDue(task, now))
+    if (!getTasks().some(task => isDue(task, Date.now()))) return
   } catch (error) {
     console.error('[scheduled-tasks] tick failed:', error)
     return
   }
-  if (due.length === 0) return
-  firingChain = firingChain.then(async () => {
-    // Re-read due state inside the chain: an earlier firing may have changed
-    // anchors or disabled tasks.
-    const now = Date.now()
-    for (const task of getTasks()) {
-      if (!isDue(task, now)) continue
+  dispatchPending = true
+  void Promise.resolve().then(async () => {
+    // Re-read due state after entering the queue: a task may have been edited,
+    // paused or deleted while another firing was starting.
+    const taskIds = getTasks().filter(task => task && typeof task.id === 'string').map(task => task.id)
+    for (const taskId of taskIds) {
+      // A previous spawn may have yielded while this task was paused, edited
+      // or deleted. Never dispatch the stale snapshot captured before it.
+      const task = getTasks().find(item => item && item.id === taskId)
+      if (!task || !isDue(task, Date.now())) continue
       console.info(`[scheduled-tasks] firing "${task.name}" (${task.id})`)
       await fireTask(task)
     }
+  }).catch(error => {
+    console.error('[scheduled-tasks] dispatch failed:', error)
+  }).finally(() => {
+    dispatchPending = false
+    scheduleNextTick()
   })
 }
 
 let schedulerStarted = false
+let schedulerReadyAt = 0
+let tickTimer: ReturnType<typeof setTimeout> | null = null
+let startupTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Recompute the earliest eligible deadline without dropping malformed records. */
+function nextTickDelay(now: number): number {
+  let deadline = now + CHECK_INTERVAL_MS
+  for (const task of getTasks()) {
+    if (!task || !task.enabled || runningTasks.has(task.id) || !isValidSchedule(task.schedule)) continue
+    const anchor = task.lastRunAt ?? task.createdAt
+    if (typeof anchor !== 'number' || !Number.isFinite(anchor)) continue
+    const due = nextRunAt(task.schedule, anchor)
+    if (Number.isFinite(due)) deadline = Math.min(deadline, due)
+  }
+  return Math.max(0, Math.max(deadline, schedulerReadyAt) - now)
+}
+
+function scheduleNextTick(): void {
+  if (tickTimer) clearTimeout(tickTimer)
+  tickTimer = null
+  // The serial dispatcher will re-arm after it finishes; do not enqueue
+  // repeated immediate checks for the same overdue task while it is busy.
+  if (!schedulerStarted || dispatchPending) return
+  tickTimer = setTimeout(() => {
+    tickTimer = null
+    checkAndFireTasks()
+    scheduleNextTick()
+  }, nextTickDelay(Date.now()))
+}
+
+/** Re-arm from actual deadlines after the task list changes. */
+export function rescheduleScheduler(): void {
+  scheduleNextTick()
+}
 
 export function startScheduler(): void {
   if (schedulerStarted) return
   schedulerStarted = true
-  // A renderer/main reload cannot observe the old in-memory session registry.
-  // Close any durable open rows before the first due-task check so history
-  // never presents a run as permanently active.
   reconcileInterruptedTaskRuns()
-  setTimeout(checkAndFireTasks, 10_000)
-  setInterval(() => {
-    try {
-      checkAndFireTasks()
-    } catch (error) {
-      // The interval callback must never take the main process down.
-      console.error('[scheduled-tasks] scheduler tick crashed:', error)
-    }
-  }, CHECK_INTERVAL_MS)
+  // Recover missed tasks after startup, preserving the existing 10-second
+  // grace period for Main and the runtime to finish initialization.
+  schedulerReadyAt = Date.now() + STARTUP_CATCHUP_MS
+  startupTimer = setTimeout(() => {
+    startupTimer = null
+    checkAndFireTasks()
+  }, STARTUP_CATCHUP_MS)
+  scheduleNextTick()
   console.info('[scheduled-tasks] scheduler started')
+}
+
+/** Test-only: stop the ticker so a suite can start it again cleanly. */
+export function stopSchedulerForTest(): void {
+  schedulerStarted = false
+  schedulerReadyAt = 0
+  if (tickTimer) { clearTimeout(tickTimer); tickTimer = null }
+  if (startupTimer) { clearTimeout(startupTimer); startupTimer = null }
 }
 
 export type RunNowResult = 'ok' | 'running' | 'not-found' | 'failed'

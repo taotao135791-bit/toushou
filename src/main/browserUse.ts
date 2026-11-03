@@ -957,12 +957,12 @@ export async function runAction(
       if (!panel) return { ok: false, error: 'panel-not-open' }
       if (!isBrowserPanelVisible()) return { ok: false, error: 'panel-hidden' }
       // Electron can return an empty NativeImage for the first compositor
-      // frame after a WebContentsView is shown or reattached. A short bounded
-      // retry keeps screenshot fallback deterministic without hanging the
-      // bridge when the view is genuinely unavailable.
+      // frame after a WebContentsView is shown or reattached. Retry empty
+      // captures for ~3s without waiting on page-owned animation callbacks:
+      // a page can pause those callbacks and would block the browser queue.
       let image = await panel.webContents.capturePage()
-      for (let attempt = 0; image.isEmpty() && attempt < 5; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 200))
+      for (let attempt = 0; image.isEmpty() && attempt < 11; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250))
         image = await panel.webContents.capturePage()
       }
       if (image.isEmpty()) return { ok: false, error: 'empty-capture' }

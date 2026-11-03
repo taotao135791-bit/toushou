@@ -44,6 +44,26 @@ const FB_READING_BASELINE_PROMPT = [
   '</session-baseline>'
 ].join('\n')
 
+/**
+ * Ad-copy ownership baseline: once the user has configured the copy model
+ * pool and switched to it, the chat model must not write the copy — not even
+ * to "fill the gap" when the pool under-delivers. The tool returns enough
+ * diagnostics (incomplete / diagnosis / next_steps) to report honestly.
+ */
+const ADS_COPY_BASELINE_PROMPT = [
+  '<session-baseline name="ads-copy-model-pool">',
+  '文案生成归属（不可绕过）：',
+  '- 用户把文案模式设为「自定义模型池」时（toushou_copy_models_list 返回 mode=pool），最终交付的每一条广告文案都必须来自 toushou_copy_generate_batch（或 toushou_copy_generate）的返回；禁止用对话模型撰写、改写、润色或补齐数量。',
+  '- 工具返回 ok=false / fulfilled=false：如实说明过了几条、缺几条、失败集中在哪一维，按返回的 next_steps 给出下一步建议（换方向、补卖点、换模型、放宽门槛）；不得用对话模型代写，也不得"先用对话模型交一版"。',
+  '- 池为空或工具报错：报告问题并在用户处理前停下，不要自己生成文案顶替。',
+  '- 只有 mode=chat（跟随对话模型）或环境里确实没有该工具时，才由对话模型按 ads-copy 技能生成文案。',
+  '- 工具返回的 items 已是成品（含分数与字节）：原样呈现，不要改写文案。',
+  '- 多语言归属：需要投放或交付给客户的每一种语言，都必须各自调用一次 toushou_copy_generate_batch（product.language 分别设为目标语言），由文案模型原生生成；语言之间不得用翻译顶替，也不得用对话模型代写。',
+  '- 参考译文不算交付文案：用户只是想把已出的稿翻译来阅读、对照或汇报时（“翻成中文给我看看”），可以由对话模型直接翻译，但必须标注“参考译文（不用于投放）”，不调用文案模型、不消耗池 token；不得把参考译文当成交付物料或再拿去投放。',
+  '- 分辨不清用途时先问一句：这套译文是要投放，还是给你对照看的。',
+  '</session-baseline>'
+].join('\n')
+
 const BOARD_BASELINE_ZH = [
   '<session-baseline name="board-preview">',
   '没有明确要求实时平台模板时，新建 blank 空白看板；从已保存的读数创建内容时，以来源组件引用添加独立 reading-module 指标、图表或说明，不重新读取广告账户。',
@@ -72,6 +92,6 @@ export function buildAgentArgs(language: Language, skillSystemPrompt?: string): 
   const persona = language === 'zh' ? ZH_PERSONA_PROMPT : EN_PERSONA_PROMPT
   const skill = skillSystemPrompt?.trim()
   const board = language === 'zh' ? BOARD_BASELINE_ZH : BOARD_BASELINE_EN
-  const base = `${persona}\n\n${FB_READING_BASELINE_PROMPT}\n\n${board}`
+  const base = `${persona}\n\n${FB_READING_BASELINE_PROMPT}\n\n${ADS_COPY_BASELINE_PROMPT}\n\n${board}`
   return ['--append-system-prompt', skill ? `${base}\n\n${skill}` : base]
 }

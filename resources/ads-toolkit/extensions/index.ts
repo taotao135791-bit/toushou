@@ -28,7 +28,7 @@ async function call(params: Record<string, unknown>): Promise<string> {
     })
     return JSON.stringify(await response.json()).slice(0, 40_000)
   } catch {
-    return JSON.stringify({ ok: false, error: '文案生成工具暂时不可用' })
+    return JSON.stringify({ ok: false, error: '文案生成工具暂时不可用：请确认投手桌面端正在运行；如果刚重启过投手，请新建对话后再试。' })
   }
 }
 
@@ -38,8 +38,9 @@ export default function adsCopyTools(api: ToolHostApi): void {
     label: '文案模型生成',
     description:
       '用文案模型池里的模型生成文本（与当前对话所用模型完全独立）。写广告文案/素材时使用：把完整的生成指令（含产品事实、规格约束、语言市场）作为 prompt 传入，system 传角色设定。\n' +
-      '用法：默认全池并发生成（一次拿多个模型的稿子再统一评分）；传 model 指定某个供应商只跑它；传 agentId（建议用产品名）则同一产品每次稳定分配同一模型。\n' +
-      '返回 mode-is-chat 时说明用户设置了「跟随对话模型」：不要重试本工具，直接按 ads-copy 技能用当前对话模型生成。池为空时提醒用户去投手「连接」页的文案模型池添加模型。',
+      '用法：默认全池并发生成（一次拿多个模型的稿子再统一评分，最快的先交卷）；传 model 指定某个供应商只跑它；agentId 会把整单钉在一个模型上，只有用户明确要求固定模型时才传——否则明显更慢。\n' +
+      '返回 mode-is-chat 时说明用户设置了「跟随对话模型」：不要重试本工具，直接按 ads-copy 技能用当前对话模型生成。池为空时提醒用户去投手「连接」页的文案模型池添加模型。\n' +
+      '池模式下（mode=pool）本工具是唯一来源：最终交付的文案必须来自返回内容，禁止用对话模型撰写、改写或补写；工具报错就如实报告并建议修复，不要改为自己写。',
     parameters: {
       type: 'object',
       properties: {
@@ -59,7 +60,10 @@ export default function adsCopyTools(api: ToolHostApi): void {
     label: '文案批量生成（引擎）',
     description:
       '广告文案专用：产品事实 + 数量 → 模型池自动跑完整评分引擎（五维打分、字节/合规硬校验、不达标自动重试换模型、Top-N 优选去重），返回已评分已筛选的成品与诊断（哪条多少分、重试了几轮、哪个模型挂了）。\n' +
-      'product：{ language（必填，如 en/zh-CN/es/fr/de）, market?, device?, benefits[]（只允许写这些卖点）, brandTerms[]?, tone? }；categories：[{type:"short"|"long", qty:1-50}]；可选 targets（各维达标线 0-10）、maxAttempts(1-5,默认3)、model（指定供应商）、agentId（产品名，稳定分配模型）。\n' +
+      'product：{ language（必填，如 en/zh-CN/es/fr/de）, market?, device?, benefits[]（只允许写这些卖点）, brandTerms[]?, tone? }；categories：[{type:"short"|"long", qty:1-50}]；可选 targets（各维达标线 0-10）、maxAttempts(1-5,默认3)、candidateMultiplier(1-4,默认3)、model（指定供应商）、agentId（可选，仅需固定同一个模型时传；默认不传，全池并发更快）。\n' +
+      '池模式下（mode=pool）本工具是唯一交付来源：最终交付的每一条文案都必须来自返回的 items，禁止用对话模型撰写、改写或补齐数量。\n' +
+      '多语言：要投放或交付的每种语言各调一次本工具（product.language 设为目标语言，原生生成，不要拿译文顶替）；仅用于阅读、对照、汇报的参考译文可以由对话模型翻译，但须标注“参考译文（不用于投放）”。\n' +
+      '返回 ok=false 或 fulfilled=false 时：如实说明过了几条、缺几条（incomplete）、失败集中在哪一维（diagnosis.dominant），按 next_steps 调整后再次调用（换方向/补卖点/换模型/放宽门槛）；仍不达标就报告用户，不要自行代写。同一方向连续两轮零产出时引擎会自动停下（stagnated=true），这时更该换方向而不是重复调用。\n' +
       '交付时把返回 items 按技能表格呈现（含分数与字节），不要改写文案本身。',
     parameters: {
       type: 'object',
@@ -68,6 +72,7 @@ export default function adsCopyTools(api: ToolHostApi): void {
         categories: { type: 'array', description: '品类与数量，如 [{"type":"short","qty":5},{"type":"long","qty":5}]' },
         targets: { type: 'object', description: '可选达标线 {hook,relevance,cta,space,total} 0-10' },
         maxAttempts: { type: 'number' },
+        candidateMultiplier: { type: 'number', description: '可选：每轮候选倍率 1-4，默认 3' },
         model: { type: 'string' },
         agentId: { type: 'string' }
       },

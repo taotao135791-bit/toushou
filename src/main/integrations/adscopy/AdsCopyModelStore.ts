@@ -39,7 +39,12 @@ const MAX_NAME = 60
 const MAX_URL = 300
 const MAX_MODEL = 120
 const MAX_KEY = 400
-const MAX_PROVIDERS = 20
+/**
+ * One relay usually serves dozens of models, so a single provider entry per
+ * model needs headroom — 100 entries cost ~40 KB encrypted and keep a whole
+ * relay importable in one go.
+ */
+export const MAX_PROVIDERS = 100
 
 const electronBackend: SecretBackend = {
   isAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -70,6 +75,27 @@ export function validateAdsCopyModelInput(raw: {
   if (!model || model.length > MAX_MODEL) return { error: 'invalid-model' }
   if (!apiKey || apiKey.length > MAX_KEY) return { error: 'invalid-api-key' }
   return { name, baseUrl, protocol: raw.protocol, model, apiKey }
+}
+
+/* Identity of a provider, ignoring its display name: two entries with the same
+ * protocol, endpoint and model are the same model seen twice. */
+function providerKey(provider: { protocol: string; baseUrl: string; model: string }): string {
+  // URL normalizes the scheme/host (and default port); relay paths and model
+  // identifiers remain case-sensitive. Only ignore trailing endpoint slashes.
+  const endpoint = new URL(provider.baseUrl.trim()).toString().replace(/\/+$/, '')
+  return JSON.stringify([provider.protocol, endpoint, provider.model.trim()])
+}
+
+/** Names are the agent's selector, so a batch must never produce duplicates. */
+function uniqueProviderName(base: string, taken: Set<string>): string {
+  const trimmed = (base.trim() || 'model').slice(0, MAX_NAME)
+  if (!taken.has(trimmed.toLowerCase())) return trimmed
+  for (let index = 2; index < 1000; index += 1) {
+    const suffix = ` (${index})`
+    const candidate = `${trimmed.slice(0, MAX_NAME - suffix.length)}${suffix}`
+    if (!taken.has(candidate.toLowerCase())) return candidate
+  }
+  return `${trimmed.slice(0, MAX_NAME - 7)} (copy)`
 }
 
 // All instances targeting one file serialize their complete read-modify-write.
@@ -204,8 +230,59 @@ export class AdsCopyModelStore {
     })
   }
 
-  async remove(id: string): Promise<AdsCopyModelPool> {
+  /**
+   * Batch add — one relay often serves dozens of models, and each model needs
+   * its own provider entry. Existing entries (same protocol + base URL +
+   * model) are skipped instead of duplicated, names stay unique (the agent
+   * selects a provider BY NAME), and the batch stops at the provider cap with
+   * `limitReached` so the UI can report what really happened.
+   */
+  async addMany(inputs: AdsCopyModelInput[]): Promise<{
+    added: number
+    skipped: number
+    limitReached: boolean
+    pool: AdsCopyModelPool
+  }> {
+    const checked = inputs.map((input) => validateAdsCopyModelInput(input))
+    const invalid = checked.find((item): item is { error: string } => 'error' in item)
+    if (invalid) throw new Error(invalid.error)
+    const valid = checked as AdsCopyModelInput[]
     const retryEpoch = this.coordinator.blockedEpoch()
+    return this.exclusive(async () => {
+      const current = await this.load()
+      const seen = new Set(current.providers.map(providerKey))
+      const names = new Set(current.providers.map((provider) => provider.name.toLowerCase()))
+      const additions: AdsCopyModelProvider[] = []
+      let skipped = 0
+      let limitReached = false
+      const now = Date.now()
+      for (const input of valid) {
+        if (current.providers.length + additions.length >= MAX_PROVIDERS) {
+          limitReached = true
+          break
+        }
+        const key = providerKey(input)
+        if (seen.has(key)) {
+          skipped += 1
+          continue
+        }
+        seen.add(key)
+        const name = uniqueProviderName(input.name || input.model, names)
+        names.add(name.toLowerCase())
+        additions.push({ id: randomUUID(), ...input, name, createdAt: now })
+      }
+      if (additions.length === 0) return { added: 0, skipped, limitReached, pool: current }
+      const pool: AdsCopyModelPool = {
+        providers: [...current.providers, ...additions],
+        pool: current.pool,
+        mode: current.mode
+      }
+      await this.persist(pool, retryEpoch)
+      return { added: additions.length, skipped, limitReached, pool }
+    })
+  }
+
+  async remove(id: string): Promise<AdsCopyModelPool> {    const retryEpoch = this.coordinator.blockedEpoch()
     return this.exclusive(async () => {
       const current = await this.load()
       const next: AdsCopyModelPool = {

@@ -19,11 +19,14 @@ import {
   noteTaskSessionFile,
   runTaskNow,
   saveTask,
+  toggleTask,
+  deleteTask,
   setTaskSpawnFn,
   setTaskOutcomeSink,
   setTaskOutcomeSinkResetForTest,
   resetRunningGuardsForTest,
   startScheduler,
+  stopSchedulerForTest,
   reconcileInterruptedTaskRuns
 } from '../scheduledTasks'
 
@@ -56,9 +59,12 @@ beforeEach(() => {
   })
   setTaskOutcomeSinkResetForTest()
   resetRunningGuardsForTest()
+  stopSchedulerForTest()
 })
 
 afterEach(() => {
+  stopSchedulerForTest()
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -283,6 +289,203 @@ describe('scheduler tick safety', () => {
     const saved = saveTask(task)
     expect(saved.id).toBe('t2')
     expect(tasks).toHaveLength(1)
+  })
+})
+
+describe('scheduler cadence', () => {
+  it('runs short interval tasks at their deadline', async () => {
+    vi.useFakeTimers()
+    const start = new Date('2026-11-03T10:00:00')
+    vi.setSystemTime(start)
+    const fired: string[] = []
+    setTaskSpawnFn(async (_cwd, title) => {
+      fired.push(title)
+      return { sessionId: 'sess-tick' }
+    })
+    tasks.push(baseTask({ schedule: { type: 'interval', minutes: 2 }, createdAt: start.getTime() }))
+    startScheduler()
+    // Startup pass at +10s: the task is due at +2min.
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fired).toHaveLength(0)
+    // At +1min the task is not due; at +2min it fires.
+    await vi.advanceTimersByTimeAsync(50_000)
+    expect(fired).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fired).toHaveLength(1)
+  })
+  it('stops the startup catch-up pass along with the ticker', async () => {
+    vi.useFakeTimers()
+    const start = new Date('2026-11-03T10:00:00')
+    vi.setSystemTime(start)
+    const fired: string[] = []
+    setTaskSpawnFn(async (_cwd, title) => {
+      fired.push(title)
+      return { sessionId: 'sess-stop' }
+    })
+    // Already due: only a surviving 10s startup timer could fire it.
+    tasks.push(baseTask({ schedule: { type: 'interval', minutes: 60 }, createdAt: start.getTime() - 2 * 3600_000 }))
+    startScheduler()
+    stopSchedulerForTest()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fired).toHaveLength(0)
+  })
+})
+
+describe('deadline-driven scheduling regressions', () => {
+  it('runs a daily task at 09:00 after an 08:50 app start', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 8, 50).getTime()
+    vi.setSystemTime(start)
+    const fired: number[] = []
+    setTaskSpawnFn(async () => { fired.push(Date.now()); return { sessionId: 'daily-session' } })
+    tasks.push(baseTask({ createdAt: start - 50 * 60_000 }))
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1)
+    expect(fired).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fired).toEqual([new Date(2026, 10, 3, 9, 0).getTime()])
+  })
+
+  it('does not postpone an existing deadline when an unrelated task is edited or deleted', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 8, 50).getTime()
+    vi.setSystemTime(start)
+    const fired: number[] = []
+    setTaskSpawnFn(async () => { fired.push(Date.now()); return { sessionId: 'daily-session' } })
+    const daily = baseTask({ createdAt: start - 50 * 60_000 })
+    const other = baseTask({ id: 'other', enabled: false, createdAt: start })
+    tasks.push(daily, other)
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(8 * 60_000)
+    saveTask({ ...other, name: 'synthetic edit' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(deleteTask('other')).toBe(true)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fired).toEqual([new Date(2026, 10, 3, 9, 0).getTime()])
+  })
+
+  it('recomputes deadlines when a task is added and its schedule is edited', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 10, 0).getTime()
+    vi.setSystemTime(start)
+    const fired: number[] = []
+    setTaskSpawnFn(async () => { fired.push(Date.now()); return { sessionId: 'edited-session' } })
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(10_000)
+    const createdAt = Date.now()
+    const task = baseTask({ createdAt, schedule: { type: 'interval', minutes: 1 } })
+    saveTask(task)
+    await vi.advanceTimersByTimeAsync(30_000)
+    saveTask({ ...task, schedule: { type: 'interval', minutes: 2 } })
+    await vi.advanceTimersByTimeAsync(89_999)
+    expect(fired).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fired).toEqual([createdAt + 2 * 60_000])
+  })
+
+  it('runs an enabled overdue task immediately and respects a later pause', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 9, 5).getTime()
+    vi.setSystemTime(start)
+    const fired: string[] = []
+    setTaskSpawnFn(async () => { fired.push('run'); return { sessionId: 'overdue-session' } })
+    tasks.push(baseTask({ enabled: false, createdAt: start - 65 * 60_000 }))
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fired).toHaveLength(0)
+    toggleTask('t1', true)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fired).toHaveLength(1)
+    toggleTask('t1', false)
+    noteTaskSessionEvent('overdue-session', { type: 'status', status: 'idle' })
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000)
+    expect(fired).toHaveLength(1)
+  })
+
+  it('catches up after startup, without firing before the ten-second grace period', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 10, 0).getTime()
+    vi.setSystemTime(start)
+    const fired: number[] = []
+    setTaskSpawnFn(async () => { fired.push(Date.now()); return { sessionId: 'catchup-session' } })
+    tasks.push(baseTask({ createdAt: start - 2 * 60 * 60_000 }))
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(fired).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fired).toEqual([start + 10_000])
+  })
+
+  it('runs short intervals on time without overlapping and catches up after the active run ends', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 10, 0).getTime()
+    vi.setSystemTime(start)
+    const fired: number[] = []
+    setTaskSpawnFn(async () => { fired.push(Date.now()); return { sessionId: `interval-${fired.length}` } })
+    tasks.push(baseTask({ createdAt: start, schedule: { type: 'interval', minutes: 1 } }))
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fired).toEqual([start + 60_000])
+    await vi.advanceTimersByTimeAsync(3 * 60_000)
+    expect(fired).toHaveLength(1)
+    noteTaskSessionEvent('interval-1', { type: 'status', status: 'idle' })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fired).toEqual([start + 60_000, start + 4 * 60_000])
+  })
+
+  it('ignores malformed task schedules without preventing valid tasks or startup', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 8, 50).getTime()
+    vi.setSystemTime(start)
+    const fired: string[] = []
+    setTaskSpawnFn(async (_cwd, title) => { fired.push(title); return { sessionId: 'valid-session' } })
+    tasks.push(baseTask({ id: 'bad', schedule: null as never }), baseTask({ id: 'good', name: 'valid', createdAt: start - 50 * 60_000 }))
+    expect(() => startScheduler()).not.toThrow()
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(fired).toEqual(['valid'])
+    expect(tasks.find(task => task.id === 'bad')?.schedule).toBeNull()
+  })
+
+  it('does not fire a task paused while an earlier due task is spawning', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 10, 0).getTime()
+    vi.setSystemTime(start)
+    // The persisted store returns snapshots; mutations of a later read must
+    // not retroactively change the dispatcher's earlier array.
+    vi.mocked(getStore).mockImplementation(() => structuredClone(tasks) as ScheduledTask[])
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const fired: string[] = []
+    setTaskSpawnFn(async (_cwd, title) => { fired.push(title); if (title === 'first') await gate; return { sessionId: title } })
+    tasks.push(baseTask({ id: 'first', name: 'first', createdAt: start - 2 * 60 * 60_000 }), baseTask({ id: 'second', name: 'second', createdAt: start - 2 * 60 * 60_000 }))
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fired).toEqual(['first'])
+    expect(toggleTask('second', false)?.enabled).toBe(false)
+    release()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fired).toEqual(['first'])
+    expect(tasks.find(task => task.id === 'second')?.enabled).toBe(false)
+  })
+
+  it('does not enqueue repeated overdue checks while a session is spawning', async () => {
+    vi.useFakeTimers()
+    const start = new Date(2026, 10, 3, 10, 0).getTime()
+    vi.setSystemTime(start)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const fired: string[] = []
+    setTaskSpawnFn(async (_cwd, title) => { fired.push(title); if (title === 'first') await gate; return { sessionId: title } })
+    tasks.push(baseTask({ id: 'first', name: 'first', createdAt: start - 2 * 60 * 60_000 }), baseTask({ id: 'second', name: 'second', createdAt: start - 2 * 60 * 60_000 }))
+    startScheduler()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fired).toEqual(['first'])
+    for (let i = 0; i < 10; i++) saveTask(baseTask({ id: 'inactive', enabled: false, name: `edit-${i}` }))
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fired).toEqual(['first'])
+    release()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fired).toEqual(['first', 'second'])
   })
 })
 

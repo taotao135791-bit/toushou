@@ -68,8 +68,17 @@ const SCORE_LANGUAGE_TERMS: Record<string, { hook: string[]; cta: string[]; forb
   }
 }
 
-/** W:443-451 — lowercase, strip diacritics/¡!, collapse whitespace. */
-export function normalizeForScore(value: string): string {
+/**
+ * The exact words the deterministic scorer rewards, per language. Prompt
+ * builders embed this so a model writes copy that can actually clear the
+ * floors instead of guessing at the rubric.
+ */
+export function scoringLexiconBrief(language: string): { hook: string[]; cta: string[]; forbidden: string[] } {
+  const key = language || 'en'
+  const base = SCORE_LANGUAGE_TERMS[key] ?? SCORE_LANGUAGE_TERMS[key.split('-')[0]] ?? SCORE_LANGUAGE_TERMS.en
+  return { hook: [...base.hook], cta: [...base.cta], forbidden: [...base.forbidden] }
+}
+/** W:443-451 — lowercase, strip diacritics/¡!, collapse whitespace. */export function normalizeForScore(value: string): string {
   return String(value ?? '')
     .toLowerCase()
     .normalize('NFD')

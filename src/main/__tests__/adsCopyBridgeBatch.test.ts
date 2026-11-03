@@ -101,6 +101,236 @@ describe('dispatch copy_generate_batch', () => {
     expect(history.length).toBeLessThanOrEqual(3)
   })
 
+  it('stops after two fruitless rounds instead of burning every attempt', async () => {
+    const members = [provider('a', 'model-a')]
+    let calls = 0
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async () => {
+        calls++
+        return okFetch('{"short":["ok"]}')()
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    const result = await dispatch(
+      { action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 5 } },
+      deps
+    )
+    expect(calls).toBe(2)
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('no-copy-passed')
+    expect((result.score_control as { stagnated: boolean }).stagnated).toBe(true)
+    expect((result.diagnosis as { dominant: string }).dominant).toBeTruthy()
+    expect(Array.isArray(result.next_steps)).toBe(true)
+  })
+
+  it('gives the model the real scoring rubric and changes direction on retry', async () => {
+    const members = [provider('a', 'model-a')]
+    const prompts: string[] = []
+    let call = 0
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> }
+        prompts.push(body.messages[body.messages.length - 1].content)
+        call++
+        if (call === 1) return okFetch('{"short":["Transfer money fast"]}')()
+        return okFetch('{"short":["Discover fast transfers now","Get low fees today","Try instant transfers now"]}')()
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 2 } }, deps)
+    // The first prompt states the exact floors and the lexicon the scorer uses.
+    expect(prompts[0]).toContain('钩子 Hook ≥6 分')
+    expect(prompts[0]).toContain('discover')
+    expect(prompts[0]).toContain('19–25 字节')
+    expect(prompts[0]).toContain('达标')
+    // The retry must switch angle and be told what already failed.
+    expect(prompts[1]).toContain('换角度')
+    expect(prompts[1]).toContain('已被淘汰')
+    expect(prompts[1]).toContain('Transfer money fast')
+  })
+
+  it('drops a pinned provider that keeps failing and finishes on the rest of the pool', async () => {
+    const members = [provider('a', 'model-a'), provider('b', 'model-b')]
+    let aCalls = 0
+    let bCalls = 0
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        if (model === 'model-a') {
+          aCalls++
+          // 200 with no content block — what thinking-only truncation looks like.
+          return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [] }) }
+        }
+        bCalls++
+        return okFetch('{"short":["Discover fast transfers","Get low fees today","Try instant transfers now"]}')()
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    // agentId pins the job to model-a (members[0]); the fallback must move on.
+    const result = await dispatch(
+      { action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 3 } },
+      deps
+    )
+    expect(result.ok).toBe(true)
+    expect(bCalls).toBeGreaterThan(0)
+    expect(aCalls).toBeLessThanOrEqual(2)
+    expect((result.provider_pool as { strategy: string }).strategy).toContain('fallback')
+  })
+
+  it.each(['http', 'quality'] as const)('tries the later healthy provider after %s and HTTP failures', async firstFailure => {
+    const members = ['a', 'b', 'c'].map(name => provider(name, `model-${name}`))
+    const calls: string[] = []
+    const result = await dispatch({
+      action: 'copy_generate_batch',
+      request: { product: { language: 'en', benefits: ['fast transfers'] }, categories: [{ type: 'short', qty: 1 }], maxAttempts: 3, candidateMultiplier: 1 }
+    }, {
+      pool: poolOf(members, members.map(member => member.id)),
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        calls.push(model)
+        if (model === 'model-c') return okFetch('{"short":["Discover fast transfers"]}')()
+        if (model === 'model-a' && firstFailure === 'quality') return okFetch('{"short":["ok"]}')()
+        return { ok: false, status: 503, text: async () => '' }
+      }
+    })
+    expect(calls).toEqual(['model-a', 'model-b', 'model-c'])
+    expect(result).toMatchObject({ ok: true, fulfilled: true, score_control: { attempts: 3, stagnated: false } })
+    expect((result.results as { short: { items: unknown[] } }).short.items).toHaveLength(1)
+  })
+
+  it('tries another member immediately when the last sticky member fails', async () => {
+    const members = [provider('a', 'model-a'), provider('b', 'model-b')]
+    const calls: string[] = []
+    // The assignment hash for "a" pins to index 1; rotation must not pick
+    // that same failed model again while index 0 is available.
+    const result = await dispatch({
+      action: 'copy_generate_batch',
+      request: { product: { language: 'en', benefits: ['fast transfers'] }, categories: [{ type: 'short', qty: 1 }], agentId: 'a', maxAttempts: 2, candidateMultiplier: 1 }
+    }, {
+      pool: poolOf(members, members.map(member => member.id)),
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        calls.push(model)
+        return model === 'model-a' ? okFetch('{"short":["Discover fast transfers"]}')() : { ok: false, status: 503, text: async () => '' }
+      }
+    })
+    expect(calls).toEqual(['model-b', 'model-a'])
+    expect(result).toMatchObject({ ok: true, fulfilled: true, provider_pool: { strategy: 'agent_sticky_fallback' }, score_control: { stagnated: false } })
+  })
+
+  it.each(['openai', 'anthropic'] as const)('keeps reflected %s provider secrets out of agent-visible errors', async protocol => {
+    const member = { ...provider('synthetic', 'synthetic-model'), protocol, apiKey: 'synthetic-secret-never-returned' }
+    const result = await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 1 } }, {
+      pool: poolOf([member], [member.id]),
+      fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ error: { message: `Invalid API key ${member.apiKey}` } }) })
+    })
+    expect(result).toMatchObject({ ok: false, provider_errors: [{ error: 'api-error: authentication-failed' }], score_control: { stagnated: false } })
+    expect(JSON.stringify(result)).not.toContain(member.apiKey)
+  })
+
+  it('cancels slow models as soon as the quota is covered', async () => {
+    const members = [provider('slow', 'model-slow'), provider('fast', 'model-fast')]
+    let aborted = false
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        if (model === 'model-slow') {
+          return new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => {
+              aborted = true
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            })
+          })
+        }
+        return Promise.resolve(okFetch('{"short":["Discover fast transfers","Get low fees today","Try instant transfers now"]}')())
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    // No agentId: the whole pool runs concurrently, so the fast model can
+    // finish the quota and cancel the slow one.
+    const result = await dispatch(
+      {
+        action: 'copy_generate_batch',
+        request: { product: { language: 'en', benefits: ['fast transfers', 'low fees'] }, categories: [{ type: 'short', qty: 3 }] }
+      },
+      deps
+    )
+    expect(result.ok).toBe(true)
+    expect(aborted).toBe(true)
+  })
+
+  it('never substitutes another model when the caller names one', async () => {
+    const members = [provider('a', 'model-a'), provider('b', 'model-b')]
+    let bCalls = 0
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        if (model === 'model-b') {
+          bCalls++
+          return okFetch('{"short":["Discover fast transfers","Get low fees today","Try instant transfers now"]}')()
+        }
+        // The named model returns nothing usable; the run must fail rather
+        // than deliver model-b's copy under model-a's name.
+        return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [] }) }
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    const result = await dispatch(
+      { action: 'copy_generate_batch', request: { ...baseRequest, model: 'a', maxAttempts: 3 } },
+      deps
+    )
+    expect(result.ok).toBe(false)
+    expect(bCalls).toBe(0)
+  })
+
+  it('does not let duplicated lines fake a covered quota', async () => {
+    const members = [provider('a', 'model-a'), provider('b', 'model-b')]
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        if (model === 'model-a') {
+          // The same accepted line five times: one unique candidate, not five.
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify({ short: Array(5).fill('Discover fast transfers') }) } }] })
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        return okFetch('{"short":["Get low fees today","Try instant transfers now","Join free transfers now"]}')()
+      },
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    const result = await dispatch(
+      {
+        action: 'copy_generate_batch',
+        request: { product: { language: 'en', benefits: ['fast transfers', 'low fees'] }, categories: [{ type: 'short', qty: 3 }] }
+      },
+      deps
+    )
+    expect(result.fulfilled).toBe(true)
+    expect((result.results as { short: { items: unknown[] } }).short.items).toHaveLength(3)
+  })
+
+  it('reports fulfilled=false plus a diagnosis when delivery is short', async () => {
+    const members = [provider('a', 'model-a')]
+    const deps: AdsCopyDispatchDeps = {
+      fetchImpl: okFetch('{"short":["Discover fast transfers"]}'),
+      pool: poolOf(members, members.map((m) => m.id))
+    }
+    const result = await dispatch(
+      {
+        action: 'copy_generate_batch',
+        request: { product: { language: 'en', benefits: ['fast transfers'] }, categories: [{ type: 'short', qty: 3 }], maxAttempts: 1 }
+      },
+      deps
+    )
+    expect(result.ok).toBe(true)
+    expect(result.fulfilled).toBe(false)
+    expect(result.incomplete).toEqual({ short: 2, long: 0 })
+    expect(result.diagnosis).toBeTruthy()
+  })
+
   it('respects chat mode and empty pools with actionable errors', async () => {
     const deps: AdsCopyDispatchDeps = { fetchImpl: okFetch('{}'), pool: poolOf([], [], 'chat') }
     const chatMode = await dispatch({ action: 'copy_generate_batch', request: baseRequest }, deps)

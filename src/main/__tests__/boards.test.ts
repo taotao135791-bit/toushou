@@ -327,6 +327,21 @@ describe('saveBoard', () => {
   })
 })
 
+describe('saveBoard lock round-trip on the strict default path', () => {
+  it('lets a locked board be unlocked again', () => {
+    const board = makeBoard('lock-1')
+    expect(saveBoard(board)).toEqual({ ok: true })
+    const locked = { ...board, locked: true, updatedAt: 3000 }
+    // The default file path applies preservesInput(), which is exactly where
+    // an explicit `locked: false` used to be dropped and rejected.
+    expect(saveBoard(locked, undefined, 2000)).toEqual({ ok: true })
+    expect(listBoards()[0].locked).toBe(true)
+    const unlocked = { ...locked, locked: false, updatedAt: 4000 }
+    expect(saveBoard(unlocked, undefined, 3000)).toEqual({ ok: true })
+    expect(listBoards()[0].locked).toBe(false)
+  })
+})
+
 describe('reorderBoards', () => {
   it('persists a new tab order without touching board content', () => {
     const a = makeBoard('A')

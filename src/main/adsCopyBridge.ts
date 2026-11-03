@@ -11,9 +11,11 @@ import {
   providerRotationIndex,
   resolveTargets,
   scoreCopyItem,
+  scoringLexiconBrief,
   selectTopN,
   targetedFixLines,
   type CopyCategoryRequest,
+  type CopyScoreTargets,
   type ScoredCopyItem
 } from './integrations/adscopy/copyEngine'
 import { validateAdsCopyModelInput } from './integrations/adscopy/AdsCopyModelStore'
@@ -251,6 +253,12 @@ export async function dispatch(tool: AdsCopyBridgeRequest, deps: AdsCopyDispatch
 
 const SHORT_MAX_BYTES = 25
 const LONG_MAX_BYTES = 75
+/**
+ * Per-call budget. Thinking-heavy models can need 60s+ on a big candidate
+ * batch; a call that exceeds this is cancelled and reported as `timeout`
+ * instead of holding the round (and the user) hostage.
+ */
+const COPY_CALL_TIMEOUT_MS = 75_000
 
 function boundedStringArray(value: unknown, max: number, perItem: number): string[] {
   if (!Array.isArray(value)) return []
@@ -272,7 +280,15 @@ function buildBatchPrompt(opts: {
   attempt: number
   frameworkBrief: string
   fixLines: string[]
+  targets: Required<CopyScoreTargets>
+  direction: string
+  rejectedSamples: string[]
 }): string {
+  const lexicon = scoringLexiconBrief(opts.language)
+  const quantities = [
+    opts.qtyShort > 0 ? `short（短标题）恰好 ${opts.qtyShort} 条，每条 19–25 字节（上限 ${SHORT_MAX_BYTES}）` : '',
+    opts.qtyLong > 0 ? `long（长描述）恰好 ${opts.qtyLong} 条，每条 56–75 字节（上限 ${LONG_MAX_BYTES}）` : ''
+  ].filter(Boolean).join('；')
   const lines = [
     `你是资深谷歌 App Campaign 广告优化师。用${opts.language}生成广告素材，只输出 JSON：{"short":[...],"long":[...]}，无其他文字。`,
     opts.market ? `投放市场：${opts.market}。` : '',
@@ -281,30 +297,101 @@ function buildBatchPrompt(opts: {
     `事实边界——卖点只允许围绕以下内容（不得编造任何资质/收益/保证）：${opts.benefits.join('；')}`,
     opts.brandTerms.length > 0 ? `品牌词（可自然融入）：${opts.brandTerms.join('、')}` : '',
     opts.tone ? `语气基调：${opts.tone}。` : '',
-    `数量：short（短标题）恰好 ${opts.qtyShort} 条，每条 ≤ ${SHORT_MAX_BYTES} 字节（中日韩字符每个算 2 字节，ASCII 算 1 字节）；long（长描述）恰好 ${opts.qtyLong} 条，每条 ≤ ${LONG_MAX_BYTES} 字节。`,
-    '短标题利益点优先；长描述=具体日常利益+自然行动号召（目标语言的动词）。',
-    opts.attempt > 1 ? `创作框架（本轮采用）：${opts.frameworkBrief}` : '',
-    opts.fixLines.length > 0 ? `针对性修复要求：\n- ${opts.fixLines.join('\n- ')}` : ''
+    `数量：${quantities}。字节算法：CJK 字符算 2 字节，ASCII 算 1 字节。`,
+    '每条文案都会按下面的确定性评分卡打分，达不到达标线直接淘汰——动笔前先对着评分卡写：',
+    `- 钩子 Hook ≥${opts.targets.hook} 分：开头 1/3 必须出现钩子词之一（${lexicon.hook.join('、')}）；前半句带数字 +2 分、带问号 +2 分（数字必须来自已提供的事实）。`,
+    `- 相关性 Relevance ≥${opts.targets.relevance} 分：必须覆盖至少 2 个卖点（原词或拆词）；覆盖 4 个以上满分。`,
+    `- 行动号召 CTA ≥${opts.targets.cta} 分：必须包含动作动词之一（${lexicon.cta.join('、')}）。`,
+    `- 空间 Space ≥${opts.targets.space} 分：短标题 19–25 字节、长描述 56–75 字节，接近上限优于留白；超上限直接淘汰。`,
+    `- 品牌与合规：品牌词自然出现一次；绝对禁止出现：${lexicon.forbidden.join('、')}；也不得出现资质、收益、保证类表述。`,
+    `- 总分 ≥ ${opts.targets.total} 分。`,
+    `本轮方向：${opts.direction}${opts.attempt > 1 ? `（第 ${opts.attempt} 轮，上一轮未达标，必须换角度而不是在同一方向上微调；创作框架：${opts.frameworkBrief}）` : ''}`,
+    opts.fixLines.length > 0 ? `针对性修复要求：\n- ${opts.fixLines.join('\n- ')}` : '',
+    opts.rejectedSamples.length > 0 ? `以下文案在上一轮已被淘汰，不要生成相同或近似的：\n- ${opts.rejectedSamples.join('\n- ')}` : ''
   ]
   return lines.filter(Boolean).join('\n')
 }
 
+/** Rotating creative angles — a retry must change direction, not just reword. */
+const CREATIVE_DIRECTIONS = [
+  '直接利益：第一句就给出用户能立刻得到的结果',
+  '场景切入：从用户具体的日常场景或痛点写起，再落到卖点',
+  '提问开场：用目标语言的疑问句把钩子放到最前面',
+  '差异化：聚焦本产品明确做到、而同类产品通常做不到的卖点',
+  '行动结果：写清楚点击或使用之后立刻发生什么',
+  '事实具体化：用已有事实里的细节让利益可感知（不新增数字或承诺）'
+]
+
+function directionBrief(attempt: number): string {
+  return CREATIVE_DIRECTIONS[(Math.max(attempt, 1) - 1) % CREATIVE_DIRECTIONS.length]
+}
+
 /**
- * Map a scoring rejectReason onto the retry-fix vocabulary (copyEngine's
- * FIX_ACTIONS keys). Without this the retry prompt silently lost every
- * targeted fix line because the two vocabularies never matched.
+ * Count WHY a candidate was rejected. Below-target copy used to collapse into a
+ * single 'total' bucket, so retries only ever got the generic "raise every
+ * score" fix line; splitting by dimension lets the next round fix the actual
+ * failing one (hook word missing, no CTA verb, byte band off…).
  */
-function noteFailure(counts: Record<string, number>, item: ScoredCopyItem): void {
-  const reason = item.rejectReason ?? 'other'
-  const key =
-    reason === 'over_limit'
-      ? 'over'
-      : reason === 'financial_compliance_violation'
-        ? 'compliance'
-        : reason === 'below_score_targets'
-          ? 'total'
-          : reason
-  counts[key] = (counts[key] ?? 0) + 1
+function noteFailure(
+  counts: Record<string, number>,
+  item: ScoredCopyItem,
+  targets: Required<CopyScoreTargets>
+): void {
+  if (item.rejectReason === 'over_limit') {
+    counts.over = (counts.over ?? 0) + 1
+    return
+  }
+  if (item.rejectReason === 'financial_compliance_violation') {
+    counts.compliance = (counts.compliance ?? 0) + 1
+    return
+  }
+  const bump = (key: string) => { counts[key] = (counts[key] ?? 0) + 1 }
+  if (item.rejectReason === 'below_score_targets') {
+    let noted = false
+    if (item.scores.hook < targets.hook) { bump('hook'); noted = true }
+    if (item.scores.relevance < targets.relevance) { bump('rel'); noted = true }
+    if (item.scores.cta < targets.cta) { bump('cta'); noted = true }
+    if (item.scores.space < targets.space) { bump('space'); noted = true }
+    if (!noted || item.scores.total < targets.total) bump('total')
+    return
+  }
+  bump(item.rejectReason ?? 'other')
+}
+
+/** Most frequent rejection dimension — drives the next-step advice. */
+function dominantFailure(counts: Record<string, number>): string | null {
+  let best: string | null = null
+  let bestCount = 0
+  for (const [key, value] of Object.entries(counts)) {
+    if (value > bestCount) { best = key; bestCount = value }
+  }
+  return best
+}
+
+/**
+ * What the caller should do instead of generating copy with the chat model:
+ * change the prompt direction / product facts, or report honestly.
+ */
+function nextStepsFor(dominant: string | null): string[] {
+  const rule = '不要用对话模型撰写、改写或补写文案；要继续就按下面的方向调整后再次调用本工具，否则如实向用户报告缺口。'
+  switch (dominant) {
+    case 'over':
+      return ['压缩字节：短标题写到 19–25 字节、长描述 56–75 字节，先删虚词和修饰语', rule]
+    case 'compliance':
+      return ['去掉保证、无风险、第一、最安全一类绝对化表述，只写已提供的事实', rule]
+    case 'hook':
+      return ['把钩子词放进开头 1/3，并尽量在前半句带上事实里的数字或问句', rule]
+    case 'cta':
+      return ['补一个目标语言的动作动词，放在结尾的自然位置', rule]
+    case 'rel':
+      return ['让每条文案覆盖 2 个以上卖点（原词或拆词）；必要时把 benefits 写得更具体', rule]
+    case 'space':
+      return ['写满字节区间：短标题 19–25 字节、长描述 56–75 字节', rule]
+    case 'total':
+      return ['四项同时满足：钩子词 + 至少 2 个卖点 + 动作动词 + 字节写满', rule]
+    default:
+      return ['本轮没有拿到可用候选：先检查模型池的连通性与模型名，必要时调大 candidateMultiplier 后重试', rule]
+  }
 }
 
 async function dispatchBatch(
@@ -371,19 +458,74 @@ async function dispatchBatch(
   const shortPool: ScoredCopyItem[] = []
   const longPool: ScoredCopyItem[] = []
   const providerErrors: Array<Record<string, unknown>> = []
+  /** Per-call latency, so "why was it slow" can be answered from the result. */
+  const timings: Array<Record<string, unknown>> = []
   const retryHistory: Array<Record<string, unknown>> = []
+  const startedAt = Date.now()
+  /** Rejected lines of recent rounds, fed back as "do not resemble these". */
+  const rejectedSamples: string[] = []
   let acceptedShort = 0
   let acceptedLong = 0
+  let zeroStreak = 0
+  let stagnated = false
+  /** Consecutive failures per provider: two strikes and we stop asking it. */
+  const failedCounts = new Map<string, number>()
+  let stickyFallback = false
   const failureCounts: Record<string, number> = {}
+  /**
+   * Accepted lines are counted by unique text — a model repeating the same
+   * line must not look like a covered quota (selection de-dupes later, so the
+   * count and the delivered list would otherwise disagree).
+   */
+  const acceptedKeys = new Set<string>()
+  const acceptUnique = (type: 'short' | 'long', text: string): boolean => {
+    const key = `${type}::${text.trim().toLowerCase()}`
+    if (acceptedKeys.has(key)) return false
+    acceptedKeys.add(key)
+    return true
+  }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // computeShortfall floors at 1 by design (the factory worker always asks
+    // for at least one more candidate), so fulfilment is checked explicitly —
+    // otherwise every batch would burn all maxAttempts rounds even after the
+    // quota was met.
+    const fulfilledShort = wantShort === 0 || acceptedShort >= wantShort
+    const fulfilledLong = wantLong === 0 || acceptedLong >= wantLong
+    if (fulfilledShort && fulfilledLong) break
     const shortfall = computeShortfall(acceptedShort, acceptedLong, categories)
-    if (shortfall <= 0) break
-    const roundProviders = fixed ?? Array.from({ length: Math.min(members.length, shortfall) }, (_, i) =>
-      members[providerRotationIndex(members.length, 0, attempt, i)]
+    // A pinned provider that keeps failing must not sink the whole job — drop
+    // it back into the pool rotation instead of repeating the same dead call
+    // until every attempt is spent. An explicit `model=` request is different:
+    // the caller asked for THAT model, so we never silently deliver another
+    // one; it either succeeds or the run reports the failure.
+    const isNamed = strategy === 'named'
+    const healthy = members.filter((member) => (failedCounts.get(member.id) ?? 0) < 2)
+    const usable = healthy.length > 0 ? healthy : members
+    const sticky = fixed && (isNamed || (failedCounts.get(fixed[0].id) ?? 0) === 0) ? fixed : null
+    if (fixed && !sticky) stickyFallback = true
+    // Try other usable members before retrying the failed sticky assignment.
+    // Explicitly named models stay pinned and never enter this fallback.
+    const alternatives = fixed && !sticky ? usable.filter(member => member.id !== fixed[0].id) : usable
+    const rotating = alternatives.length > 0 ? alternatives : usable
+    const roundProviders = sticky ?? Array.from({ length: Math.min(rotating.length, shortfall) }, (_, i) =>
+      rotating[providerRotationIndex(rotating.length, 0, attempt, i)]
     )
     const uniqueProviders = [...new Map(roundProviders.map((provider) => [provider.id, provider])).values()]
-    const perCallQty = Math.min(Math.ceil(shortfall / uniqueProviders.length) * multiplier, 50)
+    // Oversample just enough to absorb rejected candidates. The old 3× ask
+    // meant one pinned model had to emit 60 lines (short+long) per call, and
+    // that output length — not the pool — dominated the wall clock. The buffer
+    // still grows with candidateMultiplier (2→0.5×, 3→1× up to +16, 4→1.5×)
+    // but saturates at +8 per type.
+    const perProviderNeed = Math.max(1, Math.ceil(shortfall / uniqueProviders.length))
+    const buffer = multiplier <= 1
+      ? 0
+      : Math.min(8 * (multiplier - 1), Math.max(2, Math.ceil(perProviderNeed * (multiplier - 1) * 0.5)))
+    const perCallQty = Math.min(50, perProviderNeed + buffer)
+    // Thinking-capable models (opus-5 / sonnet-5.5) can spend the default
+    // budget on reasoning and return no text at all; scale the budget with the
+    // number of candidates asked for.
+    const maxTokens = Math.min(8192, 2500 + perCallQty * 140)
     const fixLines = attempt > 1 ? targetedFixLines(failureCounts) : []
     const prompt = buildBatchPrompt({
       language,
@@ -396,50 +538,117 @@ async function dispatchBatch(
       qtyLong: wantLong > 0 ? perCallQty : 0,
       attempt,
       frameworkBrief: creativeFrameworkBrief(attempt, 0),
-      fixLines
+      fixLines,
+      targets,
+      direction: directionBrief(attempt),
+      rejectedSamples: [...rejectedSamples]
     })
     const roundStart = { attempt, providers: uniqueProviders.map((provider) => provider.name), asked: perCallQty }
-    const settled = await Promise.all(
+    const roundStartedAt = Date.now()
+    let roundShort = 0
+    let roundLong = 0
+    let roundScoredCandidates = 0
+    const controllers = new Map<string, AbortController>()
+    // The round is done as soon as the remaining shortfall is covered by what
+    // arrived so far. At that point the slowest models are cancelled, so the
+    // round costs the fastest model's latency instead of the straggler's.
+    const enough = () =>
+      (wantShort === 0 || acceptedShort + roundShort >= wantShort) &&
+      (wantLong === 0 || acceptedLong + roundLong >= wantLong)
+    await Promise.all(
       uniqueProviders.map(async (provider) => {
+        const controller = new AbortController()
+        controllers.set(provider.id, controller)
+        if (enough()) return
+        const callStartedAt = Date.now()
         const result = await callCopyModel(deps.fetchImpl, provider, {
           system: '你是广告文案生成器，只输出 JSON，不输出解释。',
           prompt,
-          temperature: 0.95
+          temperature: 0.95,
+          maxTokens,
+          signal: controller.signal,
+          timeoutMs: COPY_CALL_TIMEOUT_MS
         })
-        return { provider, result }
+        timings.push({
+          name: provider.name,
+          model: provider.model,
+          attempt,
+          ms: Date.now() - callStartedAt,
+          status: controller.signal.aborted ? 'cancelled' : result.ok ? 'ok' : (result.error ?? 'error')
+        })
+        // A straggler we cancelled ourselves is not a failed provider.
+        if (controller.signal.aborted) return
+        if (!result.ok || !result.text) {
+          failedCounts.set(provider.id, (failedCounts.get(provider.id) ?? 0) + 1)
+          providerErrors.push({ name: provider.name, model: provider.model, attempt, error: result.error ?? 'empty-response' })
+          return
+        }
+        failedCounts.set(provider.id, 0)
+        const normalized = normalizeModelOutput(result.text, { short: SHORT_MAX_BYTES, long: LONG_MAX_BYTES })
+        roundScoredCandidates += normalized.shorts.length + normalized.longs.length
+        for (const text of normalized.shorts) {
+          const item = scoreCopyItem(text, { type: 'short', maxBytes: SHORT_MAX_BYTES, language, benefits, brandTerms, targets })
+          shortPool.push(item)
+          if (item.accepted) {
+            if (acceptUnique('short', text)) roundShort++
+          } else {
+            noteFailure(failureCounts, item, targets)
+            if (rejectedSamples.length < 12) rejectedSamples.push(`[short] ${text.slice(0, 80)}`)
+          }
+        }
+        for (const text of normalized.longs) {
+          const item = scoreCopyItem(text, { type: 'long', maxBytes: LONG_MAX_BYTES, language, benefits, brandTerms, targets })
+          longPool.push(item)
+          if (item.accepted) {
+            if (acceptUnique('long', text)) roundLong++
+          } else {
+            noteFailure(failureCounts, item, targets)
+            if (rejectedSamples.length < 12) rejectedSamples.push(`[long] ${text.slice(0, 80)}`)
+          }
+        }
+        if (enough()) {
+          for (const other of controllers.values()) other.abort()
+        }
       })
     )
-    let roundShort = 0
-    let roundLong = 0
-    for (const { provider, result } of settled) {
-      if (!result.ok || !result.text) {
-        providerErrors.push({ name: provider.name, model: provider.model, attempt, error: result.error ?? 'empty-response' })
-        continue
-      }
-      const normalized = normalizeModelOutput(result.text, { short: SHORT_MAX_BYTES, long: LONG_MAX_BYTES })
-      for (const text of normalized.shorts) {
-        const item = scoreCopyItem(text, { type: 'short', maxBytes: SHORT_MAX_BYTES, language, benefits, brandTerms, targets })
-        shortPool.push(item)
-        if (item.accepted) roundShort++
-        else noteFailure(failureCounts, item)
-      }
-      for (const text of normalized.longs) {
-        const item = scoreCopyItem(text, { type: 'long', maxBytes: LONG_MAX_BYTES, language, benefits, brandTerms, targets })
-        longPool.push(item)
-        if (item.accepted) roundLong++
-        else noteFailure(failureCounts, item)
-      }
-    }
     acceptedShort += roundShort
     acceptedLong += roundLong
-    retryHistory.push({ ...roundStart, acceptedShort: roundShort, acceptedLong: roundLong })
+    retryHistory.push({ ...roundStart, acceptedShort: roundShort, acceptedLong: roundLong, ms: Date.now() - roundStartedAt })
+    // Only evaluated copy can prove that a creative direction is stuck.
+    // Transport/provider failures must not stop rotation before a healthy
+    // member gets its attempt. maxAttempts still bounds recovery work.
+    if (roundShort + roundLong > 0) zeroStreak = 0
+    else if (roundScoredCandidates > 0) zeroStreak += 1
+    if (zeroStreak >= 2) {
+      stagnated = true
+      break
+    }
   }
 
   const shortSelection = wantShort > 0 ? selectTopN(shortPool, 'short', wantShort) : { selected: [], rejected: [] }
   const longSelection = wantLong > 0 ? selectTopN(longPool, 'long', wantLong) : { selected: [], rejected: [] }
   const anyOk = shortSelection.selected.length > 0 || longSelection.selected.length > 0
+  const missingShort = Math.max(0, wantShort - shortSelection.selected.length)
+  const missingLong = Math.max(0, wantLong - longSelection.selected.length)
+  const incomplete = missingShort > 0 || missingLong > 0
+  const fulfilled = !incomplete
+  const dominant = dominantFailure(failureCounts)
+  // The caller (skill/tool docs) branches on `fulfilled` and reads `diagnosis`
+  // whenever anything is short — including a partial success, where the old
+  // payload carried neither field.
+  const diagnosis = { dominant, failures: failureCounts, providerErrors: providerErrors.length, stagnated }
   return {
     ok: anyOk,
+    fulfilled,
+    ...(anyOk ? {} : { error: 'no-copy-passed' }),
+    ...(incomplete
+      ? {
+          incomplete: { short: missingShort, long: missingLong },
+          next_steps: nextStepsFor(dominant),
+          diagnosis,
+          hint: '缺口部分不要用对话模型补写：如实说明还差几条，并按 next_steps 调整后再次调用本工具。'
+        }
+      : {}),
     results: {
       ...(wantShort > 0
         ? {
@@ -468,10 +677,22 @@ async function dispatchBatch(
       acceptedShort,
       acceptedLong,
       rejectedShort: shortSelection.rejected.length,
-      rejectedLong: longSelection.rejected.length
+      rejectedLong: longSelection.rejected.length,
+      stagnated,
+      failures: failureCounts,
+      durationMs: Date.now() - startedAt
     },
-    provider_pool: { size: members.length, strategy, agentId: agentId || undefined, assignedIndex },
+    provider_pool: {
+      size: members.length,
+      strategy: stickyFallback ? `${strategy}_fallback` : strategy,
+      agentId: agentId || undefined,
+      assignedIndex,
+      unhealthy: [...failedCounts]
+        .filter(([, count]) => count >= 2)
+        .map(([id]) => members.find((member) => member.id === id)?.name ?? id)
+    },
     provider_errors: providerErrors,
+    timings,
     retry_history: retryHistory
   }
 }

@@ -14,6 +14,12 @@ interface AdsCopyModelRow {
   createdAt: number
 }
 
+interface RelayConnection {
+  baseUrl: string
+  protocol: 'openai' | 'anthropic'
+  apiKey: string
+}
+
 const inputClass =
   'w-full rounded-lg border border-line bg-ink-850 px-2.5 py-1.5 text-[13px] text-cream outline-none transition focus:border-accent/50'
 const actionClass =
@@ -35,6 +41,9 @@ export default function AdsCopyModelsSection() {
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [discovered, setDiscovered] = useState<string[]>([])
+  const [discoveredConnection, setDiscoveredConnection] = useState<RelayConnection | null>(null)
+  const [selected, setSelected] = useState<string[]>([])
+  const [batchResult, setBatchResult] = useState<{ added: number; skipped: number; limitReached: boolean } | null>(null)
   const [discovering, setDiscovering] = useState(false)
   const [discoverError, setDiscoverError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -42,6 +51,7 @@ export default function AdsCopyModelsSection() {
   const [testing, setTesting] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; detail: string }>>({})
   const mutationInFlight = useRef(false)
+  const discoveryEpoch = useRef(0)
   const [pendingDelete, setPendingDelete] = useState<ConfirmDialogRequest | null>(null)
 
   const refresh = useCallback(async (retry = false) => {
@@ -67,19 +77,37 @@ export default function AdsCopyModelsSection() {
     finally { mutationInFlight.current = false; setBusy(false) }
   }
 
+  const invalidateDiscovery = useCallback(() => {
+    discoveryEpoch.current += 1
+    setDiscovering(false)
+    setDiscovered([])
+    setDiscoveredConnection(null)
+    setSelected([])
+    setBatchResult(null)
+    setDiscoverError(null)
+  }, [])
+
   const discover = async () => {
-    if (discovering || !baseUrl.trim() || !apiKey.trim()) return
+    if (discovering || busy || !baseUrl.trim() || !apiKey.trim()) return
+    const epoch = ++discoveryEpoch.current
+    const connection = { baseUrl, protocol, apiKey }
     setDiscovering(true)
     setDiscoverError(null)
     setDiscovered([])
+    setDiscoveredConnection(null)
+    setSelected([])
+    setBatchResult(null)
     try {
-      const result = await window.electronAPI.adsCopyModelsDiscover({ baseUrl, protocol, apiKey })
-      if (result.ok && result.models) setDiscovered(result.models)
-      else setDiscoverError('discover-failed')
+      const result = await window.electronAPI.adsCopyModelsDiscover(connection)
+      if (epoch !== discoveryEpoch.current) return
+      if (result.ok && result.models) {
+        setDiscovered(result.models)
+        setDiscoveredConnection(connection)
+      } else setDiscoverError('discover-failed')
     } catch {
-      setDiscoverError('discover-failed')
+      if (epoch === discoveryEpoch.current) setDiscoverError('discover-failed')
     } finally {
-      setDiscovering(false)
+      if (epoch === discoveryEpoch.current) setDiscovering(false)
     }
   }
 
@@ -91,6 +119,7 @@ export default function AdsCopyModelsSection() {
         setDiscoverError('parse-failed')
         return
       }
+      invalidateDiscovery()
       if (parsed.baseUrl) setBaseUrl(parsed.baseUrl)
       if (parsed.apiKey) setApiKey(parsed.apiKey)
       if (parsed.model) setModel(parsed.model)
@@ -103,6 +132,7 @@ export default function AdsCopyModelsSection() {
 
   useEffect(() => {
     void refresh()
+    return () => { discoveryEpoch.current += 1 }
   }, [refresh])
 
   const add = async () => {
@@ -113,10 +143,45 @@ export default function AdsCopyModelsSection() {
     try {
       const result = await window.electronAPI.adsCopyModelsUpsert({ name, baseUrl, protocol, model, apiKey })
       if (result.ok) {
+        invalidateDiscovery()
         setName('')
         setBaseUrl('')
         setModel('')
         setApiKey('')
+        await refresh()
+      } else setError(result.error ?? 'save-failed')
+    } catch {
+      setError('save-failed')
+    } finally {
+      mutationInFlight.current = false
+      setBusy(false)
+    }
+  }
+
+  /** One relay, many models: add every ticked model with this endpoint + key. */
+  const addSelected = async () => {
+    if (mutationInFlight.current || loadFailed || rows === null || selected.length === 0) return
+    // Use the exact connection that produced this list, never the latest form
+    // values. A late discovery response cannot revive an invalidated list.
+    if (!discoveredConnection || discoveredConnection.baseUrl !== baseUrl || discoveredConnection.protocol !== protocol || discoveredConnection.apiKey !== apiKey) return
+    mutationInFlight.current = true
+    setBusy(true)
+    setError(null)
+    setBatchResult(null)
+    try {
+      // The provider name is capped at 60 chars and the model id at 120;
+      // slicing the name keeps a long relay id from failing the whole batch,
+      // and ids longer than the model cap are dropped rather than sent.
+      const usable = selected.filter((modelId) => modelId.length <= 120)
+      const inputs = usable.map((modelId) => ({ name: modelId.slice(0, 60), ...discoveredConnection, model: modelId }))
+      const result = await window.electronAPI.adsCopyModelsAddMany(inputs)
+      if (result.ok) {
+        setBatchResult({
+          added: result.added ?? 0,
+          skipped: (result.skipped ?? 0) + (selected.length - usable.length),
+          limitReached: result.limitReached === true
+        })
+        setSelected([])
         await refresh()
       } else setError(result.error ?? 'save-failed')
     } catch {
@@ -248,7 +313,7 @@ export default function AdsCopyModelsSection() {
           <div className="mt-3 grid grid-cols-1 gap-2 rounded-xl border border-line bg-ink-850/40 p-3 md:grid-cols-2">
             <input className={inputClass} placeholder={t('adsCopy.form.name')} value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
             <div className="flex gap-1.5">
-              <input className={inputClass} placeholder={t('adsCopy.form.baseUrl')} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} maxLength={300} />
+              <input className={inputClass} placeholder={t('adsCopy.form.baseUrl')} value={baseUrl} onChange={(e) => { invalidateDiscovery(); setBaseUrl(e.target.value) }} maxLength={300} />
               <button type="button" className={actionClass} onClick={() => void pasteConnectBlock()} title={t('adsCopy.pasteBlock')}>
                 <ClipboardPaste size={12} />
               </button>
@@ -256,13 +321,21 @@ export default function AdsCopyModelsSection() {
             <select
               className={inputClass}
               value={protocol}
-              onChange={(e) => setProtocol(e.target.value === 'anthropic' ? 'anthropic' : 'openai')}
+              onChange={(e) => { invalidateDiscovery(); setProtocol(e.target.value === 'anthropic' ? 'anthropic' : 'openai') }}
               aria-label={t('adsCopy.form.protocol')}
             >
               <option value="openai">OpenAI 兼容</option>
               <option value="anthropic">Anthropic</option>
             </select>
-            <div className="flex gap-1.5">
+            <input
+              className={inputClass}
+              type="password"
+              placeholder={t('adsCopy.form.apiKey')}
+              value={apiKey}
+              onChange={(e) => { invalidateDiscovery(); setApiKey(e.target.value) }}
+              maxLength={400}
+            />
+            <div className="flex gap-1.5 md:col-span-2">
               <input
                 className={inputClass}
                 placeholder={t('adsCopy.form.model')}
@@ -274,7 +347,7 @@ export default function AdsCopyModelsSection() {
               <button
                 type="button"
                 className={actionClass}
-                disabled={discovering || !baseUrl.trim() || !apiKey.trim()}
+                disabled={busy || discovering || !baseUrl.trim() || !apiKey.trim()}
                 onClick={() => void discover()}
                 title={t('adsCopy.discover')}
               >
@@ -287,9 +360,6 @@ export default function AdsCopyModelsSection() {
                 <option key={id} value={id} />
               ))}
             </datalist>
-            {discovered.length > 0 && (
-              <p className="text-[11px] text-cream-faint md:col-span-2">{t('adsCopy.discoveredCount', { count: discovered.length })}</p>
-            )}
             {discoverError && (
               <p className="text-[11px] text-red-500 md:col-span-2">
                 {discoverError === 'parse-failed'
@@ -297,17 +367,69 @@ export default function AdsCopyModelsSection() {
                   : t('adsCopy.testFailed', { detail: discoverError })}
               </p>
             )}
-            <input
-              className={inputClass}
-              type="password"
-              placeholder={t('adsCopy.form.apiKey')}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              maxLength={400}
-            />
+            {discovered.length > 0 && (
+              <div className="rounded-xl border border-line bg-ink-900/60 p-2.5 md:col-span-2">
+                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11.5px] text-cream-faint">
+                    {t('adsCopy.batch.found', { count: discovered.length })}
+                  </span>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      className={actionClass}
+                      disabled={busy || selected.length === discovered.length}
+                      onClick={() => setSelected(discovered)}
+                    >
+                      {t('adsCopy.batch.selectAll')}
+                    </button>
+                    <button
+                      type="button"
+                      className={actionClass}
+                      disabled={busy || selected.length === 0}
+                      onClick={() => setSelected([])}
+                    >
+                      {t('adsCopy.batch.clear')}
+                    </button>
+                  </div>
+                </div>
+                <div className="max-h-44 overflow-auto rounded-lg border border-line bg-ink-850/40 p-1 md:grid md:grid-cols-2 md:gap-x-2">
+                  {discovered.map((id) => (
+                    <label key={id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11.5px] text-cream-dim transition hover:bg-overlay">
+                      <input
+                        type="checkbox"
+                        disabled={busy}
+                        className="h-3.5 w-3.5 accent-[var(--accent)]"
+                        checked={selected.includes(id)}
+                        onChange={() =>
+                          setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))
+                        }
+                      />
+                      <span className="truncate">{id}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="focus-ring inline-flex items-center justify-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+                    disabled={busy || loadFailed || selected.length === 0 || !baseUrl.trim() || !apiKey.trim()}
+                    onClick={() => void addSelected()}
+                  >
+                    <Plus size={12} />
+                    {t('adsCopy.batch.add', { count: selected.length })}
+                  </button>
+                  {batchResult && (
+                    <span className="text-[11px] text-emerald-500">
+                      {t('adsCopy.batch.result', { added: batchResult.added, skipped: batchResult.skipped })}
+                      {batchResult.limitReached && ` · ${t('adsCopy.batch.limit')}`}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
             <button
               type="button"
-              className="focus-ring inline-flex items-center justify-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+              className="focus-ring inline-flex items-center justify-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40 md:col-span-2"
               disabled={busy || loadFailed || !name.trim() || !baseUrl.trim() || !model.trim() || !apiKey.trim()}
               onClick={() => void add()}
             >

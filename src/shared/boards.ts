@@ -1250,7 +1250,11 @@ export function validateBoard(raw: unknown, strict = false): KanbanBoard | null 
     // would keep it in state while disk loses it.
     return null
   }
+  // Keep the flag exactly as given: the strict save path compares the
+  // validated board with the renderer's payload field by field, so dropping an
+  // explicit `locked: false` made every unlock fail as `invalid-board`.
   if (b.locked === true) board.locked = true
+  else if (b.locked === false) board.locked = false
   return board
 }
 

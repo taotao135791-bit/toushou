@@ -133,6 +133,60 @@ describe('AdsCopyModelStore', () => {
     expect(readFileSync(file,'utf8')).toBe(data)
   })
 
+  it('batch-adds a relay model list in one write, deduping and keeping names unique', async () => {
+    const store = new AdsCopyModelStore()
+    const base = { baseUrl: 'https://relay.example.com/v1', protocol: 'openai' as const, apiKey: 'sk-relay' }
+    const first = await store.addMany([
+      { ...base, name: 'gpt-4o', model: 'gpt-4o' },
+      { ...base, name: 'claude-x', model: 'claude-x' }
+    ])
+    expect(first).toMatchObject({ added: 2, skipped: 0, limitReached: false })
+    expect(first.pool.providers.map((provider) => provider.name)).toEqual(['gpt-4o', 'claude-x'])
+
+    // Scheme/hostname/default port and trailing slashes are equivalent, but
+    // the model id is retained exactly as offered by the relay.
+    const second = await store.addMany([
+      { ...base, name: 'whatever', model: 'gpt-4o', baseUrl: 'HTTPS://RELAY.example.com:443/v1/' },
+      { ...base, name: 'gpt-4o', model: 'gpt-4o-mini' }
+    ])
+    expect(second).toMatchObject({ added: 1, skipped: 1 })
+    expect(second.pool.providers.map((provider) => provider.name)).toEqual(['gpt-4o', 'claude-x', 'gpt-4o (2)'])
+  })
+
+  it('preserves distinct relay paths and model ids that differ only by case', async () => {
+    const store = new AdsCopyModelStore()
+    const base = { name: 'copy', baseUrl: 'https://relay.example.com/TeamA/v1', protocol: 'openai' as const, model: 'ModelA', apiKey: 'synthetic-key' }
+    const result = await store.addMany([
+      base,
+      { ...base, baseUrl: 'https://relay.example.com/teama/v1' },
+      { ...base, model: 'modela' }
+    ])
+    expect(result).toMatchObject({ added: 3, skipped: 0, limitReached: false })
+    expect((await store.load()).providers.map(({ baseUrl, model }) => [baseUrl, model])).toEqual([
+      ['https://relay.example.com/TeamA/v1', 'ModelA'],
+      ['https://relay.example.com/teama/v1', 'ModelA'],
+      ['https://relay.example.com/TeamA/v1', 'modela']
+    ])
+  })
+
+  it('stops a batch at the provider cap and reports it', async () => {
+    const store = new AdsCopyModelStore()
+    const base = { baseUrl: 'https://relay.example.com/v1', protocol: 'openai' as const, apiKey: 'k' }
+    const many = Array.from({ length: 120 }, (_, index) => ({ ...base, name: `m${index}`, model: `m${index}` }))
+    const result = await store.addMany(many)
+    expect(result.added).toBe(100)
+    expect(result.limitReached).toBe(true)
+    expect((await store.load()).providers).toHaveLength(100)
+  })
+
+  it('rejects an invalid entry before writing anything', async () => {
+    const store = new AdsCopyModelStore()
+    const base = { baseUrl: 'https://relay.example.com/v1', protocol: 'openai' as const, apiKey: 'k' }
+    await expect(store.addMany([{ ...base, name: 'ok', model: 'ok' }, { ...base, name: '', model: 'x' }]))
+      .rejects.toThrow('invalid-name')
+    expect((await store.load()).providers).toHaveLength(0)
+  })
+
   it('round-trips providers and pool through the encrypted envelope, masks keys', async () => {
     const store = new AdsCopyModelStore()
     const saved = await store.upsert({ name: 'gpt-copy', baseUrl: 'https://api.example.com/v1', protocol: 'openai', model: 'gpt-4o-mini', apiKey: 'sk-secret' })
@@ -221,6 +275,38 @@ describe('callCopyModel', () => {
     )
     expect(network.ok).toBe(false)
     expect(network.error).toContain('network')
+  })
+
+  it('names thinking-only truncation instead of a mute empty response', async () => {
+    const anthropic = { ...provider, protocol: 'anthropic' as const, baseUrl: 'https://api.anthropic.com' }
+    const result = await callCopyModel(
+      async () => jsonResponse({ content: [{ type: 'thinking', thinking: '' }], stop_reason: 'max_tokens' }),
+      anthropic,
+      { prompt: 'x' }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('thinking-only')
+    expect(result.error).toContain('max_tokens')
+  })
+
+  it('cancels a call that exceeds its budget', async () => {
+    const fetchImpl = (_url: string, init: { signal?: AbortSignal }) =>
+      new Promise<{ ok: boolean; status: number; text: () => Promise<string> }>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+      })
+    const result = await callCopyModel(fetchImpl, provider, { prompt: 'x', timeoutMs: 20 })
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('timeout')
+  })
+
+  it('surfaces relay errors returned with HTTP 200', async () => {
+    const result = await callCopyModel(
+      async () => jsonResponse({ error: { message: 'insufficient quota' } }),
+      provider,
+      { prompt: 'x' }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('api-error: quota-exceeded')
   })
 })
 

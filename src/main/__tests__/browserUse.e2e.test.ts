@@ -78,14 +78,16 @@ function runHarness(modulesDir: string): { code: number; stdout: string; stderr:
   delete env.ELECTRON_RUN_AS_NODE
   const proc = spawnSync(electronBinary() as string, [harness, modulesDir], {
     encoding: 'utf-8',
-    timeout: 90_000,
+    // The suite runs other Electron apps in parallel; a loaded machine can
+    // stretch this harness past 90s even when every step is healthy.
+    timeout: 150_000,
     env
   })
   return { code: proc.status ?? -1, stdout: proc.stdout ?? '', stderr: proc.stderr ?? '' }
 }
 
 describe('browser-use e2e (real Electron panel)', () => {
-  it('drives the real panel and enforces session/visibility rules', { timeout: 120_000 }, () => {
+  it('drives the real panel and enforces session/visibility rules', { timeout: 180_000 }, () => {
     const outDir = path.join(os.tmpdir(), 'toushou-browser-use-e2e')
     mkdirSync(outDir, { recursive: true })
     const bundled = bundleModules(outDir)
@@ -104,7 +106,11 @@ describe('browser-use e2e (real Electron panel)', () => {
 
     const { stdout, stderr } = runHarness(outDir)
     const line = stdout.split('\n').find((l) => l.startsWith('E2E_RESULT '))
-    expect(line, `harness produced no verdict:\n${stdout.slice(0, 1000)}\n${stderr.slice(0, 1000)}`).toBeDefined()
+    expect(
+      line,
+      `harness produced no verdict:\n${stdout.slice(0, 1000)}\n${stderr.slice(0, 1000)}\n` +
+        'Hint: a running dev app (start.sh) competes for GPU and memory — close it and rerun.'
+    ).toBeDefined()
     const parsed = JSON.parse((line as string).slice('E2E_RESULT '.length)) as
       | { fatal: string }
       | { steps: HarnessStep[] }
@@ -137,8 +143,11 @@ describe('browser-use e2e (real Electron panel)', () => {
     expect(Array.isArray(steps['A history'].readings)).toBe(true)
 
     // Screenshot fallback writes a PNG.
-    expect(steps['A screenshot'].ok).toBe(true)
+    expect(steps['A screenshot'].ok, `screenshot step: ${JSON.stringify(steps['A screenshot'])}`).toBe(true)
     expect(existsSync(String(steps['A screenshot'].imagePath))).toBe(true)
+    expect(steps['A screenshot without animation frames'].ok).toBe(true)
+    expect(existsSync(String(steps['A screenshot without animation frames'].imagePath))).toBe(true)
+    expect(steps['A snapshot after stalled animation frames'].ok).toBe(true)
 
     // Hidden panel: operations refused.
     expect(steps['A snapshot while hidden (expect denial)'].ok).toBe(false)
