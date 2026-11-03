@@ -1,6 +1,7 @@
 /* CI only: run the actual staged packaged executable against a synthetic profile. */
-const { spawn, spawnSync } = require('node:child_process')
-const { mkdtempSync, mkdirSync, existsSync, rmSync, statSync, writeFileSync } = require('node:fs')
+const { spawn } = require('node:child_process')
+const { mkdtempSync, mkdirSync, existsSync, statSync, writeFileSync } = require('node:fs')
+const { rm } = require('node:fs/promises')
 const { createServer } = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
@@ -88,14 +89,65 @@ async function evaluate(cdp, expression) {
 
 let child, cdp, output = ''
 const running = process_ => process_ && process_.exitCode === null && process_.signalCode === null
-async function stopChild() {
-  if (!running(child)) return
-  const stopped = new Promise(resolve => child.once('exit', resolve))
-  if (process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' })
-  else child.kill('SIGTERM')
+function processState(target) {
+  return `pid=${target?.pid ?? 'none'} exit=${target?.exitCode ?? 'none'} signal=${target?.signalCode ?? 'none'}`
+}
+
+/** Bounded, asynchronous taskkill lets Node observe the packaged child's exit. */
+async function killWindowsTree(pid) {
+  const started = Date.now()
+  return new Promise(resolve => {
+    const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT
+    const command = systemRoot ? path.join(systemRoot, 'System32', 'taskkill.exe') : 'taskkill.exe'
+    let killer
+    let detail = ''
+    const collect = chunk => { if (detail.length < 1024) detail += String(chunk).slice(0, 1024 - detail.length) }
+    let settled = false
+    const finish = result => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      console.log(`[smoke-cleanup] phase=taskkill pid=${pid} status=${result.status ?? 'none'} error=${result.error ?? 'none'} elapsedMs=${Date.now() - started}`)
+      if ((result.status !== 0 || result.error) && detail) console.error(`[smoke-cleanup] phase=taskkill-output detail=${JSON.stringify(detail)}`)
+      resolve(result)
+    }
+    const timeout = setTimeout(() => {
+      try { killer?.kill('SIGKILL') } catch { /* timed-out utility */ }
+      killer?.stdout?.destroy()
+      killer?.stderr?.destroy()
+      killer?.unref()
+      finish({ status: null, error: 'timeout' })
+    }, 8000)
+    try {
+      killer = spawn(command, ['/pid', String(pid), '/t', '/f'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+      killer.stdout?.on('data', collect)
+      killer.stderr?.on('data', collect)
+      killer.once('error', error => finish({ status: null, error: error.code || 'spawn-failed' }))
+      killer.once('close', (status, signal) => finish({ status, error: signal ? 'signal' : null }))
+    } catch (error) { finish({ status: null, error: error.code || 'spawn-failed' }) }
+  })
+}
+async function stopChild(phase = 'stop') {
+  const target = child
+  console.log(`[smoke-cleanup] phase=${phase}-begin ${processState(target)}`)
+  if (!running(target)) return
+  const stopped = new Promise(resolve => target.once('exit', resolve))
+  let treeFailure = false
+  if (process.platform === 'win32' && target.pid) {
+    const result = await killWindowsTree(target.pid)
+    treeFailure = result.status !== 0 || !!result.error
+  } else {
+    try { target.kill('SIGTERM') } catch { /* checked against real exit below */ }
+  }
   await Promise.race([stopped, sleep(3000)])
-  if (running(child)) { child.kill('SIGKILL'); await Promise.race([stopped, sleep(2000)]) }
-  if (running(child)) throw new Error('Packaged app did not exit')
+  if (running(target)) {
+    console.log(`[smoke-cleanup] phase=${phase}-fallback ${processState(target)}`)
+    try { target.kill('SIGKILL') } catch { /* checked against real exit below */ }
+    await Promise.race([stopped, sleep(2000)])
+  }
+  console.log(`[smoke-cleanup] phase=${phase}-end ${processState(target)}`)
+  if (running(target)) throw new Error('Packaged app did not exit')
+  if (treeFailure) throw new Error('Packaged app process tree termination could not be confirmed')
 }
 async function launch(port) {
   child = spawn(executable, [`--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'], { env: environment, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false })
@@ -148,7 +200,7 @@ async function run() {
   if (!seed?.ok) throw new Error(`Packaged persistence failed at ${seed?.stage ?? 'read-back'}`)
   // Restart the actual packaged process and verify the saved data again.
   cdp.close(); cdp = null
-  await stopChild()
+  await stopChild('restart')
   // Windows can keep the first listener's port unavailable after the process
   // exits. Allocate a fresh loopback port for the restarted packaged app.
   const restartPort = await freePort()
@@ -172,12 +224,35 @@ async function run() {
   await until(() => evaluate(cdp, `${JSON.stringify(seed.chartIds)}.every(id=>!!document.querySelector('[data-board-widget-id="'+id+'"] iframe'))`), 15_000, 'Modular charts rendered')
   const modules = await evaluate(cdp, `(() => {const ids=${JSON.stringify(seed.chartIds)},grid=document.querySelector('.react-grid-layout').getBoundingClientRect();const rows=ids.map(id=>{const card=document.querySelector('[data-board-widget-id="'+id+'"]'),frame=card.querySelector('iframe'),r=card.getBoundingClientRect(),f=frame.getBoundingClientRect(),doc=new DOMParser().parseFromString(frame.srcdoc,'text/html');return {x:r.x,y:r.y,right:r.right,width:r.width,frameWidth:f.width,frameHeight:f.height,sandbox:frame.getAttribute('sandbox'),fullTable:!!doc.querySelector('.table-wrap'),footer:!!doc.querySelector('.module-source'),script:!!doc.querySelector('script')}});return {gridWidth:grid.width,rows}})()`)
   if (modules.rows.length !== 2 || modules.rows.some(row => row.sandbox !== '' || row.fullTable || !row.footer || row.script || row.width < modules.gridWidth * 0.4 || row.frameWidth < 100 || row.frameHeight < 100) || Math.abs(modules.rows[0].y - modules.rows[1].y) > 2 || modules.rows[0].right > modules.rows[1].x + 1) throw new Error('Modular chart layout or compact source preview is invalid')
-  console.log('Packaged app smoke passed: private profile, full report and modular snapshot persistence, separate chart layouts, and source navigation.')
+  console.log('Packaged app functional assertions passed: private profile, full report and modular snapshot persistence, separate chart layouts, and source navigation.')
 }
 let timer
 Promise.race([run(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Packaged smoke exceeded 90 seconds')), 90_000) })]).catch(error => { process.exitCode = 1; console.error(`Packaged app smoke failed: ${error.message}`); if (output) console.error(output) }).finally(async () => {
   clearTimeout(timer)
+  // Bound cleanup even when a subprocess, socket or filesystem operation stalls.
+  const cleanupDeadline = setTimeout(() => {
+    process.exitCode = 1
+    console.error(`[smoke-cleanup] phase=deadline ${processState(child)}`)
+    try { if (running(child)) child.kill('SIGKILL') } catch { /* report failure below */ }
+    process.exit(1)
+  }, 20000)
   try { cdp?.close() } catch { /* already closed */ }
-  try { await stopChild() } catch (error) { process.exitCode = 1; console.error(error.message) }
-  try { rmSync(root, { recursive: true, force: true }) } catch { /* best effort */ }
+  try { await stopChild('final') } catch (error) { process.exitCode = 1; console.error(error.message) }
+  try {
+    await Promise.race([
+      rm(root, { recursive: true, force: true }),
+      sleep(4000).then(() => { throw new Error('Synthetic profile cleanup timed out') })
+    ])
+  } catch (error) { process.exitCode = 1; console.error(`[smoke-cleanup] phase=profile error=${error.code || error.message}`) }
+  child?.stdout?.destroy()
+  child?.stderr?.destroy()
+  if (!process.exitCode) console.log('Packaged app smoke passed (including process cleanup).')
+  // Give the runner time to receive the final diagnostics before bounded exit.
+  await Promise.race([
+    Promise.all([process.stdout, process.stderr].map(stream => new Promise(resolve => stream.write('', resolve)))),
+    sleep(500)
+  ])
+  clearTimeout(cleanupDeadline)
+  // A lingering WebSocket or descendant pipe must not hold the CI step open.
+  process.exit(process.exitCode || 0)
 })
