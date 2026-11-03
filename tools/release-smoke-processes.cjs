@@ -13,6 +13,16 @@ function normalizeProcesses(value) {
   })
 }
 const imageEquals = (a, b) => typeof a === 'string' && path.win32.normalize(a).toLowerCase() === path.win32.normalize(b).toLowerCase()
+const ERROR_CATEGORIES = new Map([
+  ['process-enumeration-timeout', 'timeout'],
+  ['process-enumeration-spawn', 'spawn'],
+  ['process-enumeration-failed', 'enumeration-failed'],
+  ['process-enumeration-invalid', 'invalid'],
+  ['process-enumeration-output-limit', 'output-limit'],
+  ['process-tree-root-unverified', 'root-unverified'],
+  ['process-tree-identity-unavailable', 'identity-unavailable']
+])
+function safeFailureCategory(error) { return error instanceof Error ? ERROR_CATEGORIES.get(error.message) || 'unknown' : 'unknown' }
 function captureProcessTree(rows, rootPid, executable) {
   const root = rows.find(row => row.pid === rootPid)
   if (!root || !root.birth || !imageEquals(root.image, executable)) throw new Error('process-tree-root-unverified')
@@ -32,7 +42,7 @@ function processesGone(tracked, rows, executable) {
 }
 
 /** Bounded CIM enumeration; never log stdout, executable paths, or command lines. */
-function enumerateWindowsProcesses(timeoutMs = 3000) {
+function enumerateWindowsProcesses(timeoutMs = 10000, spawnImpl = spawn) {
   return new Promise((resolve, reject) => {
     const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT
     const executable = systemRoot ? path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe'
@@ -41,16 +51,18 @@ function enumerateWindowsProcesses(timeoutMs = 3000) {
     const finish = (error, value) => {
       if (settled) return
       settled = true; clearTimeout(timer)
-      if (error) reject(new Error('process-enumeration-failed'))
-      else { try { resolve(normalizeProcesses(JSON.parse(value))) } catch { reject(new Error('process-enumeration-invalid')) } }
+      if (error) reject(new Error(error))
+      else { try { resolve(normalizeProcesses(JSON.parse(value.replace(/^\uFEFF/, '')))) } catch { reject(new Error('process-enumeration-invalid')) } }
     }
-    const timer = setTimeout(() => { try { child?.kill('SIGKILL') } catch { /* bounded */ }; child?.stdout?.destroy(); child?.stderr?.destroy(); child?.unref(); finish(true) }, timeoutMs)
+    const stopUtility = () => { try { child?.kill('SIGKILL') } catch { /* bounded */ }; child?.stdout?.destroy(); child?.stderr?.destroy(); child?.unref() }
+    const timer = setTimeout(() => { stopUtility(); finish('process-enumeration-timeout') }, timeoutMs)
     try {
-      child = spawn(executable, ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
-      child.stdout.on('data', chunk => { output += chunk.toString('utf8'); if (output.length > 4_000_000) { try { child.kill('SIGKILL') } catch { /* bounded */ }; finish(true) } })
-      child.once('error', () => finish(true))
-      child.once('close', code => finish(code !== 0, output))
-    } catch { finish(true) }
+      child = spawnImpl(executable, ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+      child.stdout.setEncoding('utf8')
+      child.stdout.on('data', chunk => { output += chunk.toString('utf8'); if (output.length > 4_000_000) { stopUtility(); finish('process-enumeration-output-limit') } })
+      child.once('error', () => finish('process-enumeration-spawn'))
+      child.once('close', code => finish(code !== 0 ? 'process-enumeration-failed' : null, output))
+    } catch { finish('process-enumeration-spawn') }
   })
 }
-module.exports = { normalizeProcesses, captureProcessTree, processesGone, enumerateWindowsProcesses }
+module.exports = { normalizeProcesses, captureProcessTree, processesGone, enumerateWindowsProcesses, safeFailureCategory }

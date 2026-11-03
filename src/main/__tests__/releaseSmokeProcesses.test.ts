@@ -1,10 +1,14 @@
 import { createRequire } from 'node:module'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 const require_ = createRequire(import.meta.url)
-const { normalizeProcesses, captureProcessTree, processesGone } = require_('../../../tools/release-smoke-processes.cjs') as {
+const { normalizeProcesses, captureProcessTree, processesGone, enumerateWindowsProcesses, safeFailureCategory } = require_('../../../tools/release-smoke-processes.cjs') as {
   normalizeProcesses: (input: unknown) => Row[]
   captureProcessTree: (rows: Row[], pid: number, executable: string) => Array<{ pid: number; birth: string }>
   processesGone: (tracked: Array<{ pid: number; birth: string }>, rows: Row[], executable: string) => boolean
+  enumerateWindowsProcesses: (timeout: number, spawn: (...args: any[]) => any) => Promise<Row[]>
+  safeFailureCategory: (error: unknown) => string
 }
 type Row = { pid: number; parent: number; birth: string | null; image: string | null }
 const executable = 'C:\\fixture\\投手.exe'
@@ -34,5 +38,23 @@ describe('Windows smoke process verification', () => {
     expect(() => normalizeProcesses([])).toThrow('invalid')
     expect(() => normalizeProcesses([{ pid: 3, parent: 0 }, { pid: 3, parent: 0 }])).toThrow('invalid')
     expect(normalizeProcesses([{ pid: 0, parent: 0 }, { pid: 3, parent: 0, birth: '34', image: null }])).toEqual([{ pid: 0, parent: 0, birth: null, image: null }, { pid: 3, parent: 0, birth: '34', image: null }])
+  })
+  it('classifies bounded enumeration failure without exposing upstream text', async () => {
+    const utility = () => Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: null, kill: () => true, unref: () => {} })
+    const hung = utility()
+    await expect(enumerateWindowsProcesses(5, () => hung)).rejects.toThrow('process-enumeration-timeout')
+    await expect(enumerateWindowsProcesses(50, () => { throw new Error('private diagnostic') })).rejects.toThrow('process-enumeration-spawn')
+    const invalid = utility()
+    const pending = enumerateWindowsProcesses(50, () => invalid)
+    invalid.stdout.write('{invalid'); invalid.emit('close', 0)
+    await expect(pending).rejects.toThrow('process-enumeration-invalid')
+    const exited = utility()
+    const failure = enumerateWindowsProcesses(50, () => exited)
+    exited.emit('close', 1)
+    await expect(failure).rejects.toThrow('process-enumeration-failed')
+    expect(safeFailureCategory(new Error('process-enumeration-timeout'))).toBe('timeout')
+    expect(safeFailureCategory(new Error('process-tree-root-unverified'))).toBe('root-unverified')
+    expect(safeFailureCategory(new Error('process-tree-identity-unavailable'))).toBe('identity-unavailable')
+    expect(safeFailureCategory(new Error('private diagnostic'))).toBe('unknown')
   })
 })

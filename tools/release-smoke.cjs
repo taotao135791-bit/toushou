@@ -5,7 +5,7 @@ const { rm } = require('node:fs/promises')
 const { createServer } = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
-const { enumerateWindowsProcesses, captureProcessTree, processesGone } = require('./release-smoke-processes.cjs')
+const { enumerateWindowsProcesses, captureProcessTree, processesGone, safeFailureCategory } = require('./release-smoke-processes.cjs')
 
 if (process.env.CI !== 'true' || process.env.GITHUB_ACTIONS !== 'true') {
   throw new Error('Packaged smoke is restricted to GitHub Actions runners.')
@@ -134,8 +134,10 @@ async function stopChild(phase = 'stop') {
   const stopped = new Promise(resolve => target.once('exit', resolve))
   let tracked = null, captureError = false
   if (process.platform === 'win32' && target.pid) {
+    const captureStarted = Date.now()
     try { tracked = captureProcessTree(await enumerateWindowsProcesses(), target.pid, executable) }
-    catch { captureError = true }
+    catch (error) { captureError = true; console.error(`[smoke-cleanup] phase=${phase}-capture result=${safeFailureCategory(error)} elapsedMs=${Date.now() - captureStarted}`) }
+    if (!captureError) console.log(`[smoke-cleanup] phase=${phase}-capture result=ok elapsedMs=${Date.now() - captureStarted}`)
     // Never tree-kill a PID whose current process identity was not verified.
     // The ChildProcess handle remains the bounded fallback below.
     if (!captureError && running(target)) await killWindowsTree(target.pid)
@@ -153,7 +155,9 @@ async function stopChild(phase = 'stop') {
   if (process.platform === 'win32') {
     if (captureError || !tracked) throw new Error('Packaged app process tree could not be captured')
     let gone = false
-    try { gone = processesGone(tracked, await enumerateWindowsProcesses(), executable) } catch { /* fail closed */ }
+    const verifyStarted = Date.now()
+    try { gone = processesGone(tracked, await enumerateWindowsProcesses(), executable); console.log(`[smoke-cleanup] phase=${phase}-verify result=${gone ? 'gone' : 'survivor'} elapsedMs=${Date.now() - verifyStarted}`) }
+    catch (error) { console.error(`[smoke-cleanup] phase=${phase}-verify result=${safeFailureCategory(error)} elapsedMs=${Date.now() - verifyStarted}`) }
     if (!gone) throw new Error('Packaged app process tree termination could not be confirmed')
     console.log(`[smoke-cleanup] phase=${phase}-verified count=${tracked.length}`)
   }
@@ -244,7 +248,7 @@ Promise.race([run(), new Promise((_, reject) => { timer = setTimeout(() => rejec
     console.error(`[smoke-cleanup] phase=deadline ${processState(child)}`)
     try { if (running(child)) child.kill('SIGKILL') } catch { /* report failure below */ }
     process.exit(1)
-  }, 20000)
+  }, 45000)
   try { cdp?.close() } catch { /* already closed */ }
   try { await stopChild('final') } catch (error) { process.exitCode = 1; console.error(error.message) }
   try {
@@ -257,9 +261,8 @@ Promise.race([run(), new Promise((_, reject) => { timer = setTimeout(() => rejec
     ])
   } catch (error) {
     process.exitCode = 1
-    const relative = typeof error.path === 'string' ? path.relative(root, error.path) : ''
-    const target = relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) ? relative : '.'
-    console.error(`[smoke-cleanup] phase=profile error=${error.code || error.message} target=${JSON.stringify(target)}`)
+    const code = ['ENOENT', 'EACCES', 'EBUSY', 'EPERM', 'ENOTEMPTY', 'ETIMEDOUT'].includes(error.code) ? error.code : 'failure'
+    console.error(`[smoke-cleanup] phase=profile error=${code}`)
   }
   child?.stdout?.destroy()
   child?.stderr?.destroy()
