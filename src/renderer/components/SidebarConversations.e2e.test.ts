@@ -21,10 +21,14 @@ describe('project conversations in the real Sidebar', () => {
       writeFileSync(path.join(dir, 'fixture.css'), css.css)
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
       const result = spawnSync(electron, [path.resolve(__dirname, 'SidebarConversations.harness.cjs'), dir], { encoding: 'utf8', timeout: 45000, env })
+      const diagnostics = `status=${result.status} signal=${result.signal} spawnError=${result.error?.message ?? 'none'}\n${result.stdout}\n${result.stderr}`
       const line = result.stdout?.split('\n').find(value => value.startsWith('E2E_RESULT '))
-      expect(line, result.stderr).toBeDefined()
+      expect(line, diagnostics).toBeDefined()
       const data = JSON.parse(line!.slice('E2E_RESULT '.length))
-      expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
+      expect(data, diagnostics).not.toHaveProperty('fatal')
+      expect(result.error, diagnostics).toBeUndefined()
+      expect(result.status, diagnostics).toBe(0)
+      expect(result.stdout, diagnostics).not.toMatch(/RENDERER Uncaught/)
       expect(data.defaultHidden).toBe(true)
       expect(data.duplicateTitlesKept).toBe(2)
       expect(data.after).toMatchObject({ ...data.before, sameNode: true, animated: false })
@@ -53,6 +57,7 @@ describe('project conversations in the real Sidebar', () => {
       expect(data.resetArchive).toBe('Archive')
       expect(data.finalArchive).toEqual({ open: false, snapshot: { current: 'live-b', workspace: '/synthetic/client-b/project' }, kills: ['live-a'] })
       expect(data.fullTitle).toBe('Beta live conversation')
+      expect(data.nativeKeyboardClicks).toEqual(Array(9).fill(1))
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

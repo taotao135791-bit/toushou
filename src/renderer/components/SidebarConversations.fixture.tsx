@@ -89,7 +89,7 @@ window.electronAPI = {
   getSessionState: async () => null,
   gitInfo: async () => null,
   getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }), listModels: async () => [],
-  listCommands: async () => [], getSessionStats: async () => null, checkpointCreate: async () => null,
+  listCommands: async () => [], getSessionStats: async () => null, checkpointCreate: async () => null, checkpointList: async () => [],
   createSession: async (grantId: string) => {
     fixture.creates.push(grantId)
     const session: Session = { id: `created-${fixture.creates.length}`, cwd: grant(grantId.replace('grant-', '')).realPath, title: 'project', createdAt: 1000, status: 'idle', sessionFile: `/synthetic/${uuid(50 + fixture.creates.length)}.jsonl` }

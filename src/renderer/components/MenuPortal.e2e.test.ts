@@ -21,10 +21,12 @@ describe('stable portaled menus in Electron', () => {
       writeFileSync(path.join(dir, 'fixture.css'), css.css)
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
       const result = spawnSync(electron, [path.resolve(__dirname, 'MenuPortal.harness.cjs'), dir], { encoding: 'utf8', timeout: 35000, env })
+      expect(result.error).toBeUndefined()
       const line = result.stdout?.split('\n').find(value => value.startsWith('E2E_RESULT '))
-      expect(line, result.stderr).toBeDefined()
+      expect(line, JSON.stringify({ status: result.status, signal: result.signal, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code, stdoutBytes: result.stdout?.length ?? 0, stderrBytes: result.stderr?.length ?? 0 })).toBeDefined()
       const data = JSON.parse(line!.slice('E2E_RESULT '.length))
       expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
+      expect(result.status, JSON.stringify({ status: result.status, signal: result.signal, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code })).toBe(0)
       expect(data.streaming.state.stream).toBe(30)
       expect(data.streaming.state.refreshes).toBeGreaterThanOrEqual(30)
       expect(data.streaming.mutations).toEqual([])

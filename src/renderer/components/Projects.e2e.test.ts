@@ -21,10 +21,13 @@ describe('shared project controls in Electron', () => {
       writeFileSync(path.join(dir, 'fixture.css'), css.css)
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
       const result = spawnSync(electron, [path.resolve(__dirname, 'Projects.harness.cjs'), dir], { encoding: 'utf8', timeout: 45000, env })
+      const diagnostics = `status=${result.status} signal=${result.signal} spawnError=${result.error?.message ?? 'none'}\n${result.stdout}\n${result.stderr}`
       const line = result.stdout?.split('\n').find(value => value.startsWith('E2E_RESULT '))
-      expect(line, result.stderr).toBeDefined()
+      expect(line, diagnostics).toBeDefined()
       const data = JSON.parse(line!.slice('E2E_RESULT '.length))
-      expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
+      expect(data, diagnostics).not.toHaveProperty('fatal')
+      expect(result.error, diagnostics).toBeUndefined()
+      expect(result.status, diagnostics).toBe(0)
       expect(data.defaultSelected).toBe('/synthetic/default')
       expect(data.defaultPresentation).toEqual({ hiddenInSidebar: true, composerText: 'No project', composerTitle: 'No project' })
       expect(data.defaultPicker).toEqual({ present: true, title: 'No project', privatePathVisible: false })

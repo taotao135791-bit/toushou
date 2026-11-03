@@ -50,7 +50,7 @@ describe('same-turn session topic runtime compatibility', () => {
       if (!address || typeof address === 'string') throw new Error('synthetic-provider-unavailable')
       writeFileSync(path.join(agentDir, 'models.yml'), YAML.stringify({ providers: { localtopic: { baseUrl: `http://127.0.0.1:${address.port}/v1`, api: 'openai-completions', apiKey: 'synthetic-no-live-credential', models: [{ id: 'topic-fixture', name: 'Synthetic local topic fixture', reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 512 }] } } }))
       const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-        const args = ['--mode', 'json', '--print', '--no-session', '--no-skills', '--no-rules', '--no-lsp', '--no-pty', '--no-title', '--max-time=20', '--thinking=low', '--model', 'localtopic/topic-fixture', '-e', path.resolve('resources/session-topic/index.ts'), '--approval-mode', mode === 'ask' ? 'always-ask' : 'yolo']
+        const args = ['--mode', 'json', '--print', '--no-session', '--no-skills', '--no-rules', '--no-pty', '--no-title', '--max-time=20', '--thinking=low', '--model', 'localtopic/topic-fixture', '-e', path.resolve('resources/session-topic/index.ts'), '--approval-mode', mode === 'ask' ? 'always-ask' : 'yolo']
         if (mode === 'readonly') args.push('--tools', 'read,grep,glob,lsp,web_search,todo')
         args.push('Analyze this synthetic account and keep the sidebar topic concise.')
         const child = spawnCommand(process.env.OMP_BIN || 'omp', args, {

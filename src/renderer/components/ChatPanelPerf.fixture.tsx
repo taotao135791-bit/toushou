@@ -8,14 +8,15 @@ import { useAppStore } from '../store'
 const current: Session = { id: 'current', cwd: '/synthetic/current', title: 'Current conversation', status: 'idle', createdAt: 1 }
 const sessions: Session[] = [current, ...Array.from({ length: 200 }, (_, i) => ({ ...current, id: `background-${i}`, title: `Background ${i}` }))]
 const fixture = {
-  commits: 0, renderMs: 0,
-  reset() { fixture.commits = 0; fixture.renderMs = 0 },
+  commits: 0, renderMs: 0, backgroundUpdates: 0,
+  reset() { fixture.commits = 0; fixture.renderMs = 0; fixture.backgroundUpdates = 0 },
   async updateBackground() {
     for (let i = 0; i < 200; i++) {
       const id = `background-${i}`
       useAppStore.getState().setSessionTitle(id, `Background changed ${i}`)
       useAppStore.getState().setSessions(useAppStore.getState().sessions.map(session => session.id === id ? { ...session, status: 'error' } : session))
       await new Promise(requestAnimationFrame)
+      fixture.backgroundUpdates += 1
     }
   },
   renameCurrent() { useAppStore.getState().setSessionTitle('current', 'Renamed current conversation') },
