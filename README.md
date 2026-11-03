@@ -4,13 +4,13 @@
 
 ## 下载与安装
 
-当前公开版本：**v2.0.2**。安装包和校验文件也可在 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.0.2) 查看。
+当前公开版本：**v2.1.0**。安装包和校验文件也可在 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.1.0) 查看。
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.2/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.2/TouShou-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.2/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.2/TouShou-x64.zip) |
-| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.0.2/TouShou-x64.exe) |
+| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.1.0/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.1.0/TouShou-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.1.0/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.1.0/TouShou-x64.zip) |
+| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.1.0/TouShou-x64.exe) |
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 
@@ -19,9 +19,10 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 ## 快速上手
 
 1. 打开投手，按提示安装或连接 Agent 运行时，并在设置中选择模型。
-2. 在「连接」中授权需要的服务。TikTok 通过官方 MCP 读取；Facebook 和 Google 通过支持的报表入口读取。
-3. 在「今日」选择账户及日期后查看读数；需要进一步分析时，在对话中向投手提问或保存读数到看板。
-4. 使用看板和文件功能时，核对来源、数据与权限提示，再确认需要的本机更改。
+2. 需要分类保存时，从侧栏或输入框创建项目；未选项目时使用默认保存位置。
+3. 在「连接」中授权需要的服务。TikTok 通过官方 MCP 读取；Facebook 和 Google 通过支持的报表入口读取。
+4. 在「今日」选择账户及日期后查看读数；需要进一步分析时，在对话中向投手提问或保存读数到看板。
+5. 使用看板和文件功能时，核对来源、数据与权限提示，再确认需要的本机更改。
 
 读取广告报表本身不调用大模型；主动发起 AI 分析或编辑可能产生模型费用。AI 输出的文字结论需要人工复核。
 
@@ -35,7 +36,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 最新发版
 
-**v2.0.2** 改进 Facebook 单账户读取、多账户巡检、产品报表和文案模型池批量导入；修复看板解锁、定时任务迟发、连接切换及截图卡住的问题，模型服务错误不再回显凭证。完整版本记录见[更新日志](CHANGELOG.md)。
+**v2.1.0** 新增项目创建、归档、恢复和再次确认后删除，以及自动会话主题和启动更新提示；修复侧栏切换跳动、历史加载及菜单点击问题，优化前端性能，微调 macOS 红绿灯位置。使用方式见[项目与会话说明](docs/projects-and-session-topics.md)，完整版本记录见[更新日志](CHANGELOG.md)。
 
 ## 开发
 
