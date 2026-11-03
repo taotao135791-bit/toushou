@@ -13,6 +13,9 @@ export default defineConfig({
     }
   },
   test: {
+    // Native Electron regressions share one desktop and its keyboard focus.
+    // Running files in parallel can steal focus between real input events.
+    fileParallelism: false,
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx']
   }
 })

@@ -7,6 +7,7 @@ import { validateReadingSnapshot } from '@shared/readingSnapshot'
 import { buildBoardHighlightsPrompt } from '@shared/boardHighlights'
 import { useAppStore } from '../../store'
 import { startReadingAnalysis } from '../../lib/readingAnalysis'
+import { beginNavigationIntent, isCurrentNavigationIntent } from '../../lib/navigationIntent'
 import { ReadingSnapshotView } from './ReadingSnapshotView'
 import { HtmlBoardEditor } from './HtmlBoardEditor'
 
@@ -59,13 +60,15 @@ export function ReadingSnapshotBody({ widget, boardId, autoOpenAi = false, onAiO
     finally { setBusy(false) }
   }
   const reviewHighlights = async () => {
+    const intent = beginNavigationIntent()
     setBusy(true); setStatus(null)
     try {
       const result = await window.electronAPI.getBoardHighlightEvidence({ boardId, widgetId: widget.id })
       if (result.ok) {
-        const id = await startReadingAnalysis(buildBoardHighlightsPrompt(result.evidence, language))
-        if (id) navigate('/')
-        else setStatus(zh ? '未能开始分析，请检查模型连接后重试。' : 'Could not start analysis. Check your model connection and retry.')
+        if (!isCurrentNavigationIntent(intent)) return
+        const id = await startReadingAnalysis(buildBoardHighlightsPrompt(result.evidence, language), intent)
+        if (id && isCurrentNavigationIntent(intent)) navigate('/')
+        else if (!id && isCurrentNavigationIntent(intent)) setStatus(zh ? '未能开始分析，请检查模型连接后重试。' : 'Could not start analysis. Check your model connection and retry.')
       }
       else setStatus(zh ? '无法核对保存的读数，请重新打开看板。' : 'Could not verify saved readings. Reopen the board.')
     } catch { setStatus(zh ? '无法开始分析，请检查模型连接后重试。' : 'Could not start analysis. Check your model connection and retry.') }

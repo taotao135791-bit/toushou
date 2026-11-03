@@ -33,6 +33,7 @@ vi.mock('../../store', () => ({
 
 import { createSession, getSession, getSessionState, resumeSession } from '../../omp'
 import { FeishuConnectionManager } from './FeishuConnectionManager'
+import { resetWorkspaceSystemPathsForTest } from '../../workspaceSystemPaths'
 import { secureStorageCoordinator } from '../secureStorageCoordinator'
 
 interface RouterAccess {
@@ -59,6 +60,7 @@ beforeEach(async () => {
   paths.documents = await mkdtemp(path.join(os.tmpdir(), 'toushou-feishu-docs-'))
   paths.userData = await mkdtemp(path.join(os.tmpdir(), 'toushou-feishu-user-'))
   vi.clearAllMocks()
+  resetWorkspaceSystemPathsForTest()
   // The application singleton deliberately survives manager instances. Reset
   // it between isolated tests with a synthetic backend, never the Keychain.
   secureStorageCoordinator.encrypt({ isAvailable: () => true, encrypt: value => Buffer.from(value), decrypt: value => value.toString() }, 'fixture', { retry: true, retryEpoch: secureStorageCoordinator.blockedEpoch() })

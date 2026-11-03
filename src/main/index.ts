@@ -10,6 +10,7 @@ import { cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { syncMachineSkills } from './piSettings'
 import { detectCli } from './omp'
 import { initUpdater } from './updater'
+import { initSessionTopicBridge } from './sessionTopicBridge'
 import { installNavigationGuards } from './navigation'
 import { initFeishuBridge } from './integrations/feishu/feishuBridge'
 import { initTasksBridge } from './tasksBridge'
@@ -91,6 +92,8 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
+    // Slightly inset the native macOS controls within the 44px drag area.
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 14 } } : {}),
     backgroundColor: '#ffffff',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -164,6 +167,12 @@ app.whenReady().then(async () => {
     await initAdsCopyBridge()
   } catch (error) {
     console.warn('[tasks] tool bridge unavailable', error)
+  }
+  try {
+    await initSessionTopicBridge()
+  } catch {
+    // Metadata naming is independent of advertising tools and never blocks startup.
+    console.warn('[session-topic] automatic topic bridge unavailable')
   }
   // The viral-competitive-analysis chain is product kernel: its playbook
   // skill must exist in every install (idempotent, version-upgrading).

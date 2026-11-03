@@ -134,5 +134,19 @@ describe('createSessionForCurrentProject', () => {
     expect(getDefaultWorkspace).toHaveBeenCalledOnce()
     expect(createSession).toHaveBeenCalledWith('grant-default', expect.any(Object))
     expect(useAppStore.getState().currentWorkspace?.id).toBe('grant-default')
+    expect(useAppStore.getState().currentSessionId).toBe(session.id)
+  })
+
+  it('preserves a slow created session for its first prompt without taking a newer selection', async () => {
+    const pending = deferred<Session>()
+    vi.stubGlobal('window', { electronAPI: {
+      createSession: vi.fn(() => pending.promise), getSessionState: vi.fn().mockResolvedValue(null), getSubagents: vi.fn().mockResolvedValue([])
+    } })
+    const creating = createSessionForCurrentProject()
+    useAppStore.getState().setCurrentSessionId('newer-session')
+    pending.resolve(session)
+    expect(await creating).toBe(session.id)
+    expect(useAppStore.getState().currentSessionId).toBe('newer-session')
+    expect(useAppStore.getState().sessions.some(item => item.id === session.id)).toBe(true)
   })
 })

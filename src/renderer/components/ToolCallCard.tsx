@@ -93,6 +93,15 @@ function ToolCallCard({ toolCall }: ToolCallCardProps) {
   const labelKey = toolLabelKey(toolCall.tool)
   const label = labelKey ? t(labelKey) : toolCall.tool
 
+  // UI metadata has no document or account action for the user to inspect.
+  // Keep the ordinary activity row without exposing bridge schema/results.
+  if (toolCall.tool === 'toushou_session_topic') {
+    return <div className="flex h-8 items-center gap-2.5 px-3 text-xs text-cream-faint">
+      {running && <Loader2 size={11} className="shrink-0 animate-spin" />}
+      <span>{t('tool.label.sessionTopic')}</span>
+    </div>
+  }
+
   // Borderless one-line row; the surrounding group container (MessageList)
   // draws the box and hairline separators between consecutive tool calls.
   return (

@@ -30,7 +30,6 @@ export async function openGlobalHistory(
 ): Promise<GlobalHistoryOpenResult> {
   try {
     const initial = deps.getState()
-    if (initial.historyLoading) return 'loading'
     if (!initial.currentWorkspace || initial.currentWorkspace.realPath !== row.cwd) {
       // Main canonicalizes recent descriptors before returning them. Basename
       // matching can silently choose the wrong one when projects share a name.
@@ -40,6 +39,10 @@ export async function openGlobalHistory(
     }
     const grant = deps.getState().currentWorkspace
     if (!grant || grant.realPath !== row.cwd) return 'project-not-added'
+    // Activation can already have started the target scan in the Sidebar.
+    // Await/coalesce that trusted scope instead of turning the first click
+    // into a workspace-only switch. A scan for the previous project must
+    // not prevent selecting this project either.
     await deps.loadHistory(grant.id)
     const fresh = deps.getState()
     if (fresh.currentWorkspace?.id !== grant.id || fresh.currentWorkspace.realPath !== row.cwd || fresh.historyLoading) return 'history-unavailable'

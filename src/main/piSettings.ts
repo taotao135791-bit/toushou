@@ -11,8 +11,19 @@ import { detectCli } from './omp'
  *   blobs written by `pi /login` are preserved untouched)
  */
 
-export function defaultPiAgentDir(cliCommand: string = detectCli().command): string {
-  const dir = cliCommand === 'omp' ? '.omp' : '.pi'
+export function defaultPiAgentDir(cliCommand?: string): string {
+  const override = process.env.PI_CODING_AGENT_DIR
+  if (override !== undefined && override !== '' && override.trim() && !override.includes('\0') && path.isAbsolute(override)) {
+    const profile = process.env.OMP_PROFILE ?? process.env.PI_PROFILE
+    // A named OMP profile ignores this variable. Keep the pre-existing fallback
+    // for this unsupported combination rather than selecting the wrong override.
+    if (!profile || profile === 'default' || (cliCommand ?? detectCli().command) !== 'omp') {
+      return path.normalize(override)
+    }
+  }
+  // Unsupported relative/invalid values retain the prior CLI-specific fallback;
+  // they are not resolved against arbitrary Main or session working directories.
+  const dir = (cliCommand ?? detectCli().command) === 'omp' ? '.omp' : '.pi'
   return path.join(homedir(), dir, 'agent')
 }
 

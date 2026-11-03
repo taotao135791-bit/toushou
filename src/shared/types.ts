@@ -175,6 +175,20 @@ export interface WorkspaceGrant {
   createdAt: number
 }
 
+/** A Main-registered project; its opaque id, not its displayed path, authorizes operations. */
+export interface ProjectRecord {
+  id: string
+  name: string
+  path: string
+  archived: boolean
+  missing: boolean
+  isDefault: boolean
+  createdAt: number
+}
+
+export type ProjectError = 'cancelled' | 'missing' | 'busy' | 'protected' | 'system-paths-unavailable' | 'invalid-name' | 'path-changed' | 'partial-failure' | 'failed' | 'not-found' | 'archived'
+export type ProjectResult = { ok: true; project: ProjectRecord; grant?: WorkspaceGrant } | { ok: false; error: ProjectError; message?: string }
+
 /** Target app for the chat top bar "Open with" utility menu (workspace:open-in). */
 export type OpenWorkspaceTarget = 'finder' | 'terminal' | 'editor'
 
@@ -252,10 +266,17 @@ export type SessionRuntimeState =
   | 'failed'
   | 'closed'
 
+export type SessionTitleSource = 'auto' | 'manual'
+export interface SessionTitleMetadata { source: SessionTitleSource; revision: number }
+export interface SessionNamingResult extends SessionTitleMetadata { title: string }
+export interface SessionNameOptions { source: 'auto'; revision?: number }
+
 export interface Session {
   id: string
   cwd: string
   title: string
+  titleSource?: SessionTitleSource
+  titleRevision?: number
   createdAt: number
   /**
    * Last REAL interaction (a message the user actually sent). Mere viewing
@@ -314,6 +335,7 @@ export interface ExternalSessionDescriptor {
 }
 
 export type SessionEvent =
+  | { type: 'title_changed'; sessionId: string; title: string; source: SessionTitleSource; revision: number }
   | { type: 'connected'; sessionId: string }
   | {
       type: 'message'
@@ -1569,6 +1591,7 @@ export interface AppSettings {
    * names are persisted here and overlaid onto history scans.
    */
   sessionTitles: Record<string, string>
+  sessionTitleMetadata: Record<string, SessionTitleMetadata>
 }
 
 // --- Scheduled tasks --------------------------------------------------------
@@ -1694,7 +1717,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showDevChrome: false,
   scheduledTasks: [],
   tiktokAutoRefresh: false,
-  sessionTitles: {}
+  sessionTitles: {},
+  sessionTitleMetadata: {}
 }
 
 /** Snapshot of a live session, from the RPC get_state command. */
@@ -1791,7 +1815,7 @@ export type UpdaterStatus =
   | { status: 'downloading' }
   | { status: 'progress'; percent: number }
   | { status: 'downloaded'; version: string }
-  | { status: 'error'; message: string }
+  | { status: 'error'; message: string; operation?: 'check' | 'download' | 'install' }
   /** Dev builds have no updater; returned by updaterCheck only. */
   | { status: 'dev' }
 

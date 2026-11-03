@@ -86,26 +86,63 @@ export function replaceHistoricalSessionRecords(
       record.workspaceRealPath !== workspaceRealPath ||
       (record.history?.id ? discovered.has(record.history.id) : false)
   )
-  let next = kept
-  for (const info of history) {
-    const index = next.findIndex((record) => sameHistory(record, info))
-    const previous = index >= 0 ? next[index] : undefined
-    const record: SessionRecord = {
-      key: previous?.key ?? `history:${info.id}`,
-      workspaceRealPath,
-      title: previous?.isLive ? previous.title : info.title,
-      ...(previous?.runtimeSessionId ? { runtimeSessionId: previous.runtimeSessionId } : {}),
-      ...(previous?.sessionFile ? { sessionFile: previous.sessionFile } : {}),
-      history: info,
-      state: previous?.isLive ? previous.state : 'historical',
-      createdAt: previous?.createdAt ?? info.timestamp,
-      updatedAt: now,
-      isLive: previous?.isLive ?? false,
-      isResumable: true
+  const buildRecord = (info: HistorySessionDescriptor, previous?: SessionRecord): SessionRecord => ({
+    key: previous?.key ?? `history:${info.id}`,
+    workspaceRealPath,
+    title: previous?.isLive ? previous.title : info.title,
+    ...(previous?.runtimeSessionId ? { runtimeSessionId: previous.runtimeSessionId } : {}),
+    ...(previous?.sessionFile ? { sessionFile: previous.sessionFile } : {}),
+    history: info,
+    state: previous?.isLive ? previous.state : 'historical',
+    createdAt: previous?.createdAt ?? info.timestamp,
+    updatedAt: now,
+    isLive: previous?.isLive ?? false,
+    isResumable: true
+  })
+  // Ambiguous duplicate capabilities or UUIDs can make an earlier update
+  // become the next match; retain the original first-match ordering for them.
+  const originalMerge = (): SessionRecord[] => {
+    let next = kept
+    for (const info of history) {
+      const index = next.findIndex((record) => sameHistory(record, info))
+      const record = buildRecord(info, index >= 0 ? next[index] : undefined)
+      next = index >= 0 ? [record, ...next.filter((_, i) => i !== index)] : [record, ...next]
     }
-    next = index >= 0 ? [record, ...next.filter((_, i) => i !== index)] : [record, ...next]
+    return next
   }
-  return next
+  const byId = new Map<string, number>()
+  const liveByUuid = new Map<string, number>()
+  for (let index = 0; index < kept.length; index++) {
+    const item = kept[index]
+    if (!item.history) continue
+    if (byId.has(item.history.id)) return originalMerge()
+    byId.set(item.history.id, index)
+    if (item.isLive && item.history.uuid) {
+      if (liveByUuid.has(item.history.uuid)) return originalMerge()
+      liveByUuid.set(item.history.uuid, index)
+    }
+  }
+  const seenIds = new Set<string>()
+  const seenUuids = new Set<string>()
+  const consumed = new Set<number>()
+  const updated: SessionRecord[] = []
+  for (const info of history) {
+    if (seenIds.has(info.id) || (info.uuid && seenUuids.has(info.uuid))) return originalMerge()
+    seenIds.add(info.id)
+    if (info.uuid) seenUuids.add(info.uuid)
+    const idIndex = byId.get(info.id)
+    const uuidIndex = info.uuid ? liveByUuid.get(info.uuid) : undefined
+    if (idIndex !== undefined && uuidIndex !== undefined && idIndex !== uuidIndex) return originalMerge()
+    const index = idIndex ?? uuidIndex
+    if (index !== undefined && consumed.has(index)) return originalMerge()
+    const previous = index === undefined ? undefined : kept[index]
+    // Changing a live record's UUID can alter a later UUID match.
+    if (previous?.isLive && previous.history?.uuid !== info.uuid) return originalMerge()
+    if (index !== undefined) consumed.add(index)
+    updated.push(buildRecord(info, previous))
+  }
+  updated.reverse()
+  return [...updated, ...kept.filter((_, index) => !consumed.has(index))]
 }
 
 export function updateSessionRecordTitle(

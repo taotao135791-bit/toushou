@@ -622,6 +622,22 @@ describe('OmpSession prompt lifecycle (current runtime)', () => {
     )
     expect(statusEvents(events)).toEqual(['idle'])
     expect(s.runtimeState).toBe('idle')
+    expect(s.hasPendingWork).toBe(false)
+  })
+
+  it('deferred local completion clears only its own concurrent prompt', () => {
+    const { s, fake } = currentSession()
+    s.sendPrompt('/compact'); s.sendPrompt('other task')
+    const prompts = fake.stdin.write.mock.calls.map(([value]) => JSON.parse(String(value))).filter(frame => frame.type === 'prompt')
+    const [first, second] = prompts.map(frame => frame.id)
+    emitLines(fake,
+      { type: 'response', id: first, command: 'prompt', success: true, data: null },
+      { type: 'response', id: second, command: 'prompt', success: true, data: null },
+      { type: 'prompt_result', id: first, agentInvoked: false }
+    )
+    expect(s.hasPendingWork).toBe(true)
+    emitLines(fake, { type: 'agent_start' }, { type: 'agent_end' })
+    expect(s.hasPendingWork).toBe(false)
   })
 
   it('mid-stream local command does not disturb the running turn', () => {
@@ -889,5 +905,39 @@ describe('spawn-liveness deadline', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('project deletion process shutdown', () => {
+  it('treats a submitted prompt as busy before the runtime starts', () => {
+    const { s } = makeSession()
+    expect(s.hasPendingWork).toBe(false)
+    expect(s.sendPrompt('fixture')).toBe(true)
+    expect(s.hasPendingWork).toBe(true)
+    s.kill()
+  })
+  it('keeps a successfully acknowledged prompt busy when a concurrent prompt is rejected', () => {
+    const { s, fake } = makeSession()
+    s.sendPrompt('first'); s.sendPrompt('second')
+    const first = JSON.parse(fake.stdin.write.mock.calls[0][0]).id
+    const second = JSON.parse(fake.stdin.write.mock.calls[1][0]).id
+    emitLines(fake, { type: 'response', id: first, success: true, data: {agentInvoked: true} })
+    emitLines(fake, { type: 'response', id: second, success: false, error: 'synthetic rejection' })
+    expect(s.runtimeState).toBe('idle')
+    expect(s.hasPendingWork).toBe(true)
+    emitLines(fake, { type: 'agent_start' }, { type: 'agent_end' })
+    expect(s.hasPendingWork).toBe(false)
+    s.kill()
+  })
+  it('does not report child shutdown until the process actually exits', async () => {
+    const { s, fake } = makeSession()
+    let exited = false
+    const done = s.killAndWait().then(() => { exited = true })
+    await Promise.resolve()
+    expect(fake.kill).toHaveBeenCalledOnce()
+    expect(exited).toBe(false)
+    fake.emitter.emit('exit', 0)
+    await done
+    expect(exited).toBe(true)
   })
 })

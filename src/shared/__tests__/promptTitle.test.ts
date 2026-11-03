@@ -102,3 +102,18 @@ describe('dedupeSessionTitle', () => {
     expect(Array.from(result).length).toBeLessThanOrEqual(60)
   })
 })
+
+describe('private automatic conversation topics', () => {
+  it('uses a concise intent topic immediately instead of a raw account prompt', () => {
+    expect(summarizePromptTitle('请帮我分析 TikTok 广告主7123456789012345678近7天的消耗变化', '链接')).toBe('TikTok投放分析')
+    expect(summarizePromptTitle('把TikTok近七天读数保存为一个看板，做可视化', '链接')).toBe('TikTok读数看板')
+    expect(summarizePromptTitle('Review TikTok account performance and diagnose CPA', 'link')).toBe('TikTok performance analysis')
+  })
+
+  it('never copies synthetic identifiers or credentials into a fallback title', () => {
+    for (const prompt of ['sk-syntheticPrivateCredential123', '账户 7123456789012345678', 'access_token=synthetic-token-value', 'contact@example.test']) {
+      const title = summarizePromptTitle(prompt, '链接')
+      expect(title).not.toMatch(/7123456789|synthetic|example\.test/)
+    }
+  })
+})

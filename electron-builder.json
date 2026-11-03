@@ -23,6 +23,10 @@
       "to": "omp-approval"
     },
     {
+      "from": "resources/session-topic",
+      "to": "session-topic"
+    },
+    {
       "from": "resources/ads-toolkit",
       "to": "ads-toolkit"
     },

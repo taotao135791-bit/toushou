@@ -44,15 +44,46 @@ describe('history workspace activation', () => {
     expect(await openGlobalHistory({ uuid: history.uuid, cwd: '/synthetic/a' }, deps)).toBe('history-unavailable')
     expect(resume).toHaveBeenCalledOnce()
   })
-  it('reports loading, missing grants and stale cross-workspace records without starting a session', async () => {
+  it('reports missing grants and stale cross-workspace records without starting a session', async () => {
     const state: HistoryResumeState = { currentWorkspace: null, historyLoading: true, recentWorkspaces: [], sessionRecords: [] }
     const deps = { getState: () => state, activateWorkspace: vi.fn(async () => {}), loadHistory: vi.fn(async () => {}), resume: vi.fn(async () => true) }
-    expect(await openGlobalHistory({ uuid: history.uuid, cwd: '/synthetic/a' }, deps)).toBe('loading')
+    expect(await openGlobalHistory({ uuid: history.uuid, cwd: '/synthetic/a' }, deps)).toBe('project-not-added')
     state.historyLoading = false
     expect(await openGlobalHistory({ uuid: history.uuid, cwd: '/synthetic/a' }, deps)).toBe('project-not-added')
     state.currentWorkspace = grant('a', '/synthetic/a'); state.sessionRecords = [record('/synthetic/b')]
     expect(await openGlobalHistory({ uuid: history.uuid, cwd: '/synthetic/a' }, deps)).toBe('history-unavailable')
     expect(deps.resume).not.toHaveBeenCalled()
+  })
+
+  it('awaits the target project scan already started by workspace activation', async () => {
+    const state: HistoryResumeState = { currentWorkspace: grant('target', '/synthetic/b'), historyLoading: true, recentWorkspaces: [], sessionRecords: [] }
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = () => { state.sessionRecords = [record('/synthetic/b')]; state.historyLoading = false; resolve() } })
+    const resume = vi.fn(async () => true)
+    const load = vi.fn(() => pending)
+    const opening = openGlobalHistory({ uuid: history.uuid, cwd: '/synthetic/b' }, { getState: () => state, activateWorkspace: vi.fn(async () => {}), loadHistory: load, resume })
+    expect(load).toHaveBeenCalledWith('target')
+    expect(resume).not.toHaveBeenCalled()
+    finish()
+    expect(await opening).toBe('opened')
+    expect(resume).toHaveBeenCalledWith(history, '/synthetic/b')
+  })
+
+  it('can choose a new project while another project is loading and rejects a later scope change', async () => {
+    const state: HistoryResumeState = { currentWorkspace: grant('old', '/synthetic/a'), historyLoading: true, recentWorkspaces: [{ id: 'target', displayPath: '/synthetic/b' }], sessionRecords: [] }
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    const activate = vi.fn(async () => { state.currentWorkspace = grant('target', '/synthetic/b') })
+    const resume = vi.fn(async () => true)
+    const opening = openGlobalHistory({ uuid: history.uuid, cwd: '/synthetic/b' }, { getState: () => state, activateWorkspace: activate, loadHistory: () => pending, resume })
+    await Promise.resolve()
+    expect(activate).toHaveBeenCalledWith('target')
+    state.currentWorkspace = grant('newer-selection', '/synthetic/c')
+    state.historyLoading = false
+    state.sessionRecords = [record('/synthetic/b')]
+    finish()
+    expect(await opening).toBe('history-unavailable')
+    expect(resume).not.toHaveBeenCalled()
   })
 })
 

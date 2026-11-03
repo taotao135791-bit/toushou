@@ -88,6 +88,8 @@ import {
   HistoricalAgentRecord,
   WorkspaceGrant,
   RecentWorkspaceDescriptor,
+  ProjectRecord,
+  ProjectResult,
   OpenWorkspaceTarget,
   OpenWorkspaceResult,
   FileGrant,
@@ -177,6 +179,13 @@ export interface ElectronAPI {
   readFile: (grantId: string, relativePath: string) => Promise<ReadFileResult>
   /** Flat relative-path file list of a project under a workspace grant. */
   listProjectFiles: (grantId: string) => Promise<string[]>
+  listProjects: () => Promise<ProjectRecord[]>
+  createProject: (name: string) => Promise<ProjectResult>
+  importProject: () => Promise<ProjectResult>
+  activateProject: (id: string) => Promise<ProjectResult>
+  archiveProject: (id: string) => Promise<ProjectResult>
+  restoreProject: (id: string) => Promise<ProjectResult>
+  deleteProject: (id: string) => Promise<ProjectResult>
   /** Show the native folder dialog and mint a new WorkspaceGrant. */
   selectWorkspace: () => Promise<WorkspaceGrant | null>
   /** Create a named project folder under Documents/投手项目 and grant it. */
@@ -411,7 +420,7 @@ export interface ElectronAPI {
    */
   deleteSessionByUuid: (grantId: string, uuid: string) => Promise<boolean>
   /** Return the canonical saved display name, or null if naming failed. */
-  setSessionName: (sessionId: string, name: string) => Promise<{ title: string } | null>
+  setSessionName: (sessionId: string, name: string, options?: import('../shared/types').SessionNameOptions) => Promise<import('../shared/types').SessionNamingResult | null>
   /** Live subagent roster (get_subagents); null when unsupported/unavailable. */
   getSubagents: (sessionId: string) => Promise<SubagentSnapshot[] | null>
   /** Incrementally read a child agent transcript (get_subagent_messages). */
@@ -663,6 +672,13 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.FS_READ_FILE, grantId, relativePath),
   listProjectFiles: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FS_LIST_PROJECT_FILES, grantId),
+  listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_LIST),
+  createProject: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, name),
+  importProject: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_IMPORT),
+  activateProject: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_ACTIVATE, id),
+  archiveProject: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_ARCHIVE, id),
+  restoreProject: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_RESTORE, id),
+  deleteProject: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
   selectWorkspace: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_SELECT),
   createProjectWorkspace: (name: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_CREATE_PROJECT, name),
@@ -887,8 +903,8 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_FILE, grantId, historyId),
   deleteSessionByUuid: (grantId: string, uuid: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_BY_UUID, grantId, uuid),
-  setSessionName: (sessionId: string, name: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_SESSION_NAME, sessionId, name) as Promise<{ title: string } | null>,
+  setSessionName: (sessionId: string, name: string, options?: import('../shared/types').SessionNameOptions) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_SESSION_NAME, sessionId, name, options) as Promise<import('../shared/types').SessionNamingResult | null>,
   getSubagents: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_GET_SUBAGENTS, sessionId),
   getSubagentMessages: (sessionId: string, selector: SubagentTranscriptSelector) =>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AlertCircle, Download, LoaderCircle, RotateCw, X } from 'lucide-react'
 import { UpdaterStatus } from '@shared/types'
 import { useT } from '../i18n'
+import { subscribeUpdaterStatus } from '../lib/updaterStatus'
 
 /**
  * Global update banner. The packaged app already checks for updates 10s
@@ -12,20 +13,12 @@ import { useT } from '../i18n'
  */
 export default function UpdateBanner() {
   const [status, setStatus] = useState<UpdaterStatus>({ status: 'idle' })
-  const [dismissed, setDismissed] = useState(false)
+  const [dismissed, setDismissed] = useState<UpdaterStatus | null>(null)
   const t = useT()
 
-  useEffect(() => {
-    window.electronAPI.updaterGetStatus().then(setStatus)
-    return window.electronAPI.onUpdaterStatus(setStatus)
-  }, [])
+  useEffect(() => subscribeUpdaterStatus(setStatus), [])
 
-  // A new version (or a retry after error) re-opens a dismissed banner.
-  useEffect(() => {
-    setDismissed(false)
-  }, [status])
-
-  if (dismissed) return null
+  if (dismissed === status || (status.status === 'available' && dismissed?.status === 'available' && dismissed.version === status.version)) return null
 
   const pillCls =
     'flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition-colors hover:border-ink-600 hover:text-cream'
@@ -78,7 +71,7 @@ export default function UpdateBanner() {
         </button>
       </>
     )
-  } else if (status.status === 'error') {
+  } else if (status.status === 'error' && (status.operation === 'download' || status.operation === 'install')) {
     dismissible = true
     content = (
       <>
@@ -117,7 +110,7 @@ export default function UpdateBanner() {
           type="button"
           aria-label={t('update.dismiss')}
           className="ml-1 rounded p-0.5 text-cream-faint transition-colors hover:text-cream"
-          onClick={() => setDismissed(true)}
+          onClick={() => setDismissed(status)}
         >
           <X size={12} />
         </button>

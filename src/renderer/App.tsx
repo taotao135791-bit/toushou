@@ -3,11 +3,13 @@ import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { HistorySessionDescriptor, SessionEvent } from '@shared/types'
 import { useAppStore } from './store'
+import { useProjects } from './store/projects'
 import { translate, useT } from './i18n'
 import { useWindowDropGuard } from './lib/useWindowDropGuard'
 import { basename } from './lib/path'
 import { showNotice } from './lib/notice'
 import { finishHistoryResume, historyResumeGrant, openGlobalHistory } from './lib/historyResume'
+import { beginNavigationIntent, isCurrentNavigationIntent } from './lib/navigationIntent'
 import Layout from './components/Layout'
 import CommandPalette, { type CommandPaletteHandlers } from './components/CommandPalette'
 import ChatPage from './pages/ChatPage'
@@ -304,6 +306,7 @@ function App() {
   // up front — the first sent message creates it (same as the 对话 nav row).
   const [paletteOpen, setPaletteOpen] = useState(false)
   const openingHistory = useRef(false)
+  const queuedHistory = useRef<{ target: { uuid: string; cwd: string }; intent: number } | null>(null)
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -340,7 +343,8 @@ function App() {
    * project-dir title Main assigns, fold historical agents into the
    * projection, and retire the opaque history row once a live row exists.
    */
-  const resumeHistoryDescriptor = async (info: HistorySessionDescriptor, expectedWorkspace: string): Promise<boolean> => {
+  const resumeHistoryDescriptor = async (info: HistorySessionDescriptor, expectedWorkspace: string, intent: number): Promise<boolean> => {
+    if (!isCurrentNavigationIntent(intent)) return false
     const state = useAppStore.getState()
     const access = historyResumeGrant(state, info, expectedWorkspace)
     if (!access.ok) {
@@ -375,10 +379,10 @@ function App() {
         state.removeHistorySession(info.id)
         state.applyHistoricalAgents(session.id, historicalAgents ?? [])
       },
-      currentWorkspace: () => useAppStore.getState().currentWorkspace,
-      select: () => { state.setCurrentSessionId(session.id); navigate('/') }
+      currentWorkspace: () => isCurrentNavigationIntent(intent) ? useAppStore.getState().currentWorkspace : null,
+      select: () => { state.setCurrentSessionId(session.id, intent); navigate('/') }
     })
-    if (!selected) showNotice('history.restoredInOtherProject')
+    if (!selected && isCurrentNavigationIntent(intent)) showNotice('history.restoredInOtherProject')
     return selected
   }
 
@@ -388,20 +392,28 @@ function App() {
    * activate that project first (recent workspaces are the only trusted
    * grant source) and resume there.
    */
-  const openHistoryRecord = async (target: { uuid: string; cwd: string }) => {
-    if (openingHistory.current) { showNotice('history.loading'); return }
+  const openHistoryRecord = async (target: { uuid: string; cwd: string }, intent = beginNavigationIntent()) => {
+    if (openingHistory.current) { queuedHistory.current = { target, intent }; return }
     openingHistory.current = true
     try {
+      const project = useProjects.getState().projects.find(row => row.path === target.cwd && !row.archived && !row.missing)
+      if (useAppStore.getState().currentWorkspace?.realPath !== target.cwd && project) await useProjects.getState().activate(project.id, intent)
+      if (!isCurrentNavigationIntent(intent)) return
       const result = await openGlobalHistory(target, {
         getState: useAppStore.getState,
-        activateWorkspace: id => useAppStore.getState().activateRecentWorkspace(id),
+        activateWorkspace: id => useAppStore.getState().activateRecentWorkspace(id, intent),
         loadHistory: id => useAppStore.getState().loadHistorySessions(id),
-        resume: resumeHistoryDescriptor
+        resume: (info, workspace) => resumeHistoryDescriptor(info, workspace, intent)
       })
       if (result === 'loading') showNotice('history.loading')
       else if (result === 'project-not-added') showNotice('sidebar.projectNotAdded')
       else if (result === 'history-unavailable') showNotice('history.restoreFailed')
-    } finally { openingHistory.current = false }
+    } finally {
+      openingHistory.current = false
+      const queued = queuedHistory.current
+      queuedHistory.current = null
+      if (queued && isCurrentNavigationIntent(queued.intent)) void openHistoryRecord(queued.target, queued.intent)
+    }
   }
 
   const paletteHandlers: CommandPaletteHandlers = {
@@ -425,8 +437,22 @@ function App() {
         else showNotice('palette.exportFailed')
       })
     },
-    openSession: (sessionId) => {
-      useAppStore.getState().setCurrentSessionId(sessionId)
+    openSession: async (sessionId) => {
+      const intent = beginNavigationIntent()
+      const state = useAppStore.getState()
+      const session = state.sessions.find(item => item.id === sessionId)
+      if (!session) return
+      if (state.currentWorkspace?.realPath !== session.cwd) {
+        const project = useProjects.getState().projects.find(row => row.path === session.cwd && !row.archived && !row.missing)
+        if (project) await useProjects.getState().activate(project.id, intent)
+        else {
+          const recent = state.recentWorkspaces.find(row => row.displayPath === session.cwd)
+          if (recent) await state.activateRecentWorkspace(recent.id, intent)
+        }
+      }
+      if (!isCurrentNavigationIntent(intent)) return
+      if (useAppStore.getState().currentWorkspace?.realPath !== session.cwd) { showNotice('sidebar.projectNotAdded'); return }
+      useAppStore.getState().setCurrentSessionId(sessionId, intent)
       navigate('/')
     },
     openHistory: (target) => {

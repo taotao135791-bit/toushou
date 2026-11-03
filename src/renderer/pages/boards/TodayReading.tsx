@@ -30,6 +30,7 @@ import { loadTodayFacebookAccounts, type TodayFacebookRow as FacebookRow } from 
 import { SaveReadingBoardDialog } from './SaveReadingBoardDialog'
 import { snapshotToday, readingAnalysisPrompt } from './todaySnapshot'
 import { startReadingAnalysis } from '../../lib/readingAnalysis'
+import { beginNavigationIntent, isCurrentNavigationIntent } from '../../lib/navigationIntent'
 import { isTikTokAccountCurrent } from './readingFreshness'
 import { TTReadingProgress, type TTProgress } from './TTReadingProgress'
 import { TikTokAccountPicker } from './TikTokAccountPicker'
@@ -328,9 +329,10 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
     analysisRequest.current = true
     setAnalysisBusy(true); setAnalysisError(false)
     try {
-      const sessionId = await startReadingAnalysis(prompt)
-      if (sessionId) navigate('/')
-      else setAnalysisError(true)
+      const intent = beginNavigationIntent()
+      const sessionId = await startReadingAnalysis(prompt, intent)
+      if (sessionId && isCurrentNavigationIntent(intent)) navigate('/')
+      else if (!sessionId && isCurrentNavigationIntent(intent)) setAnalysisError(true)
     } catch { setAnalysisError(true) }
     finally { analysisRequest.current = false; setAnalysisBusy(false) }
   }

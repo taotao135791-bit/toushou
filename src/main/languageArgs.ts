@@ -92,6 +92,9 @@ export function buildAgentArgs(language: Language, skillSystemPrompt?: string): 
   const persona = language === 'zh' ? ZH_PERSONA_PROMPT : EN_PERSONA_PROMPT
   const skill = skillSystemPrompt?.trim()
   const board = language === 'zh' ? BOARD_BASELINE_ZH : BOARD_BASELINE_EN
-  const base = `${persona}\n\n${FB_READING_BASELINE_PROMPT}\n\n${ADS_COPY_BASELINE_PROMPT}\n\n${board}`
+  const topic = language === 'zh'
+    ? '会话主题：若提供 toushou_session_topic，请在当前回答内用它概括并更新侧栏主题，沿用最新 revision；不另开模型任务、不影响正文任务、不要求批准。主题简短，禁止含广告账户ID、密钥、令牌、邮箱或链接；手动名称受保护。工具不可用时继续正常回答。'
+    : 'Session topic: when toushou_session_topic is available, update the concise sidebar topic within the current response using the latest revision. Do not launch another model task, ask approval, or interrupt the main answer. Never include account IDs, credentials, emails or URLs. Manual names are protected; continue normally if unavailable.'
+  const base = `${persona}\n\n${FB_READING_BASELINE_PROMPT}\n\n${ADS_COPY_BASELINE_PROMPT}\n\n${board}\n\n${topic}`
   return ['--append-system-prompt', skill ? `${base}\n\n${skill}` : base]
 }

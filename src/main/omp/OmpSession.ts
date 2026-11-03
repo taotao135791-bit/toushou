@@ -77,6 +77,7 @@ export class OmpSession {
   private readonly pending = new Map<string, PendingQuery>()
   /** Request ids of prompts whose ack we still expect. */
   private readonly pendingPrompts = new Set<string>()
+  private readonly awaitingTurnStarts = new Set<string>()
   /** Active extension dialogs, keyed by the upstream request id. */
   private readonly pendingExtensionUi = new Set<string>()
   /** Avoid repeating the same host-capability diagnostic throughout a turn. */
@@ -117,6 +118,8 @@ export class OmpSession {
     this.state = 'idle'
     this.emit({ type: 'connected', sessionId: this.id })
   }
+
+  get hasPendingWork(): boolean { return this.awaitingTurnStarts.size > 0 || this.pendingPrompts.size > 0 || this.pendingExtensionUi.size > 0 }
 
   get runtimeState(): SessionRuntimeState {
     return this.state
@@ -174,7 +177,10 @@ export class OmpSession {
       ...(images?.length ? { images } : {}),
       ...(streamingBehavior ? { streamingBehavior } : {})
     })
-    if (ok) this.pendingPrompts.add(id)
+    if (ok) {
+      this.pendingPrompts.add(id)
+      if (!(this.state === 'working' && streamingBehavior === 'steer')) this.awaitingTurnStarts.add(id)
+    }
     return ok
   }
 
@@ -271,6 +277,14 @@ export class OmpSession {
     this.options.onGone?.()
   }
 
+  /** Resolve only after the child really exits, even if a caller times out. */
+  killAndWait(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.proc.on('exit', () => resolve())
+      this.kill()
+    })
+  }
+
   // --------------------------------------------------------------- stdout
 
   private handleChunk(chunk: Buffer): void {
@@ -353,7 +367,7 @@ export class OmpSession {
         return
       }
       if (this.pendingPrompts.delete(logical.id)) {
-        this.handlePromptAck(logical)
+        this.handlePromptAck(logical, logical.id)
         return
       }
     }
@@ -376,7 +390,7 @@ export class OmpSession {
       }
     }
     if (logical.type === 'prompt_result') {
-      this.handlePromptResult({ agentInvoked: logical.agentInvoked === true })
+      this.handlePromptResult({ agentInvoked: logical.agentInvoked === true, id: typeof logical.id === 'string' ? logical.id : undefined })
       return
     }
 
@@ -473,7 +487,7 @@ export class OmpSession {
         return
       }
       case 'prompt_result':
-        this.handlePromptResult({ agentInvoked: result.agentInvoked })
+        this.handlePromptResult({ agentInvoked: result.agentInvoked, id: result.id })
         return
       case 'command_failed':
         // A rejected command (e.g. a mid-stream prompt without steer/
@@ -597,8 +611,9 @@ export class OmpSession {
    * finished. `data.agentInvoked === false` marks a local-only completion
    * (slash command): no agent_start/agent_end will follow.
    */
-  private handlePromptAck(frame: Record<string, unknown>): void {
+  private handlePromptAck(frame: Record<string, unknown>, id: string): void {
     if (frame.success === false) {
+      this.awaitingTurnStarts.delete(id)
       this.emit({
         type: 'error',
         sessionId: this.id,
@@ -615,11 +630,19 @@ export class OmpSession {
       typeof data === 'object' && data !== null
         ? (data as { agentInvoked?: unknown }).agentInvoked !== false
         : true
-    if (!agentInvoked) this.settleLocalPrompt()
+    if (!agentInvoked) { this.awaitingTurnStarts.delete(id); this.settleLocalPrompt() }
   }
 
-  private handlePromptResult(frame: { agentInvoked: boolean }): void {
-    if (!frame.agentInvoked) this.settleLocalPrompt()
+  private handlePromptResult(frame: { agentInvoked: boolean; id?: string }): void {
+    if (!frame.agentInvoked) {
+      // Deferred local-only completion belongs to one prompt. Preserve all
+      // other outstanding turns, even if their acknowledgements arrived first.
+      if (frame.id !== undefined) {
+        this.pendingPrompts.delete(frame.id)
+        this.awaitingTurnStarts.delete(frame.id)
+      }
+      this.settleLocalPrompt()
+    }
   }
 
   /**
@@ -642,6 +665,10 @@ export class OmpSession {
     }
 
     if (event.type === 'status' && event.status === 'working') {
+      if (this.state === 'idle') {
+        const started = this.awaitingTurnStarts.values().next().value
+        if (started !== undefined) this.awaitingTurnStarts.delete(started)
+      }
       // agent_start — duplicate starts are suppressed (they would reset the
       // renderer's turn counters).
       if (this.state !== 'working') {
@@ -706,6 +733,7 @@ export class OmpSession {
     }
     this.pending.clear()
     this.pendingPrompts.clear()
+    this.awaitingTurnStarts.clear()
     this.pendingExtensionUi.clear()
   }
 

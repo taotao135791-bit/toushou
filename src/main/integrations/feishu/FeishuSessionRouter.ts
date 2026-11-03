@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
 import { ChatMessage, Session, SessionEvent, SessionState } from '../../../shared/types'
 import { FeishuCapability } from '../../../shared/connections'
@@ -218,6 +219,8 @@ export class FeishuSessionRouter {
   }
 
   private async ensureSession(route: FeishuSessionRoute): Promise<Session | null> {
+    // Never let a missing workspace resolve to the process working directory.
+    if (!this.opts.workspacePath || !path.isAbsolute(this.opts.workspacePath)) return null
     if (route.sessionId) {
       const live = this.opts.getSession(route.sessionId)
       if (live) return live
