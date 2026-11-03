@@ -1,0 +1,135 @@
+name: Publish verified release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable release tag (vX.Y.Z)
+        required: true
+        type: string
+      verified_run_id:
+        description: Successful Release preflight run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-verified-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish previously verified artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify provenance and download artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          VERIFIED_RUN_ID: ${{ inputs.verified_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$VERIFIED_RUN_ID" =~ ^[0-9]+$ ]]
+          # The preflight checked out the PR merge commit, confirmed from both job logs.
+          # Restrict this one-off publisher to that verified artifact set.
+          test "$VERIFIED_RUN_ID" = 41627121095
+          test "$RELEASE_TAG" = v2.1.0
+          gh api "repos/$GH_REPO/actions/runs/$VERIFIED_RUN_ID" > "$RUNNER_TEMP/verified-run.json"
+          workflow_id="$(gh api "repos/$GH_REPO/actions/workflows/release.yml" --jq .id)"
+          jq -e --arg repo "$GH_REPO" --argjson workflow "$workflow_id" '
+            .status == "completed" and .conclusion == "success" and .event == "pull_request" and
+            .run_attempt == 1 and .workflow_id == $workflow and .repository.full_name == $repo and .head_repository.full_name == $repo
+          ' "$RUNNER_TEMP/verified-run.json" >/dev/null
+          gh run view "$VERIFIED_RUN_ID" --json jobs > "$RUNNER_TEMP/verified-jobs.json"
+          jq -e '[.jobs[] | select(.name == "Verify and package (macOS)" or .name == "Verify and package (Windows)" or .name == "Verify packaged artifacts (preflight)") | select(.status == "completed" and .conclusion == "success")] | length == 3' "$RUNNER_TEMP/verified-jobs.json" >/dev/null
+          head_sha="$(jq -r .head_sha "$RUNNER_TEMP/verified-run.json")"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin "$head_sha"
+          git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" >/dev/null
+          tag_object="$(git rev-parse "refs/tags/$RELEASE_TAG")"
+          tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          tag_tree="$(git rev-parse "$tag_commit^{tree}")"
+          test "$tag_tree" = 26f27a171a0fb379a8580e710f0432544607c80a
+          test "$tag_tree" = "$(git rev-parse "$head_sha^{tree}")"
+          test "$tag_tree" = "$(gh api "repos/$GH_REPO/git/commits/56a9855878d766f7ad4bacd29f410bdfbf5e0a25" --jq .tree.sha)"
+          version="$(git show "$tag_commit:package.json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).version))')"
+          test "$RELEASE_TAG" = "v$version"
+          printf '%s' "$tag_object" > "$RUNNER_TEMP/tag-object"
+          printf '%s' "$tag_commit" > "$RUNNER_TEMP/tag-commit"
+          mkdir -p artifacts/mac artifacts/windows
+          gh run download "$VERIFIED_RUN_ID" --name "TouShou-$VERIFIED_RUN_ID-macos" --dir artifacts/mac
+          gh run download "$VERIFIED_RUN_ID" --name "TouShou-$VERIFIED_RUN_ID-windows" --dir artifacts/windows
+      - name: Verify checksums, stage, verify uploaded assets and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          python3 - <<'PY'
+          import hashlib, pathlib, re
+          mac = ['TouShou-arm64.dmg','TouShou-arm64.dmg.blockmap','TouShou-arm64.zip','TouShou-arm64.zip.blockmap','TouShou-x64.dmg','TouShou-x64.dmg.blockmap','TouShou-x64.zip','TouShou-x64.zip.blockmap','latest-mac.yml']
+          win = ['TouShou-x64.exe','TouShou-x64.exe.blockmap','latest.yml']
+          for folder, names, checksum in [('artifacts/mac', mac, 'SHA256SUMS.txt'), ('artifacts/windows', win, 'SHA256SUMS-windows.txt')]:
+              root = pathlib.Path(folder)
+              expected = set(names + [checksum])
+              assert {p.name for p in root.iterdir()} == expected, 'Unexpected or missing artifact'
+              for name in expected:
+                  p = root / name
+                  assert p.is_file() and not p.is_symlink() and p.stat().st_size > 0, f'Missing or empty asset: {name}'
+              found = {}
+              for line in (root / checksum).read_text().splitlines():
+                  match = re.fullmatch(r'([0-9a-fA-F]{64}) [ *]([^/\\]+)', line)
+                  assert match and match.group(2) not in found, 'Invalid checksum list'
+                  found[match.group(2)] = match.group(1).lower()
+              assert set(found) == set(names), 'Checksum coverage mismatch'
+              for name in names:
+                  h = hashlib.sha256()
+                  with (root / name).open('rb') as f:
+                      for chunk in iter(lambda: f.read(1024 * 1024), b''): h.update(chunk)
+                  assert h.hexdigest() == found[name], f'Checksum mismatch: {name}'
+          PY
+          tag_object="$(cat "$RUNNER_TEMP/tag-object")"
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$tag_object"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" | jq -e '.draft == true and (.assets | length == 0)' >/dev/null
+          else
+            tag_commit="$(cat "$RUNNER_TEMP/tag-commit")"
+            if git show "$tag_commit:docs/releases/$RELEASE_TAG.md" > "$RUNNER_TEMP/release-notes.md" 2>/dev/null; then
+              gh release create "$RELEASE_TAG" --verify-tag --title "投手 $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
+            else
+              gh release create "$RELEASE_TAG" --verify-tag --title "投手 $RELEASE_TAG" --generate-notes --draft
+            fi
+          fi
+          assets=(artifacts/mac/* artifacts/windows/*)
+          test "${#assets[@]}" -eq 14
+          gh release upload "$RELEASE_TAG" "${assets[@]}"
+          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/uploaded-release.json"
+          python3 - <<'PY'
+          import hashlib, json, pathlib, os
+          data = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'uploaded-release.json').read_text())
+          assert data['draft'] is True, 'Release is no longer a draft'
+          local = {p.name: p for folder in ['artifacts/mac', 'artifacts/windows'] for p in pathlib.Path(folder).iterdir()}
+          remote = data['assets']
+          assert len(local) == 14 and len(remote) == 14 and {a['name'] for a in remote} == set(local), 'Uploaded asset set mismatch'
+          for asset in remote:
+              p = local[asset['name']]
+              h = hashlib.sha256()
+              with p.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''): h.update(chunk)
+              assert asset['state'] == 'uploaded' and asset['size'] == p.stat().st_size and asset['digest'] == 'sha256:' + h.hexdigest(), f'Uploaded asset verification failed: {p.name}'
+          PY
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$tag_object"
+          gh release edit "$RELEASE_TAG" --draft=false --latest
