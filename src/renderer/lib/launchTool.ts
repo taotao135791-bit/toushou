@@ -21,6 +21,7 @@ export async function launchComposerPrompt(text: string): Promise<string | null>
   }
   if (!id) return null
   const store = useAppStore.getState()
+  if (store.currentSessionId !== id) return null
   store.setComposerPrefill(text)
   store.setComposerAutosend(true)
   return id
@@ -49,6 +50,7 @@ export async function launchSkillSession(
   }
   if (!id) return null
   const store = useAppStore.getState()
+  if (store.currentSessionId !== id) return null
   store.setComposerPrefill(referenceText)
   store.setComposerAutosend(true)
   return id

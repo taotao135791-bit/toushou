@@ -18,6 +18,9 @@ import { UpdaterStatus } from '../shared/types'
 let currentStatus: UpdaterStatus = { status: 'idle' }
 let initialized = false
 let checkInFlight: Promise<UpdaterStatus> | null = null
+let activeCheck: { manual: boolean; result: UpdaterStatus | null; downloadGeneration: number } | null = null
+let downloadGeneration = 0
+let installRequested = false
 let useUnsignedMacUpdater = false
 let pendingUpdate: { version: string; url: string; fileName: string } | null = null
 let downloadedUnsignedUpdate: { version: string; extractedApp: string; extractDir: string } | null = null
@@ -36,6 +39,25 @@ function setStatus(status: UpdaterStatus): void {
 
 export function getUpdaterStatus(): UpdaterStatus {
   return currentStatus
+}
+
+function hasUpdate(status: UpdaterStatus): boolean {
+  return status.status === 'available' || status.status === 'downloading' || status.status === 'progress' || status.status === 'downloaded'
+}
+
+/** Background checks announce releases, never their transient work/errors. */
+function setCheckStatus(status: UpdaterStatus): void {
+  if (activeCheck) activeCheck.result = status
+  // A check started before the user downloaded must not replace that flow,
+  // including its failure, when a late check event arrives.
+  if (activeCheck && activeCheck.downloadGeneration !== downloadGeneration) return
+  if (currentStatus.status === 'downloading' || currentStatus.status === 'progress' || currentStatus.status === 'downloaded') return
+  if (status.status === 'available') {
+    if (currentStatus.status === 'available' && compareVersions(status.version, currentStatus.version) <= 0) return
+    setStatus(status)
+  } else if (activeCheck?.manual && !hasUpdate(currentStatus)) {
+    setStatus(status)
+  }
 }
 
 function errorMessage(err: unknown): string {
@@ -99,6 +121,7 @@ function requestText(url: string, redirects = 0): Promise<string> {
       }
     )
     request.on('error', reject)
+    request.setTimeout(20_000, () => request.destroy(new Error('更新检查超时，请稍后重试。')))
   })
 }
 
@@ -117,7 +140,7 @@ function currentMacArtifactName(): string {
 }
 
 async function unsignedMacCheck(): Promise<UpdaterStatus> {
-  setStatus({ status: 'checking' })
+  setCheckStatus({ status: 'checking' })
   try {
     // Read the public electron-builder channel file instead of the GitHub
     // Releases API. The API is rate-limited for unauthenticated desktop
@@ -135,16 +158,18 @@ async function unsignedMacCheck(): Promise<UpdaterStatus> {
     )
     const downloadUrl = `https://github.com/taotao135791-bit/toushou/releases/latest/download/${encodeURIComponent(assetName)}`
     if (!version || compareVersions(version, app.getVersion()) <= 0) {
-      pendingUpdate = null
-      setStatus({ status: 'none' })
+      if (!hasUpdate(currentStatus)) pendingUpdate = null
+      setCheckStatus({ status: 'none' })
     } else if (!asset) {
       throw new Error(`当前架构没有可用的 ${assetName} 更新包`)
     } else {
-      pendingUpdate = { version, url: downloadUrl, fileName: assetName }
-      setStatus({ status: 'available', version })
+      if (currentStatus.status !== 'available' || compareVersions(version, currentStatus.version) >= 0) {
+        pendingUpdate = { version, url: downloadUrl, fileName: assetName }
+      }
+      setCheckStatus({ status: 'available', version })
     }
   } catch (err) {
-    setStatus({ status: 'error', message: errorMessage(err) })
+    setCheckStatus({ status: 'error', message: errorMessage(err), operation: 'check' })
   }
   return currentStatus
 }
@@ -193,7 +218,7 @@ function runCommand(command: string, args: string[]): Promise<void> {
 }
 
 async function unsignedMacDownload(): Promise<UpdaterStatus> {
-  if (!pendingUpdate) return unsignedMacCheck()
+  if (!pendingUpdate) return updaterCheck()
   const update = pendingUpdate
   const root = path.join(app.getPath('temp'), `toushou-update-${update.version}-${Date.now()}`)
   const zipPath = path.join(root, update.fileName)
@@ -211,14 +236,14 @@ async function unsignedMacDownload(): Promise<UpdaterStatus> {
     setStatus({ status: 'downloaded', version: update.version })
   } catch (err) {
     rmSync(root, { recursive: true, force: true })
-    setStatus({ status: 'error', message: errorMessage(err) })
+    setStatus({ status: 'error', message: errorMessage(err), operation: 'download' })
   }
   return currentStatus
 }
 
 function scheduleUnsignedMacInstall(): void {
   if (!downloadedUnsignedUpdate) {
-    setStatus({ status: 'error', message: '更新包尚未下载完成，请重试。' })
+    setStatus({ status: 'error', message: '更新包尚未下载完成，请重试。', operation: 'install' })
     return
   }
   // process.resourcesPath points to `<App>.app/Contents/Resources`; move up
@@ -227,7 +252,7 @@ function scheduleUnsignedMacInstall(): void {
   // when the user tried to install an unsigned in-app update.
   const currentApp = path.resolve(process.resourcesPath, '../..')
   if (path.basename(currentApp) !== '投手.app' || !existsSync(path.join(currentApp, 'Contents', 'Info.plist'))) {
-    setStatus({ status: 'error', message: '当前应用安装位置无效，请使用最新安装包重新安装。' })
+    setStatus({ status: 'error', message: '当前应用安装位置无效，请使用最新安装包重新安装。', operation: 'install' })
     return
   }
   const scriptPath = path.join(app.getPath('temp'), `toushou-install-${Date.now()}.sh`)
@@ -268,64 +293,69 @@ export function initUpdater(): void {
   initialized = true
 
   useUnsignedMacUpdater = isAdHocMacBuild()
-
-  if (useUnsignedMacUpdater) {
-    setTimeout(() => void updaterCheck(), INITIAL_CHECK_DELAY_MS)
-    setInterval(() => {
-      if (currentStatus.status !== 'downloading' && currentStatus.status !== 'progress' && currentStatus.status !== 'downloaded') {
-        void updaterCheck()
-      }
-    }, CHECK_INTERVAL_MS)
-    return
-  }
-
   autoUpdater.autoDownload = false
   // Installing is an explicit in-app action. Do not silently replace the app
   // when the user quits after a download.
   autoUpdater.autoInstallOnAppQuit = false
-  autoUpdater.on('checking-for-update', () => setStatus({ status: 'checking' }))
-  autoUpdater.on('update-available', (info) =>
-    setStatus({ status: 'available', version: info.version })
-  )
-  autoUpdater.on('update-not-available', () => setStatus({ status: 'none' }))
-  autoUpdater.on('download-progress', (progress) =>
-    setStatus({ status: 'progress', percent: Math.round(progress.percent * 10) / 10 })
-  )
-  autoUpdater.on('update-downloaded', (info) =>
-    setStatus({ status: 'downloaded', version: info.version })
-  )
-  autoUpdater.on('error', (err) => setStatus({ status: 'error', message: errorMessage(err) }))
+  if (!useUnsignedMacUpdater) {
+    autoUpdater.on('checking-for-update', () => setCheckStatus({ status: 'checking' }))
+    autoUpdater.on('update-available', (info) =>
+      setCheckStatus({ status: 'available', version: info.version })
+    )
+    autoUpdater.on('update-not-available', () => setCheckStatus({ status: 'none' }))
+    autoUpdater.on('download-progress', (progress) =>
+      setStatus({ status: 'progress', percent: Math.round(progress.percent * 10) / 10 })
+    )
+    autoUpdater.on('update-downloaded', (info) =>
+      setStatus({ status: 'downloaded', version: info.version })
+    )
+    autoUpdater.on('error', (err) => {
+      if (installRequested) {
+        installRequested = false
+        setStatus({ status: 'error', message: errorMessage(err), operation: 'install' })
+      } else if (activeCheck) {
+        setCheckStatus({ status: 'error', message: errorMessage(err), operation: 'check' })
+      } else if (currentStatus.status === 'downloading' || currentStatus.status === 'progress') {
+        setStatus({ status: 'error', message: errorMessage(err), operation: 'download' })
+      }
+    })
+  }
 
-  setTimeout(() => void updaterCheck(), INITIAL_CHECK_DELAY_MS)
+  setTimeout(() => void updaterCheck(false), INITIAL_CHECK_DELAY_MS)
   setInterval(() => {
     // A long-lived app should discover releases without requiring a restart,
     // while an active download/install flow must never be interrupted.
     if (currentStatus.status !== 'downloading' &&
         currentStatus.status !== 'progress' &&
         currentStatus.status !== 'downloaded') {
-      void updaterCheck()
+      void updaterCheck(false)
     }
   }, CHECK_INTERVAL_MS)
 }
 
-/** Manual check; the returned status reflects the outcome. */
-export async function updaterCheck(): Promise<UpdaterStatus> {
+/** IPC calls are manual; launch/periodic checks opt into silent operation. */
+export async function updaterCheck(manual = true): Promise<UpdaterStatus> {
   if (!app.isPackaged) return { status: 'dev' }
   if (currentStatus.status === 'downloading' ||
       currentStatus.status === 'progress' ||
       currentStatus.status === 'downloaded') return currentStatus
-  if (checkInFlight) return checkInFlight
-
-  if (useUnsignedMacUpdater) {
-    checkInFlight = unsignedMacCheck()
-    try {
-      return await checkInFlight
-    } finally {
-      checkInFlight = null
+  if (checkInFlight) {
+    if (manual && activeCheck) {
+      activeCheck.manual = true
+      if (!activeCheck.result || activeCheck.result.status === 'checking') setCheckStatus({ status: 'checking' })
     }
+    return checkInFlight
   }
 
+  const check = { manual, result: null as UpdaterStatus | null, downloadGeneration }
+  activeCheck = check
   checkInFlight = (async () => {
+    if (useUnsignedMacUpdater) {
+      await unsignedMacCheck()
+      if (check.downloadGeneration !== downloadGeneration) return currentStatus
+      if (hasUpdate(currentStatus) && check.result?.status !== 'error') return currentStatus
+      return check.result ?? currentStatus
+    }
     try {
       await autoUpdater.checkForUpdates()
     } catch (err) {
@@ -337,45 +367,53 @@ export async function updaterCheck(): Promise<UpdaterStatus> {
         err instanceof Error ? err.message : String(err)
       )
       if (!transient) {
-        setStatus({ status: 'error', message: errorMessage(err) })
+        setCheckStatus({ status: 'error', message: errorMessage(err), operation: 'check' })
       } else {
         try {
           await new Promise((resolve) => setTimeout(resolve, 3000))
           await autoUpdater.checkForUpdates()
         } catch (retryErr) {
-          setStatus({ status: 'error', message: errorMessage(retryErr) })
+          setCheckStatus({ status: 'error', message: errorMessage(retryErr), operation: 'check' })
         }
       }
     }
-    return currentStatus
+    if (check.downloadGeneration !== downloadGeneration) return currentStatus
+    if (hasUpdate(currentStatus) && check.result?.status !== 'error') return currentStatus
+    return check.result ?? currentStatus
   })()
   try {
     return await checkInFlight
   } finally {
     checkInFlight = null
+    activeCheck = null
   }
 }
 
 /** Download the available update; progress arrives as updater:status events. */
 export async function updaterDownload(): Promise<UpdaterStatus> {
   if (!app.isPackaged) return { status: 'dev' }
+  if (currentStatus.status === 'downloading' || currentStatus.status === 'progress' || currentStatus.status === 'downloaded') return currentStatus
+  downloadGeneration += 1
   if (useUnsignedMacUpdater) return unsignedMacDownload()
   setStatus({ status: 'downloading' })
   try {
     await autoUpdater.downloadUpdate()
   } catch (err) {
-    setStatus({ status: 'error', message: errorMessage(err) })
+    setStatus({ status: 'error', message: errorMessage(err), operation: 'download' })
   }
   return currentStatus
 }
 
 export function updaterQuitAndInstall(): void {
   if (!app.isPackaged) return
-  if (useUnsignedMacUpdater) {
-    scheduleUnsignedMacInstall()
-    return
+  installRequested = true
+  try {
+    if (useUnsignedMacUpdater) scheduleUnsignedMacInstall()
+    else autoUpdater.quitAndInstall()
+  } catch (err) {
+    installRequested = false
+    setStatus({ status: 'error', message: errorMessage(err), operation: 'install' })
   }
-  autoUpdater.quitAndInstall()
 }
 
 /**

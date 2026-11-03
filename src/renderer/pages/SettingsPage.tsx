@@ -10,6 +10,7 @@ import {
   Trash2
 } from 'lucide-react'
 import { CliCapabilities, CliInfo, PermissionMode, UpdaterStatus } from '@shared/types'
+import { subscribeUpdaterStatus } from '../lib/updaterStatus'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { I18nKey, useT } from '../i18n'
@@ -131,10 +132,7 @@ export default function SettingsPage() {
     return () => clearTimeout(capsHealTimer)
   }, [])
 
-  useEffect(() => {
-    window.electronAPI.updaterGetStatus().then(setUpdater)
-    return window.electronAPI.onUpdaterStatus(setUpdater)
-  }, [])
+  useEffect(() => subscribeUpdaterStatus(setUpdater), [])
 
   // "Already up to date" is transient — fall back to the bare check button.
   useEffect(() => {

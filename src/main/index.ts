@@ -10,6 +10,7 @@ import { cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { syncMachineSkills } from './piSettings'
 import { detectCli } from './omp'
 import { initUpdater } from './updater'
+import { initSessionTopicBridge } from './sessionTopicBridge'
 import { installNavigationGuards } from './navigation'
 import { initFeishuBridge } from './integrations/feishu/feishuBridge'
 import { initTasksBridge } from './tasksBridge'
@@ -164,6 +165,12 @@ app.whenReady().then(async () => {
     await initAdsCopyBridge()
   } catch (error) {
     console.warn('[tasks] tool bridge unavailable', error)
+  }
+  try {
+    await initSessionTopicBridge()
+  } catch {
+    // Metadata naming is independent of advertising tools and never blocks startup.
+    console.warn('[session-topic] automatic topic bridge unavailable')
   }
   // The viral-competitive-analysis chain is product kernel: its playbook
   // skill must exist in every install (idempotent, version-upgrading).

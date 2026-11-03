@@ -14,12 +14,10 @@ const TRIGGER_GAP = 6
  * 'auto' too), which made them invisible and unclickable — the portal
  * escapes that.
  *
- * The trigger passes its own ref; the anchor rect is captured on open.
- * Positioning is two-phase and settles before the first paint: the menu is
- * first parked invisibly at the trigger, then measured (offsetWidth/Height)
- * and clamped into the viewport with VIEWPORT_MARGIN — horizontal overflow
- * shifts it sideways, vertical overflow flips the placement (bottom↔top).
- * A menu taller than the viewport scrolls via `maxHeight`.
+ * Position once before the first paint, then observe actual size/scroll
+ * changes. Parent rerenders must never hide and remeasure an open menu.
+ * Horizontal overflow shifts sideways; vertical overflow flips placement.
+ * Menus taller than the viewport scroll inside its margins.
  *
  * `onClose` fires on any pointerdown outside both trigger and menu, or on
  * Escape.
@@ -43,75 +41,69 @@ export default function MenuPortal({
   children: ReactNode
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
-  const [anchor, setAnchor] = useState<{ left: number; top: number; measured: boolean } | null>(null)
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null)
 
   useLayoutEffect(() => {
-    if (!open) return
-    const rect = triggerRef.current?.getBoundingClientRect()
-    if (rect) {
-      // Phase 1: park at the trigger, invisible, so phase 2 can measure the
-      // rendered menu before anything is painted.
-      setAnchor({ left: rect.left, top: rect.top, measured: false })
+    if (!open) { setAnchor(null); return }
+    const position = () => {
+      const menu = menuRef.current
+      const trigger = triggerRef.current
+      if (!menu || !trigger) return
+      const rect = trigger.getBoundingClientRect()
+      const menuWidth = menu.offsetWidth
+      const menuHeight = menu.offsetHeight
+      const left = Math.max(VIEWPORT_MARGIN, Math.min(rect.left, window.innerWidth - menuWidth - VIEWPORT_MARGIN))
+      let top = placement === 'bottom' ? rect.bottom + TRIGGER_GAP : rect.top - TRIGGER_GAP - menuHeight
+      if (placement === 'bottom' && top + menuHeight > window.innerHeight - VIEWPORT_MARGIN) top = rect.top - TRIGGER_GAP - menuHeight
+      else if (placement === 'top' && top < VIEWPORT_MARGIN) top = rect.bottom + TRIGGER_GAP
+      top = Math.max(VIEWPORT_MARGIN, Math.min(top, window.innerHeight - menuHeight - VIEWPORT_MARGIN))
+      setAnchor(previous => previous?.left === left && previous.top === top ? previous : { left, top })
     }
-    const onPointerDown = (e: PointerEvent) => {
-      const target = e.target as Node
-      if (menuRef.current?.contains(target)) return
-      if (triggerRef.current?.contains(target)) return
-      onClose()
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return
+      closeRef.current()
     }
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeRef.current()
+        triggerRef.current?.focus()
+      }
     }
+    position()
+    const observer = new ResizeObserver(position)
+    if (menuRef.current) observer.observe(menuRef.current)
+    if (triggerRef.current) observer.observe(triggerRef.current)
+    window.addEventListener('resize', position)
+    window.addEventListener('scroll', position, true)
     window.addEventListener('pointerdown', onPointerDown)
     window.addEventListener('keydown', onKeyDown)
     return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', position)
+      window.removeEventListener('scroll', position, true)
       window.removeEventListener('pointerdown', onPointerDown)
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [open, onClose, triggerRef, placement])
+  }, [open, triggerRef, placement, width, maxHeight])
 
-  // Phase 2: the menu is in the DOM — measure it and clamp into the viewport.
-  useLayoutEffect(() => {
-    if (!open || !anchor || anchor.measured) return
-    const menu = menuRef.current
-    const rect = triggerRef.current?.getBoundingClientRect()
-    if (!menu || !rect) return
-    const menuWidth = menu.offsetWidth
-    const menuHeight = menu.offsetHeight
-    let left = Math.min(rect.left, window.innerWidth - menuWidth - VIEWPORT_MARGIN)
-    left = Math.max(left, VIEWPORT_MARGIN)
-    let top: number
-    if (placement === 'bottom') {
-      top = rect.bottom + TRIGGER_GAP
-      if (top + menuHeight > window.innerHeight - VIEWPORT_MARGIN) {
-        // Would run off the bottom: flip above the trigger instead.
-        top = rect.top - TRIGGER_GAP - menuHeight
-      }
-    } else {
-      top = rect.top - TRIGGER_GAP - menuHeight
-      if (top < VIEWPORT_MARGIN) {
-        // Would run off the top: flip below the trigger instead.
-        top = rect.bottom + TRIGGER_GAP
-      }
-    }
-    // Menu taller than the viewport: maxHeight makes it scroll — pin the box
-    // inside the margins.
-    top = Math.max(VIEWPORT_MARGIN, Math.min(top, window.innerHeight - menuHeight - VIEWPORT_MARGIN))
-    setAnchor({ left, top, measured: true })
-  }, [open, anchor, placement, triggerRef])
+  if (!open) return null
 
-  if (!open || !anchor) return null
   return createPortal(
     <div
       ref={menuRef}
       style={{
         position: 'fixed',
-        left: anchor.left,
-        top: anchor.top,
+        left: anchor?.left ?? 0,
+        top: anchor?.top ?? 0,
         zIndex: 50,
-        visibility: anchor.measured ? undefined : 'hidden',
+        visibility: anchor ? undefined : 'hidden',
         width,
-        maxHeight
+        maxHeight: maxHeight === undefined ? 'calc(100dvh - 16px)' : `min(${maxHeight}px, calc(100dvh - 16px))`
       }}
       className="overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
     >

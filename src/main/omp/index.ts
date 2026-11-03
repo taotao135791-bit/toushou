@@ -16,6 +16,7 @@ import {
   SlashCommand,
   StreamingBehavior,
   SessionThinkingLevel,
+  SessionTitleMetadata,
   SubagentMessagesResult,
   SubagentSnapshot,
   SubagentTranscriptSelector,
@@ -30,6 +31,9 @@ import { reconstructSessionMetadata, reconstructHistoricalAgents } from '../sess
 import { isSessionFilePath } from '../sessionHistory'
 import { planSpawn, removeApprovalConfig, resolvePermissionMode, spawnProcess, writeApprovalConfig } from './OmpProcess'
 import { OmpSession } from './OmpSession'
+import { isProjectDeletionInProgress, pathsOverlap } from '../projectDeletionGate'
+import { ProjectChildTracker } from '../projectChildTracker'
+import { canonicalExistingPath } from '../canonicalPath'
 import { SessionBridgePermissionRegistry } from './bridgePermissions'
 import { extensionExternalLinkMessage } from './extensionLinks'
 import {
@@ -56,6 +60,11 @@ export {
 export { drainLines } from './OmpTransport'
 
 const sessions = new Map<string, OmpSession>()
+const projectChildren = new ProjectChildTracker()
+let onUserTurn: ((sessionId: string) => void) | undefined
+let onSessionGone: ((sessionId: string) => void) | undefined
+export function setSessionGoneHook(hook: (sessionId: string) => void): void { onSessionGone = hook }
+export function setSessionUserTurnHook(hook: (sessionId: string) => void): void { onUserTurn = hook }
 // Main-owned spawn-time authority, never supplied by the renderer or bridge.
 const sessionBridgePermissions = new SessionBridgePermissionRegistry()
 
@@ -141,6 +150,7 @@ export function createSession(
     resumeSessionPath?: string
     /** Durable overlay title for resumes — see the title comment below. */
     initialTitle?: string
+    initialTitleMetadata?: SessionTitleMetadata
     modelSelector?: string
     thinkingLevel?: SessionThinkingLevel
     skillSystemPrompt?: string
@@ -150,6 +160,7 @@ export function createSession(
     origin?: 'feishu' | 'task'
   }
 ): Session {
+  if (isProjectDeletionInProgress(cwd)) throw new Error('project-deletion-in-progress')
   const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const cli = detectCli()
 
@@ -209,6 +220,7 @@ export function createSession(
     }
   }
   const proc = spawnProcess(plan, cwd)
+  const retireProjectChild = projectChildren.watch(id, cwd, proc)
 
   const session: Session = {
     id,
@@ -219,6 +231,7 @@ export function createSession(
     // arrives — a spawn-default title here flashes the project name for that
     // whole window no matter what the response later carries.
     title: opts?.initialTitle ?? (path.basename(cwd) || 'New Chat'),
+    ...(opts?.initialTitleMetadata ? { titleSource: opts.initialTitleMetadata.source, titleRevision: opts.initialTitleMetadata.revision } : {}),
     createdAt: Date.now(),
     status: 'idle',
     ...(opts?.resumeSessionPath ? { resumeFrom: opts.resumeSessionPath } : {}),
@@ -240,7 +253,7 @@ export function createSession(
     new OmpSession(session, proc, {
       label: cli.command,
       onEvent,
-      onGone: () => { sessions.delete(id); sessionBridgePermissions.remove(id) },
+      onGone: () => { retireProjectChild(); sessions.delete(id); sessionBridgePermissions.remove(id); onSessionGone?.(id) },
       onHandshake: (outcome) => {
         noteHandshake(outcome)
         // Current Oh My Pi: enable subagent progress subscription + roster
@@ -284,7 +297,45 @@ export function sendMessage(
   images?: PromptImage[],
   streamingBehavior?: StreamingBehavior
 ): boolean {
-  return sessions.get(sessionId)?.sendPrompt(text, images, streamingBehavior) ?? false
+  const entry = sessions.get(sessionId)
+  if (entry && isProjectDeletionInProgress(entry.session.cwd)) return false
+  if (entry) onUserTurn?.(sessionId)
+  return entry?.sendPrompt(text, images, streamingBehavior) ?? false
+}
+
+/** Keep timed-out children busy until the real exit event arrives. */
+export function hasProjectSessionsInFlight(projectPath: string): boolean {
+  if (projectChildren.hasRetiringOverlap(projectPath)) return true
+  return [...sessions.values()].some(entry => {
+    let cwd = path.resolve(entry.session.cwd)
+    try { cwd = canonicalExistingPath(cwd) } catch { /* retain lexical path */ }
+    return pathsOverlap(projectPath, cwd) && (entry.runtimeState !== 'idle' || entry.hasPendingWork || entry.session.status === 'running')
+  })
+}
+export async function closeIdleProjectSessions(projectPath: string): Promise<boolean> {
+  if (hasProjectSessionsInFlight(projectPath)) return false
+  const relevant = [...sessions.values()].filter(entry => {
+    let cwd = path.resolve(entry.session.cwd)
+    try { cwd = canonicalExistingPath(cwd) } catch { /* retain lexical path */ }
+    return pathsOverlap(projectPath, cwd)
+  })
+  const exits = relevant.map(entry => {
+    const exit = trackTermination(entry)
+    removeApprovalConfig(entry.session.id)
+    return exit
+  })
+  if (!exits.length) return true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const exited = await Promise.race([
+    Promise.all(exits).then(() => true),
+    new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 5000) })
+  ])
+  if (timer) clearTimeout(timer)
+  return exited
+}
+
+function trackTermination(entry: OmpSession): Promise<void> {
+  return entry.killAndWait()
 }
 
 /**
@@ -306,7 +357,7 @@ export function killSession(sessionId: string): boolean {
   const entry = sessions.get(sessionId)
   if (!entry) return false
   // kill() closes the session and drops it from the registry via onGone.
-  entry.kill()
+  void trackTermination(entry)
   // Drop the per-session approval config alongside the process.
   removeApprovalConfig(sessionId)
   return true
@@ -427,6 +478,9 @@ export async function steer(
   message: string,
   images?: PromptImage[]
 ): Promise<boolean> {
+  const session = getSession(sessionId)
+  if (session && isProjectDeletionInProgress(session.cwd)) return false
+  if (session) onUserTurn?.(sessionId)
   const res = await querySession(sessionId, {
     type: 'steer',
     message,
@@ -441,6 +495,9 @@ export async function followUp(
   message: string,
   images?: PromptImage[]
 ): Promise<boolean> {
+  const session = getSession(sessionId)
+  if (session && isProjectDeletionInProgress(session.cwd)) return false
+  if (session) onUserTurn?.(sessionId)
   const res = await querySession(sessionId, {
     type: 'follow_up',
     message,
@@ -566,12 +623,14 @@ export async function resumeSession(
     origin?: 'feishu' | 'task'
     /** Durable title so the live row is correct from the 'connected' sync on. */
     initialTitle?: string
+    initialTitleMetadata?: SessionTitleMetadata
   }
 ): Promise<{ session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] } | null> {
   if (!isSessionFilePath(filePath)) return null
   const session = createSession(cwd, onEvent, {
     resumeSessionPath: filePath,
     ...(opts?.initialTitle ? { initialTitle: opts.initialTitle } : {}),
+    ...(opts?.initialTitleMetadata ? { initialTitleMetadata: opts.initialTitleMetadata } : {}),
     ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {})
   })

@@ -1,6 +1,9 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
 import { canonicalExistingPath } from './canonicalPath'
+import { ProjectRegistry, validProjectName } from './projectRegistry'
+import { discoverProjectSessionFiles } from './projectSessionFiles'
+import { pathsOverlap, isProjectDeletionInProgress } from './projectDeletionGate'
 import { getChatBoardPreview } from './chatBoardPreview'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -14,7 +17,8 @@ import { parseFbReportReference } from '../shared/fbReportReference'
 import { validGoogleReportUrl } from '../shared/googleReport'
 import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
 import { importGoogleReportFile, readGoogleReportReadings } from './googleReportReadings'
-import { announceNamedTask, createSessionNamer } from './sessionNaming'
+import { announceNamedTask, createSessionNamer, indexSessionTitleOverlays, normalizeSessionTitleFile, removeSessionTitleOverlays } from './sessionNaming'
+import { initSessionTopicBridge, revokeSessionTopicBridge } from './sessionTopicBridge'
 import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
 import { isValidFbReadingAct, isValidFbReadingBusinessId, parseFbCustomWindow } from '../shared/fbReading'
 import {
@@ -89,7 +93,11 @@ import {
   resumeSession,
   getSubagents,
   getSubagentMessages,
-  getSessionBridgeAccess
+  getSessionBridgeAccess,
+  hasProjectSessionsInFlight,
+  closeIdleProjectSessions,
+  setSessionUserTurnHook,
+  setSessionGoneHook
 } from './omp'
 import {
   listPackages,
@@ -351,10 +359,13 @@ function broadcastSessionEvent(event: SessionEvent): void {
   // event stream everything else uses — no second observation path to drift.
   noteTaskSessionEvent(event.sessionId, event)
   if (event.type === 'closed') {
+    revokeSessionTopicBridge(event.sessionId)
+    nameSessionDurally.forget(event.sessionId)
     revokeBrowserUseSession(event.sessionId)
     revokeBoardsBridgeTokens(event.sessionId)
     revokeAdsCopyBridgeTokens(event.sessionId)
   }
+  if (event.type === 'status' && event.status === 'idle') nameSessionDurally.runtimeIdle(event.sessionId)
   maybeNotifyTurnFinished(event)
   maybeNotifyUiRequest(event)
 }
@@ -379,22 +390,34 @@ function broadcastExternalSession(descriptor: ExternalSessionDescriptor): void {
  * overlay (keyed by durable file path, same cap as setSessionName) is what
  * survives.
  */
+function sessionTitleOverlays() {
+  return indexSessionTitleOverlays(getStore('sessionTitles') ?? {}, getStore('sessionTitleMetadata') ?? {}, normalizeSessionTitleFile)
+}
+
 const nameSessionDurally = createSessionNamer({
   getSession,
   listSessions,
   getTitles: () => getStore('sessionTitles') ?? {},
+  normalizeFile: normalizeSessionTitleFile,
   setRuntimeName: setSessionName,
   markTitle: markSessionTitle,
-  saveTitles: (titles) => setStore('sessionTitles', titles)
+  saveTitles: (titles) => setStore('sessionTitles', titles),
+  getMetadata: () => getStore('sessionTitleMetadata') ?? {},
+  saveMetadata: metadata => setStore('sessionTitleMetadata', metadata),
+  markMetadata: (id, metadata) => { const session = getSession(id); if (session) { session.titleSource = metadata.source; session.titleRevision = metadata.revision } },
+  onTitleChanged: (id, result) => broadcastSessionEvent({ type: 'title_changed', sessionId: id, ...result })
 })
+setSessionUserTurnHook(id => { nameSessionDurally.advance(id) })
+setSessionGoneHook(id => { revokeSessionTopicBridge(id); nameSessionDurally.forget(id) })
 
 /** Drop one overlay entry (session file deleted — keep the map orphan-free). */
 function forgetSessionTitle(filePath: string): void {
   const titles = getStore('sessionTitles') ?? {}
-  if (!(filePath in titles)) return
-  const next = { ...titles }
-  delete next[filePath]
-  setStore('sessionTitles', next)
+  const nextTitles = removeSessionTitleOverlays(titles, filePath)
+  if (Object.keys(nextTitles).length !== Object.keys(titles).length) setStore('sessionTitles', nextTitles)
+  const metadata = getStore('sessionTitleMetadata') ?? {}
+  const nextMetadata = removeSessionTitleOverlays(metadata, filePath)
+  if (Object.keys(nextMetadata).length !== Object.keys(metadata).length) setStore('sessionTitleMetadata', nextMetadata)
 }
 
 /**
@@ -523,7 +546,7 @@ const PERMISSION_MODES: PermissionMode[] = ['full', 'no-bash', 'readonly', 'ask'
 function requireGrant(id: unknown): { grant: WorkspaceGrant; realPath: string } | null {
   if (typeof id !== 'string' || !id.trim()) return null
   const grant = grantManager.get(id)
-  if (!grant) return null
+  if (!grant || isProjectDeletionInProgress(grant.realPath)) return null
   return { grant, realPath: grant.realPath }
 }
 
@@ -692,6 +715,7 @@ export function shutdownSessionsForQuit(): void {
 }
 
 export function registerIpc() {
+  void initSessionTopicBridge({ getSession, getRevision: id => nameSessionDurally.revision(id), nameSession: nameSessionDurally }).catch(() => undefined)
   startScheduler()
   void sessionOriginIndex.ready()
   // Restore a stored TikTok Ads connection (self-heals the mcp.json entry and
@@ -1240,14 +1264,14 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY, async () => {
     await sessionOriginIndex.ready()
     const all = await listAllSessions()
-    const titles = getStore('sessionTitles') ?? {}
+    const overlays = sessionTitleOverlays()
     return all.map((entry) => {
       const origin = sessionOriginIndex.lookup(entry.filePath)
       return {
         uuid: entry.uuid,
         // Same overlay as the workspace list — the cross-project rows must
         // not show a stale title next to their renamed workspace twin.
-        title: titles[entry.filePath] ?? entry.title,
+        title: overlays.get(normalizeSessionTitleFile(entry.filePath))?.title ?? entry.title,
         timestamp: entry.timestamp,
         cwd: entry.cwd,
         // Same provenance annotation as the per-workspace listing: cross-project
@@ -1266,12 +1290,12 @@ export function registerIpc() {
       await sessionOriginIndex.ready()
       const history = await listSessionHistory(resolved.realPath)
       await pruneSessionTitles()
-      const titles = getStore('sessionTitles') ?? {}
+      const overlays = sessionTitleOverlays()
       const annotated = history.map((entry) => {
         const origin = sessionOriginIndex.lookup(entry.filePath)
         // Renames/auto-names live in the settings overlay — omp's own title
         // line is stale until (unless) it flushes.
-        const title = titles[entry.filePath]
+        const title = overlays.get(normalizeSessionTitleFile(entry.filePath))?.title
         const withTitle = title ? { ...entry, title } : entry
         return origin ? { ...withTitle, origin } : withTitle
       })
@@ -1307,12 +1331,14 @@ export function registerIpc() {
           // renderer pulls the live registry on the 'connected' event, seconds
           // before this handler's response arrives — a title patched after
           // the fact still flashes the project-dir default for that window.
-          const overlayTitle = (getStore('sessionTitles') ?? {})[filePath]
+          const overlay = sessionTitleOverlays().get(normalizeSessionTitleFile(filePath))
+          const overlayTitle = overlay?.title
           let resumed: Awaited<ReturnType<typeof resumeSession>>
           try {
             resumed = await resumeSession(resolved.realPath, broadcastSessionEvent, filePath, {
               ...(origin ? { origin } : {}),
-              ...(overlayTitle ? { initialTitle: overlayTitle } : {})
+              ...(overlayTitle ? { initialTitle: overlayTitle } : {}),
+              ...(overlay?.metadata ? { initialTitleMetadata: overlay.metadata } : {})
             })
           } catch (error) {
             // The session spawned but its transcript could not be fetched.
@@ -1322,6 +1348,12 @@ export function registerIpc() {
             throw error
           }
           if (!resumed) return null
+          const metadata = overlay?.metadata
+          const source = metadata?.source ?? (overlayTitle ? 'manual' : undefined)
+          if (source) {
+            const live = getSession(resumed.session.id)
+            if (live) { live.titleSource = source; live.titleRevision = metadata?.revision ?? 0 }
+          }
           // The runtime keeps the file path in Main for --session and durable
           // metadata reconstruction. The renderer needs only the opaque
           // history capability to merge the resulting live row.
@@ -1381,8 +1413,14 @@ export function registerIpc() {
 
   ipcMain.handle(
     IPC_CHANNELS.OMP_SET_SESSION_NAME,
-    async (_event: IpcMainInvokeEvent, sessionId: string, name: string) => {
+    async (_event: IpcMainInvokeEvent, sessionId: string, name: string, options?: unknown) => {
       if (typeof sessionId !== 'string' || !sessionId || typeof name !== 'string') return null
+      if (options !== undefined) {
+        if (!options || typeof options !== 'object' || Array.isArray(options)) return null
+        const value = options as Record<string, unknown>
+        if (value.source !== 'auto' || (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || (value.revision as number) < 0))) return null
+        return nameSessionDurally(sessionId, name, { source: 'auto', ...(value.revision === undefined ? {} : { revision: value.revision as number }) })
+      }
       return nameSessionDurally(sessionId, name)
     }
   )
@@ -1739,6 +1777,81 @@ export function registerIpc() {
     return success
   })
 
+  // Project identity and destructive operations stay in Main; renderers pass opaque IDs only.
+  const projectRegistry = new ProjectRegistry({
+    file: path.join(app.getPath('userData'), 'projects.json'),
+    defaultPath: path.join(app.getPath('documents'), '投手工作区'),
+    protectedPaths: [app.getPath('home'), app.getPath('documents'), app.getPath('desktop'), app.getPath('downloads'), app.getPath('userData')],
+    recentPaths: () => getStore('recentProjects') ?? [],
+    isBusy: projectPath => hasProjectSessionsInFlight(projectPath) || listTasks().some(task => {
+      if (typeof task.cwd !== 'string') return false
+      let cwd = path.resolve(task.cwd)
+      try { cwd = canonicalExistingPath(cwd) } catch { /* retain lexical path */ }
+      return pathsOverlap(projectPath, cwd) && Array.isArray(task.runs) && task.runs.some(run => run && run.finishedAt === undefined && ['preparing', 'running', 'waiting_user', 'blocked'].includes(run.status ?? ''))
+    }),
+    discoverSessions: discoverProjectSessionFiles,
+    closeIdleSessions: closeIdleProjectSessions,
+    confirmDelete: async (projectPath, sessions) => {
+      const result = await dialog.showMessageBox({
+        type: 'warning', buttons: ['取消', '移入废纸篓'], defaultId: 0, cancelId: 0, noLink: true,
+        message: '删除项目及其会话？',
+        detail: `项目目录：${projectPath}\n项目目录及已核验归属的 ${sessions} 份会话文件移入废纸篓；无法确认归属的旧或损坏记录会保留。`
+      })
+      return result.response === 1
+    },
+    trash: async target => {
+      const isFile = fs.lstatSync(target).isFile()
+      await shell.trashItem(target)
+      if (isFile) forgetSessionTitle(target)
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.PROJECT_LIST, () => projectRegistry.list())
+  ipcMain.handle(IPC_CHANNELS.PROJECT_CREATE, async (_event, name: unknown) => {
+    if (!validProjectName(name)) return { ok: false, error: 'invalid-name' }
+    const selected = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+    if (selected.canceled || !selected.filePaths[0]) return { ok: false, error: 'cancelled' }
+    try {
+      const parent = canonicalExistingPath(selected.filePaths[0])
+      const target = path.join(parent, name)
+      if (isProjectDeletionInProgress(target)) return { ok: false, error: 'busy' }
+      await fs.promises.mkdir(target)
+      const registered = projectRegistry.register(target, name)
+      return registered.ok ? activateRegisteredProject(registered.project.id) : registered
+    } catch { return { ok: false, error: 'failed' } }
+  })
+  ipcMain.handle(IPC_CHANNELS.PROJECT_IMPORT, async () => {
+    const selected = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+    if (selected.canceled || !selected.filePaths[0]) return { ok: false, error: 'cancelled' }
+    const registered = projectRegistry.register(selected.filePaths[0])
+    return registered.ok ? activateRegisteredProject(registered.project.id) : registered
+  })
+  async function activateRegisteredProject(id: unknown) {
+    const project = projectRegistry.get(id)
+    if (!project) return { ok: false, error: 'not-found' }
+    if (project.archived) return { ok: false, error: 'archived' }
+    if (project.missing) return { ok: false, error: 'missing' }
+    if (isProjectDeletionInProgress(project.path)) return { ok: false, error: 'busy' }
+    const grant = await grantManager.createGrant(project.path, project.isDefault ? 'default' : 'dialog')
+    const current = projectRegistry.get(id)
+    if (!grant || grant.realPath !== project.path || !current || current.archived || current.missing || current.path !== project.path || isProjectDeletionInProgress(current.path)) {
+      if (grant) { grantManager.revoke(grant.id); historySessionGrantManager.revokeWorkspace(grant.id) }
+      return { ok: false, error: 'path-changed' }
+    }
+    rememberRecentProject(grant.realPath)
+    return { ok: true, project: current, grant }
+  }
+  ipcMain.handle(IPC_CHANNELS.PROJECT_ACTIVATE, async (_event, id: unknown) => activateRegisteredProject(id))
+  ipcMain.handle(IPC_CHANNELS.PROJECT_ARCHIVE, (_event, id: unknown) => projectRegistry.setArchived(id, true))
+  ipcMain.handle(IPC_CHANNELS.PROJECT_RESTORE, (_event, id: unknown) => projectRegistry.setArchived(id, false))
+  ipcMain.handle(IPC_CHANNELS.PROJECT_DELETE, async (_event, id: unknown) => {
+    const result = await projectRegistry.delete(id)
+    if (result.ok) for (const grant of grantManager.list()) if (pathsOverlap(result.project.path, grant.realPath)) {
+      grantManager.revoke(grant.id)
+      historySessionGrantManager.revokeWorkspace(grant.id)
+    }
+    return result
+  })
+
   // Workspace authority: Main-owned grants. The renderer cannot pass an
   // arbitrary path and add it to FsGuard. It can only ask Main to (1) show the
   // native folder dialog, (2) re-authorize a persisted recent path, or (3)
@@ -1746,8 +1859,9 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.WORKSPACE_SELECT, async (): Promise<WorkspaceGrant | null> => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     if (result.canceled || !result.filePaths[0]) return null
+    if (isProjectDeletionInProgress(result.filePaths[0])) return null
     const grant = await grantManager.createGrant(result.filePaths[0], 'dialog')
-    if (grant) rememberRecentProject(grant.realPath)
+    if (grant) { rememberRecentProject(grant.realPath); projectRegistry.register(grant.realPath) }
     return grant
   })
 
@@ -1787,7 +1901,7 @@ export function registerIpc() {
         return null
       }
       const grant = await grantManager.createGrant(dir, 'dialog')
-      if (grant) rememberRecentProject(grant.realPath)
+      if (grant) { rememberRecentProject(grant.realPath); projectRegistry.register(grant.realPath) }
       return grant
     }
   )

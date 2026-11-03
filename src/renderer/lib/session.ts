@@ -1,4 +1,5 @@
 import { useAppStore } from '../store'
+import { beginNavigationIntent, isCurrentNavigationIntent } from './navigationIntent'
 
 /**
  * Create a chat session for the current workspace. With no project
@@ -13,8 +14,10 @@ import { useAppStore } from '../store'
  * picker choices for a retry.
  */
 export async function createSessionForCurrentProject(
-  extra?: { skillId?: string; permissionMode?: 'readonly' }
+  extra?: { skillId?: string; permissionMode?: 'readonly' },
+  intent = beginNavigationIntent()
 ): Promise<string | null> {
+  if (!isCurrentNavigationIntent(intent)) return null
   const {
     currentWorkspace,
     selectDefaultWorkspace,
@@ -24,9 +27,9 @@ export async function createSessionForCurrentProject(
   } = useAppStore.getState()
   let grant = currentWorkspace
   if (!grant) {
-    await selectDefaultWorkspace()
+    await selectDefaultWorkspace(intent)
     grant = useAppStore.getState().currentWorkspace
-    if (!grant) return null
+    if (!grant || !isCurrentNavigationIntent(intent)) return null
   }
   const overrides = getSessionOverrides()
   const session = await window.electronAPI.createSession(grant.id, { ...overrides, ...extra })
@@ -34,6 +37,11 @@ export async function createSessionForCurrentProject(
   // picker while Main was creating the session, that newer choice is reserved
   // for the next session instead of being erased by this completion.
   clearSessionOverrides(overrides)
-  addSession(session)
+  // Preserve the created session for the submitted prompt, but a newer user
+  // choice owns the foreground. Internal adoption reuses the original intent.
+  addSession(session, false)
+  if (isCurrentNavigationIntent(intent) && useAppStore.getState().currentWorkspace?.id === grant.id) {
+    useAppStore.getState().setCurrentSessionId(session.id, intent)
+  }
   return session.id
 }

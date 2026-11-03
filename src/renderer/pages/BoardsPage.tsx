@@ -66,6 +66,8 @@ import { useT, I18nKey } from '../i18n'
 import { useAppStore } from '../store'
 import { ConfirmDialog, type ConfirmDialogRequest } from '../components/ConfirmDialog'
 import { createSessionForCurrentProject } from '../lib/session'
+import { beginNavigationIntent } from '../lib/navigationIntent'
+import { deliverBoardReading } from '../lib/readingAnalysis'
 import {
   BOARD_READING_ACCOUNTS,
   BOARD_READING_METRIC_LABELS,
@@ -1203,23 +1205,21 @@ export default function BoardsPage() {
       setReadingError('boards.reading.needMetric')
       return
     }
+    const intent = beginNavigationIntent()
     setReadingSubmitting(true)
     setReadingError(null)
     try {
-      const sessionId = await createSessionForCurrentProject()
+      const sessionId = await createSessionForCurrentProject(undefined, intent)
       if (!sessionId) {
         setReadingError('boards.reading.createFailed')
         setReadingSubmitting(false)
         return
       }
-      const store = useAppStore.getState()
-      store.setBoardReadingLaunch({ sessionId, prompt, startedAt: Date.now() })
-      store.setCurrentSessionId(sessionId)
-      store.setComposerPrefill(prompt)
-      store.setComposerAutosend(true)
+      const delivery = deliverBoardReading(sessionId, prompt, intent)
+      if (delivery === 'failed') { setReadingError('boards.reading.createFailed'); setReadingSubmitting(false); return }
       setReadingOpen(false)
       setReadingSubmitting(false)
-      navigate('/')
+      if (delivery === 'foreground') navigate('/')
     } catch (err) {
       console.error('Board reading session creation failed:', err)
       setReadingError('boards.reading.createFailed')

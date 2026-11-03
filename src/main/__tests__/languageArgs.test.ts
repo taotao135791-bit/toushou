@@ -113,3 +113,15 @@ describe('data-source priority baseline', () => {
     }
   })
 })
+
+describe('same-turn session topics', () => {
+  it('uses the existing conversation and treats metadata failure as non-blocking', () => {
+    const zh = buildAgentArgs('zh')[1]
+    const en = buildAgentArgs('en')[1]
+    for (const prompt of [zh, en]) expect(prompt).toContain('toushou_session_topic')
+    expect(zh).toContain('不另开模型任务')
+    expect(zh).toContain('不要求批准')
+    expect(zh).toContain('手动名称受保护')
+    expect(en).toContain('continue normally if unavailable')
+  })
+})

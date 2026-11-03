@@ -16,6 +16,13 @@ export const IPC_CHANNELS = {
   /** @deprecated Workspace authority is grant-based; kept only for back-compat during transition. */
   FS_SET_ROOT: 'fs:set-root',
   FS_LIST_PROJECT_FILES: 'fs:list-project-files',
+  PROJECT_LIST: 'project:list',
+  PROJECT_CREATE: 'project:create',
+  PROJECT_IMPORT: 'project:import',
+  PROJECT_ACTIVATE: 'project:activate',
+  PROJECT_ARCHIVE: 'project:archive',
+  PROJECT_RESTORE: 'project:restore',
+  PROJECT_DELETE: 'project:delete',
   WORKSPACE_SELECT: 'workspace:select',
   WORKSPACE_CREATE_PROJECT: 'workspace:create-project',
   WORKSPACE_DEFAULT: 'workspace:default',

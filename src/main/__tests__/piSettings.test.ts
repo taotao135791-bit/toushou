@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
+import { listAllSessions } from '../sessionHistory'
 
 // piSettings.ts imports ./omp for defaultPiAgentDir's CLI detection — the
 // tests always pass an explicit dir, so stub it out electron-free.
@@ -11,6 +12,7 @@ vi.mock('../omp', () => ({
 }))
 
 import {
+  defaultPiAgentDir,
   getModelConfig,
   setModelConfig,
   setApiKey,
@@ -28,11 +30,60 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
+  vi.unstubAllEnvs()
 })
 
 function readJson(name: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path.join(dir, name), 'utf-8'))
 }
+
+describe('agent directory override', () => {
+  it('uses an absolute override for omp and pi without requiring the directory to exist', () => {
+    const override = path.join(dir, 'isolated', '..', 'future-agent')
+    vi.stubEnv('PI_CODING_AGENT_DIR', override)
+    vi.stubEnv('OMP_PROFILE', '')
+    expect(defaultPiAgentDir('omp')).toBe(path.normalize(override))
+    expect(defaultPiAgentDir('pi')).toBe(path.normalize(override))
+  })
+  it('uses the runtime directory for Main configuration reads', () => {
+    vi.stubEnv('PI_CODING_AGENT_DIR', dir)
+    vi.stubEnv('OMP_PROFILE', '')
+    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({defaultProvider:'synthetic-provider'}))
+    expect(getModelConfig().defaultProvider).toBe('synthetic-provider')
+  })
+  it('uses the legacy CLI-specific fallback for unset or empty override', () => {
+    for (const value of [undefined, '']) {
+      vi.stubEnv('PI_CODING_AGENT_DIR', value)
+      expect(defaultPiAgentDir('omp')).toBe(path.join(homedir(), '.omp', 'agent'))
+      expect(defaultPiAgentDir('pi')).toBe(path.join(homedir(), '.pi', 'agent'))
+    }
+  })
+  it('lists global history from the override without scanning the default agent directory', async () => {
+    vi.stubEnv('PI_CODING_AGENT_DIR', dir)
+    vi.stubEnv('OMP_PROFILE', '')
+    const sessionDir = path.join(dir, 'sessions', 'synthetic-layout')
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(path.join(sessionDir, 'fixture.jsonl'), JSON.stringify({type:'session', id:'synthetic-session', cwd:dir, timestamp:1}) + '\n')
+    const rows = await listAllSessions()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].uuid).toBe('synthetic-session')
+    expect(rows[0].filePath).toContain('synthetic-layout')
+  })
+  it('retains the existing fallback for relative or invalid overrides', () => {
+    for (const value of ['relative/agent', '   ', 'bad\0path']) {
+      vi.stubEnv('PI_CODING_AGENT_DIR', value)
+      expect(defaultPiAgentDir('omp')).toBe(path.join(homedir(), '.omp', 'agent'))
+    }
+  })
+  it('keeps the existing OMP fallback for an unsupported named profile with an override', () => {
+    vi.stubEnv('PI_CODING_AGENT_DIR', dir)
+    vi.stubEnv('OMP_PROFILE', 'fixture')
+    expect(defaultPiAgentDir('omp')).toBe(path.join(homedir(), '.omp', 'agent'))
+    expect(defaultPiAgentDir('pi')).toBe(dir)
+    vi.stubEnv('OMP_PROFILE', 'default')
+    expect(defaultPiAgentDir('omp')).toBe(dir)
+  })
+})
 
 describe('getModelConfig', () => {
   it('returns defaults when no settings file exists', () => {

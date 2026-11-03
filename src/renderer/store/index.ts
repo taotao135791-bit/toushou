@@ -11,6 +11,7 @@ import type { BoardReadingLaunch } from '../lib/boardReading'
 import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
 import type { OfficeWorkbookSnapshot } from '@shared/officeWorkbook'
+import { beginNavigationIntent, isCurrentNavigationIntent } from '../lib/navigationIntent'
 
 /**
  * Externally created sessions whose durable transcript was backfilled once
@@ -18,6 +19,10 @@ import type { OfficeWorkbookSnapshot } from '@shared/officeWorkbook'
  * current, so each session fetches at most once per app run.
  */
 const transcriptBackfilled = new Set<string>()
+let globalHistoryReadEpoch = 0
+let scopedHistoryReadEpoch = 0
+let scopedHistoryInFlight: { grantId: string; epoch: number; promise: Promise<void> } | null = null
+const deletedHistoryUuids = new Set<string>()
 
 export interface MessageLike {
   id: string
@@ -244,11 +249,11 @@ interface AppState {
   /** Replace the active workspace grant (and sync the MRU real paths). */
   setCurrentWorkspace: (grant: WorkspaceGrant | null) => void
   /** Activate a Main-listed recent workspace by opaque id. */
-  activateRecentWorkspace: (recentId: string) => Promise<void>
+  activateRecentWorkspace: (recentId: string, navigationIntent?: number) => Promise<void>
   /** Show the native folder dialog and select the resulting grant. */
   selectWorkspace: () => Promise<void>
   createProjectWorkspace: (name: string) => Promise<boolean>
-  selectDefaultWorkspace: () => Promise<void>
+  selectDefaultWorkspace: (navigationIntent?: number) => Promise<void>
   setSessions: (sessions: Session[]) => void
   /** Merge Main's live registry without clobbering a session created concurrently. */
   registerSessions: (sessions: Session[]) => void
@@ -260,7 +265,8 @@ interface AppState {
    * archive/delete and the uuid sweep work on it like any other.
    */
   registerExternalSession: (descriptor: ExternalSessionDescriptor) => void
-  setCurrentSessionId: (id: string | null) => void
+  /** No token starts a user intent; internal completion reuses its captured token. */
+  setCurrentSessionId: (id: string | null, navigationIntent?: number) => void
   setPendingOpenHistory: (target: { uuid: string; cwd: string } | null) => void
   /**
    * One-time durable-transcript backfill for external (Feishu-origin)
@@ -369,10 +375,9 @@ interface AppState {
   touchSession: (sessionId: string) => void
   setSessionFile: (sessionId: string, sessionFile: string) => void
   /**
-   * Auto-name a session from its FIRST user message whenever its title is
-   * still the default (project-dir basename or 'Untitled') — including
-   * resumed multi-message sessions the old code never named. No-op once the
-   * session has a real name.
+   * Fill an unnamed session immediately with a safe first-message topic.
+   * Same-conversation model updates arrive as Main-owned title events;
+   * manual names are never replaced.
    */
   maybeNameSession: (sessionId: string) => Promise<void>
   setSetupComplete: (complete: boolean) => void
@@ -533,14 +538,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         } : {})
       }
     }),
-  activateRecentWorkspace: async (recentId) => {
+  activateRecentWorkspace: async (recentId, navigationIntent = beginNavigationIntent()) => {
     const grant = await window.electronAPI.activateRecentWorkspace(recentId)
+    if (!isCurrentNavigationIntent(navigationIntent)) return
     if (grant) {
       get().setCurrentWorkspace(grant)
     } else {
       // Main revalidates and prunes stale entries. Refresh the descriptor list
       // instead of attempting to remove a renderer-supplied path locally.
       const workspaces = await window.electronAPI.listRecentWorkspaces()
+      if (!isCurrentNavigationIntent(navigationIntent)) return
       set((state) => {
         const active = state.currentWorkspace
         const isCurrent = active !== null && !workspaces.some((entry) => entry.displayPath === active.realPath)
@@ -553,22 +560,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   selectWorkspace: async () => {
+    const intent = beginNavigationIntent()
     const grant = await window.electronAPI.selectWorkspace()
-    if (grant) {
+    if (grant && isCurrentNavigationIntent(intent)) {
       get().setCurrentWorkspace(grant)
       get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
     }
   },
   createProjectWorkspace: async (name) => {
+    const intent = beginNavigationIntent()
     const grant = await window.electronAPI.createProjectWorkspace(name)
-    if (!grant) return false
+    if (!grant || !isCurrentNavigationIntent(intent)) return false
     get().setCurrentWorkspace(grant)
     get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
     return true
   },
-  selectDefaultWorkspace: async () => {
+  selectDefaultWorkspace: async (intent = beginNavigationIntent()) => {
     const grant = await window.electronAPI.getDefaultWorkspace()
-    if (grant) {
+    if (grant && isCurrentNavigationIntent(intent)) {
       get().setCurrentWorkspace(grant)
       get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
     }
@@ -632,6 +641,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...merged,
         ...(previous?.readonly === true ? { readonly: true } : {}),
         title,
+        titleSource: merged.titleSource ?? previous?.titleSource,
+        titleRevision: merged.titleRevision ?? previous?.titleRevision,
         lastActivityAt: previous?.lastActivityAt ?? merged.lastActivityAt,
         // Renderer-owned pending stamp must also survive registry re-reports.
         pendingActivityAt: previous?.pendingActivityAt
@@ -640,6 +651,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous &&
         previous.cwd === guarded.cwd &&
         previous.title === guarded.title &&
+        previous.titleSource === guarded.titleSource &&
+        previous.titleRevision === guarded.titleRevision &&
         previous.createdAt === guarded.createdAt &&
         previous.status === guarded.status &&
         previous.resumeFrom === guarded.resumeFrom &&
@@ -737,7 +750,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         sessionRecords: updateSessionRecordFile(state.sessionRecords, sessionId, sessionFile)
       }
     }),
-  setCurrentSessionId: (currentSessionId) => {
+  setCurrentSessionId: (currentSessionId, navigationIntent = beginNavigationIntent()) => {
+    if (!isCurrentNavigationIntent(navigationIntent)) return
     // Re-attaching to a session re-hydrates its roster (reconcile any agents
     // that spawned while the user was elsewhere).
     if (currentSessionId) {
@@ -1164,57 +1178,64 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Read-only metadata scan of the runtime's own session storage. This is
     // what makes the sidebar survive restarts: the live registry is in-memory
     // only, the durable files are not.
+    const epoch = ++globalHistoryReadEpoch
     try {
       const rows = await window.electronAPI.listAllSessionHistory()
-      set({ globalHistory: Array.isArray(rows) ? rows : [] })
+      if (epoch === globalHistoryReadEpoch) set({ globalHistory: Array.isArray(rows) ? rows.filter(row => !deletedHistoryUuids.has(row.uuid)) : [] })
     } catch {
       // Keep the previous list on failure — an empty sidebar reads as data loss.
     }
   },
   loadHistorySessions: async (grantId) => {
+    if (grantId && scopedHistoryInFlight?.grantId === grantId && scopedHistoryInFlight.epoch === scopedHistoryReadEpoch) return scopedHistoryInFlight.promise
+    const epoch = ++scopedHistoryReadEpoch
     if (!grantId) {
+      scopedHistoryInFlight = null
       set({ historyLoading: false })
       return
     }
-    set({ historyLoading: true })
-    try {
-      const list = await window.electronAPI.listSessionHistory(grantId)
-      // Ignore a stale response when the workspace was switched meanwhile; the
-      // newer load owns the flag then.
-      if (get().currentWorkspace?.id === grantId) {
-        const workspaceRealPath = get().currentWorkspace?.realPath
-        set((state) => ({
-          sessionRecords: workspaceRealPath
-            ? replaceHistoricalSessionRecords(state.sessionRecords, workspaceRealPath, list)
-            : state.sessionRecords,
-          historyLoading: false
-        }))
+    const pending = (async () => {
+      set({ historyLoading: true })
+      try {
+        const list = await window.electronAPI.listSessionHistory(grantId)
+        if (epoch === scopedHistoryReadEpoch && get().currentWorkspace?.id === grantId) {
+          const workspaceRealPath = get().currentWorkspace?.realPath
+          set((state) => ({
+            sessionRecords: workspaceRealPath
+              ? replaceHistoricalSessionRecords(state.sessionRecords, workspaceRealPath, list.filter(row => !deletedHistoryUuids.has(row.uuid)))
+              : state.sessionRecords,
+            historyLoading: false
+          }))
+        }
+      } catch {
+        if (epoch === scopedHistoryReadEpoch && get().currentWorkspace?.id === grantId) set({ historyLoading: false })
       }
-    } catch {
-      // A rejected scan must never wedge the resume/delete guards (they
-      // early-return while historyLoading is true): keep the previous list
-      // and release the flag.
-      if (get().currentWorkspace?.id === grantId) set({ historyLoading: false })
-    }
+    })()
+    scopedHistoryInFlight = { grantId, epoch, promise: pending }
+    try { await pending }
+    finally { if (scopedHistoryInFlight?.epoch === epoch) scopedHistoryInFlight = null }
   },
   removeHistorySession: (historyId) =>
     set((state) => ({
       sessionRecords: removeHistoryRecord(state.sessionRecords, historyId)
     })),
-  purgeDeletedSession: (uuid) =>
+  purgeDeletedSession: (uuid) => {
+    deletedHistoryUuids.add(uuid)
+    globalHistoryReadEpoch += 1
     set((state) => ({
       sessionRecords: purgeHistoryUuid(state.sessionRecords, uuid),
       globalHistory: state.globalHistory.filter((row) => row.uuid !== uuid),
       // A deleted session cannot stay archived: drop its durable key so the
       // list never keeps a hidden entry nothing can restore.
       archivedSessionIds: state.archivedSessionIds.filter((id) => id !== uuid)
-    })),
+    }))
+  },
   setSessionTitle: (sessionId, title) =>
     set((state) => {
       const current = state.sessions.find((session) => session.id === sessionId)
-      if (!current || current.title === title) return state
+      if (!current || (current.title === title && current.titleSource === 'manual')) return state
       return {
-        sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, title } : s)),
+        sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, title, titleSource: 'manual' as const } : s)),
         sessionRecords: updateSessionRecordTitle(state.sessionRecords, sessionId, title)
       }
     }),
@@ -1238,14 +1259,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!session) return
     const projectName = basename(session.cwd)
     const title = session.title
+    if (session.titleSource === 'manual') return
     if (title.trim() && title !== projectName && title !== 'Untitled') return
-    // The FIRST user message names the session; later messages never retitle.
+    // First-send fallback is synchronous. The current conversation model
+    // refines the topic through Main's title_changed events in the same turn.
     const firstUser = (state.messages[sessionId] || []).find((m) => m.role === 'user')
     const source = typeof firstUser?.content === 'string' ? firstUser.content : ''
-    const name = summarizePromptTitle(source, state.language === 'zh' ? '链接' : 'link')
-    if (!name) return
-    const result = await window.electronAPI.setSessionName(sessionId, name)
-    if (result) get().setSessionTitle(sessionId, result.title)
+    if (!firstUser) return
+    const name = summarizePromptTitle(source, state.language === 'zh' ? '链接' : 'link') || (state.language === 'zh' ? '新对话' : 'New conversation')
+    set((current) => ({
+      sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, title: name, titleSource: 'auto' as const } : item),
+      sessionRecords: updateSessionRecordTitle(current.sessionRecords, sessionId, name)
+    }))
+    const result = await window.electronAPI.setSessionName(sessionId, name, { source: 'auto' }).catch(() => null)
+    if (!result) {
+      set((current) => {
+        const live = current.sessions.find((item) => item.id === sessionId)
+        if (!live || live.title !== name || live.titleSource !== 'auto' || live.titleRevision !== session.titleRevision) return current
+        return {
+          sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, title: session.title, titleSource: session.titleSource } : item),
+          sessionRecords: updateSessionRecordTitle(current.sessionRecords, sessionId, session.title)
+        }
+      })
+      return
+    }
+    set((current) => {
+      const live = current.sessions.find((item) => item.id === sessionId)
+      if (!live || live.titleSource === 'manual' || (live.title !== name && live.title !== result.title) || (live.titleRevision ?? 0) > result.revision) return current
+      return {
+        sessions: current.sessions.map((item) => item.id === sessionId ? { ...item, title: result.title, titleSource: result.source, titleRevision: result.revision } : item),
+        sessionRecords: updateSessionRecordTitle(current.sessionRecords, sessionId, result.title)
+      }
+    })
   },
   setSetupComplete: (setupComplete) => {
     set({ setupComplete })
@@ -1377,7 +1422,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { executions: { ...state.executions, [event.sessionId]: next } }
     })
 
-    if (event.type === 'message') {
+    if (event.type === 'title_changed') {
+      set((state) => {
+        const current = state.sessions.find((session) => session.id === event.sessionId)
+        if (!current || (current.titleRevision ?? 0) > event.revision || (current.titleSource === 'manual' && event.source === 'auto')) return state
+        return {
+          sessions: state.sessions.map((session) => session.id === event.sessionId ? { ...session, title: event.title, titleSource: event.source, titleRevision: event.revision } : session),
+          sessionRecords: updateSessionRecordTitle(state.sessionRecords, event.sessionId, event.title)
+        }
+      })
+    } else if (event.type === 'message') {
       if (event.role === 'user') {
         get().addMessage(event.sessionId, {
           id: crypto.randomUUID(),

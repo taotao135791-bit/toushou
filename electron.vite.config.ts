@@ -40,6 +40,7 @@ export default defineConfig({
     },
     build: {
       outDir: 'dist-electron/renderer',
+      minify: 'esbuild',
       rollupOptions: {
         input: {
           index: path.resolve(__dirname, 'src/renderer/index.html')

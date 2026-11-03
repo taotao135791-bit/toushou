@@ -17,7 +17,6 @@ import {
   Loader2,
   MessageCircle,
   Plus,
-  Check,
   ChevronDown,
   Puzzle
 } from 'lucide-react'
@@ -40,6 +39,8 @@ import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
 import UsageMonitor from './UsageMonitor'
 import MenuPortal from './MenuPortal'
+import ProjectPicker from './ProjectPicker'
+import { useProjects } from '../store/projects'
 
 interface ComposerProps {
   /** Delivers the composed text; resolves false when delivery failed and the draft is restored. */
@@ -248,14 +249,8 @@ export default memo(function Composer({
   // Home tray (选择项目 / 插件) — design.md 5.2: the soft-gray base connected
   // under the white input card carries project scope and plugin entry.
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
+  const projects = useProjects(state => state.projects)
   const projectButtonRef = useRef<HTMLButtonElement>(null)
-  const [namingProject, setNamingProject] = useState(false)
-  const [newProjectName, setNewProjectName] = useState('')
-  const [creatingProject, setCreatingProject] = useState(false)
-  const [projectCreateFailed, setProjectCreateFailed] = useState(false)
-  const selectWorkspace = useAppStore((s) => s.selectWorkspace)
-  const selectDefaultWorkspace = useAppStore((s) => s.selectDefaultWorkspace)
-  const createProjectWorkspace = useAppStore((s) => s.createProjectWorkspace)
   const navigate = useNavigate()
   const setComposerDraft = useAppStore((s) => s.setComposerDraft)
   const clearComposerDraft = useAppStore((s) => s.clearComposerDraft)
@@ -971,21 +966,6 @@ export default memo(function Composer({
     return () => window.removeEventListener('resize', measure)
   }, [panelsOpen])
 
-  const handleCreateProject = async () => {
-    const name = newProjectName.trim()
-    if (!name || creatingProject) return
-    setCreatingProject(true)
-    setProjectCreateFailed(false)
-    const ok = await createProjectWorkspace(name)
-    setCreatingProject(false)
-    if (!ok) {
-      setProjectCreateFailed(true)
-      return
-    }
-    setNamingProject(false)
-    setNewProjectName('')
-    setProjectMenuOpen(false)
-  }
 
   return (
     // Home (no active session) trims the outer bottom padding: the hint line
@@ -1385,10 +1365,9 @@ export default memo(function Composer({
                 ref={projectButtonRef}
                 type="button"
                 onClick={() => {
-                  setNamingProject(false)
                   setProjectMenuOpen((v) => !v)
                 }}
-                title={currentWorkspace?.displayPath ?? t('composer.trayProject')}
+                title={currentWorkspace?.source === 'default' ? t('projects.noProject') : currentWorkspace?.displayPath ?? t('composer.trayProject')}
                 aria-label={t('composer.trayProject')}
                 aria-haspopup="menu"
                 aria-expanded={projectMenuOpen}
@@ -1397,8 +1376,8 @@ export default memo(function Composer({
                 <span className="max-w-[180px] truncate">
                   {currentWorkspace
                     ? currentWorkspace.source === 'default'
-                      ? t('sidebar.defaultWorkspace')
-                      : basename(currentWorkspace.displayPath) || currentWorkspace.displayPath
+                      ? t('projects.noProject')
+                      : projects.find(project => project.path === currentWorkspace.realPath)?.name || basename(currentWorkspace.displayPath) || currentWorkspace.displayPath
                     : t('composer.trayProject')}
                 </span>
                 <ChevronDown
@@ -1407,96 +1386,8 @@ export default memo(function Composer({
                   aria-hidden="true"
                 />
               </button>
-              <MenuPortal
-                open={projectMenuOpen}
-                triggerRef={projectButtonRef}
-                onClose={() => {
-                  setProjectMenuOpen(false)
-                  setNamingProject(false)
-                }}
-                width={228}
-              >
-                {namingProject ? (
-                  <div className="flex items-center gap-1.5 p-1.5">
-                    <input
-                      autoFocus
-                      value={newProjectName}
-                      onChange={(e) => setNewProjectName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.nativeEvent.isComposing || e.keyCode === 229) return
-                        if (e.key === 'Enter') void handleCreateProject()
-                        if (e.key === 'Escape') {
-                          setNamingProject(false)
-                          setNewProjectName('')
-                        }
-                      }}
-                      placeholder={t('home.namePlaceholder')}
-                      aria-label={t('home.namePlaceholder')}
-                      className="min-w-0 flex-1 rounded-md border border-line bg-ink-850 px-2 py-1.5 text-[12.5px] text-cream outline-none placeholder:text-cream-faint focus:border-accent/50"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void handleCreateProject()}
-                      disabled={!newProjectName.trim() || creatingProject}
-                      className="flex shrink-0 items-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[12px] font-medium text-white transition hover:bg-accent-bright disabled:opacity-40"
-                    >
-                      {creatingProject ? <Loader2 size={12} className="animate-spin" /> : t('composer.trayCreate')}
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setProjectMenuOpen(false)
-                        void selectDefaultWorkspace()
-                      }}
-                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
-                    >
-                      <Folder size={13} className="shrink-0 text-cream-faint" />
-                      <span className="min-w-0 flex-1 truncate">{t('composer.trayDefault')}</span>
-                      {currentWorkspace?.source === 'default' && (
-                        <Check size={12} className="shrink-0 text-accent" />
-                      )}
-                    </button>
-                    {currentWorkspace && currentWorkspace.source !== 'default' && (
-                      <div
-                        title={currentWorkspace.displayPath}
-                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream"
-                      >
-                        <FolderOpen size={13} className="shrink-0 text-cream-faint" />
-                        <span className="min-w-0 flex-1 truncate">
-                          {basename(currentWorkspace.displayPath) || currentWorkspace.displayPath}
-                        </span>
-                        <Check size={12} className="shrink-0 text-accent" />
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setProjectMenuOpen(false)
-                        void selectWorkspace()
-                      }}
-                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
-                    >
-                      <FolderOpen size={13} className="shrink-0 text-cream-faint" />
-                      <span className="min-w-0 flex-1 truncate">{t('composer.trayPickFolder')}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setNamingProject(true)}
-                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
-                    >
-                      <Plus size={13} className="shrink-0 text-cream-faint" />
-                      <span className="min-w-0 flex-1 truncate">{t('composer.trayNewFolder')}</span>
-                    </button>
-                  </>
-                )}
-                {projectCreateFailed && (
-                  <div className="px-2.5 pb-1.5 text-[11px] text-red-500" role="alert">
-                    {t('home.createFailed')}
-                  </div>
-                )}
+              <MenuPortal open={projectMenuOpen} triggerRef={projectButtonRef} onClose={() => setProjectMenuOpen(false)} width={300}>
+                <ProjectPicker onDone={() => { setProjectMenuOpen(false); projectButtonRef.current?.focus() }} />
               </MenuPortal>
               {currentWorkspace?.source !== 'default' && gitInfo && (
                 <span

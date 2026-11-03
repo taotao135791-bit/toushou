@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
+import { useProjects } from '../store/projects'
 import { I18nKey, useT } from '../i18n'
 import { createSessionForCurrentProject } from '../lib/session'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
@@ -44,11 +45,13 @@ export default function ChatPanel() {
   const t = useT()
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
-  const sessions = useAppStore((s) => s.sessions)
+  // Background metadata keeps this object reference, so it must not rerender
+  // the active transcript/composer just because another session was renamed.
+  const currentSession = useAppStore((s) => s.sessions.find(session => session.id === s.currentSessionId))
   const cliAvailable = useAppStore((s) => s.cliAvailable)
   const workspacePanel = useAppStore((s) => s.workspacePanel)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
-  const selectWorkspace = useAppStore((s) => s.selectWorkspace)
+  const selectWorkspace = useProjects((s) => s.importFolder)
   // Per-session slices only: streaming deltas of OTHER sessions must not
   // re-render this chat, and unrelated store writes must not either.
   const sessionMessages = useAppStore((s) =>
@@ -58,7 +61,6 @@ export default function ChatPanel() {
     currentSessionId ? Boolean(s.busy[currentSessionId]) : false
   )
 
-  const currentSession = sessions.find((s) => s.id === currentSessionId)
   const isCompacting = useAppStore((s) =>
     currentSessionId ? Boolean(s.compacting[currentSessionId]) : false
   )

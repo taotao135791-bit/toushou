@@ -15,6 +15,7 @@ import { tasksBridgeEnv } from '../tasksBridge'
 import { tiktokBridgeEnv } from '../tiktokBridge'
 import { boardsBridgeEnv } from '../boardsBridge'
 import { adsCopyBridgeEnv } from '../adsCopyBridge'
+import { sessionTopicBridgeEnv } from '../sessionTopicBridge'
 
 /**
  * Process assembly for `pi --mode rpc` sessions: CLI argument construction
@@ -28,6 +29,12 @@ function approvalExtensionPath(): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'omp-approval', 'index.ts')
     : path.join(app.getAppPath(), 'resources', 'omp-approval', 'index.ts')
+}
+
+function sessionTopicExtensionPath(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'session-topic', 'index.ts')
+    : path.join(app.getAppPath(), 'resources', 'session-topic', 'index.ts')
 }
 
 export interface ApprovalConfig {
@@ -161,6 +168,10 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
   // pi loads installed packages (settings.json) and auto-discovered extension
   // dirs itself on startup; the GUI manages them through the Packages page.
   const args = ['--mode', 'rpc']
+  // Host-owned metadata, independent of user package installation/removal.
+  // This extension does not call a provider or gain workspace write access.
+  const topicExtension = sessionTopicExtensionPath()
+  if (existsSync(topicExtension)) args.push('-e', topicExtension)
   // Tool gating is profile-specific: legacy pi takes --exclude-tools plus the
   // bundled approval extension; current omp takes --tools / --approval-mode
   // (its native prompts arrive as ordinary extension_ui_request dialogs).
@@ -214,7 +225,8 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       ...tasksBridgeEnv(sessionId),
       ...tiktokBridgeEnv(sessionId),
       ...boardsBridgeEnv(sessionId),
-      ...adsCopyBridgeEnv(sessionId)
+      ...adsCopyBridgeEnv(sessionId),
+      ...sessionTopicBridgeEnv(sessionId)
     }),
     approvalConfigFile
   }

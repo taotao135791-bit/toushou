@@ -84,6 +84,24 @@ describe('session registry projection', () => {
     expect(records.some((record) => record.runtimeSessionId === 'runtime-a' && record.isLive)).toBe(true)
   })
 
+  it('preserves first-match precedence when capability and live UUID point to different records', () => {
+    const first = { key:'first', workspaceRealPath:A, title:'History first', history:history('cap','old-uuid'), updatedAt:1, isLive:false, isResumable:true, state:'historical' as const }
+    const second = { key:'second', workspaceRealPath:A, title:'Live second', history:history('another','shared-uuid'), runtimeSessionId:'live', updatedAt:2, isLive:true, isResumable:true, state:'idle' as const }
+    const result = replaceHistoricalSessionRecords([first, second], A, [history('cap','shared-uuid')], 10)
+    expect(result.map(record => record.key)).toEqual(['first', 'second'])
+    expect(result[0]).toMatchObject({isLive:false, title:'History shared-uuid'})
+    expect(result[1]).toMatchObject({isLive:true, title:'Live second'})
+  })
+
+  it('preserves repeated capability updates and same-title distinct UUIDs', () => {
+    const repeated = replaceHistoricalSessionRecords([], A, [history('cap','one'), history('cap','two')], 10)
+    expect(repeated).toHaveLength(1)
+    expect(repeated[0].history?.uuid).toBe('two')
+    const sameTitle = [{...history('first','one'),title:'Same'}, {...history('second','two'),title:'Same'}]
+    const records = replaceHistoricalSessionRecords([], A, sameTitle, 10)
+    expect(records.map(record => record.history?.uuid)).toEqual(['two','one'])
+  })
+
   it('keeps foreign live rows (e.g. Feishu workspace) across another workspace refresh', () => {
     // The Feishu channel creates sessions under the app workspace (B) while
     // the user is working in A: its live row must survive A's history merge
