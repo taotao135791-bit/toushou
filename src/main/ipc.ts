@@ -1,6 +1,7 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
 import { canonicalExistingPath } from './canonicalPath'
+import { getWorkspaceSystemPaths, projectSystemPathsError } from './workspaceSystemPaths'
 import { ProjectRegistry, validProjectName } from './projectRegistry'
 import { discoverProjectSessionFiles } from './projectSessionFiles'
 import { pathsOverlap, isProjectDeletionInProgress } from './projectDeletionGate'
@@ -1224,8 +1225,10 @@ export function registerIpc() {
       // The renderer may NOT choose an arbitrary destination: the host always
       // exports to a Main-owned safe directory (Downloads) with a sanitized
       // filename, then reveals it in the Finder.
+      const downloads = getWorkspaceSystemPaths().downloads
+      if (!downloads) return null
       const target = path.join(
-        app.getPath('downloads'),
+        downloads,
         defaultExportFileName(getSession(sessionId)?.title, sessionId)
       )
       const saved = await exportHtml(sessionId, target)
@@ -1778,10 +1781,11 @@ export function registerIpc() {
   })
 
   // Project identity and destructive operations stay in Main; renderers pass opaque IDs only.
+  const workspacePaths = getWorkspaceSystemPaths()
   const projectRegistry = new ProjectRegistry({
     file: path.join(app.getPath('userData'), 'projects.json'),
-    defaultPath: path.join(app.getPath('documents'), '投手工作区'),
-    protectedPaths: [app.getPath('home'), app.getPath('documents'), app.getPath('desktop'), app.getPath('downloads'), app.getPath('userData')],
+    defaultPath: workspacePaths.defaultWorkspace,
+    protectedPaths: workspacePaths.protectedPaths,
     recentPaths: () => getStore('recentProjects') ?? [],
     isBusy: projectPath => hasProjectSessionsInFlight(projectPath) || listTasks().some(task => {
       if (typeof task.cwd !== 'string') return false
@@ -1805,8 +1809,12 @@ export function registerIpc() {
       if (isFile) forgetSessionTitle(target)
     }
   })
-  ipcMain.handle(IPC_CHANNELS.PROJECT_LIST, () => projectRegistry.list())
+  ipcMain.handle(IPC_CHANNELS.PROJECT_LIST, () => {
+    if (!workspacePaths.defaultWorkspace) throw new Error('system-paths-unavailable')
+    return projectRegistry.list()
+  })
   ipcMain.handle(IPC_CHANNELS.PROJECT_CREATE, async (_event, name: unknown) => {
+    if (!workspacePaths.defaultWorkspace) return { ok: false, error: 'system-paths-unavailable' }
     if (!validProjectName(name)) return { ok: false, error: 'invalid-name' }
     const selected = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
     if (selected.canceled || !selected.filePaths[0]) return { ok: false, error: 'cancelled' }
@@ -1820,12 +1828,14 @@ export function registerIpc() {
     } catch { return { ok: false, error: 'failed' } }
   })
   ipcMain.handle(IPC_CHANNELS.PROJECT_IMPORT, async () => {
+    if (!workspacePaths.defaultWorkspace) return { ok: false, error: 'system-paths-unavailable' }
     const selected = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     if (selected.canceled || !selected.filePaths[0]) return { ok: false, error: 'cancelled' }
     const registered = projectRegistry.register(selected.filePaths[0])
     return registered.ok ? activateRegisteredProject(registered.project.id) : registered
   })
   async function activateRegisteredProject(id: unknown) {
+    if (!workspacePaths.defaultWorkspace) return { ok: false, error: 'system-paths-unavailable' }
     const project = projectRegistry.get(id)
     if (!project) return { ok: false, error: 'not-found' }
     if (project.archived) return { ok: false, error: 'archived' }
@@ -1841,9 +1851,11 @@ export function registerIpc() {
     return { ok: true, project: current, grant }
   }
   ipcMain.handle(IPC_CHANNELS.PROJECT_ACTIVATE, async (_event, id: unknown) => activateRegisteredProject(id))
-  ipcMain.handle(IPC_CHANNELS.PROJECT_ARCHIVE, (_event, id: unknown) => projectRegistry.setArchived(id, true))
-  ipcMain.handle(IPC_CHANNELS.PROJECT_RESTORE, (_event, id: unknown) => projectRegistry.setArchived(id, false))
+  ipcMain.handle(IPC_CHANNELS.PROJECT_ARCHIVE, (_event, id: unknown) => workspacePaths.defaultWorkspace ? projectRegistry.setArchived(id, true) : { ok: false, error: 'system-paths-unavailable' })
+  ipcMain.handle(IPC_CHANNELS.PROJECT_RESTORE, (_event, id: unknown) => workspacePaths.defaultWorkspace ? projectRegistry.setArchived(id, false) : { ok: false, error: 'system-paths-unavailable' })
   ipcMain.handle(IPC_CHANNELS.PROJECT_DELETE, async (_event, id: unknown) => {
+    const systemPathsError = projectSystemPathsError(workspacePaths)
+    if (systemPathsError) return { ok: false, error: systemPathsError }
     const result = await projectRegistry.delete(id)
     if (result.ok) for (const grant of grantManager.list()) if (pathsOverlap(result.project.path, grant.realPath)) {
       grantManager.revoke(grant.id)
@@ -1857,6 +1869,7 @@ export function registerIpc() {
   // native folder dialog, (2) re-authorize a persisted recent path, or (3)
   // re-activate a grant it already holds.
   ipcMain.handle(IPC_CHANNELS.WORKSPACE_SELECT, async (): Promise<WorkspaceGrant | null> => {
+    if (!workspacePaths.defaultWorkspace) return null
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     if (result.canceled || !result.filePaths[0]) return null
     if (isProjectDeletionInProgress(result.filePaths[0])) return null
@@ -1869,7 +1882,8 @@ export function registerIpc() {
   // "just start typing" never dead-ends on a folder picker. Persisted as a
   // recent workspace so its session history survives relaunches.
   ipcMain.handle(IPC_CHANNELS.WORKSPACE_DEFAULT, async (): Promise<WorkspaceGrant | null> => {
-    const dir = path.join(app.getPath('documents'), '投手工作区')
+    const dir = workspacePaths.defaultWorkspace
+    if (!dir) return null
     try {
       await fs.promises.mkdir(dir, { recursive: true })
     } catch {
@@ -1889,7 +1903,8 @@ export function registerIpc() {
       if (typeof rawName !== 'string') return null
       const name = rawName.replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 60)
       if (!name) return null
-      const base = path.join(app.getPath('documents'), '投手项目')
+      if (!workspacePaths.documents) return null
+      const base = path.join(workspacePaths.documents, '投手项目')
       let dir = path.join(base, name)
       try {
         await fs.promises.mkdir(base, { recursive: true })

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -19,6 +19,19 @@ function message(overrides: Partial<NormalizedFeishuMessage> = {}): NormalizedFe
 }
 
 describe('FeishuSessionRouter', () => {
+  it('rejects missing workspace before resume or creation and preserves the existing route', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'toushou-router-empty-')); dirs.push(dir)
+    const routesFile = path.join(dir, 'routes.json')
+    await writeFile(routesFile, JSON.stringify([{key:'oc_1:conversation',chatId:'oc_1',chatType:'p2p',sessionFile:'/synthetic/session.jsonl',updatedAt:1}]))
+    const createSession = vi.fn(); const resumeSession = vi.fn(); const sendMessage = vi.fn(); const onReply = vi.fn(async () => undefined)
+    const router = new FeishuSessionRouter({ workspacePath:'', routesFile, createSession, resumeSession, sendMessage,
+      getSession:()=>undefined, getSessionState:async()=>null, killSession:()=>true, onReply, ownerOpenId:'ou_owner' })
+    await router.handleInbound(message())
+    expect(createSession).not.toHaveBeenCalled(); expect(resumeSession).not.toHaveBeenCalled(); expect(sendMessage).not.toHaveBeenCalled()
+    expect(router.listRoutes()[0].sessionFile).toBe('/synthetic/session.jsonl')
+    expect(onReply).toHaveBeenCalledOnce()
+  })
+
   it('enforces owner/mention policy, deduplicates events, and reuses chat threads', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'toushou-router-'))
     dirs.push(dir)

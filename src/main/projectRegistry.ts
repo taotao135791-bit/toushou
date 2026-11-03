@@ -88,6 +88,7 @@ export class ProjectRegistry {
     } catch (error) { try { fs.unlinkSync(temporary) } catch { /* best effort */ }; throw error }
   }
   private init(): ProjectStore {
+    if (!this.options.defaultPath || !path.isAbsolute(this.options.defaultPath) || isFilesystemRoot(this.options.defaultPath)) throw new Error('default-workspace-unavailable')
     const store = this.load()
     let changed = false
     let defaultWasMissing = false

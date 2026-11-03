@@ -21,6 +21,7 @@ import {
 import { Session, SessionEvent, ExternalSessionDescriptor } from '../../../shared/types'
 import { createSession, getSession, getSessionState, killSession, resumeSession, sendMessage } from '../../omp'
 import { getStore } from '../../store'
+import { getWorkspaceSystemPaths } from '../../workspaceSystemPaths'
 import { FeishuChannel } from './FeishuChannel'
 import { FEISHU_CREDENTIAL_UNAVAILABLE, FeishuCredentialStore, FeishuStoredCredentials, maskSecret } from './FeishuCredentialStore'
 import { PersonalAgentRegistrationProvider, RegistrationSession } from './FeishuAppRegistration'
@@ -45,7 +46,7 @@ export class FeishuConnectionManager {
   private readonly credentialStore = new FeishuCredentialStore()
   private readonly registrationProvider = new PersonalAgentRegistrationProvider()
   private readonly oauthManager = new FeishuOAuthManager(this.credentialStore)
-  private readonly workspacePath = path.join(app.getPath('documents'), '投手工作区')
+  private readonly workspacePath = getWorkspaceSystemPaths().defaultWorkspace
   private readonly routesFile = path.join(app.getPath('userData'), 'feishu-routes.json')
   private readonly router: FeishuSessionRouter
   private readonly tools: FeishuToolRegistry
@@ -195,7 +196,7 @@ export class FeishuConnectionManager {
   async initialize(): Promise<void> {
     if (this.initialized) return
     this.initialized = true
-    await mkdir(this.workspacePath, { recursive: true }).catch(() => undefined)
+    if (this.workspacePath) await mkdir(this.workspacePath, { recursive: true }).catch(() => undefined)
     const loaded = await this.credentialStore.loadResult()
     this.credentials = loaded.status === 'ready' ? loaded.credentials : null
     if (loaded.status === 'unavailable') {
