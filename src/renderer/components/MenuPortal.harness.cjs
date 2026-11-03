@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu } = require('electron')
+const { app, BrowserWindow, Menu, screen } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const dir = process.argv[2]
@@ -7,17 +7,27 @@ app.setPath('sessionData', path.join(dir, 'session'))
 app.whenReady().then(async () => {
   let win
   let phase = 'initial'
+  const dimensions = async () => {
+    if (!win || win.isDestroyed()) return { unavailable: true }
+    const native = { content: win.getContentBounds(), outer: win.getBounds(), workArea: screen.getDisplayMatching(win.getBounds()).workArea, visible: win.isVisible(), focused: win.isFocused() }
+    let renderer
+    try { renderer = await win.webContents.executeJavaScript(`({innerWidth,innerHeight,outerWidth,outerHeight,visibility:document.visibilityState,focused:document.hasFocus()})`) }
+    catch { renderer = { unavailable: true } }
+    return { native, renderer }
+  }
   const deadline = setTimeout(() => { console.log('E2E_RESULT ' + JSON.stringify({ fatal: 'Harness deadline before completion', phase })); process.exitCode = 1; win?.destroy(); app.quit() }, 30000)
   try {
     Menu.setApplicationMenu(null)
     const html = path.join(dir, 'index.html')
     fs.writeFileSync(html, '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="fixture.css"></head><body style="margin:0"><div id="root"></div><script src="fixture.js"></script></body></html>')
-    win = new BrowserWindow({ show: false, width: 1024, height: 700, useContentSize: true, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
+    win = new BrowserWindow({ show: false, enableLargerThanScreen: true, width: 1024, height: 700, useContentSize: true, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
     const wc = win.webContents
     wc.session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => callback({ cancel: true }))
     const readyToShow = new Promise(resolve => win.once('ready-to-show', resolve))
     await win.loadFile(html)
     win.show()
+    // CI displays can have a smaller work area; preserve the viewport under test.
+    win.setContentSize(1024, 700)
     win.focus()
     wc.focus()
     await Promise.race([readyToShow, new Promise((_, reject) => setTimeout(() => reject(new Error('ready-to-show timeout')), 5000))])
@@ -105,6 +115,6 @@ app.whenReady().then(async () => {
     await waitFor('!window.menuFixture.snapshot().open')
     const outsideClosed = await js('!window.menuFixture.snapshot().open')
     console.log('E2E_RESULT ' + JSON.stringify({ initial, streaming, expanded, expandedFocus, resized, moved, ime, escaped, repeated, outsideClosed }))
-  } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase })); process.exitCode = 1 }
+  } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

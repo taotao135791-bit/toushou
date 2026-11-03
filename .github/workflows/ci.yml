@@ -66,8 +66,15 @@ jobs:
           bun-version: 1.3.14
       - name: Install
         run: pnpm install --frozen-lockfile
-      - name: Board UI in Electron
-        run: pnpm exec vitest run src/renderer/pages/boards/boardsFlow.e2e.test.ts src/renderer/pages/boards/htmlBoardSecurity.e2e.test.ts
+      - name: Board and conversation UI in Electron
+        run: >-
+          pnpm exec vitest run
+          src/renderer/pages/boards/boardsFlow.e2e.test.ts
+          src/renderer/pages/boards/htmlBoardSecurity.e2e.test.ts
+          src/renderer/components/Projects.e2e.test.ts
+          src/renderer/components/SidebarConversations.e2e.test.ts
+          src/renderer/components/MenuPortal.e2e.test.ts
+          src/renderer/components/ChatPanelPerf.e2e.test.ts
       - name: Windows OMP command shim detection
         run: pnpm exec vitest run src/main/__tests__/ompCliDetection.test.ts src/main/__tests__/command.test.ts
 

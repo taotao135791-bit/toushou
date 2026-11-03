@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu } = require('electron')
+const { app, BrowserWindow, Menu, screen } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const dir = process.argv[2]
@@ -6,11 +6,19 @@ app.setPath('userData', path.join(dir, 'profile'))
 app.whenReady().then(async () => {
   let win
   let phase = 'startup'
+  const dimensions = async () => {
+    if (!win || win.isDestroyed()) return { unavailable: true }
+    const native = { content: win.getContentBounds(), outer: win.getBounds(), workArea: screen.getDisplayMatching(win.getBounds()).workArea, visible: win.isVisible(), focused: win.isFocused() }
+    let renderer
+    try { renderer = await win.webContents.executeJavaScript(`({innerWidth,innerHeight,outerWidth,outerHeight,visibility:document.visibilityState,focused:document.hasFocus()})`) }
+    catch { renderer = { unavailable: true } }
+    return { native, renderer }
+  }
   try {
     Menu.setApplicationMenu(null)
     const html = path.join(dir, 'index.html')
     fs.writeFileSync(html, '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="fixture.css"></head><body style="margin:0"><div id="root"></div><script src="fixture.js"></script></body></html>')
-    win = new BrowserWindow({ show: false, useContentSize: true, width: 1024, height: 700, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
+    win = new BrowserWindow({ show: false, enableLargerThanScreen: true, useContentSize: true, width: 1024, height: 700, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
     const wc = win.webContents
     const readyToShow = new Promise(resolve => win.once('ready-to-show', resolve))
     const bounded = (promise, label) => new Promise((resolve, reject) => {
@@ -22,6 +30,8 @@ app.whenReady().then(async () => {
     await win.loadFile(html)
     await bounded(readyToShow, 'ready-to-show')
     win.show()
+    // CI displays can have a smaller work area; preserve the viewport under test.
+    win.setContentSize(1024, 700)
     app.focus({ steal: true })
     win.focus()
     wc.focus()
@@ -207,6 +217,6 @@ app.whenReady().then(async () => {
     const finalArchive = await js(`({open:!!document.querySelector('[data-session-action-menu]'),snapshot:window.sidebarFixture.snapshot(),kills:window.sidebarFixture.killed})`)
     const fullTitle = await js(`${row('[data-all-conversations]', 2)}.querySelector('[data-conversation-select]').title`)
     console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, before, after, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks }))
-  } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase })); process.exitCode = 1 }
+  } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { win?.destroy(); app.quit() }
 })
