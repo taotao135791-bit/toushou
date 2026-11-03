@@ -168,14 +168,24 @@ jobs:
           # `electron-builder` can reuse a host-architecture Electron bundle
           # when electronDist is pinned locally. Check the staged apps, not
           # just their artifact filenames, before publishing either archive.
-          # Locate the bundle executable by structure — the staged app name
-          # follows productName (投手), not a stable ASCII identifier.
-          arm64_bin="$(find release/mac-arm64 -path '*/Contents/MacOS/*' -type f | head -n 1)"
-          x64_bin="$(find release/mac -path '*/Contents/MacOS/*' -type f | head -n 1)"
-          test -n "${arm64_bin}" && test -s "${arm64_bin}"
-          test -n "${x64_bin}" && test -s "${x64_bin}"
-          file "${arm64_bin}" | grep -Eq 'arm64|arm64e'
-          file "${x64_bin}" | grep -Eq 'x86_64|x86-64'
+          # afterPack adds a shell launcher beside the Mach-O binary. Resolve
+          # the declared entry, then inspect its real binary rather than a
+          # filesystem-order-dependent find result.
+          shopt -s nullglob
+          for staged in release/mac-arm64 release/mac; do
+            apps=("${staged}"/*.app)
+            test "${#apps[@]}" -eq 1
+            app_path="${apps[0]}"
+            entry="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${app_path}/Contents/Info.plist")"
+            app_bin="${app_path}/Contents/MacOS/${entry}"
+            test -x "${app_bin}"
+            if [[ -f "${app_bin}.bin" ]]; then app_bin="${app_bin}.bin"; fi
+            test -s "${app_path}/Contents/Resources/session-topic/index.ts"
+            case "${staged}" in
+              release/mac-arm64) file "${app_bin}" | grep -Eq 'arm64|arm64e' ;;
+              release/mac) file "${app_bin}" | grep -Eq 'x86_64|x86-64' ;;
+            esac
+          done
 
           blockmaps="$(find release -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d '[:space:]')"
           if [[ "${blockmaps}" -lt 2 ]]; then
@@ -195,8 +205,12 @@ jobs:
             x86_64) staged=release/mac ;;
             *) echo 'Unsupported macOS runner architecture'; exit 1 ;;
           esac
-          app_bin="$(find "${staged}" -path '*/Contents/MacOS/*' -type f | head -n 1)"
-          test -n "${app_bin}" && test -s "${app_bin}"
+          shopt -s nullglob
+          apps=("${staged}"/*.app)
+          test "${#apps[@]}" -eq 1
+          entry="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${apps[0]}/Contents/Info.plist")"
+          app_bin="${apps[0]}/Contents/MacOS/${entry}"
+          test -x "${app_bin}"
           node tools/release-smoke.cjs "${app_bin}"
 
       - name: Generate SHA-256 checksums
@@ -342,6 +356,7 @@ jobs:
           set -euo pipefail
           app_bin="release/win-unpacked/投手.exe"
           test -s "${app_bin}"
+          test -s "release/win-unpacked/resources/session-topic/index.ts"
           node tools/release-smoke.cjs "${app_bin}"
 
       - name: Generate SHA-256 checksums
