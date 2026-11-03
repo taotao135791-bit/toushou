@@ -504,8 +504,12 @@ async function dispatchBatch(
     const usable = healthy.length > 0 ? healthy : members
     const sticky = fixed && (isNamed || (failedCounts.get(fixed[0].id) ?? 0) === 0) ? fixed : null
     if (fixed && !sticky) stickyFallback = true
-    const roundProviders = sticky ?? Array.from({ length: Math.min(usable.length, shortfall) }, (_, i) =>
-      usable[providerRotationIndex(usable.length, 0, attempt, i)]
+    // Try other usable members before retrying the failed sticky assignment.
+    // Explicitly named models stay pinned and never enter this fallback.
+    const alternatives = fixed && !sticky ? usable.filter(member => member.id !== fixed[0].id) : usable
+    const rotating = alternatives.length > 0 ? alternatives : usable
+    const roundProviders = sticky ?? Array.from({ length: Math.min(rotating.length, shortfall) }, (_, i) =>
+      rotating[providerRotationIndex(rotating.length, 0, attempt, i)]
     )
     const uniqueProviders = [...new Map(roundProviders.map((provider) => [provider.id, provider])).values()]
     // Oversample just enough to absorb rejected candidates. The old 3× ask
@@ -543,6 +547,7 @@ async function dispatchBatch(
     const roundStartedAt = Date.now()
     let roundShort = 0
     let roundLong = 0
+    let roundScoredCandidates = 0
     const controllers = new Map<string, AbortController>()
     // The round is done as soon as the remaining shortfall is covered by what
     // arrived so far. At that point the slowest models are cancelled, so the
@@ -580,6 +585,7 @@ async function dispatchBatch(
         }
         failedCounts.set(provider.id, 0)
         const normalized = normalizeModelOutput(result.text, { short: SHORT_MAX_BYTES, long: LONG_MAX_BYTES })
+        roundScoredCandidates += normalized.shorts.length + normalized.longs.length
         for (const text of normalized.shorts) {
           const item = scoreCopyItem(text, { type: 'short', maxBytes: SHORT_MAX_BYTES, language, benefits, brandTerms, targets })
           shortPool.push(item)
@@ -608,11 +614,11 @@ async function dispatchBatch(
     acceptedShort += roundShort
     acceptedLong += roundLong
     retryHistory.push({ ...roundStart, acceptedShort: roundShort, acceptedLong: roundLong, ms: Date.now() - roundStartedAt })
-    // Two rounds in a row with nothing accepted means the direction is stuck;
-    // repeating it only burns tokens, so stop and let the caller change angle
-    // facts/thresholds (see next_steps) instead of brute-forcing more attempts.
-    if (roundShort + roundLong === 0) zeroStreak += 1
-    else zeroStreak = 0
+    // Only evaluated copy can prove that a creative direction is stuck.
+    // Transport/provider failures must not stop rotation before a healthy
+    // member gets its attempt. maxAttempts still bounds recovery work.
+    if (roundShort + roundLong > 0) zeroStreak = 0
+    else if (roundScoredCandidates > 0) zeroStreak += 1
     if (zeroStreak >= 2) {
       stagnated = true
       break

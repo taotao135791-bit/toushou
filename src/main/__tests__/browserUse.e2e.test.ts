@@ -145,6 +145,9 @@ describe('browser-use e2e (real Electron panel)', () => {
     // Screenshot fallback writes a PNG.
     expect(steps['A screenshot'].ok, `screenshot step: ${JSON.stringify(steps['A screenshot'])}`).toBe(true)
     expect(existsSync(String(steps['A screenshot'].imagePath))).toBe(true)
+    expect(steps['A screenshot without animation frames'].ok).toBe(true)
+    expect(existsSync(String(steps['A screenshot without animation frames'].imagePath))).toBe(true)
+    expect(steps['A snapshot after stalled animation frames'].ok).toBe(true)
 
     // Hidden panel: operations refused.
     expect(steps['A snapshot while hidden (expect denial)'].ok).toBe(false)

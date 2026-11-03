@@ -177,6 +177,57 @@ describe('dispatch copy_generate_batch', () => {
     expect((result.provider_pool as { strategy: string }).strategy).toContain('fallback')
   })
 
+  it.each(['http', 'quality'] as const)('tries the later healthy provider after %s and HTTP failures', async firstFailure => {
+    const members = ['a', 'b', 'c'].map(name => provider(name, `model-${name}`))
+    const calls: string[] = []
+    const result = await dispatch({
+      action: 'copy_generate_batch',
+      request: { product: { language: 'en', benefits: ['fast transfers'] }, categories: [{ type: 'short', qty: 1 }], maxAttempts: 3, candidateMultiplier: 1 }
+    }, {
+      pool: poolOf(members, members.map(member => member.id)),
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        calls.push(model)
+        if (model === 'model-c') return okFetch('{"short":["Discover fast transfers"]}')()
+        if (model === 'model-a' && firstFailure === 'quality') return okFetch('{"short":["ok"]}')()
+        return { ok: false, status: 503, text: async () => '' }
+      }
+    })
+    expect(calls).toEqual(['model-a', 'model-b', 'model-c'])
+    expect(result).toMatchObject({ ok: true, fulfilled: true, score_control: { attempts: 3, stagnated: false } })
+    expect((result.results as { short: { items: unknown[] } }).short.items).toHaveLength(1)
+  })
+
+  it('tries another member immediately when the last sticky member fails', async () => {
+    const members = [provider('a', 'model-a'), provider('b', 'model-b')]
+    const calls: string[] = []
+    // The assignment hash for "a" pins to index 1; rotation must not pick
+    // that same failed model again while index 0 is available.
+    const result = await dispatch({
+      action: 'copy_generate_batch',
+      request: { product: { language: 'en', benefits: ['fast transfers'] }, categories: [{ type: 'short', qty: 1 }], agentId: 'a', maxAttempts: 2, candidateMultiplier: 1 }
+    }, {
+      pool: poolOf(members, members.map(member => member.id)),
+      fetchImpl: async (_url, init) => {
+        const model = (JSON.parse(String(init.body)) as { model: string }).model
+        calls.push(model)
+        return model === 'model-a' ? okFetch('{"short":["Discover fast transfers"]}')() : { ok: false, status: 503, text: async () => '' }
+      }
+    })
+    expect(calls).toEqual(['model-b', 'model-a'])
+    expect(result).toMatchObject({ ok: true, fulfilled: true, provider_pool: { strategy: 'agent_sticky_fallback' }, score_control: { stagnated: false } })
+  })
+
+  it.each(['openai', 'anthropic'] as const)('keeps reflected %s provider secrets out of agent-visible errors', async protocol => {
+    const member = { ...provider('synthetic', 'synthetic-model'), protocol, apiKey: 'synthetic-secret-never-returned' }
+    const result = await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 1 } }, {
+      pool: poolOf([member], [member.id]),
+      fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ error: { message: `Invalid API key ${member.apiKey}` } }) })
+    })
+    expect(result).toMatchObject({ ok: false, provider_errors: [{ error: 'api-error: authentication-failed' }], score_control: { stagnated: false } })
+    expect(JSON.stringify(result)).not.toContain(member.apiKey)
+  })
+
   it('cancels slow models as soon as the quota is covered', async () => {
     const members = [provider('slow', 'model-slow'), provider('fast', 'model-fast')]
     let aborted = false

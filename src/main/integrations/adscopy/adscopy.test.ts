@@ -143,14 +143,30 @@ describe('AdsCopyModelStore', () => {
     expect(first).toMatchObject({ added: 2, skipped: 0, limitReached: false })
     expect(first.pool.providers.map((provider) => provider.name)).toEqual(['gpt-4o', 'claude-x'])
 
-    // Identity ignores the display name and a trailing slash, and compares
-    // model ids case-insensitively — re-sniffing the same relay is harmless.
+    // Scheme/hostname/default port and trailing slashes are equivalent, but
+    // the model id is retained exactly as offered by the relay.
     const second = await store.addMany([
-      { ...base, name: 'whatever', model: 'GPT-4O', baseUrl: 'https://relay.example.com/v1/' },
+      { ...base, name: 'whatever', model: 'gpt-4o', baseUrl: 'HTTPS://RELAY.example.com:443/v1/' },
       { ...base, name: 'gpt-4o', model: 'gpt-4o-mini' }
     ])
     expect(second).toMatchObject({ added: 1, skipped: 1 })
     expect(second.pool.providers.map((provider) => provider.name)).toEqual(['gpt-4o', 'claude-x', 'gpt-4o (2)'])
+  })
+
+  it('preserves distinct relay paths and model ids that differ only by case', async () => {
+    const store = new AdsCopyModelStore()
+    const base = { name: 'copy', baseUrl: 'https://relay.example.com/TeamA/v1', protocol: 'openai' as const, model: 'ModelA', apiKey: 'synthetic-key' }
+    const result = await store.addMany([
+      base,
+      { ...base, baseUrl: 'https://relay.example.com/teama/v1' },
+      { ...base, model: 'modela' }
+    ])
+    expect(result).toMatchObject({ added: 3, skipped: 0, limitReached: false })
+    expect((await store.load()).providers.map(({ baseUrl, model }) => [baseUrl, model])).toEqual([
+      ['https://relay.example.com/TeamA/v1', 'ModelA'],
+      ['https://relay.example.com/teama/v1', 'ModelA'],
+      ['https://relay.example.com/TeamA/v1', 'modela']
+    ])
   })
 
   it('stops a batch at the provider cap and reports it', async () => {
@@ -290,7 +306,7 @@ describe('callCopyModel', () => {
       { prompt: 'x' }
     )
     expect(result.ok).toBe(false)
-    expect(result.error).toContain('insufficient quota')
+    expect(result.error).toBe('api-error: quota-exceeded')
   })
 })
 

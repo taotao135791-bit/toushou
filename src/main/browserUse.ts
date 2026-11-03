@@ -957,20 +957,13 @@ export async function runAction(
       if (!panel) return { ok: false, error: 'panel-not-open' }
       if (!isBrowserPanelVisible()) return { ok: false, error: 'panel-hidden' }
       // Electron can return an empty NativeImage for the first compositor
-      // frame after a WebContentsView is shown or reattached, and a busy
-      // machine (or an occluded window) can delay the first painted frame far
-      // past a second. Nudge one animation frame before each capture and keep
-      // retrying for ~3s; a genuinely unavailable view still fails closed.
-      const capture = async () => {
-        await panel.webContents
-          .executeJavaScript('new Promise((resolve) => requestAnimationFrame(() => resolve(null)))')
-          .catch(() => undefined)
-        return panel.webContents.capturePage()
-      }
-      let image = await capture()
+      // frame after a WebContentsView is shown or reattached. Retry empty
+      // captures for ~3s without waiting on page-owned animation callbacks:
+      // a page can pause those callbacks and would block the browser queue.
+      let image = await panel.webContents.capturePage()
       for (let attempt = 0; image.isEmpty() && attempt < 11; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 250))
-        image = await capture()
+        image = await panel.webContents.capturePage()
       }
       if (image.isEmpty()) return { ok: false, error: 'empty-capture' }
       const dir = path.join(app.getPath('userData'), 'browser-use')

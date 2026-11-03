@@ -80,7 +80,10 @@ export function validateAdsCopyModelInput(raw: {
 /* Identity of a provider, ignoring its display name: two entries with the same
  * protocol, endpoint and model are the same model seen twice. */
 function providerKey(provider: { protocol: string; baseUrl: string; model: string }): string {
-  return `${provider.protocol}|${provider.baseUrl.trim().replace(/\/+$/, '').toLowerCase()}|${provider.model.trim().toLowerCase()}`
+  // URL normalizes the scheme/host (and default port); relay paths and model
+  // identifiers remain case-sensitive. Only ignore trailing endpoint slashes.
+  const endpoint = new URL(provider.baseUrl.trim()).toString().replace(/\/+$/, '')
+  return JSON.stringify([provider.protocol, endpoint, provider.model.trim()])
 }
 
 /** Names are the agent's selector, so a batch must never produce duplicates. */

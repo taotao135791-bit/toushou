@@ -35,15 +35,27 @@ export function normalizeBaseUrl(rawBase: string): string {
   return `${base}/v1`
 }
 
-/** Relay errors often arrive as HTTP 200 with an {error} body — surface them. */
-function apiErrorMessage(error: unknown): string | null {
+/**
+ * Relay errors are untrusted and can echo request headers or API keys.
+ * Classify them inside Main, returning only fixed codes to callers.
+ */
+function apiErrorCode(error: unknown): string | null {
   if (!error) return null
-  if (typeof error === 'string') return error.slice(0, 160)
-  if (typeof error === 'object') {
-    const message = (error as { message?: unknown }).message
-    if (typeof message === 'string' && message.trim()) return message.trim().slice(0, 160)
-  }
-  return 'unknown-api-error'
+  const fields = typeof error === 'string' ? [error]
+    : typeof error === 'object' ? ['code', 'type', 'message'].map(key => (error as Record<string, unknown>)[key]).filter((value): value is string => typeof value === 'string')
+      : []
+  const detail = fields.join(' ').toLowerCase()
+  if (/insufficient.?quota|quota.{0,30}exceed|insufficient.{0,20}(credit|balance)|credit.{0,20}exhaust/.test(detail)) return 'quota-exceeded'
+  if (/rate.?limit|too many requests/.test(detail)) return 'rate-limited'
+  if (/auth|api.?key|invalid.?token/.test(detail)) return 'authentication-failed'
+  if (/model.{0,30}(not.?found|not.?exist|unknown)|unknown.{0,20}model/.test(detail)) return 'model-not-found'
+  return 'provider-error'
+}
+
+/** Never interpolate a provider-controlled stop reason into an error. */
+function stopReasonSuffix(reason: unknown): string {
+  const allowed = new Set(['max_tokens', 'end_turn', 'stop_sequence', 'tool_use', 'pause_turn', 'refusal', 'model_context_window_exceeded', 'stop', 'length', 'tool_calls', 'content_filter', 'function_call'])
+  return typeof reason === 'string' && allowed.has(reason) ? ` (stop=${reason})` : ''
 }
 
 export async function callCopyModel(
@@ -96,7 +108,7 @@ export async function callCopyModel(
         error?: unknown
         stop_reason?: string
       }
-      const apiError = apiErrorMessage(data.error)
+      const apiError = apiErrorCode(data.error)
       if (apiError) return { ok: false, error: `api-error: ${apiError}` }
       const text =
         (data.content ?? [])
@@ -110,7 +122,7 @@ export async function callCopyModel(
       // Thinking models (opus-5+/sonnet-5.5) may spend the whole budget on
       // reasoning and return no text block — say so instead of a mute 'empty'.
       const thinkingOnly = (data.content ?? []).some((block) => block.type === 'thinking')
-      const stop = data.stop_reason ? ` (stop=${data.stop_reason})` : ''
+      const stop = stopReasonSuffix(data.stop_reason)
       return { ok: false, error: `${thinkingOnly ? 'thinking-only' : 'empty-response'}${stop}` }
     }
     const response = await fetchImpl(joinUrl(base, '/chat/completions'), {
@@ -137,17 +149,17 @@ export async function callCopyModel(
       choices?: Array<{ message?: { content?: string; reasoning_content?: string }; finish_reason?: string }>
       error?: unknown
     }
-    const apiError = apiErrorMessage(data.error)
+    const apiError = apiErrorCode(data.error)
     if (apiError) return { ok: false, error: `api-error: ${apiError}` }
     const text = (data.choices?.[0]?.message?.content ?? data.choices?.[0]?.message?.reasoning_content ?? '').trim()
     if (text) return { ok: true, text }
-    const finish = data.choices?.[0]?.finish_reason ? ` (stop=${data.choices?.[0]?.finish_reason})` : ''
+    const finish = stopReasonSuffix(data.choices?.[0]?.finish_reason)
     return { ok: false, error: `empty-response${finish}` }
   } catch (error) {
     if (controller.signal.aborted) {
       return { ok: false, error: request.signal?.aborted ? 'aborted' : 'timeout' }
     }
-    return { ok: false, error: error instanceof Error ? `network: ${error.message}`.slice(0, 160) : 'network-error' }
+    return { ok: false, error: error instanceof SyntaxError ? 'invalid-response' : 'network-error' }
   } finally {
     if (timer) clearTimeout(timer)
     request.signal?.removeEventListener('abort', abortFromCaller)
@@ -180,7 +192,9 @@ export async function discoverModels(
     // GET carries no body (spec-illegal bodies make some relays reject).
     const response = await fetchImpl(url, { method: 'GET', headers })
     if (!response.ok) return { ok: false, error: `http-${response.status}` }
-    const data = JSON.parse(await response.text()) as { data?: Array<{ id?: unknown }> }
+    const data = JSON.parse(await response.text()) as { data?: Array<{ id?: unknown }>; error?: unknown }
+    const apiError = apiErrorCode(data.error)
+    if (apiError) return { ok: false, error: `api-error: ${apiError}` }
     if (!Array.isArray(data.data)) return { ok: false, error: 'unexpected-format' }
     const models = data.data
       .map((item) => (typeof item?.id === 'string' ? item.id.trim() : ''))
@@ -188,6 +202,6 @@ export async function discoverModels(
       .slice(0, 500)
     return models.length > 0 ? { ok: true, models } : { ok: false, error: 'empty-list' }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? `network: ${error.message}`.slice(0, 160) : 'network-error' }
+    return { ok: false, error: error instanceof SyntaxError ? 'invalid-response' : 'network-error' }
   }
 }

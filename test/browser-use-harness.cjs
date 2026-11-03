@@ -107,6 +107,10 @@ app.whenReady().then(async () => {
       shot = await post(envA, { action: 'screenshot' })
     }
     record('A screenshot', shot)
+    // Page-owned animation scheduling must never hold the serialized bridge.
+    await panels.getActiveBrowserPanel().webContents.executeJavaScript('window.requestAnimationFrame = () => 0; null')
+    record('A screenshot without animation frames', await post(envA, { action: 'screenshot' }))
+    record('A snapshot after stalled animation frames', await post(envA, { action: 'snapshot' }))
     win.hide()
 
     // 7. User hides the panel: further actions must fail with panel-hidden.
