@@ -246,12 +246,12 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry, showBoard
             </div>
           )}
           <div
-            className={`rounded-[18px] rounded-br-[6px] px-4 py-2.5 text-[14px] leading-[1.75] text-cream ${
+            className={`user-message-bubble rounded-[18px] rounded-br-[6px] border px-4 py-3 text-[14px] leading-[1.75] text-cream ${
               skillCard ? '' : 'whitespace-pre-wrap'
             } ${
               isSteer
-                ? 'border border-accent/35 bg-accent/[0.12] shadow-[inset_3px_0_0_var(--accent)]'
-                : 'bg-ink-700'
+                ? 'user-message-bubble-steer border-accent/35 bg-accent/[0.12] shadow-[inset_3px_0_0_var(--accent)]'
+                : 'border-line'
             }`}
           >
             {message.images && message.images.length > 0 && (
@@ -351,7 +351,7 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry, showBoard
               <Pencil size={12} />
             </button>
           </div>
-          {copyState === 'failed' && <p role="status" className="mt-1 text-right text-[12px] text-red-500">{copyLabel}</p>}
+          {copyState === 'failed' && <p role="status" className="mt-1 text-right text-[12px] text-red-500">{zh ? '未能复制，请点击“复制”重试。' : 'Could not copy. Select Copy to try again.'}</p>}
           {taskDialogOpen && (
             <SaveMessageToTaskDialog
               content={message.content}
@@ -438,15 +438,16 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry, showBoard
             disabled={copyState === 'copying'}
             title={copyLabel}
             aria-label={copyLabel}
-            className="focus-ring flex min-h-7 items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint opacity-0 transition-colors hover:bg-overlay hover:text-cream group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-wait disabled:opacity-60"
+            aria-busy={copyState === 'copying'}
+            className="focus-ring flex min-h-8 min-w-[76px] items-center justify-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint transition-colors hover:bg-overlay hover:text-cream disabled:cursor-wait disabled:opacity-60"
           >
             {copyState === 'copying' ? <Loader2 size={12} className="animate-spin" /> : copyState === 'copied' ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
-            {copyLabel}
+            {copyState === 'copied' ? t('msg.copied') : t('msg.copy')}
           </button>
           {showBoardAction && <button
             onClick={() => setBoardDialogOpen(true)}
             title={t('boards.chat.saveToBoard')}
-            className="focus-ring flex min-h-7 items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
+            className="focus-ring flex min-h-8 items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
           >
             <LayoutDashboard size={12} />
             {t('boards.chat.saveToBoard')}
@@ -454,7 +455,7 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry, showBoard
           {boardSaved && <span role="status" className="text-[12px] text-emerald-500">{t('boards.chat.saved')}</span>}
         </div>
       )}
-      {copyState === 'failed' && <p role="status" className="mt-1 text-[12px] text-red-500">{copyLabel}</p>}
+      {copyState === 'failed' && <p role="status" className="mt-1 text-[12px] text-red-500">{zh ? '未能复制，请点击“复制”重试。' : 'Could not copy. Select Copy to try again.'}</p>}
       {boardDialogOpen && (
         <SaveMessageToBoardDialog
           content={visibleContent}

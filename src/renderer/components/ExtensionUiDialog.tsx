@@ -234,7 +234,7 @@ export default function ExtensionUiDialog({
                 <button
                   onClick={() => answer({ confirmed: true })}
                   disabled={sending}
-                  className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition hover:bg-accent-bright"
+                  className="focus-ring rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-wait disabled:opacity-50"
                 >
                   {t('uiDialog.allow')}
                 </button>
@@ -282,7 +282,7 @@ export default function ExtensionUiDialog({
                 <button
                   onClick={() => answer({ value: text })}
                   disabled={sending}
-                  className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white transition hover:bg-accent-bright"
+                  className="focus-ring rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-wait disabled:opacity-50"
                 >
                   {t('uiDialog.submit')}
                 </button>

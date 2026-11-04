@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import BrowserPage from '../pages/BrowserPage'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { SaveMessageToTaskDialog } from '../components/SaveMessageToTaskDialog'
+import { SaveMessageToBoardDialog } from '../components/SaveMessageToBoardDialog'
+import { useAppStore } from '../store'
 import { useModalBoundary } from './modalBoundary'
 import { WidgetBody } from '../pages/boards/WidgetBody'
 import AdsCopyModelsSection from '../components/AdsCopyModelsSection'
@@ -24,6 +27,9 @@ const widget = (id:string,type:BoardWidget['type'],datasetId:string,metric:strin
 function Fixture() {
   const [open, setOpen] = useState(false)
   const [nested, setNested] = useState(false)
+  const [taskOpen, setTaskOpen] = useState(false)
+  const [taskClosed, setTaskClosed] = useState(0)
+  const [boardOpen, setBoardOpen] = useState(false)
   return <MemoryRouter><button id="opener" onClick={() => setOpen(true)}>open</button><button id="outside">outside</button>
     <div id="tt-mixed"><WidgetBody widget={{id:'tt-mixed',type:'tt-reading',title:'TT',layout:{x:0,y:0,w:4,h:4},config:{advertiserIds:'mixed',range:'1'}}} datasets={[]} boardId="b" onConfigChange={()=>{}} /></div>
     <div id="tt-backup"><WidgetBody widget={{id:'tt-backup',type:'tt-reading',title:'TT',layout:{x:0,y:0,w:4,h:4},config:{advertiserIds:'backup',range:'1'}}} datasets={[]} boardId="b" onConfigChange={()=>{}} /></div>
@@ -32,9 +38,11 @@ function Fixture() {
     <div id="money-chart"><WidgetBody widget={widget('two','chart-line','mixed','消耗')} datasets={[mixed]} boardId="b" onConfigChange={()=>{}} /></div>
     <div id="weighted-ctr"><WidgetBody widget={widget('three','counter','usd','点击率')} datasets={[usd]} boardId="b" onConfigChange={()=>{}} /></div>
     <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 560 }}><BrowserPage embedded initialUrl="https://example.invalid/" /></div>
-    <div className="page-enter" style={{position:'absolute',left:260,top:0,width:500,height:768}}>{open && <ConfirmDialog request={{ title: 'confirm fixture', body: 'fixture', onConfirm: () => undefined }} onClose={() => setOpen(false)} />}</div>
+    <div className="page-enter msg-row" style={{position:'absolute',left:260,top:0,width:500,height:768}}>{open && <ConfirmDialog request={{ title: 'confirm fixture', body: 'fixture', onConfirm: () => undefined }} onClose={() => setOpen(false)} />}{document.body.dataset.clip === '1' && <div id="clipped-probe" className="fixed inset-0" />}</div>
+    <div className="msg-row" style={{position:'absolute',left:50,top:600,width:400,height:100,overflow:'hidden'}}><button id="task-opener" onClick={() => setTaskOpen(true)}>task</button><button id="force-task-unmount" onClick={() => setTaskOpen(false)}>unmount</button><span id="task-close-count">{taskClosed}</span><button id="board-opener" onClick={() => setBoardOpen(true)}>board</button>{taskOpen && <SaveMessageToTaskDialog content="synthetic task" onClose={() => { setTaskClosed(n => n + 1); setTaskOpen(false) }} />}{boardOpen && <SaveMessageToBoardDialog content="synthetic note" onClose={() => setBoardOpen(false)} onSaved={() => setBoardOpen(false)} />}</div>
     {open && <button id="nested-opener" onClick={() => setNested(true)}>nested opener</button>}
     {nested && <Nested close={() => setNested(false)} />}
   </MemoryRouter>
 }
+useAppStore.getState().setRecentWorkspaces([{ id: 'fixture-project', displayPath: '/synthetic/project' }])
 createRoot(document.getElementById('root')!).render(<Fixture />)

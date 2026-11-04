@@ -13,7 +13,7 @@ describe('Facebook today account workflow', () => {
       const binary = process.platform === 'darwin' ? path.join(root, 'dist/Electron.app/Contents/MacOS/Electron') : path.join(root, process.platform === 'win32' ? 'dist/electron.exe' : 'dist/electron')
       let build: { buildSync: (opts: Record<string, unknown>) => unknown }
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
-      build.buildSync({ entryPoints: [path.resolve(__dirname, 'facebookToday.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', alias: { '@shared': path.resolve(__dirname, '../../../shared') } })
+      build.buildSync({ entryPoints: [path.resolve(__dirname, 'facebookToday.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl', '.svg': 'dataurl' }, alias: { '@shared': path.resolve(__dirname, '../../../shared') } })
       const css = spawnSync(process.execPath, [require_.resolve('tailwindcss/lib/cli.js'), '-i', 'src/renderer/index.css', '-o', path.join(dir, 'fixture.css')], { cwd: path.resolve(__dirname, '../../../..'), encoding: 'utf8', timeout: 15000 })
       expect(css.status, css.stderr).toBe(0)
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE

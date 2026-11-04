@@ -17,7 +17,7 @@ it('keeps product selection separate from export and isolates verified readings 
       return
     }
     const esbuild = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) as { buildSync(options: Record<string, unknown>): void }
-    esbuild.buildSync({ entryPoints: [path.resolve(__dirname, '../../../test/fb-report-product-ui.tsx')], bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', outfile: path.join(dir, 'ui.js'), define: { 'process.env.NODE_ENV': '"test"' } })
+    esbuild.buildSync({ entryPoints: [path.resolve(__dirname, '../../../test/fb-report-product-ui.tsx')], bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl', '.svg': 'dataurl' }, outfile: path.join(dir, 'ui.js'), define: { 'process.env.NODE_ENV': '"test"' } })
     writeFileSync(path.join(dir, 'index.html'), '<!doctype html><meta charset="utf-8"><div id="root"></div><script src="ui.js"></script>')
     const env: NodeJS.ProcessEnv = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
     const result = spawnSync(binary, [path.resolve(__dirname, '../../../test/fb-report-product-harness.cjs'), dir], { encoding: 'utf8', timeout: 20_000, env })

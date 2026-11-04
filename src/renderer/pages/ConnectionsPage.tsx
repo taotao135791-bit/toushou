@@ -10,6 +10,7 @@ import AdsCopyModelsSection from '../components/AdsCopyModelsSection'
 import TikTokAdsConnectionCard from '../components/TikTokAdsConnectionCard'
 import AppsFlyerConnectionCard from '../components/AppsFlyerConnectionCard'
 import FigmaConnectionCard from '../components/FigmaConnectionCard'
+import BrandIcon from '../components/BrandIcon'
 
 const emptySnapshot: FeishuConnectionSnapshot = {
   definition: {
@@ -218,7 +219,7 @@ export default function ConnectionsPage() {
           <section className="overflow-hidden rounded-2xl border border-line bg-ink-850" aria-labelledby="feishu-connection-heading">
             <div className="px-5 pt-5">
               <div className="flex min-w-0 items-center gap-3">
-                <div aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#3370ff] text-[20px] font-semibold text-white">飞</div>
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-overlay"><BrandIcon brand="feishu" size={32} /></div>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 id="feishu-connection-heading" className="text-[15px] font-semibold text-cream">{t('connections.feishu')}</h2>

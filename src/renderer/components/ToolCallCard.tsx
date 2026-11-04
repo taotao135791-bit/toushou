@@ -2,9 +2,12 @@ import { memo, useState } from 'react'
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import type { ToolCallRecord } from '../lib/toolCalls'
 import { presentToolCall } from '../lib/toolPresentation'
+import { toolBrandForCall, websiteSourceForCall } from '../lib/toolBrand'
 import { useAppStore } from '../store'
 import { getToolRenderer } from './tools'
 import GenericToolContent from './tools/generic'
+import BrandIcon from './BrandIcon'
+import WebsiteIcon from './WebsiteIcon'
 
 interface ToolCallCardProps { toolCall: ToolCallRecord }
 
@@ -13,6 +16,8 @@ function ToolCallCard({ toolCall }: ToolCallCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [rawOpen, setRawOpen] = useState(false)
   const presentation = presentToolCall(toolCall, language)
+  const brand = toolBrandForCall(toolCall)
+  const website = websiteSourceForCall(toolCall)
   const Content = getToolRenderer(toolCall.tool)
 
   // Internal metadata has no document or account action to inspect.
@@ -34,8 +39,9 @@ function ToolCallCard({ toolCall }: ToolCallCardProps) {
       >
         {presentation.status === 'running' ? <Loader2 size={12} className="shrink-0 animate-spin text-cream-faint" aria-hidden="true" /> :
           <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${presentation.status === 'failed' ? 'bg-red-500' : presentation.status === 'completed' ? 'bg-emerald-500' : 'bg-cream-faint'}`} />}
+        {website ? <WebsiteIcon url={website.url} hostname={website.hostname} size={16} /> : <BrandIcon brand={brand} size={16} />}
         <span className="min-w-0 truncate text-[13px] font-medium text-cream">{presentation.label}</span>
-        {presentation.summary && <span className="min-w-0 flex-1 truncate text-[12px] text-cream-faint">{presentation.summary}</span>}
+        {(website || presentation.summary) && <span className="min-w-0 flex-1 truncate text-[12px] text-cream-faint">{website?.hostname ?? presentation.summary}</span>}
         <span className="ml-auto shrink-0 whitespace-nowrap text-[12px] text-cream-faint">{presentation.statusLabel}</span>
         {expanded ? <ChevronDown size={13} className="shrink-0 text-cream-faint" aria-hidden="true" /> : <ChevronRight size={13} className="shrink-0 text-cream-faint" aria-hidden="true" />}
       </button>

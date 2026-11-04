@@ -150,6 +150,7 @@ export const IPC_CHANNELS = {
   DIALOG_SELECT_IMAGE: 'dialog:select-image',
   SHELL_SHOW_CLI_SETTINGS: 'shell:show-cli-settings',
   SHELL_OPEN_EXTERNAL_URL: 'shell:open-external-url',
+  SITE_ICON_GET: 'site-icon:get',
   OMP_RESPOND_UI: 'omp:respond-ui',
   OMP_SET_MODEL: 'omp:set-model',
   OMP_SESSION_STATS: 'omp:session-stats',

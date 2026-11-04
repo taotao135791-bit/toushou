@@ -6,6 +6,7 @@ import { ProjectRegistry, validProjectName } from './projectRegistry'
 import { discoverProjectSessionFiles } from './projectSessionFiles'
 import { pathsOverlap, isProjectDeletionInProgress } from './projectDeletionGate'
 import { getChatBoardPreview } from './chatBoardPreview'
+import { siteIconService } from './siteIcon'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../shared/constants'
@@ -2431,6 +2432,8 @@ export function registerIpc() {
     shell.showItemInFolder(settingsFile)
     return true
   })
+
+  ipcMain.handle(IPC_CHANNELS.SITE_ICON_GET, (_event, hostname: unknown) => siteIconService.get(hostname))
 
   ipcMain.handle(IPC_CHANNELS.SHELL_OPEN_EXTERNAL_URL, async (_event, value: unknown) => {
     const url = safeExternalUrl(value)

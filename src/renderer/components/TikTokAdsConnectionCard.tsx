@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, ArrowUpRight, CheckCircle2, LoaderCircle, RefreshCw, Unplug } from 'lucide-react'
 import { TikTokAdsConnectionSnapshot } from '@shared/connections'
 import { useT } from '../i18n'
+import BrandIcon from './BrandIcon'
 
 const emptySnapshot: TikTokAdsConnectionSnapshot = {
   definition: {
@@ -183,12 +184,7 @@ export default function TikTokAdsConnectionCard() {
         <div className="min-w-0 flex-1 basis-[260px]">
           <div className="flex min-h-10 items-center gap-3">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-overlay text-cream">
-            <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M16.6 5.82A4.28 4.28 0 0 1 15.54 3h-3.09v12.4a2.59 2.59 0 1 1-1.84-2.48V9.77a5.68 5.68 0 1 0 4.93 5.63V8.87a7.35 7.35 0 0 0 4.3 1.38V7.16a4.28 4.28 0 0 1-3.24-1.34Z"
-              />
-            </svg>
+            <BrandIcon brand="tiktok" size={32} />
           </span>
             <h2 id="tiktok-connection-heading" className="text-[15px] font-semibold text-cream">{t('connections.tiktok')}</h2>
           </div>

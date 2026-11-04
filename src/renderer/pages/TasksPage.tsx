@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
 import { ScheduledTask } from '@shared/types'
@@ -52,7 +52,7 @@ function groupByProject(tasks: ScheduledTask[]): TaskGroup[] {
   return ungrouped ? [...grouped, { cwd: '', tasks: ungrouped }] : grouped
 }
 
-const btn = 'rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors'
+const btn = 'focus-ring rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors'
 const input = 'mt-1 w-full rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50'
 
 /**
@@ -115,6 +115,9 @@ export default function TasksPage() {
   const recentWorkspaces = useAppStore((s) => s.recentWorkspaces)
   const language = useAppStore((s) => s.language)
   const [modalOpen, setModalOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const saveInFlight = useRef(false)
+  const modalGeneration = useRef(0)
   /** Task being edited; null = creating a new one. */
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null)
   const [running, setRunning] = useState<string | null>(null)
@@ -140,6 +143,7 @@ export default function TasksPage() {
   }
 
   const openModal = () => {
+    modalGeneration.current += 1
     setEditingTask(null)
     setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', skillId: '' }))
     setModalOpen(true)
@@ -147,6 +151,7 @@ export default function TasksPage() {
 
   /** Edit keeps the identity (id/createdAt) and pre-fills user-owned fields. */
   const openEdit = (task: ScheduledTask) => {
+    modalGeneration.current += 1
     setEditingTask(task)
     setForm({
       name: task.name,
@@ -172,7 +177,7 @@ export default function TasksPage() {
   // used to appear twice).
 
   const handleSave = async () => {
-    if (!form.name.trim() || !form.prompt.trim() || !form.cwd) return
+    if (saveInFlight.current || !form.name.trim() || !form.prompt.trim() || !form.cwd) return
     const schedule = form.scheduleType === 'daily'
       ? { type: 'daily' as const, time: form.time }
       : form.scheduleType === 'weekly'
@@ -192,18 +197,24 @@ export default function TasksPage() {
       ...(form.skillId ? { skillId: form.skillId } : {}),
       ...(form.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
     }
-    let result: Awaited<ReturnType<typeof window.electronAPI.saveTask>>
+    // A second click must not mint another task id before React paints disabled.
+    saveInFlight.current = true
+    setSaving(true)
+    const generation = modalGeneration.current
     try {
-      result = await window.electronAPI.saveTask(task)
+      const result = await window.electronAPI.saveTask(task)
+      if (result.ok && result.task) {
+        // A late save may finish after Cancel and opening another task.
+        if (modalGeneration.current === generation) setModalOpen(false)
+      } else {
+        // Keep the modal open with the user's draft intact.
+        showNotice('tasks.saveFailed')
+      }
     } catch {
-      result = { ok: false }
-    }
-    if (result.ok && result.task) {
-      setModalOpen(false)
-    } else {
-      // Keep the modal open with the user's draft intact — closing silently
-      // would make the task they just wrote vanish without a trace.
       showNotice('tasks.saveFailed')
+    } finally {
+      saveInFlight.current = false
+      setSaving(false)
     }
   }
 
@@ -305,7 +316,7 @@ export default function TasksPage() {
       <header className="app-drag flex h-12 shrink-0 items-center gap-2.5 border-b border-line px-4">
         <Clock size={15} className="text-accent" />
         <span className="text-[13px] font-medium text-cream">{t('tasks.title')}</span>
-        <button onClick={openModal} className={`${btn} ml-auto flex items-center gap-1 bg-accent text-white hover:bg-accent-bright`}>
+        <button onClick={openModal} className={`${btn} ml-auto flex items-center gap-1 bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright`}>
           <Plus size={12} /> {t('tasks.create')}
         </button>
       </header>
@@ -316,7 +327,7 @@ export default function TasksPage() {
               <Clock size={28} className="mb-3 text-cream-faint/40" />
               <p className="text-[14px] font-medium text-cream-dim">{t('tasks.empty.title')}</p>
               <p className="mt-1 max-w-xs text-[12px] leading-5 text-cream-faint">{t('tasks.empty.subtitle')}</p>
-              <button onClick={openModal} className={`${btn} mt-4 bg-accent text-white hover:bg-accent-bright`}>
+              <button onClick={openModal} className={`${btn} mt-4 bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright`}>
                 <Plus size={12} /> {t('tasks.create')}
               </button>
             </div>
@@ -477,7 +488,7 @@ export default function TasksPage() {
               </span>
               <button onClick={() => setModalOpen(false)} className="text-cream-faint hover:text-cream"><Plus size={14} className="rotate-45" /></button>
             </div>
-            <div className="space-y-3">
+            <fieldset disabled={saving} className="min-w-0 space-y-3">
               {!editingTask && (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[11px] text-cream-faint">{t('tasks.template')}</span>
@@ -577,16 +588,16 @@ export default function TasksPage() {
                   type="checkbox"
                   checked={form.notifyOnComplete}
                   onChange={(e) => setForm(f => ({ ...f, notifyOnComplete: e.target.checked }))}
-                  className="h-3.5 w-3.5 accent-[var(--accent)]"
+                  className="focus-ring h-3.5 w-3.5 accent-accent"
                 />
                 {t('tasks.notifyOnComplete')}
               </label>
-            </div>
+            </fieldset>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setModalOpen(false)} className={`${btn} border border-line text-cream-dim hover:text-cream`}>{t('home.cancel')}</button>
-              <button onClick={() => void handleSave()} disabled={!form.name.trim() || !form.prompt.trim() || !form.cwd}
-                className={`${btn} bg-accent text-white disabled:opacity-40`}>
-                {editingTask ? t('tasks.save') : t('tasks.create')}
+              <button onClick={() => void handleSave()} disabled={saving || !form.name.trim() || !form.prompt.trim() || !form.cwd} aria-busy={saving}
+                className={`${btn} bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright disabled:cursor-not-allowed disabled:opacity-40`}>
+                {saving ? t('settings.saving') : editingTask ? t('tasks.save') : t('tasks.create')}
               </button>
             </div>
           </div>

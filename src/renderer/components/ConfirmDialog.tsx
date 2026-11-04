@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useModalBoundary } from '../lib/modalBoundary'
 import { useT } from '../i18n'
 
@@ -51,7 +52,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmDialogRequ
 
   useModalBoundary(dialogRef, true, () => dismiss(false))
 
-  return (
+  return createPortal(
     <div className={`dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 ${closing ? 'is-closing' : ''}`}>
       <div
         ref={dialogRef}
@@ -68,22 +69,25 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmDialogRequ
           <button
             autoFocus
             onClick={() => dismiss(false)}
-            className="rounded-full border border-line px-3 py-1 text-[11.5px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
+            disabled={closing}
+            className="focus-ring rounded-full border border-line px-3 py-1 text-[11.5px] text-cream-dim transition-colors hover:border-ink-600 hover:text-cream disabled:cursor-default disabled:opacity-60"
           >
             {t('common.cancel')}
           </button>
           <button
             onClick={() => dismiss(true)}
+            disabled={closing}
             className={
               request.danger
-                ? 'rounded-full bg-red-500 px-3 py-1 text-[11.5px] font-medium text-white transition hover:bg-red-600'
-                : 'rounded-full bg-cream px-3 py-1 text-[11.5px] font-medium text-ink-950 transition hover:opacity-90'
+                ? 'focus-ring rounded-full bg-red-600 px-3 py-1 text-[11.5px] font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-default disabled:opacity-60'
+                : 'focus-ring rounded-full bg-cream px-3 py-1 text-[11.5px] font-medium text-ink-950 transition-colors hover:opacity-90 disabled:cursor-default disabled:opacity-60'
             }
           >
             {request.confirmLabel ?? t('common.delete')}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

@@ -15,7 +15,7 @@ describe('stable portaled menus in Electron', () => {
       if (!existsSync(electron)) throw new Error('Electron unavailable')
       let build: { buildSync: (options: Record<string, unknown>) => unknown }
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
-      build.buildSync({ entryPoints: [path.resolve(__dirname, 'MenuPortal.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic' })
+      build.buildSync({ entryPoints: [path.resolve(__dirname, 'MenuPortal.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl', '.svg': 'dataurl' } })
       const cssPath = path.resolve(__dirname, '../index.css')
       const css = await require_('postcss')([require_('tailwindcss')(), require_('autoprefixer')()]).process(readFileSync(cssPath, 'utf8'), { from: cssPath })
       writeFileSync(path.join(dir, 'fixture.css'), css.css)

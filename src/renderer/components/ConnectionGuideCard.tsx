@@ -20,7 +20,7 @@ export default function ConnectionGuideCard({ kinds }: { kinds: ConnectionGuideK
       <button
         type="button"
         onClick={() => navigate('/connections')}
-        className="flex shrink-0 items-center gap-1.5 rounded-full bg-accent px-3.5 py-1.5 text-[12px] font-medium text-white shadow-card transition hover:bg-accent-bright"
+        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-full bg-accent px-3.5 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))] shadow-card transition-colors hover:bg-accent-bright"
       >
         {t('msg.guideGo')}
       </button>

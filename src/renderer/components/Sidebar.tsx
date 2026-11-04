@@ -35,7 +35,7 @@ import { cleanSessionName } from '@shared/promptTitle'
 import { useModalBoundary } from '../lib/modalBoundary'
 import { finishHistoryResume, historyResumeGrant, openGlobalHistory } from '../lib/historyResume'
 import { ConfirmDialog } from './ConfirmDialog'
-import { runLanguageTransition, runThemeTransition } from '../lib/themeTransition'
+import { runThemeTransition } from '../lib/themeTransition'
 import {
   recordDurableUuid,
   recordsForWorkspace,
@@ -109,7 +109,6 @@ export default function Sidebar() {
   const setCurrentSessionId = useAppStore((s) => s.setCurrentSessionId)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const setSessions = useAppStore((s) => s.setSessions)
-  const setLanguage = useAppStore((s) => s.setLanguage)
   const setTheme = useAppStore((s) => s.setTheme)
   const togglePinSession = useAppStore((s) => s.togglePinSession)
   const setSessionArchived = useAppStore((s) => s.setSessionArchived)
@@ -1193,8 +1192,8 @@ export default function Sidebar() {
               }`}
             >
               <span
-                className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-cream transition-all ${
-                  showArchived ? 'left-[12px]' : 'left-0.5'
+                className={`absolute top-0.5 h-2.5 w-2.5 rounded-full transition-[left,background-color] ${
+                  showArchived ? 'left-[12px] bg-ink-950' : 'left-0.5 bg-cream'
                 }`}
               />
             </span>
@@ -1260,33 +1259,22 @@ export default function Sidebar() {
         <button
           onClick={() => navigate('/settings')}
           title={t('sidebar.settings')}
-          className={`focus-ring rounded-md p-1.5 transition-colors ${
+          aria-label={t('sidebar.settings')}
+          aria-current={location.pathname === '/settings' ? 'page' : undefined}
+          className={`focus-ring flex min-h-8 items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] transition-colors ${
             location.pathname === '/settings'
               ? 'bg-overlay-strong text-cream'
               : 'text-cream-faint hover:bg-overlay hover:text-cream'
           }`}
         >
           <Settings size={15} />
+          <span>{t('sidebar.settings')}</span>
         </button>
-        <div className="ml-0.5 flex rounded-full border border-line bg-ink-800 p-0.5">
-          {(['zh', 'en'] as const).map((lang) => (
-            <button
-              key={lang}
-              onClick={(e) => runLanguageTransition(() => setLanguage(lang), { x: e.clientX, y: e.clientY })}
-              className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
-                language === lang
-                  ? 'border-line bg-ink-850 text-cream shadow-card'
-                  : 'border-transparent text-cream-dim hover:text-cream'
-              }`}
-            >
-              {lang === 'zh' ? t('settings.languageZh') : t('settings.languageEn')}
-            </button>
-          ))}
-        </div>
         <button
           onClick={(e) => runThemeTransition(() => setTheme(theme === 'dark' ? 'light' : 'dark'), { x: e.clientX, y: e.clientY }, theme === 'dark' ? 'light' : 'dark')}
           title={t('sidebar.theme')}
-          className="focus-ring ml-auto rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
+          aria-label={t('sidebar.theme')}
+          className="focus-ring ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
         >
           <span key={theme} className="theme-icon">{theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}</span>
         </button>

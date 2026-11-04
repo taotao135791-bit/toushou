@@ -46,7 +46,7 @@ function Note({ children }: { children: React.ReactNode }) {
 }
 
 const buttonCls =
-  'flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition-colors hover:border-ink-600 hover:text-cream disabled:opacity-40'
+  'focus-ring flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition-colors hover:border-ink-600 hover:text-cream disabled:opacity-40'
 
 const PERMISSION_MODES: { value: PermissionMode; label: I18nKey; note: I18nKey }[] = [
   { value: 'ask', label: 'settings.permissions.ask', note: 'settings.permissionsNote.ask' },
@@ -247,7 +247,7 @@ export default function SettingsPage() {
   }
 
   const seg = (active: boolean) =>
-    `icon-pop flex h-[26px] items-center rounded-full border px-2.5 text-[12px] font-medium transition-colors ${
+    `focus-ring flex min-h-8 items-center rounded-full border px-2.5 text-[12px] font-medium transition-colors ${
       active
         ? 'border-line bg-ink-850 text-cream shadow-card'
         : 'border-transparent text-cream-dim hover:text-cream'
@@ -310,15 +310,28 @@ export default function SettingsPage() {
           </Section>
 
           <Section title={t('settings.appearance')}>
+            <Row label={`${t('settings.language')} / ${language === 'zh' ? 'Language' : '语言'}`}>
+              <div className="flex items-center gap-2">
+                <Languages size={14} className="text-cream-faint" aria-hidden="true" />
+                <div role="group" aria-label={t('settings.language')} className="flex rounded-full border border-line bg-ink-800 p-0.5">
+                  <button type="button" aria-pressed={language === 'zh'} onClick={(e) => runLanguageTransition(() => setLanguage('zh'), { x: e.clientX, y: e.clientY })} className={seg(language === 'zh')}>
+                    {t('settings.languageZh')}
+                  </button>
+                  <button type="button" aria-pressed={language === 'en'} onClick={(e) => runLanguageTransition(() => setLanguage('en'), { x: e.clientX, y: e.clientY })} className={seg(language === 'en')}>
+                    {t('settings.languageEn')}
+                  </button>
+                </div>
+              </div>
+            </Row>
             <Row label={t('settings.theme')}>
-              <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                <button onClick={(e) => runThemeTransition(() => setTheme('light'), { x: e.clientX, y: e.clientY }, 'light')} className={seg(theme === 'light')}>
+              <div role="group" aria-label={t('settings.theme')} className="flex rounded-full border border-line bg-ink-800 p-0.5">
+                <button type="button" aria-pressed={theme === 'light'} onClick={(e) => runThemeTransition(() => setTheme('light'), { x: e.clientX, y: e.clientY }, 'light')} className={seg(theme === 'light')}>
                   <span className="flex items-center gap-1">
                     <Sun size={11} />
                     {t('settings.themeLight')}
                   </span>
                 </button>
-                <button onClick={(e) => runThemeTransition(() => setTheme('dark'), { x: e.clientX, y: e.clientY }, 'dark')} className={seg(theme === 'dark')}>
+                <button type="button" aria-pressed={theme === 'dark'} onClick={(e) => runThemeTransition(() => setTheme('dark'), { x: e.clientX, y: e.clientY }, 'dark')} className={seg(theme === 'dark')}>
                   <span className="flex items-center gap-1">
                     <Moon size={11} />
                     {t('settings.themeDark')}
@@ -337,19 +350,6 @@ export default function SettingsPage() {
                   </button>
                 </div>
                 <span className="text-[11px] text-cream-faint">{t('settings.devChromeHint')}</span>
-              </div>
-            </Row>
-            <Row label={t('settings.language')}>
-              <div className="flex items-center gap-2">
-                <Languages size={13} className="text-cream-faint" />
-                <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                  <button onClick={(e) => runLanguageTransition(() => setLanguage('zh'), { x: e.clientX, y: e.clientY })} className={seg(language === 'zh')}>
-                    中文
-                  </button>
-                  <button onClick={(e) => runLanguageTransition(() => setLanguage('en'), { x: e.clientX, y: e.clientY })} className={seg(language === 'en')}>
-                    English
-                  </button>
-                </div>
               </div>
             </Row>
           </Section>

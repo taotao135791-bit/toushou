@@ -19,7 +19,7 @@ describe('AppsFlyer connection card in Electron', () => {
       esbuild.buildSync({
         stdin: { contents: fixture, resolveDir: __dirname, sourcefile: 'appsflyer-fixture.tsx', loader: 'tsx' },
         outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
-        alias: { '@shared': path.resolve(__dirname, '../../shared') }, loader: { '.svg': 'dataurl' }
+        alias: { '@shared': path.resolve(__dirname, '../../shared') }, loader: { '.png': 'dataurl', '.svg': 'dataurl' }
       })
       const harness = path.join(dir, 'harness.cjs')
       writeFileSync(harness, harnessSource)

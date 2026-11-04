@@ -125,6 +125,6 @@ export default function BoardHighlightsProposalBlock({ raw }: { raw: string }) {
       })}</div>}
     </div>)}
     {actionError && <p role="alert" className="mt-2 text-[12px] text-red-500">{zh ? '操作未完成，请重新核验。' : 'Action failed; check the evidence again.'}</p>}
-    <div className="mt-3 flex items-center gap-3"><button type="button" disabled={!valid || busy || applied} onClick={() => void apply()} className="focus-ring rounded-full bg-accent px-3 py-1.5 text-[12px] text-white disabled:opacity-40">{applied ? (zh ? '已加入看板' : 'Added to board') : (zh ? '确认并加入看板' : 'Confirm and add to board')}</button><span role="status" className="text-[12px] text-cream-faint">{valid ? (zh ? '数字引用已核对' : 'Cited values checked') : ''}</span></div>
+    <div className="mt-3 flex items-center gap-3"><button type="button" disabled={!valid || busy || applied} onClick={() => void apply()} className="focus-ring rounded-full bg-accent px-3 py-1.5 text-[12px] text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-not-allowed disabled:opacity-40">{applied ? (zh ? '已加入看板' : 'Added to board') : (zh ? '确认并加入看板' : 'Confirm and add to board')}</button><span role="status" className="text-[12px] text-cream-faint">{valid ? (zh ? '数字引用已核对' : 'Cited values checked') : ''}</span></div>
   </section>
 }

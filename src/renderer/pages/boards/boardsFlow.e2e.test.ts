@@ -15,7 +15,7 @@ describe('board creation flow in Electron', () => {
       if (!existsSync(electron)) throw new Error('Electron unavailable')
       let build: { buildSync: (opts: Record<string, unknown>) => unknown }
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
-      build.buildSync({ entryPoints: [path.resolve(__dirname, 'boardsFlow.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.css': 'empty' }, alias: { '@shared': path.resolve(__dirname, '../../../shared') } })
+      build.buildSync({ entryPoints: [path.resolve(__dirname, 'boardsFlow.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.css': 'empty', '.png': 'dataurl', '.svg': 'dataurl' }, alias: { '@shared': path.resolve(__dirname, '../../../shared') } })
       const postcss = require_('postcss')
       const cssPath = path.resolve(__dirname, '../../index.css')
       const css = await postcss([require_('tailwindcss')(), require_('autoprefixer')()]).process(readFileSync(cssPath, 'utf8'), { from: cssPath })
@@ -30,6 +30,8 @@ describe('board creation flow in Electron', () => {
       expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
       expect(data.initial).toMatchObject({ today: true, activeBoard: null, toolbar: false, menu: false })
       expect(data.initialTodayReads).toBe(0)
+      expect(data.todayScroll).toEqual({ singleScroll: true, atCanvasEdge: true, contentExtends: true })
+      expect(data.createdScrollTop).toBe(0)
       expect(data.created).toMatchObject({ today: false, activeBoard: 'TikTok panorama', toolbar: true, menu: true, ttNotice: true, noReading: false, connect: true })
       expect(data.created.saved[0]).toMatchObject({ name: 'TikTok panorama', types: expect.arrayContaining(['tt-reading', 'counter', 'chart-line']) })
       expect(data.created.saved[0]).toMatchObject({ masterScope: { range: 'last7' }, verifiedCards: 7 })

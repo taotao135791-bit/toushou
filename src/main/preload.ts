@@ -137,6 +137,7 @@ import {
   PanelOpenRequest
 } from '../shared/types'
 import { KanbanSaveResult } from '../shared/boards'
+import type { SiteIconResult } from '../shared/siteIcon'
 import { DatasetImportResult, DatasetMutationResult } from '../shared/datasets'
 import {
   OfficeOpenDialogResult,
@@ -244,6 +245,8 @@ export interface ElectronAPI {
   installScaffoldedPlugin: (outputId: string) => Promise<PackageActionResult>
   /** Safely open an ordinary HTTP(S) URL in the system browser. */
   openExternalUrl: (url: string) => Promise<{ ok: boolean; error?: string }>
+  /** Bounded, credential-free favicon lookup for a public hostname. */
+  getSiteIcon: (hostname: string) => Promise<SiteIconResult>
   /** Show the in-app browser panel over the given bounds, optionally loading a URL. */
   browserShow: (bounds: BrowserPanelBounds, url?: string) => Promise<{ ok: boolean; error?: string }>
   /** Detach the browser panel (its navigation state is preserved). */
@@ -741,6 +744,7 @@ const api: ElectronAPI = {
   installScaffoldedPlugin: (outputId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.PLUGINS_SCAFFOLD_INSTALL, outputId),
   openExternalUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.SHELL_OPEN_EXTERNAL_URL, url),
+  getSiteIcon: (hostname: string) => ipcRenderer.invoke(IPC_CHANNELS.SITE_ICON_GET, hostname),
   browserShow: (bounds: BrowserPanelBounds, url?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SHOW, bounds, url),
   browserHide: () => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HIDE),

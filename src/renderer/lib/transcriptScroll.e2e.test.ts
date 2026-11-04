@@ -15,7 +15,7 @@ describe('transcript reading position in Electron', () => {
       if (!existsSync(electron)) throw new Error('Electron unavailable')
       let build: { buildSync: (options: Record<string, unknown>) => unknown }
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
-      build.buildSync({ entryPoints: [path.resolve(__dirname, 'transcriptScroll.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic' })
+      build.buildSync({ entryPoints: [path.resolve(__dirname, 'transcriptScroll.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl', '.svg': 'dataurl' } })
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
       const result = spawnSync(electron, [path.resolve(__dirname, 'transcriptScroll.harness.cjs'), dir], { encoding: 'utf8', timeout: 40000, env })
       expect(result.error).toBeUndefined()

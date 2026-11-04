@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, ArrowUpRight, CheckCircle2, LoaderCircle, RefreshCw, Unplug } from 'lucide-react'
 import type { AppsFlyerConnectionSnapshot } from '@shared/connections'
-import appsflyerLogo from '../assets/appsflyer-logo.svg'
 import { useT } from '../i18n'
+import BrandIcon from './BrandIcon'
 
-/** The logo is the unmodified SVG used on AppsFlyer's official security page:
- * https://www.appsflyer.com/wp-content/uploads/2021/02/AppsFlyer-logo.svg */
+/** Brand artwork is bundled from official resources; connection data remains local. */
 export default function AppsFlyerConnectionCard() {
   const t = useT()
   const [snapshot, setSnapshot] = useState<AppsFlyerConnectionSnapshot | null>(null)
@@ -80,10 +79,10 @@ export default function AppsFlyerConnectionCard() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1 basis-[260px]">
           <div className="flex min-h-10 items-center gap-3">
-            <div className="flex h-10 shrink-0 items-center rounded-lg bg-white px-1.5">
-              <img src={appsflyerLogo} alt="" className="h-8 w-auto" />
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-overlay">
+              <BrandIcon brand="appsflyer" size={32} />
             </div>
-            <h2 id="appsflyer-heading" className="sr-only">AppsFlyer</h2>
+            <h2 id="appsflyer-heading" className="text-[15px] font-semibold text-cream">AppsFlyer</h2>
           </div>
           <p className="mt-3 max-w-[560px] text-[12px] leading-5 text-cream-dim">{t('connections.appsflyerDescription')}</p>
         </div>

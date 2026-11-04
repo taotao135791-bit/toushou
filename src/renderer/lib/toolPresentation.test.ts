@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { presentToolCall } from './toolPresentation'
-import type { ToolCallRecord } from './toolCalls'
+import { applyToolResult, type ToolCallRecord } from './toolCalls'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ToolCallCard from '../components/ToolCallCard'
@@ -56,6 +56,22 @@ describe('tool presentation', () => {
     expect(html).toContain('aria-expanded="false"')
     expect(html).not.toContain('synthetic-private-id')
     expect(html).not.toContain('toushou_appsflyer_query')
+  })
+
+  it('reuses immutable call presentation per language and refreshes when the result arrives', () => {
+    const pending = { id: 'synthetic-call', tool: 'toushou_appsflyer_query', input: {} }
+    const zh = presentToolCall(pending, 'zh')
+    expect(presentToolCall(pending, 'zh')).toBe(zh)
+    const en = presentToolCall(pending, 'en')
+    expect(en).not.toBe(zh)
+    expect(en.statusLabel).toBe('In progress')
+    expect(presentToolCall(pending, 'en')).toBe(en)
+    const [updated] = applyToolResult([{ id: 'synthetic-message', role: 'assistant', content: '', toolCall: pending }], {
+      type: 'tool_result', sessionId: 'synthetic-session', id: 'synthetic-call', tool: 'toushou_appsflyer_query', output: { ok: false }, isError: false
+    })
+    expect(updated.toolCall).not.toBe(pending)
+    expect(presentToolCall(updated.toolCall!, 'zh')).toMatchObject({ status: 'failed', statusLabel: '失败' })
+    expect(presentToolCall(pending, 'zh')).toBe(zh)
   })
 
   it('preserves explicit failures and does not infer success for unstructured results', () => {

@@ -14,7 +14,7 @@ describe('modal boundary with a real Electron browser view', () => {
       if (!existsSync(electron)) throw new Error('Electron unavailable')
       let build: { buildSync: (opts: Record<string, unknown>) => unknown }
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
-      build.buildSync({ entryPoints: [path.resolve(__dirname, 'modalBoundary.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', alias: { '@shared': path.resolve(__dirname, '../../shared') } })
+      build.buildSync({ entryPoints: [path.resolve(__dirname, 'modalBoundary.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl', '.svg': 'dataurl' }, alias: { '@shared': path.resolve(__dirname, '../../shared') } })
       const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.MODAL_FIXTURE_CLIP
       const result = spawnSync(electron, [path.resolve(__dirname, 'modalBoundary.harness.cjs'), dir], { encoding: 'utf8', timeout: 20000, env })
       const line = result.stdout?.split('\n').find(s => s.startsWith('E2E_RESULT '))
@@ -32,17 +32,21 @@ describe('modal boundary with a real Electron browser view', () => {
       expect(data.metrics.ctr).toContain('10')
       expect(data.fullViewport, JSON.stringify(data.backdrop)).toBe(true)
       expect(data).toMatchObject({ hidden: true, focusInside: true, tabTrap: true, nestedHidden: true, staysHidden: true, parentStillOpen: true, restored: true, focusRestored: true })
+      expect(data.taskDialog).toMatchObject({ portal: true, full: true, focus: true, inViewport: true })
+      expect(data.boardDialog).toMatchObject({ portal: true, full: true, focus: true, inViewport: true })
+      expect(data).toMatchObject({ taskHidden: true, taskSavedAndClosed: true, taskUnmountGuard: true, boardHidden: true, boardClosed: true })
       const shown = data.calls.filter((call: {kind:string}) => call.kind === 'show')
-      expect(shown).toHaveLength(2)
+      expect(shown).toHaveLength(5)
       expect(shown[1].url).toBeNull()
-      // A transform on the page recreates the original containing-block bug;
-      // ensure the viewport assertion actually detects the clipped backdrop.
+      // A raw fixed probe inside the transformed page recreates the original bug;
+      // the portaled product dialog itself must still cover the viewport.
       const clipped = spawnSync(electron, [path.resolve(__dirname, 'modalBoundary.harness.cjs'), dir], { encoding: 'utf8', timeout: 20000, env: { ...env, MODAL_FIXTURE_CLIP: '1' } })
       const clippedLine = clipped.stdout?.split('\n').find(s => s.startsWith('E2E_RESULT '))
       expect(clippedLine, clipped.stderr).toBeDefined()
       const clippedData = JSON.parse(clippedLine!.slice('E2E_RESULT '.length))
       expect(clippedData, clipped.stderr).not.toHaveProperty('fatal')
-      expect(clippedData.fullViewport, JSON.stringify(clippedData.backdrop)).toBe(false)
+      expect(clippedData.fullViewport, JSON.stringify(clippedData.backdrop)).toBe(true)
+      expect(clippedData.probeFullViewport).toBe(false)
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

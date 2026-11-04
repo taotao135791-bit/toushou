@@ -25,6 +25,7 @@ import { formatTikTokAmount, formatTikTokCostPerConversion, formatTikTokCount, f
 import { useT, type I18nKey } from '../../i18n'
 import { useAppStore } from '../../store'
 import { FacebookAccountPicker } from './FacebookAccountPicker'
+import BrandIcon from '../../components/BrandIcon'
 import { readingBlockKind, refreshAccountWithRetry } from './fbReadingRefresh'
 import { loadTodayFacebookAccounts, type TodayFacebookRow as FacebookRow } from './todayFacebook'
 import { SaveReadingBoardDialog } from './SaveReadingBoardDialog'
@@ -399,7 +400,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-[880px] flex-col gap-5 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mx-auto flex min-h-full w-full max-w-[880px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       {saveSnapshot && <SaveReadingBoardDialog snapshot={saveSnapshot} language={zh ? 'zh' : 'en'} initialAi={saveWithAi} onClose={() => setSaveSnapshot(null)} onSaved={(board, openAi, widgetId) => { setSaveSnapshot(null); onSaved?.(board, openAi, widgetId) }} />}
       {analysisError && <p role="alert" className="text-[13px] text-red-500">{zh ? '无法开始分析，请检查模型连接后重试。当前读数仍在。' : 'Could not start analysis. Check the model connection and retry; your readings remain available.'}</p>}
       <header>
@@ -454,7 +455,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
       </form>
       {range === 'today' && <p role="note" className="text-[12px] text-amber-700 dark:text-amber-300">{zh ? '今天的数据截至读取时，比较项为昨天全天，两者不是等时段。' : 'Today is measured at read time; the comparison is the whole of yesterday. These are not equal elapsed periods.'}</p>}
       <section className="flex flex-col gap-3">
-        <h2 className="text-[15px] font-semibold leading-6 text-cream">{t('boards.today.facebook')}</h2>
+        <h2 className="flex items-center gap-2 text-[15px] font-semibold leading-6 text-cream"><BrandIcon brand="facebook" size={20} />{t('boards.today.facebook')}</h2>
         <FacebookAccountPicker
           accounts={facebookAccounts.map(row => row.account)} busy={refreshingAct !== null}
           loading={facebookLoading} error={facebookLoadError} zh={zh} needsBrowser={inChat}
@@ -477,7 +478,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
       </section>
 
       <section className="flex flex-col gap-3">
-        <h2 className="text-[15px] font-semibold leading-6 text-cream">{t('boards.today.tiktok')}</h2>
+        <h2 className="flex items-center gap-2 text-[15px] font-semibold leading-6 text-cream"><BrandIcon brand="tiktok" size={20} />{t('boards.today.tiktok')}</h2>
         <TikTokAccountPicker
           busy={tiktokBusy || singleActive !== null}
           onReadOne={(advertiserId) => chooseTikTokScope({ kind: 'one', advertiserId })}

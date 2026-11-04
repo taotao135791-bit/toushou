@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useModalBoundary } from '../lib/modalBoundary'
 import { CalendarClock, Check, Loader2, X } from 'lucide-react'
 import { ScheduledTask } from '@shared/types'
 import { useAppStore } from '../store'
@@ -31,16 +33,18 @@ export function SaveMessageToTaskDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const dialogRef = useRef<HTMLElement>(null)
+  const inFlight = useRef(false)
+  const mounted = useRef(true)
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [busy, onClose])
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  useModalBoundary(dialogRef, true, () => { if (!busy && !inFlight.current) onClose() })
 
   const create = async () => {
-    if (!cwd || busy) return
+    if (!cwd || busy || inFlight.current) return
+    inFlight.current = true
     setBusy(true)
     setError(null)
     const schedule =
@@ -61,6 +65,7 @@ export function SaveMessageToTaskDialog({
     }
     try {
       const result = await window.electronAPI.saveTask(task)
+      if (!mounted.current) return
       if (result.ok) {
         showNotice('tasks.fromChat.created')
         onClose()
@@ -68,18 +73,21 @@ export function SaveMessageToTaskDialog({
       }
       setError(t('tasks.fromChat.createFailed'))
     } catch {
-      setError(t('tasks.fromChat.createFailed'))
+      if (mounted.current) setError(t('tasks.fromChat.createFailed'))
     } finally {
-      setBusy(false)
+      inFlight.current = false
+      if (mounted.current) setBusy(false)
     }
   }
 
   const input = 'mt-1 w-full rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/50'
   const valid = !!cwd && !!prompt.trim()
 
-  return (
+  return createPortal(
     <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-ink-950/75 p-4 backdrop-blur-sm">
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={t('tasks.fromChat.dialogTitle')}
@@ -237,6 +245,7 @@ export function SaveMessageToTaskDialog({
           )}
         </footer>
       </section>
-    </div>
+    </div>,
+    document.body
   )
 }

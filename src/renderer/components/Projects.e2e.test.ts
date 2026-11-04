@@ -15,7 +15,7 @@ describe('shared project controls in Electron', () => {
       if (!existsSync(electron)) throw new Error('Electron unavailable')
       let build: { buildSync: (options: Record<string, unknown>) => unknown }
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
-      build.buildSync({ entryPoints: [path.resolve(__dirname, 'Projects.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', alias: { '@shared': path.resolve(__dirname, '../../shared') } })
+      build.buildSync({ entryPoints: [path.resolve(__dirname, 'Projects.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl', '.svg': 'dataurl' }, alias: { '@shared': path.resolve(__dirname, '../../shared') } })
       const cssPath = path.resolve(__dirname, '../index.css')
       const css = await require_('postcss')([require_('tailwindcss')(), require_('autoprefixer')()]).process(readFileSync(cssPath, 'utf8'), { from: cssPath })
       writeFileSync(path.join(dir, 'fixture.css'), css.css)

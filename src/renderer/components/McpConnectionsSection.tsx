@@ -257,7 +257,7 @@ export default function McpConnectionsSection() {
             type="button"
             onClick={() => void add()}
             disabled={busy}
-            className="flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-[12px] font-medium text-white shadow-card hover:bg-accent-bright disabled:opacity-50"
+            className="focus-ring flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-[12px] font-medium text-[rgb(var(--bg-app))] shadow-card hover:bg-accent-bright disabled:cursor-wait disabled:opacity-50"
           >
             {busy ? <LoaderCircle size={14} className="animate-spin" /> : <Plug size={14} />}
             {t('connections.mcpAdd')}

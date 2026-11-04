@@ -64,7 +64,20 @@ function outcome(value: unknown, depth = 0): 'failed' | 'completed' | null {
   return completed ? 'completed' : null
 }
 
+// Store and history mapping replace a ToolCallRecord when its result arrives.
+// Weak keys avoid retaining transcripts or provider payloads after a session closes.
+const presentations = new WeakMap<ToolCallRecord, Partial<Record<Language, ToolPresentation>>>()
 export function presentToolCall(call: ToolCallRecord, language: Language): ToolPresentation {
+  const cached = presentations.get(call)?.[language]
+  if (cached) return cached
+  const result = computeToolPresentation(call, language)
+  const perLanguage = presentations.get(call) ?? {}
+  perLanguage[language] = result
+  presentations.set(call, perLanguage)
+  return result
+}
+
+function computeToolPresentation(call: ToolCallRecord, language: Language): ToolPresentation {
   const zh = language === 'zh'
   const name = call.tool.toLowerCase()
   let action = name

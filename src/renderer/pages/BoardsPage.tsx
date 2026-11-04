@@ -84,6 +84,8 @@ import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
 import { resizeWidgetLayout, resolveResizeStop, shouldRevealMovedWidget } from './boards/widgetSizing'
 import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
+import { boardCanvasStyle } from './boards/boardCanvasStyle'
+import BrandIcon from '../components/BrandIcon'
 import { TodayReading } from './boards/TodayReading'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
@@ -173,11 +175,6 @@ function mergeWidgetStyle(
   return { ...design, ...style }
 }
 
-function mergeBoardStyle(design: BoardStyle | undefined, style: BoardStyle | undefined): BoardStyle | undefined {
-  if (!design) return style
-  return { ...design, ...style }
-}
-
 function widgetCardStyle(style?: BoardWidgetStyle): BoardCssProperties {
   const shadow =
     style?.shadow === 'none'
@@ -194,27 +191,6 @@ function widgetCardStyle(style?: BoardWidgetStyle): BoardCssProperties {
     '--board-widget-text': style?.text ?? 'rgb(var(--text))',
     '--board-widget-border': style?.border ?? 'var(--line)'
   }
-}
-
-function boardCanvasStyle(style?: BoardStyle): CSSProperties {
-  if (!style) return {}
-  const base: CSSProperties = style.background ? { backgroundColor: style.background } : {}
-  if (style.grid === 'dots') {
-    return {
-      ...base,
-      backgroundImage: 'radial-gradient(var(--line-strong) 1px, transparent 1px)',
-      backgroundSize: '16px 16px'
-    }
-  }
-  if (style.grid === 'lines') {
-    return {
-      ...base,
-      backgroundImage:
-        'linear-gradient(var(--line-strong) 1px, transparent 1px), linear-gradient(90deg, var(--line-strong) 1px, transparent 1px)',
-      backgroundSize: '24px 24px'
-    }
-  }
-  return base
 }
 
 function ToolButton({
@@ -246,6 +222,7 @@ export default function BoardsPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const language = useAppStore((state) => state.language)
+  const theme = useAppStore((state) => state.theme)
   const inChatView = useAppStore((state) => state.workspacePanel) === null
   const setWorkspacePanel = useAppStore((state) => state.setWorkspacePanel)
   const [boards, setBoardsState] = useState<KanbanBoard[] | null>(null)
@@ -1382,6 +1359,7 @@ export default function BoardsPage() {
     const padding = effectiveStyle?.padding ?? 12
     const boardId = current?.id ?? ''
     const widgetTitle = widget.title || t(widgetNameKey(widget.type))
+    const widgetBrand = widget.type === 'tt-reading' ? 'tiktok' : widget.type === 'google-report-reading' ? 'google' : ['fb-reading', 'fb-reading-summary', 'fb-report-reading'].includes(widget.type) ? 'facebook' : null
     return (
     <div
       key={widget.id}
@@ -1405,6 +1383,7 @@ export default function BoardsPage() {
         >
           <GripVertical size={12} />
         </span>
+        {widgetBrand && <BrandIcon brand={widgetBrand} size={16} />}
         <span
           title={widgetTitle}
           style={{ textAlign: effectiveStyle?.titleAlign ?? 'left' }}
@@ -1890,10 +1869,10 @@ export default function BoardsPage() {
 
       <div
         ref={boardAreaRef}
-        style={boardCanvasStyle(mergeBoardStyle(design?.board, surface === 'board' ? current?.style : undefined))}
-        className="relative flex-1 overflow-hidden bg-ink-950"
+        style={boardCanvasStyle(surface, design?.board, current?.style)}
+        className="board-canvas relative flex-1 overflow-hidden"
       >
-        <div ref={boardScrollRef} className="h-full overflow-y-auto">
+        <div key={surface === 'today' ? 'today' : `board:${currentId}`} ref={boardScrollRef} className="h-full overflow-y-auto">
           {surface === 'today' && !boardsLoadFailed ? (
             <TodayReading onSaved={(board, openAi, widgetId) => { setBoards(prev => (prev ?? []).some(item => item.id === board.id) ? (prev ?? []).map(item => item.id === board.id ? board : item) : [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(widgetId ?? board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }} />
           ) : boards === null ? (
@@ -2385,18 +2364,18 @@ export default function BoardsPage() {
                     <div className="flex items-center gap-2 rounded-lg border border-line bg-ink-850 px-2 py-1.5">
                       <input
                         type="color"
-                        value={detailStyle.background ?? '#141311'}
+                        value={detailStyle.background ?? design?.board?.background ?? (theme === 'dark' ? '#1d1d1d' : '#f4f3f1')}
                         onChange={(event) => setDetailStyle((style) => ({ ...style, background: event.target.value }))}
                         aria-label={t('boards.appearance.background')}
                         className="h-5 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
                       />
-                      <span className="font-mono text-[11px] text-cream-dim">{detailStyle.background ?? '#141311'}</span>
+                      <span className="font-mono text-[11px] text-cream-dim">{detailStyle.background ?? design?.board?.background ?? (theme === 'dark' ? '#1d1d1d' : '#f4f3f1')}</span>
                     </div>
                   </label>
                   <label className="block">
                     <span className="mb-1 block text-[11px] text-cream-faint">{t('boards.appearance.grid')}</span>
                     <select
-                      value={detailStyle.grid ?? 'none'}
+                      value={detailStyle.grid ?? design?.board?.grid ?? 'none'}
                       onChange={(event) =>
                         setDetailStyle((style) => ({
                           ...style,
