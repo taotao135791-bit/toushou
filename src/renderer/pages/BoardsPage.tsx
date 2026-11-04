@@ -1381,6 +1381,7 @@ export default function BoardsPage() {
     const effectiveStyle = mergeWidgetStyle(design?.widget, widget.style)
     const padding = effectiveStyle?.padding ?? 12
     const boardId = current?.id ?? ''
+    const widgetTitle = widget.title || t(widgetNameKey(widget.type))
     return (
     <div
       key={widget.id}
@@ -1394,45 +1395,50 @@ export default function BoardsPage() {
           paddingLeft: padding,
           paddingRight: padding,
           paddingTop: Math.max(6, Math.round(padding * 0.7)),
-          paddingBottom: 2
+          paddingBottom: 4
         }}
-        className="flex shrink-0 items-center gap-1"
+        className="flex shrink-0 items-center gap-1.5"
       >
         <span
-          className="widget-drag-handle shrink-0 cursor-grab text-cream-faint/0 transition-colors group-hover/widget:text-cream-faint active:cursor-grabbing"
+          className="widget-drag-handle flex h-7 w-4 shrink-0 cursor-grab items-center justify-center text-cream-faint opacity-0 transition-opacity group-hover/widget:opacity-100 group-focus-within/widget:opacity-100 active:cursor-grabbing"
           title={t('boards.dragHint')}
         >
-          <GripVertical size={10} />
+          <GripVertical size={12} />
         </span>
         <span
+          title={widgetTitle}
           style={{ textAlign: effectiveStyle?.titleAlign ?? 'left' }}
-          className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-[0.1em] text-cream-faint"
+          className="min-w-0 flex-1 truncate text-[12px] font-medium leading-5 text-cream-dim"
         >
-          {widget.title || t(widgetNameKey(widget.type))}
+          {widgetTitle}
         </span>
         <div
           className={`flex shrink-0 items-center gap-0.5 transition focus-within:opacity-100 ${widget.type === 'reading-module' || widget.type === 'file' ? 'opacity-100' : 'opacity-0 group-hover/widget:opacity-100'}`}
         >
           <button
+            type="button"
             onClick={() => setConfigWidgetId(widget.id)}
             title={t('boards.widgetSettings')}
-            className="rounded-md p-1 text-cream-faint transition hover:bg-overlay hover:text-cream"
+            aria-label={`${t('boards.widgetSettings')} · ${widgetTitle}`}
+            className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
           >
-            <Settings2 size={11} />
+            <Settings2 size={12} />
           </button>
           <button
+            type="button"
             onClick={() =>
               setPendingConfirm({
                 title: t('boards.widgetDeleteDialog.title'),
-                body: t('boards.widgetDeleteDialog.body', { name: widget.title || t(widgetNameKey(widget.type)) }),
+                body: t('boards.widgetDeleteDialog.body', { name: widgetTitle }),
                 danger: true,
                 onConfirm: () => removeWidget(widget.id)
               })
             }
             title={t('boards.deleteWidget')}
-            className="rounded-md p-1 text-cream-faint transition hover:bg-red-500/15 hover:text-red-500"
+            aria-label={`${t('boards.deleteWidget')} · ${widgetTitle}`}
+            className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-cream-faint transition-colors hover:bg-red-500/15 hover:text-red-500"
           >
-            <X size={11} />
+            <X size={12} />
           </button>
         </div>
       </div>

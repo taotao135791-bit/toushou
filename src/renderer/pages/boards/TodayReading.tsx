@@ -399,48 +399,62 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-[880px] flex-col gap-6 overflow-y-auto px-8 py-8">
+    <div className="mx-auto flex h-full w-full max-w-[880px] flex-col gap-5 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
       {saveSnapshot && <SaveReadingBoardDialog snapshot={saveSnapshot} language={zh ? 'zh' : 'en'} initialAi={saveWithAi} onClose={() => setSaveSnapshot(null)} onSaved={(board, openAi, widgetId) => { setSaveSnapshot(null); onSaved?.(board, openAi, widgetId) }} />}
       {analysisError && <p role="alert" className="text-[13px] text-red-500">{zh ? '无法开始分析，请检查模型连接后重试。当前读数仍在。' : 'Could not start analysis. Check the model connection and retry; your readings remain available.'}</p>}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[24px] font-semibold leading-[34px] text-cream">{t('boards.today.title')}</h1>
-          <p className="mt-1 text-[12px] leading-[18px] tabular-nums text-cream-faint">
-            {rangeLabel} · {formatReadingWindow(dateWindow)}
-            <span> · {zh ? 'Facebook 按来源日期；TikTok 快捷范围按账户时区，详见账户行' : 'Facebook uses source dates; TikTok presets use account timezones, shown per account'}</span>
-            {previous ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(previous))}` : ''}
-          </p>
-        </div>
-        <div className="flex gap-1" role="tablist" aria-label={t('boards.today.title')}>
-          {RANGES.map((value) => (
-            <button
-              key={value}
-              type="button"
-              role="tab"
-              aria-selected={range === value}
-              onClick={() => { const window = todayWindow(value); setStartInput(window.start); setEndInput(window.end); setDateError(false); setRange(value) }}
-              className={`focus-ring rounded-full border px-3 py-1 text-[12px] leading-[18px] transition ${
-                range === value
-                  ? 'border-accent/60 bg-accent-soft text-accent'
-                  : 'border-line text-cream-dim hover:text-cream'
-              }`}
-            >
-              {t(rangeKey(value))}
-            </button>
-          ))}
-        </div>
-      </div>
+      <header>
+        <h1 className="text-[24px] font-semibold leading-[34px] text-cream">{t('boards.today.title')}</h1>
+        <p className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px] leading-5 tabular-nums text-cream-dim">
+          <span>{rangeLabel} · {formatReadingWindow(dateWindow)}</span>
+          {previous && <span className="text-[12px] text-cream-faint">{t('boards.today.compare').replace('{window}', formatReadingWindow(previous))}</span>}
+        </p>
+      </header>
 
-      <form onSubmit={e => { e.preventDefault(); applyDates() }} className="flex flex-wrap items-end gap-3 rounded-xl border border-line p-3">
-        <label className="flex flex-col gap-1 text-[12px] text-cream-dim">{zh ? '开始日期' : 'Start date'}<input id="today-start-date" aria-label={zh ? '开始日期' : 'Start date'} type="date" value={startInput} onChange={e => setStartInput(e.target.value)} className="rounded-lg border border-line bg-ink-850 px-2 py-1.5 text-cream" /></label>
-        <label className="flex flex-col gap-1 text-[12px] text-cream-dim">{zh ? '结束日期' : 'End date'}<input aria-label={zh ? '结束日期' : 'End date'} type="date" value={endInput} onChange={e => setEndInput(e.target.value)} className="rounded-lg border border-line bg-ink-850 px-2 py-1.5 text-cream" /></label>
-        <button type="submit" className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] text-cream">{zh ? '应用日期' : 'Apply dates'}</button>
-        <p className="w-full text-[12px] text-cream-faint">{zh ? `可选单日或起止日期，每次最多 ${TIKTOK_CUSTOM_MAX_DAYS} 天。TikTok 按账户校验日期；Facebook 仅展示与日期完全匹配的读数。` : `Choose a day or a range up to ${TIKTOK_CUSTOM_MAX_DAYS} days. Dates are checked per TikTok account; Facebook only shows exact matching readings.`}</p>
-        {dateError && <p role="alert" className="text-[12px] text-red-600">{zh ? '日期无效、开始晚于结束，或范围过长。' : 'Invalid dates, reversed range, or range too long.'}</p>}
+      <form onSubmit={e => { e.preventDefault(); applyDates() }} className="space-y-3 rounded-xl border border-line bg-ink-850 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[13px] font-medium text-cream">{zh ? '读取日期' : 'Reading dates'}</span>
+          <div className="flex flex-wrap gap-1.5" role="tablist" aria-label={t('boards.today.title')}>
+            {RANGES.map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={range === value}
+                onClick={() => { const window = todayWindow(value); setStartInput(window.start); setEndInput(window.end); setDateError(false); setRange(value) }}
+                className={`focus-ring min-h-8 rounded-lg border px-3 py-1 text-[12px] leading-[18px] transition-colors ${
+                  range === value
+                    ? 'border-accent/25 bg-accent-soft font-medium text-accent'
+                    : 'border-line text-cream-dim hover:bg-overlay hover:text-cream'
+                }`}
+              >
+                {t(rangeKey(value))}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex min-w-[140px] flex-1 flex-col gap-1.5 text-[12px] text-cream-dim sm:flex-none">
+            {zh ? '开始日期' : 'Start date'}
+            <input id="today-start-date" aria-label={zh ? '开始日期' : 'Start date'} aria-invalid={dateError} type="date" value={startInput} onChange={e => setStartInput(e.target.value)} className="focus-ring min-h-9 min-w-0 rounded-lg border border-line bg-ink-850 px-3 py-1.5 text-[13px] tabular-nums text-cream" />
+          </label>
+          <label className="flex min-w-[140px] flex-1 flex-col gap-1.5 text-[12px] text-cream-dim sm:flex-none">
+            {zh ? '结束日期' : 'End date'}
+            <input aria-label={zh ? '结束日期' : 'End date'} aria-invalid={dateError} type="date" value={endInput} onChange={e => setEndInput(e.target.value)} className="focus-ring min-h-9 min-w-0 rounded-lg border border-line bg-ink-850 px-3 py-1.5 text-[13px] tabular-nums text-cream" />
+          </label>
+          <button type="submit" className="focus-ring min-h-9 rounded-lg border border-line px-3 py-1.5 text-[12px] font-medium text-cream transition-colors hover:bg-overlay">{zh ? '应用日期' : 'Apply dates'}</button>
+        </div>
+        <details className="text-[12px] leading-5 text-cream-faint">
+          <summary className="focus-ring w-fit cursor-pointer rounded text-cream-dim">{zh ? '日期与对比口径' : 'Date and comparison details'}</summary>
+          <div className="mt-2 space-y-1">
+            <p>{zh ? 'Facebook 按来源日期；TikTok 快捷范围按账户时区，详见账户行。' : 'Facebook uses source dates; TikTok presets use account timezones, shown per account.'}</p>
+            <p>{zh ? `可选单日或起止日期，每次最多 ${TIKTOK_CUSTOM_MAX_DAYS} 天。TikTok 按账户校验日期；Facebook 仅展示与日期完全匹配的读数。` : `Choose a day or a range up to ${TIKTOK_CUSTOM_MAX_DAYS} days. Dates are checked per TikTok account; Facebook only shows exact matching readings.`}</p>
+          </div>
+        </details>
+        {dateError && <p role="alert" className="text-[12px] leading-5 text-red-600 dark:text-red-400">{zh ? '日期无效、开始晚于结束，或范围过长。' : 'Invalid dates, reversed range, or range too long.'}</p>}
       </form>
       {range === 'today' && <p role="note" className="text-[12px] text-amber-700 dark:text-amber-300">{zh ? '今天的数据截至读取时，比较项为昨天全天，两者不是等时段。' : 'Today is measured at read time; the comparison is the whole of yesterday. These are not equal elapsed periods.'}</p>}
-      <section className="flex flex-col gap-2">
-        <h2 className="text-[16px] font-semibold leading-[26px] text-cream">{t('boards.today.facebook')}</h2>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-[15px] font-semibold leading-6 text-cream">{t('boards.today.facebook')}</h2>
         <FacebookAccountPicker
           accounts={facebookAccounts.map(row => row.account)} busy={refreshingAct !== null}
           loading={facebookLoading} error={facebookLoadError} zh={zh} needsBrowser={inChat}
@@ -462,8 +476,8 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
         />)}
       </section>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="text-[16px] font-semibold leading-[26px] text-cream">{t('boards.today.tiktok')}</h2>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-[15px] font-semibold leading-6 text-cream">{t('boards.today.tiktok')}</h2>
         <TikTokAccountPicker
           busy={tiktokBusy || singleActive !== null}
           onReadOne={(advertiserId) => chooseTikTokScope({ kind: 'one', advertiserId })}
@@ -531,17 +545,19 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
         ) : null}
       </section>
 
-      <div className="flex flex-col items-start gap-2 pb-8">
-        <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) { setSaveWithAi(false); setSaveSnapshot(currentSnapshot()) } }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring rounded-full border border-line px-4 py-2 text-[13px] text-cream disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
-        <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) { setSaveWithAi(true); setSaveSnapshot(currentSnapshot()) } }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring rounded-full bg-accent px-4 py-2 text-[13px] font-medium text-white disabled:opacity-40">{zh ? '用 AI 生成看板' : 'Create board with AI'}</button>
-        <button
-          type="button"
-          onClick={ask}
-          disabled={!hasFigures || tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || analysisBusy}
-          className="focus-ring rounded-full bg-accent px-4 py-2 text-[13px] font-medium leading-5 text-[rgb(var(--bg-app))] disabled:opacity-40"
-        >
-          {analysisBusy ? (zh ? '正在开始分析…' : 'Starting analysis…') : (zh ? 'AI 分析当前读数' : 'Analyze readings with AI')}
-        </button>
+      <div className="space-y-3 border-t border-line pb-4 pt-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) { setSaveWithAi(false); setSaveSnapshot(currentSnapshot()) } }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring min-h-9 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-not-allowed disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
+          <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) { setSaveWithAi(true); setSaveSnapshot(currentSnapshot()) } }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring min-h-9 rounded-lg border border-line px-4 py-2 text-[13px] text-cream transition-colors hover:bg-overlay disabled:cursor-not-allowed disabled:opacity-40">{zh ? '用 AI 生成看板' : 'Create board with AI'}</button>
+          <button
+            type="button"
+            onClick={ask}
+            disabled={!hasFigures || tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || analysisBusy}
+            className="focus-ring min-h-9 rounded-lg border border-line px-4 py-2 text-[13px] leading-5 text-cream transition-colors hover:bg-overlay disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {analysisBusy ? (zh ? '正在开始分析…' : 'Starting analysis…') : (zh ? 'AI 分析当前读数' : 'Analyze readings with AI')}
+          </button>
+        </div>
         <p className="text-[12px] leading-[18px] text-cream-faint">
           {hasFigures ? (zh ? '将当前范围最多 50 个账户的读数发送给所选模型，开始只读分析。' : 'Send up to 50 accounts in the current scope to the selected model for read-only analysis.') : t('boards.today.askDisabled')}
         </p>
@@ -667,7 +683,7 @@ function TikTokAccount({
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {refreshButton}
-        <button type="button" onClick={onAnalyze} disabled={busy || !!failure || refreshDisabled || analysisBusy} className="focus-ring rounded-full bg-accent px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40">{t('boards.today.analyzeThisTt')}</button>
+        <button type="button" onClick={onAnalyze} disabled={busy || !!failure || refreshDisabled || analysisBusy} className="focus-ring rounded-full bg-accent px-2.5 py-1 text-[12px] font-medium text-[rgb(var(--bg-app))] disabled:opacity-40">{t('boards.today.analyzeThisTt')}</button>
       </div>
       {progressNotice}
       {failure && <div role="status" className="mt-2 text-[12px] text-amber-700 dark:text-amber-300">

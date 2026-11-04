@@ -21,6 +21,7 @@ import { useT } from '../i18n'
 import { formatSeconds } from '../lib/time'
 import { ConfirmDialog } from './ConfirmDialog'
 import { splitConnectionMarkers } from '../lib/connectionMarkers'
+import { copyMessageText, messageActionText } from '../lib/messageActions'
 import ConnectionGuideCard from './ConnectionGuideCard'
 import Markdown from './Markdown'
 import { parseSkillChatMessage } from '@shared/skills'
@@ -33,6 +34,8 @@ interface MessageItemProps {
   index?: number
   sessionId?: string | null
   onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
+  /** Intermediate process messages keep their details but do not offer result actions. */
+  showBoardAction?: boolean
 }
 
 /** Collapsible card for a skill message: the full SOP still rides in the
@@ -76,8 +79,14 @@ function SkillMessageCard({
   )
 }
 
-function MessageItem({ message, index = -1, sessionId = null, onRetry }: MessageItemProps) {
-  const [copied, setCopied] = useState(false)
+function MessageItem({ message, index = -1, sessionId = null, onRetry, showBoardAction = true }: MessageItemProps) {
+  const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
+  const copyRequest = useRef(0)
+  const copyBusy = useRef(false)
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const identity = `${sessionId ?? ''}\u0000${message.id}`
+  const identityRef = useRef(identity)
+  identityRef.current = identity
   const [retrying, setRetrying] = useState(false)
   const retryInFlight = useRef(false)
   const [restoring, setRestoring] = useState(false)
@@ -86,6 +95,7 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry }: Message
   const [boardSaved, setBoardSaved] = useState(false)
   const [taskDialogOpen, setTaskDialogOpen] = useState(false)
   const t = useT()
+  const zh = useAppStore(s => s.language) === 'zh'
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
   const checkpointAvailable = useAppStore((s) =>
@@ -119,10 +129,35 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry }: Message
       ? formatSeconds(thinkingEnd - message.thinkingStartTs)
       : null
 
-  const copyContent = () => {
-    navigator.clipboard.writeText(message.content)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1200)
+  const visibleContent = messageActionText(message)
+  const hasActionText = visibleContent.trim().length > 0
+  const copyLabel = copyState === 'copied' ? t('msg.copied')
+    : copyState === 'copying' ? (zh ? '正在复制…' : 'Copying…')
+      : copyState === 'failed' ? (zh ? '复制失败，点击重试' : 'Copy failed. Try again') : t('msg.copy')
+  useEffect(() => {
+    setCopyState('idle')
+    copyBusy.current = false
+    return () => {
+      copyRequest.current += 1
+      copyBusy.current = false
+      if (copyTimer.current) clearTimeout(copyTimer.current)
+    }
+  }, [identity])
+
+  const copyContent = async () => {
+    if (copyBusy.current || !hasActionText) return
+    copyBusy.current = true
+    const request = ++copyRequest.current
+    const copiedIdentity = identity
+    if (copyTimer.current) clearTimeout(copyTimer.current)
+    setCopyState('copying')
+    const ok = await copyMessageText(visibleContent, text => navigator.clipboard.writeText(text))
+    if (copyRequest.current !== request || identityRef.current !== copiedIdentity) return
+    copyBusy.current = false
+    setCopyState(ok ? 'copied' : 'failed')
+    if (ok) copyTimer.current = setTimeout(() => {
+      if (copyRequest.current === request && identityRef.current === copiedIdentity) setCopyState('idle')
+    }, 1600)
   }
 
   // 连接引导标记：从正文剥离并在消息下方渲染“去连接”卡（见 connectionMarkers）。
@@ -266,13 +301,14 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry }: Message
             </div>
           )}
           {/* hover action bar: per-turn model/thinking tag, rollback, copy, edit-and-resend */}
-          <div className="mt-1 flex items-center justify-end gap-1 opacity-0 transition-all group-hover:opacity-100">
+          <div className="mt-1 flex flex-wrap items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             {checkpointAvailable && sessionId && index >= 0 && (
               <button
                 onClick={() => setRollbackConfirmOpen(true)}
                 disabled={restoring}
                 title={restoring ? t('rollback.restoring') : t('rollback.button')}
-                className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay hover:text-cream disabled:opacity-60"
+                aria-label={restoring ? t('rollback.restoring') : t('rollback.button')}
+                className="focus-ring rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay hover:text-cream disabled:opacity-60"
               >
                 {restoring ? (
                   <Loader2 size={12} className="animate-spin" />
@@ -291,26 +327,31 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry }: Message
             )}
             <button
               onClick={copyContent}
-              title={t('msg.copy')}
-              className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay hover:text-cream"
+              disabled={copyState === 'copying' || !hasActionText}
+              title={copyLabel}
+              aria-label={copyLabel}
+              className="focus-ring rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay hover:text-cream disabled:cursor-wait disabled:opacity-60"
             >
-              {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+              {copyState === 'copying' ? <Loader2 size={12} className="animate-spin" /> : copyState === 'copied' ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
             </button>
             <button
               onClick={() => setTaskDialogOpen(true)}
               title={t('tasks.fromChat.action')}
-              className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay hover:text-cream"
+              aria-label={t('tasks.fromChat.action')}
+              className="focus-ring rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
             >
               <CalendarClock size={12} />
             </button>
             <button
               onClick={editContent}
               title={t('msg.edit')}
-              className="rounded-md p-1 text-cream-faint transition-all hover:bg-overlay hover:text-cream"
+              aria-label={t('msg.edit')}
+              className="focus-ring rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
             >
               <Pencil size={12} />
             </button>
           </div>
+          {copyState === 'failed' && <p role="status" className="mt-1 text-right text-[12px] text-red-500">{copyLabel}</p>}
           {taskDialogOpen && (
             <SaveMessageToTaskDialog
               content={message.content}
@@ -390,30 +431,33 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry }: Message
       )}
       <Markdown content={guideSplit.clean} />
       <ConnectionGuideCard kinds={guideSplit.guides} />
-      {message.content && (
-        <div className="mt-1 flex items-center gap-1">
+      {hasActionText && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
           <button
             onClick={copyContent}
-            title={t('msg.copy')}
-            className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[10.5px] text-cream-faint opacity-0 transition-all hover:bg-overlay hover:text-cream group-hover:opacity-100"
+            disabled={copyState === 'copying'}
+            title={copyLabel}
+            aria-label={copyLabel}
+            className="focus-ring flex min-h-7 items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint opacity-0 transition-colors hover:bg-overlay hover:text-cream group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-wait disabled:opacity-60"
           >
-            {copied ? <Check size={11} className="text-emerald-500" /> : <Copy size={11} />}
-            {copied ? t('msg.copied') : t('msg.copy')}
+            {copyState === 'copying' ? <Loader2 size={12} className="animate-spin" /> : copyState === 'copied' ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+            {copyLabel}
           </button>
-          <button
+          {showBoardAction && <button
             onClick={() => setBoardDialogOpen(true)}
             title={t('boards.chat.saveToBoard')}
-            className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[10.5px] text-cream-faint transition hover:bg-overlay hover:text-cream"
+            className="focus-ring flex min-h-7 items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
           >
-            <LayoutDashboard size={11} />
+            <LayoutDashboard size={12} />
             {t('boards.chat.saveToBoard')}
-          </button>
-          {boardSaved && <span className="text-[10.5px] text-emerald-500">{t('boards.chat.saved')}</span>}
+          </button>}
+          {boardSaved && <span role="status" className="text-[12px] text-emerald-500">{t('boards.chat.saved')}</span>}
         </div>
       )}
+      {copyState === 'failed' && <p role="status" className="mt-1 text-[12px] text-red-500">{copyLabel}</p>}
       {boardDialogOpen && (
         <SaveMessageToBoardDialog
-          content={message.content}
+          content={visibleContent}
           onClose={() => setBoardDialogOpen(false)}
           onSaved={() => setBoardSaved(true)}
         />

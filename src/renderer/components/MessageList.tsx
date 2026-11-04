@@ -1,10 +1,12 @@
-import { memo, ReactNode, useEffect, useMemo } from 'react'
+import { memo, useEffect, useMemo } from 'react'
 import MessageItem from './MessageItem'
-import { ToolGroup, TurnChangesRow } from './TurnRow'
+import { TurnChangesRow } from './TurnRow'
 import { MessageLike, useAppStore } from '../store'
-import { turnActivityFor, turnSummaryFor } from '../lib/execution'
+import { turnSummaryFor } from '../lib/execution'
+import { projectChatTurns, type ChatTurn } from '../lib/chatFlow'
 import { CheckpointInfo } from '@shared/types'
-import BoardChatPreview, { boardPreviewReference } from './BoardChatPreview'
+import BoardChatPreview, { boardPreviewReference, groupBoardPreviews } from './BoardChatPreview'
+import TurnProcess from './TurnProcess'
 
 interface MessageListProps {
   messages: MessageLike[]
@@ -12,145 +14,66 @@ interface MessageListProps {
   onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
 }
 
-/**
- * Vertical rhythm: a loose 28px gap between turns, tightened inside a
- * question→answer pair (user bubble → reply hugs at 12px, consecutive user
- * bubbles stack compactly).
- */
-function gapBefore(prev: MessageLike | undefined, nextIsUser: boolean): string {
-  if (!prev) return ''
-  if (prev.role === 'user') return nextIsUser ? 'mt-2' : 'mt-3'
-  return 'mt-7'
-}
-
-/** A new turn starts at a real user prompt; steers continue the active turn. */
-function isTurnStart(message: MessageLike): boolean {
-  return message.role === 'user' && message.kind !== 'steer'
-}
-
 function MessageList({ messages, sessionId = null, onRetry }: MessageListProps) {
-  const streaming = useAppStore((s) => (sessionId ? Boolean(s.busy[sessionId]) : false))
-  // Live progress / frozen summary derive from the single execution projection
-  // — never from a second per-turn counter store.
-  // Select the stable projection reference first. Calling the projection
-  // helpers inside a Zustand selector creates a fresh object on every store
-  // read; React 18 treats that as an unstable external-store snapshot and can
-  // enter update-depth #185 once a live response starts rendering.
-  const projection = useAppStore((s) => (sessionId ? s.executions[sessionId] : undefined))
-  const activity = useMemo(() => (projection ? turnActivityFor(projection) : undefined), [projection])
-  const summary = useMemo(() => (projection ? turnSummaryFor(projection) : undefined), [projection])
-
-  // Per-turn change chips: load the session's checkpoints once per selection;
-  // newly dispatched turns append theirs via createCheckpointForMessage.
-  const checkpointList = useAppStore((s) =>
-    sessionId ? s.checkpointsBySession[sessionId] : undefined
-  )
+  const streaming = useAppStore(state => sessionId ? Boolean(state.busy[sessionId]) : false)
+  const projection = useAppStore(state => sessionId ? state.executions[sessionId] : undefined)
+  const summary = useMemo(() => projection ? turnSummaryFor(projection) : undefined, [projection])
+  const project = useMemo(() => {
+    let previous: ChatTurn[] = []
+    return (records: MessageLike[]) => {
+      previous = projectChatTurns(records, previous)
+      return previous
+    }
+  }, [sessionId])
+  const turns = useMemo(() => project(messages), [messages, project])
+  const checkpointList = useAppStore(state => sessionId ? state.checkpointsBySession[sessionId] : undefined)
   useEffect(() => {
     if (sessionId) void useAppStore.getState().loadCheckpoints(sessionId)
   }, [sessionId])
   const checkpointByMsgIndex = useMemo(() => {
     const map = new Map<number, CheckpointInfo>()
-    for (const c of checkpointList ?? []) {
-      const prev = map.get(c.msgIndex)
-      if (!prev || prev.createdAt >= c.createdAt) map.set(c.msgIndex, c)
+    for (const checkpoint of checkpointList ?? []) {
+      const previous = map.get(checkpoint.msgIndex)
+      if (!previous || previous.createdAt > checkpoint.createdAt) map.set(checkpoint.msgIndex, checkpoint)
     }
     return map
   }, [checkpointList])
 
-  // Turn boundary marker: groups after the last user message belong to the
-  // current (or just-finished) turn and get the live row / frozen summary.
-  // The frozen summary (with elapsed time) pins to the LAST tool group of the
-  // turn — earlier groups in the same turn show derived counts only.
-  let lastUserIdx = -1
-  let lastToolIdx = -1
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]
-    if (message.role === 'user') {
-      lastUserIdx = index
-      lastToolIdx = -1
-    } else if (message.toolCall) {
-      lastToolIdx = index
-    }
-  }
-
-  // Map "last node index of a turn" -> the user message that owns it, so the
-  // change chip renders after the turn's final node. Turns with no content
-  // after the prompt (back-to-back user bubbles) never own a chip.
-  const turnOwnerByEnd = useMemo(() => {
-    const map = new Map<number, number>()
-    for (let u = 0; u < messages.length; u += 1) {
-      if (!isTurnStart(messages[u])) continue
-      let end = u
-      while (end + 1 < messages.length && !isTurnStart(messages[end + 1])) end += 1
-      if (end > u) map.set(end, u)
-    }
-    return map
-  }, [messages])
-
-  const nodes: ReactNode[] = []
-  let prev: MessageLike | undefined
-  let i = 0
-  while (i < messages.length) {
-    const message = messages[i]
-    let turnEndIdx: number
-    // Consecutive tool calls collapse into one bordered group with hairline
-    // separators — a list, not a stack of boxes (Claude Code style).
-    if (message.toolCall) {
-      const run: MessageLike[] = []
-      const runStart = i
-      let j = i
-      while (j < messages.length && messages[j].toolCall) {
-        run.push(messages[j])
-        j++
-      }
-      turnEndIdx = j - 1
-      const isLastRun = j === messages.length
-      const inCurrentTurn = runStart > lastUserIdx
-      const isTurnsLastGroup = lastToolIdx >= runStart && lastToolIdx < j
-      nodes.push(
-        <div key={message.id} className={`msg-row ${gapBefore(prev, false)}`}>
-          <ToolGroup
-            run={run}
-            // Only the live turn's groups follow the stream; historical
-            // groups keep the user's manual expand/collapse.
-            streaming={streaming && inCurrentTurn}
-            activity={streaming && isLastRun && inCurrentTurn ? activity : undefined}
-            summary={!streaming && isTurnsLastGroup ? summary : undefined}
-          />
-          {sessionId && run.map(item => {
-            const ref = item.toolCall && boardPreviewReference(item.toolCall)
-            return ref ? <BoardChatPreview key={`${sessionId}-${item.id}-${ref.boardId}-${ref.widgetId}`} sessionId={sessionId} {...ref} /> : null
-          })}
-        </div>
-      )
-      prev = messages[j - 1]
-      i = j
-    } else {
-      turnEndIdx = i
-      nodes.push(
-        <div key={message.id} className={`msg-row ${gapBefore(prev, message.role === 'user')}`}>
-          <MessageItem message={message} index={i} sessionId={sessionId} onRetry={onRetry} />
-        </div>
-      )
-      prev = message
-      i++
-    }
-    // The per-turn change chip closes a completed turn. The turn still being
-    // streamed (last node, session busy) waits: when the run finishes, the
-    // row mounts and fetches its diff exactly once.
-    const chipOwner = turnOwnerByEnd.get(turnEndIdx)
-    if (chipOwner !== undefined && !(streaming && turnEndIdx === messages.length - 1)) {
-      const checkpoint = checkpointByMsgIndex.get(chipOwner)
-      if (checkpoint) {
-        nodes.push(
-          <div key={`turn-changes-${checkpoint.id}`} className="msg-row -mt-4">
-            <TurnChangesRow sessionId={sessionId} checkpointId={checkpoint.id} />
-          </div>
-        )
-      }
-    }
-  }
-  return <div className="flex flex-col px-6 py-8">{nodes}</div>
+  return <div className="flex min-w-0 flex-col gap-8 px-5 py-6 sm:px-6">
+    {turns.map((turn, index) => <ChatTurnView key={`${sessionId}-${turn.id}`} turn={turn} sessionId={sessionId}
+      streaming={streaming && index === turns.length - 1}
+      elapsedMs={!streaming && index === turns.length - 1 ? summary?.elapsedMs : undefined}
+      checkpoint={turn.ownerIndex === null ? undefined : checkpointByMsgIndex.get(turn.ownerIndex)} onRetry={onRetry} />)}
+  </div>
 }
+
+interface ChatTurnViewProps {
+  turn: ChatTurn
+  sessionId: string | null
+  streaming: boolean
+  elapsedMs?: number
+  checkpoint?: CheckpointInfo
+  onRetry?: MessageListProps['onRetry']
+}
+
+const ChatTurnView = memo(function ChatTurnView({ turn, sessionId, streaming, elapsedMs, checkpoint, onRetry }: ChatTurnViewProps) {
+  const references = useMemo(() => groupBoardPreviews(turn.entries.flatMap(({ message }) => {
+    const reference = message.toolCall && boardPreviewReference(message.toolCall)
+    return reference ? [reference] : []
+  })), [turn])
+  const lastProcess = turn.nodes.findLastIndex(node => node.kind === 'process')
+  return <section className="min-w-0 space-y-4" data-chat-turn={turn.id}>
+    {turn.nodes.map((node, index) => node.kind === 'message' ?
+      <div key={node.entry.message.id} data-message-id={node.entry.message.id} className="msg-row min-w-0">
+        <MessageItem message={node.entry.message} index={node.entry.index} sessionId={sessionId} onRetry={onRetry} showBoardAction={node.showBoardAction} />
+      </div> :
+      <TurnProcess key={node.entries[0].message.id} entries={node.entries} sessionId={sessionId}
+        active={streaming && index === turn.nodes.length - 1}
+        elapsedMs={!streaming && index === lastProcess ? elapsedMs : undefined} />
+    )}
+    {sessionId && references.map(group => <BoardChatPreview key={`${sessionId}-${group.boardId}`} sessionId={sessionId} boardId={group.boardId} widgetId={group.widgetIds[0]} widgetIds={group.widgetIds} revision={group.revision} />)}
+    {checkpoint && turn.entries.length > 1 && !streaming && <TurnChangesRow sessionId={sessionId} checkpointId={checkpoint.id} />}
+  </section>
+})
 
 export default memo(MessageList)

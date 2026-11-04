@@ -33,6 +33,7 @@ import GitChip from './GitChip'
 import OpenWithMenu from './OpenWithMenu'
 import useElementWidth from '../lib/useElementWidth'
 import { retryFailedMessage } from '../lib/retryMessage'
+import { useTranscriptScroll } from '../lib/useTranscriptScroll'
 
 const EMPTY_MESSAGES: MessageLike[] = []
 const EMPTY_UI_REQUESTS: UiRequest[] = []
@@ -70,14 +71,7 @@ export default function ChatPanel() {
   const sessionError = useAppStore((s) =>
     currentSessionId ? s.sessionErrors[currentSessionId] : undefined
   )
-  const scrollRef = useRef<HTMLDivElement>(null)
-  // Only auto-scroll while the user is pinned to the bottom; scrolling up
-  // during streaming must not yank the view back down on every delta.
-  const pinnedRef = useRef(true)
-  const [showJump, setShowJump] = useState(false)
-  // Suppress the scroll handler while a programmatic jump animates — the
-  // intermediate positions would otherwise flip pinned off mid-flight.
-  const jumpingRef = useRef(false)
+  const { viewportRef: scrollRef, contentRef, onScroll: handleTranscriptScroll, showJump, jumpToBottom } = useTranscriptScroll(currentSessionId)
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
   const navigate = useNavigate()
   // Built-in slash commands: available in the palette everywhere (home and
@@ -164,40 +158,6 @@ export default function ChatPanel() {
       cancelled = true
     }
   }, [currentSessionId])
-
-  // This WebView ignores behavior:'smooth' (scrollTo/scrollIntoView no-op),
-  // and rAF is throttled for occluded windows — so bottom-scroll is an
-  // instant scrollTop write. Reliability over animation.
-  const scrollToBottomNow = () => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }
-
-  useEffect(() => {
-    if (pinnedRef.current) scrollToBottomNow()
-  }, [sessionMessages, isBusy])
-
-  const handleTranscriptScroll = () => {
-    if (jumpingRef.current) return
-    const el = scrollRef.current
-    if (!el) return
-    const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-    pinnedRef.current = pinned
-    setShowJump(!pinned)
-  }
-
-  const jumpToBottom = () => {
-    pinnedRef.current = true
-    setShowJump(false)
-    jumpingRef.current = true
-    scrollToBottomNow()
-    // Recompute once the animation settles; if the stream is still appending,
-    // the pinned effect above keeps the view glued to the bottom meanwhile.
-    setTimeout(() => {
-      jumpingRef.current = false
-      handleTranscriptScroll()
-    }, 500)
-  }
 
   // useCallback-stabilized: Composer is memoized, so identity-stable handlers
   // are what let the input surface skip streaming re-renders entirely.
@@ -426,7 +386,7 @@ export default function ChatPanel() {
             aria-label={t('sidebar.workbench')}
             aria-pressed={Boolean(workspacePanel)}
             title={t('sidebar.workbench')}
-            className={`app-no-drag rounded-md p-1.5 transition hover:bg-overlay hover:text-cream ${
+            className={`focus-ring app-no-drag rounded-md p-1.5 transition-colors hover:bg-overlay hover:text-cream ${
               workspacePanel ? 'text-accent' : 'text-cream-faint'
             }`}
           >
@@ -445,7 +405,8 @@ export default function ChatPanel() {
                       ? t('export.successWithFile', { filename: exportedFilename ?? '' })
                     : t('export.button')
               }
-              className={`app-no-drag rounded-md p-1.5 transition hover:bg-overlay disabled:opacity-60 ${
+              aria-label={t('export.button')}
+              className={`focus-ring app-no-drag rounded-md p-1.5 transition-colors hover:bg-overlay disabled:opacity-60 ${
                 exportFailed
                   ? 'text-red-500'
                   : exportSuccessPath
@@ -508,7 +469,8 @@ export default function ChatPanel() {
       )}
 
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollRef} onScroll={handleTranscriptScroll} className="relative h-full overflow-y-auto">
+        <div ref={scrollRef} onScroll={handleTranscriptScroll} className="relative h-full overflow-y-auto" style={{ overflowAnchor: 'none' }}>
+        <div ref={contentRef} className="min-h-full">
         {showHero ? (
           // Hero and composer form ONE centered block: mark, sans-serif wordmark
           // title, composer, then one faint hint line and the scenario chips
@@ -537,7 +499,7 @@ export default function ChatPanel() {
                 {/* Home hint line: the @ / command / Enter affordances moved
                     here out of the placeholder — one faint centered line. */}
                 {!currentSessionId && (
-                  <p className="mt-1.5 text-center text-[11px] text-cream-faint/70">
+                  <p className="mt-2 text-center text-[12px] leading-5 text-cream-faint">
                     {t('composer.hint')}
                   </p>
                 )}
@@ -581,11 +543,13 @@ export default function ChatPanel() {
           </div>
         )}
         </div>
+        </div>
         {showJump && (
           <button
             onClick={jumpToBottom}
             title={t('chat.jumpToBottom')}
-            className="absolute bottom-4 right-5 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-line bg-ink-850 text-cream-dim shadow-pop transition-all hover:text-cream"
+            aria-label={t('chat.jumpToBottom')}
+            className="focus-ring absolute bottom-4 right-5 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-line bg-ink-850 text-cream-dim shadow-card transition-colors hover:bg-overlay hover:text-cream"
           >
             <ChevronDown size={14} />
           </button>

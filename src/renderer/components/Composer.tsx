@@ -1095,13 +1095,9 @@ export default memo(function Composer({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`composer-shell relative rounded-[25px] border bg-ink-850 p-2 shadow-composer transition-all duration-200 ease-standard ${
-            dropping
-              ? 'border-dashed border-accent/70 shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
-              : disabled
-                ? 'border-line'
-                : 'border-line focus-within:border-accent/40 focus-within:shadow-[var(--shadow-composer),0_0_0_2px_var(--accent-soft)]'
-          }`}
+          data-dropping={dropping || undefined}
+          data-disabled={disabled || undefined}
+          className={`composer-shell relative border transition-[border-color,box-shadow] duration-150 ${currentSessionId ? 'chat-composer' : 'home-composer'}`}
         >
           {dropping && (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[16px] bg-ink-950/45">
@@ -1173,7 +1169,8 @@ export default memo(function Composer({
                       })
                     }
                     title={t('composer.removeImage')}
-                    className="absolute right-0.5 top-0.5 rounded-full bg-ink-950/85 p-0.5 text-cream-faint transition-colors hover:text-cream"
+                    aria-label={t('composer.removeImage')}
+                    className="focus-ring absolute right-0.5 top-0.5 rounded-full bg-ink-950/85 p-0.5 text-cream-faint transition-colors hover:text-cream"
                   >
                     <X size={10} />
                   </button>
@@ -1311,7 +1308,7 @@ export default memo(function Composer({
                         onClick={handleSend}
                         title={t('composer.queue')}
                         aria-label={t('composer.queue')}
-                        className={`flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong text-[11px] font-medium text-cream-dim shadow-card transition-all duration-150 hover:bg-overlay hover:text-cream active:scale-95 ${
+                        className={`focus-ring flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong text-[11px] font-medium text-cream-dim transition-colors duration-150 hover:bg-overlay hover:text-cream ${
                           compact ? 'w-8 justify-center' : 'px-2.5'
                         }`}
                       >
@@ -1322,7 +1319,7 @@ export default memo(function Composer({
                         onClick={handleSteerCurrent}
                         title={t('composer.steerNow')}
                         aria-label={t('composer.steerNow')}
-                        className={`flex h-8 items-center gap-1.5 rounded-full bg-accent text-[11px] font-medium text-white shadow-card transition-all duration-150 hover:bg-accent-bright active:scale-95 ${
+                        className={`focus-ring flex h-8 items-center gap-1.5 rounded-full bg-accent text-[11px] font-medium text-[rgb(var(--bg-app))] transition-colors duration-150 hover:bg-accent-bright ${
                           compact ? 'w-8 justify-center' : 'px-2.5'
                         }`}
                       >
@@ -1336,7 +1333,7 @@ export default memo(function Composer({
                     disabled={stopping}
                     title={stopping ? t('chat.stopping') : t('composer.stop')}
                     aria-label={stopping ? t('chat.stopping') : t('composer.stop')}
-                    className="flex h-8 w-8 items-center justify-center rounded-full bg-cream text-ink-950 shadow-card transition-all duration-150 hover:opacity-85 active:scale-95 disabled:cursor-wait disabled:opacity-70"
+                    className="focus-ring flex h-8 w-8 items-center justify-center rounded-full bg-cream text-ink-950 transition-colors duration-150 hover:opacity-85 disabled:cursor-wait disabled:opacity-70"
                   >
                     {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
                   </button>
@@ -1347,9 +1344,9 @@ export default memo(function Composer({
                   disabled={!canSend}
                   title={t('composer.send')}
                   aria-label={t('composer.send')}
-                  className={`flex h-[38px] w-[38px] items-center justify-center rounded-full transition-all duration-150 active:scale-95 ${
+                  className={`focus-ring flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full transition-colors duration-150 ${
                     canSend
-                      ? 'bg-accent text-white shadow-card hover:bg-accent-bright'
+                      ? 'bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright'
                       : 'cursor-not-allowed bg-overlay-strong text-cream-faint'
                   }`}
                 >

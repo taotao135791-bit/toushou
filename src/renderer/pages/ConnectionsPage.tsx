@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
-import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, Link2, LoaderCircle, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
+import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, LoaderCircle, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
 import { FeishuCapability, FeishuConnectionSnapshot, FeishuOAuthAuthorizationView, FeishuRegistrationView , FEISHU_CAPABILITY_SCOPES } from '@shared/connections'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
@@ -209,27 +209,26 @@ export default function ConnectionsPage() {
       <header className="app-drag flex h-12 shrink-0 items-center border-b border-line px-4">
         <span className="text-[13px] font-medium text-cream">{t('connections.title')}</span>
       </header>
-      <div className="flex-1 overflow-y-auto p-5">
-        <div className="mx-auto max-w-[720px] space-y-5">
+      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+        <div className="mx-auto max-w-[760px] space-y-4">
           {/* One title only (design.md 3.3): the topbar owns the page name,
               the content keeps just the intro line. */}
-          <p className="text-[13px] text-cream-faint">{t('connections.subtitle')}</p>
+          <p className="pb-1 text-[13px] leading-5 text-cream-dim">{t('connections.subtitle')}</p>
 
-          <section className="overflow-hidden rounded-[18px] border border-line bg-ink-850 shadow-card">
-            <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
+          <section className="overflow-hidden rounded-2xl border border-line bg-ink-850" aria-labelledby="feishu-connection-heading">
+            <div className="px-5 pt-5">
               <div className="flex min-w-0 items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#3370ff] text-[20px] font-semibold text-white shadow-card">飞</div>
+                <div aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#3370ff] text-[20px] font-semibold text-white">飞</div>
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-[15px] font-semibold text-cream">{t('connections.feishu')}</h2>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${isLive ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 id="feishu-connection-heading" className="text-[15px] font-semibold text-cream">{t('connections.feishu')}</h2>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${isLive ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
                       {isLive ? t('connections.connected') : t('connections.notConnected')}
                     </span>
                   </div>
-                  <p className="mt-1 max-w-[520px] text-[12px] leading-5 text-cream-faint">{t('connections.feishuDescription')}</p>
                 </div>
               </div>
-              <Link2 size={17} className="mt-1 shrink-0 text-cream-faint" />
+              <p className="mt-3 max-w-[560px] text-[12px] leading-5 text-cream-dim">{t('connections.feishuDescription')}</p>
             </div>
 
             {!isLive && !isWaiting && !isConfiguring && !showAdvanced && (
@@ -243,10 +242,10 @@ export default function ConnectionsPage() {
                   ))}
                 </div>
                 <div className="mt-5 flex flex-wrap items-center gap-3">
-                  <button onClick={() => void begin()} disabled={busy} className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-[12px] font-medium text-white shadow-card hover:bg-accent-bright disabled:opacity-50">
+                  <button onClick={() => void begin()} disabled={busy} className="min-h-8 focus-ring flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-[12px] font-medium text-[rgb(var(--bg-app))] hover:bg-accent-bright disabled:opacity-50">
                     <QrCode size={14} /> {t('connections.connect')}
                   </button>
-                  <button onClick={() => setShowAdvanced(true)} className="text-[12px] text-cream-faint underline decoration-line-strong underline-offset-4 hover:text-cream">{t('connections.advanced')}</button>
+                  <button onClick={() => setShowAdvanced(true)} className="min-h-8 focus-ring text-[12px] text-cream-faint underline decoration-line-strong underline-offset-4 hover:text-cream">{t('connections.advanced')}</button>
                 </div>
                 <div className="mt-4 flex items-center gap-2 text-[11px] text-cream-faint"><LockKeyhole size={12} />{t('connections.secureNote')}</div>
               </div>
@@ -259,9 +258,9 @@ export default function ConnectionsPage() {
                 <p className="mt-4 text-[12px] text-cream-dim">{isRepairScan ? t('connections.repairScanHint') : t('connections.scanHint')}</p>
                 <p className="mt-1 text-[12px] text-amber-600 dark:text-amber-300">{t('connections.waiting')}</p>
                 <div className="mt-4 flex flex-wrap justify-center gap-3">
-                  <button onClick={() => registration && void window.electronAPI.feishuOpenUrl(registration.verificationUriComplete)} className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><ArrowUpRight size={12} />{t('connections.openLink')}</button>
-                  <button onClick={() => void begin()} disabled={busy} className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><RefreshCw size={12} />{t('connections.regenerate')}</button>
-                  <button onClick={() => void cancel()} disabled={busy} className="rounded-full px-3 py-1.5 text-[12px] text-cream-faint hover:text-cream">{t('connections.cancel')}</button>
+                  <button onClick={() => registration && void window.electronAPI.feishuOpenUrl(registration.verificationUriComplete)} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><ArrowUpRight size={12} />{t('connections.openLink')}</button>
+                  <button onClick={() => void begin()} disabled={busy} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><RefreshCw size={12} />{t('connections.regenerate')}</button>
+                  <button onClick={() => void cancel()} disabled={busy} className="min-h-8 focus-ring rounded-lg px-3 py-1.5 text-[12px] text-cream-faint hover:text-cream">{t('connections.cancel')}</button>
                 </div>
                 <p className="mt-4 text-[11px] text-cream-faint">{t('connections.expires')}</p>
               </div>
@@ -274,25 +273,33 @@ export default function ConnectionsPage() {
             )}
 
             {isLive && (
-              <div className="px-5 py-5">
-                <div className="mb-4 flex items-center gap-2 text-[13px] font-medium text-emerald-600 dark:text-emerald-400"><CheckCircle2 size={16} />{t('connections.connectedHint')}</div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <InfoRow label={t('connections.account')} value={snapshot.appIdMasked ?? '—'} />
-                  <InfoRow label={t('connections.bot')} value={snapshot.botName ?? t('connections.defaultBot')} />
-                  <InfoRow label={t('connections.messages')} value={t('connections.connected')} good />
-                  <InfoRow label={t('connections.docs')} value={t('connections.onDemand')} />
+              <div className="px-5 pb-5 pt-4">
+                <div role="status" className="flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400"><CheckCircle2 size={16} className="shrink-0" />{t('connections.connectedHint')}</div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button onClick={tryInChat} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))] hover:bg-accent-bright"><MessageCircle size={12} />{t('connections.tryInChat')}</button>
+                  <button onClick={() => void testConnection()} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><RefreshCw size={12} />{checked ? t('connections.checked') : t('connections.check')}</button>
+                  <button onClick={() => void disconnect()} disabled={busy} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg border border-red-500/20 px-3 py-1.5 text-[12px] text-red-500 hover:bg-red-500/10"><Unplug size={12} />{t('connections.disconnect')}</button>
                 </div>
-                <div className="mt-5 flex flex-wrap items-center gap-3">
-                  <button onClick={tryInChat} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:bg-accent-bright"><MessageCircle size={12} />{t('connections.tryInChat')}</button>
-                  <button onClick={() => void testConnection()} className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><RefreshCw size={12} />{checked ? t('connections.checked') : t('connections.check')}</button>
-                  <button onClick={() => void disconnect()} disabled={busy} className="flex items-center gap-1.5 rounded-full border border-red-500/20 px-3 py-1.5 text-[12px] text-red-500 hover:bg-red-500/10"><Unplug size={12} />{t('connections.disconnect')}</button>
-                </div>
-                <div className="mt-5 border-t border-line pt-4">
+                {snapshot.consoleAuthUrl && missingScopes.length > 0 && <div role="status" className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-amber-500/10 px-3 py-3">
+                  <div className="flex min-w-0 items-center gap-2 text-[12px] text-amber-800 dark:text-amber-300"><AlertTriangle size={14} className="shrink-0" /><span>{t('connections.scopeGapTitle', { count: missingScopes.length })}</span></div>
+                  <button type="button" onClick={() => void beginRepair()} disabled={busy} className="focus-ring min-h-8 shrink-0 rounded-lg border border-amber-500/30 px-3 py-1.5 text-[12px] font-medium text-amber-800 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-300">{t('connections.scopeGapRepair')}</button>
+                </div>}
+                <details className="mt-4 border-t border-line pt-3">
+                  <summary className="focus-ring w-fit cursor-pointer rounded text-[12px] leading-5 text-cream-dim hover:text-cream">{t('connections.tiktokDetails')}</summary>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <InfoRow label={t('connections.account')} value={snapshot.appIdMasked ?? '—'} />
+                    <InfoRow label={t('connections.bot')} value={snapshot.botName ?? t('connections.defaultBot')} />
+                    <InfoRow label={t('connections.messages')} value={t('connections.connected')} good />
+                    <InfoRow label={t('connections.docs')} value={t('connections.onDemand')} />
+                  </div>
+                </details>
+                <details className="mt-3 border-t border-line pt-3">
+                  <summary className="focus-ring w-fit cursor-pointer rounded text-[12px] leading-5 text-cream-dim hover:text-cream">{t('connections.extraAccess')}</summary>
+                  <div className="pt-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-[12px] font-medium text-cream">{t('connections.extraAccess')}</div>
                     <div className="flex flex-wrap gap-2">
-                      <button onClick={() => void beginOAuth('all')} disabled={oauthBusy} className="rounded-lg bg-accent px-3 py-1.5 text-[11px] font-medium text-white hover:bg-accent-bright disabled:opacity-50">{t('connections.authorizeAll')}</button>
-                      <button onClick={() => void verifyScopes()} disabled={oauthBusy} className="flex items-center gap-1 rounded-full border border-line px-3 py-1.5 text-[11px] text-cream-dim hover:text-cream disabled:opacity-50"><RefreshCw size={11} />{t('connections.verifyScopes')}</button>
+                      <button onClick={() => void beginOAuth('all')} disabled={oauthBusy} className="min-h-8 focus-ring rounded-lg bg-accent px-3 py-1.5 text-[11px] font-medium text-[rgb(var(--bg-app))] hover:bg-accent-bright disabled:opacity-50">{t('connections.authorizeAll')}</button>
+                      <button onClick={() => void verifyScopes()} disabled={oauthBusy} className="min-h-8 focus-ring flex items-center gap-1 rounded-lg border border-line px-3 py-1.5 text-[11px] text-cream-dim hover:text-cream disabled:opacity-50"><RefreshCw size={11} />{t('connections.verifyScopes')}</button>
                     </div>
                   </div>
                   <p className="mt-1 text-[11px] leading-5 text-cream-faint">{t('connections.extraAccessHint')}</p>
@@ -349,19 +356,19 @@ export default function ConnectionsPage() {
                         <button
                           onClick={() => void beginRepair()}
                           disabled={busy}
-                          className="rounded-lg bg-accent px-3 py-1 text-[11px] font-medium text-white transition hover:bg-accent-bright disabled:opacity-50"
+                          className="min-h-8 focus-ring rounded-lg bg-accent px-3 py-1 text-[11px] font-medium text-[rgb(var(--bg-app))] transition hover:bg-accent-bright disabled:opacity-50"
                         >
                           {t('connections.scopeGapRepair')}
                         </button>
                         <button
                           onClick={() => void navigator.clipboard.writeText(missingScopes.map(([, meta]) => meta.scope).join('\n'))}
-                          className="rounded-full border border-line px-3 py-1 text-[11px] text-cream-dim transition hover:text-cream"
+                          className="min-h-8 focus-ring rounded-lg border border-line px-3 py-1 text-[11px] text-cream-dim transition hover:text-cream"
                         >
                           {t('connections.scopeGapCopy')}
                         </button>
                         <button
                           onClick={() => void window.electronAPI.openExternalUrl(snapshot.consoleAuthUrl!)}
-                          className="rounded-full border border-line px-3 py-1 text-[11px] text-cream-dim transition hover:text-cream"
+                          className="min-h-8 focus-ring rounded-lg border border-line px-3 py-1 text-[11px] text-cream-dim transition hover:text-cream"
                         >
                           {t('connections.scopeGapOpenConsole')}
                         </button>
@@ -373,7 +380,7 @@ export default function ConnectionsPage() {
                   )}
 
                   <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <select value={oauthCapability} onChange={(event) => setOauthCapability(event.target.value as FeishuCapability)} className="h-8 rounded-lg border border-line bg-ink-800 px-2 text-[11px] text-cream">
+                    <select aria-label={t('connections.extraAccess')} value={oauthCapability} onChange={(event) => setOauthCapability(event.target.value as FeishuCapability)} className="focus-ring h-8 max-w-full rounded-lg border border-line bg-ink-800 px-2 text-[12px] text-cream">
                       <option value="docs.read">{t('connections.scopeDocsRead')}</option>
                       <option value="docs.write">{t('connections.scopeDocsWrite')}</option>
                       <option value="drive">{t('connections.scopeDrive')}</option>
@@ -385,29 +392,30 @@ export default function ConnectionsPage() {
                     {snapshot.authorizedCapabilities.includes(oauthCapability) ? (
                       <span className="text-[11px] text-emerald-600 dark:text-emerald-400">{t('connections.authorized')}</span>
                     ) : (
-                      <button onClick={() => void beginOAuth()} disabled={oauthBusy} className="rounded-full border border-line px-3 py-1.5 text-[11px] text-cream-dim hover:text-cream disabled:opacity-50">{t('connections.authorize')}</button>
+                      <button onClick={() => void beginOAuth()} disabled={oauthBusy} className="min-h-8 focus-ring rounded-lg border border-line px-3 py-1.5 text-[11px] text-cream-dim hover:text-cream disabled:opacity-50">{t('connections.authorize')}</button>
                     )}
                   </div>
 
+                  </div>
+                </details>
                   {oauthBusy && oauthAuthorization && (
                     <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-accent/30 bg-accent/[0.07] px-3 py-2.5 text-[11px] text-cream-dim">
                       <LoaderCircle size={12} className="animate-spin text-accent" />
                       <span>{t('connections.authorizationAutoWaiting')}</span>
-                      <button onClick={() => void window.electronAPI.feishuOpenUrl(oauthAuthorization.verificationUriComplete)} className="underline underline-offset-2 hover:text-cream">{t('connections.openLink')}</button>
-                      <button onClick={() => { setOauthAuthorization(null); void window.electronAPI.feishuCancelOAuth() }} className="text-cream-faint hover:text-cream">{t('connections.cancel')}</button>
+                      <button onClick={() => void window.electronAPI.feishuOpenUrl(oauthAuthorization.verificationUriComplete)} className="min-h-8 focus-ring underline underline-offset-2 hover:text-cream">{t('connections.openLink')}</button>
+                      <button onClick={() => { setOauthAuthorization(null); void window.electronAPI.feishuCancelOAuth() }} className="min-h-8 focus-ring text-cream-faint hover:text-cream">{t('connections.cancel')}</button>
                     </div>
                   )}
                   {oauthError && <p className="mt-2 text-[11px] text-red-500">{oauthError}</p>}
-                </div>
               </div>
             )}
 
             {isDegraded && (
-              <div className="px-5 py-5"><div className="text-[13px] font-medium text-amber-600 dark:text-amber-300">{t('connections.degraded')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.degradedHint')}</p><button onClick={() => void begin()} className="mt-4 flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white"><RefreshCw size={12} />{t('connections.retry')}</button></div>
+              <div className="px-5 py-5"><div className="text-[13px] font-medium text-amber-600 dark:text-amber-300">{t('connections.degraded')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.degradedHint')}</p><button onClick={() => void begin()} className="min-h-8 focus-ring mt-4 flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))]"><RefreshCw size={12} />{t('connections.retry')}</button></div>
             )}
 
             {isFailed && !showAdvanced && (
-              <div className="px-5 py-5"><div className="text-[13px] font-medium text-red-500">{t('connections.error')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.errorHint')}</p><div className="mt-4 flex gap-3"><button onClick={() => void begin()} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white"><RefreshCw size={12} />{t('connections.retry')}</button><button onClick={() => setShowAdvanced(true)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.advanced')}</button></div></div>
+              <div className="px-5 py-5"><div className="text-[13px] font-medium text-red-500">{t('connections.error')}</div><p className="mt-1 text-[12px] text-cream-faint">{snapshot.lastError || t('connections.errorHint')}</p><div className="mt-4 flex gap-3"><button onClick={() => void begin()} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))]"><RefreshCw size={12} />{t('connections.retry')}</button><button onClick={() => setShowAdvanced(true)} className="min-h-8 focus-ring rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.advanced')}</button></div></div>
             )}
 
             {showAdvanced && !isLive && (
@@ -420,7 +428,7 @@ export default function ConnectionsPage() {
                 </div>
                 <label className="mt-3 block text-[11px] text-cream-faint">{t('connections.brand')}<select value={brand} onChange={(event) => setBrand(event.target.value as 'feishu' | 'lark')} className="mt-1 h-9 rounded-lg border border-line bg-ink-800 px-3 text-[12px] text-cream outline-none"><option value="feishu">{t('connections.feishuRegion')}</option><option value="lark">{t('connections.larkRegion')}</option></select></label>
                 {snapshot.lastError && <p className="mt-3 text-[11px] text-red-500">{snapshot.lastError}</p>}
-                <div className="mt-4 flex flex-wrap gap-3"><button onClick={() => void connectManual()} disabled={busy || !appId || !appSecret} className="rounded-lg bg-accent px-4 py-2 text-[12px] font-medium text-white disabled:opacity-50">{t('connections.saveAdvanced')}</button><button onClick={() => setShowAdvanced(false)} className="rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.hideAdvanced')}</button></div>
+                <div className="mt-4 flex flex-wrap gap-3"><button onClick={() => void connectManual()} disabled={busy || !appId || !appSecret} className="min-h-8 focus-ring rounded-lg bg-accent px-4 py-2 text-[12px] font-medium text-[rgb(var(--bg-app))] disabled:opacity-50">{t('connections.saveAdvanced')}</button><button onClick={() => setShowAdvanced(false)} className="min-h-8 focus-ring rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim">{t('connections.hideAdvanced')}</button></div>
                 <div className="mt-4 flex items-center gap-2 text-[11px] text-cream-faint"><LockKeyhole size={12} />{t('connections.secureNote')}</div>
               </div>
             )}
@@ -438,5 +446,5 @@ export default function ConnectionsPage() {
 }
 
 function InfoRow({ label, value, good }: { label: string; value: string; good?: boolean }) {
-  return <div className="flex items-center justify-between rounded-xl bg-overlay px-3 py-2.5 text-[12px]"><span className="text-cream-faint">{label}</span><span className={good ? 'font-medium text-emerald-600 dark:text-emerald-400' : 'max-w-[210px] truncate text-cream-dim'}>{value}</span></div>
+  return <dl className="flex min-w-0 items-start justify-between gap-3 rounded-lg bg-overlay px-3 py-2.5 text-[12px] leading-5"><dt className="shrink-0 text-cream-faint">{label}</dt><dd className={`min-w-0 break-words text-right ${good ? 'font-medium text-emerald-700 dark:text-emerald-400' : 'text-cream-dim'}`}>{value}</dd></dl>
 }
