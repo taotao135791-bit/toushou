@@ -75,6 +75,7 @@ jobs:
           src/renderer/components/SidebarConversations.e2e.test.ts
           src/renderer/components/MenuPortal.e2e.test.ts
           src/renderer/components/ChatPanelPerf.e2e.test.ts
+          src/renderer/lib/transcriptScroll.e2e.test.ts
       - name: Windows OMP command shim detection
         run: pnpm exec vitest run src/main/__tests__/ompCliDetection.test.ts src/main/__tests__/command.test.ts
 

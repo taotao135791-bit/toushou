@@ -10,6 +10,15 @@ on:
       - 'tools/release-smoke.cjs'
       - 'tools/release-smoke-processes.cjs'
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Preflight platform (manual runs never publish)'
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - windows
 
 # Build/preflight jobs do not get a release-writing token. Only tag staging
 # and publication have write permission.
@@ -25,6 +34,7 @@ concurrency:
 jobs:
   build:
     name: Verify and package (macOS)
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
