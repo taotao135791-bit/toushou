@@ -20,6 +20,37 @@ type Store = Pick<TikTokCredentialStore, 'load' | 'save' | 'clear' | 'retry' | '
 type Flow = { server: Server; state: string; verifier: string; redirectUri: string; clientId: string; clientSecret: string; tokenEndpoint: string; timeout: ReturnType<typeof setTimeout>; epoch: number | null; exchanging: boolean }
 const validEndpoint = (s: unknown): s is string => typeof s === 'string' && (() => { try { const u = new URL(s); return u.origin === BASE && !u.username && !u.password && !u.hash } catch { return false } })()
 const proxyFetch: Fetcher = async (url, init) => (await proxyFetchFor(url, 'appsflyer'))(url, init)
+type StartupStage = 'storage' | 'discovery' | 'listener' | 'registration'
+class OAuthTimeoutError extends Error {}
+class OAuthHttpError extends Error {
+  constructor(readonly status: number) { super('OAuth request failed') }
+}
+
+/** Bound the whole operation, including proxy setup and response-body reads. */
+async function withDeadline<T>(run: () => Promise<T>, milliseconds: number, onTimeout?: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new OAuthTimeoutError())
+      try { onTimeout?.() } catch { /* timeout must still settle */ }
+    }, milliseconds)
+  })
+  try { return await Promise.race([Promise.resolve().then(run), deadline]) }
+  finally { clearTimeout(timer) }
+}
+
+function startupFailure(stage: StartupStage, error: unknown): string {
+  // Provider error bodies, URLs and exception messages may contain credentials.
+  const messages = {
+    storage: ['安全凭据存储不可用，请在连接页重试', 'AF-STORAGE'],
+    discovery: ['AppsFlyer 服务发现失败，请检查投手的网络或代理后重试', 'AF-DISCOVERY'],
+    listener: ['无法启动本机回调服务，请重试', 'AF-CALLBACK'],
+    registration: ['AppsFlyer 授权注册失败，请检查网络或稍后重试', 'AF-REGISTER'],
+  } as const
+  const [message, code] = messages[error instanceof TikTokCredentialStorageError ? 'storage' : stage]
+  const detail = error instanceof OAuthTimeoutError ? '，请求超时' : error instanceof OAuthHttpError ? `，HTTP ${error.status}` : ''
+  return `${message}${detail}（${code}）`
+}
 
 /** Owns interactive OAuth; tokens never enter renderer, settings, or MCP config. */
 export class AppsFlyerConnectionManager {
@@ -69,6 +100,8 @@ export class AppsFlyerConnectionManager {
     if (this.pendingRefresh) await this.pendingRefresh
     if (this.pendingSave) await this.pendingSave.catch(() => {})
     if (generation !== this.generation) return this.getSnapshot()
+    let stage: StartupStage = 'storage'
+    let startupServer: Server | undefined
     try {
       const recoveringStorage = this.storageBlocked
       if (recoveringStorage) { this.credentials = await this.store.retry(epoch); this.storageBlocked = false }
@@ -81,12 +114,16 @@ export class AppsFlyerConnectionManager {
         if (fresh && await this.checkConnection(fresh.accessToken, generation)) return this.getSnapshot()
         if (generation !== this.generation) return this.getSnapshot()
       }
+      stage = 'discovery'
       const meta = await this.json(`${BASE}/.well-known/oauth-authorization-server`)
       if (generation !== this.generation) return this.getSnapshot()
       if (!validEndpoint(meta.authorization_endpoint) || !validEndpoint(meta.token_endpoint) || !validEndpoint(meta.registration_endpoint)) throw new Error('invalid metadata')
+      stage = 'listener'
       const listener = await this.listen()
+      startupServer = listener.server
       if (generation !== this.generation) { listener.server.close(); return this.getSnapshot() }
       const redirectUri = `http://127.0.0.1:${listener.port}/callback`
+      stage = 'registration'
       let registration: Record<string, unknown>
       try { registration = await this.json(meta.registration_endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Toushou', redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'client_secret_post' }) }) }
       catch (error) { listener.server.close(); throw error }
@@ -99,8 +136,9 @@ export class AppsFlyerConnectionManager {
       const url = new URL(meta.authorization_endpoint)
       for (const [key, value] of Object.entries({ response_type: 'code', client_id: flow.clientId, redirect_uri: redirectUri, scope: 'user', state, code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', resource: APPSFLYER_MCP_ENDPOINT })) url.searchParams.set(key, value)
       this.url = url.toString(); this.status = 'waiting_for_user'; this.emit()
-      try { await this.open(this.url) } catch { if (this.flow === flow) { this.error = '无法打开浏览器，请手动打开授权链接'; this.emit() } }
-    } catch (error) { if (generation === this.generation) { if (error instanceof TikTokCredentialStorageError) this.storageBlocked = true; this.fail('连接初始化失败，请重试或检查安全存储') } }
+      await this.openAuthorizationUrl(this.url)
+    } catch (error) { if (generation === this.generation) { if (error instanceof TikTokCredentialStorageError) this.storageBlocked = true; this.fail(startupFailure(stage, error)) } }
+    finally { if (startupServer && this.flow?.server !== startupServer) startupServer.close() }
     return this.getSnapshot()
   }
   cancel(): AppsFlyerConnectionSnapshot { ++this.generation; this.closeFlow(); this.status = this.storageBlocked ? 'degraded' : this.credentials?.accessToken ? (this.verified ? 'connected' : 'degraded') : 'disconnected'; this.error = this.status === 'degraded' ? 'AppsFlyer 连接尚未验证，请重试' : undefined; this.emit(); return this.getSnapshot() }
@@ -122,7 +160,23 @@ export class AppsFlyerConnectionManager {
     this.pendingDisconnect = run
     try { return await run } finally { if (this.pendingDisconnect === run) this.pendingDisconnect = null }
   }
-  async openAuthorizationUrl(url: string): Promise<boolean> { if (!this.url || url !== this.url || this.status !== 'waiting_for_user') return false; try { await this.open(url); return true } catch { return false } }
+  async openAuthorizationUrl(url: string): Promise<boolean> {
+    const flow = this.flow
+    if (!flow || !this.url || url !== this.url || this.status !== 'waiting_for_user') return false
+    try {
+      await withDeadline(() => this.open(url), 10_000)
+      if (this.flow === flow && this.status === 'waiting_for_user' && this.error) { this.error = undefined; this.emit() }
+      return true
+    } catch (error) {
+      if (this.flow === flow && this.status === 'waiting_for_user') {
+        this.error = error instanceof OAuthTimeoutError
+          ? '未能确认浏览器已打开，请检查浏览器或重新打开授权页（AF-BROWSER）'
+          : '无法打开系统浏览器，请检查默认浏览器后重新打开授权页（AF-BROWSER）'
+        this.emit()
+      }
+      return false
+    }
+  }
   markReadFailure(error: unknown, token?: string): void {
     if (!this.pendingDisconnect && this.credentials?.accessToken && (!token || this.credentials.accessToken === token) && error instanceof Error && error.message === 'appsflyer-authorization-error') { this.clearVerifiedTools(); this.status = 'degraded'; this.error = 'AppsFlyer 授权已失效或权限不足，请重新连接'; this.emit() }
   }
@@ -161,9 +215,38 @@ export class AppsFlyerConnectionManager {
       this.credentials = next; this.clearVerifiedTools(); return true
     } catch (error) { if (generation === this.generation) { this.clearVerifiedTools(); if (error instanceof TikTokCredentialStorageError) this.storageBlocked = true; this.status = 'degraded'; this.error = this.storageBlocked ? '安全凭据存储不可用，请在连接页重试' : '连接续期失败，请重新授权'; this.emit() }; return false }
   }
-  private async json(url: string, init: RequestInit = {}): Promise<Record<string, unknown>> { if (!validEndpoint(url)) throw new Error('invalid endpoint'); const r = await this.fetcher(url, { ...init, signal: AbortSignal.timeout(20_000), redirect: 'error' }); if (!r.ok) throw new Error('request failed'); const x = await r.json(); if (!x || typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid response'); return x as Record<string, unknown> }
+  private async json(url: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
+    if (!validEndpoint(url)) throw new Error('invalid endpoint')
+    const controller = new AbortController()
+    return withDeadline(async () => {
+      const r = await this.fetcher(url, { ...init, signal: controller.signal, redirect: 'error' })
+      if (!r.ok) throw new OAuthHttpError(r.status)
+      const x = await r.json()
+      if (!x || typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid response')
+      return x as Record<string, unknown>
+    }, 20_000, () => controller.abort())
+  }
   private async token(url: string, body: URLSearchParams): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scope?: string }> { const x = await this.json(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() }); if (typeof x.access_token !== 'string' || !x.access_token) throw new Error('invalid token'); return { accessToken: x.access_token, ...(typeof x.refresh_token === 'string' && x.refresh_token ? { refreshToken: x.refresh_token } : {}), ...(typeof x.expires_in === 'number' && Number.isFinite(x.expires_in) && x.expires_in > 0 ? { expiresAt: this.now() + x.expires_in * 1000 } : {}), ...(typeof x.scope === 'string' ? { scope: x.scope } : {}) } }
-  private listen(): Promise<{ server: Server; port: number }> { return new Promise((resolve, reject) => { const server = createServer((req, res) => this.callback(req, res)); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const addr = server.address(); if (!addr || typeof addr === 'string') { server.close(); reject(new Error('listener failed')); return }; resolve({ server, port: addr.port }) }) }) }
+  private listen(): Promise<{ server: Server; port: number }> {
+    return new Promise((resolve, reject) => {
+      const server = createServer((req, res) => this.callback(req, res))
+      let settled = false
+      const fail = (error: Error) => {
+        if (settled) return
+        settled = true; clearTimeout(timer); server.close(); reject(error)
+      }
+      const timer = setTimeout(() => fail(new OAuthTimeoutError()), 5_000)
+      server.once('error', fail)
+      try {
+        server.listen(0, '127.0.0.1', () => {
+          if (settled) { server.close(); return }
+          const addr = server.address()
+          if (!addr || typeof addr === 'string') { fail(new Error('listener failed')); return }
+          settled = true; clearTimeout(timer); resolve({ server, port: addr.port })
+        })
+      } catch (error) { fail(error instanceof Error ? error : new Error('listener failed')) }
+    })
+  }
   private callback(req: IncomingMessage, res: ServerResponse): void {
     const u = new URL(req.url ?? '/', 'http://127.0.0.1')
     if (u.pathname !== '/callback') { res.writeHead(u.pathname === '/favicon.ico' ? 204 : 404); res.end(); return }
