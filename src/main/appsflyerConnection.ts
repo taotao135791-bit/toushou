@@ -8,7 +8,8 @@ import { defaultPiAgentDir } from './piSettings'
 import { listMcpConnections, removeMcpConnection, upsertManagedServer, type McpStorePaths } from './integrations/mcp/McpConnectionStore'
 import { AppsFlyerConnectionManager } from './integrations/appsflyer/AppsFlyerConnectionManager'
 import { AppsFlyerReadFacade } from './integrations/appsflyer/AppsFlyerReadFacade'
-import { APPSFLYER_SKILL, APPSFLYER_SKILL_FILE } from './integrations/appsflyer/appsflyerSkill'
+import { APPSFLYER_SKILL, APPSFLYER_SKILL_FILE, APPSFLYER_SKILL_V1 } from './integrations/appsflyer/appsflyerSkill'
+import { openAuthWindow, type AuthWindowHandle } from './integrations/appsflyer/authWindow'
 
 const NAME = 'appsflyer'
 const DEFINITION = { id: NAME, kind: 'oauth' as const, label: 'AppsFlyer', description: '连接 AppsFlyer 官方 MCP，读取已有聚合数据。', capabilities: ['mcp'] }
@@ -103,9 +104,26 @@ function onChange(snapshot: AppsFlyerConnectionSnapshot): void { if (!closing) b
 function installSkill(): void {
   const dir = path.join(app.getPath('userData'), 'skills'); mkdirSync(dir, { recursive: true })
   const file = path.join(dir, APPSFLYER_SKILL_FILE)
+  const marker = `${file}.hash`
+  const wantedHash = createHash('sha256').update(APPSFLYER_SKILL).digest('hex')
   // Preserve edits and hand-written files with the same name.
   try { writeFileSync(file, APPSFLYER_SKILL, { mode: 0o600, flag: 'wx' }) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    // An EXISTING file still tracks app upgrades — but only when it is
+    // provably ours and unmodified: its content matches the last hash we
+    // wrote (or the legacy v1 template from before markers existed). A
+    // user-edited file keeps their edits and the new guidance stays out.
+    try {
+      const current = readFileSync(file, 'utf8')
+      const currentHash = createHash('sha256').update(current).digest('hex')
+      let lastHash = ''
+      try { lastHash = readFileSync(marker, 'utf8').trim() } catch { /* first upgrade path */ }
+      const untouched = currentHash === lastHash || current === APPSFLYER_SKILL_V1
+      if (untouched && currentHash !== wantedHash) writeFileSync(file, APPSFLYER_SKILL, { mode: 0o600 })
+    } catch { /* never let skill refresh break the connection init */ }
+  }
+  try { writeFileSync(marker, wantedHash, { mode: 0o600 }) } catch { /* best effort */ }
 }
 export async function initializeAppsFlyerConnection(): Promise<void> {
   if (initialized || initFailed) return
@@ -135,7 +153,28 @@ export async function beginAppsFlyerConnection(): Promise<AppsFlyerConnectionSna
 }
 export async function cancelAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { await initializeAppsFlyerConnection(); if (manager && initialized) manager.cancel(); return projected }
 export async function disconnectAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { await initializeAppsFlyerConnection(); if (manager && initialized) await manager.disconnect(); return projected }
-export async function openAppsFlyerAuthorizationUrl(url: string): Promise<boolean> { await initializeAppsFlyerConnection(); return !!manager && initialized && await manager.openAuthorizationUrl(url) }
+/**
+ * Open the authorization page INSIDE the app in a direct-connection window.
+ * The user's browser is not used: its proxy state (cached PAC failures, a
+ * node that cannot reach the provider) is outside our control, while the
+ * in-app window shares the same resilient network path as the API client.
+ * The loopback redirect never renders — the window closes on it.
+ */
+let authWindow: AuthWindowHandle | null = null
+export async function openAppsFlyerAuthorizationUrl(url: string): Promise<boolean> {
+  await initializeAppsFlyerConnection()
+  if (!manager || !initialized) return false
+  const snapshot = manager.getSnapshot()
+  if (snapshot.status !== 'waiting_for_user' || url !== snapshot.authorizationUrl) return false
+  authWindow?.close()
+  const redirectPrefix = (snapshot.authorizationUrl?.match(/redirect_uri=([^&]+)/)?.[1] ?? '')
+  const prefix = decodeURIComponent(redirectPrefix)
+  if (!prefix.startsWith('http://127.0.0.1:')) return false
+  const handle = openAuthWindow(url, prefix)
+  authWindow = handle
+  void handle.done.then(() => { if (authWindow === handle) authWindow = null })
+  return true
+}
 /** Session-scoped loopback capability; never expose the upstream OAuth grant. */
 export function appsFlyerToolEnv(): Record<string, string> {
   if (!closing && initialized && projected.connected && capability && manager?.hasVerifiedTools()) {
@@ -143,9 +182,31 @@ export function appsFlyerToolEnv(): Record<string, string> {
   }
   return {}
 }
+/** Why appsFlyerToolEnv came up empty — wiring for the dataset pull's error report. */
+export function appsFlyerToolEnvDiag(): Record<string, unknown> {
+  return {
+    closing,
+    initialized,
+    projectedStatus: projected.status,
+    projectedConnected: projected.connected,
+    hasCapability: !!capability,
+    hasManager: !!manager,
+    manager: manager ? manager.verifiedDiag() : null
+  }
+}
+/**
+ * The verified OAuth access token for Main-internal pipelines (the dataset
+ * pull). The loopback capability token that agents see is deliberately NOT
+ * usable against the official endpoint.
+ */
+export function verifiedAppsFlyerAccessToken(): string | null {
+  return manager ? manager.getVerifiedAccessToken() : null
+}
 export async function shutdownAppsFlyerConnection(): Promise<void> {
   closing = true
   try {
+    authWindow?.close()
+    authWindow = null
     if (initializing) await initializing
     manager?.cancel()
     facade?.close()

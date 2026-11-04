@@ -25,6 +25,8 @@ import {
   setTaskOutcomeSink,
   setTaskOutcomeSinkResetForTest,
   resetRunningGuardsForTest,
+  setTaskReuseSessionFile,
+  resetTaskSessionReuse,
   startScheduler,
   stopSchedulerForTest,
   reconcileInterruptedTaskRuns
@@ -486,6 +488,55 @@ describe('deadline-driven scheduling regressions', () => {
     release()
     await vi.advanceTimersByTimeAsync(1)
     expect(fired).toEqual(['first', 'second'])
+  })
+})
+
+describe('task session reuse', () => {
+  it('passes the pinned transcript to the spawn fn and re-pins the forked file', async () => {
+    tasks.push(baseTask({ reuseSession: true, reuseSessionFile: '/sessions/first.jsonl' }))
+    const optsSeen: Array<{ resumeSessionFile?: string } | undefined> = []
+    setTaskSpawnFn(async (_cwd, _title, _prompt, opts) => {
+      optsSeen.push(opts)
+      return { sessionId: 'sess-reuse' }
+    })
+    await runTaskNow('t1')
+    expect(optsSeen[0]?.resumeSessionFile).toBe('/sessions/first.jsonl')
+    // The 'connected' handshake re-pins the forked file through the bridge.
+    setTaskReuseSessionFile('t1', '/sessions/second.jsonl')
+    expect(tasks[0].reuseSessionFile).toBe('/sessions/second.jsonl')
+  })
+
+  it('resetTaskSessionReuse clears the mode and the pin; the next firing opens fresh', async () => {
+    tasks.push(baseTask({ reuseSession: true, reuseSessionFile: '/sessions/first.jsonl' }))
+    expect(resetTaskSessionReuse('t1')?.reuseSession).toBe(false)
+    expect(tasks[0].reuseSessionFile).toBeUndefined()
+    const optsSeen: Array<{ resumeSessionFile?: string } | undefined> = []
+    setTaskSpawnFn(async (_cwd, _title, _prompt, opts) => {
+      optsSeen.push(opts)
+      return { sessionId: 'sess-fresh' }
+    })
+    await runTaskNow('t1')
+    expect(optsSeen[0]?.resumeSessionFile).toBeUndefined()
+  })
+
+  it('a failed resume drops the stale pin so the next firing can start fresh', async () => {
+    tasks.push(baseTask({ reuseSession: true, reuseSessionFile: '/sessions/deleted.jsonl' }))
+    setTaskSpawnFn(async () => null)
+    await runTaskNow('t1')
+    expect(tasks[0].reuseSession).toBe(true)
+    expect(tasks[0].reuseSessionFile).toBeUndefined()
+  })
+
+  it('an edit that omits reuse fields does not silently flip the mode', () => {
+    tasks.push(baseTask({ reuseSession: true, reuseSessionFile: '/s/first.jsonl' }))
+    const edited = baseTask({ name: 'renamed' })
+    const saved = saveTask(edited)
+    expect(saved.reuseSession).toBe(true)
+    expect(saved.reuseSessionFile).toBe('/s/first.jsonl')
+  })
+
+  it('resetTaskSessionReuse reports unknown tasks', () => {
+    expect(resetTaskSessionReuse('missing')).toBeNull()
   })
 })
 

@@ -182,6 +182,7 @@ export const IPC_CHANNELS = {
   TASKS_DELETE: 'tasks:delete',
   TASKS_TOGGLE: 'tasks:toggle',
   TASKS_RUN_NOW: 'tasks:run-now',
+  TASKS_RESET_REUSE: 'tasks:reset-reuse',
   /** Main → renderer push when a scheduled task fires/completes. */
   TASKS_STATE_CHANGED: 'tasks:state-changed',
   // --- Project knowledge ------------------------------------------------------
@@ -224,6 +225,7 @@ export const IPC_CHANNELS = {
   APPSFLYER_CANCEL: 'appsflyer:cancel',
   APPSFLYER_DISCONNECT: 'appsflyer:disconnect',
   APPSFLYER_OPEN_URL: 'appsflyer:open-url',
+  APPSFLYER_DATASET_REFRESH: 'appsflyer:dataset-refresh',
   /** TikTok Ads 后台报表接入（Open API v1.3 → "TikTok 报表" 看板数据集）。
    *  TIKTOK_STATUS 已被上方 MCP 连接快照占用，报表接入单独使用
    *  tiktok-report: 命名空间，两条通路互不干扰。 */

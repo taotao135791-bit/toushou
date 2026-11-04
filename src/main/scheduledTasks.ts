@@ -50,6 +50,11 @@ export interface TaskSpawnOptions {
   permissionMode?: 'default' | 'readonly'
   /** Skill library id injected as the firing session's system prompt. */
   skillId?: string
+  /**
+   * Reuse mode: resume this durable transcript instead of opening a new
+   * conversation, so a recurring task keeps one running context.
+   */
+  resumeSessionFile?: string
 }
 
 export type TaskSpawnFn = (
@@ -109,8 +114,12 @@ const RUNTIME_OWNED_KEYS = [
   'lastRunStatus',
   'consecutiveFailures',
   'lastFailureReason',
-  'runs'
+  'runs',
+  'reuseSessionFile'
 ] as const
+
+/** Explicit user intent, not runtime state: an edit carries it like any other field. */
+const USER_OWNED_KEYS = ['reuseSession'] as const
 
 export function saveTask(task: ScheduledTask): ScheduledTask {
   const tasks = getTasks()
@@ -120,13 +129,48 @@ export function saveTask(task: ScheduledTask): ScheduledTask {
     const carried = Object.fromEntries(
       RUNTIME_OWNED_KEYS.filter((key) => previous[key] !== undefined).map((key) => [key, previous[key]])
     )
-    tasks[index] = { ...task, ...carried }
+    const userCarried = Object.fromEntries(
+      USER_OWNED_KEYS.filter((key) => task[key] === undefined && previous[key] !== undefined).map((key) => [key, previous[key]])
+    )
+    tasks[index] = { ...task, ...userCarried, ...carried }
   } else {
     tasks.push(task)
   }
   saveTasks(tasks)
   broadcastTasksChanged()
   rescheduleScheduler()
+  // Return the STORED task, not the caller's payload: carried fields (the run
+  // ledger, reuse pin) only exist on the stored copy.
+  return tasks[index] ?? tasks[tasks.length - 1]!
+}
+
+/**
+ * Turn reuse mode OFF for one task (the user's "下一次开新对话" reset), and
+ * drop the pinned transcript so the next firing starts fresh. Works from the
+ * UI, from the agent bridge, and from a message inside the task's own
+ * conversation — one path, one semantics.
+ */
+export function resetTaskSessionReuse(id: string): ScheduledTask | null {
+  const tasks = getTasks()
+  const task = tasks.find((t) => t.id === id)
+  if (!task) return null
+  task.reuseSession = false
+  delete task.reuseSessionFile
+  saveTasks(tasks)
+  broadcastTasksChanged()
+  return task
+}
+
+/**
+ * Set reuse mode ON and pin the transcript the next firing resumes. The
+ * spawn implementation records the durable session file after each run.
+ */
+export function setTaskReuseSessionFile(id: string, sessionFile: string): ScheduledTask | null {
+  const tasks = getTasks()
+  const task = tasks.find((t) => t.id === id)
+  if (!task || !task.reuseSession || typeof sessionFile !== 'string' || !sessionFile) return task ?? null
+  task.reuseSessionFile = sessionFile
+  saveTasks(tasks)
   return task
 }
 
@@ -513,13 +557,28 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
       await recordFailure(task.id, runId, 'engine-unavailable')
       return null
     }
+    // Reuse mode resumes the pinned transcript; a stale pin (session file
+    // deleted, workspace reset) must not sink the run — fall back to a fresh
+    // conversation and clear the pin so the next firing re-pins it.
+    const resumeSessionFile = task.reuseSession ? task.reuseSessionFile : undefined
     const result = await spawnFn(task.cwd, task.name, task.prompt, {
       taskId: task.id,
       runId,
       permissionMode: task.permissionMode,
-      ...(task.skillId ? { skillId: task.skillId } : {})
+      ...(task.skillId ? { skillId: task.skillId } : {}),
+      ...(resumeSessionFile ? { resumeSessionFile } : {})
     })
     if (!result) {
+      // A failed resume is retried fresh next time; the pinned file was the
+      // difference between "every day keeps its context" and "task is dead".
+      if (resumeSessionFile && task.reuseSession) {
+        const tasks = getTasks()
+        const stored = tasks.find((t) => t.id === task.id)
+        if (stored?.reuseSessionFile === resumeSessionFile) {
+          delete stored.reuseSessionFile
+          saveTasks(tasks)
+        }
+      }
       await recordFailure(task.id, runId, 'spawn-failed')
       return null
     }

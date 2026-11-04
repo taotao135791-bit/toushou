@@ -64,7 +64,8 @@ export default function taskTools(api: ToolHostApi): void {
       '创建一个定时任务：到点自动在当前项目目录里用这条提示词启动一次分析。' +
       `任务运行目录固定为当前项目，无需也不能指定其他目录。${SCHEDULE_DOC} ` +
       '可选 notifyChannel："feishu" 表示每轮完成后把结果摘要推送到飞书（默认只发系统通知）。' +
-      '可选 skillId：把 Skill 库里的某份打法注入为该任务的执行手册（如「爆款竞品分析.md」），定时任务将按该打法执行。',
+      '可选 skillId：把 Skill 库里的某份打法注入为该任务的执行手册（如「爆款竞品分析.md」），定时任务将按该打法执行。' +
+      '可选 reuseSession=true：每次触发沿用上一次的对话继续跑（适合"先刷新看板再汇报"这类日常例行动作，省资源）；默认 false，每次开新对话。',
     parameters: {
       type: 'object',
       properties: {
@@ -74,7 +75,8 @@ export default function taskTools(api: ToolHostApi): void {
         notifyOnComplete: { type: 'boolean', description: '完成后是否通知，默认 true' },
         notifyChannel: { type: 'string', description: '通知渠道：system（默认）或 feishu（需已连接飞书）' },
         permissionMode: { type: 'string', description: 'default（跟随全局）或 readonly（只读执行）' },
-        skillId: { type: 'string', description: '可选，Skill 库文件名（如 爆款竞品分析.md），注入为执行打法' }
+        skillId: { type: 'string', description: '可选，Skill 库文件名（如 爆款竞品分析.md），注入为执行打法' },
+        reuseSession: { type: 'boolean', description: 'true = 每次触发沿用同一对话（上下文连续）；false/省略 = 每次开新对话' }
       },
       required: ['name', 'prompt', 'schedule']
     },
@@ -93,6 +95,22 @@ export default function taskTools(api: ToolHostApi): void {
     approval: 'write',
     execute: async (_id, params) => ({
       content: [{ type: 'text', text: await call({ action: 'task_delete', taskId: params?.taskId }) }]
+    })
+  })
+  api.registerTool({
+    name: 'toushou_task_reset_reuse',
+    label: '定时任务下次开新对话',
+    description:
+      '让一个启用了沿用对话（reuseSession）的定时任务从下一次起重新开新对话：清除已固定的对话记录，上下文不再延续。' +
+      '用户说"下次开新对话/重新开始/上下文太长了"时使用。id 来自 toushou_task_list。',
+    parameters: {
+      type: 'object',
+      properties: { taskId: { type: 'string', description: '任务 id' } },
+      required: ['taskId']
+    },
+    approval: 'write',
+    execute: async (_id, params) => ({
+      content: [{ type: 'text', text: await call({ action: 'task_reset_reuse', taskId: params?.taskId }) }]
     })
   })
 }

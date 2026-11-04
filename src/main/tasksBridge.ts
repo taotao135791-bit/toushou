@@ -1,15 +1,15 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { ScheduledTask } from '../shared/types'
-import { buildTaskFromAgentInput, deleteTask, listTasks, saveTask } from './scheduledTasks'
+import { buildTaskFromAgentInput, deleteTask, listTasks, resetTaskSessionReuse, saveTask } from './scheduledTasks'
 import { serializeBoundedJson } from '../shared/boundedJson'
 
 /**
  * Loopback bridge for the bundled tasks toolkit: the OMP extension registers
- * toushou_task_list/create/delete and calls back into Main over this server.
- * Main owns validation and identity — the tool process never touches the
- * settings store, and a created task's cwd is always the calling session's
- * own workspace (resolved here, never taken from tool input).
+ * toushou_task_list/create/delete/reset_reuse and calls back into Main over
+ * this server. Main owns validation and identity — the tool process never
+ * touches the settings store, and a created task's cwd is always the calling
+ * session's own workspace (resolved here, never taken from tool input).
  */
 
 const MAX_BODY_BYTES = 64 * 1024
@@ -17,8 +17,9 @@ export const TASKS_TOOLS_ENV_KEY = 'TOUSHOU_TASKS'
 
 export type TaskBridgeRequest =
   | { action: 'task_list' }
-  | { action: 'task_create'; name: unknown; prompt: unknown; schedule: unknown; notifyOnComplete?: unknown; notifyChannel?: unknown; permissionMode?: unknown }
+  | { action: 'task_create'; name: unknown; prompt: unknown; schedule: unknown; notifyOnComplete?: unknown; notifyChannel?: unknown; permissionMode?: unknown; reuseSession?: unknown }
   | { action: 'task_delete'; taskId: string }
+  | { action: 'task_reset_reuse'; taskId: string }
 
 export function parseTaskBridgeRequest(raw: unknown): TaskBridgeRequest | null {
   if (!raw || typeof raw !== 'object') return null
@@ -32,11 +33,15 @@ export function parseTaskBridgeRequest(raw: unknown): TaskBridgeRequest | null {
       schedule: value.schedule,
       notifyOnComplete: value.notifyOnComplete,
       notifyChannel: value.notifyChannel,
-      permissionMode: value.permissionMode
+      permissionMode: value.permissionMode,
+      reuseSession: value.reuseSession
     }
   }
   if (value.action === 'task_delete' && typeof value.taskId === 'string') {
     return { action: 'task_delete', taskId: value.taskId }
+  }
+  if (value.action === 'task_reset_reuse' && typeof value.taskId === 'string') {
+    return { action: 'task_reset_reuse', taskId: value.taskId }
   }
   return null
 }
@@ -53,7 +58,9 @@ function taskView(task: ScheduledTask): Record<string, unknown> {
     notifyChannel: task.notifyChannel ?? 'system',
     notifyOnComplete: task.notifyOnComplete,
     lastRunAt: task.lastRunAt,
-    lastFailureReason: task.lastFailureReason
+    lastFailureReason: task.lastFailureReason,
+    /** True = firings continue the same conversation; reset via task_reset_reuse. */
+    reuseSession: task.reuseSession === true
   }
 }
 
@@ -130,8 +137,14 @@ function dispatch(tool: TaskBridgeRequest, cwd: string): Record<string, unknown>
   if (tool.action === 'task_create') {
     const built = buildTaskFromAgentInput(tool, cwd, Date.now())
     if (!built.ok) return { ok: false, error: built.error }
+    // Opt-in reuse at creation time (the natural phrasing: "以后都在这个对话里跑").
+    if (tool.reuseSession === true) built.task.reuseSession = true
     saveTask(built.task)
     return { ok: true, task: taskView(built.task) }
+  }
+  if (tool.action === 'task_reset_reuse') {
+    const reset = resetTaskSessionReuse(tool.taskId)
+    return reset ? { ok: true, task: taskView(reset) } : { ok: false, error: 'not-found' }
   }
   // task_delete
   const deleted = deleteTask(tool.taskId)

@@ -1671,6 +1671,16 @@ export interface ScheduledTask {
    * 'readonly' opts a task down to read-only execution.
    */
   permissionMode?: 'default' | 'readonly'
+  /**
+   * Reuse mode: firings resume the previous run's session instead of opening
+   * a new conversation, so a recurring "refresh then report" task keeps one
+   * context. The user can reset it at any time (UI control or a message in
+   * the task's own conversation); the next firing then opens fresh. The
+   * engine clears this automatically when the previous session is gone.
+   */
+  reuseSession?: boolean
+  /** Durable transcript file the next reuse firing resumes from. Engine-owned. */
+  reuseSessionFile?: string
 }
 
 // --- Project knowledge -------------------------------------------------------

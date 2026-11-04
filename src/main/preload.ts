@@ -549,6 +549,8 @@ export interface ElectronAPI {
   onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => () => void
   /** AppsFlyer official connection; only secret-free snapshots cross IPC. */
   appsflyerStatus: () => Promise<AppsFlyerConnectionSnapshot>
+  /** Re-pull every recorded AF query spec into its AF-{name} dataset (master refresh). */
+  appsflyerDatasetRefresh: (window: { start: string; end: string }) => Promise<{ ok: boolean; error?: string; results?: Array<{ name: string; datasetName: string; ok: boolean; error?: string; rowCount?: number }> }>
   appsflyerBegin: () => Promise<AppsFlyerConnectionSnapshot>
   appsflyerCancel: () => Promise<AppsFlyerConnectionSnapshot>
   appsflyerDisconnect: () => Promise<AppsFlyerConnectionSnapshot>
@@ -604,6 +606,8 @@ export interface ElectronAPI {
    * — callers surface anything but ok instead of spinning silently.
    */
   runTaskNow: (id: string) => Promise<'ok' | 'running' | 'not-found' | 'failed'>
+  /** Turn reuse mode off and drop the pinned transcript (下一次开新对话). */
+  resetTaskReuse: (id: string) => Promise<ScheduledTask | null>
   onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => () => void
   readKnowledge: (cwd: string) => Promise<string | null>
   writeKnowledge: (cwd: string, content: string) => Promise<boolean>
@@ -1033,6 +1037,8 @@ const api: ElectronAPI = {
   tiktokDisconnect: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_DISCONNECT),
   tiktokOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_OPEN_URL, url),
   appsflyerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_STATUS),
+  appsflyerDatasetRefresh: (window: { start: string; end: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_DATASET_REFRESH, window) as Promise<{ ok: boolean; error?: string; results?: Array<{ name: string; datasetName: string; ok: boolean; error?: string; rowCount?: number }> }>,
   appsflyerBegin: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_BEGIN),
   appsflyerCancel: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_CANCEL),
   appsflyerDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_DISCONNECT),
@@ -1183,6 +1189,7 @@ const api: ElectronAPI = {
   runTaskNow: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_RUN_NOW, id) as Promise<
     'ok' | 'running' | 'not-found' | 'failed'
   >,
+  resetTaskReuse: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_RESET_REUSE, id) as Promise<ScheduledTask | null>,
   onTasksStateChanged: (callback: (tasks: ScheduledTask[]) => void) => {
     const handler = (_event: IpcRendererEvent, tasks: ScheduledTask[]) => callback(tasks)
     ipcRenderer.on(IPC_CHANNELS.TASKS_STATE_CHANGED, handler)

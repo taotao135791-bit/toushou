@@ -126,6 +126,8 @@ import {
   startScheduler,
   setTaskSpawnFn,
   setTaskOutcomeSink,
+  setTaskReuseSessionFile,
+  resetTaskSessionReuse,
   isValidSchedule,
   noteTaskSessionEvent,
   noteTaskSessionFile
@@ -246,6 +248,7 @@ import {
   shutdownAppsFlyerConnection
 } from './appsflyerConnection'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
+import { pullAppsFlyerDatasets } from './integrations/appsflyer/appsflyerDataset'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
 import { SessionOriginIndex } from './sessionOrigins'
 
@@ -769,6 +772,11 @@ export function registerIpc() {
                   markSessionFile(event.sessionId, state.sessionFile)
                   nameSessionDurally.fileAvailable(event.sessionId, state.sessionFile)
                   sessionOriginIndex.record(state.sessionFile, 'task')
+                  // Reuse mode: pin the LATEST durable file (a resumed session
+                  // forks a new one) so the next firing continues this context.
+                  // setTaskReuseSessionFile only writes when the task has
+                  // reuseSession on — this bootstraps the FIRST pin too.
+                  if (opts?.taskId) setTaskReuseSessionFile(opts.taskId, state.sessionFile)
                   const historyUuid = path.basename(state.sessionFile).match(/_([^_]+)\.jsonl$/)?.[1]
                   if (opts?.runId && historyUuid) noteTaskSessionFile(event.sessionId, opts.runId, historyUuid)
                 }
@@ -785,7 +793,8 @@ export function registerIpc() {
         // An explicitly read-only task must not silently inherit the
         // workspace's global write/exec mode while running unattended.
         ...(opts?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
-        ...(skillSystemPrompt ? { skillSystemPrompt } : {})
+        ...(skillSystemPrompt ? { skillSystemPrompt } : {}),
+        ...(opts?.resumeSessionFile ? { resumeSessionPath: opts.resumeSessionFile } : {})
       }
     )
     if (session.status === 'error') return null
@@ -918,6 +927,14 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.APPSFLYER_OPEN_URL, (_event, url: unknown) => {
     if (typeof url !== 'string' || url.length > 16384) return false
     return openAppsFlyerAuthorizationUrl(url)
+  })
+  // Master-refresh re-pull for AF dataset cards: explicit window dates only
+  // (the renderer derives them from the board's master scope), over the specs
+  // the agent recorded when it built the board.
+  ipcMain.handle(IPC_CHANNELS.APPSFLYER_DATASET_REFRESH, async (_event, window: unknown) => {
+    const w = (window ?? {}) as Record<string, unknown>
+    if (typeof w.start !== 'string' || typeof w.end !== 'string') return { ok: false, error: 'invalid-window', results: [] }
+    return pullAppsFlyerDatasets({ window: { start: w.start, end: w.end } })
   })
 
   // --- TikTok 报表接入（Open API v1.3 → "TikTok 报表" 数据集） -------------
@@ -2607,7 +2624,9 @@ export function registerIpc() {
       notifyOnComplete: t.notifyOnComplete !== false,
       ...(t.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
       ...(typeof t.skillId === 'string' && isValidSkillId(t.skillId) ? { skillId: t.skillId } : {}),
-      ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
+      ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
+      // User intent, not runtime state: omitting it on an edit means "keep".
+      ...(t.reuseSession === true ? { reuseSession: true as const } : {})
     }
     return { ok: true, task: saveTask(clean) }
   })
@@ -2625,6 +2644,14 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.TASKS_RUN_NOW, async (_event, id: unknown) => {
     if (typeof id !== 'string') return 'failed' as const
     return runTaskNow(id)
+  })
+
+  // Reuse-mode reset ("下一次开新对话"): clears the pinned transcript so the
+  // next firing opens a fresh conversation. Reachable from the UI, the agent
+  // bridge, and a message in the task's own conversation.
+  ipcMain.handle(IPC_CHANNELS.TASKS_RESET_REUSE, (_event, id: unknown) => {
+    if (typeof id !== 'string') return null
+    return resetTaskSessionReuse(id)
   })
 
   // --- Project knowledge ----------------------------------------------------

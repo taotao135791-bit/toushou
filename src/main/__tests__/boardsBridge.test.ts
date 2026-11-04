@@ -30,6 +30,7 @@ describe('parseBoardsBridgeRequest', () => {
     expect(parseBoardsBridgeRequest({ action: 'boards_list' })?.action).toBe('boards_list')
     expect(parseBoardsBridgeRequest({ action: 'board_get', name: 'x' })?.action).toBe('board_get')
     expect(parseBoardsBridgeRequest({ action: 'board_create', template: 'tiktok' })?.action).toBe('board_create')
+    expect(parseBoardsBridgeRequest({ action: 'af_dataset_pull', appId: 'a', eventName: 'b' })?.action).toBe('af_dataset_pull')
     expect(parseBoardsBridgeRequest({ action: 'make_coffee' })).toBeNull()
     expect(parseBoardsBridgeRequest(null)).toBeNull()
     expect(parseBoardsBridgeRequest('x')).toBeNull()
@@ -217,6 +218,41 @@ describe('boards bridge dispatch', () => {
     expect(renamed.ok).toBe(true)
     const collision = await dispatch({ action: 'board_rename', name: '新名', newName: '已有' })
     expect(collision.error).toBe('name-exists')
+  })
+
+  it('af_dataset_pull validates input and pulls through the AF dataset module', async () => {
+    // Missing fields are rejected before any pull.
+    const bad = await dispatch({ action: 'af_dataset_pull', appId: '', eventName: '' })
+    expect(bad.ok).toBe(false)
+    expect(bad.error).toBe('invalid-input')
+
+    // A happy path: the dataset module is stubbed at its boundary.
+    const pullCalls: unknown[] = []
+    const pull = vi.fn(async (input?: unknown) => {
+      pullCalls.push(input)
+      return { ok: true, results: [{ name: '安装量', datasetName: 'AF-安装量', ok: true, rowCount: 5 }] }
+    })
+    const saveQuerySpecMock = vi.fn()
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      saveQuerySpec: saveQuerySpecMock,
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const ok = await freshDispatch({ action: 'af_dataset_pull', name: '安装量', appId: 'app-1', eventName: 'af_install', days: 7 })
+      expect(ok.ok).toBe(true)
+      expect((ok.dataset as { name: string }).name).toBe('AF-安装量')
+      expect(pull).toHaveBeenCalledTimes(1)
+      const arg = (pullCalls[0] ?? {}) as { window: { start: string; end: string }; specIds: string[] }
+      expect(arg.specIds).toEqual(['afq-app-1-安装量'])
+      expect(arg.window.end >= arg.window.start).toBe(true)
+      expect(saveQuerySpecMock).toHaveBeenCalledTimes(1)
+      const saved = saveQuerySpecMock.mock.calls[0][0] as { id: string; query: { in_app_event: string[] } }
+      expect(saved.query.in_app_event).toEqual(['af_install'])
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
   })
 
   it('imports a CSV as a replace-by-name dataset that template bindings resolve', async () => {
