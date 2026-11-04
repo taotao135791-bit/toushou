@@ -60,6 +60,7 @@ export class AppsFlyerConnectionManager {
   private readonly onChange: (snapshot: AppsFlyerConnectionSnapshot) => void
   private readonly now: () => number
   private readonly probe: (token: string) => Promise<ToolDescription[]>
+  private readonly windowsStartup: boolean
   private readonly filePath?: string
   private credentials: Credentials | null = null
   private status: ConnectionStatus = 'disconnected'
@@ -76,7 +77,8 @@ export class AppsFlyerConnectionManager {
   private verifiedToken: string | null = null
   private verifiedTools: ToolDescription[] = []
   private pendingVerification: { token: string; generation: number; promise: Promise<boolean> } | null = null
-  constructor(options: { credentialStore?: Store; fetchImpl?: Fetcher; openExternal?: (url: string) => Promise<void>; onChange?: (snapshot: AppsFlyerConnectionSnapshot) => void; now?: () => number; probe?: (token: string) => Promise<ToolDescription[]> } = {}) {
+  constructor(options: { credentialStore?: Store; fetchImpl?: Fetcher; openExternal?: (url: string) => Promise<void>; onChange?: (snapshot: AppsFlyerConnectionSnapshot) => void; now?: () => number; probe?: (token: string) => Promise<ToolDescription[]>; platform?: NodeJS.Platform } = {}) {
+    this.windowsStartup = (options.platform ?? process.platform) === 'win32'
     this.filePath = options.credentialStore ? undefined : path.join(app.getPath('userData'), 'appsflyer-credentials.bin')
     this.store = options.credentialStore ?? new TikTokCredentialStore({ filePath: this.filePath })
     this.fetcher = options.fetchImpl ?? proxyFetch
@@ -136,9 +138,12 @@ export class AppsFlyerConnectionManager {
       const url = new URL(meta.authorization_endpoint)
       for (const [key, value] of Object.entries({ response_type: 'code', client_id: flow.clientId, redirect_uri: redirectUri, scope: 'user', state, code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', resource: APPSFLYER_MCP_ENDPOINT })) url.searchParams.set(key, value)
       this.url = url.toString(); this.status = 'waiting_for_user'; this.emit()
-      await this.openAuthorizationUrl(this.url)
-    } catch (error) { if (generation === this.generation) { if (error instanceof TikTokCredentialStorageError) this.storageBlocked = true; this.fail(startupFailure(stage, error)) } }
-    finally { if (startupServer && this.flow?.server !== startupServer) startupServer.close() }
+      if (this.windowsStartup) await this.openAuthorizationUrl(this.url)
+      else {
+        try { await this.open(this.url) } catch { if (this.flow === flow) { this.error = '无法打开浏览器，请手动打开授权链接'; this.emit() } }
+      }
+    } catch (error) { if (generation === this.generation) { if (error instanceof TikTokCredentialStorageError) this.storageBlocked = true; this.fail(this.windowsStartup ? startupFailure(stage, error) : '连接初始化失败，请重试或检查安全存储') } }
+    finally { if (this.windowsStartup && startupServer && this.flow?.server !== startupServer) startupServer.close() }
     return this.getSnapshot()
   }
   cancel(): AppsFlyerConnectionSnapshot { ++this.generation; this.closeFlow(); this.status = this.storageBlocked ? 'degraded' : this.credentials?.accessToken ? (this.verified ? 'connected' : 'degraded') : 'disconnected'; this.error = this.status === 'degraded' ? 'AppsFlyer 连接尚未验证，请重试' : undefined; this.emit(); return this.getSnapshot() }
@@ -161,6 +166,11 @@ export class AppsFlyerConnectionManager {
     try { return await run } finally { if (this.pendingDisconnect === run) this.pendingDisconnect = null }
   }
   async openAuthorizationUrl(url: string): Promise<boolean> {
+    // Keep the published macOS path unchanged; startup hardening is Windows-only.
+    if (!this.windowsStartup) {
+      if (!this.url || url !== this.url || this.status !== 'waiting_for_user') return false
+      try { await this.open(url); return true } catch { return false }
+    }
     const flow = this.flow
     if (!flow || !this.url || url !== this.url || this.status !== 'waiting_for_user') return false
     try {
@@ -217,6 +227,13 @@ export class AppsFlyerConnectionManager {
   }
   private async json(url: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
     if (!validEndpoint(url)) throw new Error('invalid endpoint')
+    if (!this.windowsStartup) {
+      const r = await this.fetcher(url, { ...init, signal: AbortSignal.timeout(20_000), redirect: 'error' })
+      if (!r.ok) throw new Error('request failed')
+      const x = await r.json()
+      if (!x || typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid response')
+      return x as Record<string, unknown>
+    }
     const controller = new AbortController()
     return withDeadline(async () => {
       const r = await this.fetcher(url, { ...init, signal: controller.signal, redirect: 'error' })
@@ -228,6 +245,17 @@ export class AppsFlyerConnectionManager {
   }
   private async token(url: string, body: URLSearchParams): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scope?: string }> { const x = await this.json(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() }); if (typeof x.access_token !== 'string' || !x.access_token) throw new Error('invalid token'); return { accessToken: x.access_token, ...(typeof x.refresh_token === 'string' && x.refresh_token ? { refreshToken: x.refresh_token } : {}), ...(typeof x.expires_in === 'number' && Number.isFinite(x.expires_in) && x.expires_in > 0 ? { expiresAt: this.now() + x.expires_in * 1000 } : {}), ...(typeof x.scope === 'string' ? { scope: x.scope } : {}) } }
   private listen(): Promise<{ server: Server; port: number }> {
+    if (!this.windowsStartup) {
+      return new Promise((resolve, reject) => {
+        const server = createServer((req, res) => this.callback(req, res))
+        server.once('error', reject)
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server.address()
+          if (!addr || typeof addr === 'string') { server.close(); reject(new Error('listener failed')); return }
+          resolve({ server, port: addr.port })
+        })
+      })
+    }
     return new Promise((resolve, reject) => {
       const server = createServer((req, res) => this.callback(req, res))
       let settled = false

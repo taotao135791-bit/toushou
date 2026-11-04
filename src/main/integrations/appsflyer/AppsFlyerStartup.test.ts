@@ -29,12 +29,13 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
-function fixture() {
+function fixture(platform: NodeJS.Platform = 'win32') {
   const store = { load: vi.fn(async () => null), retry: vi.fn(async () => null), save: vi.fn(async () => {}), clear: vi.fn(async () => {}), sharedStorageBlockedEpoch: () => null }
   const fetcher = vi.fn(async (url: string, _init?: RequestInit): Promise<Response> => url.endsWith('/register') ? json({ client_id: 'synthetic-client', client_secret: 'synthetic-secret' }) : json(metadata))
   const open = vi.fn(async (_url: string): Promise<void> => {})
-  const manager = new AppsFlyerConnectionManager({ credentialStore: store, fetchImpl: fetcher, openExternal: open })
-  return { manager, store, fetcher, open }
+  const onChange = vi.fn()
+  const manager = new AppsFlyerConnectionManager({ credentialStore: store, fetchImpl: fetcher, openExternal: open, onChange, platform })
+  return { manager, store, fetcher, open, onChange }
 }
 const privateDetail = 'synthetic-private-error-marker'
 function assertSafeError(value: { lastError?: string }, label: RegExp) {
@@ -219,5 +220,46 @@ describe('AppsFlyer startup: bounded failures and recovery', () => {
     expect(f.manager.getSnapshot().status).toBe('disconnected')
     expect(f.manager.getSnapshot().lastError).toBeUndefined()
     expect(f.open).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('AppsFlyer startup on macOS retains existing behavior', () => {
+  it('keeps the original generic discovery failure and does not leak provider details', async () => {
+    const f = fixture('darwin')
+    f.fetcher.mockRejectedValueOnce(new Error(privateDetail))
+    const result = await f.manager.begin()
+    expect(result.status).toBe('failed')
+    expect(result.lastError).toBe('连接初始化失败，请重试或检查安全存储')
+    expect(result.lastError).not.toContain(privateDetail)
+    expect(f.open).not.toHaveBeenCalled()
+  })
+
+  it('keeps the original browser error after a successful manual reopen without another event', async () => {
+    const f = fixture('darwin')
+    f.open.mockRejectedValueOnce(new Error(privateDetail))
+    const failure = await f.manager.begin()
+    expect(failure.status).toBe('waiting_for_user')
+    expect(failure.lastError).toBe('无法打开浏览器，请手动打开授权链接')
+    const eventsBeforeReopen = f.onChange.mock.calls.length
+    expect(await f.manager.openAuthorizationUrl(failure.authorizationUrl!)).toBe(true)
+    expect(f.manager.getSnapshot().lastError).toBe(failure.lastError)
+    expect(f.onChange).toHaveBeenCalledTimes(eventsBeforeReopen)
+    f.manager.cancel()
+  })
+
+  it('does not impose the Windows 10-second browser deadline', async () => {
+    vi.useFakeTimers()
+    const f = fixture('darwin'), launch = deferred<void>()
+    f.open.mockImplementationOnce(() => launch.promise)
+    let done = false
+    const pending = f.manager.begin().then(value => { done = true; return value })
+    await vi.advanceTimersByTimeAsync(10_001)
+    expect(done).toBe(false)
+    expect(f.manager.getSnapshot().status).toBe('waiting_for_user')
+    expect(f.manager.getSnapshot().lastError).toBeUndefined()
+    launch.resolve()
+    expect((await pending).status).toBe('waiting_for_user')
+    f.manager.cancel()
   })
 })
