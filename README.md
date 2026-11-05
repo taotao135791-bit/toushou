@@ -4,13 +4,13 @@
 
 ## 下载与安装
 
-当前公开版本：**v2.2.1**。安装包和校验文件也可在 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.2.1) 查看。
+当前公开版本：**v2.2.2**。安装包和校验文件也可在 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.2.2) 查看。
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.1/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.1/TouShou-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.1/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.1/TouShou-x64.zip) |
-| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.1/TouShou-x64.exe) |
+| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.2/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.2/TouShou-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.2/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.2/TouShou-x64.zip) |
+| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.2.2/TouShou-x64.exe) |
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 
@@ -28,7 +28,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 使用限制
 
-- AppsFlyer 可读取授权应用和 TikTok 渠道聚合事件；活动关联不等于事件定义或归因口径相同，时区不一致时不能直接对账。详见[接入说明](docs/appsflyer-connection.md)。
+- AppsFlyer 可读取授权应用和 TikTok 渠道聚合事件；活动关联不等于事件或归因口径相同。命名数据集仍有共享名称、全局刷新与结果完整性限制，详见[接入说明](docs/appsflyer-connection.md)。
 
 - Google 真实账户验收暂缓；链接读取支持的页面和报表口径有限，详见[多平台读数](docs/multi-platform-readings.md)。
 - 自选日期最长 366 天；AI 分析及布局生成最多发送所选范围内 50 个账户。快照和图表不会自动刷新，汇总数据不包含每日趋势。
@@ -38,7 +38,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 最新发版
 
-**v2.2.1** 整理对话过程和看板预览，加入官方平台标识及网站图标，改善气泡、操作栏和深色按钮对比；语言选择移入设置。修复保存与关闭弹窗被裁切、重复提交及今日页滚动位置问题，优化前端重绘和解析。完整记录见[更新日志](CHANGELOG.md)。
+**v2.2.2** 完善 AppsFlyer 应用内授权回调和令牌续期；循环任务支持对话复用及重置，并修复关闭复用、切换项目和迟到状态问题。改善 Windows 更新下载与安装后重启，增加命名 AF 数据集和读数来源标识。完整记录见[更新日志](CHANGELOG.md)。
 
 ## 开发
 
