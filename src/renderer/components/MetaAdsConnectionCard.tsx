@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, ArrowUpRight, CheckCircle2, Infinity, LoaderCircle, RefreshCw, Unplug } from 'lucide-react'
+import { AlertTriangle, ArrowUpRight, CheckCircle2, LoaderCircle, RefreshCw, Unplug } from 'lucide-react'
 import type { MetaAdsConnectionSnapshot } from '@shared/connections'
 import { useT } from '../i18n'
+import BrandIcon from './BrandIcon'
 
 export default function MetaAdsConnectionCard() {
   const t = useT()
@@ -81,16 +82,14 @@ export default function MetaAdsConnectionCard() {
   return (
     <section className="rounded-2xl border border-line bg-ink-850 p-5 shadow-card" aria-labelledby="meta-ads-heading" aria-busy={busy !== null}>
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-overlay text-cream" aria-hidden="true">
-              <Infinity size={22} />
+        <div className="min-w-0 flex-1 basis-[260px]">
+          <div className="flex min-h-10 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-overlay" aria-hidden="true">
+              <BrandIcon brand="facebook" size={32} />
             </div>
-            <div>
-              <h2 id="meta-ads-heading" className="text-[15px] font-semibold text-cream">Meta Ads</h2>
-              <p className="mt-1 max-w-[520px] text-[12px] leading-5 text-cream-faint">{t('connections.metaAdsDescription')}</p>
-            </div>
+            <h2 id="meta-ads-heading" className="text-[15px] font-semibold text-cream">Meta Ads</h2>
           </div>
+          <p className="mt-3 max-w-[560px] text-[12px] leading-5 text-cream-dim">{t('connections.metaAdsDescription')}</p>
         </div>
         {!snapshot?.connected && !waiting && !connecting && (
           <button type="button" onClick={() => void run('begin')} disabled={busy !== null} className="focus-ring shrink-0 rounded-full bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] hover:bg-accent-bright disabled:opacity-50">{t('connections.metaAdsConnect')}</button>
