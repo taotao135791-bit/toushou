@@ -903,9 +903,46 @@ export default function BoardsPage() {
       const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
       return id === 'TikTok 报表' || datasets.some(dataset => dataset.id === id && dataset.name === 'TikTok 报表')
     })
+    // An AF dataset binding is any dataset whose name is the legacy
+    // 「AppsFlyer 报表」or starts with the AF- prefix (AF-{name} specs).
+    const isAfDatasetId = (widget: BoardWidget) => {
+      const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
+      if (!id || widget.config.source !== 'dataset') return false
+      if (id === 'AppsFlyer 报表' || id.startsWith('AF-')) return true
+      const bound = datasets.find(dataset => dataset.id === id)
+      return !!bound && (bound.name === 'AppsFlyer 报表' || bound.name.startsWith('AF-'))
+    }
+    const hasAfDatasetBound = current.widgets.some(isAfDatasetId)
     if (widgets.length === 0 && !hasDatasetBound) return
     setBoardRefreshBusy(true)
     setBoardRefreshProgress({ done: 0, total: Math.max(widgets.length, 1) })
+    // AF dataset cards: re-pull the recorded specs over the board's master
+    // window before the dataset reload, mirroring the TikTok fallback branch.
+    if (hasAfDatasetBound) {
+      // Window = the board's master scope; without one, cover what the AF
+      // dataset already holds (its own date range) — a hard default like
+      // last7 would silently SHRINK a longer recorded span on refresh.
+      const range = current.masterScope?.range
+      let afWindow: { start: string; end: string }
+      if (range === 'yesterday') afWindow = yesterdayWindow()
+      else if (range) afWindow = boardReadingRangeDates(range === 'today' ? 'today' : range === 'last3' ? 'last3' : range === 'last30' ? 'last30' : 'last7')
+      else {
+        // No master scope: cover what the AF dataset already holds (its own
+        // date span) — a hard default like last7 would silently SHRINK a
+        // longer recorded span on refresh.
+        const afDataset = datasets.find(dataset => dataset.name === 'AppsFlyer 报表' || dataset.name.startsWith('AF-'))
+        const dateIndex = afDataset?.columns.findIndex(column => column.type === 'date') ?? -1
+        const days = afDataset && dateIndex >= 0 ? afDataset.rows.map(row => String(row[dateIndex])).filter(Boolean) : []
+        const sorted = [...new Set(days)].sort()
+        afWindow = sorted.length > 0 ? { start: sorted[0], end: sorted[sorted.length - 1] } : boardReadingRangeDates('last7')
+      }
+      try {
+        const result = await window.electronAPI.appsflyerDatasetRefresh({ start: afWindow.start, end: afWindow.end })
+        if (!result.ok && result.error !== 'no-specs' && result.error !== 'empty') flashToast(t('boards.datasetRefreshFailed'), false)
+      } catch {
+        flashToast(t('boards.datasetRefreshFailed'), false)
+      }
+    }
     // ONE pipeline: the TT reading itself writes the shared dataset. When the
     // board has dataset cards but no TT module to drive that read, run one
     // reading pull here so refresh-all updates every card in one pass.
@@ -990,6 +1027,14 @@ export default function BoardsPage() {
     ? current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)).length
     : 0
   const refreshableReadingCount = readingModuleCount + (current?.widgets.filter((widget) => widget.type === 'google-report-reading').length ?? 0)
+  /** AF dataset cards are live too: the master refresh re-pulls their specs. */
+  const hasAfDatasetCards = !!current && current.widgets.some(widget => {
+    const id = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : ''
+    if (!id || widget.config.source !== 'dataset') return false
+    if (id === 'AppsFlyer 报表' || id.startsWith('AF-')) return true
+    const bound = datasets.find(dataset => dataset.id === id)
+    return !!bound && (bound.name === 'AppsFlyer 报表' || bound.name.startsWith('AF-'))
+  })
   const browserReadingCount = current
     ? current.widgets.filter((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary').length
     : 0
@@ -1831,7 +1876,7 @@ export default function BoardsPage() {
             <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint" title={t('boards.master.noModulesHint')}>{t('boards.master.noModulesHint')}</span>
           )}
           <div className="min-w-0 flex-1" />
-          {refreshableReadingCount > 0 && (
+          {(refreshableReadingCount > 0 || hasAfDatasetCards) && (
           <button
             onClick={() => void refreshReadingModules()}
             disabled={boardRefreshBusy}

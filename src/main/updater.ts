@@ -1,5 +1,8 @@
 import { execFile, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, createWriteStream, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, type WriteStream } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import https from 'node:https'
 import path from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
@@ -7,6 +10,7 @@ import { autoUpdater } from 'electron-updater'
 import YAML from 'yaml'
 import { IPC_CHANNELS } from '../shared/constants'
 import { UpdaterStatus } from '../shared/types'
+import { proxyFetchFor } from './integrations/tiktok/proxyFetch'
 
 /**
  * Auto-update via electron-updater (GitHub Releases provider, configured in
@@ -88,14 +92,21 @@ function httpsRedirect(url: string, location: string | undefined, label: string)
   return next.toString()
 }
 
-function requestText(url: string, redirects = 0): Promise<string> {
+function requestText(url: string, redirects = 0, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('更新服务器重定向次数过多'))
     if (new URL(url).protocol !== 'https:') return reject(new Error('更新服务器链接不安全'))
     const request = https.get(
       url,
-      { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Toushou-Updater' } },
+      { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Toushou-Updater' }, ...(signal ? { signal } : {}) },
       (response) => {
+        // Windows supplies a hard-deadline signal. Consume body failures too:
+        // aborting a response can otherwise emit an unhandled stream error.
+        if (signal) {
+          response.on('error', reject)
+          response.on('aborted', () => reject(new Error('更新清单读取中断，请稍后重试')))
+          response.on('close', () => { if (!response.complete) reject(new Error('更新清单读取中断，请稍后重试')) })
+        }
         let location: string | null
         try {
           location = httpsRedirect(url, response.headers.location, '更新服务器')
@@ -106,7 +117,7 @@ function requestText(url: string, redirects = 0): Promise<string> {
         }
         if (location) {
           response.resume()
-          return requestText(new URL(location, url).toString(), redirects + 1).then(resolve, reject)
+          return requestText(new URL(location, url).toString(), redirects + 1, signal).then(resolve, reject)
         }
         let body = ''
         response.setEncoding('utf8')
@@ -395,6 +406,10 @@ export async function updaterDownload(): Promise<UpdaterStatus> {
   if (currentStatus.status === 'downloading' || currentStatus.status === 'progress' || currentStatus.status === 'downloaded') return currentStatus
   downloadGeneration += 1
   if (useUnsignedMacUpdater) return unsignedMacDownload()
+  // Windows routes through the resilient downloader (stall watchdog, Range
+  // resume, direct/proxy rotation, SHA512 verify); electron-updater's own
+  // executor is the in-function fallback when every attempt fails.
+  if (process.platform === 'win32') return windowsDownload()
   setStatus({ status: 'downloading' })
   try {
     await autoUpdater.downloadUpdate()
@@ -409,6 +424,7 @@ export function updaterQuitAndInstall(): void {
   installRequested = true
   try {
     if (useUnsignedMacUpdater) scheduleUnsignedMacInstall()
+    else if (process.platform === 'win32' && winInstallerPath) windowsInstall()
     else autoUpdater.quitAndInstall()
   } catch (err) {
     installRequested = false
@@ -423,4 +439,306 @@ export function updaterQuitAndInstall(): void {
  */
 export async function updaterOpenReleasePage(): Promise<void> {
   await shell.openExternal('https://github.com/taotao135791-bit/toushou/releases/latest')
+}
+
+// ---------------------------------------------------------------------------
+// Windows resilient download — the electron-updater executor has no stall
+// detection: on a connection that silently stops delivering bytes (a VPN
+// tunnel dying mid-transfer is the classic case) the progress bar freezes
+// forever. This downloader follows the user's configured network (environment
+// /system proxy — the same resolution as every other integration; it never
+// switches routes, nodes, or proxies on the user's behalf), resumes from the
+// partial file with Range requests, aborts a stalled attempt and retries the
+// SAME network with resume, verifies SHA512 before install is allowed, and
+// falls back to electron-updater's own download when every attempt fails.
+// ---------------------------------------------------------------------------
+
+const UPDATE_BASE = 'https://github.com/taotao135791-bit/toushou/releases/latest/download'
+const WIN_INSTALLER_ATTEMPTS = 8
+const WIN_STALL_TIMEOUT_MS = 30_000
+const WIN_WATCHDOG_TICK_MS = 5_000
+const WIN_DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000
+const WIN_MAX_DOWNLOAD_REQUESTS = 1024
+
+interface WinManifest {
+  version: string
+  url: string
+  fileName: string
+  sha512: string
+  size?: number
+}
+
+interface WinFetchResponse {
+  ok: boolean
+  status: number
+  headers: { get(name: string): string | null }
+  body?: { cancel?(): unknown } | null
+}
+
+export type WinFetcher = (url: string, init: { headers?: Record<string, string>; signal?: AbortSignal }) => Promise<WinFetchResponse>
+
+export interface ResumableDownloadOptions {
+  /**
+   * ONE fetcher over the user's configured network (environment/system proxy
+   * as resolved for every other integration). This module NEVER switches
+   * routes or nodes on the user's behalf: a stalled attempt is aborted and
+   * retried over the SAME network with Range resume, and repeated failure
+   * surfaces an actionable error instead.
+   */
+  fetcher: WinFetcher
+  /** No bytes for this long = the route stalled (tests use a small value). */
+  stallTimeoutMs?: number
+  /** Expected total size when known (progress denominator before Range metadata). */
+  totalSize?: number
+  /** Called with 0-100. */
+  onProgress?: (percent: number) => void
+  /** Poll: return false to abort the whole loop (the caller went away). */
+  shouldContinue?: () => boolean
+  sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * Download `url` to `destination` resuming from any partial file. Every
+ * attempt: resume from the current file size (Range) over the same configured
+ * network; a stall (no bytes for WIN_STALL_TIMEOUT_MS) aborts the attempt.
+ * A server that ignores Range answers 200 — the partial file is discarded and
+ * the download restarts cleanly.
+ */
+export async function downloadResumable(url: string, destination: string, options: ResumableDownloadOptions): Promise<void> {
+  const { fetcher, onProgress = () => {}, shouldContinue } = options
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  let lastError: Error = new Error('下载重试次数用尽')
+  let expectedTotal = Number.isSafeInteger(options.totalSize) && options.totalSize! > 0 ? options.totalSize : undefined
+  const deadline = Date.now() + WIN_DOWNLOAD_TIMEOUT_MS
+  let requests = 0
+  for (let attempt = 0; attempt < WIN_INSTALLER_ATTEMPTS; attempt++) {
+    if (++requests > WIN_MAX_DOWNLOAD_REQUESTS || Date.now() >= deadline) throw new Error('更新下载耗时过长或分段过多，请稍后重试')
+    if (shouldContinue && !shouldContinue()) throw new Error('下载已取消')
+    let received = existsSync(destination) ? statSync(destination).size : 0
+    const controller = new AbortController()
+    const headers: Record<string, string> = { 'User-Agent': 'Toushou-Updater' }
+    if (received > 0) headers.Range = `bytes=${received}-`
+    let lastAt = Date.now()
+    let cancelled = false
+    let invalidSize = false
+    let expired = false
+    let response: WinFetchResponse | undefined
+    let stream: Readable | undefined
+    let file: WriteStream | undefined
+    let fileClosed: Promise<void> | undefined
+    const stallTimeoutMs = options.stallTimeoutMs ?? WIN_STALL_TIMEOUT_MS
+    const watchdog = setInterval(() => {
+      if (Date.now() >= deadline) { expired = true; controller.abort() }
+      else if (shouldContinue && !shouldContinue()) { cancelled = true; controller.abort() }
+      else if (Date.now() - lastAt >= stallTimeoutMs) controller.abort()
+    }, Math.max(50, Math.min(WIN_WATCHDOG_TICK_MS, Math.floor(stallTimeoutMs / 4))))
+    // A fetcher that ignores the abort signal must not hang the attempt: the
+    // abort itself rejects this race and the loop moves on.
+    const aborted = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(new Error(cancelled ? '下载已取消' : '下载停滞，请检查网络后重试')), { once: true })
+    })
+    try {
+      const requested = Promise.resolve().then(() => fetcher(url, { headers, signal: controller.signal }))
+      void requested.then(value => { if (controller.signal.aborted) cancelWinBody(value) }, () => {})
+      response = await Promise.race([requested, aborted])
+      if (response.status === 416 && received > 0) {
+        const match = /^bytes \*\/(\d+)$/.exec(response.headers.get('content-range') ?? '')
+        const total = match ? Number(match[1]) : 0
+        if (Number.isSafeInteger(total) && total > 0 && received === total && (!expectedTotal || expectedTotal === total)) {
+          onProgress(100)
+          return
+        }
+        // An old/oversized partial file is not proof of a complete new update.
+        rmSync(destination, { force: true })
+        throw new Error('更新下载范围已失效，重新下载')
+      }
+      if (response.status !== 200 && response.status !== 206) {
+        throw new Error(`更新下载返回 HTTP ${response.status}`)
+      }
+      if (response.status === 200 && received > 0) {
+        // The server ignored Range — discard the partial file.
+        rmSync(destination, { force: true })
+        received = 0
+      }
+      const lengthHeader = response.headers.get('content-length')
+      const contentLength = lengthHeader === null ? undefined : Number(lengthHeader)
+      if (contentLength !== undefined && (!/^\d+$/.test(lengthHeader!) || !Number.isSafeInteger(contentLength))) throw new Error('更新下载长度无效')
+      let responseEnd: number | undefined
+      if (response.status === 206) {
+        const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '')
+        if (!match) throw new Error('更新下载缺少有效范围')
+        const [start, end, total] = match.slice(1).map(Number)
+        if (![start, end, total].every(Number.isSafeInteger) || start !== received || end < start || end >= total ||
+            (contentLength !== undefined && contentLength !== end - start + 1) || (expectedTotal && expectedTotal !== total)) throw new Error('更新下载范围不匹配')
+        expectedTotal = total
+        responseEnd = end + 1
+      } else if (contentLength !== undefined) {
+        if (expectedTotal && expectedTotal !== contentLength) throw new Error('更新下载总长度不匹配')
+        expectedTotal = contentLength
+      }
+      const total = expectedTotal ?? 0
+      const startedAt = received
+      if (!response.body) throw new Error('下载响应没有内容')
+      stream = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
+      file = createWriteStream(destination, received > 0 ? { flags: 'r+', start: received } : undefined)
+      fileClosed = new Promise(resolve => file!.once('close', resolve))
+      stream.on('data', (chunk: Buffer) => {
+        received += chunk.length
+        lastAt = Date.now()
+        if ((responseEnd !== undefined && received > responseEnd) || (total > 0 && received > total)) { invalidSize = true; controller.abort() }
+        else if (total > 0) onProgress(Math.min(100, Math.round((received / total) * 1000) / 10))
+      })
+      await Promise.race([pipeline(stream, file, { signal: controller.signal }), aborted])
+      if (responseEnd !== undefined && received !== responseEnd) throw new Error('下载不完整，继续重试')
+      if (total > 0 && received < total) {
+        if (received <= startedAt) throw new Error('下载没有取得进展')
+        // A valid capped 206 is progress, not a failed attempt. Continue until
+        // Content-Range's whole-object length (not this segment's length).
+        attempt -= 1
+        continue
+      }
+      onProgress(100)
+      return
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+    } finally {
+      clearInterval(watchdog)
+      controller.abort()
+      stream?.destroy()
+      file?.destroy()
+      if (!stream && response) cancelWinBody(response)
+      // Never start another writer or hash the file before the previous
+      // descriptor is closed, including source errors and watchdog aborts.
+      if (fileClosed) await fileClosed
+      if (invalidSize) rmSync(destination, { force: true })
+    }
+    if (cancelled || (shouldContinue && !shouldContinue())) throw new Error('下载已取消')
+    if (expired) throw new Error('更新下载耗时过长，请稍后重试')
+    if (attempt + 1 < WIN_INSTALLER_ATTEMPTS) await sleep(2_000)
+  }
+  throw lastError
+}
+
+function cancelWinBody(response: WinFetchResponse): void {
+  try { void Promise.resolve(response.body?.cancel?.()).catch(() => {}) } catch { /* body may already be closed */ }
+}
+
+export function verifySha512File(destination: string, expectedBase64: string): boolean {
+  const hash = createHash('sha512')
+  hash.update(readFileSync(destination))
+  return hash.digest('base64') === expectedBase64
+}
+
+async function fetchWindowsManifest(): Promise<WinManifest> {
+  // Prefer the user's configured network (environment/system proxy) for the
+  // tiny manifest too — on machines whose only route to github.com is that
+  // proxy, a raw-direct fetch would fail and silently degrade every update
+  // to the un-resumable fallback. Direct stays as the fallback route.
+  let text: string
+  try {
+    text = await windowsManifestRequest(async signal => {
+      const fetcher = await proxyFetchFor(`${UPDATE_BASE}/latest.yml`, 'updater')
+      signal.throwIfAborted()
+      const response = await fetcher(`${UPDATE_BASE}/latest.yml`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Toushou-Updater' }, signal })
+      const cancel = () => cancelWinBody(response)
+      signal.addEventListener('abort', cancel, { once: true })
+      try {
+        if (signal.aborted) { cancel(); signal.throwIfAborted() }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return await response.text()
+      } finally { signal.removeEventListener('abort', cancel) }
+    })
+  } catch {
+    text = await windowsManifestRequest(signal => requestText(`${UPDATE_BASE}/latest.yml`, 0, signal))
+  }
+  const metadata = YAML.parse(
+    text
+  ) as { version?: unknown; files?: Array<{ url?: unknown; sha512?: unknown; size?: unknown }> }
+  const version = typeof metadata.version === 'string' ? metadata.version : ''
+  const files = Array.isArray(metadata.files) ? metadata.files : []
+  const asset = files.find((item): item is { url: string; sha512: string; size?: unknown } => {
+    const entry = item && typeof item === 'object' ? (item as { url?: unknown; sha512?: unknown }) : null
+    return !!entry && typeof entry.url === 'string' && entry.url.endsWith('.exe') && typeof entry.sha512 === 'string' && entry.sha512.length > 0
+  })
+  if (!version || !asset) throw new Error('更新清单里缺少 Windows 安装包信息')
+  return { version, url: `${UPDATE_BASE}/${encodeURIComponent(asset.url)}`, fileName: asset.url, sha512: asset.sha512,
+    ...(typeof asset.size === 'number' && Number.isSafeInteger(asset.size) && asset.size > 0 ? { size: asset.size } : {}) }
+}
+
+async function windowsManifestRequest<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { reject(new Error('更新清单读取超时，请稍后重试')); controller.abort() }, 20_000)
+  })
+  try { return await Promise.race([Promise.resolve().then(() => run(controller.signal)), deadline]) }
+  finally { clearTimeout(timer); controller.abort() }
+}
+
+let winInstallerPath: string | null = null
+let winDownloadActive = false
+
+/** Windows branch of updaterDownload: resilient download + SHA512 verify. */
+async function windowsDownload(): Promise<UpdaterStatus> {
+  if (winDownloadActive) return currentStatus
+  winDownloadActive = true
+  winInstallerPath = null
+  try {
+    setStatus({ status: 'downloading' })
+    const dir = path.join(app.getPath('temp'), 'toushou-update')
+    const destination = path.join(dir, 'TouShou-x64.exe')
+    mkdirSync(dir, { recursive: true })
+    const manifest = await fetchWindowsManifest()
+    if (compareVersions(manifest.version, app.getVersion()) <= 0) {
+      setStatus({ status: 'none' })
+      return currentStatus
+    }
+    const fetcher: WinFetcher = async (url, init) => (await proxyFetchFor(url, 'updater'))(url, init) as unknown as Promise<WinFetchResponse>
+    await downloadResumable(manifest.url, destination, {
+      fetcher,
+      totalSize: manifest.size,
+      onProgress: (percent) => {
+        if (winDownloadActive) setStatus({ status: 'progress', percent })
+      }
+    })
+    if (!verifySha512File(destination, manifest.sha512)) {
+      rmSync(destination, { force: true })
+      throw new Error('安装包校验失败（下载不完整或被篡改），已删除并请重试。')
+    }
+    winInstallerPath = destination
+    setStatus({ status: 'downloaded', version: manifest.version })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    // Custom path exhausted: electron-updater's chunked downloader is the
+    // second net. Its progress events arrive on the same handler chain.
+    try {
+      await autoUpdater.downloadUpdate()
+      return currentStatus
+    } catch (fallbackErr) {
+      void fallbackErr
+      setStatus({ status: 'error', message: `${message}（备用下载也失败）`, operation: 'download' })
+    }
+  } finally { winDownloadActive = false }
+  return currentStatus
+}
+
+/** Windows branch of updaterQuitAndInstall: silent NSIS install. */
+let winInstallPending = false
+function windowsInstall(): void {
+  if (winInstallPending) return
+  if (!winInstallerPath || !existsSync(winInstallerPath)) {
+    installRequested = false
+    setStatus({ status: 'error', message: '更新包尚未下载完成，请重试。', operation: 'install' })
+    return
+  }
+  winInstallPending = true
+  try {
+    const child = spawn(winInstallerPath, ['--updated', '/S', '--force-run'], { detached: true, stdio: 'ignore' })
+    child.once('error', err => {
+      winInstallPending = false
+      installRequested = false
+      setStatus({ status: 'error', message: errorMessage(err), operation: 'install' })
+    })
+    child.once('spawn', () => { child.unref(); app.quit() })
+  } catch (err) { winInstallPending = false; throw err }
 }

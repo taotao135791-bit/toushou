@@ -8,7 +8,8 @@ import { defaultPiAgentDir } from './piSettings'
 import { listMcpConnections, removeMcpConnection, upsertManagedServer, type McpStorePaths } from './integrations/mcp/McpConnectionStore'
 import { AppsFlyerConnectionManager } from './integrations/appsflyer/AppsFlyerConnectionManager'
 import { AppsFlyerReadFacade } from './integrations/appsflyer/AppsFlyerReadFacade'
-import { APPSFLYER_SKILL, APPSFLYER_SKILL_FILE } from './integrations/appsflyer/appsflyerSkill'
+import { APPSFLYER_SKILL, APPSFLYER_SKILL_FILE, APPSFLYER_SKILL_V1 } from './integrations/appsflyer/appsflyerSkill'
+import { openAuthWindow, type AuthWindowHandle } from './integrations/appsflyer/authWindow'
 
 const NAME = 'appsflyer'
 const DEFINITION = { id: NAME, kind: 'oauth' as const, label: 'AppsFlyer', description: '连接 AppsFlyer 官方 MCP，读取已有聚合数据。', capabilities: ['mcp'] }
@@ -23,6 +24,13 @@ let initialized = false
 let initFailed = false
 let projected: AppsFlyerConnectionSnapshot = { definition: DEFINITION, connected: false, status: 'disconnected' }
 let closing = false
+let authWindow: AuthWindowHandle | null = null
+
+function closeAuthWindow(): void {
+  const handle = authWindow
+  authWindow = null
+  handle?.close()
+}
 
 function locations(): McpStorePaths & { marker: string } {
   const data = app.getPath('userData')
@@ -99,20 +107,56 @@ function broadcast(snapshot: AppsFlyerConnectionSnapshot): void {
   projected = snapshot
   for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send(IPC_CHANNELS.APPSFLYER_STATUS, snapshot)
 }
-function onChange(snapshot: AppsFlyerConnectionSnapshot): void { if (!closing) broadcast(sync(snapshot)) }
+function onChange(snapshot: AppsFlyerConnectionSnapshot): void {
+  if (snapshot.status !== 'waiting_for_user') closeAuthWindow()
+  if (!closing) broadcast(sync(snapshot))
+}
+
+async function openManagedAuthorizationWindow(url: string): Promise<void> {
+  const currentManager = manager
+  const snapshot = currentManager?.getSnapshot()
+  if (closing || !currentManager || snapshot?.status !== 'waiting_for_user' || snapshot.authorizationUrl !== url) throw new Error('Authorization unavailable')
+  const redirectUris = new URL(url).searchParams.getAll('redirect_uri')
+  if (redirectUris.length !== 1) throw new Error('Authorization unavailable')
+  closeAuthWindow()
+  const handle = openAuthWindow(url, redirectUris[0])
+  authWindow = handle
+  void handle.done.then(() => { if (authWindow === handle) authWindow = null })
+  await handle.ready
+  if (closing || manager !== currentManager || currentManager.getSnapshot().authorizationUrl !== url) {
+    if (authWindow === handle) closeAuthWindow()
+  }
+}
 function installSkill(): void {
   const dir = path.join(app.getPath('userData'), 'skills'); mkdirSync(dir, { recursive: true })
   const file = path.join(dir, APPSFLYER_SKILL_FILE)
+  const marker = `${file}.hash`
+  const wantedHash = createHash('sha256').update(APPSFLYER_SKILL).digest('hex')
   // Preserve edits and hand-written files with the same name.
   try { writeFileSync(file, APPSFLYER_SKILL, { mode: 0o600, flag: 'wx' }) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    // An EXISTING file still tracks app upgrades — but only when it is
+    // provably ours and unmodified: its content matches the last hash we
+    // wrote (or the legacy v1 template from before markers existed). A
+    // user-edited file keeps their edits and the new guidance stays out.
+    try {
+      const current = readFileSync(file, 'utf8')
+      const currentHash = createHash('sha256').update(current).digest('hex')
+      let lastHash = ''
+      try { lastHash = readFileSync(marker, 'utf8').trim() } catch { /* first upgrade path */ }
+      const untouched = currentHash === lastHash || current === APPSFLYER_SKILL_V1
+      if (untouched && currentHash !== wantedHash) writeFileSync(file, APPSFLYER_SKILL, { mode: 0o600 })
+    } catch { /* never let skill refresh break the connection init */ }
+  }
+  try { writeFileSync(marker, wantedHash, { mode: 0o600 }) } catch { /* best effort */ }
 }
 export async function initializeAppsFlyerConnection(): Promise<void> {
   if (initialized || initFailed) return
   if (initializing) return initializing
   const pending = (async () => {
     try {
-      manager = new AppsFlyerConnectionManager({ onChange })
+      manager = new AppsFlyerConnectionManager({ onChange, openExternal: openManagedAuthorizationWindow })
       facade = new AppsFlyerReadFacade(manager)
       capability = await facade.initialize()
       installSkill()
@@ -133,9 +177,17 @@ export async function beginAppsFlyerConnection(): Promise<AppsFlyerConnectionSna
   if (!manager || !initialized) return projected
   await manager.begin(); return projected
 }
-export async function cancelAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { await initializeAppsFlyerConnection(); if (manager && initialized) manager.cancel(); return projected }
-export async function disconnectAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { await initializeAppsFlyerConnection(); if (manager && initialized) await manager.disconnect(); return projected }
-export async function openAppsFlyerAuthorizationUrl(url: string): Promise<boolean> { await initializeAppsFlyerConnection(); return !!manager && initialized && await manager.openAuthorizationUrl(url) }
+export async function cancelAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { closeAuthWindow(); await initializeAppsFlyerConnection(); if (manager && initialized) manager.cancel(); return projected }
+export async function disconnectAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { closeAuthWindow(); await initializeAppsFlyerConnection(); if (manager && initialized) await manager.disconnect(); return projected }
+/**
+ * Reopen only the current manager-owned authorization URL. Initial connection
+ * uses the same isolated in-app opener; callback validation stays in Main.
+ */
+export async function openAppsFlyerAuthorizationUrl(url: string): Promise<boolean> {
+  await initializeAppsFlyerConnection()
+  if (!manager || !initialized) return false
+  return manager.openAuthorizationUrl(url)
+}
 /** Session-scoped loopback capability; never expose the upstream OAuth grant. */
 export function appsFlyerToolEnv(): Record<string, string> {
   if (!closing && initialized && projected.connected && capability && manager?.hasVerifiedTools()) {
@@ -143,9 +195,35 @@ export function appsFlyerToolEnv(): Record<string, string> {
   }
   return {}
 }
+/** Why appsFlyerToolEnv came up empty — wiring for the dataset pull's error report. */
+export function appsFlyerToolEnvDiag(): Record<string, unknown> {
+  return {
+    closing,
+    initialized,
+    projectedStatus: projected.status,
+    projectedConnected: projected.connected,
+    hasCapability: !!capability,
+    hasManager: !!manager,
+    manager: manager ? manager.verifiedDiag() : null
+  }
+}
+/**
+ * The verified OAuth access token for Main-internal pipelines (the dataset
+ * pull). The loopback capability token that agents see is deliberately NOT
+ * usable against the official endpoint.
+ */
+export async function verifiedAppsFlyerAccessToken(): Promise<string | null> {
+  if (closing) return null
+  await initializeAppsFlyerConnection()
+  const currentManager = manager
+  if (closing || !initialized || !projected.connected || !currentManager) return null
+  const token = await currentManager.getVerifiedAccessToken()
+  return !closing && manager === currentManager && initialized && projected.connected ? token : null
+}
 export async function shutdownAppsFlyerConnection(): Promise<void> {
   closing = true
   try {
+    closeAuthWindow()
     if (initializing) await initializing
     manager?.cancel()
     facade?.close()

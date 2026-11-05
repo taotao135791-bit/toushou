@@ -30,7 +30,38 @@ export async function proxyFetchFor(targetUrl: string, partition: string): Promi
     if (JSON.stringify([partition, resolveEnvProxyRules(url)]) !== key) {
       return (await proxyFetchFor(url, partition))(url, init)
     }
-    return ses.fetch(url, init) as unknown as Promise<Response>
+    try {
+      return await (ses.fetch(url, init) as unknown as Promise<Response>)
+    } catch (error) {
+      // A fixed_servers session lacks the fallback chain a browser gets from
+      // a PAC ("PROXY …; SOCKS5 …; DIRECT"): when the configured proxy cannot
+      // complete the TLS handshake to one origin, a browser silently falls
+      // back to DIRECT while we would just fail. Mirror that behavior for
+      // environment-proxied sessions only — 'system' already carries the
+      // OS fallback, and 'direct' has nothing to fall back from.
+      if (config.mode !== 'fixed_servers') throw error
+      const retry = new Error('proxy-fetch-failed')
+      ;(retry as NodeJS.ErrnoException & { cause?: unknown }).cause = error
+      const directSession = await (async () => {
+        const directKey = JSON.stringify([partition, { mode: 'direct' }])
+        let directPending = sessions.get(directKey)
+        if (!directPending) {
+          directPending = Promise.resolve().then(async () => {
+            const s = session.fromPartition(`proxy-${createHash('sha256').update(directKey).digest('hex')}`)
+            await s.setProxy({ mode: 'direct' })
+            return s
+          })
+          sessions.set(directKey, directPending)
+        }
+        return directPending
+      })()
+      try {
+        return await (directSession.fetch(url, init) as unknown as Promise<Response>)
+      } catch (directError) {
+        // Direct also failed: the original proxy error is the honest one.
+        throw retry
+      }
+    }
   }
 }
 

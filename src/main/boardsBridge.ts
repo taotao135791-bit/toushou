@@ -129,6 +129,7 @@ export type BoardsBridgeRequest =
   | { action: 'board_update_widget'; boardId?: unknown; name?: unknown; widgetId?: unknown; title?: unknown; config?: unknown }
   | { action: 'board_rename'; boardId?: unknown; name?: unknown; newName?: unknown }
   | { action: 'dataset_import'; filePath?: unknown; name?: unknown }
+  | { action: 'af_dataset_pull'; name?: unknown; appId?: unknown; eventName?: unknown; days?: unknown; basis?: unknown; metrics?: unknown; groupings?: unknown; geo?: unknown }
 
 function boundedString(value: unknown, max: number): string | null {
   if (value === undefined || value === null) return null
@@ -181,6 +182,8 @@ export function parseBoardsBridgeRequest(raw: unknown): BoardsBridgeRequest | nu
       return { action: 'board_rename', boardId: value.boardId, name: value.name, newName: value.newName }
     case 'dataset_import':
       return { action: 'dataset_import', filePath: value.filePath, name: value.name }
+    case 'af_dataset_pull':
+      return { action: 'af_dataset_pull', name: value.name, appId: value.appId, eventName: value.eventName, days: value.days, basis: value.basis, metrics: value.metrics, groupings: value.groupings, geo: value.geo }
     default:
       return null
   }
@@ -518,6 +521,71 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       ok: true,
       dataset: { name: result.dataset.name, rowCount: result.dataset.rows.length, columns: result.dataset.columns.map((c) => c.name) },
       truncated: result.truncated === true
+    }
+  }
+
+  if (tool.action === 'af_dataset_pull') {
+    const appId = boundedString(tool.appId, 200)
+    const name = boundedString(tool.name, 60)
+    const eventName = typeof tool.eventName === 'string' && tool.eventName.trim() ? tool.eventName.trim().slice(0, 200) : undefined
+    if (!appId || !name) {
+      return { ok: false, error: 'invalid-input', hint: 'appId 和 name 都是必填。name 是这组数据的短名（数据集叫 AF-{name}，卡片标题建议写「AF-{name}」）。' }
+    }
+    const basis = tool.basis === 'ltv' ? 'ltv' : 'activity'
+    const days = Math.min(Math.max(Number(tool.days) || 7, 1), 366)
+    const metrics = Array.isArray(tool.metrics) && tool.metrics.length > 0 && tool.metrics.length <= 10 && tool.metrics.every((m) => typeof m === 'string' && m.length > 0 && m.length <= 100)
+      ? (tool.metrics as string[]) : ['Count', 'Unique users']
+    const groupings = Array.isArray(tool.groupings) && tool.groupings.length > 0 && tool.groupings.length <= 4 && tool.groupings.every((g) => typeof g === 'string' && g.length > 0 && g.length <= 100)
+      ? (tool.groupings as string[]) : (eventName ? ['Campaign ID', 'Campaign', 'Media source', 'Date'] : ['Event name', 'Media source', 'Date', 'Campaign ID'])
+    const isCustom = !!eventName && eventName.toLowerCase().startsWith('af_')
+    const filters: Record<string, string[]> = { 'Media source': ['tiktokglobal_int'] }
+    if (tool.geo === true) filters.Geo = ['all']
+    const query: Record<string, unknown> = {
+      app_ids: [appId],
+      row_count: 100,
+      metrics: metrics.map((metricName) => ({ metric_name: metricName, attribution_source: 'appsflyer', period: basis })),
+      sort_by_metrics: [{ metric_name: metrics[0], order: 'desc' }],
+      groupings,
+      filters,
+      in_app_event: isCustom ? [eventName!] : []
+    }
+    const specId = `afq-${appId}-${name}`.slice(0, 80)
+    const datasetName = `AF-${name}`
+    const end = new Date()
+    const start = new Date()
+    start.setDate(start.getDate() - (days - 1))
+    const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const { pullAppsFlyerDatasets, saveQuerySpec } = await import('./integrations/appsflyer/appsflyerDataset')
+    if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    // Record the spec BEFORE the pull (minus dates): even a transient failure
+    // arms the master refresh — the pin is the query, not the last result.
+    saveQuerySpec({ id: specId, name, datasetName, query })
+    const result = await pullAppsFlyerDatasets({ window: { start: iso(start), end: iso(end) }, specIds: [specId] })
+    if (!result.ok && !result.results.some((entry) => entry.ok)) {
+      const failedEntry = result.results[0]
+      const hints: Record<string, string> = {
+        'not-connected': 'AppsFlyer 未连接或授权未验证，请先在连接页完成 AppsFlyer 授权。',
+        'no-specs': 'pull 参数为空。'
+      }
+      return {
+        ok: false,
+        error: failedEntry?.error ?? result.error ?? 'pull-failed',
+        ...(hints[result.error ?? ''] ? { hint: hints[result.error ?? ''] } : {})
+      }
+    }
+    // The written dataset's real column names (localized, metadata columns
+    // included) — the agent binds cards by these exact names.
+    const { listDatasetsStrict } = await import('./boardDatasets')
+    const dataset = listDatasetsStrict().find((d) => d.name === datasetName)
+    const columns = dataset ? dataset.columns.map((c) => c.name) : []
+    return {
+      ok: true,
+      dataset: { name: datasetName, rowCount: dataset?.rows.length ?? 0, columns },
+      binding: {
+        hint: `把数字卡/图表绑到本数据集即成为活卡（总控刷新会自动重拉本数据集）：source="dataset"，datasetId="${datasetName}"，metric 用数据列名（如「事件次数」「独立用户」「安装量」），op="sum"；可加 filterColumn/filterValue（如 事件/活动ID/地区）筛选。卡片标题（title）写「AF-${name}」这种形式；metric 列名以 dataset.columns 为准。`,
+        columns
+      },
+      results: result.results
     }
   }
 

@@ -206,4 +206,32 @@ export default function boardsTools(api: ToolHostApi): void {
     approval: 'write',
     execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ action: 'dataset_import', ...params }) }] })
   })
+  api.registerTool({
+    name: 'toushou_af_dataset_pull',
+    label: '拉取 AppsFlyer 数据集',
+    description:
+      '拉取 AppsFlyer 官方归因数据写入「AF-{name}」数据集，并记录查询条件——看板的总控刷新按钮此后会自动重拉本数据集，数字保持最新。\n' +
+      '支持多维：groupings 可含 Geo / Event name / Campaign ID / Media source / Date（最多 4 个）；metrics 可用 Count / Unique users / Installs / Active users / Revenue 等官方指标；basis 支持 activity（活动日期）或 ltv（生命周期）。\n' +
+      '用法要求：\n' +
+      '1. name 起短名（如 安装量 / Geo分布 / 7日留存）——数据集叫 AF-{name}，卡片标题（title）也写「AF-{name}」这种形式。\n' +
+      '2. 标准 AF 看板 = 账户基础数据 + AF 活卡：建 AF 专属看板时先用 tiktok 模板建板（自带分账户读数/消耗/余额等标准卡），再逐张添加 AF 卡；往已有看板补充时用 board_add_widget 加 AF 卡，不要移除已有的常规账户维度卡片。\n' +
+      '3. appId 先用 toushou_appsflyer_apps 确认；eventName 只在查自定义 af_ 事件时传（内置事件如 App Active / Install / Session 不要传）。\n' +
+      '4. 返回的 dataset.columns 是可绑定的列名（已本地化，含 日期/地区/事件 等），metric 一律用这些列名 + op="sum"。',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '短名（1-60 字符）：数据集叫 AF-{name}，卡片标题写 AF-{name}' },
+        appId: { type: 'string', description: 'AppsFlyer App ID' },
+        eventName: { type: 'string', description: '仅自定义 af_ 事件传；内置事件（App Active / Install 等）不传' },
+        days: { type: 'integer', description: '拉取最近 N 天（1-366，默认 7，含今天）' },
+        basis: { type: 'string', enum: ['activity', 'ltv'], description: 'activity=活动日期口径（默认），ltv=生命周期口径' },
+        metrics: { type: 'array', description: '官方指标名数组，默认 ["Count","Unique users"]；可用 Installs / Active users / Revenue 等', items: { type: 'string' } },
+        groupings: { type: 'array', description: '维度数组（最多4个），默认按事件类型选；可用 Geo / Event name / Campaign ID / Campaign / Media source / Date', items: { type: 'string' } },
+        geo: { type: 'boolean', description: 'true 时附加 Geo 维度数据（按国家/地区拆分）' }
+      },
+      required: ['name', 'appId']
+    },
+    approval: 'write',
+    execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ action: 'af_dataset_pull', ...params }) }] })
+  })
 }

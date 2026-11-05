@@ -36,7 +36,7 @@ export function readingModuleTemplate(spec: ReadingModuleSpec, snapshot: Reading
   let body: string
   if (spec.kind === 'metric') {
     const n = spec.accountIndex! + 1
-    body = `<article class="metric"><p class="label">${labels[spec.metric!]}</p><p class="value"><span data-reading-value="${n}.${spec.metric}"></span>${spec.metric === 'spend' ? ` <small><span data-reading-value="${n}.currency"></span></small>` : ''}</p><p class="account"><span data-reading-value="${n}.accountName"></span></p><p class="period"><span data-reading-value="${n}.windowStart"></span> — <span data-reading-value="${n}.windowEnd"></span></p>${spec.metric === 'conversions' ? `<p><span data-reading-value="${n}.resultType"></span></p>` : ''}</article>`
+    body = `<article class="metric"><p class="label">${labels[spec.metric!]}</p><p class="value"><span data-reading-value="${n}.${spec.metric}"></span>${spec.metric === 'spend' ? ` <small><span data-reading-value="${n}.currency"></span></small>` : ''}</p><p class="account"><span data-reading-value="${n}.accountName"></span></p><p class="source"><span data-reading-value="${n}.platform"></span></p><p class="period"><span data-reading-value="${n}.windowStart"></span> — <span data-reading-value="${n}.windowEnd"></span></p>${spec.metric === 'conversions' ? `<p><span data-reading-value="${n}.resultType"></span></p>` : ''}</article>`
   } else if (spec.kind === 'spend-chart') {
     body = `<div data-reading-chart="spend-${spec.chart}" data-reading-motion="animate"></div>`
   } else if (spec.kind === 'coverage') {
@@ -45,7 +45,7 @@ export function readingModuleTemplate(spec: ReadingModuleSpec, snapshot: Reading
   } else {
     body = `<article class="notes"><h2>${zh ? '复核说明' : 'Review notes'}</h2><p>${escape(spec.text!)}</p></article>`
   }
-  return { html: `${body}<div data-reading-slot></div>`, css: '.metric { padding: 16px; color: #202020; } .label { font-size: 14px; color: #555555; margin: 0; } .value { font-size: 34px; font-weight: 700; margin: 10px 0; line-height: 1.15; } .value small { font-size: 14px; } .account { font-size: 13px; margin: 8px 0; } .period { font-size: 11px; color: #555555; margin: 6px 0; } .coverage { padding: 16px; } .notes { padding: 16px; }' }
+  return { html: `${body}<div data-reading-slot></div>`, css: '.metric { padding: 16px; color: #202020; } .label { font-size: 14px; color: #555555; margin: 0; } .value { font-size: 34px; font-weight: 700; margin: 10px 0; line-height: 1.15; } .value small { font-size: 14px; } .account { font-size: 13px; margin: 8px 0; } .source { font-size: 11px; color: #777777; margin: 0; } .period { font-size: 11px; color: #555555; margin: 6px 0; } .coverage { padding: 16px; } .notes { padding: 16px; }' }
 }
 
 /** Independent widgets; the source snapshot remains a separate full-width module. */

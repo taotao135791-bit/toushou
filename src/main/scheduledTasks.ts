@@ -4,6 +4,8 @@ import { getStore, setStore } from './store'
 import { ScheduledTask, TaskFailureReason, TaskRunEntry, TaskSchedule } from '../shared/types'
 import { isValidSkillId } from '../shared/skills'
 import { IPC_CHANNELS } from '../shared/constants'
+import { canonicalExistingPath } from './canonicalPath'
+import path from 'node:path'
 
 /**
  * Scheduled task engine.
@@ -50,6 +52,13 @@ export interface TaskSpawnOptions {
   permissionMode?: 'default' | 'readonly'
   /** Skill library id injected as the firing session's system prompt. */
   skillId?: string
+  /**
+   * Reuse mode: resume this durable transcript instead of opening a new
+   * conversation, so a recurring task keeps one running context.
+   */
+  resumeSessionFile?: string
+  /** Captured at firing; invalidated on reset or workspace change. */
+  reuseGeneration?: string
 }
 
 export type TaskSpawnFn = (
@@ -82,6 +91,18 @@ const taskBySession = new Map<string, string>()
  * handshake can still attach the opaque history UUID to the finished run. */
 const taskRunBySession = new Map<string, { taskId: string; runId: string }>()
 const cancellationRequested = new Set<string>()
+const reuseGenerations = new Map<string, string>()
+function reuseGeneration(id: string): string {
+  let value = reuseGenerations.get(id)
+  if (!value) { value = randomUUID(); reuseGenerations.set(id, value) }
+  return value
+}
+function invalidateReuse(id: string): void { reuseGenerations.set(id, randomUUID()) }
+function sameTaskWorkspace(left: string, right: string): boolean {
+  if (typeof left !== 'string' || typeof right !== 'string' || !left || !right) return false
+  try { return canonicalExistingPath(left) === canonicalExistingPath(right) }
+  catch { return path.resolve(left) === path.resolve(right) }
+}
 
 export function setTaskSpawnFn(fn: TaskSpawnFn): void {
   spawnFn = fn
@@ -109,8 +130,12 @@ const RUNTIME_OWNED_KEYS = [
   'lastRunStatus',
   'consecutiveFailures',
   'lastFailureReason',
-  'runs'
+  'runs',
+  'reuseSessionFile'
 ] as const
+
+/** Explicit user intent, not runtime state: an edit carries it like any other field. */
+const USER_OWNED_KEYS = ['reuseSession'] as const
 
 export function saveTask(task: ScheduledTask): ScheduledTask {
   const tasks = getTasks()
@@ -120,24 +145,104 @@ export function saveTask(task: ScheduledTask): ScheduledTask {
     const carried = Object.fromEntries(
       RUNTIME_OWNED_KEYS.filter((key) => previous[key] !== undefined).map((key) => [key, previous[key]])
     )
-    tasks[index] = { ...task, ...carried }
+    const userCarried = Object.fromEntries(
+      USER_OWNED_KEYS.filter((key) => task[key] === undefined && previous[key] !== undefined).map((key) => [key, previous[key]])
+    )
+    const clearReuse = task.reuseSession === false || !sameTaskWorkspace(previous.cwd, task.cwd)
+    if (clearReuse) { delete carried.reuseSessionFile; invalidateReuse(task.id) }
+    tasks[index] = { ...task, ...userCarried, ...carried }
+    if (clearReuse) delete tasks[index].reuseSessionFile
   } else {
     tasks.push(task)
   }
   saveTasks(tasks)
   broadcastTasksChanged()
   rescheduleScheduler()
+  // Return the STORED task, not the caller's payload: carried fields (the run
+  // ledger, reuse pin) only exist on the stored copy.
+  return tasks[index] ?? tasks[tasks.length - 1]!
+}
+
+/**
+ * Turn reuse mode OFF for one task (the user's "下一次开新对话" reset), and
+ * drop the pinned transcript so the next firing starts fresh. Works from the
+ * UI, from the agent bridge, and from a message inside the task's own
+ * conversation — one path, one semantics.
+ */
+export function resetTaskSessionReuse(id: string): ScheduledTask | null {
+  const tasks = getTasks()
+  const task = tasks.find((t) => t.id === id)
+  if (!task) return null
+  task.reuseSession = false
+  invalidateReuse(id)
+  delete task.reuseSessionFile
+  saveTasks(tasks)
+  broadcastTasksChanged()
   return task
 }
+
+/** A firing can only reuse the task state it was started with. */
+export function taskReuseContextIsCurrent(id: string, context: { runId: string; generation: string; cwd: string }): boolean {
+  const task = getTasks().find((item) => item.id === id)
+  return !!task && task.reuseSession === true && task.lastRunId === context.runId && reuseGeneration(id) === context.generation && sameTaskWorkspace(task.cwd, context.cwd)
+}
+
+/**
+ * Set reuse mode ON and pin the transcript the next firing resumes. The
+ * spawn implementation records the durable session file after each run.
+ */
+export function setTaskReuseSessionFile(id: string, sessionFile: string, context: { runId: string; generation: string; cwd: string }): ScheduledTask | null {
+  const tasks = getTasks()
+  const task = tasks.find((t) => t.id === id)
+  if (!task || !task.reuseSession || !sessionFile || !context.runId || task.lastRunId !== context.runId || reuseGeneration(id) !== context.generation || !sameTaskWorkspace(task.cwd, context.cwd)) return task ?? null
+  task.reuseSessionFile = sessionFile
+  saveTasks(tasks)
+  return task
+}
+
+/** Clear only the stale pin observed by this same firing. */
+export function clearTaskReuseSessionFile(id: string, expected: string, context: { runId: string; generation: string; cwd: string }): void {
+  const tasks = getTasks()
+  const task = tasks.find((t) => t.id === id)
+  if (!task || task.lastRunId !== context.runId || task.reuseSessionFile !== expected || reuseGeneration(id) !== context.generation || !sameTaskWorkspace(task.cwd, context.cwd)) return
+  delete task.reuseSessionFile
+  saveTasks(tasks)
+}
+
 
 export function deleteTask(id: string): boolean {
   const tasks = getTasks()
   const next = tasks.filter((t) => t.id !== id)
   if (next.length === tasks.length) return false
   saveTasks(next)
+  reuseGenerations.delete(id)
   broadcastTasksChanged()
   rescheduleScheduler()
   return true
+}
+
+/** Validate user-owned task fields before Main persists an IPC edit. */
+export function validateTaskSaveInput(task: unknown): { ok: true; task: ScheduledTask } | { ok: false; error: string } {
+  if (!task || typeof task !== 'object') return { ok: false, error: 'invalid' }
+  const t = task as Record<string, unknown>
+  if (typeof t.id !== 'string' || !t.id) return { ok: false, error: 'missing-id' }
+  if (typeof t.name !== 'string' || !t.name.trim()) return { ok: false, error: 'missing-name' }
+  if (typeof t.prompt !== 'string' || !t.prompt.trim()) return { ok: false, error: 'missing-prompt' }
+  if (typeof t.cwd !== 'string' || !t.cwd) return { ok: false, error: 'missing-cwd' }
+  if (!isValidSchedule(t.schedule)) return { ok: false, error: 'invalid-schedule' }
+  if (t.permissionMode !== undefined && t.permissionMode !== 'default' && t.permissionMode !== 'readonly') return { ok: false, error: 'invalid-permission-mode' }
+  if (t.notifyChannel !== undefined && t.notifyChannel !== 'system' && t.notifyChannel !== 'feishu') return { ok: false, error: 'invalid-notify-channel' }
+  if (t.skillId !== undefined && !isValidSkillId(t.skillId)) return { ok: false, error: 'invalid-skill-id' }
+  if (t.reuseSession !== undefined && typeof t.reuseSession !== 'boolean') return { ok: false, error: 'invalid-reuse-session' }
+  return { ok: true, task: {
+    id: t.id, name: t.name.trim(), prompt: t.prompt.trim(), cwd: t.cwd, schedule: t.schedule,
+    enabled: t.enabled === true, createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
+    notifyOnComplete: t.notifyOnComplete !== false,
+    ...(t.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+    ...(typeof t.skillId === 'string' && isValidSkillId(t.skillId) ? { skillId: t.skillId } : {}),
+    ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
+    ...(typeof t.reuseSession === 'boolean' ? { reuseSession: t.reuseSession } : {})
+  } }
 }
 
 export type AgentTaskInputResult =
@@ -513,13 +618,30 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
       await recordFailure(task.id, runId, 'engine-unavailable')
       return null
     }
+    // Reuse mode resumes the pinned transcript; a stale pin (session file
+    // deleted, workspace reset) must not sink the run — fall back to a fresh
+    // conversation and clear the pin so the next firing re-pins it.
+    const resumeSessionFile = task.reuseSession ? task.reuseSessionFile : undefined
+    const firingGeneration = task.reuseSession ? reuseGeneration(task.id) : undefined
     const result = await spawnFn(task.cwd, task.name, task.prompt, {
       taskId: task.id,
       runId,
       permissionMode: task.permissionMode,
-      ...(task.skillId ? { skillId: task.skillId } : {})
+      ...(task.skillId ? { skillId: task.skillId } : {}),
+      ...(firingGeneration ? { reuseGeneration: firingGeneration } : {}),
+      ...(resumeSessionFile ? { resumeSessionFile } : {})
     })
     if (!result) {
+      // A failed resume is retried fresh next time; the pinned file was the
+      // difference between "every day keeps its context" and "task is dead".
+      if (resumeSessionFile && firingGeneration && taskReuseContextIsCurrent(task.id, { runId, generation: firingGeneration, cwd: task.cwd })) {
+        const tasks = getTasks()
+        const stored = tasks.find((t) => t.id === task.id)
+        if (stored?.reuseSessionFile === resumeSessionFile) {
+          delete stored.reuseSessionFile
+          saveTasks(tasks)
+        }
+      }
       await recordFailure(task.id, runId, 'spawn-failed')
       return null
     }

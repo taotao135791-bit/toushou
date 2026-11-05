@@ -289,6 +289,9 @@ function CounterBody({
   let usdHintText: string | null = null
   let currencyBadge: string | null = null
   let scopeLabel: string | null = null
+  // Where this number came from (TikTok / AppsFlyer / a named import) — shown
+  // as a small source chip so mixed-source boards read honestly at a glance.
+  let sourceLabel: string | null = null
   if (widget.config.source === 'dataset') {
     const binding = resolveBinding(widget, datasets, false, masterWindow, ttScope, ttScopeRequired, ttScopeConflict)
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
@@ -296,6 +299,7 @@ function CounterBody({
     // widget's own title is static text and must never mislead about scope).
     scopeLabel = binding.dataset.name === 'TikTok 报表' && ttScope && ttScopeRequired ? tikTokScopeLabel(ttScope) : datasetScopeLabel(binding.dataset, masterWindow)
     if (!scopeLabel && !masterWindow && binding.dataset.name === 'TikTok 报表') scopeLabel = t('boards.datasets.ttAllHistory')
+    sourceLabel = binding.dataset.name === 'TikTok 报表' ? 'TikTok' : binding.dataset.name
     // An empty window-filtered slice is "no data in this range", not zero.
     if (binding.dataset.rows.length === 0) value = null
     else {
@@ -322,9 +326,9 @@ function CounterBody({
           {currencyBadge}
         </span>
       )}
-      {scopeLabel && (
-        <span className="absolute left-0 top-0 text-[9px] leading-4 tabular-nums text-cream-faint/80" title={scopeLabel}>
-          {scopeLabel}
+      {(sourceLabel || scopeLabel) && (
+        <span className="absolute left-0 top-0 max-w-[70%] truncate text-[9px] leading-4 tabular-nums text-cream-faint/80" title={[sourceLabel, scopeLabel].filter(Boolean).join(' · ')}>
+          {[sourceLabel, scopeLabel].filter(Boolean).join(' · ')}
         </span>
       )}
       <CounterValue value={value} animate={widget.config.source !== 'dataset'} className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream" />
@@ -422,6 +426,9 @@ function ChartBody({
     if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
     chartScopeLabel = binding.dataset.name === 'TikTok 报表' && ttScope && ttScopeRequired ? tikTokScopeLabel(ttScope) : datasetScopeLabel(binding.dataset, masterWindow)
     if (!chartScopeLabel && !masterWindow && binding.dataset.name === 'TikTok 报表') chartScopeLabel = t('boards.datasets.ttAllHistory')
+    chartScopeLabel = binding.dataset.name === 'TikTok 报表'
+      ? ['TikTok', chartScopeLabel].filter(Boolean).join(' · ')
+      : [binding.dataset.name, chartScopeLabel].filter(Boolean).join(' · ')
     const currency = metricCurrencySafety(binding.dataset, configStr(widget.config.metric))
     if (currency === 'safe') chartCurrency = uniformCurrency(binding.dataset)
     if (currency === 'mixed' || currency === 'unknown') return <div role="status" className="flex h-full items-center justify-center px-2 text-center text-[11px] text-cream-faint">{t('boards.datasets.currencyUnavailable')}</div>

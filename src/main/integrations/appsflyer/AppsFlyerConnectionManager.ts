@@ -127,6 +127,30 @@ export class AppsFlyerConnectionManager {
     if (!this.pendingDisconnect && this.credentials?.accessToken && (!token || this.credentials.accessToken === token) && error instanceof Error && error.message === 'appsflyer-authorization-error') { this.clearVerifiedTools(); this.status = 'degraded'; this.error = 'AppsFlyer 授权已失效或权限不足，请重新连接'; this.emit() }
   }
   hasVerifiedTools(): boolean { return !this.pendingDisconnect && this.status === 'connected' && !!this.credentials?.accessToken && this.verifiedToken === this.credentials.accessToken && this.verifiedTools.length === 2 }
+  /** Diagnostics for the dataset pull's not-connected report (no secrets). */
+  verifiedDiag(): Record<string, unknown> {
+    return {
+      status: this.status,
+      pendingDisconnect: !!this.pendingDisconnect,
+      hasCredentials: !!this.credentials?.accessToken,
+      verifiedTokenMatches: !!this.credentials?.accessToken && this.verifiedToken === this.credentials.accessToken,
+      verifiedToolCount: this.verifiedTools.length
+    }
+  }
+  /**
+   * The OAuth access token for MAIN-INTERNAL pipelines (the dataset pull),
+   * only while the connection is verified. Never crosses to the renderer,
+   * the agent runtime, or any config file — the loopback capability token
+   * remains the only credential those ever see.
+   */
+  async getVerifiedAccessToken(): Promise<string | null> {
+    if (!this.hasVerifiedTools()) return null
+    const generation = this.generation
+    let credentials: { accessToken: string } | null
+    try { credentials = await this.loadFreshCredentials() } catch { return null }
+    if (generation !== this.generation || !credentials || !this.hasVerifiedTools() || this.verifiedToken !== credentials.accessToken) return null
+    return credentials.accessToken
+  }
   async getVerifiedToolDescriptions(): Promise<ToolDescription[] | null> {
     const credentials = await this.loadFreshCredentials()
     if (!credentials || !this.hasVerifiedTools() || this.verifiedToken !== credentials.accessToken) return null

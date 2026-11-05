@@ -91,7 +91,7 @@ export function parseHtmlBoardTemplate(html: string, accountCount?: number): { b
       if (!chart && element.attrs.some(attribute => attribute.name === 'data-reading-motion')) throw new Error('invalid-chart-motion')
       const binding = element.attrs.find(attribute => attribute.name === 'data-reading-value')
       if (binding) {
-        const match = /^(?:([1-9][0-9]{0,3}))\.(spend|previousSpend|impressions|clicks|conversions|resultType|currency|status|account|accountId|accountName|windowStart|windowEnd)$/.exec(binding.value)
+        const match = /^(?:([1-9][0-9]{0,3}))\.(spend|previousSpend|impressions|clicks|conversions|resultType|currency|status|account|accountId|accountName|platform|windowStart|windowEnd)$/.exec(binding.value)
         if (element.tagName !== 'span' || element.childNodes.length !== 0 || !match || (accountCount !== undefined && Number(match[1]) > accountCount) || element.attrs.some(attribute => !['data-reading-value', 'class'].includes(attribute.name))) throw new Error('invalid-binding')
       }
       for (const attribute of element.attrs) {
@@ -284,6 +284,7 @@ function fillReadingValues(html: string, snapshot: ReadingSnapshot, anonymous: b
       else if (field === 'accountName') value = anonymous ? `${zh ? '账户' : 'Account'} ${index + 1}` : account.name || '—'
       else if (field === 'account') value = anonymous ? `${zh ? '账户' : 'Account'} ${index + 1}` : `${account.name || account.accountId || '—'}${account.name && account.accountId ? ` (${account.accountId})` : ''}`
       else if (field === 'currency') value = account.currency ?? (zh ? '未知' : 'Unknown')
+      else if (field === 'platform') value = ({ facebook: 'Facebook', tiktok: 'TikTok', google: 'Google Ads' })[account.platform]
       else if (field === 'resultType') value = resultTypeLabel(account, anonymous, zh)
       else if (field === 'status') value = ({ ok: zh ? '成功' : 'Read', failed: zh ? '失败' : 'Failed', unattempted: zh ? '未尝试' : 'Not attempted', unavailable: zh ? '不可用' : 'Unavailable' })[account.status]
       else if (field === 'windowStart' || field === 'windowEnd') value = field === 'windowStart' ? account.window.start : account.window.end

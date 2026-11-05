@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
+import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight, RefreshCcw } from 'lucide-react'
 import { ScheduledTask } from '@shared/types'
 import { KERNEL_VIRAL_SKILL_ID } from '@shared/skills'
 import { useAppStore } from '../store'
@@ -131,7 +131,8 @@ export default function TasksPage() {
     notifyOnComplete: true,
     notifyChannel: 'system' as 'system' | 'feishu',
     skillId: '',
-    permissionMode: 'default' as 'default' | 'readonly'
+    permissionMode: 'default' as 'default' | 'readonly',
+    reuseSession: false
   })
 
   const projectName = (cwd: string) => basename(cwd) || cwd
@@ -145,7 +146,7 @@ export default function TasksPage() {
   const openModal = () => {
     modalGeneration.current += 1
     setEditingTask(null)
-    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', skillId: '' }))
+    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', skillId: '', reuseSession: false }))
     setModalOpen(true)
   }
 
@@ -166,7 +167,8 @@ export default function TasksPage() {
       notifyOnComplete: task.notifyOnComplete,
       notifyChannel: task.notifyChannel === 'feishu' ? 'feishu' : 'system',
       skillId: task.skillId ?? '',
-      permissionMode: task.permissionMode === 'readonly' ? 'readonly' : 'default'
+      permissionMode: task.permissionMode === 'readonly' ? 'readonly' : 'default',
+      reuseSession: task.reuseSession === true
     })
     setModalOpen(true)
   }
@@ -195,7 +197,8 @@ export default function TasksPage() {
       createdAt: editingTask?.createdAt ?? Date.now(), notifyOnComplete: form.notifyOnComplete,
       ...(form.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
       ...(form.skillId ? { skillId: form.skillId } : {}),
-      ...(form.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
+      ...(form.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
+      reuseSession: form.reuseSession
     }
     // A second click must not mint another task id before React paints disabled.
     saveInFlight.current = true
@@ -238,6 +241,17 @@ export default function TasksPage() {
       showNotice('tasks.runFailed')
     } finally {
       setTimeout(() => setRunning(null), 3000)
+    }
+  }
+
+  /** 下一次开新对话: clear the pinned transcript; reuse mode stays off until re-enabled. */
+  const handleResetReuse = async (task: ScheduledTask) => {
+    try {
+      const updated = await window.electronAPI.resetTaskReuse(task.id)
+      if (!updated) showNotice('tasks.toggleFailed')
+      else showNotice('tasks.reuseReset')
+    } catch {
+      showNotice('tasks.toggleFailed')
     }
   }
 
@@ -455,6 +469,13 @@ export default function TasksPage() {
                           className="rounded-lg p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-accent disabled:opacity-30">
                           {running === task.id ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                         </button>
+                        {task.reuseSession === true && (
+                          <button onClick={() => void handleResetReuse(task)} disabled={!task.enabled}
+                            title={t('tasks.resetReuse')}
+                            className="rounded-lg p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-accent disabled:opacity-30">
+                            <RefreshCcw size={14} />
+                          </button>
+                        )}
                         <button onClick={() => void handleToggle(task)} title={task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
                           className={`relative h-5 w-9 rounded-full transition-colors ${task.enabled ? 'bg-emerald-500' : 'bg-line-strong'}`}>
                           <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${task.enabled ? 'left-[18px]' : 'left-0.5'}`} />
@@ -592,6 +613,18 @@ export default function TasksPage() {
                 />
                 {t('tasks.notifyOnComplete')}
               </label>
+              <label className="flex cursor-pointer items-center gap-2 text-[11px] text-cream-faint">
+                <input
+                  type="checkbox"
+                  checked={form.reuseSession}
+                  onChange={(e) => setForm(f => ({ ...f, reuseSession: e.target.checked }))}
+                  className="focus-ring h-3.5 w-3.5 accent-accent"
+                />
+                {t('tasks.reuseSession')}
+              </label>
+              {form.reuseSession && (
+                <p className="text-[11px] leading-4 text-cream-faint">{t('tasks.reuseSessionHint')}</p>
+              )}
             </fieldset>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setModalOpen(false)} className={`${btn} border border-line text-cream-dim hover:text-cream`}>{t('home.cancel')}</button>

@@ -18,7 +18,13 @@ export function validateEventQuery(q: AppsFlyerEventQuery): void {
 }
 export function eventQueryArguments(q: AppsFlyerEventQuery): Obj {
   validateEventQuery(q)
-  return { query: { start_date: q.startDate, end_date: q.endDate, app_ids: [q.appId], row_count: 300, metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' }, { metric_name: 'Unique users', attribution_source: 'appsflyer', period: 'activity' }], sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }], groupings: ['Campaign ID', 'Campaign', 'Media source', 'Date'], filters: { 'Media source': ['tiktokglobal_int'] }, in_app_event: [q.eventName] } }
+  // Built-in events (App Active, Install, Session, …) reject BOTH an
+  // in_app_event filter AND the Count metric grouped by campaign — the proven
+  // shape for them is the discovery query (group by Event name, no filter).
+  // Custom in-app events follow the af_ prefix convention and need the exact
+  // event filter.
+  const isBuiltIn = !q.eventName.toLowerCase().startsWith('af_')
+  return { query: { start_date: q.startDate, end_date: q.endDate, app_ids: [q.appId], row_count: 100, metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' }, { metric_name: 'Unique users', attribution_source: 'appsflyer', period: 'activity' }], sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }], groupings: isBuiltIn ? ['Event name', 'Media source', 'Date', 'Campaign ID'] : ['Campaign ID', 'Campaign', 'Media source', 'Date'], filters: { 'Media source': ['tiktokglobal_int'] }, in_app_event: isBuiltIn ? [] : [q.eventName] } }
 }
 
 /** A single authenticated MCP session, restricted to the two known read-only tools. */
@@ -37,7 +43,16 @@ export class AppsFlyerMcpClient {
     const signal = this.signal ? AbortSignal.any([this.signal, timeout]) : timeout
     let r: Response
     try { r = await this.fetcher(APPSFLYER_MCP_ENDPOINT, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }), signal, redirect: 'error' }) } catch { throw new Error('appsflyer-network-error') }
-    if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? 'appsflyer-authorization-error' : 'appsflyer-request-error')
+    if (!r.ok) {
+      // The message stays exactly 'appsflyer-authorization-error' / '…-request-error'
+      // (callers match on it); status + a bounded body snippet ride as properties.
+      const base = r.status === 401 || r.status === 403 ? 'appsflyer-authorization-error' : 'appsflyer-request-error'
+      const detail = await r.text().then((t) => t.slice(0, 200)).catch(() => '')
+      const error = new Error(base) as Error & { statusCode?: number; detail?: string }
+      error.statusCode = r.status
+      error.detail = detail
+      throw error
+    }
     this.session = r.headers.get('mcp-session-id') ?? this.session
     if (notification) return {}
     const text = await r.text()
@@ -69,13 +84,27 @@ export class AppsFlyerMcpClient {
     const result = await this.send('tools/call', { name, arguments: args })
     if (result.isError) throw new Error('appsflyer-tool-error')
     const structured = obj(result.structuredContent)
-    let value: unknown = structured?.result
+    // The official tools/call answer carries the payload in structuredContent.data
+    // (same field the bundled toolkit reads); some relays use .result — try it
+    // second, then the text content.
+    let value: unknown = structured?.data ?? structured?.result
     if (typeof value !== 'string' && Array.isArray(result.content)) value = result.content.map(obj).find(x => x?.type === 'text' && typeof x.text === 'string')?.text
     if (typeof value !== 'string' || value.length > 5_000_000) throw new Error('appsflyer-invalid-data')
     return value
   }
   async listApps(): Promise<AppsFlyerApp[]> { return parseApps(await this.call('get_apps', {})) }
-  async queryEvents(q: AppsFlyerEventQuery): Promise<MmpEventAggregate[]> { return parseEvents(await this.call('analytics_fetch_aggregated_data', eventQueryArguments(q)), q) }
+  async queryEvents(q: AppsFlyerEventQuery): Promise<MmpEventAggregate[]> {
+    const text = await this.call('analytics_fetch_aggregated_data', eventQueryArguments(q))
+    try {
+      return parseEvents(text, q)
+    } catch (error) {
+      // Surface the raw shape so a provider format change is diagnosable
+      // from the pull result alone.
+      const e = error as Error & { raw?: string }
+      e.raw = text.slice(0, 600)
+      throw e
+    }
+  }
   async queryRaw(input: unknown): Promise<string> {
     const args = obj(input); const rawQuery = obj(args?.query)
     if (!args || Object.keys(args).length !== 1 || !rawQuery) throw new Error('invalid-query')
@@ -112,6 +141,13 @@ function value(row: Record<string, string>, pattern: RegExp): string | undefined
 function number(s: string | undefined): number | null { if (s === undefined || s.trim() === '' || s.trim() === '-') return null; const n = Number(s); if (!Number.isFinite(n) || n < 0) throw new Error('appsflyer-invalid-number'); return n }
 export function parseEvents(text: string, q: AppsFlyerEventQuery): MmpEventAggregate[] {
   validateEventQuery(q)
+  // The no-data-in-window answer is `## Data: ; ## Metadata: {…}` on ONE line —
+  // an empty selection, not a parse failure (empty ≠ zero; the caller shows nothing).
+  if (/^\s*## Data:\s*;\s*## Metadata:/m.test(text)) {
+    const empty: MmpEventAggregate[] & { raw?: string } = []
+    empty.raw = text.slice(0, 800)
+    return empty
+  }
   const section = /^\s*## Data:\s*([^\r\n]*)\r?\n([\s\S]*?)\r?\n[ \t]*(?:;[ \t]*)?## Metadata:[ \t]*([^\r\n]*)/m.exec(text)
   if (!section) throw new Error('appsflyer-invalid-data')
   let metadata: Obj | null
@@ -133,8 +169,10 @@ export function parseEvents(text: string, q: AppsFlyerEventQuery): MmpEventAggre
   const currency = typeof metadata.currency === 'string' && /^[A-Z]{3}$/.test(metadata.currency) ? metadata.currency : null
   return csv.data.map(row => {
     const media = value(row, /^media source$/i); const campaignId = value(row, /^campaign id$/i)?.trim() || null; const day = value(row, /^date$/i)?.trim() || null
+    // Discovery-shaped answers carry the event per row; named queries take the spec.
+    const eventName = value(row, /^event name$/i)?.trim() || q.eventName
     if (media && media.toLowerCase() !== 'tiktokglobal_int') throw new Error('appsflyer-scope-mismatch')
     if (day && (!date(day) || day < q.startDate || day > q.endDate)) throw new Error('appsflyer-scope-mismatch')
-    return { source: 'appsflyer', appId: q.appId, mediaSource: media ? 'tiktok' : null, campaignId, day, timezone, dateBasis: 'activity', metricBasis: 'activity', eventName: q.eventName, count: number(value(row, /^count(?:\s|_).*activity/i)), uniqueUsers: number(value(row, /^unique users(?:\s|_).*activity/i)), revenue: null, currency, partial, updatedAt: null }
+    return { source: 'appsflyer', appId: q.appId, mediaSource: media ? 'tiktok' : null, campaignId, day, timezone, dateBasis: 'activity', metricBasis: 'activity', eventName, count: number(value(row, /^count(?:\s|_).*activity/i)), uniqueUsers: number(value(row, /^unique users(?:\s|_).*activity/i)), revenue: null, currency, partial, updatedAt: null }
   })
 }

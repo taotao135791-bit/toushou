@@ -1,6 +1,7 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
 import { canonicalExistingPath } from './canonicalPath'
+import { taskSessionBelongsToWorkspace } from './taskSessionReuse'
 import { getWorkspaceSystemPaths, projectSystemPathsError } from './workspaceSystemPaths'
 import { ProjectRegistry, validProjectName } from './projectRegistry'
 import { discoverProjectSessionFiles } from './projectSessionFiles'
@@ -126,7 +127,11 @@ import {
   startScheduler,
   setTaskSpawnFn,
   setTaskOutcomeSink,
-  isValidSchedule,
+  setTaskReuseSessionFile,
+  clearTaskReuseSessionFile,
+  taskReuseContextIsCurrent,
+  validateTaskSaveInput,
+  resetTaskSessionReuse,
   noteTaskSessionEvent,
   noteTaskSessionFile
 } from './scheduledTasks'
@@ -178,7 +183,6 @@ import {
   revealSkillsDir
 } from './skills'
 import { importGithubSkills, previewGithubSkills } from './skillsGithub'
-import { isValidSkillId } from '../shared/skills'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
 import { openWorkspaceInRequest } from './openWorkspaceIn'
@@ -246,6 +250,7 @@ import {
   shutdownAppsFlyerConnection
 } from './appsflyerConnection'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
+import { pullAppsFlyerDatasets } from './integrations/appsflyer/appsflyerDataset'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
 import { SessionOriginIndex } from './sessionOrigins'
 
@@ -755,6 +760,12 @@ export function registerIpc() {
       if (skill.ok) skillSystemPrompt = skill.prompt
       else throw new Error(`skill-unavailable:${skill.error}`)
     }
+    let resumeSessionPath: string | undefined
+    if (opts?.resumeSessionFile && opts.taskId && opts.runId && opts.reuseGeneration) {
+      const context = { runId: opts.runId, generation: opts.reuseGeneration, cwd }
+      if (await taskSessionBelongsToWorkspace(opts.resumeSessionFile, cwd) && taskReuseContextIsCurrent(opts.taskId, context)) resumeSessionPath = opts.resumeSessionFile
+      else clearTaskReuseSessionFile(opts.taskId, opts.resumeSessionFile, context)
+    }
     const session = createSession(
       cwd,
       (event) => {
@@ -764,11 +775,18 @@ export function registerIpc() {
         if (event.type === 'connected') {
           const tryRecord = (delayMs: number) => {
             setTimeout(() => {
-              void getSessionState(event.sessionId).then((state) => {
+              void getSessionState(event.sessionId).then(async (state) => {
                 if (state?.sessionFile) {
                   markSessionFile(event.sessionId, state.sessionFile)
                   nameSessionDurally.fileAvailable(event.sessionId, state.sessionFile)
                   sessionOriginIndex.record(state.sessionFile, 'task')
+                  // Reuse mode: pin the LATEST durable file (a resumed session
+                  // forks a new one) so the next firing continues this context.
+                  // setTaskReuseSessionFile only writes when the task has
+                  // reuseSession on — this bootstraps the FIRST pin too.
+                  if (opts?.taskId && opts.runId && opts.reuseGeneration && await taskSessionBelongsToWorkspace(state.sessionFile, cwd)) {
+                    setTaskReuseSessionFile(opts.taskId, state.sessionFile, { runId: opts.runId, generation: opts.reuseGeneration, cwd })
+                  }
                   const historyUuid = path.basename(state.sessionFile).match(/_([^_]+)\.jsonl$/)?.[1]
                   if (opts?.runId && historyUuid) noteTaskSessionFile(event.sessionId, opts.runId, historyUuid)
                 }
@@ -785,7 +803,8 @@ export function registerIpc() {
         // An explicitly read-only task must not silently inherit the
         // workspace's global write/exec mode while running unattended.
         ...(opts?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
-        ...(skillSystemPrompt ? { skillSystemPrompt } : {})
+        ...(skillSystemPrompt ? { skillSystemPrompt } : {}),
+        ...(resumeSessionPath ? { resumeSessionPath } : {})
       }
     )
     if (session.status === 'error') return null
@@ -918,6 +937,14 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.APPSFLYER_OPEN_URL, (_event, url: unknown) => {
     if (typeof url !== 'string' || url.length > 16384) return false
     return openAppsFlyerAuthorizationUrl(url)
+  })
+  // Master-refresh re-pull for AF dataset cards: explicit window dates only
+  // (the renderer derives them from the board's master scope), over the specs
+  // the agent recorded when it built the board.
+  ipcMain.handle(IPC_CHANNELS.APPSFLYER_DATASET_REFRESH, async (_event, window: unknown) => {
+    const w = (window ?? {}) as Record<string, unknown>
+    if (typeof w.start !== 'string' || typeof w.end !== 'string') return { ok: false, error: 'invalid-window', results: [] }
+    return pullAppsFlyerDatasets({ window: { start: w.start, end: w.end } })
   })
 
   // --- TikTok 报表接入（Open API v1.3 → "TikTok 报表" 数据集） -------------
@@ -2577,39 +2604,9 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.TASKS_LIST, async () => listTasks())
 
   ipcMain.handle(IPC_CHANNELS.TASKS_SAVE, async (_event, task: unknown) => {
-    if (!task || typeof task !== 'object') return { ok: false, error: 'invalid' }
-    const t = task as Record<string, unknown>
-    if (typeof t.id !== 'string' || !t.id) return { ok: false, error: 'missing-id' }
-    if (typeof t.name !== 'string' || !t.name.trim()) return { ok: false, error: 'missing-name' }
-    if (typeof t.prompt !== 'string' || !t.prompt.trim()) return { ok: false, error: 'missing-prompt' }
-    if (typeof t.cwd !== 'string' || !t.cwd) return { ok: false, error: 'missing-cwd' }
-    if (!isValidSchedule(t.schedule)) return { ok: false, error: 'invalid-schedule' }
-    if (t.permissionMode !== undefined && t.permissionMode !== 'default' && t.permissionMode !== 'readonly') {
-      return { ok: false, error: 'invalid-permission-mode' }
-    }
-    if (t.notifyChannel !== undefined && t.notifyChannel !== 'system' && t.notifyChannel !== 'feishu') {
-      return { ok: false, error: 'invalid-notify-channel' }
-    }
-    if (t.skillId !== undefined && !isValidSkillId(t.skillId)) {
-      return { ok: false, error: 'invalid-skill-id' }
-    }
-    // The stored shape is exactly what passed validation. Runtime-owned run
-    // ledger fields (lastRunAt, failures, runs, last session) are merged back
-    // from the stored copy inside saveTask so an edit cannot reset them.
-    const clean = {
-      id: t.id,
-      name: t.name.trim(),
-      prompt: t.prompt.trim(),
-      cwd: t.cwd,
-      schedule: t.schedule,
-      enabled: t.enabled === true,
-      createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
-      notifyOnComplete: t.notifyOnComplete !== false,
-      ...(t.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
-      ...(typeof t.skillId === 'string' && isValidSkillId(t.skillId) ? { skillId: t.skillId } : {}),
-      ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {})
-    }
-    return { ok: true, task: saveTask(clean) }
+    const validated = validateTaskSaveInput(task)
+    if (!validated.ok) return validated
+    return { ok: true, task: saveTask(validated.task) }
   })
 
   ipcMain.handle(IPC_CHANNELS.TASKS_DELETE, async (_event, id: unknown) => {
@@ -2625,6 +2622,14 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.TASKS_RUN_NOW, async (_event, id: unknown) => {
     if (typeof id !== 'string') return 'failed' as const
     return runTaskNow(id)
+  })
+
+  // Reuse-mode reset ("下一次开新对话"): clears the pinned transcript so the
+  // next firing opens a fresh conversation. Reachable from the UI, the agent
+  // bridge, and a message in the task's own conversation.
+  ipcMain.handle(IPC_CHANNELS.TASKS_RESET_REUSE, (_event, id: unknown) => {
+    if (typeof id !== 'string') return null
+    return resetTaskSessionReuse(id)
   })
 
   // --- Project knowledge ----------------------------------------------------

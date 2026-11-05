@@ -70,4 +70,38 @@ describe('proxyFetchFor', () => {
     await fetch('https://direct.invalid/')
     expect([...fixture.sessions.values()][0].setProxy).toHaveBeenCalledWith({ mode: 'direct' })
   })
+
+  it('falls back to direct when the fixed proxy fetch throws, mirroring a PAC fallback chain', async () => {
+    const proxied = await proxyFetchFor('https://remote.invalid/', 'test-fallback')
+    const proxySession = [...fixture.sessions.values()].find((s) => s.setProxy.mock.calls[0][0].mode === 'fixed_servers')!
+    proxySession.fetch.mockImplementationOnce(async () => { throw new Error('ECONNRESET') })
+    const response = await proxied('https://remote.invalid/')
+    expect(await response.text()).toBe('ok')
+    const directSession = [...fixture.sessions.values()].find((s) => s.setProxy.mock.calls[0][0].mode === 'direct')
+    expect(directSession?.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fall back for direct or system sessions', async () => {
+    const direct = await proxyFetchFor('https://direct.invalid/', 'test-nofallback-direct')
+    const directSession = [...fixture.sessions.values()].find((s) => s.setProxy.mock.calls[0][0].mode === 'direct')!
+    directSession.fetch.mockImplementationOnce(async () => { throw new Error('ECONNRESET') })
+    await expect(direct('https://direct.invalid/')).rejects.toThrow('ECONNRESET')
+
+    const system = await proxyFetchFor('http://system.invalid/', 'test-nofallback-system')
+    const systemSession = [...fixture.sessions.values()].find((s) => s.setProxy.mock.calls[0][0].mode === 'system')!
+    systemSession.fetch.mockImplementationOnce(async () => { throw new Error('ECONNRESET') })
+    await expect(system('http://system.invalid/')).rejects.toThrow('ECONNRESET')
+  })
+
+  it('reports the proxy error when direct also fails', async () => {
+    const proxied = await proxyFetchFor('https://remote.invalid/', 'test-fallback-both')
+    const proxySession = [...fixture.sessions.values()].find((s) => s.setProxy.mock.calls[0][0].mode === 'fixed_servers')!
+    proxySession.fetch.mockImplementation(async () => { throw new Error('ECONNRESET') })
+    // Prime the direct session through a real call so it exists before the
+    // fallback path grabs it.
+    try { await proxied('https://remote.invalid/') } catch { /* both fail */ }
+    const directSession = [...fixture.sessions.values()].find((s) => s.setProxy.mock.calls[0][0].mode === 'direct')!
+    directSession.fetch.mockImplementation(async () => { throw new Error('ECONNRESET') })
+    await expect(proxied('https://remote.invalid/')).rejects.toThrow('proxy-fetch-failed')
+  })
 })
