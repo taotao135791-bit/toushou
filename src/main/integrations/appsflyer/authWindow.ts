@@ -1,41 +1,40 @@
 import { BrowserWindow, session } from 'electron'
 import { createHash } from 'node:crypto'
+import { get, type ClientRequest } from 'node:http'
+import { resolveEnvProxyRules } from '../tiktok/envProxy'
 
 /**
- * In-app authorization window for OAuth flows whose redirect target is a
- * loopback listener owned by this module. The window runs in its own
- * in-memory session with a direct-then-system proxy policy, so a user's
- * browser-level proxy state (bad extensions, cached PAC failures, corporate
- * settings) cannot block the grant — the app's own API traffic already uses
- * the same resilient fetch path.
- *
- * Security posture: sandboxed, no preload, no node integration, only
- * https navigations plus the final loopback redirect, and the window closes
- * itself the moment the callback lands.
+ * Isolated OAuth page. Only the exact registered loopback callback is
+ * forwarded; state/code validation remains with the Main-owned listener.
  */
 export interface AuthWindowHandle {
-  /** Resolves when the loopback redirect was navigated to (or the window closed). */
+  ready: Promise<void>
   done: Promise<'redirected' | 'closed'>
   close(): void
 }
 
-export function openAuthWindow(authorizationUrl: string, redirectPrefix: string): AuthWindowHandle {
+export function openAuthWindow(authorizationUrl: string, redirectUri: string): AuthWindowHandle {
+  const authorization = new URL(authorizationUrl)
+  const callback = new URL(redirectUri)
+  if (authorization.origin !== 'https://mcp.appsflyer.com' || authorization.username || authorization.password || authorization.hash
+    || authorization.searchParams.getAll('redirect_uri').length !== 1 || authorization.searchParams.get('redirect_uri') !== callback.href
+    || callback.protocol !== 'http:' || callback.hostname !== '127.0.0.1' || !callback.port || callback.pathname !== '/callback'
+    || callback.username || callback.password || callback.search || callback.hash) throw new Error('Invalid authorization window')
   const partition = `appsflyer-auth-${createHash('sha256').update(authorizationUrl).digest('hex').slice(0, 24)}`
   const ses = session.fromPartition(partition)
-  // Direct first: the loopback redirect and the provider pages are both
-  // reachable without a proxy; a user PAC can still be honoured by switching
-  // this to 'system' if a region ever needs it.
-  void ses.setProxy({ mode: 'direct' })
-
+  ses.setPermissionRequestHandler((_contents, _permission, reply) => reply(false))
+  ses.setPermissionCheckHandler(() => false)
   let settled = false
-  let win: BrowserWindow | null = null
-  const done = new Promise<'redirected' | 'closed'>((resolve) => {
-    const settle = (value: 'redirected' | 'closed') => {
-      if (settled) return
-      settled = true
-      resolve(value)
-    }
-    win = new BrowserWindow({
+  let closed = false
+  let pendingCallback: ClientRequest | null = null
+  let resolveDone!: (value: 'redirected' | 'closed') => void
+  const done = new Promise<'redirected' | 'closed'>(resolve => { resolveDone = resolve })
+  const settle = (value: 'redirected' | 'closed') => {
+    if (settled) return
+    settled = true
+    resolveDone(value)
+  }
+  const win = new BrowserWindow({
       width: 480,
       height: 720,
       title: 'AppsFlyer',
@@ -48,33 +47,61 @@ export function openAuthWindow(authorizationUrl: string, redirectPrefix: string)
         nodeIntegration: false,
         backgroundThrottling: false
       }
-    })
-    win.once('ready-to-show', () => win?.show())
-    win.on('closed', () => settle('closed'))
-    win.webContents.on('will-navigate', (event, url) => {
-      if (url.startsWith(redirectPrefix)) {
-        event.preventDefault()
-        settle('redirected')
-        win?.close()
-        return
-      }
-      if (!url.startsWith('https://')) {
-        event.preventDefault()
-        return
-      }
-    })
-    win.webContents.on('will-redirect', (event, url) => {
-      if (url.startsWith(redirectPrefix)) {
-        event.preventDefault()
-        settle('redirected')
-        win?.close()
-      }
-    })
-    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    void win.loadURL(authorizationUrl)
   })
-  return {
-    done,
-    close: () => { if (win && !win.isDestroyed()) win.close() }
+  const close = () => {
+    closed = true
+    pendingCallback?.destroy()
+    pendingCallback = null
+    if (!win.isDestroyed()) win.close()
+    settle('closed')
   }
+  win.once('ready-to-show', () => { if (!closed) win.show() })
+  win.on('closed', () => {
+    closed = true
+    pendingCallback?.destroy()
+    pendingCallback = null
+    settle('closed')
+  })
+  const isCallback = (url: URL) => url.origin === callback.origin && url.pathname === callback.pathname && !url.username && !url.password && !url.hash
+  const forward = (url: URL) => {
+    if (closed || pendingCallback) return
+    // No browser cookies, proxy, credentials or redirects reach this GET.
+    const request = get(url, { agent: false, headers: { 'cache-control': 'no-store' } }, response => {
+      response.resume()
+      response.on('end', () => {
+        if (pendingCallback !== request) return
+        pendingCallback = null
+        if (!closed && (response.statusCode === 200 || response.statusCode === 202)) {
+          settle('redirected')
+          close()
+        }
+      })
+    })
+    pendingCallback = request
+    request.setTimeout(5_000, () => request.destroy())
+    request.on('error', () => { if (pendingCallback === request) pendingCallback = null })
+  }
+  const navigate = (event: { preventDefault(): void }, target: string) => {
+    let url: URL
+    try { url = new URL(target) } catch { event.preventDefault(); return }
+    if (isCallback(url)) {
+      event.preventDefault()
+      forward(url)
+    } else if (url.protocol !== 'https:' || url.username || url.password) event.preventDefault()
+  }
+  win.webContents.on('will-navigate', navigate)
+  win.webContents.on('will-redirect', navigate)
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  let readyTimer: ReturnType<typeof setTimeout> | undefined
+  const ready = Promise.race([
+    (async () => {
+      await ses.setProxy(resolveEnvProxyRules(authorizationUrl))
+      if (closed) throw new Error('Authorization window closed')
+      await win.loadURL(authorizationUrl)
+      if (closed) throw new Error('Authorization window closed')
+    })(),
+    new Promise<never>((_, reject) => { readyTimer = setTimeout(() => reject(new Error('Authorization window unavailable')), 20_000) })
+  ]).finally(() => clearTimeout(readyTimer))
+  void ready.catch(() => close())
+  return { ready, done, close }
 }

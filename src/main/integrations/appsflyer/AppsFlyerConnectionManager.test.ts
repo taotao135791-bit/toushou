@@ -26,6 +26,44 @@ function fixture(probe: (token: string) => Promise<boolean> = async () => true, 
 }
 async function callback(url: string, state: string, code = 'synthetic-code') { const origin = new URL(new URL(url).searchParams.get('redirect_uri')!).origin; return fetch(`${origin}/callback?state=${encodeURIComponent(state)}&code=${code}`) }
 describe('AppsFlyer OAuth', () => {
+  it('refreshes an expired verified Main token once before concurrent dataset reads', async () => {
+    let clock = 1_000
+    const probe = vi.fn(async () => true)
+    const f = fixture(probe, () => clock)
+    f.store.load.mockResolvedValueOnce({ clientId: 'synthetic-client', clientSecret: 'synthetic-secret', tokenEndpoint: 'https://mcp.appsflyer.com/token', accessToken: 'synthetic-old', refreshToken: 'synthetic-refresh', expiresAt: 120_000, savedAt: 1 })
+    await f.manager.initialize()
+    clock = 130_000
+    expect(await Promise.all([f.manager.getVerifiedAccessToken(), f.manager.getVerifiedAccessToken()])).toEqual(['synthetic-access', 'synthetic-access'])
+    expect(f.fetchImpl.mock.calls.filter(([url]) => url.endsWith('/token'))).toHaveLength(1)
+    expect(probe).toHaveBeenCalledTimes(2)
+    await f.manager.disconnect()
+  })
+  it('does not return a token when disconnect occurs while renewal is pending', async () => {
+    let clock = 1_000, release!: (value: Response) => void
+    const f = fixture(async () => true, () => clock)
+    f.store.load.mockResolvedValueOnce({ clientId: 'synthetic-client', clientSecret: 'synthetic-secret', tokenEndpoint: 'https://mcp.appsflyer.com/token', accessToken: 'synthetic-old', refreshToken: 'synthetic-refresh', expiresAt: 120_000, savedAt: 1 })
+    await f.manager.initialize()
+    clock = 130_000
+    f.fetchImpl.mockImplementationOnce(async () => new Promise<Response>(resolve => { release = resolve }))
+    const reading = f.manager.getVerifiedAccessToken()
+    await flush(() => typeof release === 'function')
+    const disconnect = f.manager.disconnect()
+    release(json({ access_token: 'synthetic-renewed', expires_in: 3600 }))
+    expect(await reading).toBeNull()
+    await disconnect
+    expect(await f.manager.getVerifiedAccessToken()).toBeNull()
+    expect(f.saved()).toBeNull()
+  })
+  it('fails closed when renewal succeeds but the refreshed grant lacks verified read tools', async () => {
+    let clock = 1_000, available = true
+    const f = fixture(async () => available, () => clock)
+    f.store.load.mockResolvedValueOnce({ clientId: 'synthetic-client', tokenEndpoint: 'https://mcp.appsflyer.com/token', accessToken: 'synthetic-old', refreshToken: 'synthetic-refresh', expiresAt: 120_000, savedAt: 1 })
+    await f.manager.initialize()
+    clock = 130_000; available = false
+    expect(await f.manager.getVerifiedAccessToken()).toBeNull()
+    expect(f.manager.getSnapshot().connected).toBe(false)
+    await f.manager.disconnect()
+  })
   it('uses PKCE, ignores unrelated callbacks, and stores a successful grant', async () => {
     const f = fixture(); await f.manager.initialize(); await f.manager.begin()
     const auth = new URL(f.opened()); expect(auth.searchParams.get('scope')).toBe('user'); expect(auth.searchParams.get('code_challenge_method')).toBe('S256')

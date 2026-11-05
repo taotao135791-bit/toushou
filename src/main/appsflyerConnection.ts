@@ -24,6 +24,13 @@ let initialized = false
 let initFailed = false
 let projected: AppsFlyerConnectionSnapshot = { definition: DEFINITION, connected: false, status: 'disconnected' }
 let closing = false
+let authWindow: AuthWindowHandle | null = null
+
+function closeAuthWindow(): void {
+  const handle = authWindow
+  authWindow = null
+  handle?.close()
+}
 
 function locations(): McpStorePaths & { marker: string } {
   const data = app.getPath('userData')
@@ -100,7 +107,26 @@ function broadcast(snapshot: AppsFlyerConnectionSnapshot): void {
   projected = snapshot
   for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send(IPC_CHANNELS.APPSFLYER_STATUS, snapshot)
 }
-function onChange(snapshot: AppsFlyerConnectionSnapshot): void { if (!closing) broadcast(sync(snapshot)) }
+function onChange(snapshot: AppsFlyerConnectionSnapshot): void {
+  if (snapshot.status !== 'waiting_for_user') closeAuthWindow()
+  if (!closing) broadcast(sync(snapshot))
+}
+
+async function openManagedAuthorizationWindow(url: string): Promise<void> {
+  const currentManager = manager
+  const snapshot = currentManager?.getSnapshot()
+  if (closing || !currentManager || snapshot?.status !== 'waiting_for_user' || snapshot.authorizationUrl !== url) throw new Error('Authorization unavailable')
+  const redirectUris = new URL(url).searchParams.getAll('redirect_uri')
+  if (redirectUris.length !== 1) throw new Error('Authorization unavailable')
+  closeAuthWindow()
+  const handle = openAuthWindow(url, redirectUris[0])
+  authWindow = handle
+  void handle.done.then(() => { if (authWindow === handle) authWindow = null })
+  await handle.ready
+  if (closing || manager !== currentManager || currentManager.getSnapshot().authorizationUrl !== url) {
+    if (authWindow === handle) closeAuthWindow()
+  }
+}
 function installSkill(): void {
   const dir = path.join(app.getPath('userData'), 'skills'); mkdirSync(dir, { recursive: true })
   const file = path.join(dir, APPSFLYER_SKILL_FILE)
@@ -130,7 +156,7 @@ export async function initializeAppsFlyerConnection(): Promise<void> {
   if (initializing) return initializing
   const pending = (async () => {
     try {
-      manager = new AppsFlyerConnectionManager({ onChange })
+      manager = new AppsFlyerConnectionManager({ onChange, openExternal: openManagedAuthorizationWindow })
       facade = new AppsFlyerReadFacade(manager)
       capability = await facade.initialize()
       installSkill()
@@ -151,29 +177,16 @@ export async function beginAppsFlyerConnection(): Promise<AppsFlyerConnectionSna
   if (!manager || !initialized) return projected
   await manager.begin(); return projected
 }
-export async function cancelAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { await initializeAppsFlyerConnection(); if (manager && initialized) manager.cancel(); return projected }
-export async function disconnectAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { await initializeAppsFlyerConnection(); if (manager && initialized) await manager.disconnect(); return projected }
+export async function cancelAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { closeAuthWindow(); await initializeAppsFlyerConnection(); if (manager && initialized) manager.cancel(); return projected }
+export async function disconnectAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> { closeAuthWindow(); await initializeAppsFlyerConnection(); if (manager && initialized) await manager.disconnect(); return projected }
 /**
- * Open the authorization page INSIDE the app in a direct-connection window.
- * The user's browser is not used: its proxy state (cached PAC failures, a
- * node that cannot reach the provider) is outside our control, while the
- * in-app window shares the same resilient network path as the API client.
- * The loopback redirect never renders — the window closes on it.
+ * Reopen only the current manager-owned authorization URL. Initial connection
+ * uses the same isolated in-app opener; callback validation stays in Main.
  */
-let authWindow: AuthWindowHandle | null = null
 export async function openAppsFlyerAuthorizationUrl(url: string): Promise<boolean> {
   await initializeAppsFlyerConnection()
   if (!manager || !initialized) return false
-  const snapshot = manager.getSnapshot()
-  if (snapshot.status !== 'waiting_for_user' || url !== snapshot.authorizationUrl) return false
-  authWindow?.close()
-  const redirectPrefix = (snapshot.authorizationUrl?.match(/redirect_uri=([^&]+)/)?.[1] ?? '')
-  const prefix = decodeURIComponent(redirectPrefix)
-  if (!prefix.startsWith('http://127.0.0.1:')) return false
-  const handle = openAuthWindow(url, prefix)
-  authWindow = handle
-  void handle.done.then(() => { if (authWindow === handle) authWindow = null })
-  return true
+  return manager.openAuthorizationUrl(url)
 }
 /** Session-scoped loopback capability; never expose the upstream OAuth grant. */
 export function appsFlyerToolEnv(): Record<string, string> {
@@ -199,14 +212,18 @@ export function appsFlyerToolEnvDiag(): Record<string, unknown> {
  * pull). The loopback capability token that agents see is deliberately NOT
  * usable against the official endpoint.
  */
-export function verifiedAppsFlyerAccessToken(): string | null {
-  return manager ? manager.getVerifiedAccessToken() : null
+export async function verifiedAppsFlyerAccessToken(): Promise<string | null> {
+  if (closing) return null
+  await initializeAppsFlyerConnection()
+  const currentManager = manager
+  if (closing || !initialized || !projected.connected || !currentManager) return null
+  const token = await currentManager.getVerifiedAccessToken()
+  return !closing && manager === currentManager && initialized && projected.connected ? token : null
 }
 export async function shutdownAppsFlyerConnection(): Promise<void> {
   closing = true
   try {
-    authWindow?.close()
-    authWindow = null
+    closeAuthWindow()
     if (initializing) await initializing
     manager?.cancel()
     facade?.close()

@@ -143,8 +143,13 @@ export class AppsFlyerConnectionManager {
    * the agent runtime, or any config file — the loopback capability token
    * remains the only credential those ever see.
    */
-  getVerifiedAccessToken(): string | null {
-    return this.hasVerifiedTools() && this.credentials?.accessToken ? this.credentials.accessToken : null
+  async getVerifiedAccessToken(): Promise<string | null> {
+    if (!this.hasVerifiedTools()) return null
+    const generation = this.generation
+    let credentials: { accessToken: string } | null
+    try { credentials = await this.loadFreshCredentials() } catch { return null }
+    if (generation !== this.generation || !credentials || !this.hasVerifiedTools() || this.verifiedToken !== credentials.accessToken) return null
+    return credentials.accessToken
   }
   async getVerifiedToolDescriptions(): Promise<ToolDescription[] | null> {
     const credentials = await this.loadFreshCredentials()
