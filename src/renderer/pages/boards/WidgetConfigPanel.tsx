@@ -365,6 +365,9 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
         }
         break
       }
+      case 'meta-reading':
+        config = { ...widget.config }
+        break
       case 'tt-reading':
         // Empty advertiserIds is valid: the token's own grant covers all.
         config = { advertiserIds: ttAdvertiserIds, range: ttRange }
@@ -378,7 +381,9 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
       if (MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)) {
         const metrics = (config.metrics ?? []) as string[]
         const diverges =
-          widget.type === 'tt-reading'
+          widget.type === 'meta-reading'
+            ? config.range !== masterScope.range
+            : widget.type === 'tt-reading'
             ? config.range !== ttWindowForMasterRange(masterScope.range)
             : config.range !== masterScope.range ||
               metrics.length !== masterScope.metrics.length ||

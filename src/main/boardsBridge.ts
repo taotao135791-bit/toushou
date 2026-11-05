@@ -50,7 +50,7 @@ const BOARD_TEXT: Record<string, string> = {
   'boards.preset.meta.dailySpend': '每日消耗趋势',
   'boards.preset.meta.accountSpend': '分账户消耗',
   'boards.preset.meta.source': '数据来源与范围',
-  'boards.preset.meta.sourceBody': '等待 Meta 读数。数据来源：Pipeboard Meta Ads MCP。填入后请注明账户、日期、币种、时区、读取时间、分页和缺失项；仅有汇总时不绘制每日趋势。对话填入的数值是固定快照，不会随整板刷新自动重查；重新读取后更新各模块。',
+  'boards.preset.meta.sourceBody': '来源：Pipeboard Meta Ads MCP。在 Meta 读数模块加载并选择已授权账户，刷新和总控日期切换会读取每日明细，联动指标卡与趋势图。缺失指标不补零；未返回的账户时区标为待确认。',
   'boards.widget.clock': '时钟',
   'boards.widget.note': '便签',
   'boards.widget.todo': '待办清单',
@@ -58,6 +58,7 @@ const BOARD_TEXT: Record<string, string> = {
   'boards.widget.fb-reading-summary': 'FB 读数汇总',
   'boards.widget.fb-report-reading': 'FB 报表读数',
   'boards.widget.tt-reading': 'TT 读数',
+  'boards.widget.meta-reading': 'Meta 读数',
   'boards.reading.ttModuleName': 'TT 读数',
   'boards.preset.ads': '海外广告投放',
   'boards.preset.ads.kpiSpend': '今日消耗 ($)',
@@ -112,6 +113,7 @@ const WIDGET_TITLE_ZH: Record<WidgetType, string> = {
   'fb-report-reading': 'FB 报表读数',
   'google-report-reading': 'Google 读数',
   'tt-reading': 'TT 读数',
+  'meta-reading': 'Meta 读数',
   'reading-snapshot': '读数快照',
   'reading-module': '读数组件',
   gauge: '仪表',
@@ -505,7 +507,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       board: boardSummary({ ...board }),
       ...(template === 'tiktok' ? { datasetReady } : {}),
       note: template === 'meta'
-        ? '已创建 Meta 本地模块看板。使用 board_update_widget 将本次真实 get_insights 返回值填入 counter（source: manual、value、label）和图表（source: manual、points、labels）；先将来源便签补齐账户、日期、币种、时区、读取时间和完整性。缺失指标保持 null，不补零；仅有汇总不得填每日趋势，混合币种不合计金额。这是固定快照，不会自动刷新 MCP。不要添加整页 HTML file 代替这些模块。'
+        ? '已创建 Meta 原生读数看板。请在 Meta 读数模块加载并选择已授权账户，刷新和总控日期切换会经 Main 只读 MCP 更新绑定的指标及每日趋势。不要将这些卡片改为 manual 固定快照，也不要添加整页 HTML 代替原生模块；缺失指标不补零。'
         :
         (ids.length > 0
           ? `已按 ${ids.length} 个广告主 ID 过滤数据卡并绑定 TT 读数模块；读数需要已连接的 TikTok 授权。`

@@ -220,6 +220,7 @@ export const IPC_CHANNELS = {
   TIKTOK_CANCEL: 'tiktok:cancel',
   TIKTOK_DISCONNECT: 'tiktok:disconnect',
   TIKTOK_OPEN_URL: 'tiktok:open-url',
+  META_ADS_READING: 'meta-ads:reading',
   META_ADS_STATUS: 'meta-ads:status',
   META_ADS_BEGIN: 'meta-ads:begin',
   META_ADS_CANCEL: 'meta-ads:cancel',

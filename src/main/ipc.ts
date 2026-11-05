@@ -239,6 +239,7 @@ import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionMana
 import {
   initializeMetaAdsConnection,
   getMetaAdsConnectionSnapshot,
+  readMetaBoard,
   beginMetaAdsConnection,
   cancelMetaAdsConnection,
   disconnectMetaAdsConnection,
@@ -938,6 +939,7 @@ export function registerIpc() {
     await initializeMetaAdsConnection()
     return getMetaAdsConnectionSnapshot()
   })
+  ipcMain.handle(IPC_CHANNELS.META_ADS_READING, (_event, input: unknown) => readMetaBoard(input))
   ipcMain.handle(IPC_CHANNELS.META_ADS_BEGIN, () => beginMetaAdsConnection())
   ipcMain.handle(IPC_CHANNELS.META_ADS_CANCEL, () => cancelMetaAdsConnection())
   ipcMain.handle(IPC_CHANNELS.META_ADS_DISCONNECT, () => disconnectMetaAdsConnection())

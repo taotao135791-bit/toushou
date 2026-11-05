@@ -1,3 +1,4 @@
+import type { MetaReadingResult, MetaReadingSummary, MetaReadingAccount, MetaReadingRange } from '../shared/metaReading'
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
 import type { SaveReadingSnapshotInput } from '../shared/readingSnapshot'
@@ -549,6 +550,7 @@ export interface ElectronAPI {
   tiktokOpenUrl: (url: string) => Promise<boolean>
   onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => () => void
   /** MetaAds Pipeboard connection; only secret-free snapshots cross IPC. */
+  metaAdsReading: (input: { action: 'accounts' } | { action: 'summary'; accountId: string; range: MetaReadingRange }) => Promise<MetaReadingResult<MetaReadingSummary | { accounts: MetaReadingAccount[]; partial: boolean }>>
   metaAdsStatus: () => Promise<MetaAdsConnectionSnapshot>
   metaAdsBegin: () => Promise<MetaAdsConnectionSnapshot>
   metaAdsCancel: () => Promise<MetaAdsConnectionSnapshot>
@@ -1045,6 +1047,7 @@ const api: ElectronAPI = {
   tiktokCancel: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_CANCEL),
   tiktokDisconnect: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_DISCONNECT),
   tiktokOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_OPEN_URL, url),
+  metaAdsReading: (input) => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_READING, input),
   metaAdsStatus: () => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_STATUS),
   metaAdsBegin: () => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_BEGIN),
   metaAdsCancel: () => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_CANCEL),

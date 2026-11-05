@@ -36,14 +36,14 @@ async function call(params: Record<string, unknown>): Promise<string> {
 
 const WIDGET_TYPES = [
   'clock', 'note', 'counter', 'fb-reading', 'fb-reading-summary', 'fb-report-reading',
-  'google-report-reading', 'tt-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
+  'google-report-reading', 'tt-reading', 'meta-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
 ]
 
 const TEMPLATES = ['meta', 'tiktok', 'fb-daily-v2', 'ads', 'daily', 'blank']
 
 /** 标准看板模板，仅在用户明确要求时选择。 */
 const TEMPLATE_HELP = {
-  meta: 'Meta Ads 本地模块：独立消耗/展示/点击指标卡、每日趋势、分账户消耗及来源便签。使用真实 MCP 结果逐个更新原生组件；不是 HTML 文件，不会自动重查 MCP。',
+  meta: 'Meta Ads 原生读数：meta-reading 经 Main 调用只读 MCP，选择已授权账户、随总控切换日期、刷新并联动指标及每日趋势。',
   tiktok: 'TikTok 投放全景：总消耗/总点击/平均点击率/总转化四个指标卡 + 近 30 天消耗趋势 + 分活动消耗对比 + 转化趋势 + TT 读数模块。指标卡与图表绑定「TikTok 报表」数据集。',
   'fb-daily-v2': 'FB 投放日报：按产品关联已保存报表，自动获取并核验报表读数。',
   ads: '海外广告投放（占位演示数据）：KPI 行 + 趋势 + 渠道对比 + 预算 + 清单。',
@@ -95,7 +95,7 @@ export default function boardsTools(api: ToolHostApi): void {
       '未指定平台时默认创建空白看板；用户要求 TT/TikTok 看板时必须选 tiktok，Meta Ads/MCP 看板选 meta；FB 已保存报表选 fb-daily-v2。可选模板：\n' +
       Object.entries(TEMPLATE_HELP).map(([id, help]) => `- ${id}：${help}`).join('\n') +
       '\n用户指定 TikTok 广告主时，必须先通过 TikTok 连接信息查询其数字 ID，并以逗号分隔的字符串传 advertiserIds；不知道 ID 时先查明或请用户提供，不能留空代替指定范围。未指定账户时留空会读取连接页所选账户，未选择时读取授权账户。' +
-      '\nMeta 模板用 get_insights 的真实返回值更新原有组件（board_update_widget）：指标用 source: manual、value、label，图表用 source: manual、points、labels；来源便签记录账户、日期、币种、时区、读取时间和分页/警告。缺失指标 value: null，不填零；没有每日明细就保留空趋势；不跨币种相加。不得伪造数据集或读取快照，不需要生成 HTML/CSV 文件。\n' +
+      '\nMeta 模板已内置 meta-reading 和自动绑定的卡片。请引导用户在模块中加载并选择已授权账户；不要把其卡片改为 manual 或替换成固定快照。缺失指标不补零，时区以模块实际显示为准。不需要生成 HTML/CSV 文件。\n' +
       '\nTikTok 模板可能需要报表数据；只有用户明确要求读取时才调用 touhou_tiktok_update，不要因为新建看板而自动查询广告账户。',
     parameters: {
       type: 'object',

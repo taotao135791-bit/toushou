@@ -9,6 +9,10 @@ import { listMcpConnections, removeMcpConnection, upsertManagedServer, type McpS
 import { MetaAdsConnectionManager } from './integrations/meta/MetaAdsConnectionManager'
 import { MetaAdsReadFacade } from './integrations/meta/MetaAdsReadFacade'
 import { META_ADS_SKILL, META_ADS_SKILL_FILE } from './integrations/meta/metaAdsSkill'
+import { MetaAdsMcpClient } from './integrations/meta/MetaAdsMcpClient'
+import { MetaBoardReadError, readMetaAccounts, readMetaSummary } from './integrations/meta/MetaBoardReader'
+import { isMetaAccountId, isMetaReadingRange, type MetaReadingAccount, type MetaReadingResult, type MetaReadingSummary } from '../shared/metaReading'
+import { boardReadingRangeDates } from '../shared/fbReading'
 
 const NAME = 'meta-ads'
 const DEFINITION = { id: NAME, kind: 'oauth' as const, label: 'Meta Ads', description: '连接 Meta Ads MCP（由 Pipeboard 提供），读取已有聚合数据。', capabilities: ['mcp'] }
@@ -127,6 +131,41 @@ export async function initializeMetaAdsConnection(): Promise<void> {
   try { await pending } finally { if (initializing === pending) initializing = null }
 }
 export async function getMetaAdsConnectionSnapshot(): Promise<MetaAdsConnectionSnapshot> { await initializeMetaAdsConnection(); return projected }
+let activeReadings = 0
+/** Narrow native-board capability; neither raw tool arguments nor grants cross IPC. */
+export async function readMetaBoard(input: unknown): Promise<MetaReadingResult<MetaReadingSummary | { accounts: MetaReadingAccount[]; partial: boolean }>> {
+  const query = object(input)
+  if (!query || (query.action !== 'accounts' && query.action !== 'summary') || (query.action === 'summary' && (!isMetaAccountId(query.accountId) || !isMetaReadingRange(query.range)))) return { ok: false, error: '请选择有效的 Meta 账户和日期范围。' }
+  if (Object.keys(query).some(key => !(query.action === 'accounts' ? ['action'] : ['action', 'accountId', 'range']).includes(key))) return { ok: false, error: 'Meta 读取参数无效。' }
+  if (activeReadings >= 4) return { ok: false, error: 'Meta 正在读取，请稍后重试。' }
+  activeReadings++
+  let token: string | undefined
+  try {
+    await initializeMetaAdsConnection()
+    if (!manager || !initialized || !projected.connected) return { ok: false, error: '请先在连接页授权 Meta Ads。' }
+    const credentials = await manager.loadFreshCredentials()
+    if (!credentials) return { ok: false, error: 'Meta 授权不可用，请重新连接。' }
+    token = credentials.accessToken
+    const client = new MetaAdsMcpClient(token, undefined, AbortSignal.timeout(90_000))
+    await client.initialize()
+    const schema = client.toolDescriptions().find(tool => tool.name === 'get_insights')?.inputSchema as Obj | undefined
+    if (query.action === 'summary' && !object(schema?.properties)?.time_breakdown) return { ok: false, error: '当前 Meta 服务未提供每日明细参数，暂不能刷新看板。' }
+    const list = await readMetaAccounts(client)
+    if ((await manager.loadFreshCredentials())?.accessToken !== token) return { ok: false, error: 'Meta 授权已变化，请重新读取。' }
+    if (query.action === 'accounts') return { ok: true, data: list }
+    const account = list.accounts.find(item => item.id === query.accountId)
+    if (!account) return { ok: false, error: '所选账户不在本次已授权账户列表内，请重新选择。' }
+    const range = query.range as MetaReadingSummary['range']
+    const data = await readMetaSummary(client, account, range, boardReadingRangeDates(range))
+    const current = await manager.loadFreshCredentials()
+    if (current?.accessToken !== token) return { ok: false, error: 'Meta 授权已变化，请重新读取。' }
+    return { ok: true, data }
+  } catch (error) {
+    if (token) manager?.markReadFailure(error, token)
+    // Do not expose upstream response text, URLs or credentials.
+    return { ok: false, error: error instanceof MetaBoardReadError ? error.message : 'Meta 读取未完成，请检查连接、账户权限、服务额度或返回数据的完整性后重试。' }
+  } finally { activeReadings-- }
+}
 export async function beginMetaAdsConnection(): Promise<MetaAdsConnectionSnapshot> {
   if (initFailed) { initFailed = false; initialized = false }
   await initializeMetaAdsConnection()

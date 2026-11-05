@@ -67,7 +67,7 @@ const ADS_COPY_BASELINE_PROMPT = [
 
 const BOARD_BASELINE_ZH = [
   '<session-baseline name="board-preview">',
-  '新建看板默认使用本地前端模块：TT/TikTok 看板必须选择 tiktok 模板，Meta/Facebook/FB 广告查询后建看板选择 meta 模板；只有明确指定已有 FB 已保存报表时才选 fb-daily-v2。未指定平台时新建 blank 空白看板；从已保存的读数创建内容时，以来源组件引用添加独立 reading-module 指标、图表或说明，不重新读取广告账户。Meta MCP 结果填入 meta 模板的原生指标、图表和来源便签，缺失值保留 null，固定快照不宣称自动同步。',
+  '新建看板默认使用本地前端模块：TT/TikTok 看板必须选择 tiktok 模板，Meta/Facebook/FB 广告查询后建看板选择 meta 模板；只有明确指定已有 FB 已保存报表时才选 fb-daily-v2。未指定平台时新建 blank 空白看板；从已保存的读数创建内容时，以来源组件引用添加独立 reading-module 指标、图表或说明，不重新读取广告账户。Meta 模板包含经 Main 调用只读 MCP 的 meta-reading，用户在模块内选择已授权账户；刷新和日期切换自动更新绑定指标与图表，不要将其改成 manual 固定快照。缺失指标保持未知。',
   '成功添加 reading-module、reading-snapshot 或 HTML file 组件后，应用会尝试在对话中自动显示实际预览和“打开看板”；简短回报结果即可。不要为了显示预览搜索源码或协议、执行 shell、写额外文件或编造代码围栏。',
   '回报时使用看板和模块名称及保存状态，不主动罗列 UUID、配置参数或试探过程；用户要求诊断时可说明细节，未完成或失败时必须如实告知。',
   '用户明确要求自定义 HTML 文件时，仍可在授权工作区写文件，再添加 file 组件；遵守既有权限确认。',
@@ -76,7 +76,7 @@ const BOARD_BASELINE_ZH = [
 
 const BOARD_BASELINE_EN = [
   '<session-baseline name="board-preview">',
-  'Default to local native widgets: TT/TikTok boards must use tiktok; boards from Meta/Facebook/FB advertising queries use meta. Use fb-daily-v2 only for explicitly requested existing saved FB reports. Create a blank board unless a platform is specified. For saved readings, add independent reading-module metrics, charts or notes using the saved source widget; do not reread ad accounts. Populate native Meta widgets from actual MCP results, keep missing values null, and describe them as fixed snapshots without automatic synchronization.',
+  'Default to local native widgets: TT/TikTok boards must use tiktok; boards from Meta/Facebook/FB advertising queries use meta. Use fb-daily-v2 only for explicitly requested existing saved FB reports. Create a blank board unless a platform is specified. For saved readings, add independent reading-module metrics, charts or notes using the saved source widget; do not reread ad accounts. The meta template includes a native meta-reading module backed by Main and read-only MCP. Select an authorized account in the module; refresh and date changes update linked native cards. Do not replace these bindings with manual snapshots; keep missing metrics unknown.',
   'After successfully adding a reading-module, reading-snapshot or HTML file widget, the app attempts to show the actual preview and an Open board action in the conversation. Give a brief result. Do not search source code or protocols, run shell commands, write extra files, or invent code fences merely to display the preview.',
   'Report board and module names and save status; do not volunteer UUIDs, config parameters or trial-and-error details unless the user asks for diagnostics. Always state honestly if the work is incomplete or failed.',
   'When the user explicitly requests a custom HTML file, you may write it in the authorized workspace and add a file widget, subject to the existing permission confirmations.',
