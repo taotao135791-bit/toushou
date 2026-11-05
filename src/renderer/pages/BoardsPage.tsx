@@ -125,6 +125,7 @@ const DEFAULT_MASTER_METRICS: readonly string[] = ['spend', 'cpi', 'cpm']
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
   { preset: 'fb-daily-v2', labelKey: 'boards.template.fbDaily2' },
   { preset: 'tiktok', labelKey: 'boards.template.tiktok' },
+  { preset: 'meta', labelKey: 'boards.template.meta' },
   { preset: 'blank', labelKey: 'boards.template.blank' },
   { preset: 'ads', labelKey: 'boards.template.ads' },
   { preset: 'daily', labelKey: 'boards.template.daily' },
@@ -2515,6 +2516,8 @@ export default function BoardsPage() {
               {(
                 [
                   { preset: 'fb-daily-v2', label: t('boards.preset.fbDaily2') },
+                  { preset: 'tiktok', label: t('boards.preset.tiktok') },
+                  { preset: 'meta', label: t('boards.preset.meta') },
                   { preset: 'ads', label: t('boards.preset.ads') },
                   { preset: 'daily', label: t('boards.preset.daily') },
                   { preset: 'blank', label: t('boards.compose.chipBlank') }

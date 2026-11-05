@@ -314,7 +314,7 @@ function CounterBody({
       }
     }
   } else {
-    value = typeof widget.config.value === 'number' ? widget.config.value : 0
+    value = widget.config.value === null ? null : typeof widget.config.value === 'number' ? widget.config.value : 0
   }
   return (
     <div className="relative flex h-full flex-col items-center justify-center gap-1.5">

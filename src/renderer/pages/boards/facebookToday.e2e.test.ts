@@ -1,12 +1,12 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
 const require_ = createRequire(import.meta.url)
 describe('Facebook today account workflow', () => {
-  it('reads explicit scopes, isolates failures, saves scope, stops batches and rejects stale dates', { timeout: 40000 }, () => {
+  it('hides legacy browser controls and sends no web reads', { timeout: 40000 }, () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'facebook-today-'))
     try {
       const root = path.dirname(require_.resolve('electron/package.json'))
@@ -23,18 +23,12 @@ describe('Facebook today account workflow', () => {
       const result = JSON.parse(line!.slice('E2E_RESULT '.length))
       expect(result, run.stderr).not.toHaveProperty('fatal')
       expect(result.initial).toEqual({ calls: [], articles: 0 })
-      expect(result.single.calls).toEqual(['123456'])
-      expect(result.single.articles).toBe(1)
-      expect(result.single.text).toContain('25')
-      expect(result.searchClearedSelection).toBe(true)
-      expect(result.batch.calls).toEqual(['123456', '123456', '234567', '345678'])
-      expect(result.batch.articles).toBe(3)
-      expect(result.snapshot.accounts.map((a: { accountId: string; status: string }) => [a.accountId, a.status])).toEqual([['123456', 'ok'], ['234567', 'failed'], ['345678', 'ok']])
-      expect(result.stopped.calls).toEqual(['123456'])
-      expect(result.stopped.text).toContain('本次尚未读取')
-      expect(result.blocked).toEqual(['123456'])
-      expect(result.changed).toEqual({ calls: ['123456'], articles: 0 })
-      if (process.env.FB_TODAY_PREVIEW) copyFileSync(path.join(dir, 'preview.png'), process.env.FB_TODAY_PREVIEW)
+      expect(result.after).toEqual([])
+      expect(result.text).toContain('旧网页读数已暂停')
+      expect(result.text).toContain('前往 Meta Ads 连接')
+      expect(result.text).not.toContain('打开浏览器')
+      expect(result.text).not.toContain('巡检全部已添加账户')
+
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

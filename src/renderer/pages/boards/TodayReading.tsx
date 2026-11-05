@@ -46,6 +46,9 @@ import {
   type ReadingNotice
 } from './ReadingErrorNotice'
 
+// Archived UI has no user-facing switch; Main independently rejects legacy reads.
+const legacyFacebookBrowserEnabled = (): boolean => false
+
 const RANGES: TodayRange[] = ['today', 'last7', 'last28']
 
 type Translate = (key: I18nKey, vars?: Record<string, string | number>) => string
@@ -456,6 +459,8 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
       {range === 'today' && <p role="note" className="text-[12px] text-amber-700 dark:text-amber-300">{zh ? '今天的数据截至读取时，比较项为昨天全天，两者不是等时段。' : 'Today is measured at read time; the comparison is the whole of yesterday. These are not equal elapsed periods.'}</p>}
       <section className="flex flex-col gap-3">
         <h2 className="flex items-center gap-2 text-[15px] font-semibold leading-6 text-cream"><BrandIcon brand="facebook" size={20} />{t('boards.today.facebook')}</h2>
+        {/* Archived UI is retained in source, but never mounted. Main also rejects legacy reads. */}
+        {legacyFacebookBrowserEnabled() ? <>
         <FacebookAccountPicker
           accounts={facebookAccounts.map(row => row.account)} busy={refreshingAct !== null}
           loading={facebookLoading} error={facebookLoadError} zh={zh} needsBrowser={inChat}
@@ -475,6 +480,10 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
           onRefresh={() => void refreshFacebook(row)}
           onStep={step => row.readError ? void loadFacebook() : facebookStep(step, row)} t={t}
         />)}
+        </> : <>
+        <p className="text-[12px] text-cream-dim">{zh ? '广告数据改用 Meta Ads 连接读取。旧网页读数已暂停，已有报表仍保留。' : 'Read advertising data through the Meta Ads connection. Legacy browser reading is suspended; saved reports are retained.'}</p>
+        <button type="button" onClick={() => navigate('/connections')} className="focus-ring self-start rounded-full border border-line px-4 py-2 text-[13px] text-cream">{zh ? '前往 Meta Ads 连接' : 'Open Meta Ads connection'}</button>
+        </>}
       </section>
 
       <section className="flex flex-col gap-3">

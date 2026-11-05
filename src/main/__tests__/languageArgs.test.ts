@@ -83,6 +83,36 @@ describe('ad-copy model pool baseline', () => {
 })
 
 describe('data-source priority baseline', () => {
+  it('routes ordinary Meta and Facebook requests through MCP without requiring the acronym', () => {
+    for (const language of ['zh', 'en'] as const) {
+      const prompt = buildAgentArgs(language)[1]
+      for (const request of ['连接 Meta', '连接 Facebook', '连接 FB', '查看 Meta 账户', '查询 FB 消耗', '做 Meta 看板', 'connect Meta / Facebook']) {
+        expect(prompt).toContain(request)
+      }
+      expect(prompt).toContain('即使没有提 MCP')
+      expect(prompt).toContain('旧会话的浏览器操作历史不改变默认路由')
+      expect(prompt).toContain('get_ad_accounts / get_insights 是独立有效来源')
+      expect(prompt).toContain('连接 → Meta Ads → 连接 Meta')
+      expect(prompt).toContain('仅要求连接时不额外读取表现报表')
+      expect(prompt).toContain('禁止自动退回 browser_report')
+      expect(prompt).toContain('不能重新启动旧网页抓数')
+      expect(prompt).not.toContain('FB 数字只认 browser_report')
+      expect(prompt).not.toContain('FB 读数用 browser_report / fb_history')
+      // Archived readers cannot be revived by asking for the old route.
+      expect(prompt).toContain('browser_report 不再注册')
+      expect(prompt).toContain('已有报表及本地历史可继续查看')
+    }
+  })
+
+  it('defaults platform boards to local native templates in both UI languages', () => {
+    const zh = buildAgentArgs('zh')[1]
+    const en = buildAgentArgs('en')[1]
+    expect(zh).toContain('TT/TikTok 看板必须选择 tiktok')
+    expect(zh).toContain('Meta/Facebook/FB 广告查询后建看板选择 meta')
+    expect(en).toContain('TT/TikTok boards must use tiktok')
+    expect(en).toContain('Meta/Facebook/FB advertising queries use meta')
+  })
+
   it('injects the no-computer-use rule for tooled data into every session', () => {
     const args = buildAgentArgs('zh')
     expect(args[1]).toContain('session-baseline name="data-source-priority"')

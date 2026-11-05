@@ -168,6 +168,17 @@ export interface TikTokAdsConnectionSnapshot {
   authorizationUrl?: string
 }
 
+/** Meta Ads connection through Pipeboard. Credentials remain in Main. */
+export interface MetaAdsConnectionSnapshot {
+  definition: ConnectionDefinition
+  status: ConnectionStatus
+  connected: boolean
+  lastError?: string
+  lastConnectedAt?: number
+  tokenExpiresAt?: number
+  authorizationUrl?: string
+}
+
 /** AppsFlyer official OAuth connection. Credentials remain in Main. */
 export interface AppsFlyerConnectionSnapshot {
   definition: ConnectionDefinition

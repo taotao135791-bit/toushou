@@ -8,6 +8,11 @@ describe('board toolkit prompt contract', () => {
     const create = registered.find(tool => tool.name === 'toushou_board_create')!
     const add = registered.find(tool => tool.name === 'toushou_board_add_widget')!
     expect(create.description).toContain('默认创建空白看板')
+    expect(create.description).toContain('默认使用本地前端模块')
+    expect(create.description).toContain('必须选 tiktok')
+    expect(create.description).toContain('Meta Ads/MCP 看板选 meta')
+    expect(create.description).toContain('缺失指标 value: null')
+    expect(add.description).toContain('只有用户明确要求自定义 HTML 文件时才可添加 file')
     expect(create.description).toContain('只有用户明确要求读取时')
     expect(create.description).not.toContain('立即调用 touhou_tiktok_update')
     expect(add.description).toContain('已保存的 reading-snapshot 或 reading-module')

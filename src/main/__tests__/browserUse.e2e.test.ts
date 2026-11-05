@@ -133,10 +133,10 @@ describe('browser-use e2e (real Electron panel)', () => {
     expect(steps['A click link'].ok).toBe(true)
     expect(steps['A snapshot after click'].text).toContain('second page')
 
-    // Structured report fails closed off Ads Manager, with fallback text.
+    // A stale report call fails before any browser extraction.
     expect(steps['A report (non-Ads-Manager, expect unparseable)'].ok).toBe(false)
-    expect(steps['A report (non-Ads-Manager, expect unparseable)'].error).toBe('unparseable-page')
-    expect(steps['A report (non-Ads-Manager, expect unparseable)'].text).toContain('second page')
+    expect(steps['A report (non-Ads-Manager, expect unparseable)'].error).toBe('legacy-facebook-browser-suspended')
+    expect(steps['A report (non-Ads-Manager, expect unparseable)'].detail).toContain('Meta Ads')
 
     // History is panel-independent and reads the (empty) verified store.
     expect(steps['A history'].ok).toBe(true)

@@ -29,6 +29,7 @@ import {
   McpTestOutcome,
   TikTokAdsConnectionSnapshot,
   AppsFlyerConnectionSnapshot,
+  MetaAdsConnectionSnapshot,
   FigmaConnectionSnapshot
 } from '../shared/connections'
 import type {
@@ -547,6 +548,14 @@ export interface ElectronAPI {
   tiktokDisconnect: () => Promise<TikTokAdsConnectionSnapshot>
   tiktokOpenUrl: (url: string) => Promise<boolean>
   onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => () => void
+  /** MetaAds Pipeboard connection; only secret-free snapshots cross IPC. */
+  metaAdsStatus: () => Promise<MetaAdsConnectionSnapshot>
+  metaAdsBegin: () => Promise<MetaAdsConnectionSnapshot>
+  metaAdsCancel: () => Promise<MetaAdsConnectionSnapshot>
+  metaAdsDisconnect: () => Promise<MetaAdsConnectionSnapshot>
+  metaAdsOpenUrl: (url: string) => Promise<boolean>
+  onMetaAdsStatus: (callback: (snapshot: MetaAdsConnectionSnapshot) => void) => () => void
+
   /** AppsFlyer official connection; only secret-free snapshots cross IPC. */
   appsflyerStatus: () => Promise<AppsFlyerConnectionSnapshot>
   /** Re-pull every recorded AF query spec into its AF-{name} dataset (master refresh). */
@@ -1036,6 +1045,17 @@ const api: ElectronAPI = {
   tiktokCancel: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_CANCEL),
   tiktokDisconnect: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_DISCONNECT),
   tiktokOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_OPEN_URL, url),
+  metaAdsStatus: () => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_STATUS),
+  metaAdsBegin: () => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_BEGIN),
+  metaAdsCancel: () => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_CANCEL),
+  metaAdsDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_DISCONNECT),
+  metaAdsOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.META_ADS_OPEN_URL,
+    typeof url === 'string' && url.length <= 16384 ? url : null),
+  onMetaAdsStatus: (callback: (snapshot: MetaAdsConnectionSnapshot) => void) => {
+    const handler = (_event: IpcRendererEvent, snapshot: MetaAdsConnectionSnapshot) => callback(snapshot)
+    ipcRenderer.on(IPC_CHANNELS.META_ADS_STATUS, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.META_ADS_STATUS, handler)
+  },
   appsflyerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_STATUS),
   appsflyerDatasetRefresh: (window: { start: string; end: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_DATASET_REFRESH, window) as Promise<{ ok: boolean; error?: string; results?: Array<{ name: string; datasetName: string; ok: boolean; error?: string; rowCount?: number }> }>,

@@ -18,6 +18,7 @@ import {
   WIDGET_TYPES,
   composeBoard,
   createWidget,
+  detectPreset,
   findFreeSlot,
   type BoardPresetId,
   type BoardText
@@ -42,6 +43,14 @@ export const BOARDS_TOOLS_ENV_KEY = 'TOUSHOU_BOARDS'
 /** Main-side zh display text for the shared board presets (Main cannot import
  *  the renderer i18n; connection labels already follow this zh-first rule). */
 const BOARD_TEXT: Record<string, string> = {
+  'boards.preset.meta': 'Meta Ads 投放看板',
+  'boards.preset.meta.spend': '总消耗',
+  'boards.preset.meta.impressions': '总展示',
+  'boards.preset.meta.clicks': '总点击',
+  'boards.preset.meta.dailySpend': '每日消耗趋势',
+  'boards.preset.meta.accountSpend': '分账户消耗',
+  'boards.preset.meta.source': '数据来源与范围',
+  'boards.preset.meta.sourceBody': '等待 Meta 读数。数据来源：Pipeboard Meta Ads MCP。填入后请注明账户、日期、币种、时区、读取时间、分页和缺失项；仅有汇总时不绘制每日趋势。对话填入的数值是固定快照，不会随整板刷新自动重查；重新读取后更新各模块。',
   'boards.widget.clock': '时钟',
   'boards.widget.note': '便签',
   'boards.widget.todo': '待办清单',
@@ -87,6 +96,7 @@ const boardText: BoardText = (key) => BOARD_TEXT[key] ?? key
 
 export const BOARD_TEMPLATES: readonly BoardPresetId[] = [
   'tiktok',
+  'meta',
   'fb-daily-v2',
   'ads',
   'daily',
@@ -412,10 +422,14 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
   if (tool.action === 'board_create') {
     const boards = listBoards()
     if (boards.length >= BOARD_LIMITS.maxBoards) return { ok: false, error: 'too-many-boards' }
+    const inferred = detectPreset(`${typeof tool.name === 'string' ? tool.name : ''} ${typeof tool.description === 'string' ? tool.description : ''}`)
     const template =
       typeof tool.template === 'string' && BOARD_TEMPLATES.includes(tool.template as BoardPresetId)
         ? (tool.template as BoardPresetId)
-        : 'blank'
+        : inferred === 'tiktok' || inferred === 'meta' ? inferred : 'blank'
+    if (template === 'meta' && [tool.advertiserIds, tool.advertiserName, tool.advertiserNames].some(value => value != null)) {
+      return { ok: false, error: 'invalid-platform-scope', message: 'advertiserIds / advertiserName / advertiserNames 仅用于 TikTok；Meta 账户范围请记录在来源模块及本次查询参数中。' }
+    }
     const composed = composeBoard('', boardText, template)
     const name = boundedString(tool.name, BOARD_LIMITS.maxNameLength) ?? composed.name
     if (boards.some((board) => board.name.toLowerCase() === name.toLowerCase())) {
@@ -490,7 +504,9 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       ok: true,
       board: boardSummary({ ...board }),
       ...(template === 'tiktok' ? { datasetReady } : {}),
-      note:
+      note: template === 'meta'
+        ? '已创建 Meta 本地模块看板。使用 board_update_widget 将本次真实 get_insights 返回值填入 counter（source: manual、value、label）和图表（source: manual、points、labels）；先将来源便签补齐账户、日期、币种、时区、读取时间和完整性。缺失指标保持 null，不补零；仅有汇总不得填每日趋势，混合币种不合计金额。这是固定快照，不会自动刷新 MCP。不要添加整页 HTML file 代替这些模块。'
+        :
         (ids.length > 0
           ? `已按 ${ids.length} 个广告主 ID 过滤数据卡并绑定 TT 读数模块；读数需要已连接的 TikTok 授权。`
           : template === 'tiktok'

@@ -18,6 +18,7 @@ import {
   overseasAdsPreset,
   reflowWidgets,
   tiktokAdsPreset,
+  metaAdsPreset,
   validateBoard,
   applyMasterScope
 } from '../boards'
@@ -428,12 +429,6 @@ describe('composeBoard + presets', () => {
       'FB',
       'facebook',
       'FACEBOOK pixel',
-      'meta',
-      'META campaigns',
-      'tiktok',
-      'TikTok Shop',
-      'tt ads',
-      'TT',
       'roas',
       'ROAS 目标'
     ]
@@ -1008,5 +1003,28 @@ describe('counter/chart filterValues (cross-account boards)', () => {
 
   it('rejects values without a filter column', () => {
     expect(withWidget(card({ filterValues: ['go photo A'] }))?.widgets).toHaveLength(0)
+  })
+})
+
+
+describe('native platform board defaults', () => {
+  const t = (key: string) => key
+  it('routes TT and Meta requests to their native presets before generic report keywords', () => {
+    for (const text of ['TT', 'tt ads', 'TikTok Shop', 'TikTok 投放日报']) {
+      expect(detectPreset(text)).toBe('tiktok')
+      expect(composeBoard(text, t).widgets.filter(w => w.type === 'tt-reading')).toHaveLength(1)
+    }
+    for (const text of ['meta', 'META campaigns', 'Meta 汇总报告']) expect(detectPreset(text)).toBe('meta')
+    expect(detectPreset('FB 投放日报')).toBe('fb-daily-v2')
+    expect(detectPreset('button collection')).toBe('daily')
+  })
+  it('creates independent Meta cards without HTML, fabricated numbers or TT data bindings', () => {
+    const widgets = metaAdsPreset(t)
+    const board = validateBoard({ ...createBoard('Synthetic Meta', 1), widgets })!
+    expect(board.widgets).toHaveLength(6)
+    expect(board.widgets.map(w => w.type)).toEqual(['counter', 'counter', 'counter', 'chart-line', 'chart-bar', 'note'])
+    for (const widget of board.widgets.filter(w => w.type === 'counter')) expect(widget.config.value).toBeNull()
+    for (const widget of board.widgets.filter(w => w.type.startsWith('chart-'))) expect(widget.config.points).toEqual([])
+    expect(board.widgets.some(w => w.config.datasetId || w.type === 'file' || w.type === 'tt-reading')).toBe(false)
   })
 })

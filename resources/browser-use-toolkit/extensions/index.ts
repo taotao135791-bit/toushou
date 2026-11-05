@@ -194,40 +194,7 @@ export default function browserUseTools(api: ToolHostApi): void {
     })
   )
 
-  api.registerTool(
-    tool({
-      name: 'browser_report',
-      label: 'Browser Report',
-      description:
-        '读取当前 FB Ads Manager 广告系列页并返回硬核验证过的结构化读数（JSON，verified=true）：账户、日期范围、每个广告系列的消耗/单次成效/CPM/成效/点击/CTR/CPC/安装量、汇总总消耗。数字由本地严格解析器提取，且必须通过四道锁才会返回：行数=页面汇总标记数、行求和=汇总总消耗、双读结构一致、页面稳定。任何一道不过即拒报（incomplete-view / totals-mismatch / unstable-page / unparseable-page）——无数据好过错数据，自动化可安全消费。给用户转述时如实报告错误原因，不要自行估算补数。',
-      parameters: { type: 'object', properties: {} },
-      approval: 'read',
-      execute: () => call({ action: 'report' })
-    })
-  )
-
-  api.registerTool(
-    tool({
-      name: 'fb_history',
-      label: 'FB Reading History',
-      description:
-        '查询本地 FB 读数历史（只含四道锁验证过的读数，无未验证数字）：每次 browser_report 成功后自动累积。返回按时间排序的样本（capturedAt/账户/时间范围/总消耗/各系列消耗），适合画趋势、对比今天 vs 昨天、生成看板卡片提议。参数：accountId 可选过滤，limit 默认 10（最大 50）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          accountId: { type: 'string' },
-          limit: { type: 'number' }
-        }
-      },
-      approval: 'read',
-      execute: (p) =>
-        call({
-          action: 'history',
-          ...(str(p, 'accountId') ? { accountId: str(p, 'accountId') } : {}),
-          limit: num(p, 'limit', 10)
-        })
-    })
-  )
+  // Legacy Facebook report/history tools are suspended. Main retains local history.
 
   api.registerTool(
     tool({

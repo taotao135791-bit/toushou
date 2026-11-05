@@ -192,7 +192,7 @@ export function createWidget(
 /** Translator shape the presets need; the renderer passes its i18n `t`. */
 export type BoardText = (key: string) => string
 
-export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'fb-daily-v2' | 'tiktok'
+export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'fb-daily-v2' | 'tiktok' | 'meta'
 
 export interface ComposedBoard {
   name: string
@@ -229,6 +229,8 @@ function matchesKeyword(text: string, keyword: string): boolean {
 /** Pick a preset from a free-form description; anything unknown falls back to daily. */
 export function detectPreset(description: string): BoardPresetId {
   const text = description.toLowerCase()
+  if (['tiktok', 'tt'].some(k => matchesKeyword(text, k))) return 'tiktok'
+  if (matchesKeyword(text, 'meta')) return 'meta'
   if (FB_DAILY_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'fb-daily-v2'
   if (ADS_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'ads'
   if (FINANCE_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'finance'
@@ -449,6 +451,23 @@ export function tiktokAdsPreset(t: BoardText): BoardWidget[] {
   ]
 }
 
+/** Native cards, shared with the TT canvas. Missing metrics stay null;
+ * the agent fills only returned metrics and labels the fixed query scope. */
+export function metaAdsPreset(t: BoardText): BoardWidget[] {
+  return [
+    ...[
+      'spend', 'impressions', 'clicks'
+    ].map((key, i) => presetWidget('counter', t(`boards.preset.meta.${key}`),
+      { x: i * 4, y: 0, w: 4, h: 3 }, { source: 'manual', value: null })),
+    presetWidget('chart-line', t('boards.preset.meta.dailySpend'), { x: 0, y: 3, w: 6, h: 6 },
+      { source: 'manual', points: [], labels: [] }),
+    presetWidget('chart-bar', t('boards.preset.meta.accountSpend'), { x: 6, y: 3, w: 6, h: 6 },
+      { source: 'manual', points: [], labels: [] }),
+    presetWidget('note', t('boards.preset.meta.source'), { x: 0, y: 9, w: 12, h: 4 },
+      { text: t('boards.preset.meta.sourceBody') })
+  ]
+}
+
 /**
  * Deterministically compose a new board from a free-form description. A
  * chip-selected `preset` skips keyword detection entirely. The caller turns
@@ -473,6 +492,8 @@ export function composeBoard(
       return { name: t('boards.preset.fbDaily2'), widgets: fbDailyV2Preset(t) }
     case 'tiktok':
       return { name: t('boards.preset.tiktok'), widgets: tiktokAdsPreset(t), masterScope: { range: 'last7', metrics: ['spend', 'cpi'] } }
+    case 'meta':
+      return { name: t('boards.preset.meta'), widgets: metaAdsPreset(t) }
     case 'blank':
       return { name: t('boards.preset.blank'), widgets: [] }
     default:
@@ -886,9 +907,12 @@ function validateWidgetConfig(
     case 'counter': {
       const config: Record<string, unknown> = {}
       if (raw.value !== undefined) {
-        const value = cleanNumber(raw.value)
-        if (value === null) return null
-        config.value = value
+        if (raw.value === null) config.value = null
+        else {
+          const value = cleanNumber(raw.value)
+          if (value === null) return null
+          config.value = value
+        }
       }
       if (raw.label !== undefined) {
         const label = cleanString(raw.label, BOARD_LIMITS.maxLabelLength)
