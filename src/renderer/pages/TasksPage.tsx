@@ -146,7 +146,7 @@ export default function TasksPage() {
   const openModal = () => {
     modalGeneration.current += 1
     setEditingTask(null)
-    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', skillId: '' }))
+    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', skillId: '', reuseSession: false }))
     setModalOpen(true)
   }
 

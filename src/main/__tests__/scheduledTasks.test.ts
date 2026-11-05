@@ -26,6 +26,7 @@ import {
   setTaskOutcomeSinkResetForTest,
   resetRunningGuardsForTest,
   setTaskReuseSessionFile,
+  validateTaskSaveInput,
   resetTaskSessionReuse,
   startScheduler,
   stopSchedulerForTest,
@@ -494,7 +495,7 @@ describe('deadline-driven scheduling regressions', () => {
 describe('task session reuse', () => {
   it('passes the pinned transcript to the spawn fn and re-pins the forked file', async () => {
     tasks.push(baseTask({ reuseSession: true, reuseSessionFile: '/sessions/first.jsonl' }))
-    const optsSeen: Array<{ resumeSessionFile?: string } | undefined> = []
+    const optsSeen: Array<{ resumeSessionFile?: string; runId?: string; reuseGeneration?: string } | undefined> = []
     setTaskSpawnFn(async (_cwd, _title, _prompt, opts) => {
       optsSeen.push(opts)
       return { sessionId: 'sess-reuse' }
@@ -502,7 +503,7 @@ describe('task session reuse', () => {
     await runTaskNow('t1')
     expect(optsSeen[0]?.resumeSessionFile).toBe('/sessions/first.jsonl')
     // The 'connected' handshake re-pins the forked file through the bridge.
-    setTaskReuseSessionFile('t1', '/sessions/second.jsonl')
+    setTaskReuseSessionFile('t1', '/sessions/second.jsonl', { runId: optsSeen[0]!.runId!, generation: optsSeen[0]!.reuseGeneration!, cwd: '/tmp/project' })
     expect(tasks[0].reuseSessionFile).toBe('/sessions/second.jsonl')
   })
 
@@ -533,6 +534,49 @@ describe('task session reuse', () => {
     const saved = saveTask(edited)
     expect(saved.reuseSession).toBe(true)
     expect(saved.reuseSessionFile).toBe('/s/first.jsonl')
+  })
+
+  it('honors explicit false at the IPC validator and keeps the run ledger', () => {
+    tasks.push(baseTask({ reuseSession: true, reuseSessionFile: '/sessions/first.jsonl', lastRunId: 'previous-run', lastRunStatus: 'completed' }))
+    const input = validateTaskSaveInput({ ...baseTask(), reuseSession: false })
+    expect(input.ok).toBe(true)
+    if (!input.ok) return
+    const saved = saveTask(input.task)
+    expect(saved).toMatchObject({ reuseSession: false, lastRunId: 'previous-run', lastRunStatus: 'completed' })
+    expect(saved.reuseSessionFile).toBeUndefined()
+    expect(validateTaskSaveInput({ ...baseTask(), reuseSession: 'false' })).toEqual({ ok: false, error: 'invalid-reuse-session' })
+  })
+
+  it('clears a pin when the task changes project while preserving its ledger', async () => {
+    tasks.push(baseTask({ reuseSession: true, reuseSessionFile: '/sessions/project-a.jsonl', lastRunId: 'old-run' }))
+    const saved = saveTask(baseTask({ cwd: '/tmp/another-project', reuseSession: true }))
+    expect(saved.lastRunId).toBe('old-run')
+    expect(saved.reuseSessionFile).toBeUndefined()
+    let resume: string | undefined
+    setTaskSpawnFn(async (_cwd, _title, _prompt, opts) => { resume = opts?.resumeSessionFile; return { sessionId: 'fresh' } })
+    await runTaskNow('t1')
+    expect(resume).toBeUndefined()
+  })
+
+  it('ignores an old handshake after reset and re-enable', async () => {
+    tasks.push(baseTask({ reuseSession: true }))
+    let old: { runId: string; generation: string; cwd: string } | undefined
+    setTaskSpawnFn(async (cwd, _title, _prompt, opts) => { old = { runId: opts!.runId!, generation: opts!.reuseGeneration!, cwd }; return { sessionId: 'old-session' } })
+    await runTaskNow('t1')
+    resetTaskSessionReuse('t1')
+    saveTask(baseTask({ reuseSession: true }))
+    setTaskReuseSessionFile('t1', '/sessions/old.jsonl', old!)
+    expect(tasks[0].reuseSessionFile).toBeUndefined()
+  })
+
+  it('ignores an old handshake after a task changes project', async () => {
+    tasks.push(baseTask({ reuseSession: true }))
+    let old: { runId: string; generation: string; cwd: string } | undefined
+    setTaskSpawnFn(async (cwd, _title, _prompt, opts) => { old = { runId: opts!.runId!, generation: opts!.reuseGeneration!, cwd }; return { sessionId: 'old-session' } })
+    await runTaskNow('t1')
+    saveTask(baseTask({ cwd: '/tmp/other-project', reuseSession: true }))
+    setTaskReuseSessionFile('t1', '/sessions/old.jsonl', old!)
+    expect(tasks[0].reuseSessionFile).toBeUndefined()
   })
 
   it('resetTaskSessionReuse reports unknown tasks', () => {

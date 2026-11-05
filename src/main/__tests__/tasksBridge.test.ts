@@ -4,13 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // so only electron and the settings store get mocked (same recipe as
 // scheduledTasks.test.ts). The omp import is stubbed because the bridge
 // resolves the calling session's cwd lazily from it.
-vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }))
+const access = vi.hoisted(() => ({ mode: 'full', remoteReadonly: false, cwd: '/tmp/session-workspace', confirm: 0, hasWindow: true, changeOnConfirm: false, rejectConfirm: false }))
+vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: () => [], getFocusedWindow: () => access.hasWindow ? { isDestroyed: () => false } : null },
+  dialog: { showMessageBox: vi.fn(async () => { if (access.rejectConfirm) throw new Error('synthetic'); if (access.changeOnConfirm) access.mode = 'readonly'; return { response: access.confirm } }) }
+}))
 vi.mock('../store', () => ({
   getStore: vi.fn(() => tasksFixture()),
   setStore: vi.fn()
 }))
 vi.mock('../omp', () => ({
-  getSession: (id: string) => (id === 'session-1' ? { id, cwd: '/tmp/session-workspace' } : undefined)
+  getSession: (id: string) => (id === 'session-1' ? { id, cwd: '/tmp/session-workspace' } : undefined),
+  getSessionBridgeAccess: (id: string) => id === 'session-1' ? { mode: access.mode, remoteReadonly: access.remoteReadonly, cwd: access.cwd } : null
 }))
 
 import { ScheduledTask } from '../../shared/types'
@@ -25,6 +30,7 @@ function tasksFixture(): ScheduledTask[] {
 
 beforeEach(() => {
   tasks = []
+  Object.assign(access, { mode: 'full', remoteReadonly: false, cwd: '/tmp/session-workspace', confirm: 0, hasWindow: true, changeOnConfirm: false, rejectConfirm: false })
   vi.mocked(getStore).mockImplementation(() => tasks as ScheduledTask[])
   vi.mocked(setStore).mockImplementation((key, value) => {
     if (key === 'scheduledTasks') tasks = value as ScheduledTask[]
@@ -96,4 +102,38 @@ describe('bridge server', () => {
     const missing = await call({ action: 'task_delete', taskId })
     expect(missing.body.ok).toBe(false)
   }, 20000)
+})
+
+
+describe('task reuse reset authorization', () => {
+  it('enforces the Main session policy and rechecks after confirmation', async () => {
+    await initTasksBridge()
+    const endpoint = tasksBridgeEnv('session-1').TOUSHOU_TASKS!
+    const call = async () => (await (await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'task_reset_reuse', taskId: 'synthetic' }) })).json()) as { ok: boolean; error?: string }
+    const seed = () => { tasks = [{ id: 'synthetic', name: 'Synthetic task', prompt: 'Synthetic', cwd: '/tmp/session-workspace', schedule: { type: 'daily', time: '09:00' }, enabled: true, createdAt: 1, notifyOnComplete: false, reuseSession: true, reuseSessionFile: '/synthetic/session.jsonl' }] }
+    seed()
+    access.mode = 'readonly'
+    expect(await call()).toEqual({ ok: false, error: 'permission-denied' })
+    expect(tasks[0].reuseSession).toBe(true)
+    access.mode = 'full'; access.remoteReadonly = true
+    expect(await call()).toEqual({ ok: false, error: 'permission-denied' })
+    expect(tasks[0].reuseSessionFile).toBe('/synthetic/session.jsonl')
+    access.remoteReadonly = false; access.mode = 'ask'; access.confirm = 0
+    expect(await call()).toEqual({ ok: false, error: 'permission-denied' })
+    expect(tasks[0].reuseSession).toBe(true)
+    access.hasWindow = false
+    expect(await call()).toEqual({ ok: false, error: 'permission-denied' })
+    access.hasWindow = true; access.rejectConfirm = true
+    expect(await call()).toEqual({ ok: false, error: 'permission-denied' })
+    access.rejectConfirm = false; access.confirm = 1; access.changeOnConfirm = true
+    expect(await call()).toEqual({ ok: false, error: 'permission-denied' })
+    expect(tasks[0].reuseSession).toBe(true)
+    access.mode = 'ask'; access.changeOnConfirm = false
+    expect((await call()).ok).toBe(true)
+    expect(tasks[0].reuseSession).toBe(false)
+    expect(tasks[0].reuseSessionFile).toBeUndefined()
+    seed(); access.mode = 'no-bash'
+    expect((await call()).ok).toBe(true)
+    expect(tasks[0].reuseSession).toBe(false)
+  })
 })

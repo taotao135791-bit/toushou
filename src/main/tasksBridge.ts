@@ -1,5 +1,6 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
+import { BrowserWindow, dialog } from 'electron'
 import { ScheduledTask } from '../shared/types'
 import { buildTaskFromAgentInput, deleteTask, listTasks, resetTaskSessionReuse, saveTask } from './scheduledTasks'
 import { serializeBoundedJson } from '../shared/boundedJson'
@@ -124,9 +125,31 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (!tool) return json(response, 400, { ok: false, error: 'unsupported-action' })
   // Resolved lazily so the env-injection import chain (OmpProcess → here)
   // stays acyclic, mirroring the Feishu bridge.
-  const { getSession } = await import('./omp')
+  const { getSession, getSessionBridgeAccess } = await import('./omp')
   const cwd = getSession(sessionId)?.cwd
   if (!cwd) return json(response, 200, { ok: false, error: 'no-session' })
+  if (tool.action === 'task_reset_reuse') {
+    const access = getSessionBridgeAccess(sessionId)
+    if (!access || access.remoteReadonly || !['full', 'no-bash', 'ask'].includes(access.mode) || access.cwd !== cwd) return json(response, 200, { ok: false, error: 'permission-denied' })
+    if (access.mode === 'ask') {
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(candidate => !candidate.isDestroyed())
+      if (!win || win.isDestroyed()) return json(response, 200, { ok: false, error: 'permission-denied' })
+      const task = listTasks().find(item => item.id === tool.taskId)
+      const name = typeof task?.name === 'string' ? task.name.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 80) : ''
+      let approved = false
+      try {
+        const result = await dialog.showMessageBox(win, {
+          type: 'question', title: '确认任务操作', message: '允许此会话重置自动任务的对话复用？',
+          ...(name ? { detail: `任务：${name}` } : {}),
+          buttons: ['拒绝', '允许一次'], defaultId: 0, cancelId: 0, noLink: true
+        })
+        approved = result.response === 1
+      } catch { /* Closing the native window fails closed. */ }
+      if (!approved) return json(response, 200, { ok: false, error: 'permission-denied' })
+      const current = getSessionBridgeAccess(sessionId)
+      if (!current || current.remoteReadonly || !['full', 'no-bash', 'ask'].includes(current.mode) || current.cwd !== access.cwd) return json(response, 200, { ok: false, error: 'permission-denied' })
+    }
+  }
   return json(response, 200, dispatch(tool, cwd))
 }
 

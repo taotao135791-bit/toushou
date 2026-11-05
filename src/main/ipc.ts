@@ -1,6 +1,7 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
 import { canonicalExistingPath } from './canonicalPath'
+import { taskSessionBelongsToWorkspace } from './taskSessionReuse'
 import { getWorkspaceSystemPaths, projectSystemPathsError } from './workspaceSystemPaths'
 import { ProjectRegistry, validProjectName } from './projectRegistry'
 import { discoverProjectSessionFiles } from './projectSessionFiles'
@@ -127,8 +128,10 @@ import {
   setTaskSpawnFn,
   setTaskOutcomeSink,
   setTaskReuseSessionFile,
+  clearTaskReuseSessionFile,
+  taskReuseContextIsCurrent,
+  validateTaskSaveInput,
   resetTaskSessionReuse,
-  isValidSchedule,
   noteTaskSessionEvent,
   noteTaskSessionFile
 } from './scheduledTasks'
@@ -180,7 +183,6 @@ import {
   revealSkillsDir
 } from './skills'
 import { importGithubSkills, previewGithubSkills } from './skillsGithub'
-import { isValidSkillId } from '../shared/skills'
 import { defaultExportFileName } from './exportPath'
 import { listProjectFiles } from './projectFiles'
 import { openWorkspaceInRequest } from './openWorkspaceIn'
@@ -758,6 +760,12 @@ export function registerIpc() {
       if (skill.ok) skillSystemPrompt = skill.prompt
       else throw new Error(`skill-unavailable:${skill.error}`)
     }
+    let resumeSessionPath: string | undefined
+    if (opts?.resumeSessionFile && opts.taskId && opts.runId && opts.reuseGeneration) {
+      const context = { runId: opts.runId, generation: opts.reuseGeneration, cwd }
+      if (await taskSessionBelongsToWorkspace(opts.resumeSessionFile, cwd) && taskReuseContextIsCurrent(opts.taskId, context)) resumeSessionPath = opts.resumeSessionFile
+      else clearTaskReuseSessionFile(opts.taskId, opts.resumeSessionFile, context)
+    }
     const session = createSession(
       cwd,
       (event) => {
@@ -767,7 +775,7 @@ export function registerIpc() {
         if (event.type === 'connected') {
           const tryRecord = (delayMs: number) => {
             setTimeout(() => {
-              void getSessionState(event.sessionId).then((state) => {
+              void getSessionState(event.sessionId).then(async (state) => {
                 if (state?.sessionFile) {
                   markSessionFile(event.sessionId, state.sessionFile)
                   nameSessionDurally.fileAvailable(event.sessionId, state.sessionFile)
@@ -776,7 +784,9 @@ export function registerIpc() {
                   // forks a new one) so the next firing continues this context.
                   // setTaskReuseSessionFile only writes when the task has
                   // reuseSession on — this bootstraps the FIRST pin too.
-                  if (opts?.taskId) setTaskReuseSessionFile(opts.taskId, state.sessionFile)
+                  if (opts?.taskId && opts.runId && opts.reuseGeneration && await taskSessionBelongsToWorkspace(state.sessionFile, cwd)) {
+                    setTaskReuseSessionFile(opts.taskId, state.sessionFile, { runId: opts.runId, generation: opts.reuseGeneration, cwd })
+                  }
                   const historyUuid = path.basename(state.sessionFile).match(/_([^_]+)\.jsonl$/)?.[1]
                   if (opts?.runId && historyUuid) noteTaskSessionFile(event.sessionId, opts.runId, historyUuid)
                 }
@@ -794,7 +804,7 @@ export function registerIpc() {
         // workspace's global write/exec mode while running unattended.
         ...(opts?.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
         ...(skillSystemPrompt ? { skillSystemPrompt } : {}),
-        ...(opts?.resumeSessionFile ? { resumeSessionPath: opts.resumeSessionFile } : {})
+        ...(resumeSessionPath ? { resumeSessionPath } : {})
       }
     )
     if (session.status === 'error') return null
@@ -2594,41 +2604,9 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.TASKS_LIST, async () => listTasks())
 
   ipcMain.handle(IPC_CHANNELS.TASKS_SAVE, async (_event, task: unknown) => {
-    if (!task || typeof task !== 'object') return { ok: false, error: 'invalid' }
-    const t = task as Record<string, unknown>
-    if (typeof t.id !== 'string' || !t.id) return { ok: false, error: 'missing-id' }
-    if (typeof t.name !== 'string' || !t.name.trim()) return { ok: false, error: 'missing-name' }
-    if (typeof t.prompt !== 'string' || !t.prompt.trim()) return { ok: false, error: 'missing-prompt' }
-    if (typeof t.cwd !== 'string' || !t.cwd) return { ok: false, error: 'missing-cwd' }
-    if (!isValidSchedule(t.schedule)) return { ok: false, error: 'invalid-schedule' }
-    if (t.permissionMode !== undefined && t.permissionMode !== 'default' && t.permissionMode !== 'readonly') {
-      return { ok: false, error: 'invalid-permission-mode' }
-    }
-    if (t.notifyChannel !== undefined && t.notifyChannel !== 'system' && t.notifyChannel !== 'feishu') {
-      return { ok: false, error: 'invalid-notify-channel' }
-    }
-    if (t.skillId !== undefined && !isValidSkillId(t.skillId)) {
-      return { ok: false, error: 'invalid-skill-id' }
-    }
-    // The stored shape is exactly what passed validation. Runtime-owned run
-    // ledger fields (lastRunAt, failures, runs, last session) are merged back
-    // from the stored copy inside saveTask so an edit cannot reset them.
-    const clean = {
-      id: t.id,
-      name: t.name.trim(),
-      prompt: t.prompt.trim(),
-      cwd: t.cwd,
-      schedule: t.schedule,
-      enabled: t.enabled === true,
-      createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
-      notifyOnComplete: t.notifyOnComplete !== false,
-      ...(t.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
-      ...(typeof t.skillId === 'string' && isValidSkillId(t.skillId) ? { skillId: t.skillId } : {}),
-      ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
-      // User intent, not runtime state: omitting it on an edit means "keep".
-      ...(t.reuseSession === true ? { reuseSession: true as const } : {})
-    }
-    return { ok: true, task: saveTask(clean) }
+    const validated = validateTaskSaveInput(task)
+    if (!validated.ok) return validated
+    return { ok: true, task: saveTask(validated.task) }
   })
 
   ipcMain.handle(IPC_CHANNELS.TASKS_DELETE, async (_event, id: unknown) => {
