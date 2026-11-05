@@ -20,20 +20,21 @@ beforeEach(() => {
   userDataDir = dir
   datasetsFile = path.join(dir, 'board-datasets.json')
   specsFile = path.join(dir, 'appsflyer-dataset-specs.json')
-  setAppsFlyerDatasetTokenSourceForTest(() => 'token-1')
+  setAppsFlyerDatasetTokenSourceForTest(() => 'synthetic-access-token')
 })
 
+// Entirely invented identifiers and readings; never copy real reports here.
 const DISCOVERY_TEXT = [
   '## Data: Count days activity appsflyer,Unique users days activity appsflyer,Installs appsflyer,Event name,Media source,Date,Campaign ID',
-  '897,335,,App Active,tiktokglobal_int,2026-10-29,1869158348300529',
-  '587,250,,App Active,tiktokglobal_int,2026-11-02,1870133414912081',
+  '100,25,,App Active,tiktokglobal_int,2026-10-29,synthetic-campaign-a',
+  '60,20,,App Active,tiktokglobal_int,2026-11-02,synthetic-campaign-b',
   '; ## Metadata: {"timezone":"UTC","currency":"USD","Count_days_activity_appsflyer":{"partial-data?":false},"Installs_appsflyer":{"partial-data?":false}}'
 ].join('\n')
 
 const GEO_TEXT = [
   '## Data: Installs appsflyer,Active users days activity appsflyer,Geo',
-  '509,2885,TH',
-  '55,104,JP',
+  '2,12,US',
+  '1,4,GB',
   '; ## Metadata: {"timezone":"UTC","currency":"USD","Installs_appsflyer":{"partial-data?":false}}'
 ].join('\n')
 
@@ -45,13 +46,13 @@ describe('parseAfDataset (generic)', () => {
     expect(parsed.columns.map((c) => c.name)).toEqual(['事件次数', '独立用户', '安装量', '事件', '媒体渠道', '日期', '活动ID', '时区', '币种'])
     expect(parsed.columns.find((c) => c.name === '日期')?.type).toBe('date')
     expect(parsed.columns.find((c) => c.name === '事件次数')?.type).toBe('number')
-    expect(parsed.rows[0]).toEqual([897, 335, '', 'App Active', 'tiktokglobal_int', '2026-10-29', '1869158348300529', 'UTC', 'USD'])
+    expect(parsed.rows[0]).toEqual([100, 25, '', 'App Active', 'tiktokglobal_int', '2026-10-29', 'synthetic-campaign-a', 'UTC', 'USD'])
   })
 
   it('parses geo-shaped answers and the one-line empty answer', () => {
     const geo = parseAfDataset(GEO_TEXT)
     expect(geo.columns.map((c) => c.name)).toEqual(['安装量', '活跃用户', '地区', '时区', '币种'])
-    expect(geo.rows[0]).toEqual([509, 2885, 'TH', 'UTC', 'USD'])
+    expect(geo.rows[0]).toEqual([2, 12, 'US', 'UTC', 'USD'])
     const empty = parseAfDataset(EMPTY_TEXT)
     expect(empty.rows).toHaveLength(0)
   })
@@ -62,7 +63,7 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
     id: 'afq-installs',
     name: '安装量',
     datasetName: 'AF-安装量',
-    query: { app_ids: ['id1498607143'], row_count: 100, metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' }], groupings: ['Geo'], filters: { 'Media source': ['tiktokglobal_int'] } }
+    query: { app_ids: ['app.synthetic.install-a'], row_count: 100, metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' }], groupings: ['Geo'], filters: { 'Media source': ['tiktokglobal_int'] } }
   }
 
   it('injects dates into the recorded query and writes AF-{name}', async () => {
@@ -86,7 +87,7 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
     const q = (seen[0] as { query: Record<string, unknown> }).query
     expect(q.start_date).toBe('2026-10-29')
     expect(q.end_date).toBe('2026-11-04')
-    expect(q.app_ids).toEqual(['id1498607143'])
+    expect(q.app_ids).toEqual(['app.synthetic.install-a'])
     const dataset = listDatasets(datasetsFile).find((d) => d.name === 'AF-安装量')!
     expect(dataset.rows).toHaveLength(2)
   })
@@ -133,7 +134,7 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
   })
 
   it('migrates the legacy v1 spec shape into a discovery query', async () => {
-    writeFileSync(specsFile, JSON.stringify([{ appId: 'id1498607143', eventName: 'App Active' }]))
+    writeFileSync(specsFile, JSON.stringify([{ appId: 'app.synthetic.install-a', eventName: 'App Active' }]))
     const specs = listQuerySpecs(specsFile)
     expect(specs).toHaveLength(1)
     expect(specs[0].datasetName).toBe('AppsFlyer 报表')
