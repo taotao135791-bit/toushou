@@ -1,0 +1,76 @@
+name: Publish verified macOS Beta 5
+on:
+  push:
+    branches: [beta/board-generation-stability]
+    paths: ['.github/workflows/publish-mac-beta.yml']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: promote-mac-beta-5
+  cancel-in-progress: false
+env:
+  SOURCE_RUN: '42209606749'
+  SOURCE_JOB: '127864756232'
+  SOURCE_SHA: aca169ff4ccf92421fa8954ee063319546450ed3
+  BETA_TAG: beta-v2.4.0-beta.5
+  GH_REPO: taotao135791-bit/toushou
+  GH_TOKEN: ${{ github.token }}
+jobs:
+  publish:
+    if: github.repository == 'taotao135791-bit/toushou' && github.ref == 'refs/heads/beta/board-generation-stability'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify immutable source and successful macOS package job
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/${GH_REPO}/actions/runs/${SOURCE_RUN}" --jq .head_sha)" = "${SOURCE_SHA}"
+          test "$(gh api "repos/${GH_REPO}/actions/jobs/${SOURCE_JOB}" --jq '[.run_id,.name,.conclusion]|join("|")')" = "${SOURCE_RUN}|Verify and package beta (mac)|success"
+          test "$(gh api "repos/${GH_REPO}/git/ref/tags/${BETA_TAG}" --jq .object.type)" = tag
+          object="$(gh api "repos/${GH_REPO}/git/ref/tags/${BETA_TAG}" --jq .object.sha)"
+          test "$(gh api "repos/${GH_REPO}/git/tags/${object}" --jq .object.sha)" = "${SOURCE_SHA}"
+          test "$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)" = v2.3.1
+      - uses: actions/checkout@v4
+        with:
+          ref: aca169ff4ccf92421fa8954ee063319546450ed3
+          path: verified-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: TouShou-Beta-42209606749-mac
+          run-id: 42209606749
+          github-token: ${{ github.token }}
+          path: artifacts
+      - name: Verify and publish the ten previously tested macOS files
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_deps="${RUNNER_TEMP}/mac-beta-verify"
+          npm install --prefix "${verify_deps}" yaml@2.9.0 --ignore-scripts --no-audit --no-fund
+          export NODE_PATH="${verify_deps}/node_modules"
+          test "$(find artifacts -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 10
+          test -z "$(find artifacts -name 'latest*' -print -quit)"
+          node verified-source/tools/beta-release.cjs verify artifacts mac
+          notes="docs/releases/${BETA_TAG}.md"
+          test -s "${notes}"
+          if gh release view "${BETA_TAG}" >/dev/null 2>&1; then
+            test "$(gh release view "${BETA_TAG}" --json isDraft --jq .isDraft)" = true
+            gh release edit "${BETA_TAG}" --prerelease --latest=false --notes-file "${notes}"
+          else
+            gh release create "${BETA_TAG}" --verify-tag --title '投手 Beta 2.4.0-beta.5（macOS）' --notes-file "${notes}" --draft --prerelease --latest=false
+          fi
+          gh release upload "${BETA_TAG}" artifacts/* --clobber
+          uploaded="$(mktemp -d)"
+          gh release download "${BETA_TAG}" --dir "${uploaded}"
+          test "$(find "${uploaded}" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 10
+          node verified-source/tools/beta-release.cjs verify "${uploaded}" mac
+          (cd "${uploaded}" && sha256sum --check SHA256SUMS-beta-mac.txt)
+          test "$(gh release view "${BETA_TAG}" --json isPrerelease --jq .isPrerelease)" = true
+          gh release edit "${BETA_TAG}" --draft=false --prerelease --latest=false
+          test "$(gh release view "${BETA_TAG}" --json isPrerelease --jq .isPrerelease)" = true
+          test "$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)" = v2.3.1
