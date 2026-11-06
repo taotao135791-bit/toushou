@@ -9,7 +9,7 @@ import type { TikTokReadingSummary } from '../../shared/tiktokReport'
 import { readMetaAccounts, readMetaSummary } from '../integrations/meta/MetaBoardReader'
 import type { MetaReadingAccount } from '../../shared/metaReading'
 
-const advertiser = '7300000000000000001', now = new Date(2030, 0, 8, 12).getTime()
+const advertiser = '7300000000000000001', now = Date.parse('2030-01-08T04:00:00Z')
 const widget = (id: string, type: BoardWidget['type'], config: Record<string, unknown>): BoardWidget => ({ id, type, title: id, config, layout: { x: 0, y: 0, w: 6, h: 4 } })
 function fixture() {
   const daily = widget('daily', 'counter', { source: 'dataset', datasetId: 'media', metric: '消耗', op: 'sum' })

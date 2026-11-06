@@ -163,3 +163,11 @@ Publication is gated by the Beta workflow's clean dual-platform build, pinned
 OMP suite, packaged startup/save/restart checks and uploaded-asset checksum
 verification. The public release notes include the exact workflow and commit
 links. These notes do not assert a live production-platform reconciliation.
+
+The first immutable candidate tag, `beta-v2.4.0-beta.1`, was not published:
+clean CI caught Windows refusing to fsync a read-only file descriptor, and an
+account-calendar test whose local-time fixture differed on UTC runners. The
+file is now reopened with write access before fsync; no durability check was
+removed. The date fixture uses an explicit UTC instant and passes in both UTC
+and Asia/Shanghai, with the production scope guard unchanged. The next
+candidate is `beta-v2.4.0-beta.2`; the failed tag is preserved rather than moved.

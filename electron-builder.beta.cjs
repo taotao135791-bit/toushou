@@ -14,7 +14,7 @@ module.exports = {
   extraMetadata: {
     name: 'toushou-beta',
     productName: '投手 Beta',
-    version: '2.4.0-beta.1',
+    version: '2.4.0-beta.2',
     main: 'dist-electron/main/beta.cjs'
   },
   detectUpdateChannel: true,

@@ -47,7 +47,7 @@ export function atomicBoardFile(file: string, bytes: string): void {
   const temporary = `${file}.tmp-${randomUUID()}`
   try {
     writeFileSync(temporary, bytes, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-    const fd = openSync(temporary, 'r')
+    const fd = openSync(temporary, 'r+')
     try { fsyncSync(fd) } finally { closeSync(fd) }
     renameSync(temporary, file)
     syncDirectory(path.dirname(file))

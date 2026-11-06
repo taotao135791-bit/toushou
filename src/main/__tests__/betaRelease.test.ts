@@ -22,14 +22,15 @@ describe('isolated beta packaging', () => {
   it('uses separate identity, entry, output and channel while the stable configuration stays stable', () => {
     const stable = require_('../../../electron-builder.json')
     const metadata = validateConfig()
-    expect(metadata).toEqual({ version: '2.4.0-beta.1', tag: 'beta-v2.4.0-beta.1' })
+    expect(metadata.version).toMatch(/^\d+\.\d+\.\d+-beta\.\d+$/)
+    expect(metadata.tag).toBe(`beta-v${metadata.version}`)
     expect(stable.appId).toBe('com.toushou.desktop')
     expect(stable.productName).toBe('投手')
     expect(config.directories.output).toBe('release-beta')
     expect(config.extraMetadata).toMatchObject({ name: 'toushou-beta', productName: '投手 Beta', main: 'dist-electron/main/beta.cjs' })
     expect(config.win.target).toEqual([{ target: 'nsis', arch: ['x64'] }])
     expect(() => validateRef('tag', metadata.tag)).not.toThrow()
-    for (const [type, ref] of [['branch', metadata.tag], ['tag', 'v2.4.0-beta.1'], ['tag', 'beta-v2.4.0'], ['tag', 'beta-v2.4.0-beta.2']]) expect(() => validateRef(type, ref)).toThrow()
+    for (const [type, ref] of [['branch', metadata.tag], ['tag', `v${metadata.version}`], ['tag', 'beta-v2.4.0'], ['tag', 'beta-v999.0.0-beta.1']]) expect(() => validateRef(type, ref)).toThrow()
   })
 
   it('resolves to exactly one beta publisher in the real electron-builder config loader', async () => {
