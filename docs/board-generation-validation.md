@@ -192,3 +192,10 @@ TypeScript checking and the production build. The real-runtime suite passed
 dual-platform CI uses the repository's pinned OMP version. A duplicate local
 full-suite rerun was stopped at the maintainer's request; publication still
 requires the clean CI suite and packaged smoke checks.
+
+The `beta-v2.4.0-beta.3` Windows suite caught four expectations in the new
+package fixture that retained mixed-case temporary paths while production
+deliberately canonicalizes Windows paths to lowercase. Its other 2,660 tests
+passed; macOS's full suite passed. The fixture now uses the same Windows path
+normalization, with no production-code change. That candidate was canceled
+before publication; `beta-v2.4.0-beta.4` is the replacement candidate.
