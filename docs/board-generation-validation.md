@@ -218,3 +218,11 @@ Main and the Mac artifacts are unchanged. Windows did not reach the remaining
 packaged smoke checks and is not published. This Beta provides the verified
 macOS artifacts first; the overall dual-platform workflow is not reported as
 successful.
+
+The macOS-only prerelease was published by the separate [artifact promotion
+run](https://github.com/taotao135791-bit/toushou/actions/runs/42212200945).
+It verified the immutable tag/source SHA and successful Mac job, downloaded the
+same ten artifact files inside Actions, checked manifests and SHA-256, uploaded
+them to a prerelease draft, re-downloaded and verified them before publication.
+The release is not marked latest; the stable endpoint remains v2.3.1. No rebuild
+or additional generation evaluation was introduced for this promotion.

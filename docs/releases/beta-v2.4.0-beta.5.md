@@ -23,3 +23,5 @@ macOS 与 Windows 的全量检查及固定 OMP 兼容检查均通过。公开的
 
 
 [macOS 成品构建与验证](https://github.com/taotao135791-bit/toushou/actions/runs/42209606749/job/127864756232) · [安装包源码](https://github.com/taotao135791-bit/toushou/commit/aca169ff4ccf92421fa8954ee063319546450ed3)
+
+[发行文件发布与回验](https://github.com/taotao135791-bit/toushou/actions/runs/42212200945)
