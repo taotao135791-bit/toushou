@@ -23,6 +23,7 @@ import { useT } from '../../i18n'
 import { useAppStore } from '../../store'
 import { ttReadingRangeLabel } from './metricLabel'
 import { ReadingErrorNotice, tiktokReadingNotice, type ReadingNextStep } from './ReadingErrorNotice'
+import type { BoardRefreshStatus } from '@shared/boardRefresh'
 
 /**
  * TT 读数 board module body. Unlike FB 读数 (its own verified browser
@@ -64,7 +65,8 @@ function Metric({
   )
 }
 
-export function TTReadingBody({ widget }: { widget: BoardWidget }) {
+export interface ManagedTikTokReading { status: BoardRefreshStatus | 'pending'; summary?: TikTokReadingSummary }
+export function TTReadingBody({ widget, managedReading, onManagedRefresh }: { widget: BoardWidget; managedReading?: ManagedTikTokReading; onManagedRefresh?: () => void }) {
   const t = useT()
   const fxRates = useFxRates()
   const navigate = useNavigate()
@@ -78,12 +80,22 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
   const activeRequest = useRef<string | null>(null)
   const [progress, setProgress] = useState<TTProgress | null>(null)
   const [cancelling, setCancelling] = useState(false)
+  const managed = managedReading !== undefined
+  const refreshManaged = useRef(onManagedRefresh)
+  refreshManaged.current = onManagedRefresh
+  useEffect(() => {
+    if (!managedReading) return
+    setBusy(managedReading.status === 'pending')
+    setSummary(managedReading.status === 'updated' ? managedReading.summary ?? null : null)
+    setFailure(managedReading.status === 'failed' || managedReading.status === 'unbound' ? { code: 'invoke-failed' } : null)
+  }, [managedReading])
 
   useEffect(() => window.electronAPI.onTtReadingProgress?.((event) => {
     if (event.requestId === activeRequest.current) setProgress(event)
   }), [])
 
   const load = useCallback(async () => {
+    if (managed) { refreshManaged.current?.(); return }
     const previous = activeRequest.current
     if (previous) void window.electronAPI.ttReadingCancel?.(previous)
     const requestId = crypto.randomUUID()
@@ -113,9 +125,10 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
     } finally {
       if (version === requestVersion.current) { activeRequest.current = null; setBusy(false); setCancelling(false) }
     }
-  }, [advertiserIds, range, widget.id])
+  }, [advertiserIds, range, widget.id, managed])
 
   useEffect(() => {
+    if (managed) return
     void load()
     return () => {
       requestVersion.current += 1
@@ -123,11 +136,12 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
       activeRequest.current = null
       window.dispatchEvent(new CustomEvent('tt-reading:sync-status', { detail: { id: widget.id, failed: false, scope: null } }))
     }
-  }, [load])
+  }, [load, managed])
 
   // Board-level refresh queue: BoardsPage dispatches a board-refresh event per
   // reading module and serially waits for each module-done before advancing.
   useEffect(() => {
+    if (managed) return
     const onBoardRefresh = (event: Event) => {
       const detail = (event as CustomEvent).detail as { widgetId?: string }
       if (detail?.widgetId !== widget.id) return
@@ -137,7 +151,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
     }
     window.addEventListener('tt-reading:board-refresh', onBoardRefresh)
     return () => window.removeEventListener('tt-reading:board-refresh', onBoardRefresh)
-  }, [load, widget.id])
+  }, [load, widget.id, managed])
 
   const cancelReading = async () => {
     const requestId = activeRequest.current
@@ -185,7 +199,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
             {accountsLabel}
           </p>
           <p className="truncate text-[12px] leading-[18px] tabular-nums text-cream-faint">
-            {ttReadingRangeLabel(t, range)}{range === '1' && summary?.accountWindows ? '' : ` · ${windowLabel}`}
+            {managed && widget.dateScope?.mode === 'lookback' ? (language === 'zh' ? `近${widget.dateScope.days}天` : `Last ${widget.dateScope.days} days`) : managed && widget.dateScope?.mode === 'absolute' ? (language === 'zh' ? '指定日期' : 'Custom dates') : ttReadingRangeLabel(t, range)}{range === '1' && summary?.accountWindows ? '' : ` · ${windowLabel}`}
             {range === '1' && summary?.accountWindows ? '' : <> · {t('boards.tt.localDate')}</>}
           </p>
         </div>
@@ -200,7 +214,7 @@ export function TTReadingBody({ widget }: { widget: BoardWidget }) {
         </button>
       </div>
 
-      {busy && <TTReadingProgress progress={progress} cancelling={cancelling} onCancel={() => void cancelReading()} />}
+      {busy && (managed ? <p role="status" className="text-[12px] text-cream-faint">{t('boards.data.updating')}</p> : <TTReadingProgress progress={progress} cancelling={cancelling} onCancel={() => void cancelReading()} />)}
 
       {failure ? (
         <ReadingErrorNotice

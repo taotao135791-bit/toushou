@@ -177,6 +177,10 @@ async function launch(port) {
   await until(() => existsSync(path.join(profile, 'logs', 'main.log')), 10_000, 'Isolated app profile')
   cdp = await connect(target.webSocketDebuggerUrl)
   await until(() => evaluate(cdp, `typeof window.electronAPI?.saveReadingSnapshot === 'function' && !!document.body`), 15_000, 'Preload and page')
+  if (process.env.TOUSHOU_SMOKE_EXPECT_BETA === 'true') {
+    const beta = await evaluate(cdp, `(async () => ({version:await window.electronAPI.getAppVersion(),check:await window.electronAPI.updaterCheck(),download:await window.electronAPI.updaterDownload()}))()`)
+    if (!/^\d+\.\d+\.\d+-beta\.\d+$/.test(beta?.version) || beta.check?.status !== 'error' || beta.check?.operation !== 'check' || beta.download?.status !== 'error' || beta.download?.operation !== 'download' || !beta.check.message.includes('Beta')) throw new Error('Beta stable-updater guard is absent')
+  }
 }
 async function run() {
   // electron-store reads this file when Main starts. Seed only the two values

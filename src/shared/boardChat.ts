@@ -51,6 +51,15 @@ function widgetSummary(widget: BoardWidget): string {
       detail = configuredBinding(widget) || `${points} manual data points`
       break
     }
+    case 'table':
+      detail = `live table from ${typeof widget.config.datasetId === 'string' ? compact(widget.config.datasetId, 100) : '?'}; ${Array.isArray(widget.config.columns) ? widget.config.columns.length : 'default'} visible columns`
+      break
+    case 'funnel':
+      detail = `ordered live funnel with ${Array.isArray(widget.config.stages) ? widget.config.stages.length : 0} stages; use board_get for source bindings`
+      break
+    case 'analysis':
+      detail = configuredBinding(widget) || 'source-backed highlights awaiting configuration'
+      break
     case 'todo': {
       const items = Array.isArray(widget.config.items) ? widget.config.items : []
       const done = items.filter((item) => item && typeof item === 'object' && (item as { done?: unknown }).done === true).length

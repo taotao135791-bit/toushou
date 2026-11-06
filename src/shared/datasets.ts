@@ -8,6 +8,7 @@
  * the reference implementation in the user's pi-kanban project.
  */
 import { BoardDataset, BoardDatasetColumn } from './types'
+import { validateAppsFlyerDatasetState } from './appsflyerDataset'
 import { tiktokAccountDate } from './tiktokReport'
 
 export const DATASET_LIMITS = {
@@ -37,10 +38,13 @@ export type DatasetImportError =
   | 'parse-failed'
   | 'empty'
   | 'dataset-limit'
+  | 'dataset-cache-limit'
   | 'dataset-store-unreadable'
   | 'write-failed'
   /** createOrUpdateDataset: the replacement name failed isValidDatasetName. */
   | 'invalid-name'
+  /** An identity-bound live dataset was removed while its query was running. */
+  | 'not-found'
   /** mergeReportRowsIntoDataset: advertiser info was incomplete this round. */
   | 'incomplete-advertiser-info'
   | 'legacy-dataset'
@@ -426,5 +430,7 @@ export function validateDataset(raw: unknown): BoardDataset | null {
   }
   const result: BoardDataset & { source?: 'tiktok-report-v2' } = { id: d.id, name: d.name, columns, rows, createdAt: d.createdAt }
   if (d.source === 'tiktok-report-v2') result.source = d.source
+  const appsflyer = validateAppsFlyerDatasetState(d.appsflyer)
+  if (appsflyer) result.appsflyer = appsflyer
   return result
 }

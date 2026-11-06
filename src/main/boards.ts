@@ -1,4 +1,3 @@
-import { app } from 'electron'
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -19,6 +18,7 @@ import {
   validateBoard
 } from '../shared/boards'
 import { cardsToWidgets, parseBoardCardsProposal } from '../shared/boardCards'
+import { boardStoragePath } from './boardBuildStorage'
 
 /**
  * Widget board persistence — a single JSON document at
@@ -31,7 +31,7 @@ import { cardsToWidgets, parseBoardCardsProposal } from '../shared/boardCards'
  */
 
 function defaultBoardsFile(): string {
-  return path.join(app.getPath('userData'), 'kanban-boards-v2.json')
+  return boardStoragePath('kanban-boards-v2.json')
 }
 
 // Validation must not silently normalize away unknown metadata, even deeply

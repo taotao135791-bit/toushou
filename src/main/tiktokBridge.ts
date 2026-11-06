@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { BrowserWindow, dialog } from 'electron'
 import { serializeBoundedJson } from '../shared/boundedJson'
 import type { PermissionMode } from '../shared/types'
+import { completedTikTokReportWindow, isTikTokReportWindow } from '../shared/tiktokReport'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 
 /**
@@ -17,7 +18,7 @@ const MAX_BODY_BYTES = 16 * 1024
 export const TIKTOK_TOOLS_ENV_KEY = 'TOUSHOU_TIKTOK'
 
 export type TikTokBridgeRequest =
-  | { action: 'tiktok_update'; days?: unknown; advertiserId?: unknown }
+  | { action: 'tiktok_update'; buildId?: unknown; days?: unknown; advertiserId?: unknown; startDate?: unknown; endDate?: unknown }
   | { action: 'tiktok_status' }
 
 export function parseTikTokBridgeRequest(raw: unknown): TikTokBridgeRequest | null {
@@ -27,8 +28,11 @@ export function parseTikTokBridgeRequest(raw: unknown): TikTokBridgeRequest | nu
   if (value.action === 'tiktok_update') {
     return {
       action: 'tiktok_update',
+      buildId: value.buildId,
       days: value.days,
-      advertiserId: value.advertiserId
+      advertiserId: value.advertiserId,
+      startDate: value.startDate,
+      endDate: value.endDate
     }
   }
   return null
@@ -104,10 +108,12 @@ type BridgeDeps = {
   confirm: () => Promise<boolean | 'unavailable'>
   refresh: typeof tiktokReportService.refreshNow
   status: typeof tiktokReportService.getStatus
+  withBuild?: <T>(sessionId: string, callback: () => Promise<T>, buildId?: unknown) => Promise<T>
+  recordEvidence?: (sessionId: string, kind: 'tiktok') => void
 }
 
 function safeRefreshError(error: unknown): string {
-  const allowed = new Set(['not-configured', 'refresh-in-progress', 'invalid-advertiser', 'advertiser-not-authorized', 'permission-denied', 'token-expired', 'no-advertiser', 'advertiser-limit', 'account-timezone-unavailable', 'dataset-row-limit', 'dataset-legacy-dataset', 'dataset-invalid-scope', 'dataset-ambiguous-dataset'])
+  const allowed = new Set(['not-configured', 'refresh-in-progress', 'invalid-window', 'invalid-advertiser', 'advertiser-not-authorized', 'permission-denied', 'token-expired', 'no-advertiser', 'advertiser-limit', 'account-timezone-unavailable', 'dataset-row-limit', 'dataset-legacy-dataset', 'dataset-invalid-scope', 'dataset-ambiguous-dataset'])
   return typeof error === 'string' && allowed.has(error) ? error : 'refresh-failed'
 }
 
@@ -148,7 +154,14 @@ export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBrid
       hint: permissionBlock ? PERMISSION_HINTS[permissionBlock] : '此处会话权限约束本地数据集写入；permission-denied 不代表 TikTok 授权失效。连接状态与本地写入权限应分别判断。'
     }
   }
-  if (tool.days !== undefined && tool.days !== 7) return { ok: false, error: 'unsupported-range', hint: '仅支持近 7 天。' }
+  const days = tool.days === undefined ? 7 : tool.days
+  if (!Number.isInteger(days) || Number(days) < 1 || Number(days) > 30) return { ok: false, error: 'unsupported-range', hint: '支持最近1–30个完整日，或传入具体起止日期。' }
+  let window = completedTikTokReportWindow(Date.now(), Number(days))
+  if (tool.startDate !== undefined || tool.endDate !== undefined) {
+    const requested = { start: tool.startDate, end: tool.endDate }
+    if (!isTikTokReportWindow(requested)) return { ok: false, error: 'invalid-window', hint: '请传入有效的起止日期，最多30天。' }
+    window = requested
+  }
   if (tool.advertiserId !== undefined && (typeof tool.advertiserId !== 'string' || !/^\d{1,30}$/.test(tool.advertiserId))) return { ok: false, error: 'invalid-advertiser-id', hint: '广告主 ID 必须为数字字符串。' }
   if (permissionBlock) return permissionDenied(permissionBlock)
   if (access.mode === 'ask') {
@@ -158,7 +171,7 @@ export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBrid
       const answer = await dialog.showMessageBox(win, {
         type: 'question', title: '确认更新 TikTok 看板',
         message: '允许此会话读取 TikTok 报表并更新本地数据集？',
-        detail: tool.advertiserId ? `广告主 ID：${tool.advertiserId}` : '范围：已配置的广告主；未选择时读取授权广告主。',
+        detail: `${tool.advertiserId ? `广告主 ID：${tool.advertiserId}` : '范围：已配置的广告主；未选择时读取授权广告主。'}\n日期：${window.start} – ${window.end}`,
         buttons: ['拒绝', '允许一次'], defaultId: 0, cancelId: 0, noLink: true
       })
       return answer.response === 1
@@ -174,7 +187,20 @@ export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBrid
   }
   if (!beforeWrite()) return permissionDenied('session-permission-changed')
   const refresh = deps?.refresh ?? ((options) => tiktokReportService.refreshNow(options))
-  const outcome = await refresh({ ...(tool.advertiserId ? { advertiserId: tool.advertiserId as string } : {}), beforeWrite })
+  const withBuild = deps?.withBuild ?? (await import('./boardBuilds')).withCurrentBoardBuild
+  const recordEvidence = deps?.recordEvidence ?? (await import('./boardBuilds')).recordBoardBuildSourceEvidence
+  let outcome: Awaited<ReturnType<typeof refresh>>
+  try {
+    outcome = await withBuild(sessionId, async () => {
+      const result = await refresh({ ...(tool.advertiserId ? { advertiserId: tool.advertiserId as string } : {}), window, beforeWrite })
+      if (result.ok) recordEvidence(sessionId, 'tiktok')
+      return result
+    }, tool.buildId)
+  } catch (error) {
+    const code = error instanceof Error ? error.message : ''
+    const allowed = ['board-build-required', 'board-build-conflict', 'board-build-stale', 'board-build-not-found', 'build-id-required', 'build-not-found', 'build-stale']
+    return { ok: false, error: allowed.includes(code) ? code : 'refresh-failed', hint: '生成看板时先准备本轮草稿，并携带本轮 buildId 更新数据。' }
+  }
   if (!outcome.ok) {
     if (outcome.error === 'permission-denied') return { ...permissionDenied('session-permission-changed'), dataset: 'TikTok 报表' }
     return { ok: false, error: safeRefreshError(outcome.error), dataset: 'TikTok 报表' }
@@ -184,6 +210,7 @@ export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBrid
     dataset: 'TikTok 报表',
     rowCount: outcome.rowCount,
     truncated: outcome.truncated,
+    window,
     ...(outcome.legacyBackups?.length ? { legacyBackups: outcome.legacyBackups } : {}),
     refreshedAt: Date.now()
   }

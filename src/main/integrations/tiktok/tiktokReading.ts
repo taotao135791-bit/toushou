@@ -3,6 +3,7 @@ import {
   isTikTokReadingRange,
   tiktokAccountDate,
   parseTikTokAdvertiserIdList,
+  isTikTokReportWindow,
   type TikTokReadingAdvertiser,
   type TikTokReadingAdvertiserFailure,
   type TikTokReadingResult,
@@ -268,6 +269,8 @@ export interface TikTokReadingDeps {
   onDatasetCommitted?: () => void
   /** Test seam for exercising hashing failures before disk commit. */
   hashProofPayload?: (payload: string) => string
+  /** A superseded board plan or revoked session must not commit late rows. */
+  canCommit?: () => boolean
   /** Where a successful read lands (defaults to the shared TikTok dataset). */
   persistRows?: (
     rows: TikTokReportRow[],
@@ -337,12 +340,14 @@ async function prepareMcp(deps: TikTokReadingDeps, override: string[] = [], requ
  * still add up.
  */
 export async function buildTikTokReadingSummary(
-  input: { advertiserIds?: unknown; range?: unknown } = {},
+  input: { advertiserIds?: unknown; range?: unknown; window?: unknown; accountLookbackDays?: unknown } = {},
   deps: TikTokReadingDeps = {}
 ): Promise<TikTokReadingResult> {
   const requestVersion = beginTikTokDatasetRead()
   const now = deps.now?.() ?? Date.now()
   const range = isTikTokReadingRange(input.range) ? input.range : '7'
+  if (input.window !== undefined && !isTikTokReportWindow(input.window)) return readingFailure('invalid-input', 'invalid-window')
+  if (input.accountLookbackDays !== undefined && (!Number.isSafeInteger(input.accountLookbackDays) || Number(input.accountLookbackDays) < 1 || Number(input.accountLookbackDays) > 30 || range !== '1' || input.window !== undefined)) return readingFailure('invalid-input', 'invalid-window')
   const override = input.advertiserIds === undefined ? [] : parseTikTokAdvertiserIdList(input.advertiserIds)
   if (override === null || (typeof input.advertiserIds === 'string' && input.advertiserIds.trim() !== '' && override.length === 0)) return readingFailure('invalid-input')
   const prepared = await prepareMcp(deps, override)
@@ -350,7 +355,7 @@ export async function buildTikTokReadingSummary(
   const { resolved, client, allAdvertisers } = prepared
   const advertiserIds = allAdvertisers
   deps.onProgress?.({ completed: 0, total: advertiserIds.length, succeeded: 0 })
-  const baseWindow = tiktokReadingRangeWindow(range, new Date(now))
+  const baseWindow = isTikTokReportWindow(input.window) ? input.window : tiktokReadingRangeWindow(range, new Date(now))
   let { start: startDate, end: endDate } = baseWindow
   let info = new Map<string, TikTokReadingAdvertiser>()
   let stopped: { code: ReadingErrorCode; detail: string } | null = null
@@ -364,6 +369,7 @@ export async function buildTikTokReadingSummary(
   const scopes: TikTokDatasetScope[] = []
   const accountWindows: NonNullable<TikTokReadingSummary['accountWindows']> = []
   for (let index = 0; index < advertiserIds.length; index++) {
+    if (deps.canCommit?.() === false) return readingFailure('api', 'superseded')
     if (deps.signal?.aborted) return readingFailure('api', 'reading-cancelled')
     const attempted = !stopped
     try {
@@ -375,13 +381,13 @@ export async function buildTikTokReadingSummary(
     }
     const advertiser = info.get(advertiserId) ?? { advertiserId, name: null, currency: null }
     let window = baseWindow
-    if (range === '1') {
+    if (range === '1' && input.window === undefined) {
       const day = tiktokAccountDate(now, advertiser.timezone)
       if (!day || !advertiser.timezone) {
         failed.push({ ...advertiser, error: 'api', detail: 'account-timezone-unavailable' })
         continue
       }
-      window = { start: day, end: day }
+      window = { start: new Date(Date.parse(`${day}T00:00:00Z`) - ((Number(input.accountLookbackDays) || 1) - 1) * 86_400_000).toISOString().slice(0, 10), end: day }
     }
     try {
       const accountRows = await client.report(advertiserId, window.start, window.end, MAX_ACCOUNT_REPORT_ROWS)
@@ -423,7 +429,7 @@ export async function buildTikTokReadingSummary(
   }
   try {
     if (scopes.length && !datasetOverflow) deps.onCommitting?.()
-    const result = datasetOverflow ? { ok: false as const, error: 'row-limit' } : !scopes.length ? { ok: false as const, error: 'no-successful-accounts' } : deps.persistRows ? deps.persistRows(rows, details, scopes, beforeCommit) : mergeReportRowsIntoDataset(rows, details, undefined, scopes, requestVersion, beforeCommit)
+    const result = deps.canCommit?.() === false ? { ok: false as const, error: 'superseded' } : datasetOverflow ? { ok: false as const, error: 'row-limit' } : !scopes.length ? { ok: false as const, error: 'no-successful-accounts' } : deps.persistRows ? deps.persistRows(rows, details, scopes, beforeCommit) : mergeReportRowsIntoDataset(rows, details, undefined, scopes, requestVersion, beforeCommit)
     if (result?.ok) { try { deps.onDatasetCommitted?.() } catch { /* notification is advisory */ } }
     if (!result) datasetSync = { ok: true }
     else if (!result.ok) datasetSync = { ok: false, error: 'detail' in result && result.detail === 'proof-failed' ? 'proof-failed' : result.error }

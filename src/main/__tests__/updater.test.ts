@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   packaged: true,
+  version: '2.0.2',
   adHoc: false,
   metadata: { status: 200, version: '2.0.2' },
   handlers: new Map<string, Array<(value?: any) => void>>(),
@@ -9,13 +10,14 @@ const mocks = vi.hoisted(() => ({
   check: vi.fn(),
   download: vi.fn(),
   install: vi.fn(),
-  get: vi.fn()
+  get: vi.fn(),
+  open: vi.fn()
 }))
 const emit = (event: string, value?: unknown) => { for (const handler of mocks.handlers.get(event) ?? []) handler(value) }
 vi.mock('electron', () => ({
-  app: { get isPackaged() { return mocks.packaged }, getVersion: () => '2.0.2' },
+  app: { get isPackaged() { return mocks.packaged }, getVersion: () => mocks.version },
   BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false, webContents: { send: mocks.send } }] },
-  shell: { openExternal: vi.fn() }
+  shell: { openExternal: mocks.open }
 }))
 vi.mock('node:child_process', () => ({
   spawnSync: () => ({ stdout: '', stderr: mocks.adHoc ? 'Signature=adhoc' : 'TeamIdentifier=SYNTHETIC' }),
@@ -36,6 +38,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   mocks.handlers.clear()
   mocks.packaged = true
+  mocks.version = '2.0.2'
   mocks.adHoc = false
   mocks.metadata = { status: 200, version: '2.0.2' }
   Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
@@ -57,12 +60,39 @@ beforeEach(async () => {
   updater = await import('../updater')
 })
 afterEach(() => {
+  vi.unstubAllEnvs()
   Object.defineProperty(process, 'platform', platform)
   vi.clearAllTimers()
   vi.useRealTimers()
 })
 
 describe('startup update checks', () => {
+  it.each(['darwin', 'win32'] as const)('keeps the beta %s profile off every stable updater entry point', async platform => {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+    vi.stubEnv('TOUSHOU_RELEASE_CHANNEL', 'beta')
+    mocks.version = '2.4.0-beta.1'
+    updater.initUpdater()
+    expect(mocks.handlers.size).toBe(0)
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000)
+    expect(await updater.updaterCheck(false)).toEqual({ status: 'idle' })
+    expect(await updater.updaterCheck()).toMatchObject({ status: 'error', operation: 'check', message: expect.stringContaining('Beta') })
+    expect(await updater.updaterDownload()).toMatchObject({ status: 'error', operation: 'download' })
+    updater.updaterQuitAndInstall()
+    expect(updater.getUpdaterStatus()).toMatchObject({ status: 'error', operation: 'install' })
+    expect(mocks.check).not.toHaveBeenCalled()
+    expect(mocks.get).not.toHaveBeenCalled()
+    expect(mocks.download).not.toHaveBeenCalled()
+    expect(mocks.install).not.toHaveBeenCalled()
+    await updater.updaterOpenReleasePage()
+    expect(mocks.open).toHaveBeenCalledWith('https://github.com/taotao135791-bit/toushou/releases/tag/beta-v2.4.0-beta.1')
+  })
+
+  it('also blocks stable update actions by the packaged beta version if its environment flag is missing', async () => {
+    mocks.version = '2.4.0-beta.2'
+    expect(await updater.updaterDownload()).toMatchObject({ status: 'error', operation: 'download' })
+    expect(mocks.download).not.toHaveBeenCalled()
+  })
+
   it('checks every packaged launch and periodically without downloading or announcing no update', async () => {
     updater.initUpdater()
     updater.initUpdater()

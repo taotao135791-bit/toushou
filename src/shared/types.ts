@@ -1134,6 +1134,9 @@ export type WidgetType =
   | 'gauge'
   | 'chart-line'
   | 'chart-bar'
+  | 'table'
+  | 'funnel'
+  | 'analysis'
   | 'todo'
   | 'link'
   | 'file'
@@ -1179,6 +1182,8 @@ export interface BoardWidget {
   config: Record<string, unknown>
   /** Optional bounded appearance overrides; see BoardWidgetStyle. */
   style?: BoardWidgetStyle
+  /** Omitted follows the report; absolute dates still use live queries. */
+  dateScope?: import('./boardWindows').BoardWidgetDateScope
 }
 
 /**
@@ -1541,6 +1546,8 @@ export interface BoardDataset {
   /** Parsed values; number columns hold numbers, everything else strings. */
   rows: (string | number)[][]
   createdAt: number
+  /** Query status and the exact period represented by an AppsFlyer dataset. */
+  appsflyer?: import('./appsflyerDataset').AppsFlyerDatasetState
 }
 
 export type Language = 'zh' | 'en'

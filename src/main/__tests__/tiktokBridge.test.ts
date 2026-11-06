@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({ BrowserWindow: {}, dialog: {} }))
 vi.mock('../integrations/tiktok/TikTokRefreshService', () => ({ tiktokReportService: {} }))
 
-import { authorizeTikTokRequest } from '../tiktokBridge'
+import { authorizeTikTokRequest, parseTikTokBridgeRequest } from '../tiktokBridge'
 import type { PermissionMode } from '../../shared/types'
 
 function fixture(mode: PermissionMode = 'full', remoteReadonly = false) {
@@ -12,8 +12,16 @@ function fixture(mode: PermissionMode = 'full', remoteReadonly = false) {
     if (!options?.beforeWrite?.()) return { ok: false as const, error: 'permission-denied', status: {} as never }
     return { ok: true as const, status: {} as never, rowCount: 2, truncated: false, legacyBackups: ['历史备份'] }
   })
-  const deps = { getAccess: () => current, confirm: vi.fn<() => Promise<boolean | 'unavailable'>>(async () => true), refresh, status: () => ({} as never) }
-  return { deps, refresh, revoke: () => { current = null }, changeAccess: (next: Partial<NonNullable<typeof current>>) => { if (current) current = { ...current, ...next } } }
+  const buildCalls = vi.fn()
+  let buildError: string | null = null
+  const withBuild = async <T>(session: string, callback: () => Promise<T>, buildId?: unknown): Promise<T> => {
+    buildCalls(session, callback, buildId)
+    if (buildError) throw new Error(buildError)
+    return callback()
+  }
+  const recordEvidence = vi.fn()
+  const deps = { getAccess: () => current, confirm: vi.fn<() => Promise<boolean | 'unavailable'>>(async () => true), refresh, status: () => ({} as never), withBuild, recordEvidence }
+  return { deps, refresh, buildCalls, rejectBuild: (error: string) => { buildError = error }, revoke: () => { current = null }, changeAccess: (next: Partial<NonNullable<typeof current>>) => { if (current) current = { ...current, ...next } } }
 }
 
 describe('TikTok bridge session and scope', () => {
@@ -38,8 +46,33 @@ describe('TikTok bridge session and scope', () => {
   it('rejects imprecise account IDs and unsupported ranges before reading', async () => {
     const f = fixture()
     expect(await authorizeTikTokRequest('s', { action: 'tiktok_update', advertiserId: 1234567890123456789 }, f.deps)).toMatchObject({ error: 'invalid-advertiser-id' })
-    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update', days: 28 }, f.deps)).toMatchObject({ error: 'unsupported-range' })
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update', days: 31 }, f.deps)).toMatchObject({ error: 'unsupported-range' })
+    for (const dates of [{ startDate: '2026-02-31', endDate: '2026-03-01' }, { startDate: '2026-01-01' }, { startDate: '2026-01-01', endDate: '2026-01-31' }, { startDate: '2026-01-02', endDate: '2026-01-01' }]) {
+      expect(await authorizeTikTokRequest('s', { action: 'tiktok_update', ...dates }, f.deps)).toMatchObject({ error: 'invalid-window' })
+    }
     expect(f.refresh).not.toHaveBeenCalled()
+  })
+
+  it('passes the exact board window through Main and returns that window', async () => {
+    const f = fixture()
+    const request = { action: 'tiktok_update' as const, startDate: '2026-10-01', endDate: '2026-10-30' }
+    expect(parseTikTokBridgeRequest(request)).toMatchObject(request)
+    const result = await authorizeTikTokRequest('s', request, f.deps)
+    expect(f.refresh).toHaveBeenCalledWith(expect.objectContaining({ window: { start: request.startDate, end: request.endDate }, beforeWrite: expect.any(Function) }))
+    expect(result).toMatchObject({ ok: true, window: { start: request.startDate, end: request.endDate } })
+  })
+
+  it('routes a generation read through its draft and rejects stale builds before fetching', async () => {
+    const f = fixture()
+    await authorizeTikTokRequest('s', { action: 'tiktok_update', buildId: 'current-build' }, f.deps)
+    expect(f.buildCalls).toHaveBeenCalledWith('s', expect.any(Function), 'current-build')
+    expect(f.deps.recordEvidence).toHaveBeenCalledWith('s', 'tiktok')
+    f.refresh.mockClear()
+    f.deps.recordEvidence.mockClear()
+    f.rejectBuild('board-build-stale')
+    expect(await authorizeTikTokRequest('s', { action: 'tiktok_update', buildId: 'old-build' }, f.deps)).toMatchObject({ ok: false, error: 'board-build-stale' })
+    expect(f.refresh).not.toHaveBeenCalled()
+    expect(f.deps.recordEvidence).not.toHaveBeenCalled()
   })
 
   it('distinguishes readonly and remote sessions without attempting any report read', async () => {

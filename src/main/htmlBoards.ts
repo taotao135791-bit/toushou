@@ -1,4 +1,4 @@
-import { app, dialog } from 'electron'
+import { dialog } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -6,6 +6,7 @@ import { htmlBoardTemplate, parseHtmlBoardTemplate, renderHtmlBoard, scopedHtmlB
 import { readingModuleTemplate, validateReadingModuleSpec } from '../shared/readingModules'
 import { validateReadingSnapshot } from '../shared/readingSnapshot'
 import { listBoards } from './boards'
+import { boardProfileRoot, boardStoragePath } from './boardBuildStorage'
 import type { KanbanBoard } from '../shared/types'
 
 const MAX_DOCUMENTS = 100
@@ -17,7 +18,7 @@ interface Dependencies {
   chooseFile?: () => Promise<{ canceled: boolean; filePath?: string }>
   writeExport?: (filePath: string, html: string) => void | Promise<void>
 }
-const defaultFile = () => path.join(app.getPath('userData'), 'html-boards.json')
+const defaultFile = () => path.join(boardProfileRoot(), 'html-boards.json')
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const isId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value)
 // Source IDs follow the existing board schema; they are lookup keys, never paths.
@@ -207,7 +208,7 @@ export function pruneOrphanedHtmlBoards(deps: Dependencies = {}): HtmlBoardClean
   let boards: KanbanBoard[]
   try {
     boards = (deps.boards ?? listBoards)()
-    const source = deps.boardFile ?? path.join(app.getPath('userData'), 'kanban-boards-v2.json')
+    const source = deps.boardFile ?? boardStoragePath('kanban-boards-v2.json')
     if (!statSync(source).isFile()) return { ok: false, error: 'store-unreadable' }
   } catch { return { ok: false, error: 'store-unreadable' } }
   const retained = new Map(boards.map(board => [board.id, new Set(board.widgets.filter(widget => (widget.type === 'reading-snapshot' || widget.type === 'reading-module')).map(widget => widget.id))]))

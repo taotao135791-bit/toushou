@@ -12,7 +12,17 @@ describe('AppsFlyer bundled read-only tools', () => {
     expect(event.query).toMatchObject({ app_ids: ['example.app'], row_count: 300, in_app_event: ['example_event'], groupings: ['Campaign ID', 'Campaign', 'Media source', 'Date'], filters: { 'Media source': ['tiktokglobal_int'] }, sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }], metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: 'ltv' }, { metric_name: 'Unique users', attribution_source: 'appsflyer', period: 'ltv' }] })
     const discovery = queryArguments(fixture) as { query: Record<string, unknown> }
     expect(discovery.query).toMatchObject({ in_app_event: [], groupings: ['Event name', 'Media source', 'Date', 'Campaign ID'] })
+    expect(queryArguments({ ...fixture, eventName: 'custom_checkout' })).toMatchObject({ query: { in_app_event: ['custom_checkout'] } })
+    expect(queryArguments({ ...fixture, eventName: 'Install' })).toMatchObject({ query: { in_app_event: [], groupings: ['Event name', 'Media source', 'Date', 'Campaign ID'] } })
     for (const args of [{ ...fixture, rowCount: 301 }, { ...fixture, startDate: '2026-02-30' }, { ...fixture, appId: '' }, { ...fixture, eventName: 'x\n' }, { ...fixture, basis: 'invalid' }, { ...fixture, unknown: 1 }]) expect(queryArguments(args)).toBeNull()
+  })
+
+  it('keeps exact discovered media filters, allows explicit source discovery, and preserves old-call compatibility', () => {
+    expect(queryArguments(fixture)).toMatchObject({ query: { filters: { 'Media source': ['tiktokglobal_int'] } } })
+    expect(queryArguments({ ...fixture, mediaSources: ['synthetic_network_int', 'synthetic_partner', 'synthetic_network_int'] })).toMatchObject({ query: { filters: { 'Media source': ['synthetic_network_int', 'synthetic_partner'] } } })
+    expect(queryArguments({ ...fixture, mediaSources: [] })).toMatchObject({ query: { filters: {} } })
+    expect(queryArguments({ ...fixture, mediaSources: [] })).not.toMatchObject({ query: { filters: { 'Media source': expect.anything() } } })
+    for (const mediaSources of ['synthetic_network_int', [''], ['all'], [' synthetic_network_int'], ['synthetic\nnetwork'], Array(33).fill('synthetic_network_int')]) expect(queryArguments({ ...fixture, mediaSources })).toBeNull()
   })
 
   it('registers only read tools and uses a local capability for bounded MCP calls and cleanup', async () => {
@@ -51,5 +61,16 @@ describe('AppsFlyer bundled read-only tools', () => {
     expect(result.content[0].text).not.toContain(secret)
     expect(result.content[0].text).not.toContain('9999')
     expect(result.content[0].text).not.toContain('bad response')
+  })
+  it('does not mark a provider business validation message as a completed query', async () => {
+    vi.stubEnv('TOUSHOU_APPSFLYER', JSON.stringify({ url: 'http://127.0.0.1:9999/mcp', token: 'c'.repeat(43) }))
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.method === 'DELETE') return new Response(null, { status: 204 })
+      const payload = JSON.parse(init.body as string)
+      if (payload.method === 'notifications/initialized') return new Response(null, { status: 202 })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: payload.id, result: payload.method === 'initialize' ? { protocolVersion: '2025-03-26' } : { isError: false, structuredContent: { data: 'The following metrics have validation errors:\n- Count: in-app event required' } } }), { status: 200, headers: payload.method === 'initialize' ? { 'mcp-session-id': 'session_1' } : {} })
+    }))
+    const result = await tools()[1].execute('x', fixture)
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false })
   })
 })

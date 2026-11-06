@@ -1,0 +1,264 @@
+name: Beta Release
+
+on:
+  push:
+    tags:
+      # Deliberately does not match the stable release workflow's v* tags.
+      - 'beta-v*'
+  pull_request:
+    paths:
+      - '.github/workflows/beta-release.yml'
+      - 'electron-builder.beta.cjs'
+      - 'build/beta-bootstrap.cjs'
+      - 'tools/beta-release.cjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.beta.outputs.version }}
+      tag: ${{ steps.beta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate isolated beta configuration
+        id: beta
+        shell: bash
+        run: node tools/beta-release.cjs metadata >> "$GITHUB_OUTPUT"
+      - name: Verify immutable beta tag
+        if: github.event_name == 'push'
+        run: node tools/beta-release.cjs verify-ref
+
+  build:
+    name: Verify and package beta (${{ matrix.platform }})
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Full test suite
+        run: pnpm test
+      - name: Install and verify pinned OMP
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .omp-compat-version)"
+          test -n "${version}"
+          npm install -g "@oh-my-pi/pi-coding-agent@${version}"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            omp_path="$(npm prefix -g)/omp.cmd"
+            test -f "${omp_path}"
+          else
+            omp_path="$(command -v omp)"
+          fi
+          test "$("${omp_path}" --version)" = "omp/${version}"
+          echo "OMP_BIN=${omp_path}" >> "$GITHUB_ENV"
+      - name: OMP compatibility suite
+        shell: bash
+        run: OMP_REQUIRED="${OMP_BIN}" OMP_BIN="${OMP_BIN}" pnpm test:omp
+      - name: Build and prepare isolated beta entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm build
+          node tools/beta-release.cjs prepare
+      - name: Package beta (never publish from electron-builder)
+        shell: bash
+        env:
+          RELEASE_CSC_LINK: ${{ github.event_name == 'push' && secrets.CSC_LINK || '' }}
+          RELEASE_CSC_KEY_PASSWORD: ${{ github.event_name == 'push' && secrets.CSC_KEY_PASSWORD || '' }}
+          RELEASE_APPLE_ID: ${{ github.event_name == 'push' && secrets.APPLE_ID || '' }}
+          RELEASE_APPLE_APP_SPECIFIC_PASSWORD: ${{ github.event_name == 'push' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          RELEASE_APPLE_TEAM_ID: ${{ github.event_name == 'push' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            if [[ -n "${RELEASE_CSC_LINK:-}" ]]; then
+              export CSC_LINK="${RELEASE_CSC_LINK}"
+              if [[ -n "${RELEASE_CSC_KEY_PASSWORD:-}" ]]; then export CSC_KEY_PASSWORD="${RELEASE_CSC_KEY_PASSWORD}"; fi
+            fi
+            if [[ -n "${RELEASE_APPLE_ID:-}" && -n "${RELEASE_APPLE_APP_SPECIFIC_PASSWORD:-}" && -n "${RELEASE_APPLE_TEAM_ID:-}" ]]; then
+              export APPLE_ID="${RELEASE_APPLE_ID}"
+              export APPLE_APP_SPECIFIC_PASSWORD="${RELEASE_APPLE_APP_SPECIFIC_PASSWORD}"
+              export APPLE_TEAM_ID="${RELEASE_APPLE_TEAM_ID}"
+            fi
+            pnpm exec electron-builder --config electron-builder.beta.cjs --mac --publish never
+          else
+            pnpm exec electron-builder --config electron-builder.beta.cjs --win nsis --x64 --publish never
+          fi
+      - name: Verify staged app identity and actual macOS architectures
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            shopt -s nullglob
+            for staged in release-beta/mac-arm64 release-beta/mac; do
+              apps=("${staged}"/*.app)
+              test "${#apps[@]}" -eq 1
+              app_path="${apps[0]}"
+              test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${app_path}/Contents/Info.plist")" = 'com.toushou.desktop.beta'
+              entry="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${app_path}/Contents/Info.plist")"
+              app_bin="${app_path}/Contents/MacOS/${entry}"
+              if [[ -f "${app_bin}.bin" ]]; then app_bin="${app_bin}.bin"; fi
+              case "${staged}" in
+                release-beta/mac-arm64) file "${app_bin}" | grep -Eq 'arm64|arm64e' ;;
+                release-beta/mac) file "${app_bin}" | grep -Eq 'x86_64|x86-64' ;;
+              esac
+              node tools/beta-release.cjs verify-package "${app_path}/Contents/Resources"
+              test -s "${app_path}/Contents/Resources/appsflyer-toolkit/extensions/index.ts"
+            done
+          else
+            test -s 'release-beta/win-unpacked/投手 Beta.exe'
+            node tools/beta-release.cjs verify-package release-beta/win-unpacked/resources
+            test -s release-beta/win-unpacked/resources/appsflyer-toolkit/extensions/index.ts
+          fi
+      - name: Smoke test packaged beta with a private profile
+        shell: bash
+        timeout-minutes: 3
+        env:
+          TOUSHOU_SMOKE_EXPECT_BETA: 'true'
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            case "$(uname -m)" in
+              arm64) staged=release-beta/mac-arm64 ;;
+              x86_64) staged=release-beta/mac ;;
+              *) exit 1 ;;
+            esac
+            app_path="${staged}/投手 Beta.app"
+            entry="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${app_path}/Contents/Info.plist")"
+            app_bin="${app_path}/Contents/MacOS/${entry}"
+          else
+            app_bin='release-beta/win-unpacked/投手 Beta.exe'
+          fi
+          node tools/release-smoke.cjs "${app_bin}"
+      - name: Verify beta manifests and stage SHA-256 checked assets
+        run: node tools/beta-release.cjs stage release-beta ${{ matrix.platform }} artifacts/${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TouShou-Beta-${{ github.run_id }}-${{ matrix.platform }}
+          path: artifacts/${{ matrix.platform }}/*
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-assets:
+    name: Verify beta artifacts across both platforms
+    needs: [metadata, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: TouShou-Beta-${{ github.run_id }}-*
+          path: artifacts
+      - name: Recheck manifests and downloaded checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/beta-release.cjs verify 'artifacts/TouShou-Beta-${{ github.run_id }}-mac' mac
+          node tools/beta-release.cjs verify 'artifacts/TouShou-Beta-${{ github.run_id }}-windows' windows
+
+  publish:
+    name: Publish verified beta as prerelease only
+    if: github.event_name == 'push'
+    needs: [metadata, verify-assets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      BETA_TAG: ${{ needs.metadata.outputs.tag }}
+      BETA_VERSION: ${{ needs.metadata.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: TouShou-Beta-${{ github.run_id }}-*
+          path: artifacts
+          merge-multiple: true
+      - name: Stage prerelease draft and upload verified assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "${BETA_TAG}"
+          notes="docs/releases/${BETA_TAG}.md"
+          test -s "${notes}"
+          export BETA_NOTES_SOURCE="${notes}"
+          export BETA_NOTES_OUTPUT="${RUNNER_TEMP}/beta-release-notes.md"
+          node <<'NODE'
+          const fs = require('node:fs')
+          const run = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
+          const commit = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/commit/${process.env.GITHUB_SHA}`
+          const source = fs.readFileSync(process.env.BETA_NOTES_SOURCE, 'utf8')
+          fs.writeFileSync(process.env.BETA_NOTES_OUTPUT, `${source}\n\n[双平台构建与成品验证记录](${run}) · [对应源码提交](${commit})\n`)
+          NODE
+          notes="${BETA_NOTES_OUTPUT}"
+          if gh release view "${BETA_TAG}" >/dev/null 2>&1; then
+            test "$(gh release view "${BETA_TAG}" --json isDraft --jq .isDraft)" = true
+            gh release edit "${BETA_TAG}" --prerelease --latest=false --notes-file "${notes}"
+          else
+            gh release create "${BETA_TAG}" --verify-tag --title "投手 Beta ${BETA_VERSION}" --notes-file "${notes}" --draft --prerelease --latest=false
+          fi
+          test "$(gh release view "${BETA_TAG}" --json isPrerelease --jq .isPrerelease)" = true
+          assets=()
+          while IFS= read -r asset; do assets+=("${asset}"); done < <(find artifacts -maxdepth 1 -type f -print | LC_ALL=C sort)
+          test "${#assets[@]}" -eq 14
+          gh release upload "${BETA_TAG}" "${assets[@]}" --clobber
+      - name: Download uploaded files, verify SHA-256, and publish prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view "${BETA_TAG}" --json isDraft --jq .isDraft)" = true
+          test "$(gh release view "${BETA_TAG}" --json isPrerelease --jq .isPrerelease)" = true
+          release_dir="$(mktemp -d)"
+          trap 'rm -rf "${release_dir}"' EXIT
+          gh release download "${BETA_TAG}" --dir "${release_dir}"
+          cd "${release_dir}"
+          test "$(find . -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 14
+          test -z "$(find . -maxdepth 1 -name 'latest*' -print -quit)"
+          test "$(wc -l < SHA256SUMS-beta-mac.txt | tr -d '[:space:]')" -eq 9
+          test "$(wc -l < SHA256SUMS-beta-windows.txt | tr -d '[:space:]')" -eq 3
+          sha256sum --check SHA256SUMS-beta-mac.txt
+          sha256sum --check SHA256SUMS-beta-windows.txt
+          gh release edit "${BETA_TAG}" --draft=false --prerelease --latest=false
+          test "$(gh release view "${BETA_TAG}" --json isPrerelease --jq .isPrerelease)" = true
+          test "$(gh api 'repos/{owner}/{repo}/releases/latest' --jq .tag_name)" != "${BETA_TAG}"

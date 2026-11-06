@@ -198,8 +198,11 @@ describe('refreshNow', () => {
       return jsonResponse({ jsonrpc: '2.0', id: request.id, result })
     }
     const service = new TikTokRefreshService({ fetchImpl, settings: { getAutoRefresh: () => false, setAutoRefresh: () => {} }, credentialsFile, datasetsFile, resolveToken: async () => ({ token: 'fake', source: 'oauth', advertiserIds: [id, other] }), now: () => 1767441600000, broadcast: () => {} })
-    expect(await service.refreshNow({ advertiserId: id })).toMatchObject({ ok: true })
+    const window = { start: '2026-10-01', end: '2026-10-30' }
+    expect(await service.refreshNow({ advertiserId: id, window })).toMatchObject({ ok: true, window })
     expect(calls.find((call) => call.name === 'report_integrated_get')?.arguments?.advertiser_id).toBe(id)
+    expect(calls.find((call) => call.name === 'report_integrated_get')?.arguments).toMatchObject({ start_date: window.start, end_date: window.end })
+    expect(listDatasets(datasetsFile)[0].rows[0][0]).toBe(window.start)
     expect(calls.filter((call) => call.name === 'report_integrated_get')).toHaveLength(1)
     calls.length = 0
     expect(await service.refreshNow({ advertiserId: '999' })).toMatchObject({ ok: false, error: 'advertiser-not-authorized' })
@@ -236,9 +239,11 @@ describe('refreshNow', () => {
     const now = 1767441600000
     const localDate = (date: Date): string =>
       `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-    const endExpected = localDate(new Date(now))
+    const endDate = new Date(now)
+    endDate.setDate(endDate.getDate() - 1)
+    const endExpected = localDate(endDate)
     const startDate = new Date(now)
-    startDate.setDate(startDate.getDate() - 6)
+    startDate.setDate(startDate.getDate() - 7)
     const startExpectedStr = localDate(startDate)
     const onDatasetCommitted = vi.fn()
     const { service, requests } = makeService({ now: () => now, onDatasetCommitted })
@@ -247,6 +252,7 @@ describe('refreshNow', () => {
     if (outcome.ok) {
       expect(outcome.rowCount).toBe(1)
       expect(outcome.truncated).toBe(false)
+      expect(outcome.window).toEqual({ start: startExpectedStr, end: endExpected })
     }
     expect(outcome.status.lastRowCount).toBe(1)
     expect(outcome.status.lastRefreshAt).toBe(now)
@@ -265,6 +271,20 @@ describe('refreshNow', () => {
     expect(datasets).toHaveLength(1)
     expect(datasets[0].name).toBe('TikTok 报表')
     expect(datasets[0].rows[0]).toEqual(['2026-01-02', '7300001', 'C1', 10.5, 100, 5, 0.05, 2.1, 1, 10.5, '', '7300001', '11', '', 'open-api'])
+  })
+
+  it('uses an explicit board window on the Open API path and rejects invalid windows before reading', async () => {
+    setTikTokCredentials({ accessToken: 'tok-1', advertiserIds: [7300001] }, credentialsFile)
+    const { service, requests } = makeService()
+    const window = { start: '2026-01-02', end: '2026-01-02' }
+    expect(await service.refreshNow({ window })).toMatchObject({ ok: true, window })
+    expect(requests[0]).toMatchObject({ start_date: window.start, end_date: window.end })
+    expect(listDatasets(datasetsFile)[0].rows[0][0]).toBe('2026-01-02')
+    requests.length = 0
+    for (const invalid of [{ start: '2026-02-31', end: '2026-03-01' }, { start: '2026-01-01', end: '2026-01-31' }]) {
+      expect(await service.refreshNow({ window: invalid })).toMatchObject({ ok: false, error: 'invalid-window' })
+    }
+    expect(requests).toHaveLength(0)
   })
 
   it('preserves existing dataset bytes when pagination claims rows but returns none', async () => {
@@ -396,6 +416,8 @@ describe('refreshNow', () => {
     expect(calls.filter((call) => call.method === 'tools/call').map((call) => call.params.name)).toEqual(['advertiser_info_get', 'report_integrated_get'])
     const reportArgs = calls.find((call) => call.method === 'tools/call' && call.params.name === 'report_integrated_get')!.params.arguments as Record<string, unknown>
     expect(reportArgs.advertiser_id).toBe('7300042')
+    const end = new Date(1767441600000 - 86_400_000).toISOString().slice(0, 10)
+    expect(reportArgs).toMatchObject({ end_date: end, start_date: new Date(Date.parse(`${end}T00:00:00Z`) - 6 * 86_400_000).toISOString().slice(0, 10) })
     expect(calls.every((call) => call.bearer === 'Bearer oauth-token' || call.method === 'notifications/initialized')).toBe(true)
     expect((outcome as { rowCount?: number }).rowCount).toBeGreaterThanOrEqual(1)
   })

@@ -25,6 +25,11 @@ const LABELS: Record<string, Label> = {
   get_apps: ['查看 AppsFlyer 应用', 'View AppsFlyer apps'],
   analytics_fetch_aggregated_data: ['查询 AppsFlyer 归因', 'Query AppsFlyer attribution'],
   toushou_boards_list: ['查看看板列表', 'View boards'], toushou_board_get: ['查看看板', 'View board'], toushou_board_create: ['新建看板', 'Create board'],
+  toushou_board_customize: ['定制看板', 'Customize board'], toushou_board_check: ['检查看板', 'Check board'], toushou_af_dataset_pull: ['更新归因数据', 'Update attribution data'],
+  toushou_board_build_begin: ['准备看板', 'Prepare board'], toushou_board_build_status: ['查看看板进度', 'View board progress'],
+  toushou_board_build_preflight: ['核对看板数据', 'Verify board data'], toushou_board_build_commit: ['保存看板', 'Save board'],
+  toushou_board_build_abort: ['取消看板草稿', 'Discard board draft'], toushou_board_refresh: ['刷新看板数据', 'Refresh board data'],
+  toushou_board_meta_accounts: ['查看 Meta 账户', 'View Meta accounts'],
   toushou_board_add_widget: ['添加看板组件', 'Add board component'], toushou_board_update_widget: ['修改看板组件', 'Edit board component'], toushou_board_remove_widget: ['移除看板组件', 'Remove board component'], toushou_board_rename: ['重命名看板', 'Rename board'], toushou_dataset_import: ['导入看板数据', 'Import board data'],
   toushou_session_topic: ['整理会话主题', 'Organize conversation topic']
 }
@@ -32,10 +37,11 @@ const TYPES: Record<string, Label> = {
   file: ['文件', 'File'], note: ['便签', 'Note'], clock: ['时钟', 'Clock'], counter: ['指标', 'Metric'], gauge: ['仪表', 'Gauge'],
   'reading-module': ['读数模块', 'Reading module'], 'reading-snapshot': ['读数快照', 'Reading snapshot'],
   'chart-line': ['折线图', 'Line chart'], 'chart-bar': ['柱状图', 'Bar chart'], todo: ['待办', 'To-do'], link: ['链接', 'Link'],
+  table: ['表格', 'Table'], funnel: ['漏斗', 'Funnel'], analysis: ['数据重点', 'Data highlights'],
   'tt-reading': ['TikTok 读数', 'TikTok reading'], 'fb-reading': ['Facebook 读数', 'Facebook reading'], 'fb-reading-summary': ['Facebook 读数汇总', 'Facebook summary'],
   'fb-report-reading': ['Facebook 报表', 'Facebook report'], 'google-report-reading': ['Google 报表', 'Google report']
 }
-const PROXY_TOOLS = new Set(['toushou_boards_list', 'toushou_board_get', 'toushou_board_create', 'toushou_board_add_widget', 'toushou_board_update_widget', 'toushou_board_remove_widget', 'toushou_board_rename', 'toushou_dataset_import', 'toushou_tiktok_status', 'toushou_tiktok_update', 'toushou_appsflyer_apps', 'toushou_appsflyer_query'])
+const PROXY_TOOLS = new Set(['toushou_boards_list', 'toushou_board_get', 'toushou_board_create', 'toushou_board_customize', 'toushou_board_check', 'toushou_af_dataset_pull', 'toushou_board_add_widget', 'toushou_board_update_widget', 'toushou_board_remove_widget', 'toushou_board_rename', 'toushou_dataset_import', 'toushou_tiktok_status', 'toushou_tiktok_update', 'toushou_appsflyer_apps', 'toushou_appsflyer_query', 'toushou_board_build_begin', 'toushou_board_build_status', 'toushou_board_build_preflight', 'toushou_board_build_commit', 'toushou_board_build_abort', 'toushou_board_refresh', 'toushou_board_meta_accounts'])
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 function parse(value: unknown): unknown {
   if (typeof value !== 'string') return value

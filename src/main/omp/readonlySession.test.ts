@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 
-const mocks = vi.hoisted(() => ({ writeApproval: vi.fn(), plan: vi.fn((..._args: unknown[]) => ({})), spawn: vi.fn(() => ({})) }))
+const mocks = vi.hoisted(() => ({ writeApproval: vi.fn(), plan: vi.fn((..._args: unknown[]) => ({})), spawn: vi.fn(() => ({})), prompt: vi.fn(() => true), registerBuild: vi.fn(), revokeBuild: vi.fn(), gone: undefined as undefined | (() => void) }))
 vi.mock('electron', () => ({ app: { isPackaged: true, getPath: () => '/tmp' }, BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('../store', () => ({ getStore: (key: string) => key === 'permissionMode' ? 'ask' : 'en', rememberRecentProject: vi.fn() }))
 vi.mock('./OmpCapabilities', () => ({ detectCli: () => ({ available: true, command: 'synthetic' }), noteHandshake: vi.fn(), noteSessionState: vi.fn(), noteSubagentCapabilityOutcome: vi.fn(), invalidateCliCache: vi.fn(), executableSearchDirs: vi.fn(), getCapabilities: vi.fn() }))
 vi.mock('./OmpProcess', () => ({ planSpawn: mocks.plan, spawnProcess: mocks.spawn, resolvePermissionMode: () => ({ approval: 'off' }), writeApprovalConfig: mocks.writeApproval, removeApprovalConfig: vi.fn() }))
-vi.mock('./OmpSession', () => ({ OmpSession: class { constructor(public session: unknown) {} } }))
-import { createSession, getSession, updateApprovalConfig } from './index'
+vi.mock('../boardBuilds', () => ({ registerBoardBuildTurn: mocks.registerBuild, revokeBoardBuildSession: mocks.revokeBuild }))
+vi.mock('./OmpSession', () => ({ OmpSession: class { sendPrompt = mocks.prompt; constructor(public session: unknown, _proc: unknown, hooks: { onGone: () => void }) { mocks.gone = hooks.onGone } } }))
+import { createSession, getSession, sendMessage, updateApprovalConfig } from './index'
 
 describe('fixed readonly session', () => {
   it('marks the live session and refuses approval changes without changing the global profile', () => {
@@ -31,6 +32,21 @@ describe('fixed readonly session', () => {
     })
     expect(session).toMatchObject({ title:'人工保留主题', titleSource:'manual', titleRevision:7 })
     expect(getSession(session.id)).toMatchObject({ titleSource:'manual', titleRevision:7 })
+  })
+
+  it('freezes only accepted original user turns and revokes their drafts when the session exits', () => {
+    mocks.spawn.mockImplementation(() => new EventEmitter())
+    mocks.registerBuild.mockClear(); mocks.revokeBuild.mockClear()
+    const session = createSession(process.cwd(), () => {})
+    const text = '只做素材或广告 ID 明细，不能用活动代替；日期跟随日报。'
+    expect(sendMessage(session.id, text)).toBe(true)
+    expect(mocks.registerBuild).toHaveBeenCalledWith(session.id, process.cwd(), text)
+    mocks.prompt.mockReturnValueOnce(false)
+    expect(sendMessage(session.id, '未发送的修改')).toBe(false)
+    expect(sendMessage('missing-session', '未发送')).toBe(false)
+    expect(mocks.registerBuild).toHaveBeenCalledTimes(1)
+    mocks.gone?.()
+    expect(mocks.revokeBuild).toHaveBeenCalledWith(session.id)
   })
 
 })

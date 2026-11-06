@@ -31,7 +31,7 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 // Windows notifications (completion/approval toasts) are attributed through
 // the App User Model ID; without it packaged toasts can fail to appear.
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.toushou.app')
+  app.setAppUserModelId(process.env.TOUSHOU_RELEASE_CHANNEL === 'beta' ? 'com.toushou.desktop.beta' : 'com.toushou.app')
 }
 
 // Multiple app copies otherwise compete for the same userData, native browser

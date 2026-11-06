@@ -5,6 +5,8 @@ import { GRID_COLS, GRID_MAX_H, MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRan
 import { fbReadingMetricLabel, fbReadingRangeLabel, ttReadingRangeLabel } from './metricLabel'
 import { BOARD_LIMITS, isValidLinkUrl } from '@shared/boards'
 import { DATASET_OPS, DatasetOp } from '@shared/datasets'
+import type { FunnelStage } from '@shared/boardDataWidgets'
+import { boardWidgetWindow, validateWidgetDateScope, type BoardWidgetDateScope } from '@shared/boardWindows'
 import { validGoogleReportUrl } from '@shared/googleReport'
 import { parseTikTokAdvertiserIdList } from '@shared/tiktokReport'
 import {
@@ -39,7 +41,7 @@ interface WidgetConfigPanelProps {
   /** Board master scope, when set — divergent saves become "independent". */
   masterScope?: BoardMasterScope | null
   onClose: () => void
-  onSave: (patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle; dimensions?: { width: number; height: number }; expectedUpdatedAt: number }) => Promise<boolean>
+  onSave: (patch: { title: string; config: Record<string, unknown>; style?: BoardWidgetStyle; dateScope?: BoardWidgetDateScope; dimensions?: { width: number; height: number }; expectedUpdatedAt: number }) => Promise<boolean>
 }
 
 const inputClass =
@@ -116,6 +118,13 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
   const [googleUrlInvalid, setGoogleUrlInvalid] = useState(false)
   const [labelsInvalid, setLabelsInvalid] = useState(false)
   const [style, setStyle] = useState<BoardWidgetStyle>(widget.style ?? {})
+  const [dateMode, setDateMode] = useState<BoardWidgetDateScope['mode']>(widget.dateScope?.mode ?? 'inherit')
+  const [lookbackDays, setLookbackDays] = useState(widget.dateScope?.mode === 'lookback' ? widget.dateScope.days : 7)
+  const initialWindow = boardWidgetWindow({ ...(masterScope ? { masterScope } : {}) }, widget)
+  const [absoluteStart, setAbsoluteStart] = useState(initialWindow.start)
+  const [absoluteEnd, setAbsoluteEnd] = useState(initialWindow.end)
+  const [dateDirty, setDateDirty] = useState(false)
+  const [dateError, setDateError] = useState(false)
 
   // File widget binding: the native picker returns a workspace-RELATIVE path
   // from Main (validated against the active workspace grant). Drafted here
@@ -174,7 +183,7 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
   const selectedAccount = accounts.find((entry) => entry.act === selectedAct) ?? null
   const handleReadingAccountsChange = (entries: FbReadingAccountEntry[]) => {
     setAccounts(entries)
-    setSelectedAct((prev) => (entries.some((entry) => entry.act === prev) ? prev : entries[0]?.act ?? ''))
+    setSelectedAct((prev) => (entries.some((entry) => entry.act === prev) ? prev : ''))
   }
 
   const handleReadingAccountsAdded = (entries: FbReadingAccountEntry[]) => {
@@ -215,12 +224,13 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
     }
   }
 
-  // Dataset binding (counter / chart-line / chart-bar only).
+  // Dataset binding: tables and highlights always keep a source reference.
+  const datasetOnly = widget.type === 'table' || widget.type === 'analysis'
   const supportsDataset =
-    widget.type === 'counter' || widget.type === 'chart-line' || widget.type === 'chart-bar'
+    widget.type === 'counter' || widget.type === 'chart-line' || widget.type === 'chart-bar' || datasetOnly
   const isChart = widget.type === 'chart-line' || widget.type === 'chart-bar'
   const [source, setSource] = useState<'manual' | 'dataset'>(
-    widget.config.source === 'dataset' ? 'dataset' : 'manual'
+    datasetOnly || widget.config.source === 'dataset' ? 'dataset' : 'manual'
   )
   const [datasetId, setDatasetId] = useState(configString(widget, 'datasetId'))
   const [metric, setMetric] = useState(configString(widget, 'metric'))
@@ -230,15 +240,23 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
       : 'sum'
   )
   const [dimension, setDimension] = useState(configString(widget, 'dimension'))
+  const [tableColumns, setTableColumns] = useState<string[]>(() => Array.isArray(widget.config.columns)
+    ? widget.config.columns as string[] : (datasets.find(dataset => dataset.id === widget.config.datasetId || dataset.name === widget.config.datasetId)?.columns ?? []).slice(0, 8).map(column => column.name))
+  const [pageSize, setPageSize] = useState(typeof widget.config.pageSize === 'number' ? widget.config.pageSize : 20)
+  const [sortColumn, setSortColumn] = useState(configString(widget, 'sortColumn'))
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(widget.config.sortDirection === 'desc' ? 'desc' : 'asc')
+  const [funnelStages, setFunnelStages] = useState<FunnelStage[]>(() => Array.isArray(widget.config.stages) && widget.config.stages.length
+    ? widget.config.stages as FunnelStage[] : Array.from({ length: 2 }, () => ({ source: 'dataset', label: '', datasetId: '', metric: '', op: 'sum' })))
 
   const setStyleColor = (key: 'accent' | 'surface' | 'text' | 'border', value: string) => {
     setStyle((current) => ({ ...current, [key]: value }))
   }
 
-  const selectedDataset = datasets.find((d) => d.id === datasetId)
+  const selectedDataset = datasets.find((d) => d.id === datasetId || d.name === datasetId)
   const metricColumns = (selectedDataset?.columns ?? []).filter((c) => c.type === 'number')
   const datasetIncomplete =
-    supportsDataset && source === 'dataset' && (!datasetId || !metric || (isChart && !dimension))
+    (supportsDataset && source === 'dataset' && (!datasetId || (widget.type === 'table' ? tableColumns.length === 0 : !metric) || (isChart && !dimension))) ||
+    (widget.type === 'funnel' && (funnelStages.length < 2 || funnelStages.some(stage => !stage.label.trim() || !stage.datasetId || !stage.metric)))
 
   /** Dataset fields kept alongside the manual ones so toggling loses nothing. */
   const bindingConfig = (): Record<string, unknown> => {
@@ -251,6 +269,8 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
 
   const handleSave = async () => {
     if (datasetIncomplete || saving.current) return
+    const dateScope = validateWidgetDateScope(dateMode === 'lookback' ? { mode: dateMode, days: lookbackDays, anchor: 'reportEnd' } : dateMode === 'absolute' ? { mode: dateMode, start: absoluteStart, end: absoluteEnd } : { mode: 'inherit' })
+    if (dateDirty && !dateScope) { setDateError(true); return }
     const w = Number(width), h = Number(height)
     if (sizeDirty && (!Number.isSafeInteger(w) || w < 2 || w > GRID_COLS || !Number.isSafeInteger(h) || h < 2 || h > GRID_MAX_H)) { setSizeError(true); return }
     let config: Record<string, unknown>
@@ -276,6 +296,15 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
         }
         break
       }
+      case 'table':
+        config = { source: 'dataset', datasetId, columns: tableColumns, pageSize, ...(sortColumn ? { sortColumn, sortDirection } : {}) }
+        break
+      case 'funnel':
+        config = { source: 'dataset', stages: funnelStages }
+        break
+      case 'analysis':
+        config = { ...bindingConfig(), ...(dimension ? { dimension } : {}) }
+        break
       case 'gauge': {
         let value = Number(numValue)
         if (!Number.isFinite(value)) value = 0
@@ -401,7 +430,7 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
     // The advertiser row filter (set by cross-account board creation) has no
     // control in this panel — carry it through a save untouched, otherwise
     // saving any setting silently widens the card to every advertiser.
-    for (const key of ['filterColumn', 'filterValue', 'filterValues'] as const) {
+    for (const key of ['filterColumn', 'filterValue', 'filterValues', 'requireVerifiedTtScope'] as const) {
       if (widget.config[key] !== undefined) config[key] = widget.config[key]
     }
     saving.current = true; setSaveBusy(true); setSaveError(false)
@@ -410,6 +439,7 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
         title: title.trim() || widget.title,
         config,
         expectedUpdatedAt: openedVersion.current,
+        ...(dateDirty && dateScope ? { dateScope } : {}),
         ...(sizeDirty ? { dimensions: { width: w, height: h } } : {}),
         ...(Object.keys(style).length > 0 ? { style } : {})
       })
@@ -444,6 +474,12 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
             className={inputClass}
           />
         </Field>
+        {(supportsDataset || widget.type === 'funnel' || widget.type === 'tt-reading') && <>
+          <Field label={language === 'zh' ? '日期范围' : 'Date window'}><select value={dateMode} onChange={event => { setDateMode(event.target.value as BoardWidgetDateScope['mode']); setDateDirty(true); setDateError(false) }} className={inputClass}><option value="inherit">{language === 'zh' ? '跟随总控' : 'Follow report'}</option><option value="lookback">{language === 'zh' ? '截至报表日期的近 N 天' : 'Trailing days ending on the report date'}</option><option value="absolute">{language === 'zh' ? '指定日期（仍可刷新）' : 'Specific dates (refreshable)'}</option></select></Field>
+          {dateMode === 'lookback' && <Field label={language === 'zh' ? '天数' : 'Days'}><input type="number" min={1} max={30} value={lookbackDays} onChange={event => { setLookbackDays(Number(event.target.value)); setDateDirty(true); setDateError(false) }} className={inputClass} /></Field>}
+          {dateMode === 'absolute' && <div className="grid grid-cols-2 gap-2"><Field label={language === 'zh' ? '开始日期' : 'Start date'}><input type="date" value={absoluteStart} onChange={event => { setAbsoluteStart(event.target.value); setDateDirty(true); setDateError(false) }} className={inputClass} /></Field><Field label={language === 'zh' ? '结束日期' : 'End date'}><input type="date" value={absoluteEnd} onChange={event => { setAbsoluteEnd(event.target.value); setDateDirty(true); setDateError(false) }} className={inputClass} /></Field></div>}
+          {dateError && <p role="alert" className="text-[11px] text-red-500">{language === 'zh' ? '请填写有效范围；近 N 天为 1–30 天，指定日期最多 366 天。' : 'Use 1–30 trailing days or a valid date range up to 366 days.'}</p>}
+        </>}
         <div className="grid grid-cols-2 gap-2">
           <Field label={language === 'zh' ? '宽度（网格）' : 'Width (grid units)'}><input aria-label={language === 'zh' ? '宽度（网格）' : 'Width (grid units)'} type="number" min={2} max={GRID_COLS} step={1} value={width} onChange={event => { setWidth(event.target.value); setSizeDirty(true); setSizeError(false) }} className={inputClass} /></Field>
           <Field label={language === 'zh' ? '高度（网格）' : 'Height (grid units)'}><input aria-label={language === 'zh' ? '高度（网格）' : 'Height (grid units)'} type="number" min={2} max={GRID_MAX_H} step={1} value={height} onChange={event => { setHeight(event.target.value); setSizeDirty(true); setSizeError(false) }} className={inputClass} /></Field>
@@ -475,7 +511,7 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
                     }}
                     className={inputClass}
                   >
-                    {accounts.length === 0 && <option value="">{t('boards.reading.accounts.loading')}</option>}
+                    <option value="">{t('boards.reading.action.pickAccount')}</option>
                     {accounts.map((entry) => (
                       <option key={entry.id} value={entry.act}>
                         {entry.alias}（{entry.act}）
@@ -693,7 +729,7 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
             />
           </Field>
         )}
-        {supportsDataset && (
+        {supportsDataset && !datasetOnly && (
           <Field label={t('boards.config.source')}>
             <div className="flex rounded-lg border border-line bg-ink-850 p-0.5">
               {(['manual', 'dataset'] as const).map((s) => (
@@ -803,6 +839,8 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
                       setDatasetId(e.target.value)
                       setMetric('')
                       setDimension('')
+                      setTableColumns((datasets.find(dataset => dataset.id === e.target.value)?.columns ?? []).slice(0, 8).map(column => column.name))
+                      setSortColumn('')
                     }}
                     className={inputClass}
                   >
@@ -814,7 +852,7 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
                     ))}
                   </select>
                 </Field>
-                <Field label={t('boards.config.metric')}>
+                {widget.type !== 'table' && <><Field label={t('boards.config.metric')}>
                   <select
                     value={metric}
                     onChange={(e) => setMetric(e.target.value)}
@@ -841,8 +879,8 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
                       </option>
                     ))}
                   </select>
-                </Field>
-                {isChart && (
+                </Field></>}
+                {(isChart || widget.type === 'analysis') && (
                   <Field label={t('boards.config.dimension')}>
                     <select
                       value={dimension}
@@ -859,10 +897,30 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
                     </select>
                   </Field>
                 )}
+                {widget.type === 'table' && selectedDataset && <>
+                  <PillField label={t('boards.table.columns')}>
+                    <div className="grid grid-cols-2 gap-1 rounded-lg border border-line p-2">{selectedDataset.columns.map(column => <label key={column.name} className="flex min-w-0 items-center gap-1.5 text-[11px] text-cream-dim"><input type="checkbox" checked={tableColumns.includes(column.name)} disabled={!tableColumns.includes(column.name) && tableColumns.length >= 12} onChange={event => setTableColumns(current => event.target.checked ? [...current, column.name] : current.filter(name => name !== column.name))} /><span className="truncate" title={column.name}>{column.name}</span></label>)}</div>
+                  </PillField>
+                  <div className="grid grid-cols-2 gap-2"><Field label={t('boards.table.pageSize')}><select value={pageSize} onChange={event => setPageSize(Number(event.target.value))} className={inputClass}>{[5, 10, 20, 50, 100].map(size => <option key={size} value={size}>{size}</option>)}</select></Field><Field label={t('boards.table.sortColumn')}><select value={sortColumn} onChange={event => setSortColumn(event.target.value)} className={inputClass}><option value="">—</option>{selectedDataset.columns.map(column => <option key={column.name} value={column.name}>{column.name}</option>)}</select></Field></div>
+                  {sortColumn && <Field label={t('boards.table.sortDirection')}><select value={sortDirection} onChange={event => setSortDirection(event.target.value as 'asc' | 'desc')} className={inputClass}><option value="asc">{t('boards.table.ascending')}</option><option value="desc">{t('boards.table.descending')}</option></select></Field>}
+                </>}
               </>
             )}
           </>
         )}
+        {widget.type === 'funnel' && <div className="space-y-2">
+          {funnelStages.map((stage, index) => {
+            const dataset = datasets.find(item => item.id === stage.datasetId || item.name === stage.datasetId)
+            const update = (patch: Partial<FunnelStage>) => setFunnelStages(current => current.map((item, at) => at === index ? { ...item, ...patch } : item))
+            return <fieldset key={index} className="space-y-1.5 rounded-lg border border-line p-2"><legend className="px-1 text-[11px] font-medium text-cream-dim">{t('boards.funnel.stage', { n: String(index + 1) })}</legend>
+              <div className="flex items-end gap-1"><div className="min-w-0 flex-1"><Field label={t('boards.funnel.stageLabel')}><input value={stage.label} maxLength={100} onChange={event => update({ label: event.target.value })} className={inputClass} /></Field></div><button type="button" aria-label={t('boards.funnel.removeStage')} disabled={funnelStages.length <= 2} onClick={() => setFunnelStages(current => current.filter((_item, at) => at !== index))} className="focus-ring rounded p-1 text-cream-faint disabled:opacity-30"><X size={13} /></button></div>
+              <Field label={t('boards.config.dataset')}><select value={stage.datasetId} onChange={event => update({ datasetId: event.target.value, metric: '' })} className={inputClass}><option value="">{t('boards.config.pickDataset')}</option>{datasets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+              <div className="grid grid-cols-2 gap-2"><Field label={t('boards.config.metric')}><select value={stage.metric} onChange={event => update({ metric: event.target.value })} className={inputClass}><option value="">{t('boards.config.pickColumn')}</option>{(dataset?.columns ?? []).filter(column => column.type === 'number').map(column => <option key={column.name} value={column.name}>{column.name}</option>)}</select></Field><Field label={t('boards.config.op')}><select value={stage.op} onChange={event => update({ op: event.target.value as DatasetOp })} className={inputClass}>{DATASET_OPS.map(value => <option key={value} value={value}>{t(`boards.config.op.${value}` as I18nKey)}</option>)}</select></Field></div>
+              {stage.filterColumn && <p className="break-words text-[10px] text-cream-faint">{stage.filterColumn}: {(stage.filterValues ?? [stage.filterValue ?? '']).join(', ')}</p>}
+            </fieldset>
+          })}
+          <button type="button" disabled={funnelStages.length >= 12} onClick={() => setFunnelStages(current => [...current, { source: 'dataset', label: '', datasetId: '', metric: '', op: 'sum' }])} className="focus-ring w-full rounded-lg border border-line px-2 py-1.5 text-[12px] text-cream-dim hover:bg-overlay disabled:opacity-40">{t('boards.funnel.addStage')}</button>
+        </div>}
         {widget.type === 'todo' && (
           <p className="text-[11px] leading-4 text-cream-faint">{t('boards.config.todoHint')}</p>
         )}

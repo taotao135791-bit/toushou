@@ -136,6 +136,27 @@ beforeEach(() => {
   resetTikTokAdvertiserInfoCacheForTest()
 })
 
+describe('board planner TT coverage windows', () => {
+  it('uses an explicit historical coverage window and suppresses commits after supersession', async () => {
+    let current = true
+    const api = tiktokApi({ advertisers: { [ID_A]: { currency: 'USD', timezone: 'UTC' } }, report: () => { current = false; return reportResponse([row()]) } })
+    const persistRows = vi.fn()
+    const result = await buildTikTokReadingSummary({ advertiserIds: ID_A, window: { start: '2024-02-28', end: '2024-03-01' } }, { resolveToken: token([ID_A]), fetchImpl: api.fetchImpl, now: SEP_20, canCommit: () => current, persistRows })
+    expect(api.reports[0].get('start_date')).toBe('2024-02-28')
+    expect(api.reports[0].get('end_date')).toBe('2024-03-01')
+    expect(persistRows).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ datasetSync: { ok: false, error: 'superseded' } })
+  })
+  it('fetches lookback coverage ending on each account current day without adding a second read', async () => {
+    const api = tiktokApi({ advertisers: { [ID_A]: { currency: 'USD', timezone: 'America/Los_Angeles' }, [ID_B]: { currency: 'USD', timezone: 'Asia/Shanghai' } }, report: () => reportResponse([]) })
+    const scopes: unknown[] = []
+    const result = await buildTikTokReadingSummary({ range: '1', accountLookbackDays: 7 }, { resolveToken: token([ID_A, ID_B]), fetchImpl: api.fetchImpl, now: () => Date.parse('2026-09-20T00:30:00Z'), persistRows: (_rows, _details, windows) => { scopes.push(...windows) } })
+    expect(api.reports).toHaveLength(2)
+    expect(scopes).toEqual([{ advertiserId: ID_A, startDate: '2026-09-13', endDate: '2026-09-19' }, { advertiserId: ID_B, startDate: '2026-09-14', endDate: '2026-09-20' }])
+    expect(result).toMatchObject({ startDate: '2026-09-13', endDate: '2026-09-20' })
+  })
+})
+
 describe('summarizeTikTokReportRows', () => {
   it('sums additive metrics and recomputes ctr / cost-per-conversion', () => {
     const { totals } = summarizeTikTokReportRows([

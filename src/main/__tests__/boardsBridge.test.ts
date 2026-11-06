@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -17,6 +17,7 @@ import { saveReadingSnapshot } from '../readingSnapshots'
 import { applyBoardHighlights, validateBoardHighlights } from '../boardHighlights'
 import type { ReadingSnapshot } from '../../shared/readingSnapshot'
 import { createWidget } from '../../shared/boards'
+import { createOrUpdateDataset, listDatasets, renameDataset } from '../boardDatasets'
 
 let dir: string
 
@@ -29,7 +30,10 @@ describe('parseBoardsBridgeRequest', () => {
   it('accepts every known action and rejects the rest', () => {
     expect(parseBoardsBridgeRequest({ action: 'boards_list' })?.action).toBe('boards_list')
     expect(parseBoardsBridgeRequest({ action: 'board_get', name: 'x' })?.action).toBe('board_get')
+    expect(parseBoardsBridgeRequest({ action: 'board_check', name: 'x', mode: 'custom' })?.action).toBe('board_check')
+    expect(parseBoardsBridgeRequest({ action: 'board_check', name: 'x', granularity: ['ad', 'creative'], dimensions: ['广告ID'] })).toMatchObject({ granularity: ['ad', 'creative'], dimensions: ['广告ID'] })
     expect(parseBoardsBridgeRequest({ action: 'board_create', template: 'tiktok' })?.action).toBe('board_create')
+    expect(parseBoardsBridgeRequest({ action: 'board_customize', version: 1, preview: true })?.action).toBe('board_customize')
     expect(parseBoardsBridgeRequest({ action: 'af_dataset_pull', appId: 'a', eventName: 'b' })?.action).toBe('af_dataset_pull')
     expect(parseBoardsBridgeRequest({ action: 'make_coffee' })).toBeNull()
     expect(parseBoardsBridgeRequest(null)).toBeNull()
@@ -38,6 +42,82 @@ describe('parseBoardsBridgeRequest', () => {
 })
 
 describe('boards bridge dispatch', () => {
+  it('keeps conversational date scope authoritative while visual-only edits preserve it', async () => {
+    const created = await dispatch({ action: 'board_create', name: 'Scoped synthetic', template: 'blank', advertiserIds: '7300000000000000001', masterScope: { range: 'yesterday', metrics: ['spend'] } })
+    expect(created.ok).toBe(true)
+    let board = listBoards()[0]
+    expect(board.masterScope).toEqual({ range: 'yesterday', metrics: ['spend'] })
+    expect(board.widgets[0].config).toMatchObject({ advertiserIds: '7300000000000000001', range: 'yd' })
+    const source = structuredClone(board.widgets[0].config)
+    const styleResult = await dispatch({ action: 'board_customize', version: 1, boardId: board.id, expectedUpdatedAt: board.updatedAt, preview: false, style: { background: '#F4F4F4' } })
+    expect(styleResult.ok).toBe(true)
+    board = listBoards()[0]
+    expect(board.masterScope?.range).toBe('yesterday')
+    expect(board.widgets[0].config).toEqual(source)
+    expect((await dispatch({ action: 'board_customize', version: 1, boardId: board.id, expectedUpdatedAt: board.updatedAt, preview: false, masterScope: { range: 'last3', metrics: ['spend'] } })).ok).toBe(true)
+    board = listBoards()[0]
+    expect(board.masterScope?.range).toBe('last3')
+    expect(board.widgets[0].config).toMatchObject({ advertiserIds: source.advertiserIds, range: '3' })
+    expect((await dispatch({ action: 'board_create', name: 'Invalid scope', masterScope: { range: 'custom', metrics: ['spend'] } })).ok).toBe(false)
+    expect((await dispatch({ action: 'board_customize', version: 1, boardId: board.id, expectedUpdatedAt: board.updatedAt, preview: false, masterScope: { range: 'today', metrics: ['invented'] } })).ok).toBe(false)
+    expect(listBoards()[0]).toEqual(board)
+  })
+
+  it('supports exact conversational layout and safe style patches while retaining data bindings', async () => {
+    expect((await dispatch({ action: 'board_create', name: 'Custom synthetic', template: 'blank', style: { background: '#F4F4F4', grid: 'none' } })).ok).toBe(true)
+    expect((await dispatch({ action: 'board_add_widget', name: 'Custom synthetic', type: 'counter', title: 'Metric', config: { source: 'dataset', datasetId: 'synthetic-live', metric: 'Count', op: 'sum' }, layout: { x: 0, y: 0, w: 6, h: 3 }, style: { accent: '#123456', radius: 12 } })).ok).toBe(true)
+    const addedNote = await dispatch({ action: 'board_add_widget', name: 'Custom synthetic', type: 'note', title: 'Highlight', config: { text: 'Synthetic observation' }, layout: { x: 6, y: 0, w: 6, h: 3 } })
+    expect(addedNote.ok).toBe(true)
+    const before = listBoards()[0]
+    expect((addedNote.board as { updatedAt: number }).updatedAt).toBe(before.updatedAt)
+    const [metric, note] = before.widgets
+    const request = { action: 'board_customize' as const, version: 1, boardId: before.id, expectedUpdatedAt: before.updatedAt, style: { background: '#FFFFFF' }, widgets: [
+      { widgetId: metric.id, layout: note.layout, style: { padding: 16 }, title: 'Orders' },
+      { widgetId: note.id, layout: metric.layout }
+    ] }
+    const preview = await dispatch(request)
+    expect(preview).toMatchObject({ ok: true, preview: true, expectedUpdatedAt: before.updatedAt })
+    expect(listBoards()[0]).toEqual(before)
+    const applied = await dispatch({ ...request, preview: false })
+    expect(applied).toMatchObject({ ok: true, applied: true })
+    const after = listBoards()[0]
+    expect(after.updatedAt).toBeGreaterThan(before.updatedAt)
+    expect(after.style).toEqual({ background: '#ffffff', grid: 'none' })
+    expect(after.widgets[0]).toMatchObject({ id: metric.id, title: 'Orders', layout: note.layout, style: { accent: '#123456', radius: 12, padding: 16 }, config: metric.config })
+    expect(after.widgets[1]).toMatchObject({ id: note.id, layout: metric.layout, config: note.config })
+    const read = await dispatch({ action: 'board_get', boardId: after.id })
+    expect(read.board).toMatchObject({ style: after.style, updatedAt: after.updatedAt, widgets: [{ style: after.widgets[0].style }, {}] })
+    expect(await dispatch({ ...request, expectedUpdatedAt: after.updatedAt, preview: false })).toMatchObject({ ok: true, applied: false, changes: [] })
+  })
+
+  it('rejects invalid or stale customization atomically and never rewrites widget data', async () => {
+    await dispatch({ action: 'board_create', name: 'Atomic synthetic', template: 'blank' })
+    await dispatch({ action: 'board_add_widget', name: 'Atomic synthetic', type: 'counter', config: { source: 'manual', value: 17 }, layout: { x: 0, y: 0, w: 6, h: 3 } })
+    await dispatch({ action: 'board_add_widget', name: 'Atomic synthetic', type: 'note', layout: { x: 6, y: 0, w: 6, h: 3 }, config: { text: 'Unchanged' } })
+    const before = listBoards()[0]
+    const base = { action: 'board_customize' as const, version: 1, boardId: before.id, expectedUpdatedAt: before.updatedAt, preview: false }
+    const id = before.widgets[0].id
+    for (const patch of [
+      { widgets: [{ widgetId: id, title: 'Would change' }, { widgetId: before.widgets[1].id, style: { css: 'url(secret)' } }] },
+      { widgets: [{ widgetId: id, config: { value: 999 } }] },
+      { widgets: [{ widgetId: id, layout: { x: 6, y: 0, w: 6, h: 3 } }] },
+      { widgets: [{ widgetId: id, layout: { x: 11, y: 0, w: 2, h: 3 } }] },
+      { widgets: [{ widgetId: id }, { widgetId: id }] },
+      { style: { background: 'red' } },
+      { expectedUpdatedAt: before.updatedAt - 1, widgets: [{ widgetId: id, title: 'Stale' }] }
+    ]) {
+      expect((await dispatch({ ...base, ...patch })).ok).toBe(false)
+      expect(listBoards()[0]).toEqual(before)
+    }
+    expect((await dispatch({ action: 'board_update_widget', boardId: before.id, widgetId: id, layout: { x: 0, y: 3, w: 4, h: 4 }, style: { surface: '#FAFAFA' } })).ok).toBe(true)
+    const changed = listBoards()[0]
+    expect(changed.widgets[0].config).toEqual(before.widgets[0].config)
+    expect(changed.widgets[1]).toEqual(before.widgets[1])
+    expect((await dispatch({ action: 'board_update_widget', boardId: before.id, widgetId: id, style: null })).ok).toBe(true)
+    expect(listBoards()[0].widgets[0]).not.toHaveProperty('style')
+    expect((await dispatch({ action: 'board_add_widget', boardId: before.id, type: 'note', layout: { x: 1, w: 2, h: 2 } })).ok).toBe(false)
+  })
+
   it('creates an empty board by default without adding a live platform reader or requesting a report', async () => {
     const created = await dispatch({ action: 'board_create', name: 'Synthetic' })
     expect(created.ok).toBe(true)
@@ -244,25 +324,177 @@ describe('boards bridge dispatch', () => {
     const pullCalls: unknown[] = []
     const pull = vi.fn(async (input?: unknown) => {
       pullCalls.push(input)
-      return { ok: true, results: [{ name: '安装量', datasetName: 'AF-安装量', ok: true, rowCount: 5 }] }
+      const created = createOrUpdateDataset('AF-安装量', { columns: [{ name: '事件次数', type: 'number' }], rows: [[5]], truncated: false })
+      if (!created.ok) throw new Error(created.error)
+      return { ok: true, results: [{ name: '安装量', datasetName: 'AF-安装量', datasetId: created.dataset.id, ok: true, rowCount: 1 }] }
     })
     const saveQuerySpecMock = vi.fn()
     vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
       saveQuerySpec: saveQuerySpecMock,
+      listQuerySpecs: () => [],
       pullAppsFlyerDatasets: pull
     }))
     try {
       const { dispatch: freshDispatch } = await import('../boardsBridge')
-      const ok = await freshDispatch({ action: 'af_dataset_pull', name: '安装量', appId: 'app-1', eventName: 'af_install', days: 7 })
+      const ok = await freshDispatch({ action: 'af_dataset_pull', name: '安装量', appId: 'app-1', eventName: 'custom_checkout', startDate: '2026-10-01', endDate: '2026-10-07', geo: true, countries: ['SG'] })
       expect(ok.ok).toBe(true)
       expect((ok.dataset as { name: string }).name).toBe('AF-安装量')
       expect(pull).toHaveBeenCalledTimes(1)
       const arg = (pullCalls[0] ?? {}) as { window: { start: string; end: string }; specIds: string[] }
-      expect(arg.specIds).toEqual(['afq-app-1-安装量'])
-      expect(arg.window.end >= arg.window.start).toBe(true)
+      expect(arg.specIds).toEqual([expect.stringMatching(/^afq-[a-f0-9]{64}$/)])
+      expect(arg.window).toEqual({ start: '2026-10-01', end: '2026-10-07' })
+      expect(ok).toMatchObject({ spec: { id: arg.specIds[0] }, window: arg.window })
       expect(saveQuerySpecMock).toHaveBeenCalledTimes(1)
-      const saved = saveQuerySpecMock.mock.calls[0][0] as { id: string; query: { in_app_event: string[] } }
-      expect(saved.query.in_app_event).toEqual(['af_install'])
+      const saved = saveQuerySpecMock.mock.calls[0][0] as { id: string; query: { in_app_event: string[]; groupings: string[]; filters: Record<string, string[]> } }
+      expect(saved.query.in_app_event).toEqual(['custom_checkout'])
+      expect(saved.query.groupings).toContain('Geo')
+      expect(saved.query.groupings).toHaveLength(4)
+      expect(saved.query.filters).toEqual({ 'Media source': ['tiktokglobal_int'], Geo: ['SG'] })
+
+      for (const input of [
+        { startDate: '2026-02-30', endDate: '2026-03-01' },
+        { startDate: '2026-10-01' },
+        { startDate: '2025-01-01', endDate: '2026-10-01' },
+        { geo: true, groupings: ['Campaign ID', 'Campaign', 'Media source', 'Date'] },
+        { countries: ['all', 'SG'] }
+      ]) expect((await freshDispatch({ action: 'af_dataset_pull', name: 'invalid', appId: 'app-1', ...input })).ok).toBe(false)
+      expect(pull).toHaveBeenCalledTimes(1)
+
+      const priorDay = new Date(); priorDay.setDate(priorDay.getDate() - 1)
+      const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      await freshDispatch({ action: 'af_dataset_pull', name: '全部地区', appId: 'app-1', days: 1, geo: true, countries: ['all'] })
+      expect(pullCalls[1]).toMatchObject({ window: { start: iso(priorDay), end: iso(priorDay) } })
+      const allRegions = saveQuerySpecMock.mock.calls[1][0] as typeof saved
+      expect(allRegions.query.filters).not.toHaveProperty('Geo')
+      await freshDispatch({ action: 'af_dataset_pull', name: 'Selected source', appId: 'app-1', mediaSources: ['facebook_ads', ' facebook_ads '] })
+      expect((saveQuerySpecMock.mock.calls[2][0] as typeof saved).query.filters['Media source']).toEqual(['facebook_ads'])
+      await freshDispatch({ action: 'af_dataset_pull', name: 'All sources', appId: 'app-1', mediaSources: [] })
+      expect((saveQuerySpecMock.mock.calls[3][0] as typeof saved).query.filters).not.toHaveProperty('Media source')
+      for (const mediaSources of [['all'], [''], ['bad\nsource'], Array.from({ length: 33 }, () => 'source')]) {
+        expect(await freshDispatch({ action: 'af_dataset_pull', name: 'Invalid source', appId: 'app-1', mediaSources })).toMatchObject({ ok: false, error: 'invalid-media-sources' })
+      }
+      expect(pullCalls).toHaveLength(4)
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('keeps an AF recipe and card bound after dataset rename and a repeated pull', async () => {
+    const raw = vi.fn(async () => '## Data: Count days activity appsflyer,Date\n2,2026-10-01\n## Metadata: {"timezone":"UTC","currency":"USD","Count_days_activity_appsflyer":{"partial-data?":false}}')
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', async () => {
+      const actual = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+      actual.setAppsFlyerDatasetTokenSourceForTest(() => 'synthetic-token')
+      return { ...actual, pullAppsFlyerDatasets: (options: Parameters<typeof actual.pullAppsFlyerDatasets>[0]) => actual.pullAppsFlyerDatasets({ ...options, clientFactory: () => ({ initialize: async () => {}, queryRaw: raw }) }) }
+    })
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const request = { action: 'af_dataset_pull' as const, name: '注册', appId: 'app.synthetic', eventName: 'custom_register', metrics: ['Count'], startDate: '2026-10-01', endDate: '2026-10-01' }
+      const first = await freshDispatch(request)
+      expect(first.ok).toBe(true)
+      const dataset = first.dataset as { id: string; name: string }
+      expect(dataset.id).toBeTruthy()
+      expect(renameDataset(dataset.id, '重命名后的注册').ok).toBe(true)
+      await freshDispatch({ action: 'board_create', template: 'blank', name: 'live' })
+      const added = await freshDispatch({ action: 'board_add_widget', name: 'live', type: 'counter', config: { source: 'dataset', datasetId: dataset.id, metric: '事件次数', op: 'sum' } })
+      expect(added.ok).toBe(true)
+
+      const second = await freshDispatch({ ...request, metrics: ['Count', 'Unique users'] })
+      expect(second).toMatchObject({ ok: true, dataset: { id: dataset.id, name: '重命名后的注册' } })
+      expect(listDatasets()).toHaveLength(1)
+      const actual = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+      expect(actual.listQuerySpecs()).toMatchObject([{ datasetId: dataset.id, datasetName: '重命名后的注册', query: { metrics: [{ metric_name: 'Count' }, { metric_name: 'Unique users' }] } }])
+      expect(listDatasets()[0].appsflyer).toMatchObject({ status: 'updated', specId: (first.spec as { id: string }).id })
+      expect(listBoards().find(board => board.name === 'live')?.widgets[0].config.datasetId).toBe(dataset.id)
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('isolates long AF recipe identities while preserving an exact legacy binding', async () => {
+    const raw = vi.fn(async () => '## Data: Count days activity appsflyer,Date\n2,2026-10-01\n## Metadata: {"timezone":"UTC","currency":"USD"}')
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', async () => {
+      const actual = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+      actual.setAppsFlyerDatasetTokenSourceForTest(() => 'synthetic-token')
+      return { ...actual, pullAppsFlyerDatasets: (options: Parameters<typeof actual.pullAppsFlyerDatasets>[0]) => actual.pullAppsFlyerDatasets({ ...options, clientFactory: () => ({ initialize: async () => {}, queryRaw: raw }) }) }
+    })
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const actual = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+      const appId = `app.${'a'.repeat(180)}`
+      const otherAppId = `${appId.slice(0, -1)}b`
+      const names = ['A', 'B', 'C'].map(suffix => `Synthetic ${'x'.repeat(49)}${suffix}`)
+      const legacyId = `afq-${appId}-Legacy`.slice(0, 80)
+      const legacyDataset = createOrUpdateDataset('Renamed legacy data', { columns: [{ name: '事件次数', type: 'number' }], rows: [[3]], truncated: false })
+      if (!legacyDataset.ok) throw new Error(legacyDataset.error)
+      actual.saveQuerySpec({ id: legacyId, name: 'Legacy', datasetId: legacyDataset.dataset.id, datasetName: 'Old display name', query: { app_ids: [appId] } })
+      const requests = [
+        { appId, name: names[0] },
+        { appId, name: names[1] },
+        { appId: otherAppId, name: names[2] }
+      ]
+      // All of these would have silently reused the same old truncated ID.
+      expect(new Set(requests.map(request => `afq-${request.appId}-${request.name}`.slice(0, 80)))).toEqual(new Set([legacyId]))
+      const results = []
+      for (const request of requests) results.push(await freshDispatch({ action: 'af_dataset_pull', ...request, eventName: 'custom_checkout', metrics: ['Count'], startDate: '2026-10-01', endDate: '2026-10-01' }))
+      expect(results.every(result => result.ok === true)).toBe(true)
+      const ids = results.map(result => (result.spec as { id: string }).id)
+      expect(ids).toEqual(ids.map(() => expect.stringMatching(/^afq-[a-f0-9]{64}$/)))
+      expect(new Set(ids).size).toBe(3)
+      expect(ids).not.toContain(legacyId)
+      expect(new Set(results.map(result => (result.dataset as { id: string }).id)).size).toBe(3)
+      const repeated = await freshDispatch({ action: 'af_dataset_pull', ...requests[0], eventName: 'custom_checkout', metrics: ['Count'] })
+      expect(repeated).toMatchObject({ ok: true, spec: { id: ids[0] }, dataset: { id: (results[0].dataset as { id: string }).id } })
+
+      const legacy = await freshDispatch({ action: 'af_dataset_pull', appId, name: 'Legacy', eventName: 'custom_checkout', metrics: ['Count'] })
+      expect(legacy).toMatchObject({ ok: true, spec: { id: legacyId }, dataset: { id: legacyDataset.dataset.id, name: 'Renamed legacy data' } })
+      expect(actual.listQuerySpecs()).toHaveLength(4)
+      expect(actual.listQuerySpecs().find(spec => spec.id === legacyId)).toMatchObject({ datasetId: legacyDataset.dataset.id, datasetName: 'Renamed legacy data', query: { app_ids: [appId] } })
+      expect(actual.listQuerySpecs().find(spec => spec.id === ids[2])?.query.app_ids).toEqual([otherAppId])
+      expect(listDatasets()).toHaveLength(4)
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('rejects an AF recipe beyond capacity without pulling or detaching existing cards', async () => {
+    const raw = vi.fn(async () => '## Data: Count days activity appsflyer,Date\n9,2026-10-01\n## Metadata: {"timezone":"UTC","currency":"USD"}')
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', async () => {
+      const actual = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+      actual.setAppsFlyerDatasetTokenSourceForTest(() => 'synthetic-token')
+      return { ...actual, pullAppsFlyerDatasets: (options: Parameters<typeof actual.pullAppsFlyerDatasets>[0]) => actual.pullAppsFlyerDatasets({ ...options, clientFactory: () => ({ initialize: async () => {}, queryRaw: raw }) }) }
+    })
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const actual = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+      const existing = createOrUpdateDataset('Renamed live metric', { columns: [{ name: '事件次数', type: 'number' }], rows: [[5]], truncated: false })
+      if (!existing.ok) throw new Error(existing.error)
+      for (let index = 0; index < 20; index++) actual.saveQuerySpec({
+        id: `existing-${index}`, name: `Synthetic ${index}`, datasetName: index === 0 ? existing.dataset.name : `AF-Synthetic ${index}`,
+        ...(index === 0 ? { datasetId: existing.dataset.id } : {}), query: { app_ids: [`app.synthetic-${index}`] }
+      })
+      await freshDispatch({ action: 'board_create', name: 'Existing live board', template: 'blank' })
+      await freshDispatch({ action: 'board_add_widget', name: 'Existing live board', type: 'counter', config: { source: 'dataset', datasetId: existing.dataset.id, metric: '事件次数', op: 'sum' } })
+      const boardsBefore = listBoards()
+      const dataBefore = listDatasets()
+      const specsFile = path.join(dir, 'appsflyer-dataset-specs.json')
+      const specsBefore = readFileSync(specsFile, 'utf8')
+      expect(await freshDispatch({ action: 'af_dataset_pull', appId: 'app.new', name: 'New metric' })).toMatchObject({ ok: false, error: 'query-limit' })
+      expect(raw).not.toHaveBeenCalled()
+      expect(readFileSync(specsFile, 'utf8')).toBe(specsBefore)
+      expect(listDatasets()).toEqual(dataBefore)
+      expect(listBoards()).toEqual(boardsBefore)
+
+      // Updating an existing full identity is allowed at the limit and retains
+      // its recipe ID, renamed dataset, and every other saved query.
+      expect(await freshDispatch({ action: 'af_dataset_pull', appId: 'app.synthetic-0', name: 'Synthetic 0', eventName: 'custom_checkout', metrics: ['Count'] })).toMatchObject({ ok: true, spec: { id: 'existing-0' }, dataset: { id: existing.dataset.id, name: existing.dataset.name } })
+      expect(raw).toHaveBeenCalledTimes(1)
+      expect(actual.listQuerySpecs()).toHaveLength(20)
+      expect(actual.listQuerySpecs().filter(spec => spec.id !== 'existing-0')).toEqual(JSON.parse(specsBefore).specs.slice(1))
+      expect(listBoards()).toEqual(boardsBefore)
+      expect(listDatasets()).toHaveLength(1)
     } finally {
       vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
       vi.resetModules()
@@ -359,6 +591,8 @@ describe('dispatch board_create cross-account', () => {
     expect(readings[0].config.advertiserIds).toBe('')
     expect(String(created.note)).toContain('读取连接页所选账户')
     expect(String(created.note)).toContain('未选择时读取授权下的广告主')
+    expect(String(created.note)).toContain('无需再次询问是否取数')
+    expect(String(created.note)).toContain('不修改广告')
   })
 })
 
@@ -392,6 +626,77 @@ describe('native board approval details', () => {
 })
 
 describe('bridge access and workspace file authority', () => {
+  it('accepts explicit grain requirements only when real visible fields satisfy them', async () => {
+    const imported = createOrUpdateDataset('Synthetic ad report', { columns: [{ name: '广告ID', type: 'text' }, { name: '消耗', type: 'number' }], rows: [['ad-synthetic', 12]], truncated: false })
+    if (!imported.ok) throw new Error(imported.error)
+    await dispatch({ action: 'board_create', name: 'Custom ad report', template: 'blank' })
+    await dispatch({ action: 'board_add_widget', name: 'Custom ad report', type: 'table', title: 'Ad and creative detail', config: { source: 'dataset', datasetId: imported.dataset.id, columns: ['消耗'] } })
+    const board = listBoards()[0]
+    const deps = { getAccess: () => ({ cwd: dir, mode: 'readonly' as const, remoteReadonly: false }), confirm: vi.fn(async () => true) }
+    const check = { action: 'board_check' as const, boardId: board.id, mode: 'custom', required: ['table'] }
+    expect(await authorizeAndDispatch('s', check, deps)).toMatchObject({ ok: true, passed: true, status: 'ready' })
+    expect(await authorizeAndDispatch('s', { ...check, granularity: 'ad' }, deps)).toMatchObject({ ok: false, passed: false, error: 'board-needs-attention', status: 'needs-attention' })
+    expect(await authorizeAndDispatch('s', { ...check, dimensions: ['广告ID'] }, deps)).toMatchObject({ ok: false, passed: false, error: 'board-needs-attention' })
+    expect(listBoards()[0]).toEqual(board)
+
+    expect((await dispatch({ action: 'board_update_widget', boardId: board.id, widgetId: board.widgets[0].id, config: { columns: ['广告ID', '消耗'] } })).ok).toBe(true)
+    const visible = listBoards()[0]
+    expect(await authorizeAndDispatch('s', { ...check, granularity: ['creative', 'ad'], dimensions: ['广告ID'] }, deps)).toMatchObject({ ok: true, passed: true, status: 'ready' })
+    expect(await authorizeAndDispatch('s', { ...check, dimensions: ['Campaign ID'] }, deps)).toMatchObject({ ok: false, passed: false, status: 'needs-attention' })
+    for (const invalid of [{ granularity: 'unknown' }, { granularity: ['ad', 'unknown'] }, { dimensions: [''] }, { dimensions: Array.from({ length: 13 }, (_, index) => `Field ${index}`) }]) expect(await authorizeAndDispatch('s', { ...check, ...invalid }, deps)).toMatchObject({ ok: false, error: 'invalid-check-options' })
+    expect(listBoards()[0]).toEqual(visible)
+    expect(listDatasets()).toEqual([imported.dataset])
+    expect(deps.confirm).not.toHaveBeenCalled()
+  })
+
+  it('checks explicit custom requirements in readonly mode without migrating saved recipes', async () => {
+    await dispatch({ action: 'board_create', name: 'Checked synthetic', template: 'blank' })
+    const board = listBoards()[0]
+    const specsFile = path.join(dir, 'appsflyer-dataset-specs.json')
+    const legacy = JSON.stringify([{ appId: 'app.synthetic', eventName: 'custom_checkout' }])
+    writeFileSync(specsFile, legacy)
+    const deps = { getAccess: () => ({ cwd: dir, mode: 'readonly' as const, remoteReadonly: false }), confirm: vi.fn(async () => true) }
+    const custom = await authorizeAndDispatch('s', { action: 'board_check', boardId: board.id, mode: 'custom' }, deps)
+    expect(custom).toMatchObject({ ok: true, passed: true, status: 'ready', missing: [] })
+    const standard = await authorizeAndDispatch('s', { action: 'board_check', boardId: board.id, mode: 'default', daily: true }, deps)
+    expect(standard).toMatchObject({ ok: false, passed: false, error: 'board-incomplete', status: 'incomplete' })
+    expect(standard.missing).toEqual(expect.arrayContaining(['data', 'trend', 'funnel', 'analysis', 'third-party', 'table']))
+    expect(await authorizeAndDispatch('s', { action: 'board_check', boardId: board.id, mode: 'other' }, deps)).toMatchObject({ ok: false, error: 'invalid-check-options' })
+    expect(await authorizeAndDispatch('s', { action: 'board_check', boardId: board.id, required: ['invented'] }, deps)).toMatchObject({ ok: false, error: 'invalid-check-options' })
+    expect(readFileSync(specsFile, 'utf8')).toBe(legacy)
+    expect(listBoards()[0]).toEqual(board)
+    expect(deps.confirm).not.toHaveBeenCalled()
+  })
+
+  it('reports a completed audit with unresolved data evidence as a failed acceptance check', async () => {
+    await dispatch({ action: 'board_create', name: 'Unverified synthetic', template: 'blank' })
+    await dispatch({ action: 'board_add_widget', name: 'Unverified synthetic', type: 'tt-reading' })
+    const before = listBoards()[0]
+    expect(await dispatch({ action: 'board_check', boardId: before.id, mode: 'custom', required: ['data'] })).toMatchObject({
+      ok: false,
+      passed: false,
+      error: 'board-incomplete',
+      status: 'incomplete',
+      missing: ['data'],
+      issues: [{ code: 'native-data-unverified' }]
+    })
+    expect(listBoards()[0]).toEqual(before)
+  })
+
+  it('allows a readonly customization preview but requires write authority to apply it', async () => {
+    await dispatch({ action: 'board_create', name: 'Preview synthetic', template: 'blank' })
+    await dispatch({ action: 'board_add_widget', name: 'Preview synthetic', type: 'counter', config: { value: 17 } })
+    const before = listBoards()[0]
+    const request = { action: 'board_customize' as const, version: 1, boardId: before.id, expectedUpdatedAt: before.updatedAt, widgets: [{ widgetId: before.widgets[0].id, title: 'Updated label' }] }
+    const deps = { getAccess: () => ({ cwd: dir, mode: 'readonly' as const, remoteReadonly: false }), confirm: vi.fn(async () => true) }
+    expect(await authorizeAndDispatch('s', request, deps)).toMatchObject({ ok: true, preview: true })
+    expect(listBoards()[0]).toEqual(before)
+    expect(await authorizeAndDispatch('s', { ...request, preview: false }, deps)).toMatchObject({ ok: false, error: 'permission-denied' })
+    expect(deps.confirm).not.toHaveBeenCalled()
+    expect(await dispatch({ ...request, preview: false }, dir, () => false)).toMatchObject({ ok: false, error: 'permission-denied' })
+    expect(listBoards()[0]).toEqual(before)
+  })
+
   it('allows readonly sessions to list, but denies all board writes and dataset imports', async () => {
     const deps = { getAccess: () => ({ cwd: dir, mode: 'readonly' as const, remoteReadonly: false }), confirm: vi.fn(async () => true) }
     expect((await authorizeAndDispatch('s', { action: 'boards_list' }, deps)).ok).toBe(true)

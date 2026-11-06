@@ -1,4 +1,6 @@
 import type { MetaReadingResult, MetaReadingSummary, MetaReadingAccount, MetaReadingRange } from '../shared/metaReading'
+import type { AppsFlyerDatasetRefreshRequest, AppsFlyerDatasetRefreshResult } from '../shared/appsflyerDataset'
+import type { BoardRefreshRequest, BoardRefreshResult } from '../shared/boardRefresh'
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
 import type { SaveReadingSnapshotInput } from '../shared/readingSnapshot'
@@ -274,6 +276,8 @@ export interface ElectronAPI {
   setStore: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => Promise<boolean>
   /** Kanban boards (local-only, validated in main on every read/write). */
   listBoards: () => Promise<KanbanBoard[]>
+  /** Main resolves every module's dates and refreshes the board as one run. */
+  boardRefresh: (request: BoardRefreshRequest) => Promise<BoardRefreshResult>
   /** Whole-board upsert; rejects structurally invalid boards. */
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => Promise<SaveReadingSnapshotResult>
   exportReadingSnapshot: (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => Promise<ReadingSnapshotExportResult>
@@ -561,8 +565,8 @@ export interface ElectronAPI {
 
   /** AppsFlyer official connection; only secret-free snapshots cross IPC. */
   appsflyerStatus: () => Promise<AppsFlyerConnectionSnapshot>
-  /** Re-pull every recorded AF query spec into its AF-{name} dataset (master refresh). */
-  appsflyerDatasetRefresh: (window: { start: string; end: string }) => Promise<{ ok: boolean; error?: string; results?: Array<{ name: string; datasetName: string; ok: boolean; error?: string; rowCount?: number }> }>
+  /** Re-query only the AF datasets bound to the current board over exact dates. */
+  appsflyerDatasetRefresh: (request: AppsFlyerDatasetRefreshRequest) => Promise<AppsFlyerDatasetRefreshResult>
   appsflyerBegin: () => Promise<AppsFlyerConnectionSnapshot>
   appsflyerCancel: () => Promise<AppsFlyerConnectionSnapshot>
   appsflyerDisconnect: () => Promise<AppsFlyerConnectionSnapshot>
@@ -793,6 +797,7 @@ const api: ElectronAPI = {
   setStore: (key: keyof AppSettings, value: unknown) =>
     ipcRenderer.invoke(IPC_CHANNELS.STORE_SET, key, value),
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
+  boardRefresh: (request: BoardRefreshRequest) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REFRESH, request),
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_SAVE, input),
   exportReadingSnapshot: (input: { boardId: string; widgetId: string; anonymize?: boolean; language?: 'zh' | 'en' }) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_EXPORT, input),
   loadOrCreateHtmlBoard: (input: HtmlBoardOpenInput) => ipcRenderer.invoke(IPC_CHANNELS.HTML_BOARD_OPEN, input),
@@ -1062,8 +1067,8 @@ const api: ElectronAPI = {
     return () => ipcRenderer.removeListener(IPC_CHANNELS.META_ADS_STATUS, handler)
   },
   appsflyerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_STATUS),
-  appsflyerDatasetRefresh: (window: { start: string; end: string }) =>
-    ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_DATASET_REFRESH, window) as Promise<{ ok: boolean; error?: string; results?: Array<{ name: string; datasetName: string; ok: boolean; error?: string; rowCount?: number }> }>,
+  appsflyerDatasetRefresh: (request: AppsFlyerDatasetRefreshRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_DATASET_REFRESH, request) as Promise<AppsFlyerDatasetRefreshResult>,
   appsflyerBegin: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_BEGIN),
   appsflyerCancel: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_CANCEL),
   appsflyerDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.APPSFLYER_DISCONNECT),

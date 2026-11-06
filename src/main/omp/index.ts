@@ -36,6 +36,7 @@ import { ProjectChildTracker } from '../projectChildTracker'
 import { canonicalExistingPath } from '../canonicalPath'
 import { SessionBridgePermissionRegistry } from './bridgePermissions'
 import { extensionExternalLinkMessage } from './extensionLinks'
+import { registerBoardBuildTurn, revokeBoardBuildSession } from '../boardBuilds'
 import {
   detectCli,
   noteHandshake,
@@ -253,7 +254,7 @@ export function createSession(
     new OmpSession(session, proc, {
       label: cli.command,
       onEvent,
-      onGone: () => { retireProjectChild(); sessions.delete(id); sessionBridgePermissions.remove(id); onSessionGone?.(id) },
+      onGone: () => { retireProjectChild(); sessions.delete(id); sessionBridgePermissions.remove(id); revokeBoardBuildSession(id); onSessionGone?.(id) },
       onHandshake: (outcome) => {
         noteHandshake(outcome)
         // Current Oh My Pi: enable subagent progress subscription + roster
@@ -299,8 +300,12 @@ export function sendMessage(
 ): boolean {
   const entry = sessions.get(sessionId)
   if (entry && isProjectDeletionInProgress(entry.session.cwd)) return false
-  if (entry) onUserTurn?.(sessionId)
-  return entry?.sendPrompt(text, images, streamingBehavior) ?? false
+  if (!entry || !entry.sendPrompt(text, images, streamingBehavior)) return false
+  // Capture accepted user input in Main before yielding to runtime tool calls.
+  // Generation constraints cannot be replaced by model-supplied check options.
+  registerBoardBuildTurn(sessionId, entry.session.cwd, text)
+  onUserTurn?.(sessionId)
+  return true
 }
 
 /** Keep timed-out children busy until the real exit event arrives. */

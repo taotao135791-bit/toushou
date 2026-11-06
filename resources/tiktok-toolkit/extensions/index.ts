@@ -39,13 +39,17 @@ export default function tiktokTools(api: ToolHostApi): void {
     name: 'toushou_tiktok_update',
     label: '更新 TikTok 看板',
     description:
-      '拉取 TikTok Ads 近 7 天分活动报表（消耗/展示/点击/点击率/转化/转化成本），写入 "TikTok 报表" 看板数据集。' +
+      '生成看板时先board_build_begin并携带buildId，媒体与AF绑定完成后优先board_refresh让应用统一算日期。独立更新报表仍可调用本工具。按 startDate/endDate 精确日期（最多30天）拉取 TikTok Ads 分活动报表，写入 "TikTok 报表" 看板数据集；首次建板与AF查询必须传相同的总控具体日期。省略日期默认近7个完整日，截至昨天；今天请传今天的起止日期。' +
       '与看板读数共用 TikTok 官方授权；此操作还会更新本地数据集，因此受当前会话写入权限和确认约束。' +
       'permission-denied 表示本地写入未获允许，按返回 reason/hint 解释，不能称为 TikTok 未连接或要求重新授权。',
     parameters: {
       type: 'object',
       properties: {
-        advertiserId: { type: 'string', description: '可选：指定已授权广告主 ID，必须是数字字符串；省略则读取已配置的广告主，未配置时读取授权广告主。' }
+        buildId: { type: 'string', description: '生成看板时传board_build_begin返回的本轮buildId，写入私有草稿；独立更新报表时省略' },
+        advertiserId: { type: 'string', description: '可选：指定已授权广告主 ID，必须是数字字符串；省略则读取已配置的广告主，未配置时读取授权广告主。' },
+        startDate: { type: 'string', description: 'YYYY-MM-DD，与endDate一起传，采用看板总控实际开始日期' },
+        endDate: { type: 'string', description: 'YYYY-MM-DD，与startDate一起传，最长30天' },
+        days: { type: 'integer', minimum: 1, maximum: 30, description: '备用：最近N个完整日，截至昨天，默认7；优先使用明确日期' }
       },
       required: []
     },

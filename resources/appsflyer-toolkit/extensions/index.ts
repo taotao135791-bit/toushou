@@ -26,15 +26,18 @@ function localCapability(): { url: string; token: string } | null {
 export function queryArguments(params: Obj): Obj | null {
   const { appId, startDate, endDate } = params
   const eventName = params.eventName === undefined || params.eventName === '' ? undefined : params.eventName
+  const isBuiltIn = typeof eventName === 'string' && ['app active', 'install', 'session'].includes(eventName.toLowerCase())
+  const isCustom = !!eventName && !isBuiltIn
   const basis = params.basis ?? 'activity'
   const rowCount = params.rowCount ?? 100
-  if (Object.keys(params).some(k => !['appId', 'startDate', 'endDate', 'eventName', 'basis', 'rowCount'].includes(k)) || !validText(appId) || !validDate(startDate) || !validDate(endDate) || startDate > endDate || Date.parse(endDate) - Date.parse(startDate) > 365 * 86_400_000 || (eventName !== undefined && !validText(eventName)) || (basis !== 'activity' && basis !== 'ltv') || !Number.isInteger(rowCount) || Number(rowCount) < 1 || Number(rowCount) > 300) return null
+  const mediaSources = params.mediaSources === undefined ? ['tiktokglobal_int'] : params.mediaSources
+  if (Object.keys(params).some(k => !['appId', 'startDate', 'endDate', 'eventName', 'basis', 'rowCount', 'mediaSources'].includes(k)) || !validText(appId) || !validDate(startDate) || !validDate(endDate) || startDate > endDate || Date.parse(endDate) - Date.parse(startDate) > 365 * 86_400_000 || (eventName !== undefined && !validText(eventName)) || (basis !== 'activity' && basis !== 'ltv') || !Number.isInteger(rowCount) || Number(rowCount) < 1 || Number(rowCount) > 300 || !Array.isArray(mediaSources) || mediaSources.length > 32 || mediaSources.some(source => !validText(source) || String(source).toLowerCase() === 'all')) return null
   return { query: {
     start_date: startDate, end_date: endDate, app_ids: [appId], row_count: rowCount,
     metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: basis }, { metric_name: 'Unique users', attribution_source: 'appsflyer', period: basis }],
     sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }],
-    groupings: eventName ? ['Campaign ID', 'Campaign', 'Media source', 'Date'] : ['Event name', 'Media source', 'Date', 'Campaign ID'],
-    filters: { 'Media source': ['tiktokglobal_int'] }, in_app_event: eventName ? [eventName] : []
+    groupings: isCustom ? ['Campaign ID', 'Campaign', 'Media source', 'Date'] : ['Event name', 'Media source', 'Date', 'Campaign ID'],
+    filters: mediaSources.length ? { 'Media source': [...new Set(mediaSources)] } : {}, in_app_event: isCustom ? [eventName] : []
   } }
 }
 
@@ -68,7 +71,8 @@ async function invoke(name: 'get_apps' | 'analytics_fetch_aggregated_data', args
     if (result.isError) throw new Error('query-failed')
     const structured = object(result.structuredContent)
     if (!structured || !Object.prototype.hasOwnProperty.call(structured, 'data')) throw new Error('invalid-data')
-    return JSON.stringify({ ok: true, source: 'AppsFlyer', data: structured.data, note: '日期与时区以结果元数据为准；达到行数上限可能不完整。' })
+    if (name === 'analytics_fetch_aggregated_data' && typeof structured.data === 'string' && !/^\s*## Data:/m.test(structured.data)) throw new Error('query-failed')
+    return JSON.stringify({ ok: true, source: 'AppsFlyer', data: structured.data })
   } catch {
     return JSON.stringify({ ok: false, error: 'AppsFlyer 只读查询未完成，请检查连接、应用权限和查询范围后重试。' })
   } finally {
@@ -82,8 +86,8 @@ export default function appsFlyerTools(api: ToolHostApi): void {
   api.registerTool({ name: 'toushou_appsflyer_apps', label: '查看 AppsFlyer 应用', approval: 'read', description: '只读列出当前授权的 AppsFlyer 应用。', parameters: { type: 'object', properties: {}, required: [], additionalProperties: false }, execute: async (_id, params, signal) => ({ content: [{ type: 'text', text: Object.keys(params).length ? JSON.stringify({ ok: false, error: '此查询不需要参数。' }) : await invoke('get_apps', {}, signal) }] }) })
   api.registerTool({
     name: 'toushou_appsflyer_query', label: '查询 AppsFlyer 归因', approval: 'read',
-    description: '只读查询一个已授权应用的 TikTok 渠道聚合数据。先用应用列表确认 appId；省略 eventName 可发现事件。日期、时区与计量口径以结果为准；行数达到上限时不要当作完整结果。',
-    parameters: { type: 'object', properties: { appId: { type: 'string' }, startDate: { type: 'string', description: 'YYYY-MM-DD' }, endDate: { type: 'string', description: 'YYYY-MM-DD' }, eventName: { type: 'string', description: '可选；省略以发现事件' }, basis: { type: 'string', enum: ['activity', 'ltv'], description: '默认 activity' }, rowCount: { type: 'integer', minimum: 1, maximum: 300 } }, required: ['appId', 'startDate', 'endDate'], additionalProperties: false },
+    description: '只读查询一个已授权应用的聚合数据。仅沿用当前客户和项目已确认的 appId，或先查应用列表。业务方案应显式传 mediaSources：使用当前App真实发现的媒体名称；[]表示查询该App全部授权来源，可用于发现候选；省略仅为旧调用兼容TikTok，非TikTok方案不得省略后错标来源。用户使用业务名称时，先省略 eventName 发现真实事件，结合当前项目映射和业务含义选择唯一最匹配候选，再传准确 eventName（自定义事件不限 af_ 前缀）；只有多个候选同样合理时才简短询问，不要求用户提供技术字段。不从其他客户复用事件名称或阶段定义，不按媒体品牌猜接口别名。结果按用户任务给关键数字和基于证据的分析，来源细节按需展开；达到行数上限不能当全量。',
+    parameters: { type: 'object', properties: { appId: { type: 'string' }, startDate: { type: 'string', description: 'YYYY-MM-DD' }, endDate: { type: 'string', description: 'YYYY-MM-DD' }, eventName: { type: 'string', description: '可选；省略先发现候选，再传最匹配的实际事件名称，不限制命名前缀' }, mediaSources: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 200 }, description: '当前App真实媒体名称；[]为该App全部授权来源，省略仅兼容旧TikTok调用；新业务方案显式传入' }, basis: { type: 'string', enum: ['activity', 'ltv'], description: '默认 activity' }, rowCount: { type: 'integer', minimum: 1, maximum: 300 } }, required: ['appId', 'startDate', 'endDate'], additionalProperties: false },
     execute: async (_id, params, signal) => { const args = queryArguments(params); return { content: [{ type: 'text', text: args ? await invoke('analytics_fetch_aggregated_data', args, signal) : JSON.stringify({ ok: false, error: '查询参数无效，请检查应用、日期和行数。' }) }] } }
   })
 }

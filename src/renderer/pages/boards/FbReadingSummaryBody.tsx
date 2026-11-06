@@ -363,7 +363,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
           {metrics.includes('balance') && (
             <button
               onClick={() => void refreshBalances()}
-              disabled={refreshing || balanceBusyIndex !== null || inChat}
+              disabled={refreshing || balanceBusyIndex !== null || inChat || accounts.length === 0}
               title={inChat ? t('boards.reading.inChat') : undefined}
               className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
             >
@@ -378,7 +378,7 @@ export function FbReadingSummaryBody({ widget }: { widget: BoardWidget }) {
           )}
           <button
             onClick={() => void refresh()}
-            disabled={refreshing || balanceBusyIndex !== null || inChat}
+            disabled={refreshing || balanceBusyIndex !== null || inChat || accounts.length === 0}
             title={inChat ? t('boards.reading.inChat') : undefined}
             className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
           >

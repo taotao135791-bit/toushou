@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 let userDataDir = ''
 vi.mock('electron', () => ({ app: { getPath: () => userDataDir } }))
 import { DATASET_LIMITS, buildDataset, validateDataset } from '../../../shared/datasets'
-import { createOrUpdateDataset, listDatasets } from '../../boardDatasets'
+import { createOrUpdateDataset, listDatasets, writeDatasets } from '../../boardDatasets'
 import type { TikTokReportRow } from './tiktokClient'
 import { beginTikTokDatasetRead, mergeReportRowsIntoDataset, reportRowsToGrid, TIKTOK_DATASET_NAME, type TikTokDatasetScope } from './tiktokReportDataset'
 let dir: string, file: string
@@ -19,6 +19,15 @@ beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'tt-dataset-')); userDa
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('stable report data and atomic migration', () => {
+  it('does not charge attribution materialization caches against the user dataset quota', () => {
+    for (let index = 0; index < DATASET_LIMITS.maxDatasets - 1; index++) expect(createOrUpdateDataset(`user-${index}`, buildDataset(['Value'], [['1']]), file).ok).toBe(true)
+    const base = listDatasets(file)
+    for (let index = 0; index < 2; index++) base.push({ ...base[0], id: `cache-${index}`, name: `AF-internal-${index}`, appsflyer: { specId: 'query', status: 'updated', window: { start: '2026-01-01', end: '2026-01-02' }, dataWindow: { start: '2026-01-01', end: '2026-01-02' }, attemptedAt: 1, materialization: { boardId: 'board', bindingDatasetId: base[0].id, scopeKey: JSON.stringify({ mode: 'inherit' }) } } })
+    writeDatasets(file, base)
+    expect(mergeReportRowsIntoDataset([row()], details, file, [scope(A)]).ok).toBe(true)
+    expect(listDatasets(file).filter(dataset => !dataset.appsflyer?.materialization)).toHaveLength(DATASET_LIMITS.maxDatasets)
+    expect(listDatasets(file).filter(dataset => !!dataset.appsflyer?.materialization)).toHaveLength(2)
+  })
   it('rejects an older overlapping response after a newer request commits while allowing disjoint windows', () => {
     const older = beginTikTokDatasetRead()
     const newer = beginTikTokDatasetRead()

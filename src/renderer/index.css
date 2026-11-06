@@ -467,10 +467,10 @@
   color: var(--board-widget-text) !important;
 }
 .board-widget .text-cream-dim {
-  color: color-mix(in srgb, var(--board-widget-text) 72%, transparent) !important;
+  color: var(--board-widget-text-dim, color-mix(in srgb, var(--board-widget-text) 72%, transparent)) !important;
 }
 .board-widget .text-cream-faint {
-  color: color-mix(in srgb, var(--board-widget-text) 48%, transparent) !important;
+  color: var(--board-widget-text-faint, color-mix(in srgb, var(--board-widget-text) 48%, transparent)) !important;
 }
 .board-widget .text-accent {
   color: var(--board-widget-accent) !important;

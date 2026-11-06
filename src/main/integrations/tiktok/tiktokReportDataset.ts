@@ -2,6 +2,7 @@ import type { BoardDataset } from '../../../shared/types'
 import { DATASET_LIMITS, type DatasetImportResult } from '../../../shared/datasets'
 import { listDatasetsStrict, writeDatasets } from '../../boardDatasets'
 import type { TikTokReportRow } from './tiktokClient'
+import { boardStoragePath } from '../../boardBuildStorage'
 
 export const TIKTOK_DATASET_NAME = 'TikTok 报表'
 const LEGACY_PREFIX = 'TikTok 报表（旧数据备份）'
@@ -24,7 +25,7 @@ function scopeKeys(file: string | undefined, scopes: TikTokDatasetScope[]): stri
   for (const scope of scopes) {
     const last = Date.parse(`${scope.endDate}T00:00:00Z`)
     for (let day = Date.parse(`${scope.startDate}T00:00:00Z`); day <= last; day += 86_400_000) {
-      keys.push(JSON.stringify([file ?? '', scope.advertiserId, new Date(day).toISOString().slice(0, 10)]))
+      keys.push(JSON.stringify([file ?? boardStoragePath('board-datasets.json'), scope.advertiserId, new Date(day).toISOString().slice(0, 10)]))
     }
   }
   return keys
@@ -118,7 +119,7 @@ export function mergeReportRowsIntoDataset(
   // Reusing a shared ID could redirect a board binding to an unrelated table.
   if (existing && datasets.some((dataset) => dataset !== existing && dataset.id === existing.id)) return { ok: false, error: 'ambiguous-dataset' }
   const legacy = existing && !validSchema(existing)
-  if ((!existing || legacy) && datasets.length >= DATASET_LIMITS.maxDatasets) return { ok: false, error: 'dataset-limit' }
+  if ((!existing || legacy) && datasets.filter(dataset => !dataset.appsflyer?.materialization).length >= DATASET_LIMITS.maxDatasets) return { ok: false, error: 'dataset-limit' }
   const kept = existing && !legacy ? existing.rows.filter((row) => !scopes.some((scope) => String(row[11]) === scope.advertiserId && String(row[0]) >= scope.startDate && String(row[0]) <= scope.endDate)) : []
   if (kept.length + rows.length > DATASET_LIMITS.maxRows) return { ok: false, error: 'row-limit' }
   const merged: TaggedDataset = {

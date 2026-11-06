@@ -6,6 +6,7 @@ node_modules
 dist
 dist-electron
 release
+release-beta
 
 # Logs
 logs

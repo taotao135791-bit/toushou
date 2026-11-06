@@ -16,14 +16,28 @@ const date = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && Number.isFinite(Dat
 export function validateEventQuery(q: AppsFlyerEventQuery): void {
   if (!validText(q.appId, 200) || !validText(q.eventName, 200) || !date(q.startDate) || !date(q.endDate) || q.startDate > q.endDate || Date.parse(q.endDate) - Date.parse(q.startDate) > 365 * 86_400_000) throw new Error('invalid-query')
 }
+/** Only provider built-ins use discovery. Custom event names need no prefix. */
+export function isAppsFlyerBuiltInEvent(eventName: string): boolean {
+  return ['app active', 'install', 'session'].includes(eventName.trim().toLowerCase())
+}
+
+/** "All regions" is absence of a filter, never the literal country `all`. */
+export function normalizeAppsFlyerFilters(filters: Obj): Obj {
+  const normalized = { ...filters }
+  if (Array.isArray(normalized.Geo) && normalized.Geo.some(value => typeof value === 'string' && value.trim().toLowerCase() === 'all')) {
+    if (normalized.Geo.length !== 1) throw new Error('invalid-query')
+    delete normalized.Geo
+  }
+  return normalized
+}
 export function eventQueryArguments(q: AppsFlyerEventQuery): Obj {
   validateEventQuery(q)
   // Built-in events (App Active, Install, Session, …) reject BOTH an
   // in_app_event filter AND the Count metric grouped by campaign — the proven
   // shape for them is the discovery query (group by Event name, no filter).
-  // Custom in-app events follow the af_ prefix convention and need the exact
-  // event filter.
-  const isBuiltIn = !q.eventName.toLowerCase().startsWith('af_')
+  // Custom in-app events may use any developer-defined name; prefixes such
+  // as af_ are conventions, not a classification rule.
+  const isBuiltIn = isAppsFlyerBuiltInEvent(q.eventName)
   return { query: { start_date: q.startDate, end_date: q.endDate, app_ids: [q.appId], row_count: 100, metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' }, { metric_name: 'Unique users', attribution_source: 'appsflyer', period: 'activity' }], sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }], groupings: isBuiltIn ? ['Event name', 'Media source', 'Date', 'Campaign ID'] : ['Campaign ID', 'Campaign', 'Media source', 'Date'], filters: { 'Media source': ['tiktokglobal_int'] }, in_app_event: isBuiltIn ? [] : [q.eventName] } }
 }
 
@@ -90,6 +104,12 @@ export class AppsFlyerMcpClient {
     let value: unknown = structured?.data ?? structured?.result
     if (typeof value !== 'string' && Array.isArray(result.content)) value = result.content.map(obj).find(x => x?.type === 'text' && typeof x.text === 'string')?.text
     if (typeof value !== 'string' || value.length > 5_000_000) throw new Error('appsflyer-invalid-data')
+    // Some provider validation failures arrive as ordinary text with
+    // isError=false. They must not become a successful read/refresh upstream.
+    if (name === 'analytics_fetch_aggregated_data' && !/^\s*## Data:/m.test(value)) {
+      throw new Error(/^\s*The following (?:metrics|dimensions|filters) have validation errors:/i.test(value)
+        ? 'appsflyer-query-validation-error' : 'appsflyer-invalid-data')
+    }
     return value
   }
   async listApps(): Promise<AppsFlyerApp[]> { return parseApps(await this.call('get_apps', {})) }
@@ -118,6 +138,7 @@ export class AppsFlyerMcpClient {
     if (JSON.stringify(args).length > 12_000) throw new Error('invalid-query')
     const metricNames = query.metrics.map(metric => obj(metric)?.metric_name)
     if (metricNames.some(name => !validText(name, 100))) throw new Error('invalid-query')
+    query.filters = normalizeAppsFlyerFilters(query.filters as Obj)
     let sort = query.sort_by_metrics
     if (sort == null) sort = [{ metric_name: metricNames.includes('Count') ? 'Count' : metricNames[0], order: 'desc' }]
     if (!Array.isArray(sort) || sort.length < 1 || sort.length > 10 || sort.some(entry => { const x = obj(entry); return !x || !metricNames.includes(x.metric_name) || (x.order !== 'asc' && x.order !== 'desc') || Object.keys(x).some(key => key !== 'metric_name' && key !== 'order') })) throw new Error('invalid-query')

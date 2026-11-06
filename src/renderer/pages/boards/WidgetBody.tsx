@@ -1,4 +1,5 @@
 import { MetaReadingBody } from './MetaReadingBody'
+import type { ManagedMetaReading } from './MetaReadingBody'
 import { useMetaDatasets } from './metaReadingStore'
 import { useEffect, useState } from 'react'
 import { Check, ExternalLink, FileWarning, X } from 'lucide-react'
@@ -25,6 +26,11 @@ import { useTweenNumber } from '../../lib/useTweenNumber'
 import { useAppStore } from '../../store'
 import { useT } from '../../i18n'
 import { filterTikTokDatasetByScope, type VerifiedTikTokScope } from '../../lib/tiktokDatasetScope'
+import { type FunnelStage } from '@shared/boardDataWidgets'
+import { DatasetAnalysisBody } from './DatasetAnalysisBody'
+import { DatasetTableBody } from './DatasetTableBody'
+import type { ManagedTikTokReading } from './TTReadingBody'
+import { boardDatasetViewWindow } from '@shared/boardRefresh'
 
 /**
  * Per-type widget bodies for the board grid. Charts use HTML and CSS
@@ -67,6 +73,11 @@ export interface WidgetBodyProps {
   ttScope?: VerifiedTikTokScope | null
   ttScopeRequired?: boolean
   ttScopeConflict?: boolean
+  /** Main has verified and captured these rows for this refresh run. */
+  verifiedDatasetSnapshot?: boolean
+  managedReading?: ManagedTikTokReading
+  managedMetaReading?: ManagedMetaReading
+  onManagedRefresh?: () => void
 }
 
 function configOp(value: unknown): DatasetOp {
@@ -89,9 +100,10 @@ function datasetScopeLabel(
   dataset: BoardDataset,
   masterWindow?: { start: string; end: string; latestDay?: boolean }
 ): string | null {
+  masterWindow = boardDatasetViewWindow(dataset) ?? masterWindow
   if (!masterWindow) return null
   const dateIndex = dataset.columns.findIndex((column) => column.type === 'date')
-  if (dateIndex < 0) return null
+  if (dateIndex < 0 && masterWindow.latestDay) return null
   const short = (iso: string) => iso.slice(5)
   if (masterWindow.latestDay) {
     const days = dataset.rows.map(row => row[dateIndex]).filter((value): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)).sort()
@@ -121,12 +133,13 @@ function resolveBinding(
   masterWindow?: { start: string; end: string; latestDay?: boolean },
   ttScope?: VerifiedTikTokScope | null,
   ttScopeRequired = false,
-  ttScopeConflict = false
+  ttScopeConflict = false,
+  needsMetric = true
 ): Binding {
   const datasetId = configStr(widget.config.datasetId)
   const metric = configStr(widget.config.metric)
   const dimension = configStr(widget.config.dimension)
-  if (!datasetId || !metric || (needsDim && !dimension)) return { kind: 'incomplete' }
+  if (!datasetId || (needsMetric && !metric) || (needsDim && !dimension)) return { kind: 'incomplete' }
   // Preset templates bind by dataset NAME ("TikTok 报表") — id match first,
   // name fallback so template widgets resolve without knowing generated ids.
   const found = datasets.find((d) => d.id === datasetId) ?? datasets.find((d) => d.name === datasetId)
@@ -157,14 +170,14 @@ function resolveBinding(
   }
   // Master-scope window on top: dataset cards follow the board's range; the
   // 今天 scope shows the account's CURRENT stat day (latest among filtered rows).
-  if (masterWindow && !found.id.startsWith('meta-reading:') && !(found.name === 'TikTok 报表' && (ttScopeRequired || widget.config.requireVerifiedTtScope === true))) {
+  if (masterWindow && widget.config.__resolvedSnapshot !== true && !found.id.startsWith('meta-reading:') && !(found.name === 'TikTok 报表' && (ttScopeRequired || widget.config.requireVerifiedTtScope === true))) {
     const scope = filterDatasetRowsByWindowWithStatus(dataset, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
     if (scope.missingTimezone) return { kind: 'timezone-unavailable' }
     dataset = scope.dataset
   }
-  const metricIndex = columnIndex(dataset, metric)
+  const metricIndex = needsMetric ? columnIndex(dataset, metric) : -1
   const dimIndex = needsDim ? columnIndex(dataset, dimension) : -1
-  if (metricIndex < 0 || (needsDim && dimIndex < 0)) return { kind: 'missing-column' }
+  if ((needsMetric && metricIndex < 0) || (needsDim && dimIndex < 0)) return { kind: 'missing-column' }
   return { kind: 'ok', dataset, metricIndex, dimIndex }
 }
 
@@ -344,6 +357,33 @@ function CounterBody({
       )}
     </div>
   )
+}
+
+function FunnelBody({ widget, datasets, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: Pick<WidgetBodyProps, 'widget' | 'datasets' | 'masterWindow' | 'datasetsLoading' | 'ttScope' | 'ttScopeRequired' | 'ttScopeConflict'>) {
+  const t = useT()
+  const stages = Array.isArray(widget.config.stages) ? widget.config.stages as FunnelStage[] : []
+  if (!stages.length) return <div role="status" className="flex h-full items-center justify-center text-[12px] text-cream-faint">{t('boards.funnel.configure')}</div>
+  const values = stages.map(stage => {
+    const binding = resolveBinding({ ...widget, type: 'counter', config: { ...stage, source: 'dataset' } }, datasets, false, masterWindow, ttScope, ttScopeRequired, ttScopeConflict)
+    if (binding.kind !== 'ok') return { stage, value: null, source: '', missing: true, failed: false }
+    const safety = metricCurrencySafety(binding.dataset, stage.metric)
+    const failed = binding.dataset.appsflyer?.status === 'failed'
+    const missing = binding.dataset.appsflyer?.status === 'unbound'
+    const result = failed || missing || binding.dataset.rows.length === 0 || safety === 'mixed' || safety === 'unknown'
+      ? null : safeMetricValue(binding.dataset, binding.dataset.rows, binding.metricIndex, configOp(stage.op))
+    return { stage, value: result !== null && result >= 0 ? result : null, source: binding.dataset.name, missing, failed }
+  })
+  const max = Math.max(0, ...values.map(item => item.value ?? 0))
+  return <ol aria-label={widget.title} className="flex h-full flex-col gap-3 overflow-y-auto py-1">
+    {values.map(({ stage, value, source, missing, failed }, index) => <li key={index} className="min-w-0 shrink-0">
+      <div className="mb-1 flex items-baseline justify-between gap-3">
+        <span className="min-w-0 break-words text-[12px] font-medium text-cream">{stage.label}</span>
+        <span className="shrink-0 text-[17px] font-semibold tabular-nums text-cream">{value === null ? '—' : value.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-overlay"><div className="h-full rounded-full bg-accent/50 transition-[width]" style={{ width: `${value !== null && max > 0 ? value / max * 100 : 0}%` }} /></div>
+      <div className="mt-1 truncate text-[10px] text-cream-faint" title={source}>{value === null ? datasetsLoading ? t('boards.data.updating') : failed ? t('boards.data.failed') : missing ? t('boards.funnel.unbound') : t('boards.data.empty') : source}</div>
+    </li>)}
+  </ol>
 }
 
 /** Native HTML progress meter; no SVG is needed for editable boards. */
@@ -664,9 +704,13 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   return <HtmlFilePreview html={state.html} title={widget.title} language={language === 'en' ? 'en' : 'zh'} />
 }
 
-export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, showReadingSource, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
+export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, showReadingSource, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict, verifiedDatasetSnapshot, managedReading, managedMetaReading, onManagedRefresh }: WidgetBodyProps) {
+  if (verifiedDatasetSnapshot) {
+    widget = { ...widget, config: { ...widget.config, __resolvedSnapshot: true, requireVerifiedTtScope: false, ...(widget.type === 'funnel' && Array.isArray(widget.config.stages) ? { stages: widget.config.stages.map(stage => ({ ...stage, __resolvedSnapshot: true, requireVerifiedTtScope: false })) } : {}) } }
+    ttScopeRequired = false
+  }
   const metaDatasets = useMetaDatasets()
-  datasets = [...datasets, ...metaDatasets]
+  datasets = [...datasets, ...(!verifiedDatasetSnapshot ? metaDatasets : [])]
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -679,9 +723,9 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapsh
     case 'google-report-reading':
       return <GoogleReportReadingBody widget={widget} onSnapshotSaved={onSnapshotSaved} />
     case 'meta-reading':
-      return <MetaReadingBody widget={widget} onConfigChange={onConfigChange} />
+      return <MetaReadingBody widget={widget} onConfigChange={onConfigChange} managedReading={managedMetaReading} onManagedRefresh={onManagedRefresh} />
     case 'tt-reading':
-      return <TTReadingBody widget={widget} />
+      return <TTReadingBody widget={widget} managedReading={managedReading} onManagedRefresh={onManagedRefresh} />
     case 'reading-module':
       return <ReadingModuleBody widget={widget} boardId={boardId} autoOpenAi={autoOpenAi} onAiOpened={onAiOpened} />
     case 'reading-snapshot':
@@ -696,6 +740,19 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapsh
       return <ChartBody widget={widget} bar={false} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} ttScope={ttScope} ttScopeRequired={ttScopeRequired} ttScopeConflict={ttScopeConflict} />
     case 'chart-bar':
       return <ChartBody widget={widget} bar={true} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} ttScope={ttScope} ttScopeRequired={ttScopeRequired} ttScopeConflict={ttScopeConflict} />
+    case 'table': {
+      const binding = resolveBinding(widget, datasets, false, masterWindow, ttScope, ttScopeRequired, ttScopeConflict, false)
+      if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
+      const scope = binding.dataset.name === 'TikTok 报表' && ttScope && ttScopeRequired ? tikTokScopeLabel(ttScope) : datasetScopeLabel(binding.dataset, masterWindow)
+      return <DatasetTableBody widget={widget} dataset={binding.dataset} scope={scope} loading={datasetsLoading} />
+    }
+    case 'funnel':
+      return <FunnelBody widget={widget} datasets={datasets} masterWindow={masterWindow} datasetsLoading={datasetsLoading} ttScope={ttScope} ttScopeRequired={ttScopeRequired} ttScopeConflict={ttScopeConflict} />
+    case 'analysis': {
+      const binding = resolveBinding(widget, datasets, Boolean(configStr(widget.config.dimension)), masterWindow, ttScope, ttScopeRequired, ttScopeConflict)
+      if (binding.kind !== 'ok') return <BindingPlaceholder binding={binding} widget={widget} loading={datasetsLoading} />
+      return <DatasetAnalysisBody widget={widget} dataset={binding.dataset} loading={datasetsLoading} />
+    }
     case 'todo':
       return <TodoBody widget={widget} onConfigChange={onConfigChange} />
     case 'link':

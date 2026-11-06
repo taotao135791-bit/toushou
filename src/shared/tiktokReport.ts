@@ -128,8 +128,27 @@ export interface TikTokReportStatus {
   info: TikTokCredentialInfo
 }
 
+export interface TikTokReportWindow { start: string; end: string }
+
+export function isTikTokReportWindow(value: unknown): value is TikTokReportWindow {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const window = value as Record<string, unknown>
+  const validDate = (day: unknown): day is string => typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(`${day}T00:00:00Z`)) && new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) === day
+  return validDate(window.start) && validDate(window.end) && window.start <= window.end && Date.parse(window.end) - Date.parse(window.start) <= 29 * 86_400_000
+}
+
+/** Same completed-day default used by board tool queries; explicit dates win. */
+export function completedTikTokReportWindow(now: number, days = 7): TikTokReportWindow {
+  const end = new Date(now)
+  end.setDate(end.getDate() - 1)
+  const start = new Date(end)
+  start.setDate(start.getDate() - (days - 1))
+  const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  return { start: iso(start), end: iso(end) }
+}
+
 export type TikTokRefreshOutcome =
-  | { ok: true; status: TikTokReportStatus; rowCount: number; truncated: boolean; legacyBackups?: string[] }
+  | { ok: true; status: TikTokReportStatus; rowCount: number; truncated: boolean; legacyBackups?: string[]; window?: TikTokReportWindow }
   | { ok: false; error: string; status: TikTokReportStatus }
 
 /** Main 侧校验失败时的稳定错误码（渲染层用 i18n 映射为可读文案）。 */

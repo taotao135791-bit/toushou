@@ -165,6 +165,8 @@ import { AdsCopyModelStore, MAX_PROVIDERS, validateAdsCopyModelInput, type AdsCo
 import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
+import { refreshBoard } from './boardRefresh'
+import { parseBoardRefreshRequest } from '../shared/boardRefresh'
 import { getUsdRates } from './integrations/tiktok/fxRates'
 import { deleteDataset, importDataset, listDatasets, renameDataset } from './boardDatasets'
 import { readBoardDesign, revealBoardDesign, saveBoardDesign, watchBoardDesign } from './boardDesign'
@@ -257,6 +259,7 @@ import {
 } from './appsflyerConnection'
 import { addMcpConnection, listMcpConnections, removeMcpConnection, testMcpConnection } from './integrations/mcp/McpConnectionStore'
 import { pullAppsFlyerDatasets } from './integrations/appsflyer/appsflyerDataset'
+import { parseAppsFlyerDatasetRefreshRequest } from '../shared/appsflyerDataset'
 import { FeishuCapability, FeishuManualCredentials, McpAddInput } from '../shared/connections'
 import { SessionOriginIndex } from './sessionOrigins'
 
@@ -964,10 +967,10 @@ export function registerIpc() {
   // Master-refresh re-pull for AF dataset cards: explicit window dates only
   // (the renderer derives them from the board's master scope), over the specs
   // the agent recorded when it built the board.
-  ipcMain.handle(IPC_CHANNELS.APPSFLYER_DATASET_REFRESH, async (_event, window: unknown) => {
-    const w = (window ?? {}) as Record<string, unknown>
-    if (typeof w.start !== 'string' || typeof w.end !== 'string') return { ok: false, error: 'invalid-window', results: [] }
-    return pullAppsFlyerDatasets({ window: { start: w.start, end: w.end } })
+  ipcMain.handle(IPC_CHANNELS.APPSFLYER_DATASET_REFRESH, async (_event, raw: unknown) => {
+    const request = parseAppsFlyerDatasetRefreshRequest(raw)
+    if (!request) return { ok: false, error: 'invalid-refresh-request', results: [] }
+    return pullAppsFlyerDatasets({ window: { start: request.start, end: request.end }, datasetIds: request.datasetIds })
   })
 
   // --- TikTok 报表接入（Open API v1.3 → "TikTok 报表" 数据集） -------------
@@ -2672,6 +2675,11 @@ export function registerIpc() {
   ipcMain.handle(IPC_CHANNELS.BOARDS_LIST, async () => {
     return listBoards()
   })
+  ipcMain.handle(IPC_CHANNELS.BOARDS_REFRESH, async (_event, raw: unknown) => {
+    const request = parseBoardRefreshRequest(raw)
+    if (!request) throw new Error('invalid-board-refresh-request')
+    return refreshBoard(request)
+  })
 
   // Ads-copy model pool (Connections page section). Keys are validated,
   // stored encrypted and NEVER returned to the renderer — only the masked
@@ -2816,7 +2824,7 @@ export function registerIpc() {
   // one-use FileGrant from the native picker (or trusted preload's real Finder
   // File extraction), then resolves the id privately for the import.
   ipcMain.handle(IPC_CHANNELS.BOARDS_DATASETS_LIST, async () => {
-    return listDatasets()
+    return listDatasets().filter(dataset => !dataset.appsflyer?.materialization)
   })
 
   ipcMain.handle(IPC_CHANNELS.BOARDS_DATASETS_SELECT_FILE, async (event) => {

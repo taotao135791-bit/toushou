@@ -13,6 +13,8 @@ import { MetaAdsMcpClient } from './integrations/meta/MetaAdsMcpClient'
 import { MetaBoardReadError, readMetaAccounts, readMetaSummary } from './integrations/meta/MetaBoardReader'
 import { isMetaAccountId, isMetaReadingRange, type MetaReadingAccount, type MetaReadingResult, type MetaReadingSummary } from '../shared/metaReading'
 import { boardReadingRangeDates } from '../shared/fbReading'
+import { isBoardDate } from '../shared/boardWindows'
+import { invalidateBoardRefreshSource } from './boardRefresh'
 
 const NAME = 'meta-ads'
 const DEFINITION = { id: NAME, kind: 'oauth' as const, label: 'Meta Ads', description: '连接 Meta Ads MCP（由 Pipeboard 提供），读取已有聚合数据。', capabilities: ['mcp'] }
@@ -100,6 +102,7 @@ function sync(snapshot: MetaAdsConnectionSnapshot): MetaAdsConnectionSnapshot {
   } catch { return unavailable('无法安全更新 Meta Ads 本机连接配置，请检查配置文件与访问权限。') }
 }
 function broadcast(snapshot: MetaAdsConnectionSnapshot): void {
+  if (!snapshot.connected) invalidateBoardRefreshSource('meta')
   projected = snapshot
   for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send(IPC_CHANNELS.META_ADS_STATUS, snapshot)
 }
@@ -136,7 +139,9 @@ let activeReadings = 0
 export async function readMetaBoard(input: unknown): Promise<MetaReadingResult<MetaReadingSummary | { accounts: MetaReadingAccount[]; partial: boolean }>> {
   const query = object(input)
   if (!query || (query.action !== 'accounts' && query.action !== 'summary') || (query.action === 'summary' && (!isMetaAccountId(query.accountId) || !isMetaReadingRange(query.range)))) return { ok: false, error: '请选择有效的 Meta 账户和日期范围。' }
-  if (Object.keys(query).some(key => !(query.action === 'accounts' ? ['action'] : ['action', 'accountId', 'range']).includes(key))) return { ok: false, error: 'Meta 读取参数无效。' }
+  if (Object.keys(query).some(key => !(query.action === 'accounts' ? ['action'] : ['action', 'accountId', 'range', 'window']).includes(key))) return { ok: false, error: 'Meta 读取参数无效。' }
+  const requestedWindow = query.window === undefined ? undefined : object(query.window)
+  if (query.window !== undefined && (!requestedWindow || Object.keys(requestedWindow).some(key => !['start', 'end'].includes(key)) || !isBoardDate(requestedWindow.start) || !isBoardDate(requestedWindow.end) || requestedWindow.start > requestedWindow.end || Date.parse(requestedWindow.end) - Date.parse(requestedWindow.start) > 29 * 86_400_000)) return { ok: false, error: '请选择有效的 Meta 日期范围（最多30天）。' }
   if (activeReadings >= 4) return { ok: false, error: 'Meta 正在读取，请稍后重试。' }
   activeReadings++
   let token: string | undefined
@@ -156,7 +161,7 @@ export async function readMetaBoard(input: unknown): Promise<MetaReadingResult<M
     const account = list.accounts.find(item => item.id === query.accountId)
     if (!account) return { ok: false, error: '所选账户不在本次已授权账户列表内，请重新选择。' }
     const range = query.range as MetaReadingSummary['range']
-    const data = await readMetaSummary(client, account, range, boardReadingRangeDates(range))
+    const data = await readMetaSummary(client, account, range, requestedWindow ? { start: String(requestedWindow.start), end: String(requestedWindow.end) } : boardReadingRangeDates(range))
     const current = await manager.loadFreshCredentials()
     if (current?.accessToken !== token) return { ok: false, error: 'Meta 授权已变化，请重新读取。' }
     return { ok: true, data }

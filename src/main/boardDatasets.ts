@@ -1,9 +1,12 @@
-import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import Papa from 'papaparse'
 import * as XLSX from 'xlsx'
 import { BoardDataset } from '../shared/types'
+import { validateAppsFlyerDatasetState, type AppsFlyerDatasetState } from '../shared/appsflyerDataset'
+import { boardStoragePath } from './boardBuildStorage'
+import { listBoards } from './boards'
+import { boardWidgetDatasetBindings } from '../shared/boardDataWidgets'
 import {
   DATASET_FILE_EXTENSIONS,
   DATASET_LIMITS,
@@ -30,15 +33,37 @@ import {
  */
 
 function defaultDatasetsFile(): string {
-  return path.join(app.getPath('userData'), 'board-datasets.json')
+  return boardStoragePath('board-datasets.json')
+}
+export const DATASET_CACHE_LIMIT = 128
+export const DATASET_STORE_MAX_BYTES = 256 * 1024 * 1024
+const isCache = (dataset: BoardDataset): boolean => !!dataset.appsflyer?.materialization
+/** Only unreachable Main-owned materializations are collected. Base datasets
+ * are never evicted, even when a legacy store exceeds its normal quota. */
+function collectUnusedCaches(datasets: BoardDataset[]): BoardDataset[] {
+  if (!datasets.some(isCache) || !existsSync(boardStoragePath('kanban-boards-v2.json'))) return datasets
+  try {
+    const boards = listBoards()
+    return datasets.filter(dataset => {
+      const slot = dataset.appsflyer?.materialization
+      if (!slot) return true
+      const board = boards.find(item => item.id === slot.boardId)
+      return !!board?.widgets.some(widget => JSON.stringify(widget.dateScope ?? { mode: 'inherit' }) === slot.scopeKey && boardWidgetDatasetBindings(widget).some(binding => {
+        const original = datasets.find(item => item.id === binding.datasetId || item.name === binding.datasetId)
+        return !!original && !isCache(original) && original.id === slot.bindingDatasetId
+      }))
+    })
+  } catch { return datasets }
 }
 
 function readDatasets(file: string): BoardDataset[] {
   let text: string
   try {
+    if (statSync(file).size > DATASET_STORE_MAX_BYTES) throw new Error('dataset-store-too-large')
     text = readFileSync(file, 'utf-8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    if (error instanceof Error && error.message === 'dataset-store-too-large') throw error
     throw new Error('Could not read the local datasets file.')
   }
   let raw: unknown
@@ -59,9 +84,11 @@ function readDatasets(file: string): BoardDataset[] {
 }
 
 export function writeDatasets(file: string = defaultDatasetsFile(), datasets: BoardDataset[]): void {
+  const serialized = JSON.stringify(datasets, null, 2) + '\n'
+  if (Buffer.byteLength(serialized, 'utf8') > DATASET_STORE_MAX_BYTES) throw new Error('dataset-store-too-large')
   mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(datasets, null, 2) + '\n', 'utf-8')
+  writeFileSync(tmp, serialized, 'utf-8')
   renameSync(tmp, file)
 }
 
@@ -69,11 +96,35 @@ export function listDatasets(file: string = defaultDatasetsFile()): BoardDataset
   return readDatasets(file)
 }
 
+/** Keep previous rows on a failed query, while persisting that they are stale. */
+export function updateDatasetAppsFlyerState(
+  id: string,
+  state: AppsFlyerDatasetState,
+  file: string = defaultDatasetsFile()
+): DatasetMutationResult {
+  const validated = validateAppsFlyerDatasetState(state)
+  if (!isValidDatasetId(id) || !validated) return { ok: false, error: 'invalid-dataset' }
+  try {
+    const datasets = readDatasets(file)
+    const index = datasets.findIndex(dataset => dataset.id === id)
+    if (index < 0) return { ok: false, error: 'not-found' }
+    datasets[index] = { ...datasets[index], appsflyer: validated }
+    writeDatasets(file, datasets)
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'dataset-store-unreadable' }
+  }
+}
+
 /** Strict read for migrations: refuse invalid rows rather than dropping them. */
 export function listDatasetsStrict(file: string = defaultDatasetsFile()): BoardDataset[] {
   let text: string
-  try { text = readFileSync(file, 'utf8') } catch (error) {
+  try {
+    if (statSync(file).size > DATASET_STORE_MAX_BYTES) throw new Error('dataset-store-too-large')
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    if (error instanceof Error && error.message === 'dataset-store-too-large') throw error
     throw new Error('Could not read the local datasets file.')
   }
   let raw: unknown
@@ -227,7 +278,8 @@ export function importDatasetBuffer(
     typeof asName === 'string' && asName.trim() && !/[\x00-\x1f\x7f]/.test(asName)
       ? asName.trim().slice(0, DATASET_LIMITS.maxNameLength)
       : null
-  if (datasets.length >= DATASET_LIMITS.maxDatasets) {
+  if (explicitName && datasets.some(dataset => dataset.name === explicitName && isCache(dataset))) return { ok: false, error: 'invalid-name' }
+  if (datasets.filter(dataset => !isCache(dataset)).length >= DATASET_LIMITS.maxDatasets) {
     // A replace-by-name import removes one entry before adding — it must not
     // hit the cap (the agent's「TikTok 报表」fill flow relies on this).
     const replaces = explicitName !== null && datasets.some((dataset) => dataset.name === explicitName)
@@ -268,7 +320,8 @@ export function importDatasetBuffer(
 export function createOrUpdateDataset(
   name: unknown,
   built: BuiltDataset,
-  file: string = defaultDatasetsFile()
+  file: string = defaultDatasetsFile(),
+  options: { replaceId?: string; appsflyer?: BoardDataset['appsflyer'] } = {}
 ): DatasetImportResult {
   if (!isValidDatasetName(name)) return { ok: false, error: 'invalid-name' }
   if (built.columns.length === 0) return { ok: false, error: 'empty' }
@@ -278,18 +331,24 @@ export function createOrUpdateDataset(
   } catch {
     return { ok: false, error: 'dataset-store-unreadable' }
   }
-  const index = datasets.findIndex((d) => d.name === name)
-  if (index < 0 && datasets.length >= DATASET_LIMITS.maxDatasets) {
+  const internal = !!options.appsflyer?.materialization
+  if (internal) datasets = collectUnusedCaches(datasets)
+  const index = datasets.findIndex((d) => options.replaceId ? d.id === options.replaceId : d.name === name)
+  if (options.replaceId && index < 0) return { ok: false, error: 'not-found' }
+  if (index >= 0 && isCache(datasets[index]) !== internal) return { ok: false, error: 'invalid-name' }
+  if (index < 0 && internal && datasets.filter(isCache).length >= DATASET_CACHE_LIMIT) return { ok: false, error: 'dataset-cache-limit' }
+  if (index < 0 && !internal && datasets.filter(dataset => !isCache(dataset)).length >= DATASET_LIMITS.maxDatasets) {
     return { ok: false, error: 'dataset-limit' }
   }
   const dataset: BoardDataset = {
     // Replace-by-name keeps the existing id/createdAt so widget bindings that
     // reference the dataset id survive a refresh.
     id: index >= 0 ? datasets[index].id : crypto.randomUUID(),
-    name: name as string,
+    name: options.replaceId && index >= 0 ? datasets[index].name : name as string,
     columns: built.columns,
     rows: built.rows,
-    createdAt: index >= 0 ? datasets[index].createdAt : Date.now()
+    createdAt: index >= 0 ? datasets[index].createdAt : Date.now(),
+    ...(options.appsflyer ? { appsflyer: options.appsflyer } : {})
   }
   const next =
     index >= 0

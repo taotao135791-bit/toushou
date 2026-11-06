@@ -23,6 +23,8 @@ import { validGoogleReportUrl } from './googleReport'
 import { parseTikTokAdvertiserIdList, TIKTOK_ADVERTISER_ID_LIMIT, TIKTOK_ADVERTISER_LIST_MAX_LENGTH } from './tiktokReport'
 import { validateReadingSnapshot } from './readingSnapshot'
 import { validateReadingModuleSpec } from './readingModules'
+import { validateDataTableConfig, validateFunnelConfig, validateAnalysisConfig } from './boardDataWidgets'
+import { validateWidgetDateScope } from './boardWindows'
 import {
   FB_READING_SUMMARY_ACCOUNT_LIMIT,
   FB_READING_SUMMARY_METRICS,
@@ -76,6 +78,9 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'gauge',
   'chart-line',
   'chart-bar',
+  'table',
+  'funnel',
+  'analysis',
   'todo',
   'link',
   'file'
@@ -108,6 +113,9 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   gauge: { w: 3, h: 3 },
   'chart-line': { w: 6, h: 4 },
   'chart-bar': { w: 6, h: 4 },
+  table: { w: 12, h: 7 },
+  funnel: { w: 8, h: 5 },
+  analysis: { w: 6, h: 4 },
   todo: { w: 4, h: 5 },
   link: { w: 3, h: 2 },
   file: { w: 12, h: 12 }
@@ -119,17 +127,13 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
       return { showSeconds: true }
     case 'fb-reading':
       return {
-        account: '三国IOS',
-        act: FB_READING_ACCOUNT_TARGETS['三国IOS'].act,
-        businessId: FB_READING_ACCOUNT_TARGETS['三国IOS'].businessId,
+        account: '',
         range: 'last7',
         metrics: ['spend', 'balance', 'cpi']
       }
     case 'fb-reading-summary':
       return {
-        accounts: FB_READING_ACCOUNT_TARGETS['三国IOS']
-          ? [{ ...FB_READING_ACCOUNT_TARGETS['三国IOS'], alias: '三国IOS' }]
-          : [],
+        accounts: [],
         range: 'last7',
         metrics: ['spend', 'balance', 'cpi', 'cpm']
       }
@@ -157,6 +161,12 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
     case 'chart-line':
     case 'chart-bar':
       return { points: [3, 5, 4, 7, 6, 9, 8], labels: [] }
+    case 'table':
+      return { source: 'dataset', datasetId: '', pageSize: 20 }
+    case 'funnel':
+      return { source: 'dataset', stages: [] }
+    case 'analysis':
+      return { source: 'dataset', datasetId: '', metric: '', op: 'sum' }
     case 'todo':
       return { items: [] }
     case 'link':
@@ -935,6 +945,12 @@ function validateWidgetConfig(
       if (!validateSourceBranch(raw, config, false)) return null
       return config
     }
+    case 'table':
+      return validateDataTableConfig(raw)
+    case 'funnel':
+      return validateFunnelConfig(raw)
+    case 'analysis':
+      return validateAnalysisConfig(raw)
     case 'gauge': {
       const config: Record<string, unknown> = {}
       if (raw.value !== undefined) {
@@ -1050,7 +1066,13 @@ function validateWidgetConfig(
         metrics.push(metric)
       }
       const alias = typeof raw.account === 'string' ? raw.account.trim() : ''
-      if (!alias || alias.length > BOARD_LIMITS.maxWidgetTitleLength) return null
+      if (alias.length > BOARD_LIMITS.maxWidgetTitleLength) return null
+      // A new module is explicitly unbound. Never select an unrelated saved
+      // client merely to make the placeholder pass validation.
+      if (!alias) {
+        if ((raw.act != null && raw.act !== '') || (raw.businessId != null && raw.businessId !== '')) return null
+        return { account: '', range, metrics, ...(raw.independent === true ? { independent: true } : {}) }
+      }
       if (isValidFbReadingAct(raw.act) && isValidFbReadingBusinessId(raw.businessId ?? null)) {
         const config: Record<string, unknown> = {
           account: alias, act: raw.act, businessId: raw.businessId ?? null, range, metrics
@@ -1080,7 +1102,7 @@ function validateWidgetConfig(
         }
         metrics.push(metric)
       }
-      if (!Array.isArray(raw.accounts) || raw.accounts.length === 0 || raw.accounts.length > FB_READING_SUMMARY_ACCOUNT_LIMIT) {
+      if (!Array.isArray(raw.accounts) || raw.accounts.length > FB_READING_SUMMARY_ACCOUNT_LIMIT) {
         return null
       }
       const accounts: FbReadingAccountRef[] = []
@@ -1149,7 +1171,9 @@ function validateWidget(raw: unknown): BoardWidget | null {
   const config = validateWidgetConfig(w.type as WidgetType, (w.config ?? {}) as Record<string, unknown>)
   if (!config) return null
   const style = validateBoardWidgetStyle(w.style)
-  return { id: w.id, type: w.type as WidgetType, title: w.title, layout, config, ...(style ? { style } : {}) }
+  const dateScope = w.dateScope === undefined ? undefined : validateWidgetDateScope(w.dateScope)
+  if (dateScope === null) return null
+  return { id: w.id, type: w.type as WidgetType, title: w.title, layout, config, ...(style ? { style } : {}), ...(dateScope ? { dateScope } : {}) }
 }
 
 /**
@@ -1163,7 +1187,7 @@ function validateWidget(raw: unknown): BoardWidget | null {
  * Master scope: the union date window + metric domain of the reading modules.
  * Invalid shapes are dropped (non-strict callers keep the board).
  */
-function validateMasterScope(raw: unknown): BoardMasterScope | null {
+export function validateMasterScope(raw: unknown): BoardMasterScope | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const m = raw as Record<string, unknown>
   if (
@@ -1216,6 +1240,7 @@ export function ttWindowForMasterRange(range: BoardMasterScope['range']): string
  */
 export function applyMasterScope(widget: BoardWidget, master: BoardMasterScope): BoardWidget {
   if (!MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)) return widget
+  if (widget.dateScope && widget.dateScope.mode !== 'inherit') return widget
   const config: Record<string, unknown> = { ...widget.config }
   delete config.independent
   if (widget.type === 'tt-reading') {

@@ -246,7 +246,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           {includeBalance && (
             <button
               onClick={() => void refreshBalance()}
-              disabled={busy || balanceBusy || inChat}
+              disabled={busy || balanceBusy || inChat || !accountRef}
               title={inChat ? t('boards.reading.inChat') : undefined}
               className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
             >
@@ -258,7 +258,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
           )}
           <button
             onClick={() => void refresh()}
-            disabled={busy || balanceBusy || inChat}
+            disabled={busy || balanceBusy || inChat || !accountRef}
             title={inChat ? t('boards.reading.inChat') : undefined}
             className="flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[10.5px] text-cream-dim transition hover:border-accent/50 hover:text-cream disabled:opacity-40"
           >
@@ -298,7 +298,7 @@ export function FbReadingBody({ widget }: { widget: BoardWidget }) {
             </div>
           )}
           <div className="flex flex-1 items-center justify-center px-2 text-center text-[11px] leading-5 text-cream-faint">
-            {t('boards.reading.noData')}
+            {t(accountRef ? 'boards.reading.noData' : 'boards.reading.summary.noAccounts')}
           </div>
         </>
       ) : (

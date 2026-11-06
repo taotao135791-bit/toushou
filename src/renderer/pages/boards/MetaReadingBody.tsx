@@ -4,8 +4,10 @@ import type { BoardWidget } from '@shared/types'
 import { isMetaReadingRange, type MetaReadingAccount, type MetaReadingSummary } from '@shared/metaReading'
 import { useAppStore } from '../../store'
 import { publishMetaReading } from './metaReadingStore'
+import type { BoardRefreshStatus } from '@shared/boardRefresh'
 
-export function MetaReadingBody({ widget, onConfigChange }: { widget: BoardWidget; onConfigChange: (config: Record<string, unknown>) => void }) {
+export interface ManagedMetaReading { status: BoardRefreshStatus | 'pending'; summary?: MetaReadingSummary; accounts?: MetaReadingAccount[]; partial?: boolean; error?: string }
+export function MetaReadingBody({ widget, onConfigChange, managedReading, onManagedRefresh }: { widget: BoardWidget; onConfigChange: (config: Record<string, unknown>) => void; managedReading?: ManagedMetaReading; onManagedRefresh?: () => void }) {
   const zh = useAppStore(state => state.language) === 'zh'
   const accountId = typeof widget.config.accountId === 'string' ? widget.config.accountId : ''
   const range = isMetaReadingRange(widget.config.range) ? widget.config.range : 'last7'
@@ -16,7 +18,20 @@ export function MetaReadingBody({ widget, onConfigChange }: { widget: BoardWidge
   const [busy, setBusy] = useState(false)
   const [partial, setPartial] = useState(false)
   const version = useRef(0)
+  const managed = managedReading !== undefined
+  const refreshManaged = useRef(onManagedRefresh); refreshManaged.current = onManagedRefresh
+  useEffect(() => {
+    if (!managedReading) return
+    const data = managedReading.status === 'updated' || managedReading.status === 'empty' ? managedReading.summary ?? null : null
+    setSummary(data); publishMetaReading(widget.id, data)
+    setBusy(managedReading.status === 'pending')
+    const error = managedReading.error
+    setError(error === 'source-selection-required' ? '' : error && ['meta-read-failed', 'meta-source-scope-mismatch', 'meta-accounts-unavailable', 'meta-source-reader-missing', 'unsupported-query-window'].includes(error) ? (zh ? 'Meta 读取未完成，请核对账户和日期后重试。' : 'Meta reading did not complete. Check the account and dates, then retry.') : error ?? '')
+    if (managedReading.accounts) setAccounts(managedReading.accounts)
+    setPartial(managedReading.partial === true)
+  }, [managedReading, widget.id, zh])
   const load = useCallback(async () => {
+    if (managed && accountId) { refreshManaged.current?.(); return }
     const ticket = ++version.current
     setBusy(true); setError(''); setSummary(null); publishMetaReading(widget.id, null)
     try {
@@ -27,20 +42,22 @@ export function MetaReadingBody({ widget, onConfigChange }: { widget: BoardWidge
       else { setSummary(result.data); publishMetaReading(widget.id, result.data) }
     } catch { if (ticket === version.current) setError(zh ? 'Meta 读取失败，请重试。' : 'Meta reading failed. Retry.') }
     finally { if (ticket === version.current) setBusy(false) }
-  }, [accountId, range, widget.id, zh])
+  }, [accountId, range, widget.id, zh, managed])
   useEffect(() => {
+    if (managed) return () => { ++version.current; publishMetaReading(widget.id, null) }
     setSummary(null); publishMetaReading(widget.id, null)
-    if (accountId) void load()
+    if (accountId && !managed) void load()
     return () => { ++version.current; publishMetaReading(widget.id, null) }
-  }, [load, accountId, widget.id])
+  }, [load, accountId, widget.id, managed])
   useEffect(() => {
+    if (managed) return
     const refresh = (event: Event) => {
       if ((event as CustomEvent).detail?.widgetId !== widget.id) return
       void load().finally(() => window.dispatchEvent(new CustomEvent('meta-reading:module-done', { detail: { widgetId: widget.id } })))
     }
     window.addEventListener('meta-reading:board-refresh', refresh)
     return () => window.removeEventListener('meta-reading:board-refresh', refresh)
-  }, [load, widget.id])
+  }, [load, widget.id, managed])
   useEffect(() => window.electronAPI.onMetaAdsStatus(status => {
     if (!status.connected) { ++version.current; setSummary(null); setAccounts([]); setBusy(false); publishMetaReading(widget.id, null); setError(zh ? 'Meta 已断开，请在连接页重新授权。' : 'Meta disconnected. Reconnect in Connections.') }
   }), [widget.id, zh])
@@ -51,7 +68,7 @@ export function MetaReadingBody({ widget, onConfigChange }: { widget: BoardWidge
   const values = [summary?.account.currency ? format(spend) : '—', format(impressions), format(clicks), impressions && clicks !== null ? `${format(clicks / impressions * 100)}%` : '—', spend !== null && clicks ? format(spend / clicks) : '—', spend !== null && impressions ? format(spend / impressions * 1000) : '—']
   return <div className="flex h-full flex-col gap-3 overflow-auto text-[12px] text-cream-dim">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <div><p>{(summary?.account.name ?? accountId) || (zh ? '请选择已授权的 Meta 广告账户' : 'Select an authorized Meta ad account')}</p><p className="text-cream-faint">{rangeLabel} · {summary?.start ?? '—'} ~ {summary?.end ?? '—'}{summary?.account.currency ? ` · ${summary.account.currency}` : ''}</p></div>
+      <div><p>{(summary?.account.name ?? accountId) || (zh ? '请选择已授权的 Meta 广告账户' : 'Select an authorized Meta ad account')}</p><p className="text-cream-faint">{managed && widget.dateScope?.mode === 'lookback' ? (zh ? `近${widget.dateScope.days}天` : `Last ${widget.dateScope.days} days`) : managed && widget.dateScope?.mode === 'absolute' ? (zh ? '指定日期' : 'Custom dates') : rangeLabel} · {summary?.start ?? '—'} ~ {summary?.end ?? '—'}{summary?.account.currency ? ` · ${summary.account.currency}` : ''}</p></div>
       <button className="focus-ring flex items-center gap-1 rounded-full border border-line px-3 py-1.5 disabled:opacity-50" disabled={busy} onClick={() => void load()}><RefreshCw size={12} />{busy ? (zh ? '读取中…' : 'Loading…') : accountId ? (zh ? '刷新' : 'Refresh') : (zh ? '加载账户' : 'Load accounts')}</button>
     </div>
     <div className="flex items-center gap-2">

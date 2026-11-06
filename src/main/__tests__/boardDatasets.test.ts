@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import * as XLSX from 'xlsx'
@@ -12,7 +12,9 @@ vi.mock('electron', () => ({
   app: { getPath: () => userDataDir }
 }))
 
-import { deleteDataset, importDataset, importDatasetBuffer, listDatasets, listDatasetsStrict, renameDataset } from '../boardDatasets'
+import { createOrUpdateDataset, DATASET_CACHE_LIMIT, DATASET_STORE_MAX_BYTES, deleteDataset, importDataset, importDatasetBuffer, listDatasets, listDatasetsStrict, renameDataset, writeDatasets } from '../boardDatasets'
+import { saveBoard } from '../boards'
+import { createWidget } from '../../shared/boards'
 import { DATASET_LIMITS } from '../../shared/datasets'
 import { BoardDataset } from '../../shared/types'
 
@@ -46,6 +48,45 @@ function makeDataset(id: string): BoardDataset {
     createdAt: 1000
   }
 }
+
+describe('Main-owned materialization quota', () => {
+  const state = (boardId: string, bindingDatasetId: string): NonNullable<BoardDataset['appsflyer']> => ({ specId: 'synthetic-spec', status: 'updated', window: { start: '2026-11-05', end: '2026-11-05' }, dataWindow: { start: '2026-11-05', end: '2026-11-05' }, attemptedAt: 1, materialization: { boardId, bindingDatasetId, scopeKey: '{"mode":"inherit"}' } })
+  const bind = (id: string, datasetId: string, empty = false) => saveBoard({ id, name: id, createdAt: 1, updatedAt: 1, widgets: empty ? [] : [createWidget('table', 'Synthetic', { x: 0, y: 0 }, { source: 'dataset', datasetId })] })
+  it('keeps all 20 base datasets and refreshes internal slots using a separate quota', () => {
+    const base = Array.from({ length: DATASET_LIMITS.maxDatasets }, (_, i) => makeDataset(`base-${i}`))
+    writeDatasets(file, base)
+    expect(bind('owner', base[0].id).ok).toBe(true)
+    const cache = createOrUpdateDataset('Internal cache', { columns: base[0].columns, rows: [[7]], truncated: false }, file, { appsflyer: state('owner', base[0].id) })
+    expect(cache.ok).toBe(true)
+    if (!cache.ok) throw new Error(cache.error)
+    expect(createOrUpdateDataset('Internal cache', { columns: base[0].columns, rows: [[9]], truncated: false }, file, { replaceId: cache.dataset.id, appsflyer: state('owner', base[0].id) })).toMatchObject({ ok: true, dataset: { id: cache.dataset.id, rows: [[9]] } })
+    expect(listDatasets(file).filter(dataset => !dataset.appsflyer?.materialization)).toEqual(base)
+    expect(createOrUpdateDataset('Base 21', { columns: base[0].columns, rows: [[2]], truncated: false }, file)).toMatchObject({ ok: false, error: 'dataset-limit' })
+    expect(importDatasetBuffer('new.csv', Buffer.from('n\n3'), file, 'Internal cache')).toMatchObject({ ok: false, error: 'invalid-name' })
+    expect(listDatasetsStrict(file)).toHaveLength(21)
+  })
+  it('collects only unreachable cache slots and never evicts base data at the internal limit', () => {
+    const base = makeDataset('base')
+    expect(bind('owner', base.id).ok).toBe(true)
+    const caches = Array.from({ length: DATASET_CACHE_LIMIT }, (_, i) => ({ ...makeDataset(`cache-${i}`), appsflyer: state('owner', base.id) }))
+    writeDatasets(file, [base, ...caches])
+    const before = readFileSync(file, 'utf8')
+    expect(createOrUpdateDataset('Cache overflow', { columns: base.columns, rows: [[4]], truncated: false }, file, { appsflyer: state('owner', base.id) })).toMatchObject({ ok: false, error: 'dataset-cache-limit' })
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(bind('owner', base.id, true).ok).toBe(true)
+    expect(bind('new-owner', base.id).ok).toBe(true)
+    expect(createOrUpdateDataset('Current slot', { columns: base.columns, rows: [[4]], truncated: false }, file, { appsflyer: state('new-owner', base.id) }).ok).toBe(true)
+    expect(listDatasets(file)).toHaveLength(2)
+    expect(listDatasets(file)[0]).toEqual(base)
+    expect(listDatasets(file)[1].appsflyer?.materialization?.boardId).toBe('new-owner')
+  })
+  it('rejects an oversized store before reading it and preserves its bytes', () => {
+    writeFileSync(file, '')
+    truncateSync(file, DATASET_STORE_MAX_BYTES + 1)
+    expect(() => listDatasets(file)).toThrow()
+    expect(() => listDatasetsStrict(file)).toThrow('dataset-store-too-large')
+  })
+})
 
 describe('listDatasets', () => {
   it('returns an empty list only when the file is missing and surfaces corrupt stores', () => {

@@ -7,6 +7,7 @@ import { projectChatTurns, type ChatTurn } from '../lib/chatFlow'
 import { CheckpointInfo } from '@shared/types'
 import BoardChatPreview, { boardPreviewReference, groupBoardPreviews } from './BoardChatPreview'
 import TurnProcess from './TurnProcess'
+import SavedBoardDelivery, { groupSavedBoards, savedBoardReference } from './SavedBoardDelivery'
 
 interface MessageListProps {
   messages: MessageLike[]
@@ -61,6 +62,13 @@ const ChatTurnView = memo(function ChatTurnView({ turn, sessionId, streaming, el
     const reference = message.toolCall && boardPreviewReference(message.toolCall)
     return reference ? [reference] : []
   })), [turn])
+  const savedBoards = useMemo(() => {
+    const previews = new Set(references.map(reference => reference.boardId))
+    return groupSavedBoards(turn.entries.flatMap(({ message }) => {
+      const reference = message.toolCall && savedBoardReference(message.toolCall)
+      return reference && !previews.has(reference.boardId) ? [reference] : []
+    }))
+  }, [turn, references])
   const lastProcess = turn.nodes.findLastIndex(node => node.kind === 'process')
   return <section className="min-w-0 space-y-4" data-chat-turn={turn.id}>
     {turn.nodes.map((node, index) => node.kind === 'message' ?
@@ -72,6 +80,7 @@ const ChatTurnView = memo(function ChatTurnView({ turn, sessionId, streaming, el
         elapsedMs={!streaming && index === lastProcess ? elapsedMs : undefined} />
     )}
     {sessionId && references.map(group => <BoardChatPreview key={`${sessionId}-${group.boardId}`} sessionId={sessionId} boardId={group.boardId} widgetId={group.widgetIds[0]} widgetIds={group.widgetIds} revision={group.revision} />)}
+    {sessionId && savedBoards.map(reference => <SavedBoardDelivery key={`${sessionId}-${reference.boardId}`} sessionId={sessionId} reference={reference} />)}
     {checkpoint && turn.entries.length > 1 && !streaming && <TurnChangesRow sessionId={sessionId} checkpointId={checkpoint.id} />}
   </section>
 })

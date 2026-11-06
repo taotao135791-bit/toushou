@@ -31,6 +31,13 @@ let downloadedUnsignedUpdate: { version: string; extractedApp: string; extractDi
 
 const INITIAL_CHECK_DELAY_MS = 10_000
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+const isBetaBuild = () => process.env.TOUSHOU_RELEASE_CHANNEL === 'beta' || /-beta\.\d+(?:$|\+)/.test(app.getVersion())
+
+function betaManualUpdate(operation: 'check' | 'download' | 'install'): UpdaterStatus {
+  const status: UpdaterStatus = { status: 'error', message: 'Beta 请通过测试版发布页下载安装，不接收正式版自动更新。', operation }
+  setStatus(status)
+  return status
+}
 
 function setStatus(status: UpdaterStatus): void {
   currentStatus = status
@@ -303,6 +310,14 @@ export function initUpdater(): void {
   if (initialized || !app.isPackaged) return
   initialized = true
 
+  // The stable updater has platform-specific stable URLs/install paths. Beta
+  // remains manual-only until it has a separately verified update protocol.
+  if (isBetaBuild()) {
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = false
+    return
+  }
+
   useUnsignedMacUpdater = isAdHocMacBuild()
   autoUpdater.autoDownload = false
   // Installing is an explicit in-app action. Do not silently replace the app
@@ -347,6 +362,7 @@ export function initUpdater(): void {
 /** IPC calls are manual; launch/periodic checks opt into silent operation. */
 export async function updaterCheck(manual = true): Promise<UpdaterStatus> {
   if (!app.isPackaged) return { status: 'dev' }
+  if (isBetaBuild()) return manual ? betaManualUpdate('check') : currentStatus
   if (currentStatus.status === 'downloading' ||
       currentStatus.status === 'progress' ||
       currentStatus.status === 'downloaded') return currentStatus
@@ -403,6 +419,7 @@ export async function updaterCheck(manual = true): Promise<UpdaterStatus> {
 /** Download the available update; progress arrives as updater:status events. */
 export async function updaterDownload(): Promise<UpdaterStatus> {
   if (!app.isPackaged) return { status: 'dev' }
+  if (isBetaBuild()) return betaManualUpdate('download')
   if (currentStatus.status === 'downloading' || currentStatus.status === 'progress' || currentStatus.status === 'downloaded') return currentStatus
   downloadGeneration += 1
   if (useUnsignedMacUpdater) return unsignedMacDownload()
@@ -421,6 +438,7 @@ export async function updaterDownload(): Promise<UpdaterStatus> {
 
 export function updaterQuitAndInstall(): void {
   if (!app.isPackaged) return
+  if (isBetaBuild()) { betaManualUpdate('install'); return }
   installRequested = true
   try {
     if (useUnsignedMacUpdater) scheduleUnsignedMacInstall()
@@ -438,7 +456,8 @@ export function updaterQuitAndInstall(): void {
  * to install).
  */
 export async function updaterOpenReleasePage(): Promise<void> {
-  await shell.openExternal('https://github.com/taotao135791-bit/toushou/releases/latest')
+  const destination = isBetaBuild() ? `https://github.com/taotao135791-bit/toushou/releases/tag/beta-v${encodeURIComponent(app.getVersion())}` : 'https://github.com/taotao135791-bit/toushou/releases/latest'
+  await shell.openExternal(destination)
 }
 
 // ---------------------------------------------------------------------------

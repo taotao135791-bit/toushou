@@ -76,7 +76,7 @@ export function metaDailyRows(payload: Obj, accountId: string): unknown[] {
 /** One selected account, daily account-level rows, bounded cursor pagination; incomplete results never become a summary. */
 export async function readMetaSummary(client: Client, account: MetaReadingAccount, range: MetaReadingRange, window?: { start: string; end: string }): Promise<MetaReadingSummary> {
   if (!isMetaAccountId(account.id) || !isMetaReadingRange(range)) throw new MetaBoardReadError('请选择有效的 Meta 账户和日期范围。')
-  if (window && (!date(window.start) || !date(window.end) || window.start > window.end)) throw new MetaBoardReadError('请选择有效的 Meta 日期范围。')
+  if (window && (!date(window.start) || !date(window.end) || window.start > window.end || Date.parse(window.end) - Date.parse(window.start) > 29 * 86_400_000)) throw new MetaBoardReadError('请选择有效的 Meta 日期范围。')
   const rows: MetaReadingSummary['rows'] = []
   const seen = new Set<string>()
   const days = new Set<string>()
@@ -94,7 +94,7 @@ export async function readMetaSummary(client: Client, account: MetaReadingAccoun
     const paging = object(payload.paging)
     if (!paging?.next) {
       rows.sort((a, b) => a.date.localeCompare(b.date))
-      const maxDays = range === 'last30' ? 30 : range === 'last7' ? 7 : range === 'last3' ? 3 : 1
+      const maxDays = window ? (Date.parse(window.end) - Date.parse(window.start)) / 86_400_000 + 1 : range === 'last30' ? 30 : range === 'last7' ? 7 : range === 'last3' ? 3 : 1
       if (rows.length && (Date.parse(rows.at(-1)!.date) - Date.parse(rows[0].date)) / 86400000 >= maxDays) throw new MetaBoardReadError('Meta 返回的日期范围与请求不匹配。')
       return { account, range, rows, readAt: Date.now(), start: window?.start ?? rows[0]?.date ?? null, end: window?.end ?? rows.at(-1)?.date ?? null }
     }

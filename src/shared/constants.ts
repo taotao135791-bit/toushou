@@ -68,6 +68,7 @@ export const IPC_CHANNELS = {
   STORE_GET: 'store:get',
   STORE_SET: 'store:set',
   BOARDS_LIST: 'boards:list',
+  BOARDS_REFRESH: 'boards:refresh',
   BOARDS_SAVE: 'boards:save',
   READING_SNAPSHOT_SAVE: 'readings:save-snapshot',
   READING_SNAPSHOT_EXPORT: 'readings:export-snapshot',

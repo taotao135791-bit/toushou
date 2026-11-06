@@ -42,13 +42,13 @@ describe('TikTok toolkit compatibility and failure guidance', () => {
     vi.stubGlobal('fetch', fetchMock)
     for (const name of ['toushou_tiktok_update', 'touhou_tiktok_update']) {
       const tool = tools.find(candidate => candidate.name === name)!
-      const result = await tool.execute('call', { advertiserId: '1234567890123456789', action: 'tiktok_status' })
+      const result = await tool.execute('call', { advertiserId: '1234567890123456789', startDate: '2026-10-01', endDate: '2026-10-07', action: 'tiktok_status' })
       expect(JSON.parse(result.content[0].text)).toEqual(denial)
     }
     expect(fetchMock).toHaveBeenCalledTimes(2)
     for (const call of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
       expect(call[0]).toBe('http://127.0.0.1:9999/synthetic-session')
-      expect(JSON.parse(call[1].body as string)).toEqual({ advertiserId: '1234567890123456789', action: 'tiktok_update' })
+      expect(JSON.parse(call[1].body as string)).toEqual({ advertiserId: '1234567890123456789', startDate: '2026-10-01', endDate: '2026-10-07', action: 'tiktok_update' })
     }
   })
 

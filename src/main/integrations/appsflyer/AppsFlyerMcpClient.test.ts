@@ -4,6 +4,15 @@ import { AppsFlyerMcpClient, parseApps, parseEvents, eventQueryArguments } from 
 const query = { appId: 'com.example.demo', eventName: 'demo_event', startDate: '2026-11-01', endDate: '2026-11-02' }
 const fixture = '## Data: Count days activity appsflyer,Unique users days activity appsflyer,Installs appsflyer,Campaign ID,Campaign,Media source,Date\n2,1,1.0,1234567890123456789,Demo,tiktokglobal_int,2026-11-01\n## Metadata: {"timezone":"UTC","currency":"USD","Count_days_activity_appsflyer":{"partial-data?":false,"filters":{"event-name":["demo_event"]}}}'
 describe('AppsFlyer aggregation', () => {
+  it('keeps arbitrary custom event selectors and limits discovery to known built-ins', () => {
+    expect(() => eventQueryArguments({ ...query, startDate: '2026-02-31' })).toThrow('invalid-query')
+    for (const eventName of ['custom_checkout', 'Register', 'demo_event', 'af_purchase']) {
+      expect(eventQueryArguments({ ...query, eventName })).toMatchObject({ query: { in_app_event: [eventName], groupings: ['Campaign ID', 'Campaign', 'Media source', 'Date'] } })
+    }
+    for (const eventName of ['App Active', 'Install', 'Session']) {
+      expect(eventQueryArguments({ ...query, eventName })).toMatchObject({ query: { in_app_event: [], groupings: ['Event name', 'Media source', 'Date', 'Campaign ID'] } })
+    }
+  })
   it('keeps long campaign IDs and original date/timezone semantics', () => { const [r] = parseEvents(fixture, query); expect(r).toMatchObject({ appId: query.appId, campaignId: '1234567890123456789', count: 2, uniqueUsers: 1, day: '2026-11-01', timezone: 'UTC', metricBasis: 'activity', partial: null }) })
   it('parses the official semicolon metadata separator without adding a CSV row', () => {
     const providerFormat = fixture.replace('\n## Metadata:', '\r\n  ; ## Metadata:')
@@ -48,9 +57,24 @@ describe('AppsFlyer aggregation', () => {
     expect(payloads[3].query).toMatchObject({ row_count: 25, groupings: [], in_app_event: [], filters: {}, sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }] })
     await c.queryRaw({ query: { ...minimal.query, row_count: null, groupings: null, in_app_event: null, filters: null, sort_by_metrics: null } })
     expect(payloads[4].query).toEqual(payloads[3].query)
+    await c.queryRaw({ query: { ...minimal.query, filters: { Geo: ['all'], 'Media source': ['tiktokglobal_int'] } } })
+    expect(payloads[5].query).toMatchObject({ filters: { 'Media source': ['tiktokglobal_int'] } })
+    expect((payloads[5].query as Record<string, unknown>).filters).not.toHaveProperty('Geo')
+    await expect(c.queryRaw({ query: { ...minimal.query, filters: { Geo: ['all', 'SG'] } } })).rejects.toThrow('invalid-query')
     await expect(c.queryRaw({ query: { ...minimal.query, row_count: 301 } })).rejects.toThrow('invalid-query')
     await expect(c.queryRaw({ query: { ...minimal.query, filters: 'invalid' } })).rejects.toThrow('invalid-query')
     const args = eventQueryArguments(query); (args.query as Record<string, unknown>).app_ids = ['one', 'two']
     await expect(c.queryRaw(args)).rejects.toThrow('invalid-query')
+  })
+  it('rejects provider validation text even when tools/call reports isError=false', async () => {
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      const p = JSON.parse(String(init?.body))
+      if (!('id' in p)) return new Response(null, { status: 202 })
+      const result = p.method === 'initialize' ? { protocolVersion: '2025-03-26' } : p.method === 'tools/list' ? { tools: [{ name: 'analytics_fetch_aggregated_data' }] } : { isError: false, structuredContent: { data: 'The following metrics have validation errors:\n- Count: Metric Count is an in-app metric, try to use it with in-app event' } }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: p.id, result }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    const client = new AppsFlyerMcpClient('synthetic-token', fetcher)
+    await client.initialize()
+    await expect(client.queryRaw(eventQueryArguments(query))).rejects.toThrow('appsflyer-query-validation-error')
   })
 })

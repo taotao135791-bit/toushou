@@ -79,9 +79,10 @@ on read and write; renderer state is never trusted as persistence input.
 - title alignment and shadow are small enums;
 - board canvas supports only hex background plus `none`, `dots`, or `lines`.
 
-Malformed cosmetic input is dropped while the valid widget/board data stays
-usable. This supports substantial visual customization without allowing a
-board JSON file to inject CSS, URLs, scripts, or renderer code.
+Malformed cosmetic fields in stored board documents are dropped while the
+valid widget/board data stays usable. Conversational style commands instead
+reject invalid tokens or unknown fields before saving the whole operation.
+Neither path allows CSS, URLs, scripts, or renderer code through style fields.
 
 When adding a new widget type, update together:
 
@@ -99,10 +100,130 @@ The integration is explicit in both directions.
 | Board → chat | **Ask agent** builds a bounded composer draft from board metadata, widget summaries, and dataset schemas, then navigates to chat. | It does not auto-send. Dataset rows and note bodies are excluded; the person can inspect/edit the draft. |
 | Chat → board | An assistant reply offers **Add to board**. The person selects a board and confirms a note title before the reply is added as a note widget. | Assistant text never mutates a board by itself. The latest board is re-read before saving to avoid a stale-dialog overwrite. |
 
-Do not introduce an opaque prompt parser that lets an assistant silently create
-widgets, bind datasets, alter style, or delete boards. If a future structured
-board-plan protocol is needed, it needs a versioned schema, a preview/diff,
-per-operation confirmation, validation in Main, and fixture tests first.
+Plain assistant text is not a mutation protocol. The explicit fence proposals
+below still require their Apply action. Separately, the bundled boards toolkit
+can perform structured local-board operations through the loopback bridge,
+subject to Main validation and the current session's write authority. A user's
+already authorized board request does not require a second confirmation merely
+because the assistant uses this tool path. Readonly sessions cannot apply it.
+
+### 4.1 Candidate: conversational generation and customization
+
+The trusted Main prompt entry point records the accepted user turn and its
+revision. `board_build_begin` freezes supported explicit constraints from that
+request, not from model-supplied check arguments. Board writes require its
+`buildId`; writes, datasets and AF recipes stay in an isolated draft. Preflight
+reports current data/adapter feasibility without claiming that a platform lacks
+the capability. Commit checks the frozen requirements, native-query evidence,
+current authority and a conservative whole-store CAS, then synchronously
+publishes all three stores under a crash-recovery journal. A superseded turn
+or failed check cannot publish. This finite request extractor covers supported
+grain, structure, date, standard measures and explicit fixed values; it is not
+a general guarantee of arbitrary natural-language understanding.
+
+Source proof is produced by actual Main query paths, not by a dataset name,
+model text or imported headers. Explicit fixed snapshots are allowed; existing
+presentation-only edits preserve original data without forcing a new fetch.
+Outside generation, source queries and existing-board refresh retain their
+normal behavior. Draft responses say `published:false`; only a successful
+commit produces the saved-board delivery.
+
+The default business-board guidance is a fallback for requests without a
+specific direction: refreshable data, real date-grain trends, current-business
+stages, concise analysis, third-party/source correspondence, and a table for a
+daily report. Explicit purpose, style, structure, references, removals and
+follow-up changes take precedence. Templates are starting points; custom
+boards may start blank and are not forced back into default coverage or order.
+Application IDs, media-source names and event mappings come from the current
+task's discovered/confirmed scope, never another customer's examples or test
+fixtures. Connecting an account does not establish a business-event mapping.
+
+`board_create` accepts optional board style and `masterScope`; add/update
+operations accept bounded widget style and layout. `board_customize` provides
+a version-1 presentation patch for multiple existing widgets:
+
+- `preview` defaults to true and returns changes plus the proposed board
+  without saving; applying uses `preview:false` and normal write authority.
+- `expectedUpdatedAt` must match the saved board. Main validates the entire
+  patch, rejects stale revisions, unknown fields, invalid style tokens,
+  out-of-grid geometry and newly introduced overlaps, and saves atomically.
+- Only supplied titles, layout/style fields and optional `masterScope` change.
+  Restyling preserves widget config, data bindings, untouched widgets and the
+  current date scope. `null` clears a style override; omitted fields retain it.
+- `masterScope` uses the existing today/yesterday/last3/last7/last30 presets and
+  synchronizes native readers. Saving a scope does not execute its queries;
+  the media and saved attribution queries must be pulled for the actual dates.
+
+The global design-file proposal in §5 remains a separate, user-applied path.
+Per-board style overrides do not rewrite global defaults. Native board tools
+return saved identity and revision; chat verifies the board before showing a
+saved-result/open-board card instead of inventing an HTML preview.
+
+### 4.2 Candidate: live data widgets and readonly acceptance
+
+`table` binds one dataset and supports selected columns, sorting and paging;
+it is not a cross-source live join. `funnel` binds 2–12 named stages to real
+dataset metrics and optional field filters; stages can use different datasets,
+but cross-source ratios do not establish same-user conversion. `analysis`
+recomputes up to three descriptive highlights from a bound metric and optional
+dimension. These facts include period values, first-to-last date changes and a
+leading group, not causal explanations. A static note does not refresh itself.
+
+All three modules use current bindings and the module's resolved date scope.
+`dateScope` is omitted/inherit, lookback anchored to the report end, or an
+absolute historical window that remains refreshable. A yesterday report can
+therefore keep one-day totals and a separately queried seven-day trend. Main
+resolves all dates once per refresh; the renderer, source labels and acceptance
+use that same result. A single date point does not establish a history trend.
+
+`board_refresh` and renderer refresh share the Main planner. Compatible TikTok
+reads share a coverage query, then use immutable verified source slices. AF
+scope policies use separate stable materializations of one recipe; they never
+overwrite each other's dates. These internal caches do not consume the 20 user
+dataset slots. Relative dates, recipe changes, revoked authority and changed
+board configurations invalidate an old run. Native Meta reads use the existing
+authorized connector and the selected account; missing selection is an explicit
+configuration state, not permission to guess an account.
+
+`board_check` is readonly, including recipe reads with migration disabled.
+`mode:"default"` checks fallback coverage; `mode:"custom"` (the default)
+checks only explicitly declared `required` capabilities, with `daily:true`
+also requiring a table. It inspects saved bindings, metric/date columns,
+source state and available campaign-key evidence. Explicit grain requests can
+add `granularity` (account/campaign/adgroup/ad/creative, one or an OR-list)
+and up to 12 exact `dimensions` column names (all required together in the same
+visible table or chart projection). When both are supplied, the same projection
+must satisfy the grain and dimensions. Checks use visible columns or actual
+grouping and current valid IDs, not titles or hidden report fields. Omitted
+grain requirements do not impose a custom layout. Only
+`ok:true, passed:true, status:"ready"` passes. Incomplete coverage or unresolved
+evidence returns `ok:false, passed:false`, a stable error, `missing` and
+`issues`; fix them and recheck, or report the actual blocker. Passing is not
+proof of live-network availability, numerical platform reconciliation or an
+unrequested capability. The checker does not itself refresh data.
+
+Agent generation starts with `board_build_begin`. Main captures the original
+accepted user turn and freezes supported requirements; subsequent board writes
+must carry that build ID and are redirected to private board/data/recipe stores.
+Ordinary list/get/check reads remain available without a build, including in a
+readonly session. A build's check cannot weaken its frozen requirements by
+omitting parameters. `board_build_commit` independently rechecks actual source
+evidence, scope, the captured turn and permissions, then publishes the stores
+with whole-store compare-and-swap and a recovery journal. Failed or superseded
+work does not produce a saved-board result card. Existing explicit fixed
+references and utility boards remain usable; newly generated business values
+require source bindings unless the user explicitly requested a fixed snapshot.
+
+### 4.3 Beta rollback compatibility
+
+With the Beta release channel, board stores live in `board-beta-v3` beneath the
+same application data directory. First access atomically imports the board,
+dataset, AF-recipe and HTML-board stores and retains board-only initial backups.
+Credentials and model/runtime settings remain in their existing location.
+Later Beta writes do not modify stable's stores, and stable writes are not
+automatically merged into the Beta overlay. Beta results remain available for
+a future explicit compatible migration; the overlay is not disposable test
+storage.
 
 ## 5. Board design file (board-design.md)
 
@@ -132,14 +253,14 @@ Two writer paths converge on the same Main entry point
    (`buildBoardDesignPrompt`); the agent answers with one
    ```` ```board-design ```` fence, which the chat UI renders as a card showing
    the parsed tokens and issues. Clicking **Apply to boards** is the required
-   human confirmation — this is the §4-compliant way an assistant may change
-   board styling: proposal only, never a silent mutation.
+   human confirmation for this global-default proposal path. The independent
+   structured per-board tool path is governed by §4.1 and session authority.
 
 ## 6. Board cards proposal (```board-cards) and live file cards
 
-The §4 requirement for "a versioned schema, a preview, per-operation
-confirmation, validation in Main, and fixture tests" is implemented by the
-board-cards protocol (`shared/boardCards.ts`, the data-card sibling of §5):
+The board-cards protocol (`shared/boardCards.ts`, the data-card sibling of §5)
+provides a versioned fence proposal with a preview, explicit Apply action,
+Main validation and fixture tests:
 
 - The boards-page board menu prefills a bounded brief (`buildBoardCardsPrompt`)
   as a composer **draft**; the agent answers with exactly one
@@ -156,7 +277,7 @@ board-cards protocol (`shared/boardCards.ts`, the data-card sibling of §5):
   cards against the named workspace grant (fsGuard realpath containment;
   unresolvable cards are skipped with a warning), rebuilds the cards into the
   existing widget model through the shared factories, and appends them via
-  the normal atomic boards save. The agent can never write boards by itself.
+  the normal atomic boards save. The fence itself cannot write boards.
 
 Live file cards are the `file` widget type: the board stores only a
 workspace-relative path (`.png/.jpg/.html`; unsafe paths are rejected by

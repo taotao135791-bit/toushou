@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { BoardWidget, KanbanBoard } from '../types'
-import { FB_READING_SUMMARY_ACCOUNT_LIMIT } from '../fbReading'
+import { FB_READING_SUMMARY_ACCOUNT_LIMIT, resolveFbReadingWidgetAccount, resolveFbReadingSummaryAccounts } from '../fbReading'
 import {
   BOARD_LIMITS,
   GRID_COLS,
@@ -362,11 +362,23 @@ describe('factories', () => {
     expect(validateBoard({ ...createBoard('B', 1), widgets: [widget] }, true)).toBeNull()
   })
 
+  it('keeps new legacy reading modules unbound instead of selecting a client account', () => {
+    const single = createWidget('fb-reading', 'Reading', { x: 0, y: 0 })
+    const summary = createWidget('fb-reading-summary', 'Summary', { x: 0, y: 6 })
+    expect(resolveFbReadingWidgetAccount(single.config)).toBeNull()
+    expect(resolveFbReadingSummaryAccounts(summary.config)).toEqual([])
+    const result = validateBoard({ ...createBoard('Unbound', 1), widgets: [single, summary] }, true)
+    expect(result?.widgets).toHaveLength(2)
+    expect(result?.widgets[0].config).not.toHaveProperty('act')
+    expect(result?.widgets[1].config.accounts).toEqual([])
+    expect(withWidget(widgetOf('fb-reading', { ...single.config, act: '1000000000001' }))?.widgets).toHaveLength(0)
+  })
+
   it('validates summary reading configs with bounded, unique account refs', () => {
     const config = {
       accounts: [
-        { alias: '三国IOS', act: '2131017261144314', businessId: '1734414010144999' },
-        { alias: '三国AND', act: '27893958520273993', businessId: null }
+        { alias: 'Synthetic one', act: '1000000000001', businessId: '2000000000001' },
+        { alias: 'Synthetic two', act: '1000000000002', businessId: null }
       ],
       range: 'last3',
       metrics: ['spend', 'cpi', 'cpm']
@@ -375,7 +387,7 @@ describe('factories', () => {
       widgetOf('fb-reading-summary', config, { x: 0, y: 0, w: 6, h: 6 })
     )
     expect(board?.widgets[0].config).toEqual(config)
-    expect(withWidget(widgetOf('fb-reading-summary', { ...config, accounts: [] }))?.widgets).toHaveLength(0)
+    expect(withWidget(widgetOf('fb-reading-summary', { ...config, accounts: [] }))?.widgets).toHaveLength(1)
     expect(
       withWidget(widgetOf('fb-reading-summary', { ...config, accounts: [...config.accounts, config.accounts[0]] }))
         ?.widgets
