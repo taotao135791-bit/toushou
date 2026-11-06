@@ -1,0 +1,100 @@
+name: Build and publish verified Windows Beta 5
+on:
+  push:
+    branches: [beta/board-generation-stability]
+    paths: ['.github/workflows/publish-windows-beta.yml']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: promote-windows-beta-5
+  cancel-in-progress: false
+env:
+  SOURCE_RUN: '42209606749'
+  SOURCE_JOB: '127864756244'
+  SOURCE_SHA: aca169ff4ccf92421fa8954ee063319546450ed3
+  BETA_TAG: beta-v2.4.0-beta.5
+  GH_REPO: taotao135791-bit/toushou
+  GH_TOKEN: ${{ github.token }}
+jobs:
+  publish:
+    if: github.repository == 'taotao135791-bit/toushou' && github.ref == 'refs/heads/beta/board-generation-stability'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tested source, tag and existing public prerelease
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/${GH_REPO}/actions/runs/${SOURCE_RUN}" --jq .head_sha)" = "${SOURCE_SHA}"
+          test "$(gh api "repos/${GH_REPO}/actions/jobs/${SOURCE_JOB}" --jq '[.run_id,.name]|join("|")')" = "${SOURCE_RUN}|Verify and package beta (windows)"
+          test "$(gh api "repos/${GH_REPO}/actions/jobs/${SOURCE_JOB}" --jq '[.steps[]|select(.name=="Full test suite" or .name=="OMP compatibility suite")|.conclusion]|join("|")')" = 'success|success'
+          object="$(gh api "repos/${GH_REPO}/git/ref/tags/${BETA_TAG}" --jq .object.sha)"
+          test "$(gh api "repos/${GH_REPO}/git/tags/${object}" --jq .object.sha)" = "${SOURCE_SHA}"
+          test "$(gh release view "${BETA_TAG}" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|join("|")')" = 'false|true'
+          test "$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)" = v2.3.1
+      - uses: actions/checkout@v4
+        with:
+          ref: aca169ff4ccf92421fa8954ee063319546450ed3
+          path: build-source
+      - name: Apply only the platform path fix to the verification helper
+        run: |
+          set -euo pipefail
+          test "$(git -C build-source rev-parse HEAD)" = "${SOURCE_SHA}"
+          cp tools/beta-release.cjs build-source/tools/beta-release.cjs
+          test "$(git -C build-source diff --name-only)" = tools/beta-release.cjs
+          test "$(git -C build-source diff --numstat)" = $'2\t2\ttools/beta-release.cjs'
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: build-source/pnpm-lock.yaml
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install tested dependencies and pinned runtime for packaged startup
+        working-directory: build-source
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          version="$(tr -d '[:space:]' < .omp-compat-version)"
+          test "${version}" = 17.2.12
+          npm install -g "@oh-my-pi/pi-coding-agent@${version}"
+          omp_path="$(npm prefix -g)/omp.cmd"
+          test "$("${omp_path}" --version)" = "omp/${version}"
+          echo "OMP_BIN=${omp_path}" >> "$GITHUB_ENV"
+      - name: Build and package the exact tested product source
+        working-directory: build-source
+        run: |
+          set -euo pipefail
+          pnpm build
+          node tools/beta-release.cjs prepare
+          pnpm exec electron-builder --config electron-builder.beta.cjs --win nsis --x64 --publish never
+          node tools/beta-release.cjs verify-package release-beta/win-unpacked/resources
+          test -s release-beta/win-unpacked/resources/appsflyer-toolkit/extensions/index.ts
+      - name: Smoke test the packaged app using private synthetic profiles
+        working-directory: build-source
+        env:
+          TOUSHOU_SMOKE_EXPECT_BETA: 'true'
+        run: node tools/release-smoke.cjs 'release-beta/win-unpacked/投手 Beta.exe'
+      - name: Add four verified Windows files without replacing macOS assets
+        working-directory: build-source
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = tools/beta-release.cjs
+          node tools/beta-release.cjs stage release-beta windows artifacts/windows
+          test "$(find artifacts/windows -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 4
+          test "$(gh release view "${BETA_TAG}" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|join("|")')" = 'false|true'
+          test "$(gh release view "${BETA_TAG}" --json assets --jq '[.assets[].name|select(endswith(".exe") or endswith(".exe.blockmap") or .=="beta.yml" or .=="SHA256SUMS-beta-windows.txt")]|length')" -eq 0
+          gh release upload "${BETA_TAG}" artifacts/windows/*
+          downloaded="$(mktemp -d)"
+          gh release download "${BETA_TAG}" --dir "${downloaded}" --pattern 'TouShou-Beta-2.4.0-beta.5-x64.exe' --pattern 'TouShou-Beta-2.4.0-beta.5-x64.exe.blockmap' --pattern beta.yml --pattern SHA256SUMS-beta-windows.txt
+          test "$(find "${downloaded}" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 4
+          node tools/beta-release.cjs verify "${downloaded}" windows
+          (cd "${downloaded}" && sha256sum --check SHA256SUMS-beta-windows.txt)
+          test "$(gh release view "${BETA_TAG}" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|join("|")')" = 'false|true'
+          test "$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)" = v2.3.1
