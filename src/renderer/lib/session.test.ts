@@ -51,6 +51,14 @@ afterEach(() => {
 })
 
 describe('createSessionForCurrentProject', () => {
+  it('keeps the draft and model choices when the default folder needs confirmation', async () => {
+    useAppStore.setState({ currentWorkspace: null, composerDrafts: { __new__: { text: 'Unsent draft', images: [] } } })
+    const createSession = vi.fn()
+    vi.stubGlobal('window', { electronAPI: { getDefaultWorkspace: vi.fn().mockResolvedValue(null), createSession } })
+    expect(await createSessionForCurrentProject()).toBeNull()
+    expect(createSession).not.toHaveBeenCalled()
+    expect(useAppStore.getState()).toMatchObject({ currentWorkspace: null, pendingModel: 'deepseek/deepseek-v4-flash', pendingThinking: 'high', composerDrafts: { __new__: { text: 'Unsent draft' } } })
+  })
   it('keeps next-session overrides when Main rejects session creation', async () => {
     const createSession = vi.fn().mockRejectedValue(new Error('grant unavailable'))
     vi.stubGlobal('window', { electronAPI: { createSession } })

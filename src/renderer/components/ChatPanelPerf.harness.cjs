@@ -50,7 +50,17 @@ app.whenReady().then(async () => {
     const permission = await js(`document.querySelector('[aria-label="Permissions"]').disabled`)
     await js('window.chatPerfFixture.addMessage();window.chatPerfFixture.showError()'); await frame()
     const content = await js(`({message:document.body.textContent.includes('Synthetic current message'),error:document.querySelector('header').textContent.includes("Couldn't send")})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ background, renamed, status, permission, content }))
+    phase = 'default save folder recovery on home'
+    await js('window.chatPerfFixture.showUnavailableDefault()')
+    await waitFor(`!!document.querySelector('.home-hero [data-project-recovery="default"] button')`)
+    const defaultRecovery = await js(`(() => {const hero=document.querySelector('.home-hero');return {message:hero.textContent.includes('Confirm the default save folder before starting a conversation without a project.'),path:hero.textContent.includes('/synthetic/default-save-folder'),button:hero.querySelector('[data-project-recovery="default"] button').textContent.trim()}})()`)
+    await js(`(() => {const field=document.querySelector('.home-hero textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(field,'Unsent default folder brief');field.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    await frame()
+    await js(`(() => {const button=document.querySelector('.home-hero [data-project-recovery="default"] button');button.click();button.click()})()`)
+    await waitFor(`window.chatPerfFixture.recoverySnapshot().workspace==='/synthetic/default-save-folder' && !document.querySelector('.home-hero [data-project-recovery="default"]')`)
+    await frame()
+    const defaultRecovered = await js(`({ ...window.chatPerfFixture.recoverySnapshot(),promptGone:!document.querySelector('.home-hero').textContent.includes('Confirm the default save folder'),draft:document.querySelector('.home-hero textarea').value })`)
+    console.log('E2E_RESULT ' + JSON.stringify({ background, renamed, status, permission, content, defaultRecovery, defaultRecovered }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

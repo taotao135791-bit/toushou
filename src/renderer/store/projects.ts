@@ -9,10 +9,12 @@ interface ProjectsState {
   loading: boolean
   pending: string | null
   error: ProjectError | 'load-failed' | null
+  errorProjectId: string | null
   refresh: () => Promise<void>
   activate: (id: string, navigationIntent?: number) => Promise<boolean>
   create: (name: string) => Promise<boolean>
   importFolder: () => Promise<boolean>
+  recover: (id: string) => Promise<boolean>
   archive: (id: string) => Promise<boolean>
   restore: (id: string) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
@@ -41,23 +43,30 @@ export const useProjects = create<ProjectsState>((set, get) => {
     set({ loading: true })
     try {
       const projects = await window.electronAPI.listProjects()
-      if (epoch === readEpoch) set({ projects, loaded: true, loading: false, error: get().error === 'load-failed' ? null : get().error })
+      if (epoch === readEpoch) {
+        const { error, errorProjectId } = get()
+        const resolvedFolderError = (error === 'missing' || error === 'path-changed' || error === 'wrong-folder') && (errorProjectId
+          ? !projects.some(project => project.id === errorProjectId && project.missing)
+          : true)
+        const clear = error === 'load-failed' || resolvedFolderError
+        set({ projects, loaded: true, loading: false, ...(clear ? { error: null, errorProjectId: null } : {}) })
+      }
     } catch {
-      if (epoch === readEpoch) set({ loading: false, error: 'load-failed' })
+      if (epoch === readEpoch) set({ loading: false, error: 'load-failed', errorProjectId: null })
     }
   }
-  const run = async (key: string, operation: () => Promise<ProjectResult>, after?: (project: ProjectRecord, intent: number) => Promise<void>, navigationIntent?: number) => {
+  const run = async (key: string, operation: () => Promise<ProjectResult>, after?: (project: ProjectRecord, intent: number) => Promise<void>, navigationIntent?: number, projectId?: string) => {
     if (get().pending) return false
     const intent = navigationIntent ?? beginNavigationIntent()
     if (!isCurrentNavigationIntent(intent)) return false
-    set({ pending: key, error: null })
+    set({ pending: key, error: null, errorProjectId: null })
     const origin = useAppStore.getState().currentWorkspace?.id
     const session = useAppStore.getState().currentSessionId
     ++readEpoch
     try {
       const result = await operation()
       if (!result.ok) {
-        if (result.error !== 'cancelled') set({ error: result.error })
+        if (result.error !== 'cancelled') set({ error: result.error, errorProjectId: projectId ?? null })
         if (result.error === 'partial-failure' || result.error === 'path-changed' || result.error === 'missing') {
           await refresh()
           const active = useAppStore.getState().currentWorkspace
@@ -70,23 +79,24 @@ export const useProjects = create<ProjectsState>((set, get) => {
       await refresh()
       return true
     } catch {
-      set({ error: 'failed' })
+      set({ error: 'failed', errorProjectId: projectId ?? null })
       return false
     } finally {
       set({ pending: null, loading: false })
     }
   }
   return {
-    projects: [], loaded: false, loading: false, pending: null, error: null,
+    projects: [], loaded: false, loading: false, pending: null, error: null, errorProjectId: null,
     refresh,
-    clearError: () => set({ error: null }),
-    activate: (id, intent) => run(`activate:${id}`, () => window.electronAPI.activateProject(id), undefined, intent),
+    clearError: () => set({ error: null, errorProjectId: null }),
+    activate: (id, intent) => run(`activate:${id}`, () => window.electronAPI.activateProject(id), undefined, intent, id),
     create: name => run('create', () => window.electronAPI.createProject(name)),
     importFolder: () => run('import', () => window.electronAPI.importProject()),
+    recover: id => run(`recover:${id}`, () => window.electronAPI.recoverProject(id), undefined, undefined, id),
     archive: id => run(`archive:${id}`, () => window.electronAPI.archiveProject(id), async (project, intent) => {
       if (useAppStore.getState().currentWorkspace?.realPath === project.path) await fallback(intent)
-    }),
-    restore: id => run(`restore:${id}`, () => window.electronAPI.restoreProject(id)),
+    }, undefined, id),
+    restore: id => run(`restore:${id}`, () => window.electronAPI.restoreProject(id), undefined, undefined, id),
     remove: id => run(`delete:${id}`, () => window.electronAPI.deleteProject(id), async (project, intent) => {
       const app = useAppStore.getState()
       if (app.currentWorkspace?.realPath === project.path) await fallback(intent)
@@ -102,6 +112,6 @@ export const useProjects = create<ProjectsState>((set, get) => {
         queuedMessages: Object.fromEntries(Object.entries(state.queuedMessages).filter(([id]) => !removed.has(id)))
       }))
       await useAppStore.getState().loadAllHistorySessions()
-    })
+    }, undefined, id)
   }
 })

@@ -186,6 +186,7 @@ export interface ElectronAPI {
   listProjects: () => Promise<ProjectRecord[]>
   createProject: (name: string) => Promise<ProjectResult>
   importProject: () => Promise<ProjectResult>
+  recoverProject: (id: string) => Promise<ProjectResult>
   activateProject: (id: string) => Promise<ProjectResult>
   archiveProject: (id: string) => Promise<ProjectResult>
   restoreProject: (id: string) => Promise<ProjectResult>
@@ -701,6 +702,7 @@ const api: ElectronAPI = {
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_LIST),
   createProject: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, name),
   importProject: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_IMPORT),
+  recoverProject: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_RECOVER, id),
   activateProject: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_ACTIVATE, id),
   archiveProject: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_ARCHIVE, id),
   restoreProject: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_RESTORE, id),

@@ -3,11 +3,12 @@ import { Check, Folder, FolderOpen, Loader2, Plus } from 'lucide-react'
 import { useProjects } from '../store/projects'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
+import ProjectRecovery from './ProjectRecovery'
 
 /** Shared by the sidebar + and the composer project selector. */
 export default function ProjectPicker({ onDone }: { onDone: () => void }) {
   const t = useT()
-  const { projects, loaded, loading, pending, error, refresh, activate, create, importFolder, clearError } = useProjects()
+  const { projects, loaded, loading, pending, error, errorProjectId, refresh, activate, create, importFolder, clearError } = useProjects()
   const current = useAppStore(state => state.currentWorkspace)
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
@@ -40,17 +41,20 @@ export default function ProjectPicker({ onDone }: { onDone: () => void }) {
     </form> : <>
       <div className="max-h-64 overflow-y-auto">
         {loading && !loaded && <div role="status" className="px-2.5 py-3 text-xs text-cream-faint">{t('app.loading')}</div>}
-        {projects.filter(project => !project.archived).map(project => <button key={project.id} type="button" disabled={busy || project.missing}
-          className={rowClass} title={project.isDefault ? t('projects.noProject') : project.path} onClick={async () => { if (await activate(project.id)) onDone() }}>
+        {projects.filter(project => !project.archived).map(project => <div key={project.id}>
+          <button type="button" disabled={busy || project.missing}
+          className={rowClass} title={project.isDefault && !project.missing ? t('projects.noProject') : project.path} onClick={async () => { if (await activate(project.id)) onDone() }}>
           {project.isDefault ? <Folder size={14} className="shrink-0 text-cream-faint" /> : <FolderOpen size={14} className="shrink-0 text-cream-faint" />}
-          <span className="min-w-0 flex-1"><span className="block truncate">{project.isDefault ? t('projects.noProject') : project.name}</span>{!project.isDefault && <span className="block truncate text-[10.5px] text-cream-faint">{project.missing ? t('projects.missing') : project.path}</span>}</span>
-          {current?.realPath === project.path && <Check size={13} className="shrink-0" />}
-        </button>)}
+          <span className="min-w-0 flex-1"><span className="block truncate">{project.isDefault ? t('projects.noProject') : project.name}</span>{(!project.isDefault || project.missing) && <span className="block truncate text-[10.5px] text-cream-faint">{project.path}</span>}</span>
+          {!project.missing && current?.realPath === project.path && <Check size={13} className="shrink-0" />}
+          </button>
+          <ProjectRecovery project={project} onRecovered={onDone} />
+        </div>)}
       </div>
       <div className="my-1 border-t border-line" />
       <button type="button" className={rowClass} disabled={busy} onClick={() => { clearError(); setCreating(true) }}><Plus size={14} />{t('projects.create')}</button>
       <button type="button" className={rowClass} disabled={busy} onClick={async () => { if (await importFolder()) onDone() }}><FolderOpen size={14} />{t('projects.import')}</button>
     </>}
-    {error && <div role="alert" className="px-2.5 py-2 text-xs leading-5 text-red-500">{t(`projects.error.${error}`)}</div>}
+    {error && !projects.some(project => !project.archived && project.id === errorProjectId) && <div role="alert" className="px-2.5 py-2 text-xs leading-5 text-red-500">{t(`projects.error.${error}`)}</div>}
   </div>
 }

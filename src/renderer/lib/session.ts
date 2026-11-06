@@ -5,7 +5,8 @@ import { beginNavigationIntent, isCurrentNavigationIntent } from './navigationIn
  * Create a chat session for the current workspace. With no project
  * selected the session silently anchors to the app-managed default
  * workspace (Documents/投手工作区): the home screen offers explicit project
- * choices, but pressing Enter must never dead-end on a folder picker.
+ * choices. If the default directory needs confirmation, the home screen offers
+ * recovery and this function leaves the draft and picker choices intact.
  * Returns the new session id, or null when no workspace could be resolved.
  *
  * Next-session overrides (composer pickers used without an active session)

@@ -2,22 +2,84 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ProjectRegistry, isFilesystemRoot } from './projectRegistry'
+import { ProjectRegistry, isFilesystemRoot, type ProjectRegistryOptions } from './projectRegistry'
 import { isProjectDeletionInProgress } from './projectDeletionGate'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
-function fixture() {
+function fixture(identify?: ProjectRegistryOptions['identify']) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'project-registry-test-')); roots.push(root)
   const fallback = path.join(root, 'default'); const project = path.join(root, 'project')
   fs.mkdirSync(fallback); fs.mkdirSync(project)
   const confirm = vi.fn(async () => true); const trash = vi.fn(async (_file: string) => {})
   const close = vi.fn(async () => true); const discover = vi.fn(async (_file: string) => [] as Array<{path: string;dev:number;ino:number}>)
   let busy = false
-  const registry = new ProjectRegistry({ file: path.join(root, 'data', 'projects.json'), defaultPath: fallback, protectedPaths: [root], recentPaths: () => [], isBusy: () => busy, confirmDelete: confirm, trash, discoverSessions: discover, closeIdleSessions: close })
-  return { root, project, fallback, registry, confirm, trash, close, discover, setBusy: (b: boolean) => { busy = b } }
+  const options: ProjectRegistryOptions = { file: path.join(root, 'data', 'projects.json'), defaultPath: fallback, protectedPaths: [root], recentPaths: () => [], isBusy: () => busy, confirmDelete: confirm, trash, discoverSessions: discover, closeIdleSessions: close, identify }
+  const registry = new ProjectRegistry(options)
+  return { root, project, fallback, registry, options, confirm, trash, close, discover, setBusy: (b: boolean) => { busy = b } }
+}
+function remountIdentity() {
+  let devDelta = 0
+  let volumeId = '00000000-0000-0000-0000-000000000001'
+  let birthDelta = 0
+  const identify: NonNullable<ProjectRegistryOptions['identify']> = target => {
+    const canonical = fs.realpathSync.native(target), st = fs.lstatSync(canonical)
+    return { path: canonical, dev: st.dev + devDelta, ino: st.ino, volumeId, birthtimeMs: st.birthtimeMs + birthDelta }
+  }
+  return { identify, remount: () => { devDelta++ }, replaceVolume: () => { volumeId = '00000000-0000-0000-0000-000000000002' }, reuseInode: () => { birthDelta++ } }
 }
 describe('project lifecycle', () => {
+  it('retains project and default identities after a remount and process restart', () => {
+    const identity = remountIdentity(), f = fixture(identity.identify)
+    const registered = f.registry.register(f.project); if (!registered.ok) throw new Error('fixture')
+    const defaultId = f.registry.list().find(p => p.isDefault)!.id
+    identity.remount()
+    const restarted = new ProjectRegistry(f.options)
+    expect(restarted.get(registered.project.id)).toMatchObject({ id: registered.project.id, missing: false })
+    expect(restarted.get(defaultId)).toMatchObject({ missing: false })
+  })
+  it('requires confirmation for a changed volume or reused inode even at the same path', () => {
+    const identity = remountIdentity(), f = fixture(identity.identify)
+    const p = f.registry.register(f.project); if (!p.ok) throw new Error('fixture')
+    identity.replaceVolume()
+    expect(f.registry.get(p.project.id)).toMatchObject({ missing: true, unavailableReason: 'identity-changed' })
+    expect(f.registry.recover(p.project.id, f.project)).toMatchObject({ ok: true, project: { id: p.project.id, missing: false } })
+    identity.reuseInode()
+    expect(f.registry.get(p.project.id)).toMatchObject({ missing: true, unavailableReason: 'identity-changed' })
+  })
+  it('migrates a matching legacy identity but requires same-path recovery after legacy device drift', () => {
+    const identity = remountIdentity(), f = fixture(identity.identify)
+    const p = f.registry.register(f.project); if (!p.ok) throw new Error('fixture')
+    const stripIdentity = () => {
+      const store = JSON.parse(fs.readFileSync(f.options.file, 'utf8'))
+      for (const item of store.projects) { delete item.volumeId; delete item.birthtimeMs }
+      fs.writeFileSync(f.options.file, JSON.stringify(store))
+    }
+    stripIdentity()
+    expect(f.registry.get(p.project.id)?.missing).toBe(false)
+    expect(JSON.parse(fs.readFileSync(f.options.file, 'utf8')).projects.find((item: { id: string }) => item.id === p.project.id).volumeId).toBeTruthy()
+    stripIdentity(); identity.remount()
+    expect(f.registry.get(p.project.id)).toMatchObject({ missing: true, unavailableReason: 'identity-changed' })
+    expect(f.registry.recover(p.project.id, f.fallback)).toMatchObject({ ok: false, error: 'wrong-folder' })
+    expect(f.registry.list()).toHaveLength(2)
+    expect(f.registry.recover(p.project.id, f.project)).toMatchObject({ ok: true, project: { id: p.project.id, missing: false } })
+    identity.remount()
+    expect(new ProjectRegistry(f.options).get(p.project.id)?.missing).toBe(false)
+  })
+  it('keeps strict device validation on filesystems without a persistent volume ID', () => {
+    const identity = remountIdentity()
+    const f = fixture((target, force) => ({ ...identity.identify(target, force), volumeId: null }))
+    const p = f.registry.register(f.project); if (!p.ok) throw new Error('fixture')
+    identity.remount()
+    expect(f.registry.get(p.project.id)?.unavailableReason).toBe('identity-changed')
+  })
+  it('blocks deletion if a mount changes while the native confirmation is open', async () => {
+    const identity = remountIdentity(), f = fixture(identity.identify)
+    const p = f.registry.register(f.project); if (!p.ok) throw new Error('fixture')
+    f.confirm.mockImplementationOnce(async () => { identity.remount(); return true })
+    expect(await f.registry.delete(p.project.id)).toMatchObject({ ok: false, error: 'path-changed' })
+    expect(f.trash).not.toHaveBeenCalled()
+  })
   it('protects filesystem roots including other drives and UNC shares on any test platform', () => {
     expect(isFilesystemRoot('/', path.posix)).toBe(true)
     expect(isFilesystemRoot('/tmp/project', path.posix)).toBe(false)
