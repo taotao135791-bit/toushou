@@ -207,3 +207,14 @@ assertion requiring `spawnSync().error` to be `undefined`; cross-spawn returns
 four actual registry-root/content checks remain, and the redundant assertion
 was removed. Production code is unchanged. This candidate was also canceled
 before publication; the replacement is `beta-v2.4.0-beta.5`.
+
+For `beta-v2.4.0-beta.5`, both full suites and all 25 OMP compatibility tests
+passed on each platform. The macOS package job passed actual architecture,
+ASAR identity/bootstrap, packaged startup/save/restart, manifest and checksum
+checks. Windows built its installer but its ASAR verifier used POSIX separators
+with an API that splits on the host's `path.sep`, falsely reporting a missing
+entry. Two verifier-only paths are now normalized in the test branch; production
+Main and the Mac artifacts are unchanged. Windows did not reach the remaining
+packaged smoke checks and is not published. This Beta provides the verified
+macOS artifacts first; the overall dual-platform workflow is not reported as
+successful.

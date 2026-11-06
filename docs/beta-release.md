@@ -12,7 +12,7 @@
 - 回退 v2.3.1 时，旧版仍在后台恢复自己的工具链接；若首个会话工具尚未就绪，等待初始化后新建会话。旧版重链可能重新启用停用插件，回退后需核对插件开关；Beta 的启动等待和禁用保护不能改变已经发布的旧版代码。
 - 明确传入 `--user-data-dir` 时，应用资料使用该目录，既有 `PI_CODING_AGENT_DIR` 和 CLI profile 环境保持不变。成品冒烟另外设置临时 HOME 与 Agent 目录，始终隔离真实资料。
 - Beta 采用手动下载安装；应用内检查、下载和安装均不会进入正式版自动更新流程。设置中的发布页入口指向当前 Beta 标签。
-- 提供 macOS Apple Silicon / Intel 的 DMG 与 ZIP，以及 Windows x64 安装程序，与当前正式版支持范围相同。尚未提供 Windows ARM64 包。
+- 当前 `beta-v2.4.0-beta.5` 先公开 macOS Apple Silicon / Intel 的 DMG 与 ZIP。Windows x64 的单测和 OMP 检查通过，安装程序已生成，但成品校验脚本的路径分隔符错误阻止了后续检查，故未公开；两处脚本路径已修复在测试分支。尚未提供 Windows ARM64 包。
 
 ## 发布步骤
 

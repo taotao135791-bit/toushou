@@ -70,9 +70,9 @@ function verifyPackage(resources) {
   const archive = path.join(resources, 'app.asar')
   const metadata = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'))
   for (const [field, value] of Object.entries(config.extraMetadata)) if (metadata[field] !== value) throw new Error(`Packaged beta metadata mismatch ${field}`)
-  const actual = asar.extractFile(archive, config.extraMetadata.main)
+  const actual = asar.extractFile(archive, path.normalize(config.extraMetadata.main))
   if (!actual.equals(readFileSync(path.join(root, 'build', 'beta-bootstrap.cjs')))) throw new Error('Packaged beta bootstrap mismatch')
-  if (!asar.extractFile(archive, 'dist-electron/main/index.js').length) throw new Error('Packaged beta Main is absent')
+  if (!asar.extractFile(archive, path.join('dist-electron', 'main', 'index.js')).length) throw new Error('Packaged beta Main is absent')
 }
 
 module.exports = { validateConfig, validateRef, expectedAssets, verifyAssets, stageAssets, verifyChecksums, prepare, verifyPackage }
