@@ -226,3 +226,14 @@ same ten artifact files inside Actions, checked manifests and SHA-256, uploaded
 them to a prerelease draft, re-downloaded and verified them before publication.
 The release is not marked latest; the stable endpoint remains v2.3.1. No rebuild
 or additional generation evaluation was introduced for this promotion.
+
+Windows was subsequently added by the [Windows-only package job](https://github.com/taotao135791-bit/toushou/actions/runs/42241897226).
+It verified that the immutable source run/tag matched and that the original
+Windows full suite and all 25 OMP tests had passed. It checked out exactly the
+same product source, applied only the two-line path fix to the verification
+helper (which is not shipped inside the app), and enforced that no other tracked
+file changed. The packaged Windows app passed identity/bootstrap, private-profile
+startup/save/restart and uploaded-file read-back checks. Four Windows files were
+added without replacing the existing Mac assets. All 14 release files are now
+public; the stable channel remains v2.3.1. The full source test suites were not
+repeated for this verifier-only repair.

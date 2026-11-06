@@ -12,7 +12,7 @@
 | macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.3.1/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.3.1/TouShou-x64.zip) |
 | Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.3.1/TouShou-x64.exe) |
 
-macOS 测试版 **[2.4.0-beta.5](https://github.com/taotao135791-bit/toushou/releases/tag/beta-v2.4.0-beta.5)** 已发布：沿用已有模型、MCP、账户及项目，支持真实数据和可刷新看板。先退出正式版，再打开「投手 Beta」；已有看板自动导入兼容副本，后续独立保存。安装与回退说明见 [Beta 文档](docs/beta-release.md)。下方正式版限制与最新正式发版记录仍对应 v2.3.1。
+测试版 **[2.4.0-beta.5](https://github.com/taotao135791-bit/toushou/releases/tag/beta-v2.4.0-beta.5)** 已发布，提供 macOS 与 Windows x64 安装包：沿用已有模型、MCP、账户及项目，支持真实数据和可刷新看板。先退出正式版，再打开「投手 Beta」；已有看板自动导入兼容副本，后续独立保存。安装与回退说明见 [Beta 文档](docs/beta-release.md)。下方正式版限制与最新正式发版记录仍对应 v2.3.1。
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 

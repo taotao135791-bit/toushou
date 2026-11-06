@@ -13,11 +13,11 @@
 
 安装包显示为「投手 Beta」，直接使用现有账户、项目和模型设置，无需重新连接。已有看板首次自动载入兼容副本，Beta 的后续看板修改独立保存，保留初始副本，不改写旧正式版看板文件，两版后续修改不自动合并。打开 Beta 前请先退出正式版；更新测试版请从本发布页下载安装。回退旧正式版的插件初始化限制见 [Beta 安装说明](https://github.com/taotao135791-bit/toushou/blob/beta/board-generation-stability/docs/beta-release.md)。
 
-本次提供 macOS Apple Silicon / Intel 的 DMG、ZIP。macOS 尚未公证，首次打开可能需要右键选择「打开」。Windows 安装包已生成，但成品校验脚本遇到路径分隔符问题，本次不公开 Windows 包；脚本修复已保留在测试分支。
+提供 macOS Apple Silicon / Intel 的 DMG、ZIP 与 Windows x64 安装程序。macOS 尚未公证，首次打开可能需要右键选择「打开」；Windows 未签名，首次安装可能出现 SmartScreen 提示。
 
 ## 本轮验证
 
-macOS 与 Windows 的全量检查及固定 OMP 兼容检查均通过。公开的两个 macOS 架构均已核对实际架构、应用入口和更新通道，成品通过隔离资料的启动、保存及重启检查。macOS 的 9 项发行文件与 SHA-256 清单随本次发布提供，上传后核对摘要，并另行校验下载的 Apple Silicon 安装包。发布页附对应源码与 macOS 成品构建记录；整条双平台工作流因上述 Windows 校验脚本问题未成功，未公开未经完整成品检查的 Windows 包。
+macOS 与 Windows 的全量检查及固定 OMP 兼容检查均通过。公开成品已核对实际架构、应用入口和更新通道，并通过隔离资料的启动、保存及重启检查。14 项发行文件上传后均已重新下载核验，Apple Silicon 安装包也已在本机下载并核对 SHA-256。初始双平台流程遇到 Windows 校验脚本的路径分隔符问题；Windows 随后使用相同产品源码，仅修正未打入应用的校验工具，在独立任务中完成打包及成品检查，没有重复运行整套测试。
 
 生成检查依据当前可见的数据证据，不替代实际广告后台逐项核对或视觉质量判断。真实模型测试使用合成来源，小样本结果不代表所有客户、模型和用途的成功率；数据源不支持的需求会保留明确未完成项。相关测试范围见[看板生成验证](https://github.com/taotao135791-bit/toushou/blob/beta/board-generation-stability/docs/board-generation-validation.md)。
 
@@ -25,3 +25,5 @@ macOS 与 Windows 的全量检查及固定 OMP 兼容检查均通过。公开的
 [macOS 成品构建与验证](https://github.com/taotao135791-bit/toushou/actions/runs/42209606749/job/127864756232) · [安装包源码](https://github.com/taotao135791-bit/toushou/commit/aca169ff4ccf92421fa8954ee063319546450ed3)
 
 [发行文件发布与回验](https://github.com/taotao135791-bit/toushou/actions/runs/42212200945)
+
+[Windows 独立打包、成品验证与回验](https://github.com/taotao135791-bit/toushou/actions/runs/42241897226)
