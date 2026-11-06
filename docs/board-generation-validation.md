@@ -199,3 +199,11 @@ deliberately canonicalizes Windows paths to lowercase. Its other 2,660 tests
 passed; macOS's full suite passed. The fixture now uses the same Windows path
 normalization, with no production-code change. That candidate was canceled
 before publication; `beta-v2.4.0-beta.4` is the replacement candidate.
+
+Both platforms' full suites passed for `beta-v2.4.0-beta.4` (Windows:
+2,664 passed, two skipped). Its Windows runtime suite caught a redundant
+assertion requiring `spawnSync().error` to be `undefined`; cross-spawn returns
+`null` for a successful Windows command. The strict zero-exit check and all
+four actual registry-root/content checks remain, and the redundant assertion
+was removed. Production code is unchanged. This candidate was also canceled
+before publication; the replacement is `beta-v2.4.0-beta.5`.

@@ -19,8 +19,7 @@ describe('current OMP — switching app-managed bundle locations', () => {
         timeout: 30_000,
         stdio: ['pipe', 'pipe', 'pipe']
       })
-      expect(result.error, 'OMP command must start in the isolated profile').toBeUndefined()
-      expect(result.status, String(result.stderr ?? '')).toBe(0)
+      expect(result.status, String(result.error ?? result.stderr ?? '')).toBe(0)
       return String(result.stdout ?? '')
     }
     try {
