@@ -65,8 +65,9 @@ export function metaDailyRows(payload: Obj, accountId: string): unknown[] {
     const segment = object(raw), metrics = object(segment?.metrics)
     if (!segment || !metrics || !date(segment.period_start) || segment.period_start !== segment.period_end || seen.has(segment.period_start) || segment.period_start < window.since! || segment.period_start > window.until!) throw new MetaBoardReadError('Meta 每日分段格式不可用。')
     seen.add(segment.period_start)
-    // Empty days carry no measured values; never fabricate zero rows.
-    if (Object.keys(metrics).length === 0) return []
+    // Retain empty days as unknown values. Dropping them would let callers
+    // present a partial sum as the total for the entire requested window.
+    if (Object.keys(metrics).length === 0) return [{ account_id: accountId.slice(4), date_start: segment.period_start, date_stop: segment.period_end }]
     if (metrics.date_start !== segment.period_start || metrics.date_stop !== segment.period_end) throw new MetaBoardReadError('Meta 每日分段日期不匹配。')
     return [metrics]
   })

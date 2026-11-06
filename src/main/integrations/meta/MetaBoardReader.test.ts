@@ -22,6 +22,18 @@ describe('Meta native board read boundary', () => {
     expect(() => metaDailyRows({ ...payload, truncated: true }, account.id)).toThrow()
     expect(() => metaDailyRows({ ...payload, segmented_metrics: [{ ...payload.segmented_metrics[0], period_end: '2026-01-02' }] }, account.id)).toThrow()
   })
+  it('preserves an empty daily segment as unknown instead of silently publishing a partial total', async () => {
+    const payload = { object_id: account.id, level: 'account', time_breakdown: 'day', total_segments: 2,
+      time_range: { since: '2026-01-01', until: '2026-01-02' }, segmented_metrics: [
+        { period_start: '2026-01-01', period_end: '2026-01-01', metrics: row('2026-01-01') },
+        { period_start: '2026-01-02', period_end: '2026-01-02', metrics: {} }
+      ] }
+    const summary = await readMetaSummary({ callReadTool: vi.fn().mockResolvedValue({ structuredContent: payload }) }, account, 'last3')
+    expect(summary.rows).toEqual([
+      { date: '2026-01-01', spend: 1.25, impressions: 100, clicks: 2 },
+      { date: '2026-01-02', spend: null, impressions: null, clicks: null }
+    ])
+  })
   it('projects only safe account fields, preserves unknown timezone and reports partial account lists', async () => {
     const callReadTool = vi.fn().mockResolvedValue(result([{ ...account, secret: 'must-not-return' }], { next: 'https://example.invalid' }))
     const data = await readMetaAccounts({ callReadTool })
