@@ -113,6 +113,7 @@ import { listAvailableModels, listCatalogModels, invalidateModelCache } from './
 import { getStore, rememberRecentProject, setStore } from './store'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
+import { beginRuntimePreparation } from './runtimePreparationGate'
 import { readBrowserScreenshotData, revokeBrowserUseSession } from './browserUse'
 import { logRendererError, readLogTail } from './lib/logger'
 import {
@@ -1823,18 +1824,38 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.OMP_INSTALL, async (event: IpcMainInvokeEvent) => {
     const sender = event.sender
-    const success = await installOmp((status: InstallStatus) => {
-      if (!sender.isDestroyed()) {
-        sender.send(IPC_CHANNELS.OMP_INSTALL_STATUS, status)
+    const finishPreparation = beginRuntimePreparation()
+    try {
+      let successStatus: InstallStatus | undefined
+      const success = await installOmp((status: InstallStatus) => {
+        // SetupWizard opens the composer from this event, before the invoke
+        // promise resolves. Keep success private until bundled tools are ready.
+        if (status.type === 'success') {
+          successStatus = status
+          return
+        }
+        if (!sender.isDestroyed()) {
+          sender.send(IPC_CHANNELS.OMP_INSTALL_STATUS, status)
+        }
+      })
+      if (success) {
+        invalidateCliCache()
+        // The runtime just became visible: link bundled packages now instead
+        // of waiting for the next launch.
+        try {
+          const preparation = await ensureBundledPackages()
+          if (!preparation.ok) console.warn('[bundled-packages] runtime installation preparation incomplete', preparation.failed)
+        } catch (error) {
+          console.warn('[bundled-packages] runtime installation preparation failed', error)
+        }
+        if (!sender.isDestroyed()) {
+          sender.send(IPC_CHANNELS.OMP_INSTALL_STATUS, successStatus ?? { type: 'success' })
+        }
       }
-    })
-    if (success) {
-      invalidateCliCache()
-      // The runtime just became visible: link bundled packages now instead
-      // of waiting for the next launch.
-      void ensureBundledPackages()
+      return success
+    } finally {
+      finishPreparation()
     }
-    return success
   })
 
   // Project identity and destructive operations stay in Main; renderers pass opaque IDs only.

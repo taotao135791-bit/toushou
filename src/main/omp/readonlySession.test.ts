@@ -9,8 +9,34 @@ vi.mock('./OmpProcess', () => ({ planSpawn: mocks.plan, spawnProcess: mocks.spaw
 vi.mock('../boardBuilds', () => ({ registerBoardBuildTurn: mocks.registerBuild, revokeBoardBuildSession: mocks.revokeBuild }))
 vi.mock('./OmpSession', () => ({ OmpSession: class { sendPrompt = mocks.prompt; constructor(public session: unknown, _proc: unknown, hooks: { onGone: () => void }) { mocks.gone = hooks.onGone } } }))
 import { createSession, getSession, sendMessage, updateApprovalConfig } from './index'
+import { beginRuntimePreparation, isRuntimePreparing } from '../runtimePreparationGate'
 
 describe('fixed readonly session', () => {
+  it('never spawns during nested installation and relinking, and recovers when both settle', async () => {
+    mocks.spawn.mockImplementation(() => new EventEmitter())
+    mocks.spawn.mockClear()
+    const finishInstall = beginRuntimePreparation()
+    const finishRelink = beginRuntimePreparation()
+    const events: unknown[] = []
+    try {
+      expect(createSession(process.cwd(), event => events.push(event)).status).toBe('error')
+      finishInstall()
+      finishInstall() // A repeated cleanup must not release the relink lease.
+      expect(isRuntimePreparing()).toBe(true)
+      expect(createSession(process.cwd(), event => events.push(event), { origin: 'task' }).status).toBe('error')
+      expect(createSession(process.cwd(), event => events.push(event), { origin: 'feishu' }).status).toBe('error')
+      expect(mocks.spawn).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(events).toHaveLength(3))
+      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'error', recoverable: true })]))
+    } finally {
+      finishInstall()
+      finishRelink()
+    }
+    expect(isRuntimePreparing()).toBe(false)
+    expect(createSession(process.cwd(), () => {}).status).toBe('idle')
+    expect(mocks.spawn).toHaveBeenCalledOnce()
+  })
+
   it('marks the live session and refuses approval changes without changing the global profile', () => {
     mocks.spawn.mockImplementation(() => new EventEmitter())
     const session = createSession(process.cwd(), () => {}, { permissionMode: 'readonly' })

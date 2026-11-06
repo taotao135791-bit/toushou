@@ -1,158 +1,164 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import type { AppSettings, PackageInfo } from '../../shared/types'
 
-// The runner shells out to the CLI and touches the electron store; only the
-// pure planner is under test here.
-vi.mock('../packages', () => ({
-  listPackages: vi.fn(async () => []),
-  linkLocalPackage: vi.fn(async () => ({ ok: true }))
-}))
-vi.mock('../store', () => ({
-  getStore: vi.fn(() => undefined),
-  setStore: vi.fn()
-}))
-vi.mock('electron', () => ({
-  app: {
-    isPackaged: false,
-    getAppPath: () => process.cwd(),
-    getPath: () => './'
-  }
-}))
-
-import { listPackages, linkLocalPackage } from '../packages'
+const state = vi.hoisted(() => ({ appRoot: '', packaged: false }))
+vi.mock('../packages', () => ({ listPackagesStrict: vi.fn(), linkLocalPackage: vi.fn() }))
+vi.mock('../store', () => ({ getStore: vi.fn(), setStore: vi.fn() }))
+vi.mock('electron', () => ({ app: { get isPackaged() { return state.packaged }, getAppPath: () => state.appRoot, getPath: () => './' } }))
+import { listPackagesStrict, linkLocalPackage } from '../packages'
 import { getStore, setStore } from '../store'
-import {
-  BUNDLED_PACKAGES,
-  ensureBundledPackages,
-  planBundledPackageAction,
-  readBundledPackageVersion
-} from '../bundledPackages'
+import { BUNDLED_PACKAGES, bundledCompatibilityStamp, bundledResourcePath, ensureBundledPackages, planBundledPackageAction, readBundledPackageVersion } from '../bundledPackages'
+import { isRuntimePreparing } from '../runtimePreparationGate'
 
-const mockList = vi.mocked(listPackages)
-const mockLink = vi.mocked(linkLocalPackage)
-const mockGet = vi.mocked(getStore)
-const mockSet = vi.mocked(setStore)
-
-describe('planBundledPackageAction', () => {
-  it('links a package the app has never linked and the runtime does not list', () => {
-    expect(
-      planBundledPackageAction({ installed: false, userRemoved: false }, '0.1.0')
-    ).toBe('link')
-  })
-
-  it('skips when the runtime lists the linked version', () => {
-    expect(
-      planBundledPackageAction(
-        { installed: true, linkedVersion: '0.1.0', userRemoved: false },
-        '0.1.0'
-      )
-    ).toBe('skip')
-  })
-
-  it('stamps a newer bundled version without re-linking when the package is present', () => {
-    expect(
-      planBundledPackageAction(
-        { installed: true, linkedVersion: '0.1.0', userRemoved: false },
-        '0.2.0'
-      )
-    ).toBe('mark')
-    // Also when the stamp is missing entirely (package was installed by hand).
-    expect(planBundledPackageAction({ installed: true, userRemoved: false }, '0.1.0')).toBe('mark')
-  })
-
-  it('records user removal when a previously linked package disappears', () => {
-    expect(
-      planBundledPackageAction(
-        { installed: false, linkedVersion: '0.1.0', userRemoved: false },
-        '0.1.0'
-      )
-    ).toBe('note-removed')
-  })
-
-  it('never re-adds a package the user removed', () => {
-    expect(
-      planBundledPackageAction(
-        { installed: false, linkedVersion: '0.1.0', userRemoved: true },
-        '0.2.0'
-      )
-    ).toBe('skip')
-  })
-
-  it('does nothing when the bundled manifest is unreadable', () => {
-    expect(planBundledPackageAction({ installed: false, userRemoved: false }, null)).toBe('skip')
-    expect(
-      planBundledPackageAction({ installed: true, linkedVersion: '0.1.0', userRemoved: false }, null)
-    ).toBe('skip')
-  })
+const mockList = vi.mocked(listPackagesStrict), mockLink = vi.mocked(linkLocalPackage), mockGet = vi.mocked(getStore), mockSet = vi.mocked(setStore)
+const first = BUNDLED_PACKAGES[0]
+let fixture: string, registry: PackageInfo[], receipts: AppSettings['bundledPackages']
+const row = (root: string, enabled = true, name = first.name): PackageInfo => ({ name, source: `omp:npm:user:${first.name}`, commandSource: first.name, kind: 'npm', path: root, enabled, resources: [], pinned: false })
+function appRoot(label: string): string {
+  const root = path.join(fixture, label)
+  mkdirSync(root, { recursive: true })
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'toushou', main: 'dist-electron/main/index.js' }))
+  for (const pkg of BUNDLED_PACKAGES) {
+    const folder = path.join(root, 'resources', pkg.resourceDir)
+    mkdirSync(folder, { recursive: true })
+    const actual = JSON.parse(readFileSync(path.join(process.cwd(), 'resources', pkg.resourceDir, 'package.json'), 'utf8'))
+    writeFileSync(path.join(folder, 'package.json'), JSON.stringify(actual))
+  }
+  return realpathSync(root)
+}
+beforeEach(() => {
+  fixture = mkdtempSync(path.join(tmpdir(), 'bundled-managed-test-'))
+  state.appRoot = appRoot('beta'); state.packaged = false
+  registry = []
+  receipts = Object.fromEntries(BUNDLED_PACKAGES.slice(1).map(pkg => [pkg.name, { version: 'kept-user-choice', userRemoved: true }]))
+  mockList.mockReset().mockImplementation(async () => registry)
+  mockGet.mockReset().mockImplementation(() => receipts as never)
+  mockSet.mockReset().mockImplementation((_key, value) => { receipts = structuredClone(value) as AppSettings['bundledPackages'] })
+  mockLink.mockReset().mockImplementation(async root => { registry = [row(root)]; return { ok: true, log: '' } })
 })
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); state.appRoot = process.cwd(); rmSync(fixture, { recursive: true, force: true }) })
 
-describe('ensureBundledPackages', () => {
-  const firstPkg = BUNDLED_PACKAGES[0]
-  const firstVersion = readBundledPackageVersion(firstPkg.resourceDir)
-
-  beforeEach(() => {
-    mockList.mockReset()
-    mockGet.mockReset().mockReturnValue(undefined as never)
-    mockSet.mockReset()
+describe('managed package preparation', () => {
+  it('requires actual managed/current roots rather than trusting a name and version', () => {
+    expect(planBundledPackageAction({ installed: false, userRemoved: false }, '1')).toBe('link')
+    expect(planBundledPackageAction({ installed: true, userRemoved: false, linkedVersion: '1' }, '1')).toBe('skip')
+    expect(planBundledPackageAction({ installed: true, managed: true, userRemoved: false, currentPath: false }, '1')).toBe('link')
+    expect(planBundledPackageAction({ installed: true, managed: true, currentPath: true, receiptCurrent: true, userRemoved: false }, '1')).toBe('skip')
+    expect(planBundledPackageAction({ installed: true, managed: true, currentPath: true, userRemoved: false }, '1')).toBe('mark')
+    expect(planBundledPackageAction({ installed: false, linkedVersion: '1', userRemoved: false }, '1')).toBe('note-removed')
+    expect(planBundledPackageAction({ installed: true, managed: true, enabled: false, userRemoved: false }, '1')).toBe('skip')
+    expect(planBundledPackageAction({ installed: false, userRemoved: true }, '1')).toBe('skip')
+    expect(planBundledPackageAction({ installed: false, userRemoved: false }, null)).toBe('skip')
   })
-
-  it('never infers removal from a failed package listing', async () => {
-    // Cold-start CLI timeout: the listing throws. Previously every bundled
-    // package was stamped userRemoved=true by this path.
-    mockList.mockRejectedValue(new Error('spawn timeout'))
-    mockGet.mockReturnValue({
-      [firstPkg.name]: { version: firstVersion ?? '0.1.0', userRemoved: false }
-    })
+  it('links and verifies a fresh package, then does no redundant relink', async () => {
+    expect(await ensureBundledPackages()).toEqual({ ok: true, failed: [] })
+    const target = bundledResourcePath(first.resourceDir), version = readBundledPackageVersion(first.resourceDir)!
+    expect(receipts[first.name]).toEqual({ version: bundledCompatibilityStamp(version, target), manifestVersion: version, resourcePath: target, userRemoved: false })
+    expect(mockList).toHaveBeenCalledTimes(2)
+    mockLink.mockClear()
     await ensureBundledPackages()
+    expect(mockLink).not.toHaveBeenCalled()
+  })
+  it('restores the correct roots across same-version Beta → actual legacy-stable algorithm → Beta', async () => {
+    const stable = appRoot('stable'), stableTarget = path.join(stable, 'resources', first.resourceDir)
+    const version = readBundledPackageVersion(first.resourceDir)!
+    receipts[first.name] = { version, userRemoved: false }
+    registry = [row(stableTarget)]
+    await ensureBundledPackages()
+    const beta = bundledResourcePath(first.resourceDir)
+    expect(registry[0].path).toBe(beta)
+    // These are the old stable 2.3.1 branches: installed name + stamp mismatch,
+    // then re-link and overwrite the receipt with only plain version/removal.
+    expect(receipts[first.name].version).not.toBe(version)
+    if (registry.some(pkg => pkg.name === first.name) && receipts[first.name].version !== version) {
+      await mockLink(stableTarget)
+      receipts[first.name] = { version, userRemoved: false }
+    }
+    expect(registry[0].path).toBe(stableTarget)
+    await ensureBundledPackages()
+    expect(registry[0].path).toBe(beta)
+    expect(receipts[first.name].manifestVersion).toBe(version)
+  })
+  it('recognizes legacy Pi display names from the actual package manifest', async () => {
+    const stable = appRoot('stable')
+    registry = [row(path.join(stable, 'resources', first.resourceDir), true, 'Synthetic translated display name')]
+    receipts[first.name] = { version: readBundledPackageVersion(first.resourceDir)!, userRemoved: false }
+    await ensureBundledPackages()
+    expect(mockLink).toHaveBeenCalledWith(bundledResourcePath(first.resourceDir), expect.any(Object))
+    expect(receipts[first.name].userRemoved).toBe(false)
+  })
+  it('preserves namesakes even when an old app receipt exists', async () => {
+    const foreign = path.join(fixture, 'user-plugin')
+    mkdirSync(foreign); writeFileSync(path.join(foreign, 'package.json'), JSON.stringify({ name: first.name, version: '999' }))
+    registry = [row(foreign)]
+    receipts[first.name] = { version: 'old-managed-version', userRemoved: false }
+    await ensureBundledPackages()
+    expect(mockLink).not.toHaveBeenCalled()
     expect(mockSet).not.toHaveBeenCalled()
   })
-
-  it('still records removal when a listing succeeds without the package', async () => {
-    mockList.mockResolvedValue([])
-    mockGet.mockReturnValue({
-      [firstPkg.name]: { version: firstVersion ?? '0.1.0', userRemoved: false }
-    })
+  it('preserves disabled packages and explicit user removals without changing receipts', async () => {
+    const stable = appRoot('stable')
+    registry = [row(path.join(stable, 'resources', first.resourceDir), false)]
+    receipts[first.name] = { version: 'previous', userRemoved: false }
     await ensureBundledPackages()
-    expect(mockSet).toHaveBeenCalledTimes(1)
-    const record = mockSet.mock.calls[0][1] as Record<string, { userRemoved: boolean }>
-    expect(record[firstPkg.name].userRemoved).toBe(true)
+    expect(mockLink).not.toHaveBeenCalled(); expect(mockSet).not.toHaveBeenCalled()
+    registry = []
+    receipts[first.name].userRemoved = true
+    await ensureBundledPackages()
+    expect(mockLink).not.toHaveBeenCalled(); expect(mockSet).not.toHaveBeenCalled()
   })
-
-  it('links a package the successful listing does not know yet', async () => {
-    mockList.mockResolvedValue([])
-    mockGet.mockReturnValue(undefined as never)
+  it('notes removal only after an authoritative successful list and retries unavailable probes', async () => {
+    receipts[first.name] = { version: 'previous', userRemoved: false }
+    mockList.mockRejectedValueOnce(new Error('private CLI error'))
+    expect(await ensureBundledPackages()).toMatchObject({ ok: false })
+    expect(mockSet).not.toHaveBeenCalled()
     await ensureBundledPackages()
-    const record = mockSet.mock.calls[0][1] as Record<string, { userRemoved: boolean }>
-    expect(record[firstPkg.name].userRemoved).toBe(false)
+    expect(receipts[first.name].userRemoved).toBe(true)
   })
-
-  it('relinks our own stale link when the bundle carries a newer toolkit', async () => {
-    // The old 'stamp-only' behavior left agents running stale tools forever.
-    mockLink.mockClear()
-    mockList.mockResolvedValue([{ name: firstPkg.name } as never])
-    mockGet.mockReturnValue({
-      [firstPkg.name]: { version: '0.0.1', userRemoved: false }
-    })
-    await ensureBundledPackages()
-    expect(mockLink).toHaveBeenCalled()
-    const record = mockSet.mock.calls[0][1] as Record<string, { version: string }>
-    expect(record[firstPkg.name].version).toBe(firstVersion)
+  it('never upgrades a receipt on failed links, false-success targets, or failed verification', async () => {
+    mockLink.mockResolvedValueOnce({ ok: false, log: 'private upstream error' })
+    expect(await ensureBundledPackages()).toMatchObject({ ok: false })
+    expect(receipts[first.name]).toBeUndefined()
+    mockLink.mockResolvedValueOnce({ ok: true, log: '' })
+    expect(await ensureBundledPackages()).toMatchObject({ ok: false })
+    expect(receipts[first.name]).toBeUndefined()
+    mockList.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('unavailable'))
+    expect(await ensureBundledPackages()).toMatchObject({ ok: false })
+    expect(receipts[first.name]).toBeUndefined()
   })
-
-  it('never touches a same-named package the app did not link itself', async () => {
-    mockLink.mockClear()
-    mockList.mockResolvedValue([{ name: firstPkg.name } as never])
-    // No record = someone else installed this name; a relink would stomp it.
-    mockGet.mockReturnValue(undefined as never)
+  it('shares in-flight work and stops at a real 30 second preparation budget', async () => {
+    vi.useFakeTimers()
+    delete receipts[BUNDLED_PACKAGES[1].name]
+    let release!: () => void
+    mockList.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve([]) }))
+    const firstCall = ensureBundledPackages(), secondCall = ensureBundledPackages()
+    expect(secondCall).toBe(firstCall); expect(isRuntimePreparing()).toBe(true)
+    release()
+    mockLink.mockImplementation(async () => { await new Promise(resolve => setTimeout(resolve, 15_000)); return { ok: false, log: '' } })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(await firstCall).toMatchObject({ ok: false })
+    expect(mockLink).toHaveBeenCalledTimes(2)
+    expect(mockLink.mock.calls.every(call => call[1]!.timeoutMs! <= 15_000)).toBe(true)
+    expect(isRuntimePreparing()).toBe(false)
+    expect(mockSet).not.toHaveBeenCalled()
+  })
+  it('resolves runtime symlinks before comparing with the managed bundle root', async () => {
+    const target = bundledResourcePath(first.resourceDir), alias = path.join(fixture, 'linked-plugin')
+    symlinkSync(target, alias, 'junction')
+    registry = [row(alias)]
     await ensureBundledPackages()
-    const firstPath = JSON.stringify(firstPkg.resourceDir)
-    expect(mockLink.mock.calls.some((call) => JSON.stringify(call[0]).includes(firstPath))).toBe(false)
+    expect(mockLink).not.toHaveBeenCalled()
+    expect(receipts[first.name].resourcePath).toBe(target)
   })
 })
 
 describe('packaged toolkit resource layout', () => {
   it('registers the AppsFlyer read-only toolkit for fresh installs', () => {
     expect(BUNDLED_PACKAGES).toContainEqual({ name: 'toushou-appsflyer-toolkit', resourceDir: 'appsflyer-toolkit' })
-    expect(readBundledPackageVersion('appsflyer-toolkit')).toBe('0.1.0')
+    expect(readBundledPackageVersion('appsflyer-toolkit')).toBe('0.2.0')
   })
 
   it('places every registered toolkit at the external path used by the runtime', async () => {

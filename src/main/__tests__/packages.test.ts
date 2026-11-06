@@ -28,6 +28,7 @@ import {
   parseOmpPluginCapabilities,
   parseOmpPluginList,
   listPackages,
+  listPackagesStrict,
   setPackageEnabled,
   resourceEntries,
   normalizeOmpPluginSource
@@ -314,6 +315,33 @@ describe('setPackageEnabled', () => {
 })
 
 describe('current OMP plugin output', () => {
+  it('keeps display fallback empty but refuses failed or malformed authoritative probes', async () => {
+    cliState.cli = { command: 'omp', path: '/fake/omp', available: true }
+    mockCliResult('', 1)
+    await expect(listPackages(dir)).resolves.toEqual([])
+    mockCliResult('', 1)
+    await expect(listPackagesStrict(dir)).rejects.toThrow('package-list-unavailable')
+    for (const raw of ['invalid json', '{}', '{"npm":[{}]}', '{"npm":"wrong"}']) {
+      mockCliResult(raw)
+      await expect(listPackagesStrict(dir)).rejects.toThrow('package-list-unavailable')
+    }
+    mockCliResult('{"npm":[],"marketplace":[]}')
+    await expect(listPackagesStrict(dir)).resolves.toEqual([])
+  })
+
+  it('kills and settles a timed-out authoritative probe within the caller deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      cliState.cli = { command: 'omp', path: '/fake/omp', available: true }
+      const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() })
+      proc.kill.mockImplementation(() => { queueMicrotask(() => proc.emit('exit', null)); return true })
+      cliState.spawn.mockReturnValueOnce(proc)
+      const result = listPackagesStrict(dir, { timeoutMs: 200 }).catch(error => error)
+      await vi.advanceTimersByTimeAsync(200)
+      expect(await result).toMatchObject({ message: 'package-list-unavailable' })
+      expect(proc.kill).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
+  })
   it('uses native list output instead of stale legacy settings.json', async () => {
     writeSettings({ packages: ['npm:legacy-only'] })
     cliState.cli = { command: 'omp', path: '/fake/omp', available: true }

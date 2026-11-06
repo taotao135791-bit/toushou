@@ -1582,8 +1582,8 @@ export interface AppSettings {
   sessionSort: SessionSortOrder
   /** Sidebar: last drag-chosen width in px; the renderer clamps it on read. */
   sidebarWidth: number
-  /** Version stamps + user-removal marks for app-bundled packages. */
-  bundledPackages: Record<string, { version: string; userRemoved: boolean }>
+  /** Managed links. version is also a compatibility stamp for older apps. */
+  bundledPackages: Record<string, { version: string; userRemoved: boolean; manifestVersion?: string; resourcePath?: string }>
   /** Experimental one-click Feishu PersonalAgent registration. */
   feishuExperimentalPersonalAgentRegistration: boolean
   /** Show developer chrome in the chat header (Git branch chip). Default off. */

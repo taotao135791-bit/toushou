@@ -144,7 +144,7 @@ small, deliberately varied sample.
 
 ## Application validation
 
-The final local Beta baseline passed TypeScript checking, 2,654 unit/integration
+The earlier local Beta baseline passed TypeScript checking, 2,654 unit/integration
 tests (two skipped), 24 OMP compatibility tests and the production build.
 Subsequent focused checks passed for the report-date suffix, snapshot guidance
 and final table palette/date-wrapping adjustments. Electron fixtures
@@ -170,4 +170,25 @@ account-calendar test whose local-time fixture differed on UTC runners. The
 file is now reopened with write access before fsync; no durability check was
 removed. The date fixture uses an explicit UTC instant and passes in both UTC
 and Asia/Shanghai, with the production scope guard unchanged. The next
-candidate is `beta-v2.4.0-beta.2`; the failed tag is preserved rather than moved.
+candidate, `beta-v2.4.0-beta.2`, passed both platforms' full suites and OMP
+compatibility checks but was deliberately canceled before publication. A final
+existing-profile audit found that same-version bundled toolkits could remain
+linked to the stable app's resource directory, leaving the new Main bridge with
+old tool schemas. No Beta release was published from either tag. The next
+candidate is `beta-v2.4.0-beta.3`; earlier tags are preserved rather than moved.
+
+The follow-up covers both the actual installed resource root and the startup
+ordering. A credential-free real-OMP acceptance test links same-name,
+same-version packages across stable → Beta → stable → Beta directories and
+verifies the registry's resolved code path at every step. Main startup tests
+hold the synchronization promise pending and verify that IPC/scheduler, the
+window and remote sessions cannot start ahead of it. Optional tooling errors
+remain recoverable; explicitly disabled/removed or independently installed
+packages are not claimed as app-managed.
+
+The bundled-profile follow-up passed 50 focused package tests and seven startup/session tests,
+TypeScript checking and the production build. The real-runtime suite passed
+25 tests locally (OMP 17.2.7; legacy Pi was unavailable). The final clean
+dual-platform CI uses the repository's pinned OMP version. A duplicate local
+full-suite rerun was stopped at the maintainer's request; publication still
+requires the clean CI suite and packaged smoke checks.

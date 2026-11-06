@@ -18,6 +18,7 @@ import {
 import { detectCli, executableSearchDirs } from './omp'
 import { defaultPiAgentDir, readPiSettings, writePiSettings, PiSettings } from './piSettings'
 import { spawnCommand } from './command'
+import { beginRuntimePreparation } from './runtimePreparationGate'
 
 export { defaultPiAgentDir } from './piSettings'
 
@@ -475,7 +476,7 @@ interface CliCommandResult extends PackageActionResult {
 function runCli(
   args: string[],
   cli = detectCli(),
-  options: { preserveStdout?: boolean; timeoutMs?: number } = {}
+  options: { preserveStdout?: boolean; timeoutMs?: number; preparation?: boolean } = {}
 ): Promise<CliCommandResult> {
   if (!cli.available) {
     return Promise.resolve({ ok: false, log: 'omp/pi CLI not found', stdout: '', stderr: '' })
@@ -510,7 +511,20 @@ function runCli(
     proc.stdout?.on('data', append('stdout'))
     proc.stderr?.on('data', append('stderr'))
     timer = setTimeout(() => {
-      proc.kill()
+      if (options.preparation) {
+        // Return the bounded failure, but keep session creation gated until
+        // the actual child closes. command.ts force-kills Windows cmd trees.
+        const release = beginRuntimePreparation()
+        let closed = false
+        const cleanup = setTimeout(() => {
+          if (!closed) { proc.kill('SIGKILL'); console.warn('[packages] timed-out-command-termination-unverified') }
+        }, 1000)
+        cleanup.unref()
+        const done = () => { closed = true; clearTimeout(cleanup); release() }
+        proc.once('exit', done)
+        proc.once('close', done)
+        proc.kill('SIGKILL')
+      } else proc.kill()
       finish(false, 'timed out')
     }, options.timeoutMs ?? PI_COMMAND_TIMEOUT_MS)
     proc.on('error', (err) => finish(false, err.message))
@@ -518,15 +532,27 @@ function runCli(
   })
 }
 
-async function listCurrentOmpPackages(cli = detectCli()): Promise<PackageInfo[]> {
+async function listCurrentOmpPackages(cli = detectCli(), strict = false, timeoutMs = PACKAGE_PROBE_TIMEOUT_MS): Promise<PackageInfo[]> {
   const result = await runCli(['plugin', 'list', '--json'], cli, {
     preserveStdout: true,
-    timeoutMs: PACKAGE_PROBE_TIMEOUT_MS
+    timeoutMs,
+    preparation: strict
   })
-  if (!result.ok) return []
+  if (!result.ok) {
+    if (strict) throw new Error('package-list-unavailable')
+    return []
+  }
   try {
-    return parseOmpPluginList(JSON.parse(result.stdout))
+    const raw: unknown = JSON.parse(result.stdout)
+    if (strict) {
+      const root = asRecord(raw)
+      if (!root || (!Array.isArray(root.npm) && !Array.isArray(root.marketplace)) ||
+        (root.npm !== undefined && (!Array.isArray(root.npm) || root.npm.some(item => !stringValue(asRecord(item)?.name)))) ||
+        (root.marketplace !== undefined && (!Array.isArray(root.marketplace) || root.marketplace.some(item => !stringValue(asRecord(item)?.id))))) throw new Error('invalid-package-list')
+    }
+    return parseOmpPluginList(raw)
   } catch {
+    if (strict) throw new Error('package-list-unavailable')
     return []
   }
 }
@@ -551,6 +577,23 @@ export async function listPackages(piAgentDir: string = defaultPiAgentDir()): Pr
     return cli.available ? listCurrentOmpPackages(cli) : []
   }
   return parsePackages(readPiSettings(piAgentDir), piAgentDir)
+}
+
+/** Ownership/removal decisions must not use the display API's empty fallback. */
+export async function listPackagesStrict(piAgentDir: string = defaultPiAgentDir(), options: { timeoutMs?: number } = {}): Promise<PackageInfo[]> {
+  const cli = detectCli()
+  if (cli.command === 'omp') {
+    if (!cli.available) throw new Error('package-list-unavailable')
+    return listCurrentOmpPackages(cli, true, options.timeoutMs ?? PACKAGE_PROBE_TIMEOUT_MS)
+  }
+  let raw: unknown
+  try { raw = JSON.parse(readFileSync(path.join(piAgentDir, 'settings.json'), 'utf8')) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw new Error('package-list-unavailable')
+  }
+  const settings = asRecord(raw)
+  if (!settings || (settings.packages !== undefined && (!Array.isArray(settings.packages) || settings.packages.some(item => !entrySource(item))))) throw new Error('package-list-unavailable')
+  return parsePackages(settings as PiSettings, piAgentDir)
 }
 
 export async function setPackageEnabled(
@@ -615,9 +658,9 @@ export function installPackage(source: string): Promise<PackageActionResult> {
  * keeps a symlink so saving a handwritten plugin source can take effect after
  * the next session/reload; legacy Pi only has its local install primitive.
  */
-export function linkLocalPackage(source: string): Promise<PackageActionResult> {
+export function linkLocalPackage(source: string, options: { timeoutMs?: number; preparation?: boolean } = {}): Promise<PackageActionResult> {
   const cli = detectCli()
-  return runCli(cli.command === 'omp' ? ['plugin', 'link', source] : ['install', source], cli)
+  return runCli(cli.command === 'omp' ? ['plugin', 'link', source] : ['install', source], cli, options)
 }
 
 /**

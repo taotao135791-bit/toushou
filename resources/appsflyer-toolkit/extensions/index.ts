@@ -65,7 +65,7 @@ async function invoke(name: 'get_apps' | 'analytics_fetch_aggregated_data', args
       if (!payload || payload.jsonrpc !== '2.0' || payload.id !== requestId || payload.error || !object(payload.result)) throw new Error('invalid-response')
       return object(payload.result)!
     }
-    await send('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'toushou-appsflyer-toolkit', version: '0.1.0' } })
+    await send('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'toushou-appsflyer-toolkit', version: '0.2.0' } })
     await send('notifications/initialized', {}, true)
     const result = await send('tools/call', { name, arguments: args })
     if (result.isError) throw new Error('query-failed')

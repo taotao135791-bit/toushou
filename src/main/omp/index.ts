@@ -37,6 +37,7 @@ import { canonicalExistingPath } from '../canonicalPath'
 import { SessionBridgePermissionRegistry } from './bridgePermissions'
 import { extensionExternalLinkMessage } from './extensionLinks'
 import { registerBoardBuildTurn, revokeBoardBuildSession } from '../boardBuilds'
+import { isRuntimePreparing } from '../runtimePreparationGate'
 import {
   detectCli,
   noteHandshake,
@@ -163,6 +164,17 @@ export function createSession(
 ): Session {
   if (isProjectDeletionInProgress(cwd)) throw new Error('project-deletion-in-progress')
   const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  // The binary may become visible before installation/relinking finishes.
+  // Keep interactive, task and Feishu spawns on the same synchronous gate.
+  if (isRuntimePreparing()) {
+    setTimeout(() => onEvent({
+      type: 'error', sessionId: id, recoverable: true,
+      message: getStore('language') === 'en'
+        ? 'Runtime setup is still finishing. Please try again shortly.'
+        : '运行环境正在准备，请稍后重试。'
+    }), 0)
+    return { id, cwd, title: 'Preparing runtime', createdAt: Date.now(), status: 'error' }
+  }
   const cli = detectCli()
 
   if (!cli.available) {

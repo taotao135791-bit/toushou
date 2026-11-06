@@ -1,6 +1,6 @@
 {
   "name": "toushou-appsflyer-toolkit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "投手 AppsFlyer 只读查询工具",
   "displayName": "AppsFlyer 只读工具",
   "author": "投手团队",

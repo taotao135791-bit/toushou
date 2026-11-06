@@ -132,7 +132,6 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   console.info(`[app] starting TouShou ${app.getVersion()} (${process.platform}, electron ${process.versions.electron})`)
-  registerIpc()
   try {
     if (!pruneOrphanedHtmlBoards().ok) console.warn('[boards] HTML cleanup needs retry from the boards page')
   } catch { console.warn('[boards] HTML cleanup deferred until local storage is readable') }
@@ -178,11 +177,18 @@ app.whenReady().then(async () => {
   // skill must exist in every install (idempotent, version-upgrading).
   const kernelSkill = ensureKernelSkill()
   if (!kernelSkill.ok) console.warn('[kernel-skill] install failed:', kernelSkill.error)
+  // A runtime loads package extensions when the session process starts. Finish
+  // relinking this app's bundled resources before IPC starts the scheduler or
+  // exposes session creation to the first window (including cold CLI starts).
+  try {
+    const preparation = await ensureBundledPackages()
+    if (!preparation.ok) console.warn('[bundled-packages] startup preparation incomplete', preparation.failed)
+  } catch (error) {
+    console.warn('[bundled-packages] startup preparation failed', error)
+  }
+  registerIpc()
   createWindow()
   initUpdater()
-  // Fire-and-forget: links bundled packages (e.g. the ads toolkit) into the
-  // runtime when detected; no-ops once linked or after user removal.
-  void ensureBundledPackages()
   // Background-only recovery: GUI creation is never held up by Feishu DNS or
   // WebSocket handshake latency.
   void feishuConnectionManager.initialize()
