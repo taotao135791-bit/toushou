@@ -6,6 +6,13 @@ import { publishMetaReading } from './metaReadingStore'
 import type { MetaReadingSummary } from '@shared/metaReading'
 
 describe('native Meta board metrics', () => {
+  it('explains that relative date ranges follow the computer calendar, not necessarily the account day', () => {
+    const reader = metaAdsPreset(key => key)[0]
+    const html = renderToStaticMarkup(<WidgetBody widget={reader} datasets={[]} boardId="synthetic" onConfigChange={() => {}} />)
+    expect(html).toContain('Date ranges use this computer’s calendar')
+    expect(html).toContain('may differ from today in the account timezone')
+    expect(html).toContain('unverified')
+  })
   it('renders missing readings as unknown rather than zero or an embedded report', () => {
     const widget = { ...metaAdsPreset(key => key)[1], config: { source: 'manual', value: null } }
     const empty = renderToStaticMarkup(<WidgetBody widget={widget} datasets={[]} boardId="synthetic" onConfigChange={() => {}} />)

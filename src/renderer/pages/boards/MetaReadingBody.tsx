@@ -66,6 +66,6 @@ export function MetaReadingBody({ widget, onConfigChange }: { widget: BoardWidge
     {partial && <p>{zh ? '账户列表尚有后续分页，仅展示当前返回的账户。' : 'Account list is partial; only returned accounts are selectable.'}</p>}
     {summary && !summary.rows.length && <p>{zh ? '该范围没有返回明细，不将缺失值填成零。' : 'No rows returned for this range.'}</p>}
     <div className="grid grid-cols-2 gap-3">{labels.map((label, index) => <div key={label} className="rounded-xl bg-ink-850 px-2.5 py-2"><div className="text-cream-faint">{label}</div><div className="text-[20px] font-semibold tabular-nums text-cream">{values[index]}</div></div>)}</div>
-    <p className="text-cream-faint">Pipeboard Meta Ads MCP · {zh ? '只读 · 账户统计日；时区' : 'Read only · Account reporting dates; timezone'}: {summary?.account.timezone ?? (zh ? '待确认' : 'unverified')}{summary ? ` · ${zh ? '读取于' : 'Read at'} ${new Date(summary.readAt).toLocaleString()}` : ''}</p>
+    <p className="text-cream-faint">Pipeboard Meta Ads MCP · {zh ? '只读 · 日期范围按本机日历，可能与账户时区的今天不同；账户时区' : 'Read only · Date ranges use this computer’s calendar and may differ from today in the account timezone; account timezone'}: {summary?.account.timezone ?? (zh ? '待确认' : 'unverified')}{summary ? ` · ${zh ? '读取于' : 'Read at'} ${new Date(summary.readAt).toLocaleString()}` : ''}</p>
   </div>
 }
