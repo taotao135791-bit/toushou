@@ -1,3 +1,4 @@
+import { suspendedFacebookBrowserResult } from './legacyFacebookBrowser'
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
 import { canonicalExistingPath } from './canonicalPath'
@@ -16,19 +17,15 @@ import { exportReadingSnapshot } from './readingSnapshotExport'
 import { loadOrCreateHtmlBoard, findHtmlBoardForReading, saveHtmlBoard, exportHtmlBoard, removeHtmlBoardsForBoard, pruneHtmlBoardsForBoard, pruneOrphanedHtmlBoards } from './htmlBoards'
 import { getBoardHighlightEvidence, validateBoardHighlights, applyBoardHighlights } from './boardHighlights'
 import { requestHtmlBoardAiEdit, cancelHtmlBoardAiEdit, cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
-import { parseFbReportReference } from '../shared/fbReportReference'
 import { validGoogleReportUrl } from '../shared/googleReport'
 import { autoFetchGoogleReportCsv } from './googleReportAutoFetch'
 import { importGoogleReportFile, readGoogleReportReadings } from './googleReportReadings'
 import { announceNamedTask, createSessionNamer, indexSessionTitleOverlays, normalizeSessionTitleFile, removeSessionTitleOverlays } from './sessionNaming'
 import { initSessionTopicBridge, revokeSessionTopicBridge } from './sessionTopicBridge'
-import type { FbReadingAccountRef, FbReadingRange } from '../shared/fbReading'
-import { isValidFbReadingAct, isValidFbReadingBusinessId, parseFbCustomWindow } from '../shared/fbReading'
+import type { FbReadingAccountRef } from '../shared/fbReading'
+import { isValidFbReadingAct, isValidFbReadingBusinessId } from '../shared/fbReading'
 import {
   captureFbReadingAccountFromPanel,
-  discoverFbReadingAccounts,
-  refreshBoardFbReading,
-  refreshFbAccountBalance
 } from './browserUse'
 import { listFbReadings } from './fbReadings'
 import { listFbAccountBalances } from './fbBalances'
@@ -238,8 +235,17 @@ import { TikTokReadingRequests } from './integrations/tiktok/tiktokReadingReques
 import { setTikTokReadingAdvertisers } from './integrations/tiktok/tiktokReadingAdvertisers'
 import { setTikTokOAuthCredentialLoader } from './integrations/tiktok/resolveTikTokToken'
 import { importFbReportFile, readFbReportReadings } from './fbReportReadings'
-import { autoFetchFbReportCsv, FbReportFetchRange } from './fbReportAutoFetch'
 import { FigmaConnectionManager } from './integrations/figma/FigmaConnectionManager'
+import {
+  initializeMetaAdsConnection,
+  getMetaAdsConnectionSnapshot,
+  readMetaBoard,
+  beginMetaAdsConnection,
+  cancelMetaAdsConnection,
+  disconnectMetaAdsConnection,
+  openMetaAdsAuthorizationUrl,
+  shutdownMetaAdsConnection
+} from './metaConnection'
 import {
   initializeAppsFlyerConnection,
   getAppsFlyerConnectionSnapshot,
@@ -723,6 +729,7 @@ function redactScaffoldOutputLog(value: unknown, canonicalDir: string): string {
  */
 export function shutdownSessionsForQuit(): void {
   void shutdownAppsFlyerConnection().catch(() => {})
+  void shutdownMetaAdsConnection().catch(() => {})
   try {
     killAllSessions()
   } catch {
@@ -739,6 +746,7 @@ export function registerIpc() {
   // the refresh schedule); never opens anything without a stored credential.
   void tiktokAdsConnectionManager.initialize()
   void initializeAppsFlyerConnection()
+  void initializeMetaAdsConnection()
   // Restore the Figma Dev Mode MCP entry and probe whether the Figma desktop
   // app is currently serving (the endpoint is loopback, no secrets involved).
   void figmaConnectionManager.initialize()
@@ -925,6 +933,21 @@ export function registerIpc() {
     return tiktokAdsConnectionManager.openAuthorizationUrl(url)
   })
 
+  // MetaAds uses the same Main-owned grant for its card and read-only tools.
+  // Neither official OAuth credentials nor arbitrary tool calls cross this IPC.
+  ipcMain.handle(IPC_CHANNELS.META_ADS_STATUS, async () => {
+    await initializeMetaAdsConnection()
+    return getMetaAdsConnectionSnapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.META_ADS_READING, (_event, input: unknown) => readMetaBoard(input))
+  ipcMain.handle(IPC_CHANNELS.META_ADS_BEGIN, () => beginMetaAdsConnection())
+  ipcMain.handle(IPC_CHANNELS.META_ADS_CANCEL, () => cancelMetaAdsConnection())
+  ipcMain.handle(IPC_CHANNELS.META_ADS_DISCONNECT, () => disconnectMetaAdsConnection())
+  ipcMain.handle(IPC_CHANNELS.META_ADS_OPEN_URL, (_event, url: unknown) => {
+    if (typeof url !== 'string' || url.length > 16384) return false
+    return openMetaAdsAuthorizationUrl(url)
+  })
+
   // AppsFlyer uses the same Main-owned grant for its card and read-only tools.
   // Neither official OAuth credentials nor arbitrary tool calls cross this IPC.
   ipcMain.handle(IPC_CHANNELS.APPSFLYER_STATUS, async () => {
@@ -1022,31 +1045,9 @@ export function registerIpc() {
     if (!widgetId) return null
     return readFbReportReadings()[widgetId] ?? null
   })
-  // Automated export: hidden panel opens the named saved report and downloads
-  // the CSV (read-only — never clicks 保存, never touches report settings).
-  // The downloaded file flows through the same verified import as a manual one.
-  ipcMain.handle(IPC_CHANNELS.FB_REPORT_AUTO_FETCH, async (_event, raw: unknown) => {
-    const input = (raw ?? {}) as { widgetId?: unknown; reportName?: unknown; reportId?: unknown; range?: unknown }
-    const widgetId =
-      typeof input.widgetId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(input.widgetId) ? input.widgetId : null
-    const reportName =
-      typeof input.reportName === 'string' ? input.reportName.trim().slice(0, 80) : ''
-    const hasReference = input.reportId !== undefined && input.reportId !== null && input.reportId !== ''
-    const reference = hasReference ? parseFbReportReference(input.reportId) : null
-    if (hasReference && !reference) {
-      return { ok: false, fetchError: 'fetch-failed', detail: '报表 ID 或链接无效，请复制 FB 已保存报表的完整链接。' }
-    }
-    const reportId = reference ? reference.url ?? reference.reportId : undefined
-    const range =
-      input.range === 'today' || input.range === 'last7' || input.range === 'last30'
-        ? (input.range as FbReportFetchRange)
-        : undefined
-    if (!widgetId || !reportName) return { ok: false, error: 'invalid-widget' }
-    const fetch = await autoFetchFbReportCsv(reportName, reportId, range)
-    if (!fetch.ok || !fetch.filePath) {
-      return { ok: false, fetchError: fetch.error ?? 'fetch-failed', detail: fetch.detail }
-    }
-    return importFbReportFile(widgetId, fetch.filePath)
+  // Keep the old channel callable, but fail before opening an export panel.
+  ipcMain.handle(IPC_CHANNELS.FB_REPORT_AUTO_FETCH, async () => {
+    return suspendedFacebookBrowserResult()
   })
 
   // Google links and file paths remain Main-owned. A failed refresh keeps the last verified reading.
@@ -2825,41 +2826,12 @@ export function registerIpc() {
     return deleteDataset(id)
   })
 
-  // FB reading module — direct panel refresh, NO chat session involved. The
-  // canonical URL is built here (shared grammar), navigation takes over the
-  // panel from a stale owner session, and browser_report enforces the four
-  // precision gates before anything lands in fb_history. The module renders
-  // exclusively from verified history entries.
-  ipcMain.handle(
-    IPC_CHANNELS.FB_READING_REFRESH,
-    async (_event, raw: unknown) => {
-      const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown; range?: unknown; startDate?: unknown; endDate?: unknown }
-      const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
-      const businessId = input.businessId ?? null
-      const range = input.range as FbReadingRange | 'custom' | undefined
-      const ref: FbReadingAccountRef | null =
-        alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
-          ? { alias, act: input.act, businessId }
-          : null
-      if (!ref || (range !== 'custom' && range !== 'today' && range !== 'yesterday' && range !== 'last3' && range !== 'last7' && range !== 'last30')) {
-        return { ok: false, error: 'invalid-input' }
-      }
-      if (range !== 'custom' && (input.startDate !== undefined || input.endDate !== undefined)) return { ok: false, error: 'invalid-input' }
-      const window = range === 'custom' ? parseFbCustomWindow(input.startDate, input.endDate) : null
-      if (range === 'custom' && !window) return { ok: false, error: 'invalid-input' }
-      return refreshBoardFbReading(ref, range, window ?? undefined)
-    }
-  )
+  // Archived browser reader IPC stays registered so stale widgets fail before navigation.
+  // Local report/history readers below remain available.
+  ipcMain.handle(IPC_CHANNELS.FB_READING_REFRESH, () => suspendedFacebookBrowserResult())
 
-  ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCE_REFRESH, (_event, raw: unknown) => {
-    const input = (raw ?? {}) as { alias?: unknown; act?: unknown; businessId?: unknown }
-    const alias = typeof input.alias === 'string' ? input.alias.trim() : ''
-    const businessId = input.businessId ?? null
-    const ref: FbReadingAccountRef | null =
-      alias && alias.length <= 40 && isValidFbReadingAct(input.act) && isValidFbReadingBusinessId(businessId)
-        ? { alias, act: input.act, businessId }
-        : null
-    return ref ? refreshFbAccountBalance(ref) : { ok: false, error: 'invalid-input' }
+  ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCE_REFRESH, () => {
+    return suspendedFacebookBrowserResult()
   })
 
   ipcMain.handle(IPC_CHANNELS.FB_READING_BALANCES_LIST, (_event, raw: unknown) => {
@@ -2901,13 +2873,9 @@ export function registerIpc() {
     return { ok: true, accounts: removeFbReadingAccount(input.id) }
   })
 
-  // Enumerates accessible ad accounts from the logged-in browser panel.
-  // Account names and IDs remain on-device and are never sent to a ranker.
-  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_DISCOVER, async (_event, raw: unknown) => {
-    const input = (raw ?? {}) as { query?: unknown }
-    const query = typeof input.query === 'string' ? input.query.trim() : ''
-    if (query !== '' && query.length > 30) return { ok: false, error: 'invalid-input' }
-    return await discoverFbReadingAccounts(query)
+  // Discovery via the browser is archived; saved local account IDs remain readable.
+  ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_DISCOVER, async () => {
+    return suspendedFacebookBrowserResult()
   })
 
   ipcMain.handle(IPC_CHANNELS.FB_READING_ACCOUNTS_CAPTURE, () => captureFbReadingAccountFromPanel())

@@ -1126,6 +1126,7 @@ export type WidgetType =
   | 'fb-report-reading'
   | 'google-report-reading'
   | 'tt-reading'
+  | 'meta-reading'
   | 'reading-snapshot'
   | 'reading-module'
   | 'gauge'

@@ -8,6 +8,7 @@ import { useT, I18nKey } from '../i18n'
 import McpConnectionsSection from '../components/McpConnectionsSection'
 import AdsCopyModelsSection from '../components/AdsCopyModelsSection'
 import TikTokAdsConnectionCard from '../components/TikTokAdsConnectionCard'
+import MetaAdsConnectionCard from '../components/MetaAdsConnectionCard'
 import AppsFlyerConnectionCard from '../components/AppsFlyerConnectionCard'
 import FigmaConnectionCard from '../components/FigmaConnectionCard'
 import BrandIcon from '../components/BrandIcon'
@@ -436,6 +437,7 @@ export default function ConnectionsPage() {
           </section>
 
           <TikTokAdsConnectionCard />
+          <MetaAdsConnectionCard />
           <AppsFlyerConnectionCard />
           <FigmaConnectionCard />
           <McpConnectionsSection />

@@ -36,13 +36,14 @@ async function call(params: Record<string, unknown>): Promise<string> {
 
 const WIDGET_TYPES = [
   'clock', 'note', 'counter', 'fb-reading', 'fb-reading-summary', 'fb-report-reading',
-  'google-report-reading', 'tt-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
+  'google-report-reading', 'tt-reading', 'meta-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'todo', 'link', 'file'
 ]
 
-const TEMPLATES = ['tiktok', 'fb-daily-v2', 'ads', 'daily', 'blank']
+const TEMPLATES = ['meta', 'tiktok', 'fb-daily-v2', 'ads', 'daily', 'blank']
 
 /** 标准看板模板，仅在用户明确要求时选择。 */
 const TEMPLATE_HELP = {
+  meta: 'Meta Ads 原生读数：meta-reading 经 Main 调用只读 MCP，选择已授权账户、随总控切换日期、刷新并联动指标及每日趋势。',
   tiktok: 'TikTok 投放全景：总消耗/总点击/平均点击率/总转化四个指标卡 + 近 30 天消耗趋势 + 分活动消耗对比 + 转化趋势 + TT 读数模块。指标卡与图表绑定「TikTok 报表」数据集。',
   'fb-daily-v2': 'FB 投放日报：按产品关联已保存报表，自动获取并核验报表读数。',
   ads: '海外广告投放（占位演示数据）：KPI 行 + 趋势 + 渠道对比 + 预算 + 清单。',
@@ -90,15 +91,17 @@ export default function boardsTools(api: ToolHostApi): void {
     label: '新建看板',
     description:
       '新建本机看板并回报结果；需要确认时等待用户批准，不触碰广告平台。\n' +
-      '默认创建空白看板；只有用户明确要求对应模板或平台时才选择模板。可选模板：\n' +
+      '默认使用本地前端模块（可独立拖动、缩放的指标卡、图表、便签），不得以整页 HTML file 代替默认看板。只有用户明确要求自定义 HTML 文件时才使用 file。\n' +
+      '未指定平台时默认创建空白看板；用户要求 TT/TikTok 看板时必须选 tiktok，Meta Ads/MCP 看板选 meta；FB 已保存报表选 fb-daily-v2。可选模板：\n' +
       Object.entries(TEMPLATE_HELP).map(([id, help]) => `- ${id}：${help}`).join('\n') +
       '\n用户指定 TikTok 广告主时，必须先通过 TikTok 连接信息查询其数字 ID，并以逗号分隔的字符串传 advertiserIds；不知道 ID 时先查明或请用户提供，不能留空代替指定范围。未指定账户时留空会读取连接页所选账户，未选择时读取授权账户。' +
+      '\nMeta 模板已内置 meta-reading 和自动绑定的卡片。请引导用户在模块中加载并选择已授权账户；不要把其卡片改为 manual 或替换成固定快照。缺失指标不补零，时区以模块实际显示为准。不需要生成 HTML/CSV 文件。\n' +
       '\nTikTok 模板可能需要报表数据；只有用户明确要求读取时才调用 touhou_tiktok_update，不要因为新建看板而自动查询广告账户。',
     parameters: {
       type: 'object',
       properties: {
         name: { type: 'string', description: '看板名称，如 "miclip"；缺省用模板名' },
-        template: { type: 'string', enum: TEMPLATES, description: '标准模板；默认 blank，用户明确要求时再选平台模板。' },
+        template: { type: 'string', enum: TEMPLATES, description: '默认本地模块；TT/TikTok 必须选 tiktok，Meta Ads/MCP 选 meta，未指定平台选 blank。' },
         description: { type: 'string', description: '可选看板说明' },
         advertiserIds: { type: 'string', description: '指定账户时必填：数字广告主 ID 字符串，多个 ID 用逗号分隔；读数与数据卡都按这些 ID 筛选。' },
         advertiserName: { type: 'string', description: '可选显示名称；提供名称时也必须提供对应 advertiserIds，数据卡按 ID 而不是名称筛选。' },
@@ -117,7 +120,7 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_add_widget',
     label: '看板加组件',
-    description: '向已有看板添加一个组件（自动找空位；配置不合法会被整体拒绝，不会弄坏看板）。展示读数时使用独立 reading-module 指标、图表、说明组件，避免将整页挤入小卡。先 board_get 获取已保存的 reading-snapshot 或 reading-module 的 boardId 和 widgetId，再通过 source 引用；不能自己提供或伪造 snapshot。config 仅传 module：kind 为 metric、spend-chart、coverage 或 note；metric 必须传 metric（spend、impressions、clicks、conversions）及从 0 开始的 accountIndex；spend-chart 传 chart（bar、pie、donut）；note 传 text。数据是保存时的快照，不是实时数据；不要混合币种或伪造时间趋势。file 组件使用 config: {"filePath":"report.html"}，路径相对于已授权工作区，文件类型须受支持。layout 的 w 范围 1–12、h 范围 1–20。成功添加读数模块或 HTML file 后，应用会自动尝试在对话显示实际预览及“打开看板”；请简短回复，无需搜索源码、协议、执行 shell、写额外文件或编造围栏来展示预览。用户明确要求自定义 HTML 文件时，仍可在授权工作区写文件并添加 file 组件，遵守确认。',
+    description: '默认添加本地前端模块：counter、chart-line、chart-bar、note；只有用户明确要求自定义 HTML 文件时才可添加 file。向已有看板添加一个组件（自动找空位；配置不合法会被整体拒绝，不会弄坏看板）。展示读数时使用独立 reading-module 指标、图表、说明组件，避免将整页挤入小卡。先 board_get 获取已保存的 reading-snapshot 或 reading-module 的 boardId 和 widgetId，再通过 source 引用；不能自己提供或伪造 snapshot。config 仅传 module：kind 为 metric、spend-chart、coverage 或 note；metric 必须传 metric（spend、impressions、clicks、conversions）及从 0 开始的 accountIndex；spend-chart 传 chart（bar、pie、donut）；note 传 text。数据是保存时的快照，不是实时数据；不要混合币种或伪造时间趋势。file 组件使用 config: {"filePath":"report.html"}，路径相对于已授权工作区，文件类型须受支持。layout 的 w 范围 1–12、h 范围 1–20。成功添加读数模块或 HTML file 后，应用会自动尝试在对话显示实际预览及“打开看板”；请简短回复，无需搜索源码、协议、执行 shell、写额外文件或编造围栏来展示预览。用户明确要求自定义 HTML 文件时，仍可在授权工作区写文件并添加 file 组件，遵守确认。',
     parameters: {
       type: 'object',
       properties: {

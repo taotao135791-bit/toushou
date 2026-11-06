@@ -18,6 +18,7 @@ import {
   WIDGET_TYPES,
   composeBoard,
   createWidget,
+  detectPreset,
   findFreeSlot,
   type BoardPresetId,
   type BoardText
@@ -42,6 +43,14 @@ export const BOARDS_TOOLS_ENV_KEY = 'TOUSHOU_BOARDS'
 /** Main-side zh display text for the shared board presets (Main cannot import
  *  the renderer i18n; connection labels already follow this zh-first rule). */
 const BOARD_TEXT: Record<string, string> = {
+  'boards.preset.meta': 'Meta Ads 投放看板',
+  'boards.preset.meta.spend': '总消耗',
+  'boards.preset.meta.impressions': '总展示',
+  'boards.preset.meta.clicks': '总点击',
+  'boards.preset.meta.dailySpend': '每日消耗趋势',
+  'boards.preset.meta.accountSpend': '分账户消耗',
+  'boards.preset.meta.source': '数据来源与范围',
+  'boards.preset.meta.sourceBody': '来源：Pipeboard Meta Ads MCP。在 Meta 读数模块加载并选择已授权账户，刷新和总控日期切换会读取每日明细，联动指标卡与趋势图。缺失指标不补零；未返回的账户时区标为待确认。',
   'boards.widget.clock': '时钟',
   'boards.widget.note': '便签',
   'boards.widget.todo': '待办清单',
@@ -49,6 +58,7 @@ const BOARD_TEXT: Record<string, string> = {
   'boards.widget.fb-reading-summary': 'FB 读数汇总',
   'boards.widget.fb-report-reading': 'FB 报表读数',
   'boards.widget.tt-reading': 'TT 读数',
+  'boards.widget.meta-reading': 'Meta 读数',
   'boards.reading.ttModuleName': 'TT 读数',
   'boards.preset.ads': '海外广告投放',
   'boards.preset.ads.kpiSpend': '今日消耗 ($)',
@@ -87,6 +97,7 @@ const boardText: BoardText = (key) => BOARD_TEXT[key] ?? key
 
 export const BOARD_TEMPLATES: readonly BoardPresetId[] = [
   'tiktok',
+  'meta',
   'fb-daily-v2',
   'ads',
   'daily',
@@ -102,6 +113,7 @@ const WIDGET_TITLE_ZH: Record<WidgetType, string> = {
   'fb-report-reading': 'FB 报表读数',
   'google-report-reading': 'Google 读数',
   'tt-reading': 'TT 读数',
+  'meta-reading': 'Meta 读数',
   'reading-snapshot': '读数快照',
   'reading-module': '读数组件',
   gauge: '仪表',
@@ -412,10 +424,14 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
   if (tool.action === 'board_create') {
     const boards = listBoards()
     if (boards.length >= BOARD_LIMITS.maxBoards) return { ok: false, error: 'too-many-boards' }
+    const inferred = detectPreset(`${typeof tool.name === 'string' ? tool.name : ''} ${typeof tool.description === 'string' ? tool.description : ''}`)
     const template =
       typeof tool.template === 'string' && BOARD_TEMPLATES.includes(tool.template as BoardPresetId)
         ? (tool.template as BoardPresetId)
-        : 'blank'
+        : inferred === 'tiktok' || inferred === 'meta' ? inferred : 'blank'
+    if (template === 'meta' && [tool.advertiserIds, tool.advertiserName, tool.advertiserNames].some(value => value != null)) {
+      return { ok: false, error: 'invalid-platform-scope', message: 'advertiserIds / advertiserName / advertiserNames 仅用于 TikTok；Meta 账户范围请记录在来源模块及本次查询参数中。' }
+    }
     const composed = composeBoard('', boardText, template)
     const name = boundedString(tool.name, BOARD_LIMITS.maxNameLength) ?? composed.name
     if (boards.some((board) => board.name.toLowerCase() === name.toLowerCase())) {
@@ -490,7 +506,9 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       ok: true,
       board: boardSummary({ ...board }),
       ...(template === 'tiktok' ? { datasetReady } : {}),
-      note:
+      note: template === 'meta'
+        ? '已创建 Meta 原生读数看板。请在 Meta 读数模块加载并选择已授权账户，刷新和总控日期切换会经 Main 只读 MCP 更新绑定的指标及每日趋势。不要将这些卡片改为 manual 固定快照，也不要添加整页 HTML 代替原生模块；缺失指标不补零。'
+        :
         (ids.length > 0
           ? `已按 ${ids.length} 个广告主 ID 过滤数据卡并绑定 TT 读数模块；读数需要已连接的 TikTok 授权。`
           : template === 'tiktok'

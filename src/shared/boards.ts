@@ -1,3 +1,4 @@
+import { isMetaAccountId, isMetaReadingRange } from './metaReading'
 /**
  * Pure half of the widget boards: model factories, grid-layout helpers and
  * structural validation, with no filesystem access (that lives in
@@ -69,6 +70,7 @@ export const WIDGET_TYPES: readonly WidgetType[] = [
   'fb-report-reading',
   'google-report-reading',
   'tt-reading',
+  'meta-reading',
   'reading-snapshot',
   'reading-module',
   'gauge',
@@ -100,6 +102,7 @@ export const WIDGET_DEFAULT_SIZES: Record<WidgetType, { w: number; h: number }> 
   'fb-report-reading': { w: 8, h: 8 },
   'google-report-reading': { w: 8, h: 8 },
   'tt-reading': { w: 6, h: 5 },
+  'meta-reading': { w: 12, h: 6 },
   'reading-snapshot': { w: 12, h: 12 },
   'reading-module': { w: 6, h: 8 },
   gauge: { w: 3, h: 3 },
@@ -130,6 +133,8 @@ export function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
         range: 'last7',
         metrics: ['spend', 'balance', 'cpi', 'cpm']
       }
+    case 'meta-reading':
+      return { accountId: '', range: 'last7' }
     case 'tt-reading':
       // advertiserIds: comma-separated string (empty = use every advertiser
       // the connected TikTok token's grant covers); range in days.
@@ -192,7 +197,7 @@ export function createWidget(
 /** Translator shape the presets need; the renderer passes its i18n `t`. */
 export type BoardText = (key: string) => string
 
-export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'fb-daily-v2' | 'tiktok'
+export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'fb-daily-v2' | 'tiktok' | 'meta'
 
 export interface ComposedBoard {
   name: string
@@ -229,6 +234,8 @@ function matchesKeyword(text: string, keyword: string): boolean {
 /** Pick a preset from a free-form description; anything unknown falls back to daily. */
 export function detectPreset(description: string): BoardPresetId {
   const text = description.toLowerCase()
+  if (['tiktok', 'tt'].some(k => matchesKeyword(text, k))) return 'tiktok'
+  if (matchesKeyword(text, 'meta')) return 'meta'
   if (FB_DAILY_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'fb-daily-v2'
   if (ADS_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'ads'
   if (FINANCE_KEYWORDS.some((k) => matchesKeyword(text, k))) return 'finance'
@@ -449,6 +456,30 @@ export function tiktokAdsPreset(t: BoardText): BoardWidget[] {
   ]
 }
 
+/** Only an untouched empty legacy starter can be explicitly replaced by the user. */
+export function isEmptyMetaStarter(widgets: readonly BoardWidget[]): boolean {
+  return widgets.length === 6 && widgets.filter(w => w.type === 'counter').length === 3 &&
+    widgets.filter(w => w.type === 'chart-line').length === 1 && widgets.filter(w => w.type === 'chart-bar').length === 1 &&
+    widgets.filter(w => w.type === 'note').length === 1 && widgets.every(w =>
+      w.type === 'note' ? String(w.config.text).includes('Pipeboard') :
+      w.type === 'counter' ? w.config.source === 'manual' && w.config.value === null :
+      w.config.source === 'manual' && Array.isArray(w.config.points) && w.config.points.length === 0)
+}
+
+/** Live Meta reader owns an isolated, transient dataset shared by its native cards. */
+export function metaAdsPreset(t: BoardText): BoardWidget[] {
+  const reader = presetWidget('meta-reading', t('boards.widget.meta-reading'), { x: 0, y: 0, w: 12, h: 6 }, defaultWidgetConfig('meta-reading'))
+  const binding = { source: 'dataset', datasetId: `meta-reading:${reader.id}`, op: 'sum' }
+  return [
+    reader,
+    ...['spend', 'impressions', 'clicks'].map((key, i) => presetWidget('counter', t(`boards.preset.meta.${key}`),
+      { x: i * 4, y: 6, w: 4, h: 3 }, { ...binding, metric: key })),
+    presetWidget('chart-line', t('boards.preset.meta.dailySpend'), { x: 0, y: 9, w: 6, h: 6 }, { ...binding, metric: 'spend', dimension: 'date' }),
+    presetWidget('chart-bar', t('boards.preset.meta.accountSpend'), { x: 6, y: 9, w: 6, h: 6 }, { ...binding, metric: 'spend', dimension: 'account' }),
+    presetWidget('note', t('boards.preset.meta.source'), { x: 0, y: 15, w: 12, h: 3 }, { text: t('boards.preset.meta.sourceBody') })
+  ]
+}
+
 /**
  * Deterministically compose a new board from a free-form description. A
  * chip-selected `preset` skips keyword detection entirely. The caller turns
@@ -473,6 +504,8 @@ export function composeBoard(
       return { name: t('boards.preset.fbDaily2'), widgets: fbDailyV2Preset(t) }
     case 'tiktok':
       return { name: t('boards.preset.tiktok'), widgets: tiktokAdsPreset(t), masterScope: { range: 'last7', metrics: ['spend', 'cpi'] } }
+    case 'meta':
+      return { name: t('boards.preset.meta'), widgets: metaAdsPreset(t), masterScope: { range: 'last7', metrics: ['spend'] } }
     case 'blank':
       return { name: t('boards.preset.blank'), widgets: [] }
     default:
@@ -886,9 +919,12 @@ function validateWidgetConfig(
     case 'counter': {
       const config: Record<string, unknown> = {}
       if (raw.value !== undefined) {
-        const value = cleanNumber(raw.value)
-        if (value === null) return null
-        config.value = value
+        if (raw.value === null) config.value = null
+        else {
+          const value = cleanNumber(raw.value)
+          if (value === null) return null
+          config.value = value
+        }
       }
       if (raw.label !== undefined) {
         const label = cleanString(raw.label, BOARD_LIMITS.maxLabelLength)
@@ -1065,6 +1101,11 @@ function validateWidgetConfig(
       if (raw.independent === true) config.independent = true
       return config
     }
+    case 'meta-reading': {
+      if (raw.accountId !== undefined && raw.accountId !== '' && !isMetaAccountId(raw.accountId)) return null
+      if (raw.range !== undefined && !isMetaReadingRange(raw.range)) return null
+      return { accountId: raw.accountId ?? '', range: raw.range ?? 'last7', ...(raw.independent === true ? { independent: true } : {}) }
+    }
     case 'tt-reading': {
       // TT 读数 config: optional comma-separated advertiser id string plus a
       // day-window enum. Empty advertiserIds is meaningful (use the
@@ -1148,7 +1189,7 @@ function validateMasterScope(raw: unknown): BoardMasterScope | null {
 
 /** Widget types whose date/metric scope a master scope governs — the single
  * list behind unification, refresh-all and the independence check. */
-export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading', 'fb-report-reading']
+export const MASTER_SCOPED_WIDGET_TYPES: readonly WidgetType[] = ['fb-reading', 'fb-reading-summary', 'tt-reading', 'meta-reading', 'fb-report-reading']
 
 /** TikTok day windows: every master range now maps exactly (the master scope
  *  is authoritative over controllable modules — no divergence escapes). */
@@ -1194,6 +1235,7 @@ export function applyMasterScope(widget: BoardWidget, master: BoardMasterScope):
     return { ...widget, config }
   }
   config.range = master.range
+  if (widget.type === 'meta-reading') return { ...widget, config }
   config.metrics = [...master.metrics]
   return { ...widget, config }
 }

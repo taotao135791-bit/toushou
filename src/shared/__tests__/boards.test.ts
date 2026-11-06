@@ -18,6 +18,8 @@ import {
   overseasAdsPreset,
   reflowWidgets,
   tiktokAdsPreset,
+  metaAdsPreset,
+  isEmptyMetaStarter,
   validateBoard,
   applyMasterScope
 } from '../boards'
@@ -428,12 +430,6 @@ describe('composeBoard + presets', () => {
       'FB',
       'facebook',
       'FACEBOOK pixel',
-      'meta',
-      'META campaigns',
-      'tiktok',
-      'TikTok Shop',
-      'tt ads',
-      'TT',
       'roas',
       'ROAS 目标'
     ]
@@ -1008,5 +1004,50 @@ describe('counter/chart filterValues (cross-account boards)', () => {
 
   it('rejects values without a filter column', () => {
     expect(withWidget(card({ filterValues: ['go photo A'] }))?.widgets).toHaveLength(0)
+  })
+})
+
+
+describe('native platform board defaults', () => {
+  const t = (key: string) => key
+  it('routes TT and Meta requests to their native presets before generic report keywords', () => {
+    for (const text of ['TT', 'tt ads', 'TikTok Shop', 'TikTok 投放日报']) {
+      expect(detectPreset(text)).toBe('tiktok')
+      expect(composeBoard(text, t).widgets.filter(w => w.type === 'tt-reading')).toHaveLength(1)
+    }
+    for (const text of ['meta', 'META campaigns', 'Meta 汇总报告']) expect(detectPreset(text)).toBe('meta')
+    expect(detectPreset('FB 投放日报')).toBe('fb-daily-v2')
+    expect(detectPreset('button collection')).toBe('daily')
+  })
+  it('only offers the live upgrade for empty legacy Meta starters', () => {
+    const widgets = [
+      ...Array.from({ length: 3 }, () => createWidget('counter', '', { x: 0, y: 0 }, { source: 'manual', value: null })),
+      createWidget('chart-line', '', { x: 0, y: 0 }, { source: 'manual', points: [], labels: [] }),
+      createWidget('chart-bar', '', { x: 0, y: 0 }, { source: 'manual', points: [], labels: [] }),
+      createWidget('note', '', { x: 0, y: 0 }, { text: 'Source: Pipeboard Meta Ads MCP' })
+    ]
+    expect(isEmptyMetaStarter(widgets)).toBe(true)
+    expect(isEmptyMetaStarter(widgets.map((w, i) => i === 0 ? { ...w, config: { ...w.config, value: 0 } } : w))).toBe(false)
+    expect(isEmptyMetaStarter(metaAdsPreset(t))).toBe(false)
+  })
+  it('creates a live Meta reader with isolated bindings and no fabricated readings', () => {
+    const widgets = metaAdsPreset(t)
+    const board = validateBoard({ ...createBoard('Synthetic Meta', 1), widgets })!
+    expect(board.widgets).toHaveLength(7)
+    expect(board.widgets[0].type).toBe('meta-reading')
+    const datasetId = `meta-reading:${board.widgets[0].id}`
+    for (const widget of board.widgets.filter(w => w.type === 'counter' || w.type.startsWith('chart-'))) {
+      expect(widget.config.source).toBe('dataset')
+      expect(widget.config.datasetId).toBe(datasetId)
+      expect(widget.config.value).toBeUndefined()
+    }
+    expect(metaAdsPreset(t)[1].config.datasetId).not.toBe(datasetId)
+    expect(board.widgets.some(w => w.type === 'file' || w.type === 'tt-reading')).toBe(false)
+    const scoped = applyMasterScope(widgets[0], { range: 'today', metrics: ['spend'] })
+    expect(scoped.config).not.toHaveProperty('metrics')
+    expect(validateBoard({ ...board, widgets: [scoped] }, true)?.widgets[0].config).toEqual(scoped.config)
+    expect(composeBoard('Meta', t).masterScope?.range).toBe('last7')
+    expect(applyMasterScope(widgets[0], { range: 'today', metrics: ['spend'] }).config.range).toBe('today')
+    expect(validateBoard({ ...board, widgets: [{ ...widgets[0], config: { accountId: 'invalid' } }] }, true)).toBeNull()
   })
 })

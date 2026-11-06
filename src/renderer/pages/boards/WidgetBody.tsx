@@ -1,3 +1,5 @@
+import { MetaReadingBody } from './MetaReadingBody'
+import { useMetaDatasets } from './metaReadingStore'
 import { useEffect, useState } from 'react'
 import { Check, ExternalLink, FileWarning, X } from 'lucide-react'
 import { FbReadingBody } from './FbReadingBody'
@@ -155,7 +157,7 @@ function resolveBinding(
   }
   // Master-scope window on top: dataset cards follow the board's range; the
   // 今天 scope shows the account's CURRENT stat day (latest among filtered rows).
-  if (masterWindow && !(found.name === 'TikTok 报表' && (ttScopeRequired || widget.config.requireVerifiedTtScope === true))) {
+  if (masterWindow && !found.id.startsWith('meta-reading:') && !(found.name === 'TikTok 报表' && (ttScopeRequired || widget.config.requireVerifiedTtScope === true))) {
     const scope = filterDatasetRowsByWindowWithStatus(dataset, masterWindow, masterWindow.latestDay ? { latestDay: true } : undefined)
     if (scope.missingTimezone) return { kind: 'timezone-unavailable' }
     dataset = scope.dataset
@@ -188,7 +190,9 @@ function BindingPlaceholder({
     )
   }
   const text =
-    binding.kind === 'missing-dataset'
+    configStr(widget.config.datasetId).startsWith('meta-reading:')
+      ? binding.kind === 'missing-column' ? t('boards.datasets.metaMetricMissing') : t('boards.datasets.metaReadingPending')
+      : binding.kind === 'missing-dataset'
       ? // Template widgets bind by dataset NAME and may legitimately point at a
         // dataset that does not exist YET (e.g. a fresh TikTok board before the
         // first report pull) — guide the user instead of crying "deleted".
@@ -314,7 +318,7 @@ function CounterBody({
       }
     }
   } else {
-    value = typeof widget.config.value === 'number' ? widget.config.value : 0
+    value = widget.config.value === null ? null : typeof widget.config.value === 'number' ? widget.config.value : 0
   }
   return (
     <div className="relative flex h-full flex-col items-center justify-center gap-1.5">
@@ -661,6 +665,8 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
 }
 
 export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, showReadingSource, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict }: WidgetBodyProps) {
+  const metaDatasets = useMetaDatasets()
+  datasets = [...datasets, ...metaDatasets]
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />
@@ -672,6 +678,8 @@ export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapsh
       return <FbReportReadingBody widget={widget} onConfigChange={onConfigChange} />
     case 'google-report-reading':
       return <GoogleReportReadingBody widget={widget} onSnapshotSaved={onSnapshotSaved} />
+    case 'meta-reading':
+      return <MetaReadingBody widget={widget} onConfigChange={onConfigChange} />
     case 'tt-reading':
       return <TTReadingBody widget={widget} />
     case 'reading-module':

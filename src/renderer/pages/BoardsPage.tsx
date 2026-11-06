@@ -52,6 +52,8 @@ import {
   compactWidgets,
   MASTER_SCOPED_WIDGET_TYPES,
   composeBoard,
+  metaAdsPreset,
+  isEmptyMetaStarter,
   createBoard,
   createWidget,
   detectPreset,
@@ -125,6 +127,7 @@ const DEFAULT_MASTER_METRICS: readonly string[] = ['spend', 'cpi', 'cpm']
 const TEMPLATE_OPTIONS: { preset: BoardPresetId; labelKey: I18nKey }[] = [
   { preset: 'fb-daily-v2', labelKey: 'boards.template.fbDaily2' },
   { preset: 'tiktok', labelKey: 'boards.template.tiktok' },
+  { preset: 'meta', labelKey: 'boards.template.meta' },
   { preset: 'blank', labelKey: 'boards.template.blank' },
   { preset: 'ads', labelKey: 'boards.template.ads' },
   { preset: 'daily', labelKey: 'boards.template.daily' },
@@ -973,11 +976,12 @@ export default function BoardsPage() {
     }
     for (let index = 0; index < widgets.length; index += 1) {
       const widget = widgets[index]
+      const isMeta = widget.type === 'meta-reading'
       const isTt = widget.type === 'tt-reading'
       const isGoogle = widget.type === 'google-report-reading'
       const isReport = widget.type === 'fb-report-reading' || isGoogle
-      const doneEvent = isGoogle ? 'google-report-reading:module-done' : isTt ? 'tt-reading:module-done' : isReport ? 'fb-report-reading:module-done' : 'fb-reading:module-done'
-      const refreshEvent = isGoogle ? 'google-report-reading:board-refresh' : isTt ? 'tt-reading:board-refresh' : isReport ? 'fb-report-reading:board-refresh' : 'fb-reading:board-refresh'
+      const doneEvent = isMeta ? 'meta-reading:module-done' : isGoogle ? 'google-report-reading:module-done' : isTt ? 'tt-reading:module-done' : isReport ? 'fb-report-reading:module-done' : 'fb-reading:module-done'
+      const refreshEvent = isMeta ? 'meta-reading:board-refresh' : isGoogle ? 'google-report-reading:board-refresh' : isTt ? 'tt-reading:board-refresh' : isReport ? 'fb-report-reading:board-refresh' : 'fb-reading:board-refresh'
       await new Promise<void>((resolve) => {
         let settled = false
         const finish = () => {
@@ -1404,7 +1408,7 @@ export default function BoardsPage() {
     const padding = effectiveStyle?.padding ?? 12
     const boardId = current?.id ?? ''
     const widgetTitle = widget.title || t(widgetNameKey(widget.type))
-    const widgetBrand = widget.type === 'tt-reading' ? 'tiktok' : widget.type === 'google-report-reading' ? 'google' : ['fb-reading', 'fb-reading-summary', 'fb-report-reading'].includes(widget.type) ? 'facebook' : null
+    const widgetBrand = widget.type === 'tt-reading' ? 'tiktok' : widget.type === 'google-report-reading' ? 'google' : ['meta-reading', 'fb-reading', 'fb-reading-summary', 'fb-report-reading'].includes(widget.type) ? 'facebook' : null
     return (
     <div
       key={widget.id}
@@ -1875,6 +1879,12 @@ export default function BoardsPage() {
           ) : (
             <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint" title={t('boards.master.noModulesHint')}>{t('boards.master.noModulesHint')}</span>
           )}
+          {current && isEmptyMetaStarter(current.widgets) && (
+            <button className="shrink-0 rounded-full border border-line px-3 py-1 text-[12px]" onClick={() => mutateBoard(current.id, board => {
+              const scope: BoardMasterScope = { range: board.masterScope?.range ?? 'last7', metrics: ['spend'] }
+              return { ...board, widgets: metaAdsPreset(key => t(key as I18nKey)).map(widget => applyMasterScope(widget, scope)), masterScope: scope }
+            })}>{language === 'zh' ? '启用 Meta 读数' : 'Enable Meta reading'}</button>
+          )}
           <div className="min-w-0 flex-1" />
           {(refreshableReadingCount > 0 || hasAfDatasetCards) && (
           <button
@@ -2045,6 +2055,7 @@ export default function BoardsPage() {
                   <BarChart3 size={12} />
                   {t('boards.reading.ttModuleName')}
                 </button>
+                <button onClick={() => addWidget('meta-reading')} className={`${menuItemClass} text-cream hover:bg-overlay`}><BarChart3 size={12} />{t('boards.widget.meta-reading')}</button>
                 <div className="mx-1.5 mb-1 border-t border-line" />
                 <div className="grid grid-cols-2 gap-0.5">
                   {WIDGET_GALLERY.map(({ type, Icon }) => (
@@ -2515,6 +2526,8 @@ export default function BoardsPage() {
               {(
                 [
                   { preset: 'fb-daily-v2', label: t('boards.preset.fbDaily2') },
+                  { preset: 'tiktok', label: t('boards.preset.tiktok') },
+                  { preset: 'meta', label: t('boards.preset.meta') },
                   { preset: 'ads', label: t('boards.preset.ads') },
                   { preset: 'daily', label: t('boards.preset.daily') },
                   { preset: 'blank', label: t('boards.compose.chipBlank') }

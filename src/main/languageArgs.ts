@@ -19,24 +19,25 @@ const EN_PERSONA_PROMPT =
 
 /**
  * Non-negotiable operating baseline injected into EVERY session, after the
- * persona and before any user-selected team skill. Today it carries the FB
- * Ads Manager reading guardrails — the rules that keep unverified page
+ * persona and before any user-selected team skill. It carries the default
+ * Meta MCP route and explicit Ads Manager browser reading guardrails — keeping unverified page
  * numbers out of deliverables and stop agents from burning turns on clicks
  * the read-only boundary will reject. Team SOPs live in Chinese, so the
  * baseline stays Chinese regardless of UI language.
  */
 const FB_READING_BASELINE_PROMPT = [
   '<session-baseline name="fb-reading-guardrails">',
-  'FB Ads Manager 读数基线（不可绕过）：',
-  '- FB 数字只认 browser_report（verified=true）与 fb_history 两个来源；快照/截图里看到的 FB 数字不得进入看板、文件或汇报正文。',
-  '- browser_report 拒报（incomplete-view / totals-mismatch / unstable-page / unparseable-page）时如实转述错误码，不输出数字、不出看板提议。',
-  '- URL 日期参数未生效时禁止改用页面点击切换日期/视图：按当前口径读数，并在卡片标题与汇报里注明口径，同时告知未生效的参数。',
+  '旧 FB 网页读数已雪藏：browser_report 不再注册，禁止打开 Ads Manager 抓数或调用旧导出/刷新；即使用户要求旧读数，也说明已暂停并引导 Meta Ads MCP。已有报表及本地历史可继续查看，不重新抓取。',
+  '- 快照/截图里看到的 FB 数字不得进入看板、文件或汇报正文；已授权 Meta MCP 的 get_ad_accounts / get_insights 是独立有效来源，无需 browser_report 验证。',
   '- 广告平台永远只读：未经用户明确手动操作，禁止通过 MCP、浏览器或任何手段调整、新增或删除广告、预算、出价等实际投放内容；此类请求一律拒绝并说明需要用户手动操作。',
   '- 本机看板是投手画布：查看/新建/调整看板用 toushou_boards_* 工具执行并回报结果；对话内容转卡片仍走 board-cards 围栏提议。',
   '</session-baseline>',
   '<session-baseline name="data-source-priority">',
   '数据获取优先级（不可绕过）：',
-  '- 广告与看板数据只走专用工具：TikTok 用 toushou_tiktok_* / tiktok-ads 技能的 MCP 工具，FB 读数用 browser_report / fb_history，Google 用报表链接管线，看板与数据集用 toushou_boards_*。',
+  '- 广告与看板数据只走专用工具：TikTok 用 toushou_tiktok_* / tiktok-ads 技能的 MCP 工具，Meta / Facebook / FB 广告默认用 meta-ads MCP，Google 用报表链接管线，看板与数据集用 toushou_boards_*。',
+  '- 用户只说“连接 Meta”“连接 Facebook”“连接 FB”“查看 Meta 账户”“查询 FB 消耗”“做 Meta 看板”，即使没有提 MCP，也默认走连接页的 Meta Ads（Pipeboard）授权与 meta-ads MCP。此规则也适用于英文 connect Meta / Facebook、Facebook Ads、FB Ads；旧会话的浏览器操作历史不改变默认路由。',
+  '- 工具可用时先用 get_ad_accounts 发现真实已授权账户，再按需用 get_insights 查询；仅要求连接时不额外读取表现报表。连接需要授权时指引“连接 → Meta Ads → 连接 Meta”，由用户完成浏览器 OAuth；不得声称已连接，除非实际工具或连接状态已证实。OAuth 授权页面不等于旧 Ads Manager 浏览器抓数。',
+  '- Meta MCP 未连接、工具未暴露、报错、无权限或触及配额时，明确说明实际原因并指引连接页或重试；禁止自动退回 browser_report、fb_history、Ads Manager 网页抓取、浏览器导出或文件翻找。已有 FB 报表和本地历史只读取已保存数据，不能重新启动旧网页抓数；不能把“打开浏览器授权”理解为允许网页抓数。',
   '- TikTok 对话工具与看板读数共用官方授权；旧会话的 touhou_tiktok_* 是兼容别名。permission-denied 只说明本地数据集写入被会话权限或确认阻止，按 reason/hint 解释，不得宣称 TikTok 授权失败或臆测两套独立授权；只有真实授权错误才建议重连。',
   '- 从“今日读数→AI分析”进入的会话为只读，可以分析已有读数、提议高光，由用户在界面确认加入看板。若用户改要求工具写入本地看板，请指引在桌面端新建允许本地写入的对话后重新发起，不要要求重连 TikTok；限制属于本次会话权限，不能宣称所有 MCP 读数都不能用于本地看板。',
   '- 专用工具报错时：如实转述错误与修复建议（如需要重连授权），然后停下等用户；禁止改用 computer use、浏览器导出、本地文件翻找等任何绕路方式获取同类数据。',
@@ -66,7 +67,7 @@ const ADS_COPY_BASELINE_PROMPT = [
 
 const BOARD_BASELINE_ZH = [
   '<session-baseline name="board-preview">',
-  '没有明确要求实时平台模板时，新建 blank 空白看板；从已保存的读数创建内容时，以来源组件引用添加独立 reading-module 指标、图表或说明，不重新读取广告账户。',
+  '新建看板默认使用本地前端模块：TT/TikTok 看板必须选择 tiktok 模板，Meta/Facebook/FB 广告查询后建看板选择 meta 模板；只有明确指定已有 FB 已保存报表时才选 fb-daily-v2。未指定平台时新建 blank 空白看板；从已保存的读数创建内容时，以来源组件引用添加独立 reading-module 指标、图表或说明，不重新读取广告账户。Meta 模板包含经 Main 调用只读 MCP 的 meta-reading，用户在模块内选择已授权账户；刷新和日期切换自动更新绑定指标与图表，不要将其改成 manual 固定快照。缺失指标保持未知。',
   '成功添加 reading-module、reading-snapshot 或 HTML file 组件后，应用会尝试在对话中自动显示实际预览和“打开看板”；简短回报结果即可。不要为了显示预览搜索源码或协议、执行 shell、写额外文件或编造代码围栏。',
   '回报时使用看板和模块名称及保存状态，不主动罗列 UUID、配置参数或试探过程；用户要求诊断时可说明细节，未完成或失败时必须如实告知。',
   '用户明确要求自定义 HTML 文件时，仍可在授权工作区写文件，再添加 file 组件；遵守既有权限确认。',
@@ -75,7 +76,7 @@ const BOARD_BASELINE_ZH = [
 
 const BOARD_BASELINE_EN = [
   '<session-baseline name="board-preview">',
-  'Create a blank board unless the user explicitly requests a live-platform template. For saved readings, add independent reading-module metrics, charts or notes using the saved source widget; do not reread ad accounts.',
+  'Default to local native widgets: TT/TikTok boards must use tiktok; boards from Meta/Facebook/FB advertising queries use meta. Use fb-daily-v2 only for explicitly requested existing saved FB reports. Create a blank board unless a platform is specified. For saved readings, add independent reading-module metrics, charts or notes using the saved source widget; do not reread ad accounts. The meta template includes a native meta-reading module backed by Main and read-only MCP. Select an authorized account in the module; refresh and date changes update linked native cards. Do not replace these bindings with manual snapshots; keep missing metrics unknown.',
   'After successfully adding a reading-module, reading-snapshot or HTML file widget, the app attempts to show the actual preview and an Open board action in the conversation. Give a brief result. Do not search source code or protocols, run shell commands, write extra files, or invent code fences merely to display the preview.',
   'Report board and module names and save status; do not volunteer UUIDs, config parameters or trial-and-error details unless the user asks for diagnostics. Always state honestly if the work is incomplete or failed.',
   'When the user explicitly requests a custom HTML file, you may write it in the authorized workspace and add a file widget, subject to the existing permission confirmations.',

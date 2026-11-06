@@ -1,3 +1,4 @@
+import { isSuspendedFacebookBrowserRequest, suspendedFacebookBrowserResult } from './legacyFacebookBrowser'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, readdir, unlink } from 'node:fs/promises'
@@ -1810,6 +1811,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return
   }
   await withBrowserActionLock(async () => {
+    if (isSuspendedFacebookBrowserRequest(request.action, request.url, safeCurrentPage()?.url)) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(serializeBoundedJson(suspendedFacebookBrowserResult()))
+      return
+    }
+
     const denied = gateBrowserUseRequest(
       request.action,
       sessionId,

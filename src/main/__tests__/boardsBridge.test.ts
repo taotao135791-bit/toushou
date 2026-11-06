@@ -46,6 +46,20 @@ describe('boards bridge dispatch', () => {
     expect(created).not.toHaveProperty('datasetReady')
     expect(listBoards()[0].widgets).toEqual([])
   })
+  it('defaults named platform boards to local modules and persists unknown Meta values', async () => {
+    const meta = await dispatch({ action: 'board_create', name: 'Synthetic Meta 报告' })
+    expect(meta.ok).toBe(true)
+    const board = listBoards()[0]
+    expect(board.widgets.map(w => w.type)).toEqual(['meta-reading', 'counter', 'counter', 'counter', 'chart-line', 'chart-bar', 'note'])
+    expect(board.widgets[0].config).toMatchObject({ accountId: '', range: 'last7' })
+    expect(meta.note).toContain('原生读数')
+    const updated = await dispatch({ action: 'board_update_widget', boardId: board.id, widgetId: board.widgets[1].id, config: { source: 'manual', value: 42, label: 'USD · synthetic date' } })
+    expect(updated.ok).toBe(true)
+    expect(listBoards()[0].widgets[1].config).toMatchObject({ value: 42, label: 'USD · synthetic date' })
+    const tt = await dispatch({ action: 'board_create', name: 'Synthetic TT 投放日报' })
+    expect(tt.ok).toBe(true)
+    expect(listBoards().find(b => b.name === 'Synthetic TT 投放日报')?.widgets.filter(w => w.type === 'tt-reading')).toHaveLength(1)
+  })
   it('creates immutable reading modules only from an existing saved source and validates layout', async () => {
     const snapshot: ReadingSnapshot = { kind: 'reading-snapshot', version: 1, rangeLabel: 'Synthetic', window: { start: '2026-01-01', end: '2026-01-01' }, capturedAt: 100,
       accounts: [{ platform: 'tiktok', accountId: 'synthetic', name: 'Synthetic', status: 'ok', statusDetail: null, window: { start: '2026-01-01', end: '2026-01-01' }, previousWindow: null, sourceAt: 90, timezone: 'UTC', currency: 'USD', spend: 42, previousSpend: null, impressions: 10, clicks: 1, conversions: 1 }] }
