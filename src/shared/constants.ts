@@ -19,6 +19,7 @@ export const IPC_CHANNELS = {
   PROJECT_LIST: 'project:list',
   PROJECT_CREATE: 'project:create',
   PROJECT_IMPORT: 'project:import',
+  PROJECT_RECOVER: 'project:recover',
   PROJECT_ACTIVATE: 'project:activate',
   PROJECT_ARCHIVE: 'project:archive',
   PROJECT_RESTORE: 'project:restore',

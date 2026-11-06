@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
-import type { ProjectRecord, ProjectResult, Session, WorkspaceGrant } from '@shared/types'
+import type { ProjectError, ProjectRecord, ProjectResult, Session, WorkspaceGrant } from '@shared/types'
 import SidebarProjects from './SidebarProjects'
 import Composer from './Composer'
 import { useProjects } from '../store/projects'
@@ -8,13 +8,20 @@ import { useAppStore } from '../store'
 
 const project = (id: string, name: string, path: string, isDefault = false): ProjectRecord => ({ id, name, path, isDefault, archived: false, missing: false, createdAt: 1 })
 const fixture = {
-  projects: [project('default', 'TouShou workspace', '/synthetic/default', true), project('alpha', 'Alpha', '/synthetic/alpha'), project('long', 'Long path project', '/synthetic/' + Array.from({ length: 60 }, (_, i) => `nested-folder-${i}`).join('/'))],
+  projects: [project('default', 'TouShou workspace', '/synthetic/default', true), project('alpha', 'Alpha', '/synthetic/alpha'), { ...project('unavailable', 'Unavailable project', '/synthetic/unavailable'), missing: true, unavailableReason: 'identity-changed' as const }, project('long', 'Long path project', '/synthetic/' + Array.from({ length: 60 }, (_, i) => `nested-folder-${i}`).join('/'))],
   nextCreate: 'success' as 'success' | 'failed' | 'cancelled',
   creates: [] as string[],
   imports: 0,
+  recoveries: [] as string[],
+  nextRecovery: 'success' as 'success' | 'cancelled' | 'wrong-folder',
   deleteRequests: 0,
   finishDelete: null as ((confirm: boolean) => void) | null,
   clipboard: '',
+  projectIssue(id: string, patch: Partial<ProjectRecord>, error: ProjectError) {
+    const row = fixture.projects.find(item => item.id === id)!
+    Object.assign(row, patch)
+    useProjects.setState({ projects: structuredClone(fixture.projects), error, errorProjectId: id })
+  },
   grant(row: ProjectRecord): WorkspaceGrant { return { id: `grant-${row.id}`, realPath: row.path, displayPath: row.path, source: row.isDefault ? 'default' : 'dialog', createdAt: 1 } },
   snapshot() {
     const state = useAppStore.getState()
@@ -46,6 +53,14 @@ window.electronAPI = {
     const name = ++fixture.imports === 1 ? 'Sidebar import' : 'Composer import'
     const row = project(`imported-${fixture.imports}`, name, `/synthetic/imports/${name}`)
     fixture.projects.push(row)
+    return { ok: true, project: structuredClone(row), grant: fixture.grant(row) }
+  },
+  recoverProject: async (id: string): Promise<ProjectResult> => {
+    fixture.recoveries.push(id)
+    if (fixture.nextRecovery !== 'success') { const error = fixture.nextRecovery; fixture.nextRecovery = 'success'; return { ok: false, error } }
+    const row = fixture.projects.find(item => item.id === id)!
+    row.missing = false
+    delete row.unavailableReason
     return { ok: true, project: structuredClone(row), grant: fixture.grant(row) }
   },
   archiveProject: async (id: string): Promise<ProjectResult> => { const row = fixture.projects.find(item => item.id === id)!; row.archived = true; return { ok: true, project: structuredClone(row) } },

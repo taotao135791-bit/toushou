@@ -1888,15 +1888,25 @@ export function registerIpc() {
     const registered = projectRegistry.register(selected.filePaths[0])
     return registered.ok ? activateRegisteredProject(registered.project.id) : registered
   })
-  async function activateRegisteredProject(id: unknown) {
+  ipcMain.handle(IPC_CHANNELS.PROJECT_RECOVER, async (_event, id: unknown) => {
     if (!workspacePaths.defaultWorkspace) return { ok: false, error: 'system-paths-unavailable' }
     const project = projectRegistry.get(id)
+    if (!project) return { ok: false, error: 'not-found' }
+    if (project.archived) return { ok: false, error: 'archived' }
+    const selected = await dialog.showOpenDialog({ title: '重新确认项目文件夹', defaultPath: project.path, properties: ['openDirectory'] })
+    if (selected.canceled || !selected.filePaths[0]) return { ok: false, error: 'cancelled' }
+    const recovered = projectRegistry.recover(id, selected.filePaths[0])
+    return recovered.ok ? activateRegisteredProject(recovered.project.id) : recovered
+  })
+  async function activateRegisteredProject(id: unknown) {
+    if (!workspacePaths.defaultWorkspace) return { ok: false, error: 'system-paths-unavailable' }
+    const project = projectRegistry.get(id, true)
     if (!project) return { ok: false, error: 'not-found' }
     if (project.archived) return { ok: false, error: 'archived' }
     if (project.missing) return { ok: false, error: 'missing' }
     if (isProjectDeletionInProgress(project.path)) return { ok: false, error: 'busy' }
     const grant = await grantManager.createGrant(project.path, project.isDefault ? 'default' : 'dialog')
-    const current = projectRegistry.get(id)
+    const current = projectRegistry.get(id, true)
     if (!grant || grant.realPath !== project.path || !current || current.archived || current.missing || current.path !== project.path || isProjectDeletionInProgress(current.path)) {
       if (grant) { grantManager.revoke(grant.id); historySessionGrantManager.revokeWorkspace(grant.id) }
       return { ok: false, error: 'path-changed' }
@@ -1932,20 +1942,16 @@ export function registerIpc() {
     return grant
   })
 
-  // App-managed fallback workspace: chatting without a project anchors here so
-  // "just start typing" never dead-ends on a folder picker. Persisted as a
-  // recent workspace so its session history survives relaunches.
+  // The managed no-project directory follows the same registration check as
+  // the picker. A default needing confirmation must not be bypassed by typing.
   ipcMain.handle(IPC_CHANNELS.WORKSPACE_DEFAULT, async (): Promise<WorkspaceGrant | null> => {
-    const dir = workspacePaths.defaultWorkspace
-    if (!dir) return null
+    if (!workspacePaths.defaultWorkspace) return null
     try {
-      await fs.promises.mkdir(dir, { recursive: true })
-    } catch {
-      return null
-    }
-    const grant = await grantManager.createGrant(dir, 'default')
-    if (grant) rememberRecentProject(grant.realPath)
-    return grant
+      const project = projectRegistry.list().find(item => item.isDefault)
+      if (!project) return null
+      const result = await activateRegisteredProject(project.id)
+      return result.ok ? result.grant ?? null : null
+    } catch { return null }
   })
 
   // "New project folder" from the home screen: Main creates a uniquely-named
@@ -1978,7 +1984,22 @@ export function registerIpc() {
   ipcMain.handle(
     IPC_CHANNELS.WORKSPACE_ACTIVATE_RECENT,
     async (_event, recentId: string): Promise<WorkspaceGrant | null> => {
-      return recentWorkspaceRegistry.activate(recentId)
+      if (!workspacePaths.defaultWorkspace) return null
+      try {
+        const recent = (await recentWorkspaceRegistry.list()).find(item => item.id === recentId)
+        if (!recent) return null
+        const projects = projectRegistry.list()
+        const registered = projects.find(item => item.path === recent.displayPath) ?? projects.find(item => {
+          try { return canonicalExistingPath(item.path) === recent.displayPath } catch { return false }
+        })
+        // A legacy recent entry cannot reauthorize a changed/archived registered
+        // project or its replacement symlink behind the project UI's back.
+        if (registered) {
+          const result = await activateRegisteredProject(registered.id)
+          return result.ok ? result.grant ?? null : null
+        }
+        return recentWorkspaceRegistry.activate(recentId)
+      } catch { return null }
     }
   )
 

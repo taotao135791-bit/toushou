@@ -28,6 +28,7 @@ import { basename } from '../lib/path'
 import MessageList from './MessageList'
 import ExecutionActivity from './ExecutionActivity'
 import Composer from './Composer'
+import ProjectRecovery from './ProjectRecovery'
 import ExtensionUiDialog from './ExtensionUiDialog'
 import GitChip from './GitChip'
 import OpenWithMenu from './OpenWithMenu'
@@ -53,6 +54,7 @@ export default function ChatPanel() {
   const workspacePanel = useAppStore((s) => s.workspacePanel)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const selectWorkspace = useProjects((s) => s.importFolder)
+  const unavailableDefault = useProjects(s => s.projects.find(project => project.isDefault && project.missing))
   // Per-session slices only: streaming deltas of OTHER sessions must not
   // re-render this chat, and unrelated store writes must not either.
   const sessionMessages = useAppStore((s) =>
@@ -484,6 +486,11 @@ export default function ChatPanel() {
                 投手
               </div>
               <div className="rise w-full" style={{ animationDelay: '140ms' }}>
+                {!currentWorkspace && unavailableDefault && <div className="mb-3 rounded-xl border border-line px-2 py-2 text-xs text-cream-dim">
+                  <p className="px-2.5 pb-1">{t('projects.defaultUnavailable')}</p>
+                  <p className="break-all px-2.5 pb-2 text-[11px] text-cream-faint">{unavailableDefault.path}</p>
+                  <ProjectRecovery project={unavailableDefault} />
+                </div>}
                 <Composer
                   onSend={handleSend}
                   onStop={handleStop}
@@ -496,6 +503,7 @@ export default function ChatPanel() {
                   onCompact={currentSessionId ? handleCompact : undefined}
                   compact={compact}
                 />
+                {sendError && <p role="alert" className="mt-2 text-center text-xs text-red-500">{t(sendError)}</p>}
                 {/* Home hint line: the @ / command / Enter affordances moved
                     here out of the placeholder — one faint centered line. */}
                 {!currentSessionId && (

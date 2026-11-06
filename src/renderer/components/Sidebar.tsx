@@ -70,6 +70,18 @@ const clampSidebarWidth = (width: number): number => {
   return Math.round(Math.min(SIDEBAR_MAX_WIDTH, windowBound, Math.max(SIDEBAR_MIN_WIDTH, width)))
 }
 
+/** Registered projects must not fall back to the older path-only recent list. */
+export async function activateSidebarProject(cwd: string, intent: number): Promise<'registered' | 'legacy' | 'unavailable'> {
+  if (!useProjects.getState().loaded) await useProjects.getState().refresh()
+  if (!useProjects.getState().loaded || !isCurrentNavigationIntent(intent)) return 'unavailable'
+  const project = useProjects.getState().projects.find(item => item.path === cwd)
+  if (!project) return 'legacy'
+  const current = useAppStore.getState().currentWorkspace
+  if (current?.realPath === cwd && !project.missing && !project.archived) return 'registered'
+  if (!(await useProjects.getState().activate(project.id, intent))) return 'unavailable'
+  return isCurrentNavigationIntent(intent) && useAppStore.getState().currentWorkspace?.realPath === cwd ? 'registered' : 'unavailable'
+}
+
 export default function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -375,6 +387,10 @@ export default function Sidebar() {
       queuedOpen.current = { intent: epoch, open: () => void handleResumeHistory(info, expectedWorkspace, epoch) }
       return false
     }
+    const targetWorkspace = expectedWorkspace ?? useAppStore.getState().currentWorkspace?.realPath
+    const targetProject = useProjects.getState().projects.find(project => project.path === targetWorkspace)
+    if (targetProject && (targetProject.missing || targetProject.archived) && await activateSidebarProject(targetProject.path, epoch) === 'unavailable') return false
+    if (!isCurrentNavigationIntent(epoch)) return false
     const access = historyResumeGrant(useAppStore.getState(), info, expectedWorkspace)
     if (!access.ok) {
       showNotice(access.error === 'loading' ? 'history.loading' : access.error === 'project-not-added' ? 'sidebar.projectNotAdded' : 'history.restoreFailed')
@@ -488,8 +504,7 @@ export default function Sidebar() {
     resumingGlobalRef.current = true
     setResumingGlobalUuid(row.uuid)
     try {
-      const project = useProjects.getState().projects.find(item => item.path === row.cwd && !item.archived && !item.missing)
-      if (useAppStore.getState().currentWorkspace?.realPath !== row.cwd && project) await useProjects.getState().activate(project.id, epoch)
+      if (await activateSidebarProject(row.cwd, epoch) === 'unavailable') return
       if (!isCurrentNavigationIntent(epoch)) return
       const result = await openGlobalHistory(row, {
         getState: useAppStore.getState,
@@ -519,16 +534,11 @@ export default function Sidebar() {
       queuedOpen.current = { intent: epoch, open: () => void handleOpenLive(session, epoch) }
       return
     }
-    if (useAppStore.getState().currentWorkspace?.realPath === session.cwd) {
-      setCurrentSessionId(session.id, epoch)
-      navigate('/')
-      return
-    }
     openingLiveRef.current = true
     try {
-      const project = useProjects.getState().projects.find(item => item.path === session.cwd && !item.archived && !item.missing)
-      if (project) await useProjects.getState().activate(project.id, epoch)
-      else {
+      const target = await activateSidebarProject(session.cwd, epoch)
+      if (target === 'unavailable') return
+      if (target === 'legacy' && useAppStore.getState().currentWorkspace?.realPath !== session.cwd) {
         const before = useAppStore.getState()
         const recent = before.recentWorkspaces.find(item => item.displayPath === session.cwd)
         const grant = recent ? await window.electronAPI.activateRecentWorkspace(recent.id) : null

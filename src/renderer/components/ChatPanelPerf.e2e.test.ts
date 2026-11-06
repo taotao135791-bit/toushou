@@ -37,6 +37,8 @@ describe('ChatPanel background metadata rendering', () => {
       expect(data.status).toBeGreaterThan(data.renamed.commits)
       expect(data.permission).toBe(true)
       expect(data.content).toEqual({ message: true, error: true })
+      expect(data.defaultRecovery).toEqual({ message: true, path: true, button: 'Reselect folder…' })
+      expect(data.defaultRecovered).toEqual({ calls: ['default'], workspace: '/synthetic/default-save-folder', source: 'default', missing: false, promptGone: true, draft: 'Unsent default folder brief' })
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
