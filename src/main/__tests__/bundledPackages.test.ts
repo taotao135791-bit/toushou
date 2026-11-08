@@ -27,7 +27,8 @@ function appRoot(label: string): string {
     const actual = JSON.parse(readFileSync(path.join(process.cwd(), 'resources', pkg.resourceDir, 'package.json'), 'utf8'))
     writeFileSync(path.join(folder, 'package.json'), JSON.stringify(actual))
   }
-  return realpathSync(root)
+  const resolved = realpathSync(root)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 beforeEach(() => {
   fixture = mkdtempSync(path.join(tmpdir(), 'bundled-managed-test-'))
