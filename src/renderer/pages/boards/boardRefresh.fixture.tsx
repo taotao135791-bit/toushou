@@ -21,7 +21,7 @@ const metaBoard: KanbanBoard = { id: 'meta-refresh-fixture', name: 'Meta fixture
 ] }
 const metaListeners = new Set<(status: { connected: boolean }) => void>()
 let datasets: BoardDataset[] = [{ id: 'af-bound', name: 'AF-Synthetic', createdAt: 1, columns: [{ name: 'Date', type: 'date' }, { name: 'Count', type: 'number' }], rows: [['2020-01-01', 999]] }, { id: 'af-other', name: 'AF-Other board', createdAt: 1, columns: [{ name: 'Count', type: 'number' }], rows: [[888]] }]
-const fixture = { board, meta: { refreshCalls: 0, summaryCalls: 0, accountsCalls: 0, fail: false }, emitMeta: (connected: boolean) => metaListeners.forEach(listener => listener({ connected })), media: [] as Array<{ range: string }>, af: [] as AppsFlyerDatasetRefreshRequest[], pending: false, unbound: false, empty: false, resolve: null as null | (() => void) }
+const fixture = { board, meta: { refreshCalls: 0, summaryCalls: 0, accountsCalls: 0, fail: false }, emitMeta: (connected: boolean) => metaListeners.forEach(listener => listener({ connected })), media: [] as Array<{ range: string }>, af: [] as AppsFlyerDatasetRefreshRequest[], pending: false, unbound: false, empty: false, partial: false, resolve: null as null | (() => void) }
 Object.assign(window, { boardRefreshFixture: fixture, electronAPI: {
   cleanupOrphanedHtmlBoards: async () => ({ ok: true }), listBoards: async () => [board, metaBoard], listBoardDatasets: async () => structuredClone(datasets),
   listFbReadingAccounts: async () => [], listFbReadings: async () => [], ttReadingAdvertisers: async () => ({ selected: [], granted: [], accounts: [] }),
@@ -44,7 +44,7 @@ Object.assign(window, { boardRefreshFixture: fixture, electronAPI: {
     if (fixture.pending) await new Promise<void>(resolve => { fixture.resolve = resolve })
     const status = fixture.unbound ? 'unbound' as const : fixture.empty ? 'empty' as const : 'updated' as const
     datasets = datasets.map(dataset => dataset.id === 'af-bound' ? { ...dataset, rows: fixture.empty ? [] : [[window.end, fixture.af.length]], appsflyer: { specId: 'query-synthetic', status, window, dataWindow: window, attemptedAt: Date.now() } } : dataset)
-    return { ok: false, boardId: captured.id, runId: `synthetic-${fixture.af.length}`, planKey: boardRefreshPlanKey(captured), reportWindow: window, generatedAt: Date.now(), status: 'partial', sources: [{ key: 'tt', kind: 'tiktok', status: 'failed', window, error: 'no-credentials' }, { key: 'af', kind: 'appsflyer', status, window, dataset: structuredClone(datasets[0]) }], widgets: [{ widgetId: 'tt-reader', window, status: 'failed', bindings: [], nativeSourceKey: 'tt' }, { widgetId: 'af-counter', window, status, bindings: [{ datasetId: 'af-bound', sourceKey: 'af' }] }] }
+    return { ok: false, boardId: captured.id, runId: `synthetic-${fixture.af.length}`, planKey: boardRefreshPlanKey(captured), reportWindow: window, generatedAt: Date.now(), status: 'partial', sources: [{ key: 'tt', kind: 'tiktok', status: 'failed', window, error: 'no-credentials' }, { key: 'af', kind: 'appsflyer', status, window, ...(fixture.partial ? { partial: true } : {}), dataset: structuredClone(datasets[0]) }], widgets: [{ widgetId: 'tt-reader', window, status: 'failed', bindings: [], nativeSourceKey: 'tt' }, { widgetId: 'af-counter', window, status, bindings: [{ datasetId: 'af-bound', sourceKey: 'af' }] }] }
   },
   appsflyerDatasetRefresh: async (input: AppsFlyerDatasetRefreshRequest) => {
     fixture.af.push(input)

@@ -63,6 +63,15 @@ describe('parseAfDataset (generic)', () => {
     expect(() => parseAfDataset(GEO_TEXT, 2)).toThrow('appsflyer-incomplete-data')
     expect(() => parseAfDataset(EMPTY_TEXT.replace('"timezone":"UTC"', '"partial-data?":true,"timezone":"UTC"'))).toThrow('appsflyer-incomplete-data')
   })
+
+  it('can explicitly accept today partial metadata but never truncation', () => {
+    const partial = GEO_TEXT.replace('"partial-data?":false', '"partial-data?":true')
+    expect(() => parseAfDataset(partial)).toThrow('appsflyer-incomplete-data')
+    const parsed = parseAfDataset(partial, undefined, { allowPartial: true })
+    expect(parsed.partial).toBe(true)
+    expect(parsed.rows).toHaveLength(2)
+    expect(() => parseAfDataset(partial.replace('"timezone":"UTC"', '"truncated":true,"timezone":"UTC"'), undefined, { allowPartial: true })).toThrow('appsflyer-incomplete-data')
+  })
 })
 
 describe('pullAppsFlyerDatasets (general queries)', () => {
@@ -171,6 +180,28 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
     expect(dataset.rows).toEqual([])
     expect(dataset.columns).toEqual([{ name: '日期', type: 'date' }, { name: '安装量', type: 'number' }])
     expect(dataset.appsflyer).toMatchObject({ status: 'empty', window: { start: '2026-10-29', end: '2026-11-04' }, dataWindow: { start: '2026-10-29', end: '2026-11-04' } })
+  })
+
+  it('accepts today partial data with an explicit state and rejects it for a historical window', async () => {
+    saveQuerySpec(spec, specsFile)
+    const partial = GEO_TEXT.replace('"partial-data?":false', '"partial-data?":true')
+    const now = Date.parse('2026-11-08T12:00:00Z')
+    const today = await pullAppsFlyerDatasets({
+      window: { start: '2026-11-08', end: '2026-11-08' }, now, file: datasetsFile, specsFile,
+      clientFactory: () => ({ initialize: async () => {}, queryRaw: async () => partial })
+    })
+    expect(today.ok).toBe(true)
+    expect(listDatasets(datasetsFile).find(dataset => dataset.name === 'AF-安装量')?.appsflyer).toMatchObject({
+      status: 'updated', window: { start: '2026-11-08', end: '2026-11-08' }, dataWindow: { start: '2026-11-08', end: '2026-11-08' }, partial: true
+    })
+    const historical = await pullAppsFlyerDatasets({
+      window: { start: '2026-11-07', end: '2026-11-07' }, now, file: datasetsFile, specsFile,
+      clientFactory: () => ({ initialize: async () => {}, queryRaw: async () => partial })
+    })
+    expect(historical.ok).toBe(false)
+    expect(listDatasets(datasetsFile).find(dataset => dataset.name === 'AF-安装量')?.appsflyer).toMatchObject({
+      status: 'failed', error: 'appsflyer-incomplete-data'
+    })
   })
 
   it('one failing spec does not block the others', async () => {

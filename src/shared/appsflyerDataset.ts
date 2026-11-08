@@ -18,6 +18,8 @@ export interface AppsFlyerDatasetState {
   window: AppsFlyerDatasetWindow
   /** Window of the rows currently stored; absent for an unverified import. */
   dataWindow?: AppsFlyerDatasetWindow
+  /** Today's response is partial (as of now), not a complete day. */
+  partial?: boolean
   attemptedAt: number
   error?: string
   /** Stable per-board scope slot; logical recipe identity remains specId. */
@@ -65,6 +67,7 @@ export function validateAppsFlyerDatasetState(raw: unknown): AppsFlyerDatasetSta
   if (typeof raw.attemptedAt !== 'number' || !Number.isFinite(raw.attemptedAt) || raw.attemptedAt < 0) return null
   if (raw.specId !== undefined && !boundedText(raw.specId, 200)) return null
   if (raw.dataWindow !== undefined && !isAppsFlyerDatasetWindow(raw.dataWindow)) return null
+  if (raw.partial !== undefined && typeof raw.partial !== 'boolean') return null
   if ((raw.status === 'updated' || raw.status === 'empty') && (
     !isAppsFlyerDatasetWindow(raw.dataWindow) || raw.dataWindow.start !== raw.window.start || raw.dataWindow.end !== raw.window.end
   )) return null
@@ -76,6 +79,7 @@ export function validateAppsFlyerDatasetState(raw: unknown): AppsFlyerDatasetSta
     attemptedAt: raw.attemptedAt,
     ...(typeof raw.specId === 'string' ? { specId: raw.specId } : {}),
     ...(isAppsFlyerDatasetWindow(raw.dataWindow) ? { dataWindow: { start: raw.dataWindow.start, end: raw.dataWindow.end } } : {}),
+    ...(raw.partial === true ? { partial: true } : {}),
     ...(typeof raw.error === 'string' ? { error: raw.error } : {}),
     ...(isRecord(raw.materialization) ? { materialization: { boardId: String(raw.materialization.boardId), bindingDatasetId: String(raw.materialization.bindingDatasetId), scopeKey: String(raw.materialization.scopeKey) } } : {})
   }

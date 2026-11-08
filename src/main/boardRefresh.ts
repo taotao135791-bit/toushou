@@ -245,7 +245,7 @@ export async function refreshBoard(request: BoardRefreshRequest, deps: BoardRefr
       const entry = pulled.results.find(item => item.ok && item.datasetId)
       const data = entry && readDatasets().find(item => item.id === entry.datasetId)
       if (!data || !data.appsflyer?.dataWindow || !sameWindow(data.appsflyer.dataWindow, first.window) || !success(data.appsflyer.status)) { source.status = 'failed'; source.error = pulled.results[0]?.error ?? pulled.error ?? 'appsflyer-read-failed'; continue }
-      source.dataset = structuredClone(data); source.status = data.rows.length ? 'updated' : 'empty'
+      source.dataset = structuredClone(data); source.status = data.rows.length ? 'updated' : 'empty'; source.partial = data.appsflyer.partial === true
     } catch (error) { source.status = 'failed'; source.error = error instanceof Error ? error.message : 'appsflyer-read-failed' }
   }
   if (!current()) return { ...result, status: 'superseded', error: 'superseded' }

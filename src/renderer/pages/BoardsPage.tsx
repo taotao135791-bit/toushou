@@ -277,15 +277,16 @@ export default function BoardsPage() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [saveFailed, setSaveFailed] = useState(false)
   const [datasets, setDatasets] = useState<BoardDataset[]>([])
-  const [afRefresh, setAfRefresh] = useState<Record<string, { pending: boolean; failed: boolean; unbound: boolean; empty: boolean }>>({})
+  const [afRefresh, setAfRefresh] = useState<Record<string, { pending: boolean; failed: boolean; unbound: boolean; empty: boolean; partial: boolean }>>({})
   const [planResults, setPlanResults] = useState<Record<string, BoardRefreshResult>>({})
   const [planPending, setPlanPending] = useState<Record<string, boolean>>({})
   const [metaDisconnected, setMetaDisconnected] = useState(false)
   const metaConnectionWasDisconnected = useRef(false)
   const boardRefreshInFlight = useRef(false)
   const automaticRefreshKey = useRef('')
-  const [dateRefreshRevision, setDateRefreshRevision] = useState(0)
-  const requestedDateRefresh = useRef<{ boardId: string; repeat: boolean } | null>(null)
+  const [scopeRefreshPending, setScopeRefreshPending] = useState(false)
+  const [refreshRevision, setRefreshRevision] = useState(0)
+  const manualScopeChange = useRef<{ boardId: string; range: BoardMasterScope['range'] } | null>(null)
   const [datasetsLoadFailed, setDatasetsLoadFailed] = useState(false)
   const [ttSyncFailures, setTtSyncFailures] = useState<Record<string, boolean>>({})
   const [ttScopes, setTtScopes] = useState<Record<string, VerifiedTikTokScope | null>>({})
@@ -329,7 +330,7 @@ export default function BoardsPage() {
     metaConnectionWasDisconnected.current = !status.connected
     setMetaDisconnected(!status.connected)
     if (!status.connected) setPlanResults(previous => Object.fromEntries(Object.entries(previous).filter(([, result]) => !result.sources.some(source => source.kind === 'meta'))))
-    else if (reconnected) setDateRefreshRevision(revision => revision + 1)
+    else if (reconnected) setRefreshRevision(revision => revision + 1)
   }), [])
   const retryHtmlCleanup = async () => {
     try { const result = await window.electronAPI.cleanupOrphanedHtmlBoards(); setHtmlCleanupFailed(!result.ok); if (result.ok && htmlCleanupFailed) setBoardsLoadGeneration(generation => generation + 1) }
@@ -919,13 +920,14 @@ export default function BoardsPage() {
   // Serial board-level refresh: each module runs its own bounded pipeline
   // and reports completion; the hard cap keeps one stuck module from
   // freezing the whole queue.
-  const refreshReadingModules = async (board = current, dateChange = false) => {
+  const refreshReadingModules = async (board = current) => {
     if (!board || boardRefreshInFlight.current) return
+    setScopeRefreshPending(false)
     // Main resolves every dataset window and queries TT coverage/AF slots.
     // Legacy browser readers keep their existing bounded UI pipeline.
     const widgets = board.widgets.filter(
       (widget) => (MASTER_SCOPED_WIDGET_TYPES.includes(widget.type) || widget.type === 'google-report-reading') &&
-        (!plannerEnabled || !['tt-reading', 'meta-reading'].includes(widget.type)) && (!dateChange || !['meta-reading', 'google-report-reading', ...(!plannerEnabled ? ['tt-reading'] : [])].includes(widget.type))
+        (!plannerEnabled || !['tt-reading', 'meta-reading'].includes(widget.type))
     )
     const boardBindings = board.widgets.flatMap(boardWidgetDatasetBindings)
     const hasDatasetBound = boardBindings.length > 0
@@ -942,20 +944,20 @@ export default function BoardsPage() {
     const sourceTask = (async () => {
       if (!hasManagedSource) { await refreshDatasets(); return }
       setPlanPending(state => ({ ...state, [board.id]: true }))
-      if (afDatasetIds.length) setAfRefresh(state => ({ ...state, [board.id]: { pending: true, failed: false, unbound: false, empty: false } }))
+      if (afDatasetIds.length) setAfRefresh(state => ({ ...state, [board.id]: { pending: true, failed: false, unbound: false, empty: false, partial: false } }))
       try {
         // Wait for the local date/config write; Main reads authoritative storage.
         await boardSaves.current.get(board.id)
         const saved = (await window.electronAPI.listBoards()).find(item => item.id === board.id)
-        if (saved && boardRefreshPlanKey(saved) !== boardRefreshPlanKey(board)) { automaticRefreshKey.current = ''; requestedDateRefresh.current = { boardId: board.id, repeat: true }; return }
+        if (saved && boardRefreshPlanKey(saved) !== boardRefreshPlanKey(board)) { automaticRefreshKey.current = ''; setScopeRefreshPending(true); return }
         const result = await window.electronAPI.boardRefresh({ boardId: board.id })
         if (result.status !== 'superseded') setPlanResults(state => ({ ...state, [board.id]: result }))
         const af = result.sources.filter(source => source.kind === 'appsflyer')
-        if (afDatasetIds.length) setAfRefresh(state => ({ ...state, [board.id]: { pending: false, failed: af.some(source => !['updated', 'empty'].includes(source.status)), unbound: af.some(source => source.status === 'unbound'), empty: af.length > 0 && af.every(source => source.status === 'empty') } }))
+        if (afDatasetIds.length) setAfRefresh(state => ({ ...state, [board.id]: { pending: false, failed: af.some(source => !['updated', 'empty'].includes(source.status)), unbound: af.some(source => source.status === 'unbound'), empty: af.length > 0 && af.every(source => source.status === 'empty'), partial: af.some(source => source.partial === true) } }))
         setTtSyncFailures(state => ({ ...state, [`fallback:${board.id}`]: result.sources.some(source => source.kind === 'tiktok' && !['updated', 'empty'].includes(source.status)) }))
       } catch {
         setPlanResults(state => { const next = { ...state }; delete next[board.id]; return next })
-        if (afDatasetIds.length) setAfRefresh(state => ({ ...state, [board.id]: { pending: false, failed: true, unbound: false, empty: false } }))
+        if (afDatasetIds.length) setAfRefresh(state => ({ ...state, [board.id]: { pending: false, failed: true, unbound: false, empty: false, partial: false } }))
         setTtSyncFailures(state => ({ ...state, [`fallback:${board.id}`]: true }))
       } finally {
         setPlanPending(state => ({ ...state, [board.id]: false }))
@@ -1007,11 +1009,11 @@ export default function BoardsPage() {
 
   // Master scope: writing it re-unifies every reading module onto it and
   // clears all independence flags (see applyMasterScope in shared/boards).
-  const saveMasterScope = (next: BoardMasterScope, requery = false) => {
+  const saveMasterScope = (next: BoardMasterScope) => {
     if (!currentId) return
-    if (requery || current?.masterScope?.range !== next.range) {
-      requestedDateRefresh.current = { boardId: currentId, repeat: current?.masterScope?.range === next.range }
-      setDateRefreshRevision(revision => revision + 1)
+    if (current?.masterScope?.range !== next.range) {
+      manualScopeChange.current = { boardId: currentId, range: next.range }
+      setScopeRefreshPending(true)
     }
     mutateBoard(currentId, (b) => ({
       ...b,
@@ -1026,20 +1028,29 @@ export default function BoardsPage() {
   const currentAfRefresh = current ? afRefresh[current.id] : undefined
   const displayedDatasets = datasetsForBoardWindow(datasets, currentAfDatasetIds, currentAfWindow, currentAfRefresh?.pending ?? false)
   const scopeCounts = current ? boardScopeCounts(current, datasets) : { live: 0, fixed: 0, independent: 0, unbound: 0 }
-  // Date changes and opening a media/AF board use the same scoped pipeline.
-  // A later click while a refresh is busy stays pending until it can run.
+  // Opening a board still refreshes its live sources. A manual date change
+  // only updates the scope and waits for the user's refresh action.
   useEffect(() => {
     if (surface !== 'board' || !current || !datasetsReady) { automaticRefreshKey.current = ''; return }
-    const requested = requestedDateRefresh.current?.boardId === current.id ? requestedDateRefresh.current : null
-    if (!afDatasetKey && (!plannerEnabled || (!hasCurrentTtDataset && !ttWidgets.length && !hasCurrentMetaDataset && !metaWidgets.length)) && !requested) return
+    if (!afDatasetKey && (!plannerEnabled || (!hasCurrentTtDataset && !ttWidgets.length && !hasCurrentMetaDataset && !metaWidgets.length))) return
     if (metaDisconnected && !afDatasetKey && !hasCurrentTtDataset && !ttWidgets.length) return
-    const key = `${boardRefreshPlanKey(current)}:${expectedReport?.start}:${expectedReport?.end}:${accountCalendarKey}:${dateRefreshRevision}`
-    if (currentPlan && automaticRefreshKey.current && !requested) { automaticRefreshKey.current = key; return }
+    const key = `${boardRefreshPlanKey(current)}:${expectedReport?.start}:${expectedReport?.end}:${accountCalendarKey}:${refreshRevision}`
+    const manual = manualScopeChange.current
+    if (manual) {
+      if (manual.boardId !== current.id || manual.range !== current.masterScope?.range) return
+      manualScopeChange.current = null
+      automaticRefreshKey.current = key
+      return
+    }
+    if (currentPlan && automaticRefreshKey.current) { automaticRefreshKey.current = key; return }
     if (automaticRefreshKey.current === key || boardRefreshBusy) return
     automaticRefreshKey.current = key
-    requestedDateRefresh.current = null
-    void refreshReadingModules(current, !requested?.repeat)
-  }, [surface, current?.id, current ? boardRefreshPlanKey(current) : '', expectedReport?.start, expectedReport?.end, accountCalendarKey, master?.range, afDatasetKey, hasCurrentTtDataset, ttWidgets.length, hasCurrentMetaDataset, metaWidgets.length, metaDisconnected, dateRefreshRevision, datasetsReady, boardRefreshBusy])
+    void refreshReadingModules(current)
+  }, [surface, current?.id, current ? boardRefreshPlanKey(current) : '', expectedReport?.start, expectedReport?.end, accountCalendarKey, refreshRevision, master?.range, afDatasetKey, hasCurrentTtDataset, ttWidgets.length, hasCurrentMetaDataset, metaWidgets.length, metaDisconnected, datasetsReady, boardRefreshBusy])
+  useEffect(() => {
+    manualScopeChange.current = null
+    setScopeRefreshPending(false)
+  }, [current?.id])
   const snapshotIndependent = !!current?.widgets.some(widget => widget.type === 'reading-snapshot') && !current.widgets.some(widget => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type))
   const readingModuleCount = current
     ? current.widgets.filter((widget) => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)).length
@@ -1794,12 +1805,14 @@ export default function BoardsPage() {
       {htmlCleanupFailed && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2 text-[12px] text-cream-dim"><p>{language === 'zh' ? '无法核对或清理已删除看板的 HTML 副本，请重试。' : 'Could not check or clean up HTML copies of deleted boards. Retry.'}</p><button type="button" className="focus-ring rounded-full border border-line px-3 py-1" onClick={() => void retryHtmlCleanup()}>{language === 'zh' ? '重试清理' : 'Retry cleanup'}</button></div>}
       {surface === 'board' && current && !snapshotIndependent && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
       {surface === 'board' && current && !snapshotIndependent && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
+      {surface === 'board' && current && !snapshotIndependent && scopeRefreshPending && !boardRefreshBusy && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.scope.pendingRefresh')}</p>}
       {surface === 'board' && current && hasAfDatasetCards && currentAfRefresh && (
         currentAfRefresh.pending ? <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{language === 'zh' ? 'AF 更新中…' : 'Updating AF…'}</p>
           : currentAfRefresh.failed ? <div role="status" className="flex items-center gap-2 px-4 py-2 text-[12px] text-cream-dim">
             <span>{currentAfRefresh.unbound ? (language === 'zh' ? 'AF 尚未接通刷新' : 'AF refresh is not connected') : (language === 'zh' ? 'AF 更新失败' : 'AF update failed')}</span>
             <button type="button" className="focus-ring rounded-full border border-line px-2.5 py-1" onClick={currentAfRefresh.unbound ? connectBoardAfRefresh : () => void refreshReadingModules()}>{currentAfRefresh.unbound ? (language === 'zh' ? '接通刷新' : 'Connect refresh') : (language === 'zh' ? '重试' : 'Retry')}</button>
-          </div> : currentAfRefresh.empty ? <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{language === 'zh' ? 'AF 暂无数据' : 'No AF data for this range'}</p> : null
+          </div> : currentAfRefresh.empty ? <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{currentAfRefresh.partial ? t('boards.af.emptyToday') : t('boards.af.empty')}</p>
+          : currentAfRefresh.partial ? <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.af.partial')}</p> : null
       )}
       {surface === 'board' && current && !snapshotIndependent && datasets.some(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')) && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names: datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name).join('、')})}</p>}
       {surface === 'board' && current && snapshotIndependent && <p className="border-b border-line px-4 py-2 text-[12px] text-cream-dim">{language === 'zh' ? '已保存的快照使用固定日期。可回到“今日”选择其他日期，再保存为新看板。' : 'Saved snapshots keep their original dates. Return to Today to choose dates and save a new board.'}</p>}
@@ -1818,7 +1831,7 @@ export default function BoardsPage() {
             ).map(([value, label]) => (
               <button
                 key={value}
-                onClick={() => saveMasterScope({ range: value, metrics: master?.metrics ?? seedMasterMetrics() }, true)}
+                onClick={() => saveMasterScope({ range: value, metrics: master?.metrics ?? seedMasterMetrics() })}
                 title={formatReadingWindow(boardMasterWindow(value))}
                 aria-label={`${label} · ${formatReadingWindow(boardMasterWindow(value))}`}
                 aria-pressed={master?.range === value}

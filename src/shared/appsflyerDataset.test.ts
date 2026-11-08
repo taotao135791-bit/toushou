@@ -22,5 +22,7 @@ describe('AppsFlyer board refresh contract', () => {
     expect(validateAppsFlyerDatasetState({ ...state, status: 'updated' })).toBeNull()
     expect(validateAppsFlyerDatasetState({ ...state, status: 'empty', dataWindow: undefined })).toBeNull()
     expect(validateAppsFlyerDatasetState({ ...state, status: 'updated', dataWindow: state.window })).toMatchObject({ status: 'updated' })
+    expect(validateAppsFlyerDatasetState({ ...state, status: 'updated', dataWindow: state.window, partial: true })).toMatchObject({ status: 'updated', partial: true })
+    expect(validateAppsFlyerDatasetState({ ...state, partial: 'yes' })).toBeNull()
   })
 })

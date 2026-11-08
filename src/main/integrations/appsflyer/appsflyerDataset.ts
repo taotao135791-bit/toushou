@@ -175,30 +175,47 @@ function normalizeColumnName(rawName: string): { name: string; type: BoardDatase
   return { name: rawName.trim(), type: 'text' }
 }
 
-function incompleteMetadata(value: unknown, depth = 0): boolean {
-  if (depth > 16) return true
-  if (Array.isArray(value)) return value.some(item => incompleteMetadata(item, depth + 1))
+interface MetadataFlags { partial: boolean; truncated: boolean }
+function metadataFlags(value: unknown, depth = 0): MetadataFlags {
+  if (depth > 16) return { partial: true, truncated: true }
+  if (Array.isArray(value)) return value.reduce<MetadataFlags>((flags, item) => {
+    const next = metadataFlags(item, depth + 1)
+    return { partial: flags.partial || next.partial, truncated: flags.truncated || next.truncated }
+  }, { partial: false, truncated: false })
   const record = obj(value)
-  if (!record) return false
-  return Object.entries(record).some(([key, child]) =>
-    (/^(?:partial(?:[-_ ]data)?\??|truncated|is[-_ ]truncated)$/i.test(key) && child === true) || incompleteMetadata(child, depth + 1)
-  )
+  if (!record) return { partial: false, truncated: false }
+  let partial = false, truncated = false
+  for (const [key, child] of Object.entries(record)) {
+    if (/^partial(?:[-_ ]data)?\??$/i.test(key) && child === true) partial = true
+    else if (/^(?:truncated|is[-_ ]truncated)$/i.test(key) && child === true) truncated = true
+    const nested = metadataFlags(child, depth + 1)
+    partial = partial || nested.partial
+    truncated = truncated || nested.truncated
+  }
+  return { partial, truncated }
+}
+function partialMetadata(metadata: unknown, allowPartial: boolean): boolean {
+  const flags = metadataFlags(metadata)
+  if (flags.truncated) throw new Error('appsflyer-incomplete-data')
+  if (flags.partial && !allowPartial) throw new Error('appsflyer-incomplete-data')
+  return flags.partial
 }
 
-export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.maxRows): { columns: BoardDatasetColumn[]; rows: (string | number)[][] } {
+export interface ParseAfDatasetOptions { allowPartial?: boolean }
+export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.maxRows, options: ParseAfDatasetOptions = {}): { columns: BoardDatasetColumn[]; rows: (string | number)[][]; partial: boolean } {
   const empty = /^\s*## Data:\s*;\s*## Metadata:[ \t]*([^\r\n]*)/m.exec(text)
   if (empty) {
     let metadata: unknown
     try { metadata = JSON.parse(empty[1]) } catch { throw new Error('appsflyer-invalid-metadata') }
-    if (incompleteMetadata(metadata)) throw new Error('appsflyer-incomplete-data')
-    return { columns: [], rows: [] }
+    const partial = partialMetadata(metadata, options.allowPartial === true)
+    return { columns: [], rows: [], partial }
   }
   const section = /^\s*## Data:\s*([^\r\n]*)\r?\n([\s\S]*?)\r?\n[ \t]*(?:;[ \t]*)?## Metadata:[ \t]*([^\r\n]*)/m.exec(text)
   if (!section) throw new Error('appsflyer-invalid-data')
   let metadata: Obj | null
   try { metadata = obj(JSON.parse(section[3])) } catch { throw new Error('appsflyer-invalid-metadata') }
   if (!metadata) throw new Error('appsflyer-invalid-metadata')
-  if (incompleteMetadata(metadata)) throw new Error('appsflyer-incomplete-data')
+  const partial = partialMetadata(metadata, options.allowPartial === true)
   const csv = Papa.parse<Record<string, string>>(`${section[1]}\n${section[2]}`, { header: true, skipEmptyLines: true, dynamicTyping: false })
   if (csv.errors.length || csv.data.length >= Math.min(rowLimit, DATASET_LIMITS.maxRows)) throw new Error('appsflyer-incomplete-data')
   const headerNames = csv.meta.fields ?? Object.keys(csv.data[0] ?? {})
@@ -222,7 +239,7 @@ export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.m
     if (metadata?.currency && typeof metadata.currency === 'string') values.push(metadata.currency)
     return values
   })
-  return { columns, rows }
+  return { columns, rows, partial }
 }
 
 export type AppsFlyerPullResult = AppsFlyerDatasetRefreshResult
@@ -239,6 +256,8 @@ export interface AppsFlyerPullOptions {
   /** Main planner slots reuse a recipe without redirecting its original dataset. */
   materializations?: Array<{ specId: string; datasetId?: string; datasetName: string; materialization: NonNullable<AppsFlyerDatasetState['materialization']> }>
   canCommit?: () => boolean
+  /** Deterministic clock for tests and today's partial-window policy. */
+  now?: number
 }
 
 function emptyQueryColumns(query: Obj): BoardDatasetColumn[] {
@@ -319,6 +338,15 @@ function selectTargets(options: AppsFlyerPullOptions, specs: AfQuerySpec[], data
 export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Promise<AppsFlyerPullResult> {
   const { window, file, specsFile: specsFilePath, clientFactory } = options
   if (!isAppsFlyerDatasetWindow(window)) return { ok: false, error: 'invalid-window', results: [] }
+  const now = options.now ?? Date.now()
+  const localToday = (() => {
+    const date = new Date(now)
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  })()
+  // Today's aggregation is legitimately partial (as of now). Historical
+  // partial/truncated responses remain unusable. A custom range ending today
+  // is partial for the same reason.
+  const allowPartial = window.end === localToday
   let datasets: BoardDataset[]
   try { datasets = listDatasets(file) } catch { return { ok: false, error: 'dataset-store-unreadable', results: [] } }
   const targets = selectTargets(options, listQuerySpecs(specsFilePath), datasets)
@@ -373,7 +401,7 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
     try {
       const text = await client.queryRaw({ query })
       const rowCount = typeof query.row_count === 'number' && query.row_count > 0 ? query.row_count : 100
-      const parsed = parseAfDataset(text, rowCount)
+      const parsed = parseAfDataset(text, rowCount, { allowPartial })
       if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
       const columns = parsed.columns.length > 0 ? parsed.columns : target.dataset?.columns.length ? target.dataset.columns : emptyQueryColumns(query)
       const status = parsed.rows.length > 0 ? 'updated' : 'empty'
@@ -383,7 +411,7 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
         truncated: false
       }, file, {
         ...(target.dataset ? { replaceId: target.dataset.id } : {}),
-        appsflyer: { specId: spec.id, status, window: { ...window }, dataWindow: { ...window }, attemptedAt: Date.now(), ...(target.materialization ? { materialization: target.materialization } : {}) }
+        appsflyer: { specId: spec.id, status, window: { ...window }, dataWindow: { ...window }, ...(parsed.partial ? { partial: true } : {}), attemptedAt: Date.now(), ...(target.materialization ? { materialization: target.materialization } : {}) }
       })
       if (!written.ok) { fail(target, written.error); continue }
       // Bind to identity after the initial pull, including an empty result.

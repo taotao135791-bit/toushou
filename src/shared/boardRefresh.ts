@@ -11,6 +11,8 @@ export interface BoardRefreshSource {
   kind: 'tiktok' | 'meta' | 'appsflyer' | 'dataset'
   status: BoardRefreshStatus
   window: BoardDateWindow
+  /** Today's AF response is partial (as of now), not a complete day. */
+  partial?: boolean
   dataset?: BoardDataset
   proofs?: TikTokDatasetProof[]
   accountWindows?: TikTokReadingSummary['accountWindows']
