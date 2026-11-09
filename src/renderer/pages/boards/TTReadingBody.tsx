@@ -65,7 +65,7 @@ function Metric({
   )
 }
 
-export interface ManagedTikTokReading { status: BoardRefreshStatus | 'pending'; summary?: TikTokReadingSummary }
+export interface ManagedTikTokReading { status: BoardRefreshStatus | 'pending' | 'stale'; summary?: TikTokReadingSummary }
 export function TTReadingBody({ widget, managedReading, onManagedRefresh }: { widget: BoardWidget; managedReading?: ManagedTikTokReading; onManagedRefresh?: () => void }) {
   const t = useT()
   const fxRates = useFxRates()
@@ -76,6 +76,8 @@ export function TTReadingBody({ widget, managedReading, onManagedRefresh }: { wi
   const [summary, setSummary] = useState<TikTokReadingSummary | null>(null)
   const [failure, setFailure] = useState<{ code: ReadingErrorCode | 'invoke-failed'; detail?: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  /** Waiting for a manual refresh after a date change: not loading, not failed. */
+  const [stale, setStale] = useState(false)
   const requestVersion = useRef(0)
   const activeRequest = useRef<string | null>(null)
   const [progress, setProgress] = useState<TTProgress | null>(null)
@@ -86,6 +88,7 @@ export function TTReadingBody({ widget, managedReading, onManagedRefresh }: { wi
   useEffect(() => {
     if (!managedReading) return
     setBusy(managedReading.status === 'pending')
+    setStale(managedReading.status === 'stale')
     setSummary(managedReading.status === 'updated' ? managedReading.summary ?? null : null)
     setFailure(managedReading.status === 'failed' || managedReading.status === 'unbound' ? { code: 'invoke-failed' } : null)
   }, [managedReading])
@@ -95,7 +98,7 @@ export function TTReadingBody({ widget, managedReading, onManagedRefresh }: { wi
   }), [])
 
   const load = useCallback(async () => {
-    if (managed) { refreshManaged.current?.(); return }
+    if (managed) { setStale(false); refreshManaged.current?.(); return }
     const previous = activeRequest.current
     if (previous) void window.electronAPI.ttReadingCancel?.(previous)
     const requestId = crypto.randomUUID()
@@ -215,6 +218,7 @@ export function TTReadingBody({ widget, managedReading, onManagedRefresh }: { wi
       </div>
 
       {busy && (managed ? <p role="status" className="text-[12px] text-cream-faint">{t('boards.data.updating')}</p> : <TTReadingProgress progress={progress} cancelling={cancelling} onCancel={() => void cancelReading()} />)}
+      {!busy && stale && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.scope.pendingRefresh')}</p>}
 
       {failure ? (
         <ReadingErrorNotice

@@ -6,7 +6,7 @@ import { useAppStore } from '../../store'
 import { publishMetaReading } from './metaReadingStore'
 import type { BoardRefreshStatus } from '@shared/boardRefresh'
 
-export interface ManagedMetaReading { status: BoardRefreshStatus | 'pending'; summary?: MetaReadingSummary; accounts?: MetaReadingAccount[]; partial?: boolean; error?: string }
+export interface ManagedMetaReading { status: BoardRefreshStatus | 'pending' | 'stale'; summary?: MetaReadingSummary; accounts?: MetaReadingAccount[]; partial?: boolean; error?: string }
 export function MetaReadingBody({ widget, onConfigChange, managedReading, onManagedRefresh }: { widget: BoardWidget; onConfigChange: (config: Record<string, unknown>) => void; managedReading?: ManagedMetaReading; onManagedRefresh?: () => void }) {
   const zh = useAppStore(state => state.language) === 'zh'
   const accountId = typeof widget.config.accountId === 'string' ? widget.config.accountId : ''
@@ -16,6 +16,8 @@ export function MetaReadingBody({ widget, onConfigChange, managedReading, onMana
   const [summary, setSummary] = useState<MetaReadingSummary | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  /** Waiting for a manual refresh after a date change: not loading, not failed. */
+  const [stale, setStale] = useState(false)
   const [partial, setPartial] = useState(false)
   const version = useRef(0)
   const managed = managedReading !== undefined
@@ -25,13 +27,14 @@ export function MetaReadingBody({ widget, onConfigChange, managedReading, onMana
     const data = managedReading.status === 'updated' || managedReading.status === 'empty' ? managedReading.summary ?? null : null
     setSummary(data); publishMetaReading(widget.id, data)
     setBusy(managedReading.status === 'pending')
+    setStale(managedReading.status === 'stale')
     const error = managedReading.error
     setError(error === 'source-selection-required' ? '' : error && ['meta-read-failed', 'meta-source-scope-mismatch', 'meta-accounts-unavailable', 'meta-source-reader-missing', 'unsupported-query-window'].includes(error) ? (zh ? 'Meta 读取未完成，请核对账户和日期后重试。' : 'Meta reading did not complete. Check the account and dates, then retry.') : error ?? '')
     if (managedReading.accounts) setAccounts(managedReading.accounts)
     setPartial(managedReading.partial === true)
   }, [managedReading, widget.id, zh])
   const load = useCallback(async () => {
-    if (managed && accountId) { refreshManaged.current?.(); return }
+    if (managed && accountId) { setStale(false); refreshManaged.current?.(); return }
     const ticket = ++version.current
     setBusy(true); setError(''); setSummary(null); publishMetaReading(widget.id, null)
     try {
@@ -80,6 +83,7 @@ export function MetaReadingBody({ widget, onConfigChange, managedReading, onMana
       {accountId && <button disabled={busy} className="rounded-full border border-line px-3 py-1.5" onClick={() => onConfigChange({ ...widget.config, accountId: '' })}>{zh ? '换账户' : 'Change account'}</button>}
     </div>
     {error && <p role="alert" className="text-red-500">{error} <a href="#/connections" className="underline">{zh ? '连接设置' : 'Connections'}</a></p>}
+    {!busy && stale && <p role="status" className="text-amber-700 dark:text-amber-300">{zh ? '日期已切换，点击刷新获取新日期数据。' : 'Date range changed. Refresh to load data for the new range.'}</p>}
     {partial && <p>{zh ? '账户列表尚有后续分页，仅展示当前返回的账户。' : 'Account list is partial; only returned accounts are selectable.'}</p>}
     {summary && !summary.rows.length && <p>{zh ? '该范围没有返回明细，不将缺失值填成零。' : 'No rows returned for this range.'}</p>}
     <div className="grid grid-cols-2 gap-3">{labels.map((label, index) => <div key={label} className="rounded-xl bg-ink-850 px-2.5 py-2"><div className="text-cream-faint">{label}</div><div className="text-[20px] font-semibold tabular-nums text-cream">{values[index]}</div></div>)}</div>

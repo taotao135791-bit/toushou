@@ -179,7 +179,9 @@ describe('OmpSession abort', () => {
     expect(written).toContain('"type":"abort"')
     emitLines(fake, { type: 'agent_end' })
     expect(s.runtimeState).toBe('idle')
-    expect(statusEvents(events)).toEqual(['working', 'idle'])
+    // The aborting transition must be observable: scheduled-task runs settle a
+    // cancelled firing as failed only when they see this status first.
+    expect(statusEvents(events)).toEqual(['working', 'aborting', 'idle'])
   })
 })
 

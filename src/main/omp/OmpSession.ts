@@ -189,6 +189,10 @@ export class OmpSession {
     const ok = this.write({ id: crypto.randomUUID(), type: 'abort' })
     if (ok && (this.state === 'working' || this.state === 'waiting_for_user')) {
       this.state = 'aborting'
+      // Announce the transition. Scheduled-task runs can only tell a user cancel
+      // apart from a clean completion through this event, so staying silent here
+      // would settle the run as completed.
+      this.emit({ type: 'status', sessionId: this.id, status: 'aborting' })
     }
     return ok
   }

@@ -80,6 +80,7 @@ import {
   type BoardReadingRange
 } from '../lib/boardReading'
 import { WidgetBody } from './boards/WidgetBody'
+import { managedReadingStatus } from './boards/readingStatus'
 import { widgetCardStyle } from './boards/widgetCardStyle'
 import { reloadLatestDataset, type DatasetReloadState } from '../lib/latestDatasetReload'
 import { boardAppsFlyerDatasetIds, boardMasterWindow, boardRefreshWindow, boardScopeCounts, boardScopedBoardTitle, boardScopedWidgetTitle, datasetsForBoardWindow } from '../lib/boardRefreshScope'
@@ -282,9 +283,10 @@ export default function BoardsPage() {
   const [planPending, setPlanPending] = useState<Record<string, boolean>>({})
   const [metaDisconnected, setMetaDisconnected] = useState(false)
   const metaConnectionWasDisconnected = useRef(false)
-  const boardRefreshInFlight = useRef(false)
+  const boardRefreshInFlight = useRef(new Set<string>())
   const automaticRefreshKey = useRef('')
   const [scopeRefreshPending, setScopeRefreshPending] = useState(false)
+  const [refreshBlocked, setRefreshBlocked] = useState<Record<string, string>>({})
   const [refreshRevision, setRefreshRevision] = useState(0)
   const manualScopeChange = useRef<{ boardId: string; range: BoardMasterScope['range'] } | null>(null)
   const [datasetsLoadFailed, setDatasetsLoadFailed] = useState(false)
@@ -921,7 +923,7 @@ export default function BoardsPage() {
   // and reports completion; the hard cap keeps one stuck module from
   // freezing the whole queue.
   const refreshReadingModules = async (board = current) => {
-    if (!board || boardRefreshInFlight.current) return
+    if (!board || boardRefreshInFlight.current.has(board.id)) return
     setScopeRefreshPending(false)
     // Main resolves every dataset window and queries TT coverage/AF slots.
     // Legacy browser readers keep their existing bounded UI pipeline.
@@ -938,7 +940,7 @@ export default function BoardsPage() {
     const afDatasetIds = boardAppsFlyerDatasetIds(board, datasets)
     const hasManagedSource = plannerEnabled && (hasTtDatasetBound || afDatasetIds.length > 0 || board.widgets.some(widget => widget.type === 'tt-reading' || widget.type === 'meta-reading') || boardBindings.some(binding => binding.datasetId.startsWith('meta-reading:')))
     if (widgets.length === 0 && !hasDatasetBound && !hasManagedSource) return
-    boardRefreshInFlight.current = true
+    boardRefreshInFlight.current.add(board.id)
     setBoardRefreshBusy(true)
     setBoardRefreshProgress({ done: 0, total: Math.max(widgets.length, 1) })
     const sourceTask = (async () => {
@@ -949,7 +951,13 @@ export default function BoardsPage() {
         // Wait for the local date/config write; Main reads authoritative storage.
         await boardSaves.current.get(board.id)
         const saved = (await window.electronAPI.listBoards()).find(item => item.id === board.id)
-        if (saved && boardRefreshPlanKey(saved) !== boardRefreshPlanKey(board)) { automaticRefreshKey.current = ''; setScopeRefreshPending(true); return }
+        if (saved && boardRefreshPlanKey(saved) !== boardRefreshPlanKey(board)) {
+          automaticRefreshKey.current = ''
+          setScopeRefreshPending(true)
+          setRefreshBlocked(state => ({ ...state, [board.id]: language === 'zh' ? '看板配置尚未保存完成，本次刷新已取消；请稍后重试。' : 'The board configuration is still saving, so this refresh was skipped. Retry in a moment.' }))
+          return
+        }
+        setRefreshBlocked(state => { const next = { ...state }; delete next[board.id]; return next })
         const result = await window.electronAPI.boardRefresh({ boardId: board.id })
         if (result.status !== 'superseded') setPlanResults(state => ({ ...state, [board.id]: result }))
         const af = result.sources.filter(source => source.kind === 'appsflyer')
@@ -966,8 +974,8 @@ export default function BoardsPage() {
     })()
     if (widgets.length === 0) {
       await sourceTask
-      boardRefreshInFlight.current = false
-      setBoardRefreshBusy(false)
+      boardRefreshInFlight.current.delete(board.id)
+      setBoardRefreshBusy(boardRefreshInFlight.current.size > 0)
       setBoardRefreshProgress({ done: 1, total: 1 })
       return
     }
@@ -1003,8 +1011,8 @@ export default function BoardsPage() {
       setBoardRefreshProgress({ done: index + 1, total: widgets.length })
     }
     await sourceTask
-    boardRefreshInFlight.current = false
-    setBoardRefreshBusy(false)
+    boardRefreshInFlight.current.delete(board.id)
+    setBoardRefreshBusy(boardRefreshInFlight.current.size > 0)
   }
 
   // Master scope: writing it re-unifies every reading module onto it and
@@ -1524,10 +1532,10 @@ export default function BoardsPage() {
           key={widget.id}
           widget={widget}
           datasets={widgetDatasets}
-          datasetsLoading={!datasetsReady || (managedSource && (planPending[boardId] === true || (!view && !ttFailed && !currentAfRefresh?.failed)))}
+          datasetsLoading={!datasetsReady || (managedSource && planPending[boardId] === true)}
           verifiedDatasetSnapshot={managedSource}
-          managedReading={plannerEnabled && widget.type === 'tt-reading' ? { status: view?.status ?? (planPending[boardId] || !ttFailed ? 'pending' : 'failed'), ...(view?.ttSummary ? { summary: view.ttSummary } : {}) } : undefined}
-          managedMetaReading={plannerEnabled && widget.type === 'meta-reading' ? { status: metaDisconnected ? 'failed' : view?.status ?? (planPending[boardId] || !ttFailed ? 'pending' : 'failed'), ...(view?.metaSummary && !metaDisconnected ? { summary: view.metaSummary } : {}), ...(view?.metaAccounts ? { accounts: view.metaAccounts, partial: view.metaAccountsPartial } : {}), error: metaDisconnected ? (language === 'zh' ? 'Meta 已断开，请重新连接。' : 'Meta disconnected. Reconnect in Connections.') : view?.nativeSourceKey ? currentPlan?.sources.find(source => source.key === view.nativeSourceKey)?.error : undefined } : undefined}
+          managedReading={plannerEnabled && widget.type === 'tt-reading' ? { status: managedReadingStatus({ viewStatus: view?.status, planPending: planPending[boardId] === true, failed: ttFailed }), ...(view?.ttSummary ? { summary: view.ttSummary } : {}) } : undefined}
+          managedMetaReading={plannerEnabled && widget.type === 'meta-reading' ? { status: metaDisconnected ? 'failed' : managedReadingStatus({ viewStatus: view?.status, planPending: planPending[boardId] === true, failed: ttFailed }), ...(view?.metaSummary && !metaDisconnected ? { summary: view.metaSummary } : {}), ...(view?.metaAccounts ? { accounts: view.metaAccounts, partial: view.metaAccountsPartial } : {}), error: metaDisconnected ? (language === 'zh' ? 'Meta 已断开，请重新连接。' : 'Meta disconnected. Reconnect in Connections.') : view?.nativeSourceKey ? currentPlan?.sources.find(source => source.key === view.nativeSourceKey)?.error : undefined } : undefined}
           onManagedRefresh={() => { void refreshReadingModules(current) }}
           ttScope={currentTtScope}
           ttScopeConflict={ttScopeConflict}
@@ -1806,6 +1814,7 @@ export default function BoardsPage() {
       {surface === 'board' && current && !snapshotIndependent && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
       {surface === 'board' && current && !snapshotIndependent && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
       {surface === 'board' && current && !snapshotIndependent && scopeRefreshPending && !boardRefreshBusy && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.scope.pendingRefresh')}</p>}
+      {surface === 'board' && current && !snapshotIndependent && refreshBlocked[current.id] && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{refreshBlocked[current.id]}</p>}
       {surface === 'board' && current && hasAfDatasetCards && currentAfRefresh && (
         currentAfRefresh.pending ? <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{language === 'zh' ? 'AF 更新中…' : 'Updating AF…'}</p>
           : currentAfRefresh.failed ? <div role="status" className="flex items-center gap-2 px-4 py-2 text-[12px] text-cream-dim">
