@@ -154,11 +154,27 @@ async function stopChild(phase = 'stop') {
   if (running(target)) throw new Error('Packaged app did not exit')
   if (process.platform === 'win32') {
     if (captureError || !tracked) throw new Error('Packaged app process tree could not be captured')
-    let gone = false
-    const verifyStarted = Date.now()
-    try { gone = processesGone(tracked, await enumerateWindowsProcesses(), executable); console.log(`[smoke-cleanup] phase=${phase}-verify result=${gone ? 'gone' : 'survivor'} elapsedMs=${Date.now() - verifyStarted}`) }
-    catch (error) { console.error(`[smoke-cleanup] phase=${phase}-verify result=${safeFailureCategory(error)} elapsedMs=${Date.now() - verifyStarted}`) }
-    if (!gone) throw new Error('Packaged app process tree termination could not be confirmed')
+    // Electron helpers on Windows share the parent's executable image and can
+    // outlive the main process by a few hundred milliseconds, including after a
+    // taskkill that raced the app's own exit. Poll a bounded window so a
+    // short-lived survivor is not reported as a leaked tree; the final snapshot
+    // must still be empty.
+    const verifyDeadline = Date.now() + 20000
+    let gone = false, lastError = null
+    do {
+      const verifyStarted = Date.now()
+      try {
+        gone = processesGone(tracked, await enumerateWindowsProcesses(), executable)
+        lastError = null
+        console.log(`[smoke-cleanup] phase=${phase}-verify result=${gone ? 'gone' : 'survivor'} elapsedMs=${Date.now() - verifyStarted}`)
+      } catch (error) {
+        lastError = error
+        console.error(`[smoke-cleanup] phase=${phase}-verify result=${safeFailureCategory(error)} elapsedMs=${Date.now() - verifyStarted}`)
+      }
+      if (gone) break
+      await sleep(500)
+    } while (Date.now() < verifyDeadline)
+    if (!gone) throw new Error(lastError ? 'Packaged app process tree could not be verified' : 'Packaged app process tree termination could not be confirmed')
     console.log(`[smoke-cleanup] phase=${phase}-verified count=${tracked.length}`)
   }
 }
