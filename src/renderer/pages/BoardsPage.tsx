@@ -83,7 +83,7 @@ import { WidgetBody } from './boards/WidgetBody'
 import { managedReadingStatus } from './boards/readingStatus'
 import { widgetCardStyle } from './boards/widgetCardStyle'
 import { reloadLatestDataset, type DatasetReloadState } from '../lib/latestDatasetReload'
-import { boardAppsFlyerDatasetIds, boardMasterWindow, boardRefreshWindow, boardScopeCounts, boardScopedBoardTitle, boardScopedWidgetTitle, datasetsForBoardWindow } from '../lib/boardRefreshScope'
+import { afBindingHasRefreshSource, boardAppsFlyerDatasetIds, boardMasterWindow, boardRefreshWindow, boardScopeCounts, boardScopeSummary, boardScopedBoardTitle, boardScopedWidgetTitle, datasetsForBoardWindow } from '../lib/boardRefreshScope'
 import { boardWidgetDatasetBindings } from '@shared/boardDataWidgets'
 import { boardRefreshWidgetDatasets, type BoardRefreshResult } from '@shared/boardRefresh'
 import { boardRefreshPlanKey, boardReportWindow, boardWidgetWindow, type BoardWidgetDateScope } from '@shared/boardWindows'
@@ -98,6 +98,40 @@ import BrandIcon from '../components/BrandIcon'
 import { TodayReading } from './boards/TodayReading'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
+
+/** Only a changed query window on an actual source needs an upstream refresh. */
+export function boardScopeNeedsRefresh(previous: KanbanBoard, next: KanbanBoard, datasets: BoardDataset[], now: number, plan?: BoardRefreshResult, sourceOnly = false): boolean {
+  return next.widgets.some(widget => {
+    if (widget.dateScope?.mode === 'absolute' || (!widget.dateScope && widget.config.independent === true)) return false
+    const bindings = boardWidgetDatasetBindings(widget)
+    const hasSource = widget.type === 'tt-reading' ||
+      (widget.type === 'meta-reading' && typeof widget.config.accountId === 'string' && widget.config.accountId !== '') ||
+      (widget.type === 'fb-reading' && !!widget.config.account) ||
+      (widget.type === 'fb-reading-summary' && Array.isArray(widget.config.accounts) && widget.config.accounts.length > 0) ||
+      widget.type === 'fb-report-reading' || bindings.some(binding => {
+        if (binding.datasetId.startsWith('meta-reading:')) {
+          const reader = next.widgets.find(item => item.type === 'meta-reading' && item.id === binding.datasetId.slice('meta-reading:'.length))
+          if (!reader || !reader.config.accountId) return false
+          // A card without its own policy inherits the reader's independent range.
+          if (!widget.dateScope && (reader.config.independent === true || (reader.dateScope && reader.dateScope.mode !== 'inherit'))) return false
+          return true
+        }
+        const dataset = datasets.find(item => item.id === binding.datasetId || item.name === binding.datasetId)
+        if (binding.datasetId === 'TikTok 报表' || dataset?.name === 'TikTok 报表' || !!dataset?.appsflyer?.specId) return true
+        // Legacy AF recipes can be resolved by Main from datasetName without
+        // writing a specId to the original dataset. Trust only a matching
+        // source in this board's last plan, never the dataset name alone.
+        return afBindingHasRefreshSource(plan, previous.id, widget.id, binding.datasetId, dataset)
+      })
+    if (!hasSource) return false
+    const oldWidget = previous.widgets.find(item => item.id === widget.id)
+    if (!oldWidget) return false
+    if (sourceOnly) return true
+    const prior = plan?.widgets.find(item => item.widgetId === widget.id)?.window ?? boardWidgetWindow(previous, oldWidget, now)
+    const window = boardWidgetWindow(next, widget, now)
+    return prior.start !== window.start || prior.end !== window.end
+  })
+}
 
 /**
  * Widget-grid boards page. Local-first: every committed mutation is
@@ -1015,13 +1049,17 @@ export default function BoardsPage() {
     setBoardRefreshBusy(boardRefreshInFlight.current.size > 0)
   }
 
-  // Master scope: writing it re-unifies every reading module onto it and
-  // clears all independence flags (see applyMasterScope in shared/boards).
+  // Update inherited reading scopes; explicit per-widget date scopes remain.
   const saveMasterScope = (next: BoardMasterScope) => {
     if (!currentId) return
     if (current?.masterScope?.range !== next.range) {
       manualScopeChange.current = { boardId: currentId, range: next.range }
-      setScopeRefreshPending(true)
+      if (current) {
+        const proposed = { ...current, masterScope: next, widgets: current.widgets.map(widget => applyMasterScope(widget, next)) }
+        const changed = boardScopeNeedsRefresh(current, proposed, datasets, boardNow, candidatePlan)
+        // Without a prior plan, keep an already-pending refresh until it runs.
+        setScopeRefreshPending(changed || (!candidatePlan && scopeRefreshPending && boardScopeNeedsRefresh(current, proposed, datasets, boardNow, undefined, true)))
+      }
     }
     mutateBoard(currentId, (b) => ({
       ...b,
@@ -1035,7 +1073,7 @@ export default function BoardsPage() {
   const currentAfWindow = current ? boardRefreshWindow(current, datasets) : boardMasterWindow('last7')
   const currentAfRefresh = current ? afRefresh[current.id] : undefined
   const displayedDatasets = datasetsForBoardWindow(datasets, currentAfDatasetIds, currentAfWindow, currentAfRefresh?.pending ?? false)
-  const scopeCounts = current ? boardScopeCounts(current, datasets) : { live: 0, fixed: 0, independent: 0, unbound: 0 }
+  const scopeCounts = current ? boardScopeCounts(current, datasets, candidatePlan) : { live: 0, fixed: 0, independent: 0, lookback: 0, unbound: 0 }
   // Opening a board still refreshes its live sources. A manual date change
   // only updates the scope and waits for the user's refresh action.
   useEffect(() => {
@@ -1045,10 +1083,13 @@ export default function BoardsPage() {
     const key = `${boardRefreshPlanKey(current)}:${expectedReport?.start}:${expectedReport?.end}:${accountCalendarKey}:${refreshRevision}`
     const manual = manualScopeChange.current
     if (manual) {
-      if (manual.boardId !== current.id || manual.range !== current.masterScope?.range) return
-      manualScopeChange.current = null
-      automaticRefreshKey.current = key
-      return
+      if (manual.boardId !== current.id) manualScopeChange.current = null
+      else {
+        if (manual.range !== current.masterScope?.range) return
+        manualScopeChange.current = null
+        automaticRefreshKey.current = key
+        return
+      }
     }
     if (currentPlan && automaticRefreshKey.current) { automaticRefreshKey.current = key; return }
     if (automaticRefreshKey.current === key || boardRefreshBusy) return
@@ -1068,9 +1109,6 @@ export default function BoardsPage() {
   const hasAfDatasetCards = currentAfDatasetIds.length > 0
   const browserReadingCount = current
     ? current.widgets.filter((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary').length
-    : 0
-  const independentCount = current
-    ? current.widgets.filter((widget) => widget.config.independent === true || widget.type === 'google-report-reading').length
     : 0
   /** First-time master metrics: keep what the board's reading modules already
    * show instead of silently replacing their columns with the default —
@@ -1194,8 +1232,14 @@ export default function BoardsPage() {
       void refreshReadingModules()
       return
     }
+    if (current && !current.widgets.some(widget => boardWidgetDatasetBindings(widget).length > 0)) {
+      flashToast(scopeCounts.unbound > 0
+        ? (language === 'zh' ? '看板数据尚未接通刷新。' : 'Board data is not connected for refresh.')
+        : (language === 'zh' ? '当前看板没有可刷新的数据。' : 'This board has no refreshable data.'), false)
+      return
+    }
     void refreshDatasets().then((ok) => {
-      flashToast(t(ok ? 'boards.refreshed' : 'boards.datasets.loadFailed'), ok)
+      flashToast(ok ? (language === 'zh' ? '已重新载入本地数据。' : 'Local data reloaded.') : t('boards.datasets.loadFailed'), ok)
     })
   }
 
@@ -1919,22 +1963,7 @@ export default function BoardsPage() {
             )}
           </div>
           {master ? (
-            scopeCounts.unbound > 0 ? (
-              <span className="min-w-0 text-[12px] leading-[18px] text-cream-faint">{language === 'zh' ? `${scopeCounts.unbound} 个模块待接通` : `${scopeCounts.unbound} modules awaiting connection`}</span>
-            ) : scopeCounts.fixed > 0 ? (
-              <span className="min-w-0 text-[12px] leading-[18px] text-cream-faint">
-                {language === 'zh' ? `${scopeCounts.live > 0 ? `${scopeCounts.live} 个模块联动 · ` : ''}${scopeCounts.fixed} 个固定模块` : `${scopeCounts.live > 0 ? `${scopeCounts.live} live · ` : ''}${scopeCounts.fixed} fixed modules`}
-              </span>
-            ) : independentCount > 0 ? (
-              <span
-                className="shrink-0 rounded-full bg-[#F8F2E7] px-2 py-0.5 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]"
-                title={t('boards.master.independentHint')}
-              >
-                {t('boards.master.independentBadge').replace('{n}', String(independentCount))}
-              </span>
-            ) : scopeCounts.live > 0 && !currentAfRefresh?.pending && !currentAfRefresh?.failed ? (
-              <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint">{t('boards.master.unified')}</span>
-            ) : null
+            boardScopeSummary(scopeCounts, language) && <span className="min-w-0 text-[12px] leading-[18px] text-cream-faint">{boardScopeSummary(scopeCounts, language)}</span>
           ) : readingModuleCount > 0 ? (
             <span className="min-w-0 truncate text-[12px] leading-[18px] text-cream-faint" title={t('boards.master.unsetHint')}>{t('boards.master.unsetHint')}</span>
           ) : (

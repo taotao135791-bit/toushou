@@ -140,8 +140,8 @@ function hasRequiredMeasure(board: KanbanBoard, data: BoardDataset[], intent: Bo
       const ids = dataset.columns.flatMap((column, index) => visible.includes(column.name) && grains.some(grain => grainKeys[grain].includes(normalized(column.name))) ? [index] : [])
       const window = boardWidgetWindow(board, widget), date = dataset.columns.findIndex(column => column.type === 'date')
       const filter = binding.filterColumn ? dataset.columns.findIndex(column => column.name === binding.filterColumn) : -1
-      const values = binding.filterValues ?? (binding.filterValue !== undefined ? [binding.filterValue] : [])
-      return dataset.rows.some(row => typeof row[metric] === 'number' && Number.isFinite(row[metric]) && (date < 0 || String(row[date]) >= window.start && String(row[date]) <= window.end) && (!binding.filterColumn || filter >= 0 && (!values.length || values.includes(String(row[filter])))) && (!grains.length || ids.some(index => typeof row[index] === 'number' ? Number.isSafeInteger(row[index]) && Number(row[index]) > 0 : typeof row[index] === 'string' && !['', '0', 'null', 'none', 'all', '—'].includes(String(row[index]).trim().toLowerCase()))))
+      const values = binding.filterValues ?? (binding.filterValue ? [binding.filterValue] : [])
+      return dataset.rows.some(row => typeof row[metric] === 'number' && Number.isFinite(row[metric]) && (date < 0 || String(row[date]) >= window.start && String(row[date]) <= window.end) && (!binding.filterColumn || !values.length || filter >= 0 && values.includes(String(row[filter]))) && (!grains.length || ids.some(index => typeof row[index] === 'number' ? Number.isSafeInteger(row[index]) && Number(row[index]) > 0 : typeof row[index] === 'string' && !['', '0', 'null', 'none', 'all', '—'].includes(String(row[index]).trim().toLowerCase()))))
     })
   })
 }

@@ -19,6 +19,41 @@ function message(overrides: Partial<NormalizedFeishuMessage> = {}): NormalizedFe
 }
 
 describe('FeishuSessionRouter', () => {
+  it('waits for the same route file load for concurrent callers', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'toushou-router-concurrent-')); dirs.push(dir)
+    const routesFile = path.join(dir, 'routes.json')
+    await writeFile(routesFile, JSON.stringify([{ key: 'oc_test:conversation', chatId: 'oc_test', chatType: 'group', updatedAt: 1 }]))
+    const router = new FeishuSessionRouter({
+      workspacePath: dir, routesFile,
+      createSession: vi.fn(), sendMessage: () => true, getSession: () => undefined,
+      getSessionState: async () => null, resumeSession: async () => null,
+      killSession: () => true, onReply: async () => undefined
+    })
+    const first = router.load()
+    const second = router.load()
+    await second
+    expect(router.listRoutes()).toMatchObject([{ chatId: 'oc_test', chatType: 'group' }])
+    await first
+    expect(router.listRoutes()).toHaveLength(1)
+  })
+
+  it('continues with an empty route index after a corrupt file', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'toushou-router-corrupt-')); dirs.push(dir)
+    const routesFile = path.join(dir, 'routes.json')
+    await writeFile(routesFile, '{invalid')
+    const router = new FeishuSessionRouter({
+      workspacePath: dir, routesFile,
+      createSession: () => ({ id: 'synthetic', cwd: dir, title: 'Feishu', createdAt: 1, status: 'idle' }),
+      sendMessage: () => true, getSession: () => undefined, getSessionState: async () => null,
+      resumeSession: async () => null, killSession: () => true, onReply: async () => undefined,
+      ownerOpenId: 'ou_owner'
+    })
+    await Promise.all([router.load(), router.load()])
+    expect(router.listRoutes()).toEqual([])
+    await router.handleInbound(message())
+    expect(router.listRoutes()).toMatchObject([{ chatId: 'oc_1' }])
+  })
+
   it('rejects missing workspace before resume or creation and preserves the existing route', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'toushou-router-empty-')); dirs.push(dir)
     const routesFile = path.join(dir, 'routes.json')

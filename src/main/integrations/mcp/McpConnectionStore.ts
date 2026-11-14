@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, renameSync, linkSync, unlinkSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { app } from 'electron'
@@ -31,43 +33,99 @@ export interface McpStorePaths {
 }
 
 export function defaultMcpStorePaths(): McpStorePaths {
+  // Match the explicit default-runtime profile used by OMP and the other
+  // connectors. Never write the real user's MCP when a separate profile was
+  // explicitly selected (for example an isolated packaged acceptance test).
+  const override = process.env.PI_CODING_AGENT_DIR
+  const profile = process.env.OMP_PROFILE ?? process.env.PI_PROFILE
+  const agentDir = override && override.trim() && !override.includes('\0') && path.isAbsolute(override) && (!profile || profile === 'default')
+    ? path.normalize(override) : path.join(homedir(), '.omp', 'agent')
   return {
-    mcpJson: path.join(homedir(), '.omp', 'agent', 'mcp.json'),
+    mcpJson: path.join(agentDir, 'mcp.json'),
     registry: path.join(app.getPath('userData'), 'mcp-connections.json')
   }
 }
 
-function readJson(file: string): Record<string, unknown> {
+type JsonSnapshot = { value: Record<string, unknown>; bytes: Buffer | null }
+
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** Missing files can be created; invalid or unreadable files must be preserved. */
+function readJson(file: string): JsonSnapshot {
+  let bytes: Buffer
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf-8'))
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
-  } catch {
-    return {}
+    const stat = lstatSync(file)
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('配置文件不是安全的普通文件')
+    bytes = readFileSync(file)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { value: {}, bytes: null }
+    throw new Error('无法安全读取 MCP 配置，请检查文件和访问权限')
+  }
+  let parsed: unknown
+  try { parsed = JSON.parse(bytes.toString('utf8')) } catch { throw new Error('MCP 配置不是合法 JSON，原文件已保留') }
+  if (!object(parsed)) throw new Error('MCP 配置格式无效，原文件已保留')
+  return { value: parsed, bytes }
+}
+
+function readRegistry(paths: McpStorePaths): JsonSnapshot & { names: string[] } {
+  const snapshot = readJson(paths.registry)
+  const names = snapshot.value.managed
+  if (names !== undefined && (!Array.isArray(names) || names.some(name => typeof name !== 'string'))) {
+    throw new Error('MCP 管理记录格式无效，原文件已保留')
+  }
+  return { ...snapshot, names: (names ?? []) as string[] }
+}
+
+function readOmpMcp(paths: McpStorePaths): JsonSnapshot & { config: OmpMcpFile } {
+  const snapshot = readJson(paths.mcpJson)
+  const { mcpServers, disabledServers } = snapshot.value
+  if ((mcpServers !== undefined && (!object(mcpServers) || Object.values(mcpServers).some(entry => !object(entry)))) ||
+      (disabledServers !== undefined && (!Array.isArray(disabledServers) || disabledServers.some(name => typeof name !== 'string')))) {
+    throw new Error('MCP 配置结构无效，原文件已保留')
+  }
+  return { ...snapshot, config: snapshot.value as OmpMcpFile }
+}
+
+/** Detect changes immediately before replacement. Rename is atomic, but is not
+ * a cross-process compare-and-swap: another writer can still race the rename. */
+function ensureUnchanged(file: string, expected: Buffer | null): void {
+  const current = readJson(file).bytes
+  if (expected === null ? current !== null : current === null || !expected.equals(current)) {
+    throw new Error('MCP 配置已被其他程序修改，请重试')
   }
 }
 
-function readRegistry(paths: McpStorePaths): string[] {
-  const raw = readJson(paths.registry)
-  const names = Array.isArray(raw.managed) ? raw.managed : []
-  return names.filter((n): n is string => typeof n === 'string')
-}
-
-function writeRegistry(paths: McpStorePaths, names: string[]): void {
-  mkdirSync(path.dirname(paths.registry), { recursive: true })
-  writeFileSync(paths.registry, JSON.stringify({ managed: names }, null, 2))
-}
-
-function readOmpMcp(paths: McpStorePaths): OmpMcpFile {
-  return readJson(paths.mcpJson) as OmpMcpFile
-}
-
-function writeOmpMcp(paths: McpStorePaths, file: OmpMcpFile): void {
-  mkdirSync(path.dirname(paths.mcpJson), { recursive: true })
-  if (!file.$schema) {
-    file.$schema =
-      'https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json'
+function atomicWrite(file: string, value: Record<string, unknown>, expected: Buffer | null): void {
+  mkdirSync(path.dirname(file), { recursive: true })
+  const temp = `${file}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temp, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    ensureUnchanged(file, expected)
+    if (expected === null) {
+      // link refuses to replace a file created since the absence check.
+      linkSync(temp, file)
+      unlinkSync(temp)
+    } else renameSync(temp, file)
+  } finally {
+    try { unlinkSync(temp) } catch { /* already moved or removed */ }
   }
-  writeFileSync(paths.mcpJson, JSON.stringify(file, null, 2))
+}
+
+function writeOmpMcp(paths: McpStorePaths, file: OmpMcpFile, expected: Buffer | null): void {
+  if (!file.$schema) file.$schema = 'https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json'
+  atomicWrite(paths.mcpJson, file, expected)
+}
+
+function writeRegistryAfterConfig(paths: McpStorePaths, registry: JsonSnapshot, names: string[]): void {
+  try { atomicWrite(paths.registry, { ...registry.value, managed: names }, registry.bytes) }
+  catch { throw new Error('MCP 配置已更新，但管理记录未能保存；请检查文件后重试') }
+}
+
+function failure(error: unknown): { ok: false; error: string } {
+  // Never return filesystem exceptions which can contain private paths.
+  return { ok: false, error: error instanceof Error && error.message.startsWith('MCP ') ? error.message : '无法安全保存 MCP 配置，请检查文件和访问权限' }
 }
 
 function maskEndpoint(entry: Record<string, unknown>): string {
@@ -164,8 +222,8 @@ function validateEntry(name: string, entry: Record<string, unknown>): { ok: true
 
 /** Managed + hand-written entries as a masked listing for the renderer. */
 export function listMcpConnections(paths: McpStorePaths = defaultMcpStorePaths()): McpConnectionInfo[] {
-  const managed = new Set(readRegistry(paths))
-  const file = readOmpMcp(paths)
+  const managed = new Set(readRegistry(paths).names)
+  const file = readOmpMcp(paths).config
   const servers = file.mcpServers ?? {}
   const disabled = new Set(Array.isArray(file.disabledServers) ? file.disabledServers : [])
   const out: McpConnectionInfo[] = []
@@ -190,31 +248,42 @@ export function addMcpConnection(
 ): { ok: true; name: string } | { ok: false; error: string } {
   const parsed = parseMcpAddInput(input)
   if (!parsed.ok) return parsed
-  const file = readOmpMcp(paths)
-  file.mcpServers = file.mcpServers ?? {}
-  file.mcpServers[parsed.name] = parsed.entry
-  writeOmpMcp(paths, file)
-  const managed = readRegistry(paths)
-  if (!managed.includes(parsed.name)) managed.push(parsed.name)
-  writeRegistry(paths, managed)
-  return { ok: true, name: parsed.name }
+  try {
+    const config = readOmpMcp(paths)
+    const registry = readRegistry(paths)
+    const existing = config.config.mcpServers?.[parsed.name]
+    if (existing && !registry.names.includes(parsed.name)) return { ok: false, error: 'MCP 存在同名手写配置，未覆盖原配置' }
+    const file = config.config
+    file.mcpServers = { ...file.mcpServers, [parsed.name]: parsed.entry }
+    const names = registry.names.includes(parsed.name) ? registry.names : [...registry.names, parsed.name]
+    ensureUnchanged(paths.registry, registry.bytes)
+    writeOmpMcp(paths, file, config.bytes)
+    writeRegistryAfterConfig(paths, registry, names)
+    return { ok: true, name: parsed.name }
+  } catch (error) { return failure(error) }
 }
 
 export function removeMcpConnection(
   name: string,
   paths: McpStorePaths = defaultMcpStorePaths()
 ): { ok: true } | { ok: false; error: string } {
-  const managed = readRegistry(paths)
-  if (!managed.includes(name)) {
-    return { ok: false, error: '该服务器不是投手添加的（手写配置请直接编辑 ~/.omp/agent/mcp.json）' }
-  }
-  const file = readOmpMcp(paths)
-  if (file.mcpServers && name in file.mcpServers) {
-    delete file.mcpServers[name]
-    writeOmpMcp(paths, file)
-  }
-  writeRegistry(paths, managed.filter((n) => n !== name))
-  return { ok: true }
+  try {
+    const registry = readRegistry(paths)
+    if (!registry.names.includes(name)) {
+      return { ok: false, error: '该服务器不是投手添加的（手写配置请直接编辑 ~/.omp/agent/mcp.json）' }
+    }
+    const config = readOmpMcp(paths)
+    const file = config.config
+    if (file.mcpServers && Object.prototype.hasOwnProperty.call(file.mcpServers, name)) {
+      delete file.mcpServers[name]
+      ensureUnchanged(paths.registry, registry.bytes)
+      writeOmpMcp(paths, file, config.bytes)
+      writeRegistryAfterConfig(paths, registry, registry.names.filter((n) => n !== name))
+    } else {
+      atomicWrite(paths.registry, { ...registry.value, managed: registry.names.filter((n) => n !== name) }, registry.bytes)
+    }
+    return { ok: true }
+  } catch (error) { return failure(error) }
 }
 
 /**
@@ -230,14 +299,22 @@ export function upsertManagedServer(
 ): { ok: true } | { ok: false; error: string } {
   const validated = validateEntry(name, entry)
   if (!validated.ok) return validated
-  const file = readOmpMcp(paths)
-  file.mcpServers = file.mcpServers ?? {}
-  file.mcpServers[name] = validated.entry
-  writeOmpMcp(paths, file)
-  const managed = readRegistry(paths)
-  if (!managed.includes(name)) managed.push(name)
-  writeRegistry(paths, managed)
-  return { ok: true }
+  try {
+    const config = readOmpMcp(paths)
+    const registry = readRegistry(paths)
+    const existing = config.config.mcpServers?.[name]
+    if (existing && !registry.names.includes(name)) {
+      if (isDeepStrictEqual(existing, validated.entry)) return { ok: true }
+      return { ok: false, error: 'MCP 存在同名手写配置，未覆盖原配置' }
+    }
+    const file = config.config
+    file.mcpServers = { ...file.mcpServers, [name]: validated.entry }
+    const names = registry.names.includes(name) ? registry.names : [...registry.names, name]
+    ensureUnchanged(paths.registry, registry.bytes)
+    writeOmpMcp(paths, file, config.bytes)
+    writeRegistryAfterConfig(paths, registry, names)
+    return { ok: true }
+  } catch (error) { return failure(error) }
 }
 
 /** Extract JSON-RPC messages from JSON or multi-line SSE events. */
@@ -266,7 +343,9 @@ export async function testMcpConnection(
   name: string,
   paths: McpStorePaths = defaultMcpStorePaths()
 ): Promise<{ ok: boolean; detail: string }> {
-  const entry = (readOmpMcp(paths).mcpServers ?? {})[name] as Record<string, unknown> | undefined
+  let entry: Record<string, unknown> | undefined
+  try { entry = (readOmpMcp(paths).config.mcpServers ?? {})[name] }
+  catch { return { ok: false, detail: '无法读取 MCP 配置，请检查配置文件与访问权限' } }
   if (!entry) return { ok: false, detail: '服务器不存在' }
   const type = typeof entry.type === 'string' ? entry.type : 'stdio'
   if (type !== 'http' && type !== 'sse') {

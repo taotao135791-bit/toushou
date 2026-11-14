@@ -50,12 +50,12 @@ describe('saved FB report references', () => {
     expect(fbReportEntryUrl(null, 'about:blank')).toBe(FB_REPORT_ENTRY_URL)
   })
 
-  it('persists scoped links and the chosen range without dropping it for an empty optional ID', () => {
+  it('persists scoped links, the chosen range and an explicitly cleared optional ID', () => {
     const link = `${FB_REPORT_ENTRY_URL}?selected_report_id=333&business_id=444`
     expect(reportConfig({ reportName: 'Other product', reportId: link, range: 'last7' }))
       .toEqual({ reportName: 'Other product', reportId: link, range: 'last7' })
     expect(reportConfig({ reportName: 'Other product', reportId: '', range: 'today' }))
-      .toEqual({ reportName: 'Other product', range: 'today' })
+      .toEqual({ reportName: 'Other product', reportId: '', range: 'today' })
     expect(reportConfig({ reportId: 'https://example.com' })).toBeNull()
   })
 })

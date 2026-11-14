@@ -3,6 +3,7 @@ import { MASTER_SCOPED_WIDGET_TYPES } from '@shared/boards'
 import { boardReadingRangeDates } from '@shared/fbReading'
 import { boardWidgetDatasetBindings } from '@shared/boardDataWidgets'
 import { boardWidgetWindow, boardWindowLabel } from '@shared/boardWindows'
+import type { BoardRefreshResult } from '@shared/boardRefresh'
 
 export function boardMasterWindow(range: BoardMasterScope['range'], now = new Date()): { start: string; end: string } {
   if (range !== 'yesterday') return boardReadingRangeDates(range, now)
@@ -42,11 +43,27 @@ export function boardRefreshWindow(board: KanbanBoard, datasets: BoardDataset[],
 }
 
 /** Data modules only: notes and controls do not claim to follow a date. */
-export function boardScopeCounts(board: KanbanBoard, datasets: BoardDataset[]): { live: number; fixed: number; independent: number; unbound: number } {
-  let live = 0, fixed = 0, independent = 0, unbound = 0
+/** Main's last plan proves a specific board/widget/binding reached an AF
+ * adapter, including legacy recipes that have no specId on the dataset. */
+export function afBindingHasRefreshSource(plan: BoardRefreshResult | undefined, boardId: string, widgetId: string, bindingId: string, dataset?: BoardDataset): boolean {
+  if (plan?.boardId !== boardId) return false
+  const view = plan.widgets.find(item => item.widgetId === widgetId)
+  return !!view?.bindings.some(saved => {
+    const sameDataset = saved.datasetId === bindingId || !!dataset && (saved.datasetId === dataset.id || saved.datasetId === dataset.name)
+    const source = plan.sources.find(item => item.key === saved.sourceKey)
+    return sameDataset && source?.kind === 'appsflyer' && ['updated', 'empty', 'failed'].includes(source.status)
+  })
+}
+
+export function boardScopeCounts(board: KanbanBoard, datasets: BoardDataset[], plan?: BoardRefreshResult): { live: number; fixed: number; independent: number; lookback: number; unbound: number } {
+  let live = 0, fixed = 0, independent = 0, lookback = 0, unbound = 0
   for (const widget of board.widgets) {
-    if (widget.dateScope?.mode === 'absolute' || widget.config.independent === true || widget.type === 'google-report-reading') { independent++; continue }
-    if (MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)) { live++; continue }
+    const countScoped = () => {
+      if (widget.dateScope?.mode === 'absolute' || widget.config.independent === true || widget.type === 'google-report-reading') independent++
+      else if (widget.dateScope?.mode === 'lookback') lookback++
+      else live++
+    }
+    if (widget.type === 'google-report-reading' || MASTER_SCOPED_WIDGET_TYPES.includes(widget.type)) { countScoped(); continue }
     const bindings = boardWidgetDatasetBindings(widget)
     if (bindings.length) {
       let missing = false, follows = true
@@ -58,15 +75,33 @@ export function boardScopeCounts(board: KanbanBoard, datasets: BoardDataset[]): 
         }
         const dataset = datasets.find(item => item.id === binding.datasetId || item.name === binding.datasetId)
         const afBound = dataset ? isAppsFlyerDataset(dataset) : binding.datasetId === 'AppsFlyer 报表' || binding.datasetId.startsWith('AF-')
-        if (afBound && (!dataset?.appsflyer?.specId || dataset.appsflyer.status === 'unbound')) missing = true
+        if (afBound && (!dataset?.appsflyer?.specId || dataset.appsflyer.status === 'unbound') && !afBindingHasRefreshSource(plan, board.id, widget.id, binding.datasetId, dataset)) missing = true
         else if (!afBound && !dataset?.columns.some(column => column.type === 'date')) follows = false
       }
       if (missing) unbound++
-      else if (follows) live++
+      else if (follows) countScoped()
       else fixed++
-    } else if (['counter', 'chart-line', 'chart-bar', 'table', 'funnel', 'analysis', 'gauge', 'reading-module', 'reading-snapshot'].includes(widget.type)) fixed++
+    } else if (['counter', 'chart-line', 'chart-bar', 'table', 'funnel', 'analysis', 'gauge', 'reading-module', 'reading-snapshot'].includes(widget.type)) {
+      if (widget.config.source === 'dataset') unbound++
+      else fixed++
+    }
   }
-  return { live, fixed, independent, unbound }
+  return { live, fixed, independent, lookback, unbound }
+}
+
+/** Make differing date policies visible together; none implies fresh data. */
+export function boardScopeSummary(counts: ReturnType<typeof boardScopeCounts>, language: Language): string {
+  const zh = language === 'zh'
+  if (counts.live > 0 && !counts.lookback && !counts.independent && !counts.fixed && !counts.unbound) {
+    return zh ? '全部数据模块跟随总控' : 'All data modules follow the report scope'
+  }
+  return [
+    counts.live && (zh ? `${counts.live} 个跟随总控` : `${counts.live} follow report`),
+    counts.lookback && (zh ? `${counts.lookback} 个按截止日回看` : `${counts.lookback} trailing report end`),
+    counts.independent && (zh ? `${counts.independent} 个独立范围` : `${counts.independent} independent`),
+    counts.fixed && (zh ? `${counts.fixed} 个固定模块` : `${counts.fixed} fixed modules`),
+    counts.unbound && (zh ? `${counts.unbound} 个待接通` : `${counts.unbound} awaiting connection`)
+  ].filter(Boolean).join(' · ')
 }
 
 /** A trailing report date is display scope, not a permanent business label. */

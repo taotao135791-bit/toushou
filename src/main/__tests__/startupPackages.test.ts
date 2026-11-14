@@ -7,6 +7,7 @@ const startup = vi.hoisted(() => ({
   registerIpc: vi.fn(),
   feishu: vi.fn(),
   updater: vi.fn(),
+  afBridge: vi.fn<() => Promise<void>>(),
   ready: Promise.resolve()
 }))
 
@@ -37,6 +38,7 @@ vi.mock('../ipc', () => ({
   shutdownSessionsForQuit: vi.fn()
 }))
 vi.mock('../browserUse', () => ({ initBrowserUseBridge: async () => { startup.events.push('browser-bridge') } }))
+vi.mock('../appsflyerConnection', () => ({ initializeAppsFlyerToolBridge: startup.afBridge }))
 vi.mock('../integrations/feishu/feishuBridge', () => ({ initFeishuBridge: async () => {} }))
 vi.mock('../tasksBridge', () => ({ initTasksBridge: async () => {} }))
 vi.mock('../tiktokBridge', () => ({ initTiktokBridge: async () => {} }))
@@ -64,12 +66,26 @@ beforeEach(() => {
   startup.registerIpc.mockClear()
   startup.feishu.mockClear()
   startup.updater.mockClear()
+  startup.afBridge.mockReset().mockResolvedValue()
   vi.spyOn(console, 'info').mockImplementation(() => {})
 })
 
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('Main startup bundled resource readiness', () => {
+  it('does not expose session entry points until the local AppsFlyer listener has bound', async () => {
+    let finish!: () => void
+    startup.afBridge.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    startup.ensure.mockResolvedValue({ ok: true, failed: [] })
+    await import('../index')
+    await vi.waitFor(() => expect(startup.afBridge).toHaveBeenCalledOnce())
+    expect(startup.registerIpc).not.toHaveBeenCalled()
+    expect(startup.windows).not.toHaveBeenCalled()
+    finish()
+    await startup.ready
+    expect(startup.registerIpc).toHaveBeenCalledOnce()
+    expect(startup.windows).toHaveBeenCalledOnce()
+  })
   it('holds interactive, scheduled and Feishu session entry points until relinking settles', async () => {
     let finish!: (result: { ok: boolean; failed: string[] }) => void
     const pending = new Promise<{ ok: boolean; failed: string[] }>(resolve => { finish = resolve })

@@ -42,6 +42,24 @@ function fixture() {
   return { deps, calls, board: () => board, datasets: () => datasets, setBoard: (next: KanbanBoard) => { board = next }, setDatasets: (next: BoardDataset[]) => { datasets = next } }
 }
 describe('Main board refresh planner', () => {
+  it('resolves a legacy AF recipe by dataset name without changing the original dataset metadata', async () => {
+    const f = fixture(), [, old] = f.datasets(), { appsflyer: _metadata, ...legacy } = old
+    legacy.name = 'AppsFlyer 报表'
+    f.setDatasets([f.datasets()[0], legacy])
+    f.setBoard({ ...f.board(), widgets: [f.board().widgets.find(item => item.id === 'af-daily')!] })
+    f.deps.readSpecs = () => [{ id: 'legacy-recipe', name: 'Synthetic', datasetName: 'AppsFlyer 报表', query: { app_ids: ['app.synthetic'] } }]
+    const result = await refreshBoard({ boardId: f.board().id }, f.deps)
+    expect(result.status).toBe('ready')
+    expect(result.sources).toEqual([expect.objectContaining({ kind: 'appsflyer', status: 'updated' })])
+    expect(result.widgets[0].bindings[0]).toMatchObject({ datasetId: 'af', sourceKey: result.sources[0].key })
+    expect(f.datasets().find(item => item.id === 'af')).toEqual(legacy)
+    expect(f.calls.af[0]).toMatchObject({ materializations: [expect.objectContaining({ specId: 'legacy-recipe' })] })
+    f.setBoard({ ...f.board(), masterScope: { range: 'today', metrics: ['spend'] } })
+    const changed = await refreshBoard({ boardId: f.board().id }, f.deps)
+    expect(changed.sources[0].window).toEqual({ start: '2030-01-08', end: '2030-01-08' })
+    expect(f.calls.af).toHaveLength(2)
+  })
+
   it('queries one TT superset and two stable AF slots without changing the original dataset', async () => {
     const f = fixture(), original = structuredClone(f.datasets()[1]), result = await refreshBoard({ boardId: f.board().id }, f.deps)
     expect(result.status).toBe('ready')

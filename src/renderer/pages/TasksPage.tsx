@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight, RefreshCcw } from 'lucide-react'
-import { ScheduledTask } from '@shared/types'
+import { ScheduledTask, TaskFeishuTarget } from '@shared/types'
 import { KERNEL_VIRAL_SKILL_ID } from '@shared/skills'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
@@ -84,6 +84,14 @@ function formatDuration(ms: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
+function feishuTargetLabel(target: TaskFeishuTarget, targets: TaskFeishuTarget[], language: string): string {
+  const suffix = target.chatId.slice(-8)
+  const uniqueSuffix = targets.filter((other) => other.chatId.slice(-8) === suffix).length === 1
+  if (target.chatType === 'p2p') return `${language === 'zh' ? '与投手的私聊' : 'Direct chat with Toushou'} · ${uniqueSuffix ? suffix : target.chatId}`
+  if (!target.name) return `${language === 'zh' ? '群聊（名称未知）' : 'Group (name unavailable)'} · ${target.chatId}`
+  return `${target.name} · ${uniqueSuffix ? suffix : target.chatId}`
+}
+
 function nextScheduledRun(task: ScheduledTask, after = Date.now()): number | null {
   const schedule = task.schedule
   if (schedule.type === 'interval') {
@@ -121,6 +129,10 @@ export default function TasksPage() {
   /** Task being edited; null = creating a new one. */
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null)
   const [running, setRunning] = useState<string | null>(null)
+  const [feishuTargets, setFeishuTargets] = useState<TaskFeishuTarget[]>([])
+  const [targetsFailed, setTargetsFailed] = useState(false)
+  const [retryingDelivery, setRetryingDelivery] = useState<string | null>(null)
+  const [deliveryRetryError, setDeliveryRetryError] = useState<string | null>(null)
   /** Task ids whose run-history list is expanded. */
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
   const [form, setForm] = useState({
@@ -130,6 +142,7 @@ export default function TasksPage() {
     intervalUnit: 'hour' as 'hour' | 'minute',
     notifyOnComplete: true,
     notifyChannel: 'system' as 'system' | 'feishu',
+    feishuChatId: '',
     skillId: '',
     permissionMode: 'default' as 'default' | 'readonly',
     reuseSession: false
@@ -146,7 +159,7 @@ export default function TasksPage() {
   const openModal = () => {
     modalGeneration.current += 1
     setEditingTask(null)
-    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', skillId: '', reuseSession: false }))
+    setForm(f => ({ ...f, cwd: recentWorkspaces[0]?.displayPath ?? '', name: '', prompt: '', permissionMode: 'default', notifyChannel: 'system', feishuChatId: '', skillId: '', reuseSession: false }))
     setModalOpen(true)
   }
 
@@ -166,12 +179,24 @@ export default function TasksPage() {
       intervalUnit: task.schedule.type === 'interval' && task.schedule.minutes !== undefined ? 'minute' : 'hour',
       notifyOnComplete: task.notifyOnComplete,
       notifyChannel: task.notifyChannel === 'feishu' ? 'feishu' : 'system',
+      feishuChatId: task.feishuChatId ?? '',
       skillId: task.skillId ?? '',
       permissionMode: task.permissionMode === 'readonly' ? 'readonly' : 'default',
       reuseSession: task.reuseSession === true
     })
     setModalOpen(true)
   }
+
+  useEffect(() => {
+    if (!modalOpen || form.notifyChannel !== 'feishu') return
+    let active = true
+    setFeishuTargets([])
+    setTargetsFailed(false)
+    window.electronAPI.listTaskFeishuTargets().then((targets) => {
+      if (active) setFeishuTargets(targets)
+    }).catch(() => { if (active) { setFeishuTargets([]); setTargetsFailed(true) } })
+    return () => { active = false }
+  }, [modalOpen, form.notifyChannel])
 
   // All mutations trust the Main-side TASKS_STATE_CHANGED broadcast: Main
   // applies the change and pushes the authoritative list BEFORE the invoke
@@ -180,6 +205,7 @@ export default function TasksPage() {
 
   const handleSave = async () => {
     if (saveInFlight.current || !form.name.trim() || !form.prompt.trim() || !form.cwd) return
+    if (form.notifyChannel === 'feishu' && !form.feishuChatId && !(editingTask?.notifyChannel === 'feishu' && !editingTask.feishuChatId)) return
     const schedule = form.scheduleType === 'daily'
       ? { type: 'daily' as const, time: form.time }
       : form.scheduleType === 'weekly'
@@ -196,6 +222,7 @@ export default function TasksPage() {
       schedule, enabled: editingTask?.enabled ?? true,
       createdAt: editingTask?.createdAt ?? Date.now(), notifyOnComplete: form.notifyOnComplete,
       ...(form.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+      ...(form.notifyChannel === 'feishu' && form.feishuChatId ? { feishuChatId: form.feishuChatId } : {}),
       ...(form.skillId ? { skillId: form.skillId } : {}),
       ...(form.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
       reuseSession: form.reuseSession
@@ -384,7 +411,7 @@ export default function TasksPage() {
                           )}
                           {task.notifyChannel === 'feishu' && (
                             <span className="rounded-full bg-overlay px-2 py-0.5 text-[10px] font-medium text-cream-faint">
-                              {t('tasks.notifyFeishu')}
+                              {t('tasks.notifyFeishu')}{!task.feishuChatId && (language === 'zh' ? ' · 待选择收件目标' : ' · choose a recipient')}
                             </span>
                           )}
                         </div>
@@ -442,6 +469,29 @@ export default function TasksPage() {
                                       {failed && run.reason && (
                                         <span className="min-w-0 truncate text-red-400">{t(`tasks.failure.${run.reason}`)}</span>
                                       )}
+                                      {run.delivery && (
+                                        <span className={run.delivery.status === 'sent' ? 'text-emerald-500' : 'text-amber-500'}>
+                                          {run.delivery.status === 'failed' && run.delivery.error === 'no-target'
+                                            ? (language === 'zh' ? '飞书未发送 · 请为后续运行选择收件目标' : 'Not sent · choose a recipient for future runs')
+                                            : run.delivery.status === 'failed' && run.delivery.error === 'payload-unavailable'
+                                              ? (language === 'zh' ? '飞书未发送 · 原发送内容不可用' : 'Not sent · original content unavailable')
+                                              : language === 'zh'
+                                                ? ({ sending: '飞书发送中', sent: '飞书已发送', failed: '飞书未发送', unknown: '飞书发送状态未知，请先在飞书确认' } as const)[run.delivery.status]
+                                                : ({ sending: 'Sending to Feishu', sent: 'Sent to Feishu', failed: 'Not sent to Feishu', unknown: 'Delivery unknown; check Feishu first' } as const)[run.delivery.status]}
+                                        </span>
+                                      )}
+                                      {run.delivery?.status === 'failed' && ['feishu-not-connected', 'no-chat'].includes(run.delivery.error ?? '') && run.runId && (
+                                        <button type="button" className="text-accent hover:underline" title={language === 'zh' ? '使用本次运行保存的原内容和原收件目标' : 'Use this run’s original content and recipient'} disabled={retryingDelivery === run.runId} onClick={(event) => {
+                                          event.stopPropagation()
+                                          const runId = run.runId!
+                                          setRetryingDelivery(runId)
+                                          setDeliveryRetryError(null)
+                                          void window.electronAPI.retryTaskDelivery(task.id, runId).then((ok) => {
+                                            if (!ok) setDeliveryRetryError(runId)
+                                          }).catch(() => setDeliveryRetryError(runId)).finally(() => setRetryingDelivery(null))
+                                        }}>{language === 'zh' ? '重试发送' : 'Retry delivery'}</button>
+                                      )}
+                                      {deliveryRetryError === run.runId && run.delivery?.status === 'failed' && <span className="text-red-400">{language === 'zh' ? '发送未完成，请检查飞书连接和收件目标' : 'Delivery not completed; check the Feishu connection and recipient'}</span>}
                                       {!live && (
                                         <MessageSquare size={11} className="ml-auto shrink-0 text-cream-faint opacity-0 transition-opacity group-hover:opacity-100" />
                                       )}
@@ -602,7 +652,15 @@ export default function TasksPage() {
                 </select>
               </label>
               {form.notifyChannel === 'feishu' && (
-                <p className="text-[11px] leading-4 text-cream-faint">{t('tasks.notifyFeishuHint')}</p>
+                <label className="block text-[11px] text-cream-faint">
+                  {language === 'zh' ? '收件目标' : 'Recipient'}
+                  <select value={form.feishuChatId} onChange={e => setForm(f => ({ ...f, feishuChatId: e.target.value }))} className={input + ' h-8'}>
+                    <option value="">{language === 'zh' ? '请选择已有飞书聊天' : 'Choose an existing Feishu chat'}</option>
+                    {form.feishuChatId && !feishuTargets.some(target => target.chatId === form.feishuChatId) && <option value={form.feishuChatId}>{language === 'zh' ? '原目标暂不可用' : 'Previous recipient unavailable'} · {form.feishuChatId}</option>}
+                    {feishuTargets.map(target => <option key={target.chatId} value={target.chatId}>{feishuTargetLabel(target, feishuTargets, language)}</option>)}
+                  </select>
+                  <span className="mt-1 block leading-4">{targetsFailed ? (language === 'zh' ? '飞书未连接或无法读取聊天列表，请检查连接后重试。' : 'Feishu is disconnected or chats could not be loaded. Check the connection and try again.') : (language === 'zh' ? '先在飞书中与投手聊天，再选择收件目标。历史任务未选择时不会自动发送。' : 'Chat with Toushou in Feishu first, then choose a recipient. Existing tasks do not send until a recipient is chosen.')}</span>
+                </label>
               )}
               <label className="mt-1 flex cursor-pointer items-center gap-2 text-[11px] text-cream-faint">
                 <input
@@ -628,7 +686,7 @@ export default function TasksPage() {
             </fieldset>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setModalOpen(false)} className={`${btn} border border-line text-cream-dim hover:text-cream`}>{t('home.cancel')}</button>
-              <button onClick={() => void handleSave()} disabled={saving || !form.name.trim() || !form.prompt.trim() || !form.cwd} aria-busy={saving}
+              <button onClick={() => void handleSave()} disabled={saving || !form.name.trim() || !form.prompt.trim() || !form.cwd || (form.notifyChannel === 'feishu' && !form.feishuChatId && !(editingTask?.notifyChannel === 'feishu' && !editingTask.feishuChatId))} aria-busy={saving}
                 className={`${btn} bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright disabled:cursor-not-allowed disabled:opacity-40`}>
                 {saving ? t('settings.saving') : editingTask ? t('tasks.save') : t('tasks.create')}
               </button>

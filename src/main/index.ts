@@ -4,6 +4,7 @@ import { readdirSync, unlinkSync } from 'node:fs'
 import { getStore, setStore, applyFirstRunDefaults } from './store'
 import { ensureBundledPackages } from './bundledPackages'
 import { initBrowserUseBridge } from './browserUse'
+import { initializeAppsFlyerToolBridge } from './appsflyerConnection'
 import { registerIpc, shutdownSessionsForQuit } from './ipc'
 import { pruneOrphanedHtmlBoards } from './htmlBoards'
 import { cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
@@ -159,6 +160,9 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('[feishu] tool bridge unavailable', error)
   }
+  // Only the local listener is awaited. Slow authorization restoration stays
+  // in the background; first-session reads wait for it at the trusted bridge.
+  await initializeAppsFlyerToolBridge()
   try {
     await initTasksBridge()
     await initTiktokBridge()

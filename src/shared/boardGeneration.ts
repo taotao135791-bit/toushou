@@ -171,13 +171,11 @@ export function checkBoardGeneration(
       if (index >= 0) rows = rows.filter(row => allTtIds.includes(String(row[index])))
       else issue('account-scope-unverified')
     }
-    if (binding.filterColumn) {
+    const filterValues = binding.filterValues ?? (binding.filterValue ? [binding.filterValue] : [])
+    if (binding.filterColumn && filterValues.length) {
       const index = dataset.columns.findIndex(column => column.name === binding.filterColumn)
       if (index < 0) { valid = false; issue('filter-column-missing') }
-      else {
-        const values = binding.filterValues ?? (binding.filterValue !== undefined ? [binding.filterValue] : [])
-        if (values.length) rows = rows.filter(row => values.includes(String(row[index])))
-      }
+      else rows = rows.filter(row => filterValues.includes(String(row[index])))
     }
     if (attribution && binding.metric && eventMetrics.has(key(binding.metric))) {
       const selectedEvent = Array.isArray(recipe?.query?.in_app_event) && recipe.query.in_app_event.some(text)

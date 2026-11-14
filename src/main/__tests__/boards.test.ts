@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
 }))
 
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from '../boards'
-import { BOARD_LIMITS } from '../../shared/boards'
+import { BOARD_LIMITS, createWidget } from '../../shared/boards'
 import { KanbanBoard } from '../../shared/types'
 import { saveReadingSnapshot } from '../readingSnapshots'
 import { applyBoardHighlights, getBoardHighlightEvidence } from '../boardHighlights'
@@ -328,6 +328,38 @@ describe('saveBoard', () => {
 })
 
 describe('saveBoard lock round-trip on the strict default path', () => {
+  it('accepts every self-contained gallery default on the strict default path', () => {
+    const types = ['clock', 'note', 'counter', 'gauge', 'chart-line', 'chart-bar', 'table', 'funnel', 'analysis', 'todo', 'link', 'file', 'fb-reading', 'fb-reading-summary', 'tt-reading', 'meta-reading', 'google-report-reading', 'fb-report-reading'] as const
+    const widgets = types.map((type, index) => createWidget(type, type, { x: 0, y: index * 4 }))
+    const board = { ...makeBoard('gallery'), widgets }
+    expect(saveBoard(board)).toEqual({ ok: true })
+    expect(listBoards()[0].widgets.map(widget => widget.type)).toEqual(types)
+  })
+
+  it('saves and reloads default and cleared optional fields through the real default store', () => {
+    const counter = createWidget('counter', 'Counter', { x: 0, y: 0 })
+    const gauge = createWidget('gauge', 'Gauge', { x: 0, y: 4 })
+    const fileWidget = createWidget('file', 'File', { x: 0, y: 8 })
+    const board = { ...makeBoard('defaults'), widgets: [counter, gauge, fileWidget] }
+    expect(saveBoard(board)).toEqual({ ok: true })
+    expect(listBoards()[0].widgets.map(w => w.config)).toEqual([{ value: 0, label: '' }, { value: 50, label: '' }, { filePath: '' }])
+
+    const cleared = {
+      ...board, updatedAt: 3000, widgets: [
+        { ...counter, config: { value: 0, label: '', source: 'manual', datasetId: '', metric: '', dimension: '', filterColumn: '', filterValue: '', requireVerifiedTtScope: false } },
+        { ...gauge, config: { value: 50, label: '' } },
+        { ...fileWidget, config: { filePath: '' } },
+        createWidget('table', 'Table', { x: 0, y: 12 }, { source: 'dataset', datasetId: '', pageSize: 20, sortColumn: '', filterColumn: '', filterValue: '', requireVerifiedTtScope: false }),
+        createWidget('analysis', 'Analysis', { x: 0, y: 16 }, { source: 'dataset', datasetId: '', metric: '', dimension: '', op: 'sum' })
+      ]
+    }
+    expect(saveBoard(cleared, undefined, 2000)).toEqual({ ok: true })
+    expect(listBoards()[0].widgets.map(w => w.config)).toEqual(cleared.widgets.map(w => w.config))
+    const unsafe = { ...cleared, updatedAt: 4000, widgets: cleared.widgets.map(w => w.id === fileWidget.id ? { ...w, config: { filePath: '../private' } } : w) }
+    expect(saveBoard(unsafe, undefined, 3000)).toEqual({ ok: false, error: 'invalid-board' })
+    expect(listBoards()[0].updatedAt).toBe(3000)
+  })
+
   it('lets a locked board be unlocked again', () => {
     const board = makeBoard('lock-1')
     expect(saveBoard(board)).toEqual({ ok: true })

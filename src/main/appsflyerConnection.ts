@@ -19,6 +19,7 @@ const object = (v: unknown): Obj | null => v && typeof v === 'object' && !Array.
 let manager: AppsFlyerConnectionManager | null = null
 let facade: AppsFlyerReadFacade | null = null
 let capability: { endpoint: string; token: string } | null = null
+let bridgeInitializing: Promise<void> | null = null
 let initializing: Promise<void> | null = null
 let initialized = false
 let initFailed = false
@@ -151,19 +152,43 @@ function installSkill(): void {
   }
   try { writeFileSync(marker, wantedHash, { mode: 0o600 }) } catch { /* best effort */ }
 }
+/** Bind the local transport before sessions start, without waiting for OAuth or
+ * the remote MCP. Every read checks current connection authority in Main. */
+export async function initializeAppsFlyerToolBridge(): Promise<void> {
+  if (closing || capability || initFailed) return
+  if (bridgeInitializing) return bridgeInitializing
+  const pending = (async () => {
+    try {
+      const currentManager = manager ?? new AppsFlyerConnectionManager({ onChange, openExternal: openManagedAuthorizationWindow })
+      manager = currentManager
+      facade = new AppsFlyerReadFacade(currentManager, Date.now, async () => {
+        await initializeAppsFlyerConnection()
+        return !closing && initialized && projected.connected && manager === currentManager && currentManager.hasVerifiedTools()
+      })
+      capability = await facade.initialize()
+    } catch {
+      facade?.close(); facade = null; capability = null; initFailed = true
+      broadcast(unavailable('无法初始化 AppsFlyer 本机工具，请在连接页重试。'))
+    }
+  })()
+  bridgeInitializing = pending
+  try { await pending } finally { if (bridgeInitializing === pending) bridgeInitializing = null }
+}
+
 export async function initializeAppsFlyerConnection(): Promise<void> {
   if (initialized || initFailed) return
   if (initializing) return initializing
   const pending = (async () => {
     try {
-      manager = new AppsFlyerConnectionManager({ onChange, openExternal: openManagedAuthorizationWindow })
-      facade = new AppsFlyerReadFacade(manager)
-      capability = await facade.initialize()
+      await initializeAppsFlyerToolBridge()
+      if (closing || !manager || !capability || initFailed) return
       installSkill()
       await manager.initialize()
       initialized = true
     } catch {
-      facade?.close(); facade = null; capability = null; initFailed = true
+      // Keep the local capability stable: an already-running session must be
+      // able to use the connection after an explicit retry/re-authorization.
+      initFailed = true
       broadcast(unavailable('无法初始化 AppsFlyer 连接，请重试。'))
     }
   })()
@@ -188,9 +213,10 @@ export async function openAppsFlyerAuthorizationUrl(url: string): Promise<boolea
   if (!manager || !initialized) return false
   return manager.openAuthorizationUrl(url)
 }
-/** Session-scoped loopback capability; never expose the upstream OAuth grant. */
+/** Stable local transport only; account/tool authority is checked on every read.
+ * This never exposes the upstream OAuth grant or claims a connection is ready. */
 export function appsFlyerToolEnv(): Record<string, string> {
-  if (!closing && initialized && projected.connected && capability && manager?.hasVerifiedTools()) {
+  if (!closing && capability) {
     return { TOUSHOU_APPSFLYER: JSON.stringify({ url: capability.endpoint, token: capability.token }) }
   }
   return {}
@@ -224,6 +250,7 @@ export async function shutdownAppsFlyerConnection(): Promise<void> {
   closing = true
   try {
     closeAuthWindow()
+    if (bridgeInitializing) await bridgeInitializing
     if (initializing) await initializing
     manager?.cancel()
     facade?.close()

@@ -21,15 +21,15 @@ function filters(raw: Record<string, unknown>, target: Record<string, unknown>):
   for (const key of ['filterColumn', 'filterValue'] as const) {
     if (raw[key] === undefined) continue
     if (!text(raw[key], DATASET_LIMITS.maxColumnNameLength, true)) return false
-    if (raw[key]) target[key] = raw[key]
+    target[key] = raw[key]
   }
   if (raw.filterValues !== undefined) {
     if (!Array.isArray(raw.filterValues) || raw.filterValues.length === 0 || raw.filterValues.length > 500 || raw.filterValues.some(value => !text(value, DATASET_LIMITS.maxColumnNameLength))) return false
     target.filterValues = [...new Set(raw.filterValues)]
   }
-  if ((target.filterValue !== undefined || target.filterValues !== undefined) && !target.filterColumn) return false
+  if ((target.filterValue || target.filterValues !== undefined) && !target.filterColumn) return false
   if (raw.requireVerifiedTtScope !== undefined && typeof raw.requireVerifiedTtScope !== 'boolean') return false
-  if (raw.requireVerifiedTtScope === true) target.requireVerifiedTtScope = true
+  if (raw.requireVerifiedTtScope !== undefined) target.requireVerifiedTtScope = raw.requireVerifiedTtScope
   return true
 }
 
@@ -46,7 +46,7 @@ export function validateDataTableConfig(raw: Record<string, unknown>): Record<st
   config.pageSize = raw.pageSize ?? 20
   if (raw.sortColumn !== undefined) {
     if (!text(raw.sortColumn, DATASET_LIMITS.maxColumnNameLength, true)) return null
-    if (raw.sortColumn) config.sortColumn = raw.sortColumn
+    config.sortColumn = raw.sortColumn
   }
   if (raw.sortDirection !== undefined) {
     if (raw.sortDirection !== 'asc' && raw.sortDirection !== 'desc') return null
@@ -78,7 +78,7 @@ export function validateAnalysisConfig(raw: Record<string, unknown>): Record<str
   const config: Record<string, unknown> = { source: 'dataset', datasetId: raw.datasetId, metric: raw.metric, op: raw.op ?? 'sum' }
   if (raw.dimension !== undefined) {
     if (!text(raw.dimension, DATASET_LIMITS.maxColumnNameLength, true)) return null
-    if (raw.dimension) config.dimension = raw.dimension
+    config.dimension = raw.dimension
   }
   if (!filters(raw, config)) return null
   return config

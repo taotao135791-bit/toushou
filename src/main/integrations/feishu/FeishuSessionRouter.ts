@@ -74,6 +74,7 @@ export class FeishuSessionRouter {
   private readonly opts: FeishuSessionRouterOptions
   private ownerOpenId: string | undefined
   private loaded = false
+  private loading: Promise<void> | null = null
 
   constructor(options: FeishuSessionRouterOptions) {
     this.opts = options
@@ -86,7 +87,16 @@ export class FeishuSessionRouter {
 
   async load(): Promise<void> {
     if (this.loaded) return
-    this.loaded = true
+    if (this.loading) return this.loading
+    const pending = this.loadInitialRoutes()
+    this.loading = pending
+    try { await pending } finally {
+      this.loaded = true
+      if (this.loading === pending) this.loading = null
+    }
+  }
+
+  private async loadInitialRoutes(): Promise<void> {
     try {
       const raw = JSON.parse(await readFile(this.opts.routesFile, 'utf8')) as unknown
       if (!Array.isArray(raw)) return

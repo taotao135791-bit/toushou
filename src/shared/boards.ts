@@ -762,7 +762,7 @@ function validateFilterBranch(raw: Record<string, unknown>, config: Record<strin
     if (typeof value !== 'string' || value.length > DATASET_LIMITS.maxColumnNameLength || CONTROL_RE.test(value)) {
       return false
     }
-    if (value) config[key] = value
+    config[key] = value
   }
   // Multi-value filter (cross-account boards): OR-match a bounded set of
   // advertiser names. Deduped; empty/garbage entries reject the widget.
@@ -783,7 +783,7 @@ function validateFilterBranch(raw: Record<string, unknown>, config: Record<strin
     config.filterValues = values
   }
   // A value without a column filters nothing meaningful — reject the pair.
-  if ((config.filterValue !== undefined || config.filterValues !== undefined) && !config.filterColumn) return false
+  if ((config.filterValue || config.filterValues !== undefined) && !config.filterColumn) return false
   return true
 }
 
@@ -837,11 +837,11 @@ function validateSourceBranch(
     if (requireDimension && !dimension) return false
   }
   if (raw.requireVerifiedTtScope !== undefined && typeof raw.requireVerifiedTtScope !== 'boolean') return false
-  if (raw.requireVerifiedTtScope === true) config.requireVerifiedTtScope = true
+  if (raw.requireVerifiedTtScope !== undefined) config.requireVerifiedTtScope = raw.requireVerifiedTtScope
   if (source !== undefined) config.source = source
-  if (datasetId) config.datasetId = datasetId
-  if (metric) config.metric = metric
-  if (dimension) config.dimension = dimension
+  if (raw.datasetId !== undefined) config.datasetId = datasetId
+  if (raw.metric !== undefined) config.metric = metric
+  if (raw.dimension !== undefined) config.dimension = dimension
   if (op) config.op = op
   return true
 }
@@ -889,7 +889,7 @@ function validateWidgetConfig(
       if (raw.reportName !== undefined) {
         const reportName = cleanString(raw.reportName, 80)
         if (reportName === null) return null
-        if (reportName) config.reportName = reportName
+        config.reportName = reportName
       }
       // Optional numeric ID or allowlisted saved-report link with business scope.
       if (raw.reportId !== undefined) {
@@ -898,7 +898,7 @@ function validateWidgetConfig(
           const reference = parseFbReportReference(raw.reportId)
           if (!reference) return null
           config.reportId = reference.url ?? reference.reportId
-        }
+        } else if (raw.reportId === '') config.reportId = ''
       }
       // Unsupported presets are retained for explicit UI rejection, never remapped.
       if (raw.independent === true) config.independent = true
@@ -939,7 +939,7 @@ function validateWidgetConfig(
       if (raw.label !== undefined) {
         const label = cleanString(raw.label, BOARD_LIMITS.maxLabelLength)
         if (label === null) return null
-        if (label) config.label = label
+        config.label = label
       }
       if (!validateFilterBranch(raw, config)) return null
       if (!validateSourceBranch(raw, config, false)) return null
@@ -961,7 +961,7 @@ function validateWidgetConfig(
       if (raw.label !== undefined) {
         const label = cleanString(raw.label, BOARD_LIMITS.maxLabelLength)
         if (label === null) return null
-        if (label) config.label = label
+        config.label = label
       }
       return config
     }
@@ -1049,7 +1049,7 @@ function validateWidgetConfig(
       if (raw.filePath !== undefined) {
         const filePath = cleanString(raw.filePath, BOARD_LIMITS.maxFilePathLength)
         if (filePath === null || (filePath !== '' && !isValidWidgetFilePath(filePath))) return null
-        if (filePath) config.filePath = filePath
+        config.filePath = filePath
       }
       return config
     }

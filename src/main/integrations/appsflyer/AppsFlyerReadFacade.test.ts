@@ -7,6 +7,26 @@ import type { AppsFlyerConnectionManager } from './AppsFlyerConnectionManager'
 let facade: AppsFlyerReadFacade | undefined
 afterEach(() => { facade?.close(); facade = undefined; calls.init.mockClear(); calls.raw.mockClear(); calls.apps.mockClear() })
 describe('AppsFlyer local read-only MCP facade', () => {
+  it('waits for restored authority and denies a disconnected account using the same local session', async () => {
+    let finish!: (value: boolean) => void
+    const authorize = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve }))
+    facade = new AppsFlyerReadFacade({ loadFreshCredentials: async () => ({ accessToken: 'synthetic' }), markReadFailure: () => {} } as unknown as AppsFlyerConnectionManager, Date.now, authorize)
+    const { endpoint, token } = await facade.initialize()
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+    const initial = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) })
+    const sessionHeaders = { ...headers, 'mcp-session-id': initial.headers.get('mcp-session-id')! }
+    const read = (id: number) => fetch(endpoint, { method: 'POST', headers: sessionHeaders, body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'get_apps', arguments: {} } }) })
+    const pending = read(2)
+    await vi.waitFor(() => expect(authorize).toHaveBeenCalledOnce())
+    expect(calls.apps).not.toHaveBeenCalled()
+    finish(true)
+    expect((await (await pending).json()).result.structuredContent.data).toHaveLength(1)
+    authorize.mockImplementation(async () => false)
+    expect((await (await read(3)).json()).result.isError).toBe(true)
+    expect(calls.apps).toHaveBeenCalledOnce()
+    authorize.mockImplementation(async () => true)
+    expect((await (await read(4)).json()).result.structuredContent.data).toHaveLength(1)
+  })
   it('releases closed or idle sessions without exhausting the local session cap', async () => {
     let now = 0
     facade = new AppsFlyerReadFacade({} as AppsFlyerConnectionManager, () => now)

@@ -134,6 +134,7 @@ import {
   noteTaskSessionFile
 } from './scheduledTasks'
 import { readKnowledge, writeKnowledge } from './projectKnowledge'
+import { deliverTaskResult, pruneTaskDeliveryPayloads } from './taskDelivery'
 import { listLaunchableTools } from './toolLaunch'
 import { searchCommunityPackages } from './community'
 import { scaffoldPlugin } from './pluginScaffold'
@@ -854,9 +855,8 @@ export function registerIpc() {
       notifyTaskFinished(task.name, sessionId)
       // A task pointed at Feishu delivers its digest there too; the desktop
       // notice still fires above so a push failure never loses the run.
-      if (task.notifyChannel === 'feishu') {
-        void feishuConnectionManager.pushTaskResult(taskFeishuDigest(task, sessionId))
-      }
+      if (task.lastRunId) void deliverTaskResult(task.id, task.lastRunId, taskFeishuDigest(task, sessionId))
+        .catch(() => console.warn('[tasks] could not persist delivery state; no automatic resend'))
     } else if (kind === 'disabled') {
       notifyTaskAutoDisabled(task.name)
     }
@@ -2648,6 +2648,11 @@ export function registerIpc() {
   // --- Scheduled tasks ---------------------------------------------------
 
   ipcMain.handle(IPC_CHANNELS.TASKS_LIST, async () => listTasks())
+  ipcMain.handle(IPC_CHANNELS.TASKS_FEISHU_TARGETS, async () => feishuConnectionManager.listTaskPushTargets())
+  ipcMain.handle(IPC_CHANNELS.TASKS_RETRY_DELIVERY, async (_event, taskId: unknown, runId: unknown) => {
+    if (typeof taskId !== 'string' || !taskId || taskId.length > 200 || typeof runId !== 'string' || !runId || runId.length > 200) return false
+    return deliverTaskResult(taskId, runId, undefined, true)
+  })
 
   ipcMain.handle(IPC_CHANNELS.TASKS_SAVE, async (_event, task: unknown) => {
     const validated = validateTaskSaveInput(task)
@@ -2657,7 +2662,9 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.TASKS_DELETE, async (_event, id: unknown) => {
     if (typeof id !== 'string') return false
-    return deleteTask(id)
+    const deleted = deleteTask(id)
+    if (deleted) pruneTaskDeliveryPayloads()
+    return deleted
   })
 
   ipcMain.handle(IPC_CHANNELS.TASKS_TOGGLE, async (_event, id: unknown, enabled: unknown) => {

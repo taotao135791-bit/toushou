@@ -18,7 +18,7 @@ import {
   FeishuOAuthBeginResult,
   FEISHU_CAPABILITY_SCOPES
 } from '../../../shared/connections'
-import { Session, SessionEvent, ExternalSessionDescriptor } from '../../../shared/types'
+import { Session, SessionEvent, ExternalSessionDescriptor, TaskFeishuTarget } from '../../../shared/types'
 import { createSession, getSession, getSessionState, killSession, resumeSession, sendMessage } from '../../omp'
 import { getStore } from '../../store'
 import { getWorkspaceSystemPaths } from '../../workspaceSystemPaths'
@@ -26,7 +26,7 @@ import { FeishuChannel } from './FeishuChannel'
 import { FEISHU_CREDENTIAL_UNAVAILABLE, FeishuCredentialStore, FeishuStoredCredentials, maskSecret } from './FeishuCredentialStore'
 import { PersonalAgentRegistrationProvider, RegistrationSession } from './FeishuAppRegistration'
 import { FeishuOAuthManager } from './FeishuOAuthManager'
-import { FeishuSessionContext, FeishuSessionRouter, mostRecentPushRoute } from './FeishuSessionRouter'
+import { FeishuSessionContext, FeishuSessionRouter } from './FeishuSessionRouter'
 import { FeishuToolRegistry } from './FeishuToolRegistry'
 
 const FEISHU_DEFINITION: ConnectionDefinition = {
@@ -721,28 +721,64 @@ export class FeishuConnectionManager {
     this.router.onSessionEvent(event)
   }
 
-  /**
-   * Main-initiated push (scheduled-task result) to the owner's most recent
-   * bot chat. Read-only vs the connection state machine: a failed push must
-   * never degrade the live channel — the caller falls back to the desktop
-   * notification the task already raised.
-   */
-  async pushTaskResult(content: string): Promise<{ ok: boolean; error?: string }> {
+  /** Existing chat targets only; never expose session paths or message ids. */
+  async listTaskPushTargets(): Promise<TaskFeishuTarget[]> {
+    await this.router.load()
+    const chats = new Map<string, TaskFeishuTarget>()
+    for (const route of this.router.listRoutes()) {
+      const prior = chats.get(route.chatId)
+      if (!prior || route.updatedAt > prior.updatedAt) chats.set(route.chatId, { chatId: route.chatId, chatType: route.chatType, updatedAt: route.updatedAt })
+    }
+    if (!chats.size && this.channel?.websocketState !== 'connected') throw new Error('feishu-not-connected')
+    const targets = [...chats.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+    const channel = this.channel
+    if (channel?.websocketState !== 'connected' || !channel.rawClient?.im?.chat?.get) return targets
+    // Names are optional metadata: use only the current connection's existing
+    // access, limit work and never make the task editor wait on a slow API.
+    const groups = targets.filter((target) => target.chatType === 'group').slice(0, 20)
+    let next = 0
+    let active = true
+    const worker = async () => {
+      while (active && next < groups.length) {
+        const target = groups[next++]
+        try {
+          const result = await channel.rawClient.im.chat.get({ path: { chat_id: target.chatId } })
+          if (active && result.code === 0 && typeof result.data?.name === 'string' && result.data.name.trim()) {
+            target.name = result.data.name.trim().slice(0, 120)
+          }
+        } catch { /* Missing permission, network or metadata: show the ID. */ }
+      }
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([
+      Promise.all(Array.from({ length: Math.min(4, groups.length) }, () => worker())),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, 2000) })
+    ])
+    active = false
+    if (timer) clearTimeout(timer)
+    return targets
+  }
+
+  /** Never infer a destination: even old tasks require an explicit chat. */
+  async pushTaskResult(content: string, chatId?: string): Promise<{ ok: boolean; error?: string; uncertain?: boolean }> {
+    if (!chatId) return { ok: false, error: 'no-target' }
     const channel = this.channel
     if (!channel || channel.websocketState !== 'connected') {
       return { ok: false, error: 'feishu-not-connected' }
     }
     await this.router.load()
-    const route = mostRecentPushRoute(this.router.listRoutes())
+    const route = this.router.listRoutes().find((item) => item.chatId === chatId)
     if (!route) return { ok: false, error: 'no-chat' }
     try {
       const body = content.length > 30_000 ? `${content.slice(0, 30_000)}\n\n（内容过长，已截断）` : content
-      await channel.sendMarkdown(route.chatId, body)
+      const receipt = await channel.sendMarkdown(route.chatId, body)
+      if (!receipt?.messageId) return { ok: false, error: 'no-receipt', uncertain: true }
       console.info('[feishu] task push delivered')
       return { ok: true }
     } catch (error) {
       console.warn('[feishu] task push failed:', error)
-      return { ok: false, error: 'send-failed' }
+      // The service may have accepted the message before the transport failed.
+      return { ok: false, error: 'send-failed', uncertain: true }
     }
   }
 

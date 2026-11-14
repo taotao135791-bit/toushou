@@ -56,6 +56,64 @@ function session(id: string, createdAt: number): Session {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 10))
 
+describe('scheduled task recipients', () => {
+  it('reads only bounded group names through the existing connection, with safe fallback', async () => {
+    const routes = Array.from({ length: 22 }, (_, i) => ({ key: `oc_group${i}:conversation`, chatId: `oc_group${i}`, chatType: 'group', updatedAt: 22 - i }))
+    await writeFile(path.join(paths.userData, 'feishu-routes.json'), JSON.stringify(routes))
+    const manager = new FeishuConnectionManager()
+    const get = vi.fn(async ({ path: request }: { path: { chat_id: string } }) => request.chat_id === 'oc_group1'
+      ? { code: 999, data: { name: 'should not use' } }
+      : { code: 0, data: { name: `Name ${request.chat_id}` } })
+    ;(manager as unknown as { channel: unknown }).channel = { websocketState: 'connected', rawClient: { im: { chat: { get } } } }
+    const targets = await manager.listTaskPushTargets()
+    expect(get).toHaveBeenCalledTimes(20)
+    expect(targets[0].name).toBe('Name oc_group0')
+    expect(targets[1].name).toBeUndefined()
+    expect(targets[20].name).toBeUndefined()
+    expect(targets).toHaveLength(22)
+  })
+
+  it('returns the list when group-name requests stall', async () => {
+    const routes = Array.from({ length: 8 }, (_, i) => ({ key: `oc_g${i}:conversation`, chatId: `oc_g${i}`, chatType: 'group', updatedAt: i }))
+    await writeFile(path.join(paths.userData, 'feishu-routes.json'), JSON.stringify(routes))
+    const manager = new FeishuConnectionManager()
+    const get = vi.fn(() => new Promise(() => {}))
+    ;(manager as unknown as { channel: unknown }).channel = { websocketState: 'connected', rawClient: { im: { chat: { get } } } }
+    // Load the route file before using fake timers so fs completion is real.
+    await (manager as unknown as { router: { load(): Promise<void> } }).router.load()
+    vi.useFakeTimers()
+    try {
+      const pending = manager.listTaskPushTargets()
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(await pending).toHaveLength(8)
+      expect(get).toHaveBeenCalledTimes(4)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('only sends to the explicitly selected existing chat and records uncertain receipts', async () => {
+    await writeFile(path.join(paths.userData, 'feishu-routes.json'), JSON.stringify([
+      { key: 'oc_group:conversation', chatId: 'oc_group', chatType: 'group', updatedAt: 10 },
+      { key: 'oc_direct:conversation', chatId: 'oc_direct', chatType: 'p2p', updatedAt: 5 }
+    ]))
+    const manager = new FeishuConnectionManager()
+    const sendMarkdown = vi.fn().mockResolvedValue({ messageId: 'om_receipt' })
+    ;(manager as unknown as { channel: unknown }).channel = { websocketState: 'connected', sendMarkdown }
+    expect(await manager.listTaskPushTargets()).toEqual([
+      { chatId: 'oc_group', chatType: 'group', updatedAt: 10 },
+      { chatId: 'oc_direct', chatType: 'p2p', updatedAt: 5 }
+    ])
+    expect(await manager.pushTaskResult('synthetic result')).toMatchObject({ ok: false, error: 'no-target' })
+    expect(await manager.pushTaskResult('synthetic result', 'oc_missing')).toMatchObject({ ok: false, error: 'no-chat' })
+    expect(sendMarkdown).not.toHaveBeenCalled()
+    expect(await manager.pushTaskResult('synthetic result', 'oc_direct')).toEqual({ ok: true })
+    expect(sendMarkdown).toHaveBeenCalledWith('oc_direct', 'synthetic result')
+    sendMarkdown.mockRejectedValueOnce(new Error('synthetic network error'))
+    expect(await manager.pushTaskResult('synthetic result', 'oc_direct')).toMatchObject({ ok: false, uncertain: true })
+    sendMarkdown.mockResolvedValueOnce({})
+    expect(await manager.pushTaskResult('synthetic result', 'oc_direct')).toMatchObject({ ok: false, uncertain: true })
+  })
+})
+
 beforeEach(async () => {
   paths.documents = await mkdtemp(path.join(os.tmpdir(), 'toushou-feishu-docs-'))
   paths.userData = await mkdtemp(path.join(os.tmpdir(), 'toushou-feishu-user-'))

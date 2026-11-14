@@ -1630,6 +1630,20 @@ export interface TaskRunEntry {
   historyUuid?: string
   /** Human-readable recovery action, never a substitute for the machine state. */
   recovery?: string
+  /** Recipient frozen at run start, never inferred from later task edits. */
+  feishuChatId?: string
+  /** Feishu delivery choice frozen with the run. */
+  feishuDeliveryRequested?: boolean
+  /** Delivery is separate from the task's execution outcome. */
+  delivery?: { status: 'sending' | 'sent' | 'failed' | 'unknown'; error?: string; attemptedAt: number }
+}
+
+export interface TaskFeishuTarget {
+  chatId: string
+  chatType: 'p2p' | 'group'
+  updatedAt: number
+  /** Group name returned by the existing Feishu connection, when available. */
+  name?: string
 }
 
 export type TaskFailureReason =
@@ -1656,10 +1670,12 @@ export interface ScheduledTask {
   notifyOnComplete: boolean
   /**
    * Where the completion notice lands: the OS notification center (default)
-   * or, once Feishu is connected, the owner's most recent bot DM.
+   * or the explicitly selected Feishu chat.
    */
   notifyChannel?: 'system' | 'feishu'
-  /** Consecutive spawn failures; resets on success or manual re-enable. */
+  /** Fixed destination. Legacy tasks may lack a destination and must not auto-send. */
+  feishuChatId?: string
+  /** Consecutive execution failures; resets after success or manual re-enable. */
   consecutiveFailures?: number
   /** Machine-readable reason of the last failure (diagnostics only). */
   lastFailureReason?: string

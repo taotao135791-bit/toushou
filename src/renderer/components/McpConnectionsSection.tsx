@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Plug,
   Trash2,
@@ -29,6 +29,9 @@ type Mode = 'socialpeta' | 'custom' | 'paste'
 export default function McpConnectionsSection() {
   const t = useT()
   const [entries, setEntries] = useState<McpConnectionInfo[] | null>(null)
+  const [listFailed, setListFailed] = useState(false)
+  const [listLoading, setListLoading] = useState(false)
+  const listRevision = useRef(0)
   const [mode, setMode] = useState<Mode>('socialpeta')
   const [token, setToken] = useState('')
   const [name, setName] = useState('')
@@ -42,14 +45,26 @@ export default function McpConnectionsSection() {
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; detail: string }>>({})
 
   const refresh = useCallback(() => {
+    const revision = ++listRevision.current
+    setListLoading(true)
     window.electronAPI
       .mcpList()
-      .then((value) => setEntries(value.filter((entry) => !(entry.managed && entry.name === 'appsflyer'))))
-      .catch(() => setEntries([]))
+      .then((value) => {
+        if (revision !== listRevision.current) return
+        setEntries(value.filter((entry) => !(entry.managed && entry.name === 'appsflyer')))
+        setListFailed(false)
+      })
+      .catch(() => {
+        if (revision !== listRevision.current) return
+        setEntries(null)
+        setListFailed(true)
+      })
+      .finally(() => { if (revision === listRevision.current) setListLoading(false) })
   }, [])
 
   useEffect(() => {
     refresh()
+    return () => { listRevision.current += 1 }
   }, [refresh])
 
   const add = async () => {
@@ -130,7 +145,18 @@ export default function McpConnectionsSection() {
       </div>
 
       <div className="px-5 py-5">
-        {(entries?.length ?? 0) > 0 && (
+        {listFailed && (
+          <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-3">
+            <div className="flex min-w-0 items-start gap-2 text-amber-700 dark:text-amber-300">
+              <AlertCircle size={15} className="mt-0.5 shrink-0" />
+              <p className="text-[12px] leading-5">{t('connections.mcpListFailed')}</p>
+            </div>
+            <button type="button" onClick={refresh} disabled={listLoading} className="focus-ring shrink-0 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream hover:bg-overlay disabled:opacity-50">
+              {listLoading ? t('connections.mcpListRetrying') : t('connections.mcpListRetry')}
+            </button>
+          </div>
+        )}
+        {!listFailed && (entries?.length ?? 0) > 0 && (
           <div className="mb-4 space-y-2">
             {entries?.map((entry) => (
               <div

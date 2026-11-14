@@ -30,7 +30,9 @@ import {
   resetTaskSessionReuse,
   startScheduler,
   stopSchedulerForTest,
-  reconcileInterruptedTaskRuns
+  reconcileInterruptedTaskRuns,
+  beginTaskDelivery,
+  finishTaskDelivery
 } from '../scheduledTasks'
 
 const { getStore, setStore } = await import('../store')
@@ -265,14 +267,15 @@ describe('firing lifecycle', () => {
     }
   })
 
-  it('re-enabling clears the failure slate', () => {
-    const task = baseTask({ enabled: false, consecutiveFailures: 2 })
+  it('manual re-enable clears the failure count and reason', () => {
+    const task = baseTask({ enabled: false, consecutiveFailures: 2, lastFailureReason: 'run-error' })
     tasks.push(task)
     // toggleTask is imported lazily to keep the top import list stable.
     return import('../scheduledTasks').then(({ toggleTask }) => {
       const updated = toggleTask('t1', true)
       expect(updated?.enabled).toBe(true)
       expect(updated?.consecutiveFailures).toBe(0)
+      expect(updated?.lastFailureReason).toBeUndefined()
     })
   })
 
@@ -604,7 +607,7 @@ describe('edit-and-ledger loop closures', () => {
     })
     expect(calls[0].opts?.runId).toMatch(/^[0-9a-f-]{36}$/)
     expect(tasks[0].lastRunSessionId).toBe('session-C')
-    expect(tasks[0].consecutiveFailures).toBe(0)
+    expect(tasks[0].consecutiveFailures).toBeUndefined()
   })
 
   it('an edit (saveTask with the same id) keeps the engine-owned run ledger', () => {
@@ -620,6 +623,17 @@ describe('edit-and-ledger loop closures', () => {
     expect(tasks[0].lastFailureReason).toBe('threw')
   })
 
+  it('does not accept a caller-supplied run ledger or engine state on create or edit', () => {
+    const forged = [{ runId: 'forged', startedAt: 1, finishedAt: 2, outcome: 'success' as const, feishuDeliveryRequested: true, feishuChatId: 'oc_forged' }]
+    saveTask(baseTask({ runs: forged, consecutiveFailures: 88, lastRunId: 'forged' }))
+    expect(tasks[0].runs).toBeUndefined()
+    expect(tasks[0].lastRunId).toBeUndefined()
+    expect(tasks[0].consecutiveFailures).toBeUndefined()
+    saveTask(baseTask({ runs: forged, lastFailureReason: 'threw' }))
+    expect(tasks[0].runs).toBeUndefined()
+    expect(tasks[0].lastFailureReason).toBeUndefined()
+  })
+
   it('the completion notice carries the run session id for click-through', async () => {
     tasks.push(baseTask())
     setTaskSpawnFn(async () => ({ sessionId: 'session-D' }))
@@ -633,6 +647,55 @@ describe('edit-and-ledger loop closures', () => {
 })
 
 describe('run ledger', () => {
+  it('freezes the chosen Feishu recipient for the run even if the task is edited', async () => {
+    tasks.push(baseTask({ notifyChannel: 'feishu', feishuChatId: 'oc_first' }))
+    setTaskSpawnFn(async () => ({ sessionId: 'recipient-session' }))
+    await runTaskNow('t1')
+    saveTask(baseTask({ notifyChannel: 'feishu', feishuChatId: 'oc_second' }))
+    noteTaskSessionEvent('recipient-session', { type: 'status', status: 'idle' })
+    expect(tasks[0].feishuChatId).toBe('oc_second')
+    expect(tasks[0].runs![0]).toMatchObject({ feishuChatId: 'oc_first', feishuDeliveryRequested: true })
+  })
+
+  it('counts failures across successful spawns, resetting only on a completed run', async () => {
+    tasks.push(baseTask())
+    let id = 0
+    setTaskSpawnFn(async () => ({ sessionId: `failure-${++id}` }))
+    for (let n = 1; n <= 3; n++) {
+      await runTaskNow('t1')
+      expect(tasks[0].consecutiveFailures ?? 0).toBe(n - 1)
+      noteTaskSessionEvent(`failure-${n}`, { type: 'error', recoverable: false })
+      expect(tasks[0].consecutiveFailures).toBe(n)
+    }
+    expect(tasks[0].enabled).toBe(false)
+    toggleTask('t1', true)
+    expect(tasks[0].consecutiveFailures).toBe(0)
+    await runTaskNow('t1')
+    noteTaskSessionEvent('failure-4', { type: 'status', status: 'idle' })
+    expect(tasks[0].consecutiveFailures).toBe(0)
+  })
+
+  it('keeps delivery separate and never retries an uncertain receipt', async () => {
+    tasks.push(baseTask())
+    setTaskSpawnFn(async () => ({ sessionId: 'delivery-session' }))
+    await runTaskNow('t1')
+    noteTaskSessionEvent('delivery-session', { type: 'status', status: 'idle' })
+    const runId = tasks[0].runs![0].runId!
+    expect(beginTaskDelivery('t1', runId)).not.toBeNull()
+    expect(beginTaskDelivery('t1', runId)).toBeNull()
+    finishTaskDelivery('t1', runId, { status: 'failed', error: 'feishu-not-connected' })
+    expect(tasks[0].runs![0].outcome).toBe('success')
+    expect(beginTaskDelivery('t1', runId, true)).not.toBeNull()
+    finishTaskDelivery('t1', runId, { status: 'unknown', error: 'send-failed' })
+    expect(beginTaskDelivery('t1', runId, true)).toBeNull()
+  })
+
+  it('marks an interrupted delivery as unknown instead of resending after restart', () => {
+    tasks.push(baseTask({ runs: [{ runId: 'old', startedAt: 1, finishedAt: 2, outcome: 'success', delivery: { status: 'sending', attemptedAt: 2 } }] }))
+    reconcileInterruptedTaskRuns(3)
+    expect(tasks[0].runs![0].delivery?.status).toBe('unknown')
+    expect(beginTaskDelivery('t1', 'old', true)).toBeNull()
+  })
   it('a finished run lands in the ledger as success with a duration', async () => {
     tasks.push(baseTask())
     setTaskSpawnFn(async () => ({ sessionId: 'run-1' }))

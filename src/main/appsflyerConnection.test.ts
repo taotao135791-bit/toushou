@@ -3,12 +3,13 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync }
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 const f = vi.hoisted(() => ({ data: '', agent: '', callback: undefined as undefined | ((v: unknown) => void), initializeCount: 0, facadeFailures: 0, closeCount: 0, state: 'disconnected', open: undefined as undefined | ((url: string) => Promise<void>), windows: [] as Array<{ close: ReturnType<typeof vi.fn>; ready: Promise<void>; done: Promise<'closed'> }>, tokenRead: vi.fn(async (): Promise<string | null> => 'synthetic-fresh') }))
+const readiness = vi.hoisted(() => ({ restore: undefined as Promise<void> | undefined, authorize: undefined as (() => Promise<boolean>) | undefined }))
 const authorizationUrl = 'https://mcp.appsflyer.com/authorize?state=synthetic-state&redirect_uri=http%3A%2F%2F127.0.0.1%3A12345%2Fcallback'
 vi.mock('electron', () => ({ app: { getPath: () => f.data }, BrowserWindow: { getAllWindows: () => [] }, session: {} }))
 vi.mock('./piSettings', () => ({ defaultPiAgentDir: () => f.agent }))
 vi.mock('./integrations/appsflyer/AppsFlyerConnectionManager', () => ({ AppsFlyerConnectionManager: class {
   constructor(options: { onChange: (v: unknown) => void; openExternal?: (url: string) => Promise<void> }) { f.callback = options.onChange; f.open = options.openExternal }
-  async initialize() { f.initializeCount++ }
+  async initialize() { f.initializeCount++; await readiness.restore }
   hasVerifiedTools() { return true }
   getSnapshot() { return { ...snapshot(f.state), ...(f.state === 'waiting_for_user' ? { authorizationUrl } : {}) } }
   async begin() { f.state = 'waiting_for_user'; f.callback?.(this.getSnapshot()); await f.open?.(authorizationUrl); return this.getSnapshot() }
@@ -24,12 +25,13 @@ vi.mock('./integrations/appsflyer/authWindow', () => ({ openAuthWindow: vi.fn(()
   return handle
 }) }))
 vi.mock('./integrations/appsflyer/AppsFlyerReadFacade', () => ({ AppsFlyerReadFacade: class {
+  constructor(_manager: unknown, _now: unknown, authorize: () => Promise<boolean>) { readiness.authorize = authorize }
   async initialize() { if (f.facadeFailures > 0) { f.facadeFailures--; throw new Error('private upstream error') }; return { endpoint: 'http://127.0.0.1:12345/mcp', token: 'synthetic-capability' } }
   close() { f.closeCount++ }
 } }))
 function snapshot(status: string) { return { definition: { id: 'appsflyer', kind: 'oauth', label: 'AppsFlyer', description: '', capabilities: [] }, status, connected: status === 'connected' } }
 let root = ''
-beforeEach(() => { vi.resetModules(); root = mkdtempSync(path.join(tmpdir(), 'toushou-af-test-')); f.data = path.join(root, 'data'); f.agent = path.join(root, 'agent'); mkdirSync(f.data); mkdirSync(f.agent); f.callback = undefined; f.initializeCount = 0; f.facadeFailures = 0; f.closeCount = 0; f.state = 'disconnected'; f.open = undefined; f.windows = []; f.tokenRead.mockReset().mockResolvedValue('synthetic-fresh') })
+beforeEach(() => { vi.resetModules(); readiness.restore = undefined; readiness.authorize = undefined; root = mkdtempSync(path.join(tmpdir(), 'toushou-af-test-')); f.data = path.join(root, 'data'); f.agent = path.join(root, 'agent'); mkdirSync(f.data); mkdirSync(f.agent); f.callback = undefined; f.initializeCount = 0; f.facadeFailures = 0; f.closeCount = 0; f.state = 'disconnected'; f.open = undefined; f.windows = []; f.tokenRead.mockReset().mockResolvedValue('synthetic-fresh') })
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 async function mod() { return import('./appsflyerConnection') }
 describe('AppsFlyer application integration', () => {
@@ -61,7 +63,7 @@ describe('AppsFlyer application integration', () => {
     await m.shutdownAppsFlyerConnection()
   })
   it('registers only local capability with private file mode and cleans up on exit', async () => {
-    const m = await mod(); await m.initializeAppsFlyerConnection(); expect(m.appsFlyerToolEnv()).toEqual({}); f.callback?.(snapshot('connected'))
+    const m = await mod(); await m.initializeAppsFlyerConnection(); expect(await readiness.authorize?.()).toBe(false); f.callback?.(snapshot('connected'))
     const file = path.join(f.agent, 'mcp.json'); const config = JSON.parse(readFileSync(file, 'utf8'))
     expect(config.mcpServers.appsflyer.url).toBe('http://127.0.0.1:12345/mcp')
     expect(config.mcpServers.appsflyer.headers.Authorization).toBe('Bearer synthetic-capability')
@@ -74,7 +76,7 @@ describe('AppsFlyer application integration', () => {
   it('preserves handwritten or another integration’s same-name config', async () => {
     const file = path.join(f.agent, 'mcp.json'); const original = JSON.stringify({ mcpServers: { appsflyer: { type: 'http', url: 'https://example.invalid/mcp' } } }); writeFileSync(file, original)
     const m = await mod(); await m.initializeAppsFlyerConnection(); f.callback?.(snapshot('connected'))
-    expect((await m.getAppsFlyerConnectionSnapshot()).status).toBe('degraded'); expect(m.appsFlyerToolEnv()).toEqual({}); expect(readFileSync(file, 'utf8')).toBe(original)
+    expect((await m.getAppsFlyerConnectionSnapshot()).status).toBe('degraded'); expect(await readiness.authorize?.()).toBe(false); expect(readFileSync(file, 'utf8')).toBe(original)
     await m.shutdownAppsFlyerConnection(); expect(readFileSync(file, 'utf8')).toBe(original)
   })
   it('does not overwrite a corrupted configuration or a changed owned entry', async () => {
@@ -86,6 +88,27 @@ describe('AppsFlyer application integration', () => {
   it('retries failed initialization only after explicit begin', async () => {
     f.facadeFailures = 1; const m = await mod(); await m.initializeAppsFlyerConnection(); expect((await m.getAppsFlyerConnectionSnapshot()).status).toBe('degraded'); expect(f.initializeCount).toBe(0)
     await m.beginAppsFlyerConnection(); expect(f.initializeCount).toBe(1); await m.shutdownAppsFlyerConnection()
+  })
+  it('wires the first session before slow authorization restoration and reuses that capability after reconnect', async () => {
+    let restore!: () => void
+    readiness.restore = new Promise<void>(resolve => { restore = resolve })
+    const m = await mod()
+    await m.initializeAppsFlyerToolBridge()
+    expect(f.initializeCount).toBe(0)
+    const firstSessionEnv = m.appsFlyerToolEnv()
+    expect(firstSessionEnv.TOUSHOU_APPSFLYER).toBeTruthy()
+    const pendingRead = readiness.authorize!()
+    await vi.waitFor(() => expect(f.initializeCount).toBe(1))
+    f.callback?.(snapshot('connected'))
+    restore()
+    expect(await pendingRead).toBe(true)
+    expect(m.appsFlyerToolEnv()).toEqual(firstSessionEnv)
+    await m.disconnectAppsFlyerConnection()
+    expect(await readiness.authorize!()).toBe(false)
+    f.callback?.(snapshot('connected'))
+    expect(await readiness.authorize!()).toBe(true)
+    expect(m.appsFlyerToolEnv()).toEqual(firstSessionEnv)
+    await m.shutdownAppsFlyerConnection()
   })
   it('preserves a connection changed after registration when shutting down', async () => {
     const m = await mod(); await m.initializeAppsFlyerConnection(); f.callback?.(snapshot('connected'))

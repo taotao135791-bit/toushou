@@ -54,6 +54,7 @@ import {
   CliInfo,
   HistorySessionRow,
   ScheduledTask,
+  TaskFeishuTarget,
   Session,
   SessionEvent,
   ExternalSessionDescriptor,
@@ -614,6 +615,8 @@ export interface ElectronAPI {
   /** User-initiated diagnostics bundle (versions + log tail) via save dialog. */
   exportDiagnostics: () => Promise<{ ok: boolean; path?: string; error?: string }>
   listTasks: () => Promise<ScheduledTask[]>
+  listTaskFeishuTargets: () => Promise<TaskFeishuTarget[]>
+  retryTaskDelivery: (taskId: string, runId: string) => Promise<boolean>
   saveTask: (task: ScheduledTask) => Promise<{ ok: boolean; task?: ScheduledTask; error?: string }>
   deleteTask: (id: string) => Promise<boolean>
   toggleTask: (id: string, enabled: boolean) => Promise<ScheduledTask | null>
@@ -1212,6 +1215,8 @@ const api: ElectronAPI = {
       error?: string
     }>,
   listTasks: () => ipcRenderer.invoke(IPC_CHANNELS.TASKS_LIST) as Promise<ScheduledTask[]>,
+  listTaskFeishuTargets: () => ipcRenderer.invoke(IPC_CHANNELS.TASKS_FEISHU_TARGETS) as Promise<TaskFeishuTarget[]>,
+  retryTaskDelivery: (taskId, runId) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_RETRY_DELIVERY, taskId, runId) as Promise<boolean>,
   saveTask: (task) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_SAVE, task) as never,
   deleteTask: (id) => ipcRenderer.invoke(IPC_CHANNELS.TASKS_DELETE, id) as Promise<boolean>,
   toggleTask: (id, enabled) =>

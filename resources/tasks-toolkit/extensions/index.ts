@@ -63,7 +63,7 @@ export default function taskTools(api: ToolHostApi): void {
     description:
       '创建一个定时任务：到点自动在当前项目目录里用这条提示词启动一次分析。' +
       `任务运行目录固定为当前项目，无需也不能指定其他目录。${SCHEDULE_DOC} ` +
-      '可选 notifyChannel："feishu" 表示每轮完成后把结果摘要推送到飞书（默认只发系统通知）。' +
+      '可选 notifyChannel："feishu" 表示希望向飞书发送结果摘要（默认只发系统通知）；创建后必须在任务设置中选择已有飞书聊天作为收件目标，未选择前不会发送。' +
       '可选 skillId：把 Skill 库里的某份打法注入为该任务的执行手册（如「爆款竞品分析.md」），定时任务将按该打法执行。' +
       '可选 reuseSession=true：每次触发沿用上一次的对话继续跑（适合"先刷新看板再汇报"这类日常例行动作，省资源）；默认 false，每次开新对话。',
     parameters: {
@@ -73,7 +73,7 @@ export default function taskTools(api: ToolHostApi): void {
         prompt: { type: 'string', description: '每次执行时投手收到的完整提示词' },
         schedule: SCHEDULE_JSON,
         notifyOnComplete: { type: 'boolean', description: '完成后是否通知，默认 true' },
-        notifyChannel: { type: 'string', description: '通知渠道：system（默认）或 feishu（需已连接飞书）' },
+        notifyChannel: { type: 'string', description: '通知渠道：system（默认）或 feishu；飞书任务创建后需用户在任务设置中选择收件聊天，否则不会发送' },
         permissionMode: { type: 'string', description: 'default（跟随全局）或 readonly（只读执行）' },
         skillId: { type: 'string', description: '可选，Skill 库文件名（如 爆款竞品分析.md），注入为执行打法' },
         reuseSession: { type: 'boolean', description: 'true = 每次触发沿用同一对话（上下文连续）；false/省略 = 每次开新对话' }

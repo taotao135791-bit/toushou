@@ -185,6 +185,8 @@ export const IPC_CHANNELS = {
   TASKS_TOGGLE: 'tasks:toggle',
   TASKS_RUN_NOW: 'tasks:run-now',
   TASKS_RESET_REUSE: 'tasks:reset-reuse',
+  TASKS_FEISHU_TARGETS: 'tasks:feishu-targets',
+  TASKS_RETRY_DELIVERY: 'tasks:retry-delivery',
   /** Main → renderer push when a scheduled task fires/completes. */
   TASKS_STATE_CHANGED: 'tasks:state-changed',
   // --- Project knowledge ------------------------------------------------------

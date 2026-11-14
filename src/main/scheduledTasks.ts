@@ -31,7 +31,7 @@ const CHECK_INTERVAL_MS = 15 * 60_000
 const STARTUP_CATCHUP_MS = 10_000
 /** Fallback guard lifetime if the session's terminal event never arrives. */
 export const MAX_RUN_MS = 6 * 60 * 60 * 1000
-/** Consecutive spawn failures before a task disables itself. */
+/** Consecutive execution failures before a task disables itself. */
 const MAX_CONSECUTIVE_FAILURES = 3
 /** Cap on stored tasks — mainly so an agent-created loop cannot flood the store. */
 export const MAX_TASKS = 50
@@ -138,22 +138,27 @@ const RUNTIME_OWNED_KEYS = [
 const USER_OWNED_KEYS = ['reuseSession'] as const
 
 export function saveTask(task: ScheduledTask): ScheduledTask {
+  // Defend the engine ledger even if a future caller bypasses IPC's input
+  // projection, including when the stored task has no previous value for a
+  // particular runtime-owned key.
+  const userTask = { ...task }
+  for (const key of RUNTIME_OWNED_KEYS) delete userTask[key]
   const tasks = getTasks()
-  const index = tasks.findIndex((t) => t.id === task.id)
+  const index = tasks.findIndex((t) => t.id === userTask.id)
   if (index >= 0) {
     const previous = tasks[index]
     const carried = Object.fromEntries(
       RUNTIME_OWNED_KEYS.filter((key) => previous[key] !== undefined).map((key) => [key, previous[key]])
     )
     const userCarried = Object.fromEntries(
-      USER_OWNED_KEYS.filter((key) => task[key] === undefined && previous[key] !== undefined).map((key) => [key, previous[key]])
+      USER_OWNED_KEYS.filter((key) => userTask[key] === undefined && previous[key] !== undefined).map((key) => [key, previous[key]])
     )
-    const clearReuse = task.reuseSession === false || !sameTaskWorkspace(previous.cwd, task.cwd)
-    if (clearReuse) { delete carried.reuseSessionFile; invalidateReuse(task.id) }
-    tasks[index] = { ...task, ...userCarried, ...carried }
+    const clearReuse = userTask.reuseSession === false || !sameTaskWorkspace(previous.cwd, userTask.cwd)
+    if (clearReuse) { delete carried.reuseSessionFile; invalidateReuse(userTask.id) }
+    tasks[index] = { ...userTask, ...userCarried, ...carried }
     if (clearReuse) delete tasks[index].reuseSessionFile
   } else {
-    tasks.push(task)
+    tasks.push(userTask)
   }
   saveTasks(tasks)
   broadcastTasksChanged()
@@ -232,6 +237,7 @@ export function validateTaskSaveInput(task: unknown): { ok: true; task: Schedule
   if (!isValidSchedule(t.schedule)) return { ok: false, error: 'invalid-schedule' }
   if (t.permissionMode !== undefined && t.permissionMode !== 'default' && t.permissionMode !== 'readonly') return { ok: false, error: 'invalid-permission-mode' }
   if (t.notifyChannel !== undefined && t.notifyChannel !== 'system' && t.notifyChannel !== 'feishu') return { ok: false, error: 'invalid-notify-channel' }
+  if (t.feishuChatId !== undefined && (typeof t.feishuChatId !== 'string' || !/^oc_[A-Za-z0-9_-]{1,200}$/.test(t.feishuChatId))) return { ok: false, error: 'invalid-feishu-chat' }
   if (t.skillId !== undefined && !isValidSkillId(t.skillId)) return { ok: false, error: 'invalid-skill-id' }
   if (t.reuseSession !== undefined && typeof t.reuseSession !== 'boolean') return { ok: false, error: 'invalid-reuse-session' }
   return { ok: true, task: {
@@ -239,6 +245,7 @@ export function validateTaskSaveInput(task: unknown): { ok: true; task: Schedule
     enabled: t.enabled === true, createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
     notifyOnComplete: t.notifyOnComplete !== false,
     ...(t.notifyChannel === 'feishu' ? { notifyChannel: 'feishu' as const } : {}),
+    ...(t.notifyChannel === 'feishu' && typeof t.feishuChatId === 'string' ? { feishuChatId: t.feishuChatId } : {}),
     ...(typeof t.skillId === 'string' && isValidSkillId(t.skillId) ? { skillId: t.skillId } : {}),
     ...(t.permissionMode === 'readonly' ? { permissionMode: 'readonly' as const } : {}),
     ...(typeof t.reuseSession === 'boolean' ? { reuseSession: t.reuseSession } : {})
@@ -300,10 +307,10 @@ export function toggleTask(id: string, enabled: boolean): ScheduledTask | null {
   const task = tasks.find((t) => t.id === id)
   if (!task) return null
   task.enabled = enabled
-  // A manual re-enable is an explicit vote of confidence: give the task a
-  // clean failure slate instead of letting old failures disable it again on
-  // the next hiccup.
-  if (enabled) task.consecutiveFailures = 0
+  if (enabled) {
+    task.consecutiveFailures = 0
+    task.lastFailureReason = undefined
+  }
   saveTasks(tasks)
   broadcastTasksChanged()
   rescheduleScheduler()
@@ -503,6 +510,28 @@ function updateStoredTask(taskId: string, update: (task: ScheduledTask) => void)
   return stored
 }
 
+/** Claim one delivery synchronously before any network request. A retry is
+ * allowed only when the previous attempt is known not to have been sent. */
+export function beginTaskDelivery(taskId: string, runId: string, isRetry = false): { task: ScheduledTask; run: TaskRunEntry } | null {
+  let claimed = false
+  const task = updateStoredTask(taskId, (stored) => {
+    const run = stored.runs?.find((item) => item.runId === runId)
+    if (!run || run.outcome !== 'success' || (isRetry ? run.delivery?.status !== 'failed' : !!run.delivery)) return
+    run.delivery = { status: 'sending', attemptedAt: Date.now() }
+    claimed = true
+  })
+  const run = task?.runs?.find((item) => item.runId === runId)
+  return claimed && task && run ? { task, run } : null
+}
+
+export function finishTaskDelivery(taskId: string, runId: string, result: { status: 'sent' | 'failed' | 'unknown'; error?: string }): void {
+  updateStoredTask(taskId, (task) => {
+    const run = task.runs?.find((item) => item.runId === runId)
+    if (!run?.delivery || run.delivery.status !== 'sending') return
+    run.delivery = { ...run.delivery, status: result.status, ...(result.error ? { error: result.error } : {}) }
+  })
+}
+
 function updateRunEntry(
   taskId: string,
   runId: string,
@@ -588,6 +617,8 @@ function beginFiring(task: ScheduledTask): { runId: string; startedAt: number } 
       runId,
       status: 'preparing',
       startedAt,
+      ...(task.notifyChannel === 'feishu' && task.notifyOnComplete !== false ? { feishuDeliveryRequested: true } : {}),
+      ...(task.notifyChannel === 'feishu' && task.feishuChatId ? { feishuChatId: task.feishuChatId } : {}),
       recovery: '正在启动运行时…'
     }
     current.runs = [entry, ...(current.runs ?? [])].slice(0, MAX_RUN_ENTRIES)
@@ -595,7 +626,6 @@ function beginFiring(task: ScheduledTask): { runId: string; startedAt: number } 
     current.lastRunId = runId
     current.lastRunStatus = 'preparing'
     current.lastRunSessionId = undefined
-    current.lastFailureReason = undefined
   })
   if (!stored) {
     releaseFiring(task.id)
@@ -667,8 +697,6 @@ async function fireTask(task: ScheduledTask): Promise<string | null> {
       stored.lastRunStatus = 'running'
       stored.lastRunSessionId = result.sessionId
       stored.lastRunId = runId
-      stored.consecutiveFailures = 0
-      stored.lastFailureReason = undefined
     })
     return result.sessionId
   } catch (error) {
@@ -691,13 +719,21 @@ export function reconcileInterruptedTaskRuns(now = Date.now()): void {
   for (const task of tasks) {
     if (!task || typeof task !== 'object' || !Array.isArray(task.runs)) continue
     for (const run of task.runs) {
-      if (!run || typeof run !== 'object' || run.finishedAt !== undefined) continue
+      if (!run || typeof run !== 'object') continue
+      if (run.delivery?.status === 'sending') {
+        run.delivery = { ...run.delivery, status: 'unknown', error: 'interrupted' }
+        changed = true
+      }
+      if (run.finishedAt !== undefined) continue
       run.finishedAt = now
       run.outcome = 'failed'
       run.status = 'interrupted'
       run.reason = 'interrupted'
       run.recovery = '应用已重启；请核对会话后手动重试。'
       if (task.lastRunId === run.runId) task.lastRunStatus = 'interrupted'
+      task.lastFailureReason = 'interrupted'
+      task.consecutiveFailures = (task.consecutiveFailures ?? 0) + 1
+      if (task.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) task.enabled = false
       changed = true
     }
   }

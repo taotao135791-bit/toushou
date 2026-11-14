@@ -318,6 +318,18 @@ describe('generated board evidence checks', () => {
     expect(checkBoardGeneration(f.board, f.datasets, { mode: 'custom', granularity: 'ad' }, [], now).status).toBe('ready')
   })
 
+  it('treats a cleared single filter value as no filter while respecting explicit values', () => {
+    const f = fixture(), data = f.datasets[0]
+    f.board.widgets = [widget('table', 'table', { source: 'dataset', datasetId: data.id, columns: ['Campaign ID', 'Spend'], filterColumn: 'Campaign ID', filterValue: '' })]
+    const options = { mode: 'custom', required: ['data', 'table'] } as const
+    expect(checkBoardGeneration(f.board, f.datasets, options, [], now).status).toBe('ready')
+    f.board.widgets[0].config.filterColumn = 'Removed column'
+    expect(checkBoardGeneration(f.board, f.datasets, options, [], now).status).toBe('ready')
+    f.board.widgets[0].config.filterColumn = 'Campaign ID'
+    f.board.widgets[0].config.filterValues = ['nonexistent']
+    expect(checkBoardGeneration(f.board, f.datasets, options, [], now).status).toBe('incomplete')
+  })
+
   it('does not combine separate hidden grains and metric tables into a false joint breakdown', () => {
     const f = fixture(), data = f.datasets[0]
     data.columns.push({ name: 'Creative ID', type: 'text' })

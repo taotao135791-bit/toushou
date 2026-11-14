@@ -12,7 +12,8 @@ export class AppsFlyerReadFacade {
   private server?: Server
   private readonly token = randomBytes(32).toString('base64url')
   private readonly sessions = new Map<string, number>()
-  constructor(private readonly manager: AppsFlyerConnectionManager, private readonly now: () => number = Date.now) {}
+  constructor(private readonly manager: AppsFlyerConnectionManager, private readonly now: () => number = Date.now,
+    private readonly authorizeRead?: () => Promise<boolean>) {}
   async initialize(): Promise<{ endpoint: string; token: string }> {
     if (this.server) throw new Error('already-started')
     const server = createServer((req, res) => void this.handle(req, res))
@@ -50,6 +51,7 @@ export class AppsFlyerReadFacade {
     if (p.method === 'ping') { result({}); return }
     if (p.method === 'tools/list') {
       try {
+        if (this.authorizeRead && !(await this.authorizeRead())) throw new Error('not connected')
         const cached = await this.manager.getVerifiedToolDescriptions()
         if (!cached) throw new Error('not connected')
         const tools = cached.map(tool => ({ name: tool.name, description: `${typeof tool.description === 'string' ? tool.description : ''}\n只读；仅允许单个 App、最多 366 天、300 行、最多一个事件（空事件用于发现）。返回达到行数上限时不能视为完整。`, inputSchema: tool.inputSchema, annotations: { readOnlyHint: true } }))
@@ -63,6 +65,7 @@ export class AppsFlyerReadFacade {
     try {
       if (params.name === 'get_apps' && Object.keys(args).length !== 0) throw new Error('invalid query')
       if (!['get_apps', 'analytics_fetch_aggregated_data'].includes(params.name)) throw new Error('unsupported tool')
+      if (this.authorizeRead && !(await this.authorizeRead())) throw new Error('not connected')
       const credentials = await this.manager.loadFreshCredentials()
       if (!credentials) throw new Error('not connected')
       token = credentials.accessToken

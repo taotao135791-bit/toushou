@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BoardDataset, BoardWidget, KanbanBoard } from '@shared/types'
-import { boardAppsFlyerDatasetIds, boardMasterWindow, boardRefreshWindow, boardScopeCounts, boardScopedBoardTitle, boardScopedWidgetTitle, datasetsForBoardWindow } from './boardRefreshScope'
+import type { BoardRefreshResult } from '@shared/boardRefresh'
+import { boardAppsFlyerDatasetIds, boardMasterWindow, boardRefreshWindow, boardScopeCounts, boardScopeSummary, boardScopedBoardTitle, boardScopedWidgetTitle, datasetsForBoardWindow } from './boardRefreshScope'
 
 const widget = (id: string, type: BoardWidget['type'], config: Record<string, unknown>, title = id): BoardWidget => ({ id, type, title, config, layout: { x: 0, y: 0, w: 3, h: 3 } })
 const board = (widgets: BoardWidget[]): KanbanBoard => ({ id: 'board', name: 'Synthetic', widgets, createdAt: 1, updatedAt: 1 })
@@ -43,15 +44,43 @@ describe('board refresh scope', () => {
   it('distinguishes live, independent and fixed modules without counting explanatory notes', () => {
     const a = { ...dataset('af-a'), appsflyer: { specId: 'query-a', status: 'updated' as const, window, dataWindow: window, attemptedAt: 1 } }
     const target = board([widget('media', 'tt-reading', { range: '7' }), widget('af', 'counter', { source: 'dataset', datasetId: a.id }), widget('fixed', 'counter', { source: 'manual', value: 5 }), widget('note', 'note', { text: 'Explanation' }), widget('google', 'google-report-reading', {})])
-    expect(boardScopeCounts(target, [a])).toEqual({ live: 2, fixed: 1, independent: 1, unbound: 0 })
+    expect(boardScopeCounts(target, [a])).toEqual({ live: 2, fixed: 1, independent: 1, lookback: 0, unbound: 0 })
+  })
+
+  it('shows follow, trailing, independent, fixed and unavailable scopes together', () => {
+    const a = { ...dataset('af-a'), appsflyer: { specId: 'query-a', status: 'updated' as const, window, dataWindow: window, attemptedAt: 1 } }
+    const bound = widget('af', 'counter', { source: 'dataset', datasetId: a.id })
+    const target = board([
+      widget('media', 'tt-reading', { range: '7' }),
+      { ...bound, id: 'trailing', dateScope: { mode: 'lookback', days: 7, anchor: 'reportEnd' } },
+      { ...bound, id: 'absolute', dateScope: { mode: 'absolute', start: '2026-11-01', end: '2026-11-01' } },
+      widget('fixed', 'counter', { source: 'manual', value: 5 }),
+      { ...bound, id: 'missing', config: { source: 'dataset', datasetId: 'AF-Removed' }, dateScope: { mode: 'absolute', start: '2026-11-01', end: '2026-11-01' } }
+    ])
+    const counts = boardScopeCounts(target, [a])
+    expect(counts).toEqual({ live: 1, lookback: 1, independent: 1, fixed: 1, unbound: 1 })
+    expect(boardScopeSummary(counts, 'zh')).toBe('1 个跟随总控 · 1 个按截止日回看 · 1 个独立范围 · 1 个固定模块 · 1 个待接通')
+    expect(boardScopeSummary(counts, 'zh')).not.toContain('全部')
   })
 
   it('does not claim disconnected AF cards follow the master', () => {
     const a = dataset('af-a')
     const target = board([widget('af', 'counter', { source: 'dataset', datasetId: a.id })])
-    expect(boardScopeCounts(target, [a])).toEqual({ live: 0, fixed: 0, independent: 0, unbound: 1 })
+    expect(boardScopeCounts(target, [a])).toEqual({ live: 0, fixed: 0, independent: 0, lookback: 0, unbound: 1 })
     expect(boardScopeCounts(target, [{ ...a, appsflyer: { status: 'unbound', window, attemptedAt: 1 } }]).live).toBe(0)
-    expect(boardScopeCounts(board([widget('missing', 'counter', { source: 'dataset', datasetId: 'AF-Removed' })]), [])).toEqual({ live: 0, fixed: 0, independent: 0, unbound: 1 })
+    expect(boardScopeCounts(board([widget('missing', 'counter', { source: 'dataset', datasetId: 'AF-Removed' })]), [])).toEqual({ live: 0, fixed: 0, independent: 0, lookback: 0, unbound: 1 })
+    expect(boardScopeCounts(board([widget('empty', 'table', { source: 'dataset', datasetId: '' })]), []).unbound).toBe(1)
+  })
+
+  it('recognizes only a matching Main AF plan for legacy datasets without spec metadata', () => {
+    const a = dataset('legacy-af', 'AppsFlyer 报表'), target = board([widget('legacy', 'counter', { source: 'dataset', datasetId: a.id })])
+    const plan: BoardRefreshResult = { ok: true, boardId: target.id, runId: 'legacy', planKey: '', reportWindow: window, generatedAt: 1, status: 'ready', sources: [{ key: 'source', kind: 'appsflyer', status: 'updated', window }], widgets: [{ widgetId: 'legacy', window, status: 'updated', bindings: [{ datasetId: a.id, sourceKey: 'source' }] }] }
+    expect(boardScopeCounts(target, [a]).unbound).toBe(1)
+    expect(boardScopeCounts(target, [a], plan)).toEqual({ live: 1, fixed: 0, independent: 0, lookback: 0, unbound: 0 })
+    expect(boardScopeCounts(target, [a], { ...plan, boardId: 'other' }).unbound).toBe(1)
+    expect(boardScopeCounts(target, [a], { ...plan, widgets: [{ ...plan.widgets[0], bindings: [{ datasetId: 'other', sourceKey: 'source' }] }] }).unbound).toBe(1)
+    expect(boardScopeCounts(target, [a], { ...plan, sources: [{ ...plan.sources[0], status: 'unbound' }] }).unbound).toBe(1)
+    expect(boardScopeCounts(target, [a], { ...plan, sources: [{ ...plan.sources[0], kind: 'dataset' }] }).unbound).toBe(1)
   })
 
   it('updates stale range titles while retaining fixed snapshot and custom business titles', () => {

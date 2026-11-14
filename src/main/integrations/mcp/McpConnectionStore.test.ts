@@ -1,17 +1,28 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const proxyFetchFor = vi.hoisted(() => vi.fn())
+const hooks = vi.hoisted(() => ({ afterWrite: undefined as undefined | ((file: string) => void) }))
+vi.mock('electron', () => ({ app: { getPath: () => '/synthetic-profile' } }))
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>()
+  return { ...fs, writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
+    fs.writeFileSync(...args)
+    hooks.afterWrite?.(String(args[0]))
+  } }
+})
 vi.mock('../tiktok/proxyFetch', () => ({ proxyFetchFor }))
 import {
   addMcpConnection,
+  defaultMcpStorePaths,
   listMcpConnections,
   McpStorePaths,
   parseMcpAddInput,
   removeMcpConnection,
-  testMcpConnection
+  testMcpConnection,
+  upsertManagedServer
 } from './McpConnectionStore'
 
 const roots: string[] = []
@@ -25,7 +36,9 @@ function makePaths(prefillOmp?: string): McpStorePaths {
 }
 
 afterEach(() => {
+  hooks.afterWrite = undefined
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   proxyFetchFor.mockReset()
   while (roots.length > 0) {
     const dir = roots.pop()
@@ -79,16 +92,114 @@ describe('parseMcpAddInput', () => {
 })
 
 describe('McpConnectionStore files', () => {
+  it('honors an explicit absolute runtime profile without changing the default or accepting relative overrides', () => {
+    vi.stubEnv('PI_CODING_AGENT_DIR', '')
+    vi.stubEnv('OMP_PROFILE', '')
+    vi.stubEnv('PI_PROFILE', '')
+    const normal = defaultMcpStorePaths()
+    const isolated = path.join(tmpdir(), 'synthetic-agent', '..', 'isolated-agent')
+    vi.stubEnv('PI_CODING_AGENT_DIR', isolated)
+    expect(defaultMcpStorePaths().mcpJson).toBe(path.join(path.normalize(isolated), 'mcp.json'))
+    expect(defaultMcpStorePaths().registry).toBe(normal.registry)
+    vi.stubEnv('PI_CODING_AGENT_DIR', 'relative-agent')
+    expect(defaultMcpStorePaths()).toEqual(normal)
+    vi.stubEnv('PI_CODING_AGENT_DIR', isolated)
+    vi.stubEnv('OMP_PROFILE', 'named-profile')
+    expect(defaultMcpStorePaths()).toEqual(normal)
+  })
+  it('does not overwrite malformed or invalid-shape configuration on a managed restore', () => {
+    for (const original of ['{"mcpServers":{"other":', '[]', 'null', '{"mcpServers":[]}', '{"mcpServers":{"other":null}}', '{"disabledServers":"other"}']) {
+      const paths = makePaths(original)
+      const result = upsertManagedServer('tiktok-ads', { type: 'http', url: 'https://example.test/mcp' }, paths)
+      expect(result.ok).toBe(false)
+      expect(readFileSync(paths.mcpJson, 'utf8')).toBe(original)
+      expect(() => readFileSync(paths.registry)).toThrow()
+    }
+  })
+
+  it('rejects a damaged registry without changing the valid MCP file', () => {
+    const original = JSON.stringify({ mcpServers: { other: { command: 'x' } } })
+    for (const registry of ['{', '{"managed": "wrong"}', '{"managed":[1]}']) {
+      const paths = makePaths(original)
+      writeFileSync(paths.registry, registry)
+      expect(addMcpConnection({ name: 'new', url: 'https://example.test' }, paths).ok).toBe(false)
+      expect(readFileSync(paths.mcpJson, 'utf8')).toBe(original)
+      expect(readFileSync(paths.registry, 'utf8')).toBe(registry)
+    }
+  })
+
+  it('refuses to overwrite a same-name unmanaged entry while an identical restore is a no-op', () => {
+    const entry = { type: 'http', url: 'https://example.test/mcp' }
+    const original = JSON.stringify({ mcpServers: { 'tiktok-ads': entry, other: { command: 'x' } } })
+    const paths = makePaths(original)
+    expect(upsertManagedServer('tiktok-ads', entry, paths)).toEqual({ ok: true })
+    expect(upsertManagedServer('tiktok-ads', { ...entry, url: 'https://different.test/mcp' }, paths).ok).toBe(false)
+    expect(readFileSync(paths.mcpJson, 'utf8')).toBe(original)
+  })
+
+  it.skipIf(process.platform === 'win32')('rejects an unsafe filesystem entry and keeps its target untouched', () => {
+    const paths = makePaths()
+    const target = path.join(path.dirname(paths.mcpJson), 'target.json')
+    writeFileSync(target, '{"mcpServers":{}}')
+    symlinkSync(target, paths.mcpJson)
+    expect(addMcpConnection({ name: 'new', url: 'https://example.test' }, paths).ok).toBe(false)
+    expect(readFileSync(target, 'utf8')).toBe('{"mcpServers":{}}')
+  })
+
+  it('detects another writer changing the config before replacement', () => {
+    const paths = makePaths('{"mcpServers":{"old":{"command":"old"}}}')
+    const otherWrite = '{"mcpServers":{"other":{"command":"new"}}}'
+    hooks.afterWrite = file => {
+      if (file.startsWith(`${paths.mcpJson}.`) && file.endsWith('.tmp')) {
+        hooks.afterWrite = undefined
+        writeFileSync(paths.mcpJson, otherWrite)
+      }
+    }
+    const result = upsertManagedServer('tiktok-ads', { type: 'http', url: 'https://example.test/mcp' }, paths)
+    expect(result.ok).toBe(false)
+    expect(readFileSync(paths.mcpJson, 'utf8')).toBe(otherWrite)
+    expect(() => readFileSync(paths.registry)).toThrow()
+  })
+
+  it('reports a partial update if the registry changes during its write', () => {
+    const paths = makePaths('{"mcpServers":{"other":{"command":"x"}}}')
+    writeFileSync(paths.registry, '{"managed":[]}')
+    const otherRegistry = '{"managed":["external"]}'
+    hooks.afterWrite = file => {
+      if (file.startsWith(`${paths.registry}.`) && file.endsWith('.tmp')) {
+        hooks.afterWrite = undefined
+        writeFileSync(paths.registry, otherRegistry)
+      }
+    }
+    const result = upsertManagedServer('tiktok-ads', { type: 'http', url: 'https://example.test/mcp' }, paths)
+    expect(result).toEqual({ ok: false, error: expect.stringContaining('管理记录未能保存') })
+    expect(readFileSync(paths.registry, 'utf8')).toBe(otherRegistry)
+    expect(JSON.parse(readFileSync(paths.mcpJson, 'utf8')).mcpServers.other).toEqual({ command: 'x' })
+  })
+
+  it('writes new sensitive configuration with owner-only POSIX permissions', () => {
+    const paths = makePaths()
+    expect(addMcpConnection({ name: 'new', url: 'https://example.test', token: 'synthetic' }, paths).ok).toBe(true)
+    if (process.platform !== 'win32') {
+      expect(statSync(paths.mcpJson).mode & 0o777).toBe(0o600)
+      expect(statSync(paths.registry).mode & 0o777).toBe(0o600)
+    }
+  })
+
   it('adds a managed entry and preserves hand-written neighbors', () => {
     const paths = makePaths(
-      JSON.stringify({ mcpServers: { mine: { command: 'npx', args: ['-y', 's'] } } })
+      JSON.stringify({ mcpServers: { mine: { command: 'npx', args: ['-y', 's'] } }, disabledServers: ['mine'], customSetting: { unchanged: true } })
     )
+    writeFileSync(paths.registry, JSON.stringify({ managed: [], customMetadata: { unchanged: true } }))
     const result = addMcpConnection({ name: 'socialpeta', url: 'https://mcp.example.com/mcp', token: 't' }, paths)
     expect(result.ok).toBe(true)
 
     const onDisk = JSON.parse(readFileSync(paths.mcpJson, 'utf-8'))
     expect(onDisk.mcpServers.mine).toBeDefined()
     expect(onDisk.mcpServers.socialpeta.type).toBe('http')
+    expect(onDisk.disabledServers).toEqual(['mine'])
+    expect(onDisk.customSetting).toEqual({ unchanged: true })
+    expect(JSON.parse(readFileSync(paths.registry, 'utf8')).customMetadata).toEqual({ unchanged: true })
 
     const list = listMcpConnections(paths)
     const mine = list.find((c) => c.name === 'mine')

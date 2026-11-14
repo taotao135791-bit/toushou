@@ -147,8 +147,8 @@ export function notifyTaskAutoDisabled(taskName: string): void {
   const notification = new Notification({
     title: zh ? '定时任务已自动暂停' : 'Task auto-paused',
     body: zh
-      ? `任务「${taskName}」连续 3 次启动失败，已自动停用。请检查项目目录和运行时后重新启用。`
-      : `Task "${taskName}" failed to start 3 times in a row and was disabled. Check its project folder and runtime, then re-enable.`
+      ? `任务「${taskName}」连续多次执行失败，已自动停用。请检查运行记录后重新启用。`
+      : `Task "${taskName}" failed repeatedly and was disabled. Check its run history, then re-enable.`
   })
   notification.on('click', () => {
     if (!win || win.isDestroyed()) return
