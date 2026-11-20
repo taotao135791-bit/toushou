@@ -4,17 +4,17 @@
 
 ## 下载与安装
 
-当前公开版本：**v2.4.3**。安装包和校验文件也可在 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.4.3) 查看。
+当前公开版本为 **v2.5.0**。安装包、更新清单和校验文件见 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.5.0)。
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.4.3/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.4.3/TouShou-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.4.3/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.4.3/TouShou-x64.zip) |
-| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.4.3/TouShou-x64.exe) |
+| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.5.0/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.5.0/TouShou-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.5.0/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.5.0/TouShou-x64.zip) |
+| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.5.0/TouShou-x64.exe) |
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 
-V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)、[HTML 看板说明](docs/v2-html-board-evaluation.md)和 [v2.4.3 发布说明](docs/releases/v2.4.3.md)。
+V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和 [HTML 看板说明](docs/v2-html-board-evaluation.md)。
 
 ## 快速上手
 
@@ -33,7 +33,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)、
 
 ## 最新发版
 
-**v2.4.3** 修复 MCP 配置保护与读取错误提示、默认模块保存、旧 AF 配方和日期刷新提示；定时任务失败计数更准确，飞书通知使用固定收件聊天并支持确认未发送后的单独重试。已有飞书通知任务需要重新选择收件聊天，之后才会继续自动推送。完整记录见[更新日志](CHANGELOG.md)和 [v2.4.3 发布说明](docs/releases/v2.4.3.md)。
+**v2.5.0** 带来轻盈版 Agent 首页和全局侧栏。切换到看板时侧栏沿用相同外观，看板内容区保留原有布局和配色。本版也精简了连接和自动任务的状态提示。完整记录见[更新日志](CHANGELOG.md)和 [v2.5.0 发布说明](docs/releases/v2.5.0.md)。
 
 ## 开发
 
