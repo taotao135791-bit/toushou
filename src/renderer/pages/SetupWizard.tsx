@@ -25,10 +25,9 @@ export default function SetupWizard() {
   const t = useT()
   const navigate = useNavigate()
 
-  // The real command is copied verbatim but never displayed, keeping the
-  // first-run surface brand-neutral (runtime details live in Settings).
-  const manualCommand = 'curl -fsSL https://omp.sh/install | sh'
-  const [copied, setCopied] = useState(false)
+  const isWindows = /Win/.test(navigator.platform || navigator.userAgent)
+  const manualCommand = isWindows ? 'irm https://omp.sh/install.ps1 | iex' : 'curl -fsSL https://omp.sh/install | sh'
+  const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
   const [manualFailed, setManualFailed] = useState(false)
   // 'checking' = probing model config after the CLI appeared; 'needed' = no
   // provider authenticated and no catalogued model — offer the settings page
@@ -114,6 +113,12 @@ export default function SetupWizard() {
     return () => unsubscribe()
   }, [setInstallStatus, setCliAvailable])
 
+  useEffect(() => {
+    if (copyState !== 'copied') return
+    const timer = setTimeout(() => setCopyState('idle'), 1500)
+    return () => clearTimeout(timer)
+  }, [copyState])
+
   const handleAutoInstall = async () => {
     setInstallStatus({ type: 'downloading', progress: 0, message: 'Starting download...' })
     await window.electronAPI.installOmp()
@@ -130,10 +135,14 @@ export default function SetupWizard() {
     // Completing setup (and the model step) is driven by the probe effect.
   }
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(manualCommand)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+  const handleCopy = async () => {
+    setCopyState('copying')
+    try {
+      await navigator.clipboard.writeText(manualCommand)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
   }
 
   if (cliAvailable === null) {
@@ -279,18 +288,16 @@ export default function SetupWizard() {
         </div>
 
         <div className="space-y-4">
-          <button
-            onClick={handleAutoInstall}
-            disabled={isInstalling}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-cream px-4 py-3 text-sm font-medium text-ink-950 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isInstalling ? (
-              <Loader2 size={18} className="animate-spin" />
-            ) : (
-              <Download size={18} />
-            )}
-            {isInstalling ? t('setup.installing') : t('setup.autoInstall')}
-          </button>
+          {!isWindows && (
+            <button
+              onClick={handleAutoInstall}
+              disabled={isInstalling}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-cream px-4 py-3 text-sm font-medium text-ink-950 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isInstalling ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+              {isInstalling ? t('setup.installing') : t('setup.autoInstall')}
+            </button>
+          )}
 
           {installStatus.type === 'downloading' && (
             <div className="space-y-2">
@@ -328,27 +335,34 @@ export default function SetupWizard() {
             </div>
           )}
 
-          <div className="relative flex items-center py-2">
-            <div className="flex-1 border-t border-line" />
-            <span className="px-3 text-xs text-cream-faint">{t('setup.orManual')}</span>
-            <div className="flex-1 border-t border-line" />
-          </div>
+          {!isWindows && (
+            <div className="relative flex items-center py-2">
+              <div className="flex-1 border-t border-line" />
+              <span className="px-3 text-xs text-cream-faint">{t('setup.orManual')}</span>
+              <div className="flex-1 border-t border-line" />
+            </div>
+          )}
 
           <div className="space-y-2">
-            <label className="text-xs text-cream-faint">{t('setup.terminalCommand')}</label>
+            <label htmlFor="runtime-install-command" className="text-xs text-cream-faint">
+              {t(isWindows ? 'setup.powerShellCommand' : 'setup.terminalCommand')}
+            </label>
             <div className="flex gap-2">
               <input
+                id="runtime-install-command"
                 readOnly
-                value={t('setup.terminalCommandMasked')}
-                className="flex-1 rounded-lg border border-line bg-ink-950 px-3 py-2 font-mono text-xs text-cream-dim outline-none"
+                value={isWindows || copyState === 'failed' ? manualCommand : t('setup.terminalCommandMasked')}
+                className="focus-ring min-w-0 flex-1 rounded-lg border border-line bg-ink-950 px-3 py-2 font-mono text-xs text-cream-dim"
               />
               <button
-                onClick={handleCopy}
-                className="shrink-0 whitespace-nowrap rounded-lg border border-line px-3 py-2 text-xs text-cream-dim transition hover:bg-overlay-strong hover:text-cream"
+                onClick={() => void handleCopy()}
+                disabled={copyState === 'copying'}
+                className={`focus-ring shrink-0 whitespace-nowrap rounded-lg border border-line px-3 py-2 text-xs transition disabled:opacity-50 ${isWindows ? 'bg-cream font-medium text-ink-950 hover:opacity-90' : 'text-cream-dim hover:bg-overlay-strong hover:text-cream'}`}
               >
-                {copied ? t('setup.copied') : t('setup.copy')}
+                <span aria-live="polite">{t(copyState === 'copied' ? 'setup.copied' : 'setup.copy')}</span>
               </button>
             </div>
+            {copyState === 'failed' && <div role="alert" className="text-xs text-red-500">{t('setup.copyFailed')}</div>}
             <button
               onClick={handleManualDone}
               className="flex w-full items-center justify-center gap-2 rounded-lg border border-line px-4 py-2 text-sm text-cream-dim transition hover:bg-overlay-strong hover:text-cream"

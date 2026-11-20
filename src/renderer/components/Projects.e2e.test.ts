@@ -29,7 +29,7 @@ describe('shared project controls in Electron', () => {
       expect(result.error, diagnostics).toBeUndefined()
       expect(result.status, diagnostics).toBe(0)
       expect(data.defaultSelected).toBe('/synthetic/default')
-      expect(data.defaultPresentation).toEqual({ hiddenInSidebar: true, composerText: 'No project', composerTitle: 'No project' })
+      expect(data.defaultPresentation).toEqual({ hiddenInSidebar: true, composerText: 'Default workspace', composerTitle: '/synthetic/default', composerLabel: 'Change chat workspace: Default workspace' })
       expect(data.defaultPicker).toEqual({ present: true, title: 'No project', privatePathVisible: false })
       expect(data.ime).toEqual({ prevented: true, open: true, creates: 0 })
       expect(data.cancelledDraft).toBe('中文项目')

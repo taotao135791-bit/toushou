@@ -39,6 +39,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { BoardDataset, BoardDesignSpec, BoardMasterScope, BoardStyle, BoardWidget, BoardWidgetStyle, KanbanBoard, WidgetType } from '@shared/types'
+import BoardsIcon from '../components/BoardsIcon'
 import { FB_READING_SUMMARY_ACCOUNT_LIMIT, FB_READING_SUMMARY_METRICS } from '@shared/fbReading'
 import { formatReadingWindow } from '@shared/todayReading'
 import { fbReadingMetricLabel } from './boards/metricLabel'
@@ -988,7 +989,7 @@ export default function BoardsPage() {
         if (saved && boardRefreshPlanKey(saved) !== boardRefreshPlanKey(board)) {
           automaticRefreshKey.current = ''
           setScopeRefreshPending(true)
-          setRefreshBlocked(state => ({ ...state, [board.id]: language === 'zh' ? '看板配置尚未保存完成，本次刷新已取消；请稍后重试。' : 'The board configuration is still saving, so this refresh was skipped. Retry in a moment.' }))
+          setRefreshBlocked(state => ({ ...state, [board.id]: language === 'zh' ? '看板配置仍在保存，稍后再刷新。' : 'Board still saving. Refresh again shortly.' }))
           return
         }
         setRefreshBlocked(state => { const next = { ...state }; delete next[board.id]; return next })
@@ -1107,6 +1108,7 @@ export default function BoardsPage() {
   const refreshableReadingCount = readingModuleCount + (current?.widgets.filter((widget) => widget.type === 'google-report-reading').length ?? 0)
   /** AF dataset cards are live too: the master refresh re-pulls their specs. */
   const hasAfDatasetCards = currentAfDatasetIds.length > 0
+  const showMasterRefresh = !snapshotIndependent && (refreshableReadingCount > 0 || hasAfDatasetCards)
   const browserReadingCount = current
     ? current.widgets.filter((widget) => widget.type === 'fb-reading' || widget.type === 'fb-reading-summary').length
     : 0
@@ -1611,14 +1613,47 @@ export default function BoardsPage() {
   const menuItemClass =
     'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition'
 
+  const zh = language === 'zh'
+  const refreshLabel = boardRefreshBusy
+    ? t('boards.master.refreshBusy', boardRefreshProgress)
+    : t('boards.master.refresh')
+  const rangeStatus = current && !snapshotIndependent && !boardRefreshBusy
+    ? refreshBlocked[current.id] || (scopeRefreshPending ? t('boards.scope.pendingRefresh') : '')
+    : ''
+  const afState = hasAfDatasetCards ? currentAfRefresh : undefined
+  let afStatus = ''
+  if (afState?.pending && !showMasterRefresh) afStatus = zh ? 'AF 更新中…' : 'Updating AF…'
+  else if (afState?.unbound) afStatus = zh ? 'AF 尚未接通刷新' : 'AF refresh is not connected'
+  else if (afState && !scopeRefreshPending && !rangeStatus) {
+    if (afState.failed) afStatus = zh ? 'AF 更新失败' : 'AF update failed'
+    else if (afState.empty) afStatus = t(afState.partial ? 'boards.af.emptyToday' : 'boards.af.empty')
+    else if (afState.partial) afStatus = t('boards.af.partial')
+  }
+  let tiktokStatus = ''
+  if (!snapshotIndependent && !boardRefreshBusy && !rangeStatus) {
+    if (ttFailed && (hasCurrentTtDataset || ttWidgets.length > 0 || !afState?.failed)) {
+      tiktokStatus = zh ? '部分数据刷新失败，请重试。' : 'Some data could not be refreshed. Try again.'
+    } else if (hasCurrentTtDataset && !ttVerifiedThisSession) {
+      tiktokStatus = zh ? '请刷新以核对 TikTok 数据。' : 'Refresh to verify TikTok data.'
+    }
+  }
+  const backupNames = snapshotIndependent ? [] : datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name)
+  const statusMessages = [
+    { id: 'range', message: rangeStatus, warning: true },
+    { id: 'tiktok', message: tiktokStatus, warning: ttFailed },
+    { id: 'af', message: afStatus, warning: afState?.failed },
+    { id: 'backup', message: backupNames.length ? t('boards.tt.backupNotice', { names: backupNames.join('、') }) : '', warning: true }
+  ].filter(item => item.message)
+
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
       <header className="app-drag relative z-30 flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
-        <SquareKanban size={15} className="shrink-0 text-accent" />
+        <BoardsIcon size={15} className="shrink-0 text-accent" />
         <span className="shrink-0 text-[13px] font-medium text-cream">{t('boards.title')}</span>
         <div className="app-no-drag ml-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           <button
             type="button"
+            aria-current={surface === 'today' ? 'true' : undefined}
             onClick={() => {
               revealTargetRef.current = null
               setRevealTarget(null)
@@ -1675,17 +1710,25 @@ export default function BoardsPage() {
                     : 'border-transparent text-cream-faint hover:bg-overlay hover:text-cream-dim'
                 }`}
               >
-                {locked && !active && <Lock size={10} className="shrink-0 text-cream-faint" aria-hidden="true" />}
-                <span className="truncate">{boardScopedBoardTitle(b)}</span>
+                <button
+                  type="button"
+                  aria-current={active ? 'true' : undefined}
+                  className="focus-ring flex min-w-0 items-center gap-1 rounded-sm text-left"
+                >
+                  {locked && !active && <Lock size={10} className="shrink-0 text-cream-faint" aria-hidden="true" />}
+                  <span className="truncate">{boardScopedBoardTitle(b)}</span>
+                </button>
                 {active && (
                   <>
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation()
                         toggleBoardLock()
                       }}
                       title={locked ? t('boards.unlock') : t('boards.lock')}
-                      className={`shrink-0 rounded-full p-0.5 transition hover:bg-overlay ${
+                      aria-label={locked ? t('boards.unlock') : t('boards.lock')}
+                      className={`focus-ring shrink-0 rounded-full p-0.5 transition hover:bg-overlay ${
                         locked ? 'text-accent' : 'text-cream-faint hover:text-cream'
                       }`}
                     >
@@ -1693,12 +1736,14 @@ export default function BoardsPage() {
                     </button>
                     {!locked && (
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation()
                           requestDeleteBoard()
                         }}
                         title={t('boards.deleteBoard')}
-                        className="shrink-0 rounded-full p-0.5 text-cream-faint transition hover:bg-red-500/15 hover:text-red-500"
+                        aria-label={t('boards.deleteBoard')}
+                        className="focus-ring shrink-0 rounded-full p-0.5 text-cream-faint transition hover:bg-red-500/15 hover:text-red-500"
                       >
                         <X size={10} />
                       </button>
@@ -1855,19 +1900,18 @@ export default function BoardsPage() {
         )}
       </header>
       {htmlCleanupFailed && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2 text-[12px] text-cream-dim"><p>{language === 'zh' ? '无法核对或清理已删除看板的 HTML 副本，请重试。' : 'Could not check or clean up HTML copies of deleted boards. Retry.'}</p><button type="button" className="focus-ring rounded-full border border-line px-3 py-1" onClick={() => void retryHtmlCleanup()}>{language === 'zh' ? '重试清理' : 'Retry cleanup'}</button></div>}
-      {surface === 'board' && current && !snapshotIndependent && ttFailed && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.datasets.syncFailed')}</p>}
-      {surface === 'board' && current && !snapshotIndependent && hasCurrentTtDataset && !ttFailed && !ttVerifiedThisSession && <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.datasets.cachedNotice')}</p>}
-      {surface === 'board' && current && !snapshotIndependent && scopeRefreshPending && !boardRefreshBusy && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.scope.pendingRefresh')}</p>}
-      {surface === 'board' && current && !snapshotIndependent && refreshBlocked[current.id] && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{refreshBlocked[current.id]}</p>}
-      {surface === 'board' && current && hasAfDatasetCards && currentAfRefresh && (
-        currentAfRefresh.pending ? <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{language === 'zh' ? 'AF 更新中…' : 'Updating AF…'}</p>
-          : currentAfRefresh.failed ? <div role="status" className="flex items-center gap-2 px-4 py-2 text-[12px] text-cream-dim">
-            <span>{currentAfRefresh.unbound ? (language === 'zh' ? 'AF 尚未接通刷新' : 'AF refresh is not connected') : (language === 'zh' ? 'AF 更新失败' : 'AF update failed')}</span>
-            <button type="button" className="focus-ring rounded-full border border-line px-2.5 py-1" onClick={currentAfRefresh.unbound ? connectBoardAfRefresh : () => void refreshReadingModules()}>{currentAfRefresh.unbound ? (language === 'zh' ? '接通刷新' : 'Connect refresh') : (language === 'zh' ? '重试' : 'Retry')}</button>
-          </div> : currentAfRefresh.empty ? <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{currentAfRefresh.partial ? t('boards.af.emptyToday') : t('boards.af.empty')}</p>
-          : currentAfRefresh.partial ? <p role="status" className="px-4 py-2 text-[12px] text-cream-faint">{t('boards.af.partial')}</p> : null
+      {surface === 'board' && current && (
+        <div className={statusMessages.length ? 'flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-[12px]' : undefined}>
+          <div role="status" className="flex flex-wrap gap-x-3 gap-y-1 text-cream-dim">
+            {statusMessages.map(({ id, message, warning }) => <span key={id} className={warning ? 'text-amber-700 dark:text-amber-300' : undefined}>{message}</span>)}
+          </div>
+          {afStatus && afState?.failed && (
+            <button type="button" className="focus-ring rounded-full border border-line px-2.5 py-1" onClick={afState.unbound ? connectBoardAfRefresh : () => void refreshReadingModules()}>
+              {afState.unbound ? (zh ? '接通刷新' : 'Connect refresh') : t('boards.retry')}
+            </button>
+          )}
+        </div>
       )}
-      {surface === 'board' && current && !snapshotIndependent && datasets.some(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')) && <p role="status" className="px-4 py-2 text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names: datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name).join('、')})}</p>}
       {surface === 'board' && current && snapshotIndependent && <p className="border-b border-line px-4 py-2 text-[12px] text-cream-dim">{language === 'zh' ? '已保存的快照使用固定日期。可回到“今日”选择其他日期，再保存为新看板。' : 'Saved snapshots keep their original dates. Return to Today to choose dates and save a new board.'}</p>}
       {surface === 'board' && current && !snapshotIndependent && (
         <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-b border-line bg-ink-900/60 px-4 py-1.5">
@@ -1976,26 +2020,17 @@ export default function BoardsPage() {
             })}>{language === 'zh' ? '启用 Meta 读数' : 'Enable Meta reading'}</button>
           )}
           <div className="min-w-0 flex-1" />
-          {(refreshableReadingCount > 0 || hasAfDatasetCards) && (
-          <button
-            onClick={() => void refreshReadingModules()}
-            disabled={boardRefreshBusy}
-            title={
-              boardRefreshBusy
-                ? t('boards.master.refreshBusy')
-                    .replace('{done}', String(boardRefreshProgress.done))
-                    .replace('{total}', String(boardRefreshProgress.total))
-                : t('boards.master.refresh')
-            }
-            className="focus-ring flex shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[12px] leading-[18px] text-cream-dim transition hover:bg-ink-850 hover:text-cream disabled:opacity-40"
-          >
-            <RefreshCw size={11} className={boardRefreshBusy ? 'animate-spin' : ''} />
-            {boardRefreshBusy
-              ? t('boards.master.refreshBusy')
-                  .replace('{done}', String(boardRefreshProgress.done))
-                  .replace('{total}', String(boardRefreshProgress.total))
-              : t('boards.master.refresh')}
-          </button>
+          {showMasterRefresh && (
+            <button
+              type="button"
+              onClick={() => void refreshReadingModules()}
+              disabled={boardRefreshBusy}
+              title={refreshLabel}
+              className="focus-ring flex shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[12px] leading-[18px] text-cream-dim transition hover:bg-ink-850 hover:text-cream disabled:opacity-40"
+            >
+              <RefreshCw aria-hidden="true" size={11} className={boardRefreshBusy ? 'animate-spin' : ''} />
+              {refreshLabel}
+            </button>
           )}
         </div>
       )}

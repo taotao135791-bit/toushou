@@ -10,7 +10,6 @@ import {
   X,
   File,
   Folder,
-  FolderOpen,
   GitBranch,
   FileArchive,
   ListPlus,
@@ -18,7 +17,7 @@ import {
   MessageCircle,
   Plus,
   ChevronDown,
-  Puzzle
+  Layers
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { QueuedMessage, useAppStore } from '../store'
@@ -41,6 +40,7 @@ import UsageMonitor from './UsageMonitor'
 import MenuPortal from './MenuPortal'
 import ProjectPicker from './ProjectPicker'
 import { useProjects } from '../store/projects'
+import './AgentHome.css'
 
 interface ComposerProps {
   /** Delivers the composed text; resolves false when delivery failed and the draft is restored. */
@@ -946,6 +946,15 @@ export default memo(function Composer({
   }
 
   const canSend = !disabled && Boolean(text.trim())
+  const destination = currentWorkspace && currentWorkspace.source !== 'default'
+    ? t('composer.destinationProject', {
+        name: projects.find(project => project.path === currentWorkspace.realPath)?.name
+          || basename(currentWorkspace.displayPath) || currentWorkspace.displayPath
+      })
+    : t('composer.trayDefault')
+  const stopLabel = stopping
+    ? t('chat.stopping')
+    : queue.length > 0 ? t('composer.stopWithQueue', { count: queue.length }) : t('composer.stop')
 
   // Panels open ABOVE the composer (bottom-full). On the home screen the card
   // sits mid-window, so a tall panel would run past the window's top edge and
@@ -968,12 +977,8 @@ export default memo(function Composer({
 
 
   return (
-    // Home (no active session) trims the outer bottom padding: the hint line
-    // below the card takes over the rhythm.
-    <div className={`px-4 pt-2 ${currentSessionId ? 'pb-4' : 'pb-1'}`}>
-      {/* Session composer aligns with the 760px reading column (design.md
-          3.2); home keeps the wider 880px hero combination. */}
-      <div ref={panelAnchorRef} className={`relative mx-auto w-full ${currentSessionId ? 'max-w-[760px]' : 'max-w-[880px]'}`}>
+    <div className={currentSessionId ? 'px-4 pb-4 pt-2' : 'agent-home-composer'}>
+      <div ref={panelAnchorRef} className={`relative mx-auto w-full ${currentSessionId ? 'max-w-[760px]' : 'max-w-[776px]'}`}>
         {slashQuery !== null && (
           <div
             className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-y-auto overflow-x-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
@@ -1239,7 +1244,7 @@ export default memo(function Composer({
                   ? t('composer.placeholderBusy')
                   : currentSessionId
                     ? t('composer.placeholderSession')
-                    : t('composer.placeholder')
+                    : t('composer.homePlaceholder')
             }
             rows={1}
             className="max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-2.5 py-1.5 text-[15px] leading-6 text-cream placeholder-cream-faint outline-none"
@@ -1306,8 +1311,8 @@ export default memo(function Composer({
                     <>
                       <button
                         onClick={handleSend}
-                        title={t('composer.queue')}
-                        aria-label={t('composer.queue')}
+                        title={t('composer.queueHint')}
+                        aria-label={`${t('composer.queue')} · ${t('composer.queueHint')}`}
                         className={`focus-ring flex h-8 items-center gap-1.5 rounded-full bg-overlay-strong text-[11px] font-medium text-cream-dim transition-colors duration-150 hover:bg-overlay hover:text-cream ${
                           compact ? 'w-8 justify-center' : 'px-2.5'
                         }`}
@@ -1331,8 +1336,8 @@ export default memo(function Composer({
                   <button
                     onClick={onStop}
                     disabled={stopping}
-                    title={stopping ? t('chat.stopping') : t('composer.stop')}
-                    aria-label={stopping ? t('chat.stopping') : t('composer.stop')}
+                    title={stopLabel}
+                    aria-label={stopLabel}
                     className="focus-ring flex h-8 w-8 items-center justify-center rounded-full bg-cream text-ink-950 transition-colors duration-150 hover:opacity-85 disabled:cursor-wait disabled:opacity-70"
                   >
                     {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
@@ -1344,7 +1349,7 @@ export default memo(function Composer({
                   disabled={!canSend}
                   title={t('composer.send')}
                   aria-label={t('composer.send')}
-                  className={`focus-ring flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full transition-colors duration-150 ${
+                  className={`composer-send focus-ring flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full transition-colors duration-150 ${
                     canSend
                       ? 'bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright'
                       : 'cursor-not-allowed bg-overlay-strong text-cream-faint'
@@ -1364,18 +1369,15 @@ export default memo(function Composer({
                 onClick={() => {
                   setProjectMenuOpen((v) => !v)
                 }}
-                title={currentWorkspace?.source === 'default' ? t('projects.noProject') : currentWorkspace?.displayPath ?? t('composer.trayProject')}
-                aria-label={t('composer.trayProject')}
+                title={currentWorkspace?.displayPath ?? destination}
+                aria-label={t('composer.chooseDestination', { destination })}
                 aria-haspopup="menu"
                 aria-expanded={projectMenuOpen}
+                className="focus-ring"
               >
-                <FolderOpen size={14} className="shrink-0" aria-hidden="true" />
+                <Folder size={15} className="shrink-0" aria-hidden="true" />
                 <span className="max-w-[180px] truncate">
-                  {currentWorkspace
-                    ? currentWorkspace.source === 'default'
-                      ? t('projects.noProject')
-                      : projects.find(project => project.path === currentWorkspace.realPath)?.name || basename(currentWorkspace.displayPath) || currentWorkspace.displayPath
-                    : t('composer.trayProject')}
+                  {destination}
                 </span>
                 <ChevronDown
                   size={12}
@@ -1398,9 +1400,9 @@ export default memo(function Composer({
               <button
                 type="button"
                 onClick={() => navigate('/plugins')}
-                className="ml-auto"
+                className="focus-ring ml-auto"
               >
-                <Puzzle size={14} className="shrink-0" aria-hidden="true" />
+                <Layers size={14} className="shrink-0" aria-hidden="true" />
                 <span>{t('composer.trayPlugins')}</span>
               </button>
             </div>

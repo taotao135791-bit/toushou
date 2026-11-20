@@ -76,18 +76,18 @@ export default function SidebarProjects({ renderConversations }: { renderConvers
   }, [refresh])
   const visible = projects.filter(project => !project.isDefault && project.archived === archived)
   const errorProject = projects.find(project => project.id === errorProjectId)
-  return <section className="mt-5 flex min-h-0 flex-col px-2.5" aria-label={t('sidebar.project')}>
-    <div className="flex shrink-0 items-center gap-1 px-2 pb-1.5">
-      <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left text-xs font-semibold text-cream-faint" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{t(archived ? 'projects.archived' : 'sidebar.project')}<ChevronDown size={12} className={expanded ? '' : '-rotate-90'} /></button>
-      <button ref={optionsRef} type="button" className="rounded-md p-1 text-cream-faint hover:bg-overlay hover:text-cream" aria-label={t('projects.options')} aria-expanded={optionsOpen} onClick={() => setOptionsOpen(value => !value)}><MoreHorizontal size={15} /></button>
-      <button ref={plusRef} type="button" className="rounded-md p-1 text-cream-faint hover:bg-overlay hover:text-cream" aria-label={t('projects.create')} aria-expanded={createOpen} onClick={() => { clearError(); setCreateOpen(value => !value) }}><Plus size={15} /></button>
+  return <section className="sidebar-projects mt-5 flex min-h-0 flex-col px-2.5" aria-label={t('sidebar.project')}>
+    <div className="sidebar-section-header flex shrink-0 items-center gap-1 px-2 pb-1.5">
+      <button type="button" className="sidebar-section-title flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left text-xs font-semibold text-cream-faint" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{t(archived ? 'projects.archived' : 'sidebar.project')}<ChevronDown size={12} className={expanded ? '' : '-rotate-90'} /></button>
+      <button ref={optionsRef} type="button" className="sidebar-section-action rounded-md p-1 text-cream-faint hover:bg-overlay hover:text-cream" aria-label={t('projects.options')} aria-expanded={optionsOpen} onClick={() => setOptionsOpen(value => !value)}><MoreHorizontal size={15} /></button>
+      <button ref={plusRef} type="button" className="sidebar-section-action rounded-md p-1 text-cream-faint hover:bg-overlay hover:text-cream" aria-label={t('projects.create')} aria-expanded={createOpen} onClick={() => { clearError(); setCreateOpen(value => !value) }}><Plus size={15} /></button>
     </div>
     <MenuPortal open={optionsOpen} triggerRef={optionsRef} onClose={() => setOptionsOpen(false)} width={200} placement="bottom"><button type="button" className="project-menu-action" onClick={() => { setArchived(value => !value); setExpanded(true); setOptionsOpen(false) }}><Archive size={13} />{t(archived ? 'projects.active' : 'projects.archived')}</button></MenuPortal>
     <MenuPortal open={createOpen} triggerRef={plusRef} onClose={() => setCreateOpen(false)} width={300} placement="bottom"><ProjectPicker onDone={() => { setCreateOpen(false); setArchived(false); setExpanded(true); plusRef.current?.focus() }} /></MenuPortal>
     {expanded && <div className="min-h-0 max-h-56 space-y-0.5 overflow-y-auto overscroll-contain" data-project-list>
       {loading && !loaded && <p role="status" className="px-2 py-3 text-xs text-cream-faint">{t('app.loading')}</p>}
       {visible.map(project => <ProjectRow key={project.id} project={project} conversations={renderConversations?.(project.path)} />)}
-      {loaded && !visible.length && <p className="px-2 py-3 text-xs text-cream-faint">{t(archived ? 'projects.noArchived' : 'projects.empty')}</p>}
+      {loaded && !visible.length && <p className="sidebar-empty px-2 py-3 text-xs text-cream-faint">{t(archived ? 'projects.noArchived' : 'projects.empty')}</p>}
     </div>}
     {error && !(expanded && visible.some(project => project.id === errorProjectId)) && !createOpen && <div role="alert" className="px-2 py-2 text-xs leading-5 text-red-500">
       {errorProject && <span className="font-medium">{errorProject.isDefault ? t('sidebar.defaultWorkspace') : errorProject.name} · </span>}{t(`projects.error.${error}`)}

@@ -25,7 +25,8 @@ describe('Facebook today account workflow', () => {
       expect(result.initial).toEqual({ calls: [], articles: 0 })
       expect(result.after).toEqual([])
       expect(result.text).toContain('旧网页读数已暂停')
-      expect(result.text).toContain('前往 Meta Ads 连接')
+      expect(result.text).toContain('前往连接页设置 Meta Ads')
+      expect(result.text).toContain('选好日期后，点「读取此账户」或「巡检全部已选账户」。')
       expect(result.text).not.toContain('打开浏览器')
       expect(result.text).not.toContain('巡检全部已添加账户')
 

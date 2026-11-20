@@ -29,7 +29,7 @@ describe('MetaAds connection card in Electron', () => {
       expect(line, result.stderr).toBeDefined()
       const data = JSON.parse(line!.slice('E2E_RESULT '.length))
       expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
-      expect(data).toEqual({ staleInitialIgnored: true, cancelledPendingBegin: true, lateBeginIgnored: true, failureReleased: true, retryConnected: true, failedDisconnectRetry: true, disconnected: true, noDeveloperForm: true, statusFailureRecoverable: true, staleMainExplained: true })
+      expect(data).toEqual({ staleInitialIgnored: true, cancelledPendingBegin: true, lateBeginIgnored: true, failureReleased: true, retryConnected: true, expiredDoesNotShowReady: true, failedDisconnectRetry: true, disconnected: true, noDeveloperForm: true, statusFailureRecoverable: true, staleMainExplained: true })
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
@@ -40,7 +40,7 @@ import MetaAdsConnectionCard from './MetaAdsConnectionCard'
 import { useAppStore } from '../store'
 const snap = (status: string) => ({ definition: { id:'metaAds',kind:'oauth',label:'MetaAds',description:'',capabilities:['mcp'] }, status, connected: status === 'connected', ...(status === 'waiting_for_user' ? {authorizationUrl:'https://example.test/authorize'} : {}) })
 const fixture: any = { listener: null, initial: null, beginResolve: null, beginFails: false, disconnectFails: false, begins: 0, cancels: 0, disconnects: 0,
- emit(status: string) { fixture.listener(snap(status)) } }
+ emit(status: string, tokenExpiresAt?: number) { fixture.listener({ ...snap(status), tokenExpiresAt }) } }
 ;(window as any).cardFixture = fixture
 ;(window as any).electronAPI = {
  onMetaAdsStatus: (listener: any) => { fixture.listener = listener; return () => { fixture.listener = null } },
@@ -103,6 +103,11 @@ app.whenReady().then(async () => {
   await js("window.cardFixture.beginResolve({definition:{id:'metaAds'},status:'waiting_for_user',connected:false,authorizationUrl:'https://example.test/authorize'})")
   await new Promise(r=>setTimeout(r,50))
   const retryConnected = await js('document.body.textContent.includes("Connected. You can")')
+  await js("window.cardFixture.emit('connected', Date.now() - 1000)")
+  await wait('document.querySelector("[role=status]")?.textContent.includes("Token expired")')
+  const expiredDoesNotShowReady = await js('document.querySelectorAll("[role=status]").length === 1 && !document.body.textContent.includes("Connected. You can") && document.body.textContent.includes("Re-authorize")')
+  await js("window.cardFixture.emit('connected', Date.now() + 60000)")
+  await wait('document.body.textContent.includes("Connected. You can")')
   await js('window.cardFixture.disconnectFails=true')
   await click('Disconnect')
   await wait('document.body.textContent.includes("Could not complete this action") && [...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="Disconnect"&&!b.disabled)')
@@ -112,8 +117,8 @@ app.whenReady().then(async () => {
   await wait('window.cardFixture.disconnects===2 && [...document.querySelectorAll("button")].some(b=>b.textContent.includes("Connect Meta")&&!b.disabled)')
   const disconnected = true
   await js("window.cardFixture.listener({definition:{id:'metaAds'},status:'failed',connected:false})")
-  await wait('document.body.textContent.includes("Connect Meta")')
-  const noDeveloperForm = await js('!document.querySelector("input") && [...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="Connect Meta"&&!b.disabled)')
+  await wait('document.querySelector("[role=alert]")?.textContent.includes("Could not connect to Meta")')
+  const noDeveloperForm = await js('!document.querySelector("input") && !document.body.textContent.includes("Connect Meta") && [...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="Try again"&&!b.disabled)')
   await js('window.cardFixture.remount()')
   await wait('!!window.cardFixture.initial && !!window.cardFixture.listener')
   await js('window.cardFixture.initialReject(new Error("synthetic status failure"))')
@@ -123,7 +128,7 @@ app.whenReady().then(async () => {
   await js('window.cardFixture.initialReject(new Error("No handler registered for meta-ads:status"))')
   await wait('document.body.textContent.includes("Restart the updated app")')
   const staleMainExplained = true
-  console.log('E2E_RESULT '+JSON.stringify({staleInitialIgnored,cancelledPendingBegin,lateBeginIgnored,failureReleased,retryConnected,failedDisconnectRetry,disconnected,noDeveloperForm,statusFailureRecoverable,staleMainExplained}))
+  console.log('E2E_RESULT '+JSON.stringify({staleInitialIgnored,cancelledPendingBegin,lateBeginIgnored,failureReleased,retryConnected,expiredDoesNotShowReady,failedDisconnectRetry,disconnected,noDeveloperForm,statusFailureRecoverable,staleMainExplained}))
  } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})); process.exitCode=1 }
  finally { win?.destroy(); app.quit() }
 })

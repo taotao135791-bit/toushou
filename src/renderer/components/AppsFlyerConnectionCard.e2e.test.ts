@@ -29,7 +29,7 @@ describe('AppsFlyer connection card in Electron', () => {
       expect(line, result.stderr).toBeDefined()
       const data = JSON.parse(line!.slice('E2E_RESULT '.length))
       expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
-      expect(data).toEqual({ staleInitialIgnored: true, cancelledPendingBegin: true, lateBeginIgnored: true, failureReleased: true, retryConnected: true, failedDisconnectRetry: true, disconnected: true })
+      expect(data).toEqual({ staleInitialIgnored: true, cancelledPendingBegin: true, lateBeginIgnored: true, failureReleased: true, retryConnected: true, expiredDoesNotShowReady: true, failedDisconnectRetry: true, disconnected: true })
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
@@ -40,7 +40,7 @@ import AppsFlyerConnectionCard from './AppsFlyerConnectionCard'
 import { useAppStore } from '../store'
 const snap = (status: string) => ({ definition: { id:'appsflyer',kind:'oauth',label:'AppsFlyer',description:'',capabilities:['mcp'] }, status, connected: status === 'connected', ...(status === 'waiting_for_user' ? {authorizationUrl:'https://example.test/authorize'} : {}) })
 const fixture: any = { listener: null, initial: null, beginResolve: null, beginFails: false, disconnectFails: false, begins: 0, cancels: 0, disconnects: 0,
- emit(status: string) { fixture.listener(snap(status)) } }
+ emit(status: string, tokenExpiresAt?: number) { fixture.listener({ ...snap(status), tokenExpiresAt }) } }
 ;(window as any).cardFixture = fixture
 ;(window as any).electronAPI = {
  onAppsFlyerStatus: (listener: any) => { fixture.listener = listener; return () => { fixture.listener = null } },
@@ -100,6 +100,11 @@ app.whenReady().then(async () => {
   await js("window.cardFixture.beginResolve({definition:{id:'appsflyer'},status:'waiting_for_user',connected:false,authorizationUrl:'https://example.test/authorize'})")
   await new Promise(r=>setTimeout(r,50))
   const retryConnected = await js('document.body.textContent.includes("Authorized. You can")')
+  await js("window.cardFixture.emit('connected', Date.now() - 1000)")
+  await wait('document.querySelector("[role=status]")?.textContent.includes("Token expired")')
+  const expiredDoesNotShowReady = await js('document.querySelectorAll("[role=status]").length === 1 && !document.body.textContent.includes("Authorized. You can") && document.body.textContent.includes("Re-authorize")')
+  await js("window.cardFixture.emit('connected', Date.now() + 60000)")
+  await wait('document.body.textContent.includes("Authorized. You can")')
   await js('window.cardFixture.disconnectFails=true')
   await click('Disconnect')
   await wait('document.body.textContent.includes("Could not complete this action") && [...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="Disconnect"&&!b.disabled)')
@@ -108,7 +113,7 @@ app.whenReady().then(async () => {
   await click('Disconnect')
   await wait('window.cardFixture.disconnects===2 && [...document.querySelectorAll("button")].some(b=>b.textContent.includes("Connect AppsFlyer")&&!b.disabled)')
   const disconnected = true
-  console.log('E2E_RESULT '+JSON.stringify({staleInitialIgnored,cancelledPendingBegin,lateBeginIgnored,failureReleased,retryConnected,failedDisconnectRetry,disconnected}))
+  console.log('E2E_RESULT '+JSON.stringify({staleInitialIgnored,cancelledPendingBegin,lateBeginIgnored,failureReleased,retryConnected,expiredDoesNotShowReady,failedDisconnectRetry,disconnected}))
  } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})); process.exitCode=1 }
  finally { win?.destroy(); app.quit() }
 })

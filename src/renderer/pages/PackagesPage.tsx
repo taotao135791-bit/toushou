@@ -462,23 +462,10 @@ export default function PackagesPage() {
         <div className="flex items-center gap-2.5">
           <Puzzle size={15} className="text-accent" />
           <span className="text-[13px] font-medium text-cream">{t('plugins.pageTitle')}</span>
-          <span className="text-xs text-cream-faint">
-            {/* Loading reads once, in the content area — the header only
-                carries the resolved subtitle. */}
-            {capabilitiesLoaded
-              ? isCurrentOmp
-                ? t('plugins.omp.subtitle')
-                : isLegacyPi
-                  ? t('plugins.subtitle')
-                  : loadTimedOut
-                    ? t('plugins.loadTimeout')
-                    : t('plugins.capabilitiesUnavailable')
-              : null}
-          </span>
         </div>
         <button
           onClick={() => void refreshAll()}
-          className="app-no-drag flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
+          className="app-no-drag focus-ring flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
         >
           <RotateCcw size={11} />
           {t('plugins.refresh')}
@@ -488,12 +475,12 @@ export default function PackagesPage() {
       <div className="flex-1 overflow-y-auto p-5 pb-20">
         <div className="mx-auto max-w-[760px] space-y-4">
           {!capabilitiesLoaded ? (
-            <section className="flex items-center gap-2.5 rounded-[16px] border border-line bg-ink-850 px-4 py-3 text-xs text-cream-dim shadow-card">
+            <section role="status" className="flex items-center gap-2.5 rounded-[16px] border border-line bg-ink-850 px-4 py-3 text-xs text-cream-dim shadow-card">
               <Loader2 size={14} className="animate-spin text-accent" />
               {t('plugins.loadingCapabilities')}
             </section>
           ) : !isCurrentOmp && !isLegacyPi ? (
-            <section className="flex items-start gap-2.5 rounded-[16px] border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs leading-5 text-cream-dim shadow-card">
+            <section role="alert" className="flex items-start gap-2.5 rounded-[16px] border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs leading-5 text-cream-dim shadow-card">
               <Info size={14} className="mt-0.5 shrink-0 text-red-600 dark:text-red-300" />
               <div>
                 {loadTimedOut ? t('plugins.loadTimeout') : t('plugins.capabilitiesUnavailable')}
@@ -507,7 +494,8 @@ export default function PackagesPage() {
               <button
                 key={value}
                 onClick={() => setTab(value)}
-                className={`rounded-full px-3.5 py-1.5 text-[12px] transition ${
+                aria-pressed={tab === value}
+                className={`focus-ring rounded-full px-3.5 py-1.5 text-[12px] transition ${
                   tab === value
                     ? 'bg-ink-850 font-medium text-cream shadow-card'
                     : 'text-cream-dim hover:text-cream'
@@ -547,7 +535,8 @@ export default function PackagesPage() {
                       key={mode}
                       onClick={() => setSourceMode(mode)}
                       disabled={pending !== null}
-                      className={`rounded-full px-3 py-1 text-[11px] transition disabled:opacity-50 ${
+                      aria-pressed={sourceMode === mode}
+                      className={`focus-ring rounded-full px-3 py-1 text-[11px] transition disabled:opacity-50 ${
                         sourceMode === mode
                           ? 'bg-ink-850 font-medium text-cream shadow-card'
                           : 'text-cream-dim hover:text-cream'
@@ -701,16 +690,9 @@ export default function PackagesPage() {
               {canUseAssemblyLayout ? (
                 <>
                   <section className="rounded-[16px] border border-line bg-ink-850 px-4 py-3 shadow-card">
-                    <div className="flex items-start gap-2.5">
-                      <Info size={13} className="mt-0.5 shrink-0 text-accent" />
-                      <div className="space-y-1 text-xs leading-5 text-cream-dim">
-                        <div className="font-medium text-cream">
-                          {isCurrentOmp ? t('plugins.omp.usageTitle') : t('plugins.usageTitle')}
-                        </div>
-                        <div>· {isCurrentOmp ? t('plugins.omp.usage1') : t('plugins.usage1')}</div>
-                        <div>· {isCurrentOmp ? t('plugins.omp.usage2') : t('plugins.usage2')}</div>
-                        <div>· {isCurrentOmp ? t('plugins.omp.usage3') : t('plugins.usage3')}</div>
-                      </div>
+                    <div className="flex items-center gap-2.5 text-xs leading-5 text-cream-dim">
+                      <Info size={13} className="shrink-0 text-accent" aria-hidden="true" />
+                      {t(isCurrentOmp ? 'plugins.omp.usage' : 'plugins.usage')}
                     </div>
                   </section>
 
@@ -728,7 +710,7 @@ export default function PackagesPage() {
                       </span>
                       <span className="rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[10px] text-accent">
                         {isCurrentOmp
-                          ? t('plugins.omp.enabledCount', { count: mounted.length })
+                          ? mounted.length
                           : t('plugins.mounted', { count: mounted.length })}
                       </span>
                     </div>
@@ -807,12 +789,9 @@ export default function PackagesPage() {
               ) : (
                 <>
                   <section className="rounded-[16px] border border-line bg-ink-850 px-4 py-3 shadow-card">
-                    <div className="flex items-start gap-2.5">
-                      <Info size={13} className="mt-0.5 shrink-0 text-accent" />
-                      <div className="space-y-1 text-xs leading-5 text-cream-dim">
-                        <div className="font-medium text-cream">{t('plugins.omp.nativeControlsUnavailable')}</div>
-                        <div>{t('plugins.omp.nativeControlsUnavailableNote')}</div>
-                      </div>
+                    <div className="flex items-center gap-2.5 text-xs leading-5 text-cream-dim">
+                      <Info size={13} className="shrink-0 text-accent" aria-hidden="true" />
+                      {t('plugins.omp.nativeControlsUnavailable')}
                     </div>
                   </section>
 

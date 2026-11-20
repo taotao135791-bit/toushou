@@ -1,6 +1,10 @@
 import { useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from 'react'
 
 type ModalEntry = { root: HTMLElement; previous: HTMLElement | null }
+type ModalFocusOptions = {
+  initialFocus?: RefObject<HTMLElement>
+  fallbackFocus?: RefObject<HTMLElement>
+}
 const stack: ModalEntry[] = []
 const listeners = new Set<() => void>()
 const notify = () => { for (const listener of listeners) listener() }
@@ -13,10 +17,15 @@ export function useBrowserSuspendedForModal(): boolean {
 }
 const focusable = (root: HTMLElement): HTMLElement[] => Array.from(root.querySelectorAll<HTMLElement>(
   'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
-)).filter((el) => el.getClientRects().length > 0 && !el.closest('[hidden], [inert], [aria-hidden="true"]'))
+)).filter((el) => !el.matches(':disabled') && el.getClientRects().length > 0 && !el.closest('[hidden], [inert], [aria-hidden="true"]'))
 
 /** Trap keyboard focus, restore the opener, and keep native browser views parked. */
-export function useModalBoundary(ref: RefObject<HTMLElement>, open: boolean, onEscape?: () => void): void {
+export function useModalBoundary(
+  ref: RefObject<HTMLElement>,
+  open: boolean,
+  onEscape?: () => void,
+  { initialFocus, fallbackFocus }: ModalFocusOptions = {}
+): void {
   const escapeRef = useRef(onEscape)
   escapeRef.current = onEscape
   const wasOpen = useRef(false)
@@ -31,7 +40,7 @@ export function useModalBoundary(ref: RefObject<HTMLElement>, open: boolean, onE
     notify()
     const first = () => focusable(root)[0] ?? root
     const autofocus = root.querySelector<HTMLElement>('[autofocus]')
-    ;(autofocus ?? first()).focus()
+    ;(initialFocus?.current ?? autofocus ?? first()).focus()
     const onKey = (event: KeyboardEvent) => {
       if (stack[stack.length - 1] !== entry) return
       if (event.key === 'Escape' && !event.isComposing && escapeRef.current) {
@@ -61,9 +70,12 @@ export function useModalBoundary(ref: RefObject<HTMLElement>, open: boolean, onE
       notify()
       if (top) {
         const remaining = stack[stack.length - 1]
-        if (entry.previous?.isConnected && (!remaining || remaining.root.contains(entry.previous))) entry.previous.focus()
+        const previous = entry.previous
+        const fallback = fallbackFocus?.current
+        if (previous?.isConnected && previous !== document.body && (!remaining || remaining.root.contains(previous))) previous.focus()
+        else if (fallback?.isConnected && (!remaining || remaining.root.contains(fallback))) fallback.focus()
         else if (remaining) (focusable(remaining.root)[0] ?? remaining.root).focus()
       }
     }
-  }, [open, ref])
+  }, [open, ref, initialFocus, fallbackFocus])
 }

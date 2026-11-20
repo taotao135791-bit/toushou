@@ -14,10 +14,10 @@ app.whenReady().then(async () => {
     const waitFor = async code => { for (let i = 0; i < 150; i++) { if (await js(code)) return; await new Promise(r => setTimeout(r, 50)) } throw new Error('Timed out: ' + code) }
     const click = text => js(`[...document.querySelectorAll('button')].find(e => e.textContent.trim() === ${JSON.stringify(text)})?.click()`)
     const calls = () => js('window.fbFixture.calls.map(c=>c.act)')
-    await waitFor(`document.body.textContent.includes('前往 Meta Ads 连接')`)
+    await waitFor(`document.body.textContent.includes('前往连接页设置 Meta Ads')`)
     const initial = { calls: await calls(), articles: await js('document.querySelectorAll("article").length') }
     const text = await js('document.body.innerText')
-    await click('前往 Meta Ads 连接')
+    await click('前往连接页设置 Meta Ads')
     const after = await calls()
     console.log('E2E_RESULT ' + JSON.stringify({ initial, text, after }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: error.stack })) }

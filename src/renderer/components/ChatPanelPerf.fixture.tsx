@@ -27,6 +27,10 @@ const fixture = {
   updatePermission() { useAppStore.getState().setSessions(useAppStore.getState().sessions.map(session => session.id === 'current' ? { ...session, readonly: true } : session)) },
   addMessage() { useAppStore.getState().addMessage('current', { id: 'synthetic-message', role: 'user', content: 'Synthetic current message' }) },
   showError() { useAppStore.getState().setSessionError('current', 'chat.sendFailed') },
+  showStopError() {
+    useAppStore.getState().setBusy('current', true)
+    useAppStore.getState().setSessionError('current', 'chat.stopFailed')
+  },
   recoveryCalls: [] as string[],
   showUnavailableDefault() {
     useProjects.setState({ projects: [{ ...defaultProject }], loaded: true, loading: false, pending: null, error: null, errorProjectId: null })

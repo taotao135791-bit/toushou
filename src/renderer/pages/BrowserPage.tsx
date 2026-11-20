@@ -116,9 +116,11 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
     const trimmed = raw.trim()
     if (!trimmed) return
     const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`
-    void window.electronAPI.browserNavigate('go', withScheme)
     addressRef.current?.blur()
-  }, [])
+    void window.electronAPI.browserNavigate('go', withScheme).then((result) => {
+      if (!result.ok) flashToast(t(result.error === 'invalid-url' ? 'browser.invalidAddress' : 'browser.openFailed'))
+    }).catch(() => flashToast(t('browser.openFailed')))
+  }, [flashToast, t])
 
   const closePanel = () => {
     if (onClose) {
@@ -142,16 +144,17 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
   }
 
   const iconButton =
-    'shrink-0 rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-cream-dim'
+    'focus-ring shrink-0 rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-cream-dim'
 
   return (
     <div className={`relative flex h-full min-h-0 flex-col bg-ink-950 ${embedded ? 'w-full' : ''}`}>
-      <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3">
+      <div role="group" aria-label={t('home.quick.browser')} className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3">
         <button
           className={iconButton}
           disabled={!panelState.canGoBack}
           onClick={() => void window.electronAPI.browserNavigate('back')}
           title={t('browser.back')}
+          aria-label={t('browser.back')}
         >
           <ArrowLeft size={15} />
         </button>
@@ -160,6 +163,7 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
           disabled={!panelState.canGoForward}
           onClick={() => void window.electronAPI.browserNavigate('forward')}
           title={t('browser.forward')}
+          aria-label={t('browser.forward')}
         >
           <ArrowRight size={15} />
         </button>
@@ -167,6 +171,8 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
           className={iconButton}
           onClick={() => void window.electronAPI.browserNavigate('reload')}
           title={t('browser.reload')}
+          aria-label={t('browser.reload')}
+          aria-busy={panelState.loading}
         >
           {panelState.loading ? <Loader2 size={15} className="animate-spin" /> : <RotateCw size={15} />}
         </button>
@@ -179,7 +185,8 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
             if (e.nativeEvent.isComposing || e.keyCode === 229) return
             if (e.key === 'Enter') go(address)
           }}
-          placeholder={panelState.url ? t('browser.addressPlaceholder') : t('browser.homeHint')}
+          aria-label={t('browser.addressPlaceholder')}
+          placeholder={t('browser.addressPlaceholder')}
           spellCheck={false}
         />
         <button
@@ -187,6 +194,7 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
           disabled={!panelState.url}
           onClick={sendPageToAgent}
           title={t('browser.askAgent')}
+          aria-label={t('browser.askAgent')}
         >
           <MessageSquareText size={15} />
         </button>
@@ -195,12 +203,13 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
           disabled={!panelState.url}
           onClick={() => void window.electronAPI.openExternalUrl(panelState.url)}
           title={t('browser.openExternal')}
+          aria-label={t('browser.openExternal')}
         >
           <ExternalLink size={15} />
         </button>
         {/* Embedded: the workspace panel's tab row owns the close control. */}
         {!embedded && (
-          <button className={iconButton} onClick={closePanel} title={t('browser.close')}>
+          <button className={iconButton} onClick={closePanel} title={t('browser.close')} aria-label={t('browser.close')}>
             <X size={15} />
           </button>
         )}
@@ -211,14 +220,14 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
         {!panelState.url && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2.5 px-8 text-center">
             <Globe2 size={26} className="text-cream-faint" aria-hidden="true" />
-            <p className="text-[13px] text-cream-faint">{t('browser.emptyState')}</p>
+            <p role="status" className="text-[13px] text-cream-dim">{t(panelState.loading ? 'browser.loading' : 'browser.emptyState')}</p>
           </div>
         )}
       </div>
       {/* Anchored to the toolbar strip: everything below it is covered by the
           native WebContentsView, which would hide a lower toast. */}
       {toast && (
-        <div className="fade-in pointer-events-none absolute left-1/2 top-1.5 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-ink-900 px-3 py-1 shadow-pop">
+        <div role="status" className="fade-in pointer-events-none absolute left-1/2 top-1.5 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-ink-900 px-3 py-1 shadow-pop">
           <span className="text-[12px] text-cream">{toast}</span>
         </div>
       )}

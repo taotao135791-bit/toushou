@@ -2,7 +2,7 @@ import { useAppStore } from '../store'
 import Sidebar from './Sidebar'
 import UpdateBanner from './UpdateBanner'
 import WorkspacePanel from './WorkspacePanel'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useMatch } from 'react-router-dom'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -11,6 +11,7 @@ interface LayoutProps {
 export default function Layout({ children }: LayoutProps) {
   const workspacePanel = useAppStore((state) => state.workspacePanel)
   const location = useLocation()
+  const boardsRoute = useMatch('/boards')
   // /browser and /office are the full-page forms of the same Main-owned
   // surfaces (one panel per window) — showing both would double-mount them.
   // On every other route the panel persists so an agent-driven task keeps
@@ -21,7 +22,10 @@ export default function Layout({ children }: LayoutProps) {
     (location.pathname === '/office' && panelKind === 'office')
 
   return (
-    <div className="app-shell flex h-full w-full overflow-hidden bg-ink-950 text-cream">
+    <div
+      className="app-shell flex h-full w-full overflow-hidden bg-ink-950 text-cream"
+      data-appearance={boardsRoute ? undefined : 'lightweight'}
+    >
       <Sidebar />
       <main className="app-main flex min-w-0 flex-1 flex-col">
         <UpdateBanner />

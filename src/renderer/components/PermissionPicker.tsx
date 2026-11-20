@@ -76,7 +76,7 @@ export default function PermissionPicker({ compact = false }: { compact?: boolea
           if (!locked) setOpen((v) => !v)
         }}
         disabled={locked}
-        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-60"
+        className="composer-picker composer-permission-picker focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-60"
         title={remoteLocked ? t('permission.remoteFixed') : locked ? t('permission.readonlyFixed') : t('composer.permissions')}
         aria-label={t('composer.permissions')}
       >
@@ -84,7 +84,7 @@ export default function PermissionPicker({ compact = false }: { compact?: boolea
         {!compact && (
           <span className={current?.labelClass}>{t(current?.labelKey ?? 'settings.permissions.ask')}</span>
         )}
-        {!compact && <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />}
+        {!compact && <ChevronUp size={11} className={`composer-picker-chevron transition ${open ? 'rotate-180' : ''}`} />}
       </button>
 
       <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={232}>

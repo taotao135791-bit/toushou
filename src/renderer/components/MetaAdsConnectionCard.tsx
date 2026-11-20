@@ -74,7 +74,7 @@ export default function MetaAdsConnectionCard() {
   const waiting = status === 'waiting_for_user'
   const connecting = status === 'connecting'
   const failed = status === 'failed' || status === 'degraded' || status === 'needs_attention'
-  const ready = snapshot?.connected && !waiting && !connecting && !failed
+  const hasConnection = snapshot?.connected && !waiting && !connecting && !failed
   const canCancel = (waiting || connecting) && (busy === null || busy === 'begin')
   const tokenExpired = typeof snapshot?.tokenExpiresAt === 'number' && snapshot.tokenExpiresAt <= Date.now()
   const date = (value?: number) => value && Number.isFinite(value) ? new Date(value).toLocaleString() : '—'
@@ -91,7 +91,7 @@ export default function MetaAdsConnectionCard() {
           </div>
           <p className="mt-3 max-w-[560px] text-[12px] leading-5 text-cream-dim">{t('connections.metaAdsDescription')}</p>
         </div>
-        {!snapshot?.connected && !waiting && !connecting && (
+        {!snapshot?.connected && !waiting && !connecting && !failed && (
           <button type="button" onClick={() => void run('begin')} disabled={busy !== null} className="focus-ring shrink-0 rounded-full bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] hover:bg-accent-bright disabled:opacity-50">{t('connections.metaAdsConnect')}</button>
         )}
       </div>
@@ -104,18 +104,22 @@ export default function MetaAdsConnectionCard() {
           <button type="button" onClick={() => void run('cancel')} disabled={!canCancel} className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream disabled:opacity-50">{t('connections.cancel')}</button>
         </div>
       </div>}
-      {ready && <div className="mt-4">
-        <div role="status" className="mb-3 flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400"><CheckCircle2 size={16} />{t('connections.metaAdsConnected')}</div>
+      {hasConnection && <div className="mt-4">
+        {tokenExpired ? (
+          <div role="status" className="mb-3 flex items-center gap-2 text-[13px] font-medium text-amber-700 dark:text-amber-300"><AlertTriangle size={16} className="shrink-0" />{t('connections.authorizationRenewal')}</div>
+        ) : (
+          <div role="status" className="mb-3 flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400"><CheckCircle2 size={16} className="shrink-0" />{t('connections.metaAdsConnected')}</div>
+        )}
         <div className="grid gap-2 sm:grid-cols-2">
-          <div className="flex justify-between gap-3 rounded-xl bg-overlay px-3 py-2.5 text-[12px]"><span className="text-cream-faint">{t('connections.tiktokTokenExpires')}</span><span className="text-right text-cream-dim">{tokenExpired ? t('connections.tiktokTokenExpired') : date(snapshot.tokenExpiresAt)}</span></div>
+          <div className="flex justify-between gap-3 rounded-xl bg-overlay px-3 py-2.5 text-[12px]"><span className="text-cream-faint">{t('connections.tiktokTokenExpires')}</span><span className="text-right text-cream-dim">{date(snapshot.tokenExpiresAt)}</span></div>
           {snapshot.lastConnectedAt && <div className="flex justify-between gap-3 rounded-xl bg-overlay px-3 py-2.5 text-[12px]"><span className="text-cream-faint">{t('connections.tiktokLastConnected')}</span><span className="text-right text-cream-dim">{date(snapshot.lastConnectedAt)}</span></div>}
         </div>
       </div>}
       {failed && <div role="alert" className="mt-4 flex items-center gap-2 text-[13px] text-amber-700 dark:text-amber-300"><AlertTriangle size={15} />{t('connections.metaAdsNeedsAttention')}</div>}
       {snapshot?.lastError && <p className="mt-2 break-words text-[12px] leading-5 text-cream-faint">{snapshot.lastError}</p>}
       {error && <p role="alert" className="mt-3 text-[12px] text-red-600 dark:text-red-400">{t(error === 'bridge' ? 'connections.metaAdsRestartRequired' : error === 'status' ? 'connections.metaAdsStatusFailed' : 'connections.metaAdsActionFailed')}</p>}
-      {(failed || ready || (error && !waiting && !connecting)) && <div className="mt-3 flex flex-wrap gap-2">
-        <button type="button" onClick={() => void run(snapshot ? 'begin' : 'status')} disabled={busy !== null} className="focus-ring flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:bg-overlay hover:text-cream disabled:opacity-50"><RefreshCw size={12} />{t(snapshot ? ready ? 'connections.tiktokReauthorize' : 'connections.retry' : 'connections.retry')}</button>
+      {(failed || hasConnection || (error && !waiting && !connecting)) && <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={() => void run(snapshot ? 'begin' : 'status')} disabled={busy !== null} className="focus-ring flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:bg-overlay hover:text-cream disabled:opacity-50"><RefreshCw size={12} />{t(hasConnection ? 'connections.tiktokReauthorize' : 'connections.retry')}</button>
         {(snapshot?.connected || failed) && <button type="button" onClick={() => void run('disconnect')} disabled={busy !== null} className="focus-ring flex items-center gap-1.5 rounded-full border border-red-500/20 px-3 py-1.5 text-[12px] text-red-600 hover:bg-red-500/10 disabled:opacity-50 dark:text-red-400"><Unplug size={12} />{t('connections.disconnect')}</button>}
       </div>}
     </section>

@@ -71,7 +71,32 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))")
     await wait()
     const boardClosed = await wc.executeJavaScript("!document.querySelector('[role=dialog]') && document.activeElement?.id === 'board-opener'")
-    console.log('E2E_RESULT '+JSON.stringify({tt,metrics,hidden,fullViewport,backdrop,focusInside,tabTrap,nestedHidden,staysHidden,parentStillOpen,restored,focusRestored,calls,probeFullViewport,taskDialog,taskHidden,taskSavedAndClosed,taskUnmountGuard,boardDialog,boardHidden,boardClosed}))
+    await wc.executeJavaScript("document.querySelector('#scheduler header button').focus(); document.querySelector('#scheduler header button').click()")
+    await wait()
+    const schedulerDialog = await wc.executeJavaScript(inspectDialog)
+    const schedulerControls = await wc.executeJavaScript(`(() => {
+      const dialog = document.querySelector('[role=dialog]')
+      const close = dialog.querySelector('button[aria-label="Close task dialog"]')
+      const initialFocus = document.activeElement === dialog.querySelector('input')
+      const timeLabel = dialog.querySelector('input[type=time]').labels[0].textContent
+      const title = document.getElementById(dialog.getAttribute('aria-labelledby')).textContent.trim()
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+      close.focus()
+      close.dispatchEvent(tab)
+      const trap = tab.defaultPrevented && document.activeElement.textContent === 'Cancel'
+      return { initialFocus, timeLabel, title, trap, zone: Intl.DateTimeFormat().resolvedOptions().timeZone }
+    })()`)
+    await wc.executeJavaScript("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))")
+    await wait()
+    const schedulerRestored = await wc.executeJavaScript("!document.querySelector('[role=dialog]') && document.activeElement === document.querySelector('#scheduler header button')")
+    await wc.executeJavaScript("const create = document.querySelectorAll('#scheduler button')[1]; create.focus(); create.click()")
+    await wait()
+    await wc.executeJavaScript("document.querySelector('#scheduler-update').click()")
+    await wait()
+    await wc.executeJavaScript("document.querySelector('[role=dialog] button[aria-label]').click()")
+    await wait()
+    const schedulerFallbackRestored = await wc.executeJavaScript("!document.querySelector('[role=dialog]') && document.activeElement === document.querySelector('#scheduler header button')")
+    console.log('E2E_RESULT '+JSON.stringify({tt,metrics,hidden,fullViewport,backdrop,focusInside,tabTrap,nestedHidden,staysHidden,parentStillOpen,restored,focusRestored,calls,probeFullViewport,taskDialog,taskHidden,taskSavedAndClosed,taskUnmountGuard,boardDialog,boardHidden,boardClosed,schedulerDialog,schedulerControls,schedulerRestored,schedulerFallbackRestored}))
   } catch (error) { console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)})) }
   finally { if(win&&!win.isDestroyed())win.destroy(); app.exit(0) }
 }).catch(error => {console.log('E2E_RESULT '+JSON.stringify({fatal:String(error)}));app.exit(1)})

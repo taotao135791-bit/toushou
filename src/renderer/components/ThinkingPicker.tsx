@@ -171,7 +171,7 @@ export default function ThinkingPicker({ sessionId, compact = false }: ThinkingP
       <button
         ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
-        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
+        className="composer-picker focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
         title={t('composer.thinking')}
         aria-label={`${t('composer.thinking')}: ${
           failed ? t('composer.thinkingFailed') : levelLabel(level, t)
@@ -193,7 +193,7 @@ export default function ThinkingPicker({ sessionId, compact = false }: ThinkingP
               : `${t('composer.thinking')} · ${loaded ? levelLabel(level, t) : '—'}`}
           </span>
         )}
-        {!compact && <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />}
+        {!compact && <ChevronUp size={11} className={`composer-picker-chevron transition ${open ? 'rotate-180' : ''}`} />}
       </button>
 
       <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={176}>

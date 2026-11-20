@@ -9,6 +9,8 @@ import {
   PanelRight,
   LayoutDashboard,
   CalendarClock,
+  Clock3,
+  Layers,
   Plug,
   BookOpen,
   Puzzle,
@@ -115,6 +117,8 @@ export default function ChatPanel() {
   // Home hero: inline "new project folder" naming state
 
   const isStopping = currentSessionId !== null && stoppingSessionId === currentSessionId
+  const actionError = sessionError === 'chat.stopFailed' || sessionError === 'chat.steerComposerFailed' || sessionError === 'chat.steerQueueFailed'
+  const statusError = !isBusy || actionError ? sessionError ?? sendError : null
 
   // The browser panel (or a small window) squeezes this column; compact
   // flips once when the column crosses the breakpoint, never per pixel.
@@ -349,10 +353,7 @@ export default function ChatPanel() {
 
   return (
     <div ref={columnRef} className="relative flex h-full flex-col">
-      {/* Status bar, doubles as window drag region. On the home screen (no
-          active session) it collapses to a bare drag spacer: breadcrumb,
-          title, and every button need a session, and the premium home keeps a
-          clean top edge. Chat keeps the full bar. */}
+      {/* Keep a window drag region on home and show session controls in chat. */}
       {currentSessionId ? (
         <header className="app-drag flex h-12 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
         {/* ZCode-style order: bold session title first, then context pills */}
@@ -446,22 +447,17 @@ export default function ChatPanel() {
           {isStopping ? (
             <>
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
-              <span className="font-medium text-amber-500">{t('chat.stopping')}</span>
+              <span role="status" className="font-medium text-amber-500">{t('chat.stopping')}</span>
+            </>
+          ) : statusError ? (
+            <>
+              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+              <span role="alert" className="font-medium text-red-500">{t(statusError)}</span>
             </>
           ) : isBusy ? (
             <>
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
-              <span className="font-medium text-amber-500">{t('chat.running')}</span>
-            </>
-          ) : sessionError ? (
-            <>
-              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
-              <span className="font-medium text-red-500">{t(sessionError)}</span>
-            </>
-          ) : sendError ? (
-            <>
-              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
-              <span className="font-medium text-red-500">{t(sendError)}</span>
+              <span role="status" className="font-medium text-amber-500">{t('chat.running')}</span>
             </>
           ) : null}
         </span>
@@ -474,18 +470,10 @@ export default function ChatPanel() {
         <div ref={scrollRef} onScroll={handleTranscriptScroll} className="relative h-full overflow-y-auto" style={{ overflowAnchor: 'none' }}>
         <div ref={contentRef} className="min-h-full">
         {showHero ? (
-          // Hero and composer form ONE centered block: mark, sans-serif wordmark
-          // title, composer, then one faint hint line and the scenario chips
-          // below — nothing else. The top bar is a bare drag spacer on home.
-          <div className="flex min-h-full flex-col items-center px-8">
-            {/* Top-anchored per design.md 3.2 (~18vh, clamped 80–175px): the
-                brand + composer + entries read as one top-down column, not a
-                vertically centered block. */}
-            <div className="home-hero flex flex-col items-center pb-10 pt-[clamp(80px,18vh,175px)]">
-              <div className="home-wordmark rise" style={{ animationDelay: '0ms' }} aria-label="投手">
-                投手
-              </div>
-              <div className="rise w-full" style={{ animationDelay: '140ms' }}>
+          <div className="agent-home flex min-h-full flex-col items-center">
+            <div className="home-hero flex flex-col items-center">
+              <h1 className="home-heading">{t('home.heading')}</h1>
+              <div className="w-full">
                 {!currentWorkspace && unavailableDefault && <div className="mb-3 rounded-xl border border-line px-2 py-2 text-xs text-cream-dim">
                   <p className="px-2.5 pb-1">{t('projects.defaultUnavailable')}</p>
                   <p className="break-all px-2.5 pb-2 text-[11px] text-cream-faint">{unavailableDefault.path}</p>
@@ -504,36 +492,28 @@ export default function ChatPanel() {
                   compact={compact}
                 />
                 {sendError && <p role="alert" className="mt-2 text-center text-xs text-red-500">{t(sendError)}</p>}
-                {/* Home hint line: the @ / command / Enter affordances moved
-                    here out of the placeholder — one faint centered line. */}
-                {!currentSessionId && (
-                  <p className="mt-2 text-center text-[12px] leading-5 text-cream-faint">
-                    {t('composer.hint')}
-                  </p>
-                )}
-                {/* Project choice lives in the composer's connected tray now
-                    (选择项目 menu: default workspace / pick / new folder). */}
                 <div className="home-quick-links" aria-label={t('home.quickLabel')}>
-                  <button type="button" onClick={() => setWorkspacePanel({ kind: 'browser' })}>
+                  <button type="button" className="focus-ring" onClick={() => setWorkspacePanel({ kind: 'browser' })}>
                     <Globe2 size={15} aria-hidden="true" />
                     <span>{t('home.quick.browser')}</span>
                   </button>
                   {/* One office entry: the "files" and "sheets" quick buttons used
                       to call the same dialog — the office panel is a workbook
                       editor, so the single button says sheets. */}
-                  <button type="button" onClick={() => void openOfficeFile()}>
+                  <button type="button" className="focus-ring" onClick={() => void openOfficeFile()}>
                     <Table2 size={15} aria-hidden="true" />
                     <span>{t('home.quick.sheets')}</span>
                   </button>
-                  <button type="button" onClick={() => navigate('/tasks')}>
-                    <CalendarClock size={15} aria-hidden="true" />
+                  <button type="button" className="focus-ring" onClick={() => navigate('/tasks')}>
+                    <Clock3 size={15} aria-hidden="true" />
                     <span>{t('home.quick.tasks')}</span>
                   </button>
-                  <button type="button" onClick={() => navigate('/plugins')}>
-                    <Puzzle size={15} aria-hidden="true" />
+                  <button type="button" className="focus-ring" onClick={() => navigate('/plugins')}>
+                    <Layers size={15} aria-hidden="true" />
                     <span>{t('home.quick.plugins')}</span>
                   </button>
                 </div>
+                {!currentSessionId && <p className="home-keyboard-hint">{t('composer.hint')}</p>}
               </div>
             </div>
           </div>

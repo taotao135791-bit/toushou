@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { TikTokAccountOptions, TikTokAccountPicker, discoverPickerAccounts, filterPickerAccounts, parsePickerAccount, stepActiveAccountIndex, type TikTokAccountPickerLabels } from './TikTokAccountPicker'
 
 const labels: TikTokAccountPickerLabels = {
-  title: 'Choose a scope', description: 'Choose one account or the connection scope.',
+  title: 'Choose a scope',
   accountLabel: 'Account name or ID', accountPlaceholder: 'Search or enter an ID', manualHint: 'Authorization is checked on reading.',
   loading: 'Discovering', empty: 'No accounts found', discoveryError: 'Discovery failed', namesIncomplete: 'Some names unavailable', noMatch: 'No matches', retry: 'Retry',
   invalidId: 'Invalid account ID', readOne: 'Read one', readAll: 'Inspect selected accounts', readAllHint: 'Uses the connection scope.'

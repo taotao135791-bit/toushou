@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  MessageSquare,
-  Puzzle,
-  SquareKanban,
+  MessageCircle,
+  Layers,
   AlertCircle,
-  Library,
+  BookOpen,
   Trash2,
   Sun,
   Moon,
   Search,
-  Settings,
+  SlidersHorizontal,
+  SquarePen,
   X,
   Pin,
   PinOff,
@@ -47,11 +47,13 @@ import { getSessionStatus } from '../lib/sessionStatus'
 import { basename } from '../lib/path'
 import { useConfirmId } from '../lib/confirmClick'
 import Logo from './Logo'
+import BoardsIcon from './BoardsIcon'
 import MenuPortal from './MenuPortal'
 import SidebarProjects from './SidebarProjects'
 import { useProjects } from '../store/projects'
 import { sidebarConversations, type SidebarConversation } from '../lib/sidebarConversations'
 import { beginNavigationIntent, isCurrentNavigationIntent } from '../lib/navigationIntent'
+import './Sidebar.appearance.css'
 
 const EMPTY_MESSAGES: Record<string, MessageLike[]> = {}
 
@@ -665,9 +667,9 @@ export default function Sidebar() {
   }, [recentEntries, query, searchMessages])
 
   const navRow = (active: boolean) =>
-    `icon-pop group flex h-8 w-full items-center gap-2.5 rounded-lg border px-2.5 text-[13px] transition-all duration-150 ease-standard ${
+    `sidebar-nav-row icon-pop group flex h-8 w-full items-center gap-2.5 rounded-lg border px-2.5 text-[13px] transition-all duration-150 ease-standard ${
       active
-        ? 'border-transparent bg-selected font-medium text-cream'
+        ? 'sidebar-nav-active border-transparent bg-selected font-medium text-cream'
         : 'border-transparent text-cream-dim hover:bg-overlay hover:text-cream'
     }`
 
@@ -1002,10 +1004,11 @@ export default function Sidebar() {
     <aside
       ref={asideRef}
       style={{ width: sidebarWidth }}
+      data-sidebar-appearance="lightweight"
       className="app-sidebar relative flex shrink-0 flex-col border-r border-line bg-ink-900 max-w-[min(360px,30vw)]"
     >
       {/* drag spacer — clears the macOS traffic lights */}
-      <div className="app-drag h-11 shrink-0" />
+      <div className="sidebar-window-drag app-drag h-11 shrink-0" />
 
       {/* Resize handle: spans everything below the drag spacer so it never
           fights window dragging, overlays the border, highlights on hover,
@@ -1024,13 +1027,13 @@ export default function Sidebar() {
       />
 
       <div className="app-drag app-sidebar-brand flex items-center justify-between px-4 pb-3">
-        <div className="flex items-center gap-2.5">
+        <div className="sidebar-brand-mark flex items-center gap-2.5">
           <Logo size={22} className="shrink-0" />
           <span className="text-[15px] font-semibold tracking-tight text-cream">投手</span>
         </div>
       </div>
 
-      <div className="px-3 pb-3">
+      <div className="sidebar-view-switch px-3 pb-3">
         <div className="app-view-segment" role="tablist" aria-label={t('sidebar.mode.label')}>
           <button
             type="button"
@@ -1054,13 +1057,13 @@ export default function Sidebar() {
             }}
             className="focus-ring flex items-center justify-center gap-1.5 px-2 text-[12px] font-medium"
           >
-            <MessageSquare size={14} aria-hidden="true" />
+            <MessageCircle size={14} aria-hidden="true" />
             <span>{t('sidebar.mode.agent')}</span>
           </button>
         </div>
       </div>
 
-      <nav className="space-y-0.5 px-3" aria-label={t('sidebar.primaryNav')}>
+      <nav className="sidebar-navigation space-y-0.5 px-3" aria-label={t('sidebar.primaryNav')}>
         {/* 新建会话 = 回首页 + 清空选中。会话只在第一条消息发出时创建（⌘N 同效）。 */}
         <button
           onClick={() => {
@@ -1068,9 +1071,9 @@ export default function Sidebar() {
             setCurrentSessionId(null)
             navigate('/')
           }}
-          className={navRow(location.pathname === '/' && !currentSessionId)}
+          className={`${navRow(location.pathname === '/' && !currentSessionId)} sidebar-new-chat`}
         >
-          <MessageSquare size={14} className="shrink-0" />
+          <SquarePen size={16} className="shrink-0" aria-hidden="true" />
           {t('sidebar.newChat')}
           <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">{modShortcut('N')}</span>
         </button>
@@ -1078,28 +1081,28 @@ export default function Sidebar() {
           onClick={() => navigate('/plugins')}
           className={navRow(location.pathname === '/plugins')}
         >
-          <Puzzle size={14} className="shrink-0" />
+          <Layers size={16} className="shrink-0" aria-hidden="true" />
           {t('sidebar.plugins')}
         </button>
         <button
           onClick={() => navigate('/boards')}
           className={navRow(location.pathname === '/boards')}
         >
-          <SquareKanban size={14} className="shrink-0" />
+          <BoardsIcon size={14} className="shrink-0" aria-hidden="true" />
           {t('sidebar.boards')}
         </button>
         <button
           onClick={() => navigate('/skills')}
           className={navRow(location.pathname === '/skills')}
         >
-          <Library size={14} className="shrink-0" />
+          <BookOpen size={16} className="shrink-0" aria-hidden="true" />
           {t('sidebar.skills')}
         </button>
         <button
           onClick={() => navigate('/connections')}
           className={navRow(location.pathname === '/connections')}
         >
-          <Link2 size={14} className="shrink-0" />
+          <Link2 size={14} className="sidebar-connection-icon shrink-0" aria-hidden="true" />
           {t('sidebar.connections')}
         </button>
         <button
@@ -1141,9 +1144,9 @@ export default function Sidebar() {
         </div>
       )}
 
-      <div className="mt-5 min-h-[128px] flex-1 overflow-y-auto px-2.5 pb-4" ref={listRef} data-all-conversations>
-        <div className="flex items-center justify-between px-2 pb-1.5">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
+      <div className="sidebar-conversations mt-5 min-h-[128px] flex-1 overflow-y-auto px-2.5 pb-4" ref={listRef} data-all-conversations>
+        <div className="sidebar-section-header flex items-center justify-between px-2 pb-1.5">
+          <span className="sidebar-section-title text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
             {t('sidebar.sessions')}
           </span>
           <div className="flex items-center gap-0.5">
@@ -1151,7 +1154,7 @@ export default function Sidebar() {
               ref={sortButtonRef}
               onClick={() => setSortMenuOpen((open) => !open)}
               title={t('sidebar.sort')}
-              className={`rounded-md p-1 transition-colors hover:bg-overlay hover:text-cream ${
+              className={`sidebar-section-action rounded-md p-1 transition-colors hover:bg-overlay hover:text-cream ${
                 sortMenuOpen ? 'bg-overlay text-cream' : 'text-cream-faint'
               }`}
             >
@@ -1163,7 +1166,7 @@ export default function Sidebar() {
                 if (searchOpen) setQuery('')
               }}
               title={t('sidebar.searchSessions')}
-              className="rounded-md p-1 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
+              className="sidebar-section-action rounded-md p-1 text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
             >
               {searchOpen ? <X size={12} /> : <Search size={12} />}
             </button>
@@ -1239,7 +1242,9 @@ export default function Sidebar() {
             <div className="space-y-0.5">{filteredRecentEntries.map(renderRecentEntry)}</div>
           )
         ) : filteredRecentEntries.length === 0 ? (
-          <div className="px-2 py-1.5 text-xs leading-5 text-cream-faint">{t('sidebar.noSessions')}</div>
+          <div className="sidebar-empty px-2 py-1.5 text-xs leading-5 text-cream-faint">
+            {t('sidebar.noSessions')}
+          </div>
         ) : (
           <div className="space-y-0.5">{filteredRecentEntries.map(renderRecentEntry)}</div>
         )}
@@ -1265,19 +1270,19 @@ export default function Sidebar() {
         )}
       </div>
 
-      <div className="flex items-center gap-1 border-t border-line px-2.5 py-2">
+      <div className="sidebar-footer flex items-center gap-1 border-t border-line px-2.5 py-2">
         <button
           onClick={() => navigate('/settings')}
           title={t('sidebar.settings')}
           aria-label={t('sidebar.settings')}
           aria-current={location.pathname === '/settings' ? 'page' : undefined}
-          className={`focus-ring flex min-h-8 items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] transition-colors ${
+          className={`sidebar-settings focus-ring flex min-h-8 items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] transition-colors ${
             location.pathname === '/settings'
               ? 'bg-overlay-strong text-cream'
               : 'text-cream-faint hover:bg-overlay hover:text-cream'
           }`}
         >
-          <Settings size={15} />
+          <SlidersHorizontal size={16} aria-hidden="true" />
           <span>{t('sidebar.settings')}</span>
         </button>
         <button

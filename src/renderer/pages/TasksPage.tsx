@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight, RefreshCcw } from 'lucide-react'
-import { ScheduledTask, TaskFeishuTarget } from '@shared/types'
+import { Plus, Play, Trash2, Clock, Calendar, Folder, Loader2, Pencil, MessageSquare, ChevronDown, ChevronRight, RefreshCcw, X } from 'lucide-react'
+import { ScheduledTask, TaskFeishuTarget, TaskRunEntry } from '@shared/types'
 import { KERNEL_VIRAL_SKILL_ID } from '@shared/skills'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
 import { showNotice } from '../lib/notice'
+import { useModalBoundary } from '../lib/modalBoundary'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { basename } from '../lib/path'
 import { formatRelativeTime } from '../lib/time'
@@ -92,6 +94,19 @@ function feishuTargetLabel(target: TaskFeishuTarget, targets: TaskFeishuTarget[]
   return `${target.name} · ${uniqueSuffix ? suffix : target.chatId}`
 }
 
+function feishuDeliveryText(delivery: NonNullable<TaskRunEntry['delivery']>, language: string): string {
+  const zh = language === 'zh'
+  if (delivery.status === 'failed' && delivery.error === 'no-target') {
+    return zh ? '飞书未发送 · 未选收件人' : 'Feishu not sent · no recipient'
+  }
+  if (delivery.status === 'failed' && delivery.error === 'payload-unavailable') {
+    return zh ? '飞书未发送 · 正文不可用' : 'Feishu not sent · content unavailable'
+  }
+  return zh
+    ? { sending: '飞书发送中', sent: '飞书已发送', failed: '飞书未发送', unknown: '飞书送达待确认' }[delivery.status]
+    : { sending: 'Feishu sending', sent: 'Feishu sent', failed: 'Feishu not sent', unknown: 'Feishu delivery unconfirmed' }[delivery.status]
+}
+
 function nextScheduledRun(task: ScheduledTask, after = Date.now()): number | null {
   const schedule = task.schedule
   if (schedule.type === 'interval') {
@@ -123,6 +138,15 @@ export default function TasksPage() {
   const recentWorkspaces = useAppStore((s) => s.recentWorkspaces)
   const language = useAppStore((s) => s.language)
   const [modalOpen, setModalOpen] = useState(false)
+  const modalRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  const taskNameRef = useRef<HTMLInputElement>(null)
+  const createButtonRef = useRef<HTMLButtonElement>(null)
+  const scheduleZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  useModalBoundary(modalRef, modalOpen, () => setModalOpen(false), {
+    initialFocus: taskNameRef,
+    fallbackFocus: createButtonRef
+  })
   const [saving, setSaving] = useState(false)
   const saveInFlight = useRef(false)
   const modalGeneration = useRef(0)
@@ -341,23 +365,12 @@ export default function TasksPage() {
       .catch(() => showNotice('tasks.deleteFailed'))
   }
 
-  // Esc closes the dialog; clicking the dimmed backdrop does too. Without
-  // this, the only way out is the small ✕ in the corner.
-  useEffect(() => {
-    if (!modalOpen) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.isComposing) setModalOpen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [modalOpen])
-
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <header className="app-drag flex h-12 shrink-0 items-center gap-2.5 border-b border-line px-4">
         <Clock size={15} className="text-accent" />
         <span className="text-[13px] font-medium text-cream">{t('tasks.title')}</span>
-        <button onClick={openModal} className={`${btn} ml-auto flex items-center gap-1 bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright`}>
+        <button ref={createButtonRef} onClick={openModal} className={`${btn} app-no-drag ml-auto flex items-center gap-1 bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright`}>
           <Plus size={12} /> {t('tasks.create')}
         </button>
       </header>
@@ -417,7 +430,9 @@ export default function TasksPage() {
                         </div>
                         <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-cream-faint">{task.prompt}</p>
                         <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-cream-faint">
-                          <span className="flex items-center gap-1"><Calendar size={11} /> {scheduleText(task, t)}</span>
+                          <span className="flex items-center gap-1" title={task.schedule.type !== 'interval' ? t('tasks.localTime', { zone: scheduleZone }) : undefined}>
+                            <Calendar size={11} /> {scheduleText(task, t)}{task.schedule.type !== 'interval' && ` · ${scheduleZone}`}
+                          </span>
                           <span className="flex items-center gap-1"><Clock size={11} /> {projectName(task.cwd)}</span>
                           {task.lastRunAt && (
                             <span title={new Date(task.lastRunAt).toLocaleString()}>
@@ -431,7 +446,7 @@ export default function TasksPage() {
                           )}
                           {task.lastRunStatus && (
                             <span className={task.lastRunStatus === 'failed' || task.lastRunStatus === 'interrupted' ? 'text-red-400' : task.lastRunStatus === 'completed' ? 'text-emerald-500' : 'text-amber-400'}>
-                              {t('tasks.lastResult')}: {t(`tasks.status.${task.lastRunStatus}` as I18nKey)}
+                              {t('tasks.execution')} · {t(`tasks.status.${task.lastRunStatus}`)}
                             </span>
                           )}
                         </div>
@@ -448,36 +463,31 @@ export default function TasksPage() {
                               <div className="mt-1 space-y-0.5">
                                 {(task.runs ?? []).map((run, index) => {
                                   const live = !run.finishedAt
-                                  const failed = run.outcome === 'failed'
+                                  const runStatus = run.status ?? (live ? 'running' : run.outcome === 'failed' ? 'failed' : 'completed')
+                                  const completed = runStatus === 'completed'
                                   return (
                                     <div
                                       key={run.runId ?? run.sessionId ?? `${run.startedAt}-${index}`}
                                       onClick={() => !live && openRunEntry(task, run)}
                                       className={`group flex items-center gap-2 rounded-md px-1.5 py-1 text-[11px] ${live ? 'text-cream-faint' : 'cursor-pointer text-cream-dim transition-colors hover:bg-overlay'}`}
                                     >
-                                      {live ? (
-                                        <Loader2 size={11} className="shrink-0 animate-spin" />
-                                      ) : failed ? (
-                                        <span className="shrink-0 font-medium text-red-500">✕</span>
-                                      ) : (
-                                        <span className="shrink-0 font-medium text-emerald-500">✓</span>
-                                      )}
+                                      <span className={`flex shrink-0 items-center gap-1 ${live ? '' : completed ? 'text-emerald-500' : 'text-red-500'}`}>
+                                        {live && <Loader2 size={11} className="animate-spin" aria-hidden="true" />}
+                                        {t(`tasks.status.${runStatus}`)}
+                                      </span>
                                       <span className="shrink-0">{formatRelativeTime(run.startedAt, language)}</span>
                                       {run.finishedAt && (
                                         <span className="shrink-0 text-cream-faint">{formatDuration(run.finishedAt - run.startedAt)}</span>
                                       )}
-                                      {failed && run.reason && (
+                                      {run.outcome === 'failed' && run.reason && (
                                         <span className="min-w-0 truncate text-red-400">{t(`tasks.failure.${run.reason}`)}</span>
                                       )}
                                       {run.delivery && (
-                                        <span className={run.delivery.status === 'sent' ? 'text-emerald-500' : 'text-amber-500'}>
-                                          {run.delivery.status === 'failed' && run.delivery.error === 'no-target'
-                                            ? (language === 'zh' ? '飞书未发送 · 请为后续运行选择收件目标' : 'Not sent · choose a recipient for future runs')
-                                            : run.delivery.status === 'failed' && run.delivery.error === 'payload-unavailable'
-                                              ? (language === 'zh' ? '飞书未发送 · 原发送内容不可用' : 'Not sent · original content unavailable')
-                                              : language === 'zh'
-                                                ? ({ sending: '飞书发送中', sent: '飞书已发送', failed: '飞书未发送', unknown: '飞书发送状态未知，请先在飞书确认' } as const)[run.delivery.status]
-                                                : ({ sending: 'Sending to Feishu', sent: 'Sent to Feishu', failed: 'Not sent to Feishu', unknown: 'Delivery unknown; check Feishu first' } as const)[run.delivery.status]}
+                                        <span
+                                          className={run.delivery.status === 'sent' ? 'text-emerald-500' : 'text-amber-500'}
+                                          title={run.delivery.status === 'unknown' ? (language === 'zh' ? '请先在飞书确认是否已收到' : 'Check Feishu to confirm delivery') : undefined}
+                                        >
+                                          {feishuDeliveryText(run.delivery, language)}
                                         </span>
                                       )}
                                       {run.delivery?.status === 'failed' && ['feishu-not-connected', 'no-chat'].includes(run.delivery.error ?? '') && run.runId && (
@@ -491,7 +501,7 @@ export default function TasksPage() {
                                           }).catch(() => setDeliveryRetryError(runId)).finally(() => setRetryingDelivery(null))
                                         }}>{language === 'zh' ? '重试发送' : 'Retry delivery'}</button>
                                       )}
-                                      {deliveryRetryError === run.runId && run.delivery?.status === 'failed' && <span className="text-red-400">{language === 'zh' ? '发送未完成，请检查飞书连接和收件目标' : 'Delivery not completed; check the Feishu connection and recipient'}</span>}
+                                      {deliveryRetryError === run.runId && run.delivery?.status === 'failed' && <span className="text-red-400">{language === 'zh' ? '请检查飞书连接和收件人' : 'Check Feishu and the recipient'}</span>}
                                       {!live && (
                                         <MessageSquare size={11} className="ml-auto shrink-0 text-cream-faint opacity-0 transition-opacity group-hover:opacity-100" />
                                       )}
@@ -545,19 +555,21 @@ export default function TasksPage() {
         </div>
       </div>
 
-      {modalOpen && (
+      {modalOpen && createPortal(
         <div
           className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-6 backdrop-blur-[2px]"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) setModalOpen(false)
           }}
         >
-          <div className="w-full max-w-md rounded-2xl border border-line bg-ink-850 p-5 shadow-pop">
+          <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+            className="max-h-full w-full max-w-md overflow-y-auto rounded-2xl border border-line bg-ink-850 p-5 shadow-pop">
             <div className="mb-4 flex items-center justify-between">
-              <span className="text-[14px] font-semibold text-cream">
+              <h2 id={titleId} className="text-[14px] font-semibold text-cream">
                 {editingTask ? t('tasks.editTitle') : t('tasks.create')}
-              </span>
-              <button onClick={() => setModalOpen(false)} className="text-cream-faint hover:text-cream"><Plus size={14} className="rotate-45" /></button>
+              </h2>
+              <button type="button" aria-label={t('tasks.closeDialog')} onClick={() => setModalOpen(false)}
+                className="focus-ring rounded-md text-cream-faint hover:text-cream"><X size={14} aria-hidden="true" /></button>
             </div>
             <fieldset disabled={saving} className="min-w-0 space-y-3">
               {!editingTask && (
@@ -580,7 +592,7 @@ export default function TasksPage() {
               )}
               <label className="block text-[11px] text-cream-faint">
                 {t('sidebar.taskName')}
-                <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className={input} placeholder={t('sidebar.taskNamePh')} />
+                <input ref={taskNameRef} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className={input} placeholder={t('sidebar.taskNamePh')} />
               </label>
               <label className="block text-[11px] text-cream-faint">
                 {t('sidebar.taskPrompt')}
@@ -604,7 +616,7 @@ export default function TasksPage() {
                   </select>
                 </label>
                 {form.scheduleType !== 'interval' && (
-                  <label className="block text-[11px] text-cream-faint">{t('tasks.time')}
+                  <label className="block text-[11px] text-cream-faint">{t('tasks.localTime', { zone: scheduleZone })}
                     <input type="time" value={form.time} onChange={e => setForm(f => ({ ...f, time: e.target.value }))} className={input + ' h-8'} />
                   </label>
                 )}
@@ -692,7 +704,8 @@ export default function TasksPage() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
       {pendingDeleteTask && (
         <ConfirmDialog
