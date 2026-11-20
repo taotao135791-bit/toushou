@@ -309,7 +309,7 @@ export default function RuntimeModelSection() {
                 }}
                 className={selectCls}
               >
-                <option value="">{t('settings.providerAuto')}</option>
+                <option value="">{t('settings.providerUnselected')}</option>
                 {visibleProviders.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -441,7 +441,7 @@ export default function RuntimeModelSection() {
                 first entry instead. */}
             {thinkingOptions.map((level) => (
               <option key={level} value={level}>
-                {level === 'auto' ? `${t('settings.thinkingAuto')} (auto)` : level}
+                {level === 'auto' ? t('settings.thinkingAuto') : level}
               </option>
             ))}
           </select>

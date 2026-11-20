@@ -177,7 +177,7 @@ app.whenReady().then(async () => {
     await mouseSelect('[data-project-conversations="alpha"]', 12)
     await waitFor('!!window.sidebarFixture.finishResume')
     await mouseSelect('[data-all-conversations]', 30)
-    await js(`document.querySelector('[aria-label="Choose project"]').click()`)
+    await js(`document.querySelector('.composer-tray > button[aria-haspopup="menu"]').click()`)
     await waitFor(`!!document.querySelector('[aria-label="Choose a project"]')`)
     await js(`[...document.querySelector('[aria-label="Choose a project"]').querySelectorAll('button')].find(e=>e.textContent.trim()==='No project').click()`)
     await waitFor(`window.sidebarFixture.snapshot().workspace==='/synthetic/TouShou workspace'`)

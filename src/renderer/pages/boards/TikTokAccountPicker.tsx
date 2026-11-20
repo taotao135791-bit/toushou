@@ -3,7 +3,6 @@ import type { TikTokReadingAdvertisers } from '@shared/tiktokReport'
 
 export interface TikTokAccountPickerLabels {
   title: string
-  description: string
   accountLabel: string
   accountPlaceholder: string
   manualHint: string
@@ -128,7 +127,6 @@ export function TikTokAccountPicker({ labels, busy = false, onReadOne, onReadAll
   return (
     <section aria-label={labels.title} className="rounded-xl border border-line bg-ink-900 p-4">
       <h3 className="text-[14px] font-medium text-cream">{labels.title}</h3>
-      <p className="mt-1 text-[12px] leading-5 text-cream-faint">{labels.description}</p>
       <form onSubmit={submit} className="mt-3 space-y-2">
         <label htmlFor={`${listId}-account`} className="block text-[12px] text-cream-dim">{labels.accountLabel}</label>
         <input id={`${listId}-account`} type="search" role="combobox" aria-autocomplete="list" aria-expanded={status === 'ready' && matches.length > 0} aria-controls={status === 'ready' && matches.length > 0 ? `${listId}-list` : undefined} aria-activedescendant={active >= 0 ? `${listId}-option-${active}` : undefined} autoComplete="off" value={draft} onChange={event => { setDraft(event.target.value); setActiveIndex(-1) }} onKeyDown={event => {

@@ -528,6 +528,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
       if (revisionRef.current === revisionAtCapture) {
         setDirty(false)
         useAppStore.getState().setOfficeWorkbookDirty(false)
+        flashToast(t('office.saved'))
       } else {
         // Edits made while the native dialog or disk write was in flight are
         // newer than the saved revision and must remain visibly dirty.
@@ -667,7 +668,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
   }, [setOfficeEditHandoff])
 
   const iconButton =
-    'shrink-0 rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-cream-dim'
+    'focus-ring shrink-0 rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-cream-dim'
 
   const errorKey = error as
     | 'invalid-grant'
@@ -683,11 +684,11 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
 
   return (
     <div className={`flex h-full min-h-0 w-full flex-col overflow-hidden bg-ink-950 ${embedded ? 'min-w-0' : ''}`}>
-      <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3">
-        <button className={iconButton} disabled={busy !== null} onClick={() => void openFile()} title={t('office.open')}>
+      <div role="group" aria-label={t('home.quick.sheets')} className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3">
+        <button className={iconButton} disabled={busy !== null} onClick={() => void openFile()} title={t('office.open')} aria-label={t('office.open')}>
           {busy === 'open' ? <Loader2 size={15} className="animate-spin" /> : <FolderOpen size={15} />}
         </button>
-        <button className={iconButton} disabled={busy !== null} onClick={() => void saveAs()} title={t('office.saveAs')}>
+        <button className={iconButton} disabled={busy !== null} onClick={() => void saveAs()} title={t('office.saveAs')} aria-label={t('office.saveAs')}>
           {busy === 'save' ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
         </button>
         <button
@@ -695,14 +696,16 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
           disabled={busy !== null}
           onClick={askAgentAboutWorkbook}
           title={t('office.askAgent')}
+          aria-label={t('office.askAgent')}
         >
           <MessageSquareText size={15} />
         </button>
         <div className="flex min-w-0 flex-1 items-center gap-1.5 px-2 text-[13px] text-cream">
           <FileSpreadsheet size={14} className="shrink-0 text-cream-faint" />
-          <span className="truncate">{fileName || t('office.untitled')}</span>
-          <span className="shrink-0 text-[11px] text-cream-faint" title="Document revision">v{revision}</span>
-          {dirty && <span className="shrink-0 text-cream-faint">· {t('office.unsaved')}</span>}
+          <span className="truncate" title={fileName ? t('office.fileRevision', { file: fileName, revision }) : undefined}>{fileName || t('office.untitled')}</span>
+          <span role="status" className="shrink-0 text-[12px] text-cream-dim">
+            {busy ? t(busy === 'save' ? 'office.saving' : 'office.opening') : dirty ? t('office.unsaved') : ''}
+          </span>
         </div>
         {warnings.length > 0 && (
           <span
@@ -714,14 +717,14 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
           </span>
         )}
         {errorKey && (
-          <span className="shrink-0 text-xs text-red-500 dark:text-red-300">
+          <span role="alert" className="min-w-0 shrink truncate text-xs text-red-600 dark:text-red-300" title={t(`office.error.${errorKey}`)}>
             {t(`office.error.${errorKey}`)}
           </span>
         )}
         {/* Embedded: the workspace panel's own tab row carries the close
             control — one chrome set per object (design.md 3.3). */}
         {!embedded && (
-          <button className={iconButton} onClick={closePanel} title={t('office.close')}>
+          <button className={iconButton} onClick={closePanel} title={t('office.close')} aria-label={t('office.close')}>
             <X size={15} />
           </button>
         )}
@@ -828,7 +831,7 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
           </div>
         )}
         {toast && (
-          <div className="fade-in pointer-events-none absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-ink-900 px-3 py-1.5 shadow-pop">
+          <div role="status" className="fade-in pointer-events-none absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-ink-900 px-3 py-1.5 shadow-pop">
             <span className="text-[12px] text-cream">{toast}</span>
           </div>
         )}

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import BrowserPage from '../pages/BrowserPage'
+import TasksPage from '../pages/TasksPage'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { SaveMessageToTaskDialog } from '../components/SaveMessageToTaskDialog'
 import { SaveMessageToBoardDialog } from '../components/SaveMessageToBoardDialog'
@@ -9,7 +10,7 @@ import { useAppStore } from '../store'
 import { useModalBoundary } from './modalBoundary'
 import { WidgetBody } from '../pages/boards/WidgetBody'
 import AdsCopyModelsSection from '../components/AdsCopyModelsSection'
-import type { BoardDataset, BoardWidget } from '@shared/types'
+import type { BoardDataset, BoardWidget, ScheduledTask } from '@shared/types'
 
 function Nested({ close }: { close: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -24,6 +25,10 @@ const mixed: BoardDataset = {id:'mixed',name:'sample',createdAt:0,columns,rows:[
 const unknown: BoardDataset = {...mixed,id:'unknown',rows:[['2026-01-01','',100,100,100,100]]}
 const usd: BoardDataset = {...mixed,id:'usd',rows:[['2026-01-01','USD',100,100,100,100],['2026-01-01','USD',100,900,0,0]]}
 const widget = (id:string,type:BoardWidget['type'],datasetId:string,metric:string):BoardWidget => ({id,type,title:id,layout:{x:0,y:0,w:4,h:4},config:{source:'dataset',datasetId,metric,op:'avg',...(type==='chart-line'?{dimension:'日期'}:{})}})
+const scheduledTask: ScheduledTask = {
+  id: 'fixture-scheduled-task', name: 'Synthetic scheduled task', prompt: 'Synthetic prompt', cwd: '/synthetic/project',
+  schedule: { type: 'daily', time: '09:00' }, enabled: true, createdAt: 0, notifyOnComplete: true
+}
 function Fixture() {
   const [open, setOpen] = useState(false)
   const [nested, setNested] = useState(false)
@@ -40,6 +45,10 @@ function Fixture() {
     <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 560 }}><BrowserPage embedded initialUrl="https://example.invalid/" /></div>
     <div className="page-enter msg-row" style={{position:'absolute',left:260,top:0,width:500,height:768}}>{open && <ConfirmDialog request={{ title: 'confirm fixture', body: 'fixture', onConfirm: () => undefined }} onClose={() => setOpen(false)} />}{document.body.dataset.clip === '1' && <div id="clipped-probe" className="fixed inset-0" />}</div>
     <div className="msg-row" style={{position:'absolute',left:50,top:600,width:400,height:100,overflow:'hidden'}}><button id="task-opener" onClick={() => setTaskOpen(true)}>task</button><button id="force-task-unmount" onClick={() => setTaskOpen(false)}>unmount</button><span id="task-close-count">{taskClosed}</span><button id="board-opener" onClick={() => setBoardOpen(true)}>board</button>{taskOpen && <SaveMessageToTaskDialog content="synthetic task" onClose={() => { setTaskClosed(n => n + 1); setTaskOpen(false) }} />}{boardOpen && <SaveMessageToBoardDialog content="synthetic note" onClose={() => setBoardOpen(false)} onSaved={() => setBoardOpen(false)} />}</div>
+    <div id="scheduler" className="page-enter" style={{ position: 'absolute', left: 20, top: 150, width: 440, height: 400 }}>
+      <TasksPage />
+      <button id="scheduler-update" onClick={() => useAppStore.getState().setScheduledTasks([scheduledTask])}>Update tasks</button>
+    </div>
     {open && <button id="nested-opener" onClick={() => setNested(true)}>nested opener</button>}
     {nested && <Nested close={() => setNested(false)} />}
   </MemoryRouter>

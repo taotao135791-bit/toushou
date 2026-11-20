@@ -158,7 +158,7 @@ export default function ModelPicker({ sessionId, compact = false }: ModelPickerP
             else void loadModelState()
           }
         }}
-        className="focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
+        className="composer-picker focus-ring flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] font-medium whitespace-nowrap text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
         title={sessionId ? t('composer.model') : t('composer.modelNextSession')}
         aria-label={`${sessionId ? t('composer.model') : t('composer.modelNextSession')}: ${
           failed ? t('composer.modelFailed') : label
@@ -171,7 +171,7 @@ export default function ModelPicker({ sessionId, compact = false }: ModelPickerP
           </span>
         )}
         {/* Compact renders icon-only; a lone caret reads as a broken label. */}
-        {!compact && <ChevronUp size={11} className={`transition ${open ? 'rotate-180' : ''}`} />}
+        {!compact && <ChevronUp size={11} className={`composer-picker-chevron transition ${open ? 'rotate-180' : ''}`} />}
       </button>
 
       <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={256} maxHeight={320}>

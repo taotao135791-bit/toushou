@@ -480,7 +480,7 @@ function App() {
   }
 
   if (!setupComplete) {
-    return <SetupWizard />
+    return <div className="h-full" data-appearance="lightweight"><SetupWizard /></div>
   }
 
   return (

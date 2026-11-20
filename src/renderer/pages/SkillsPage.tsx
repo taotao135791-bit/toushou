@@ -25,6 +25,7 @@ import { launchSkillSession } from '../lib/launchTool'
 import { formatSkillChatMessage, formatSkillChatReference } from '@shared/skills'
 import Markdown from '../components/Markdown'
 import { useModalBoundary } from '../lib/modalBoundary'
+import { skillCardSummary } from '../lib/skillCardSummary'
 
 /**
  * SKILL 目录 — the team library of self-made assets. Markdown docs open in
@@ -39,17 +40,11 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Card descriptions clamp to two lines; hovering reveals the full text in a
- * bubble beside the card so long SOP intros stay readable without a click. */
-function DescriptionWithBubble({ text }: { text: string }) {
+function SkillCardSummary({ description }: { description: string }) {
+  const text = skillCardSummary(description)
   if (!text) return null
   return (
-    <div className="group/desc relative w-full">
-      <p className="line-clamp-2 w-full text-[12px] leading-5 text-cream-faint">{text}</p>
-      <div className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden w-64 rounded-lg border border-line bg-ink-800 px-3 py-2 text-[11px] leading-5 text-cream-dim shadow-card group-hover/desc:block">
-        {text}
-      </div>
-    </div>
+    <p className="line-clamp-2 w-full text-[12px] leading-5 text-cream-dim" title={text}>{text}</p>
   )
 }
 
@@ -345,21 +340,20 @@ export default function SkillsPage() {
       <header className="app-drag relative z-30 flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
         <Library size={15} className="shrink-0 text-accent" />
         <span className="shrink-0 text-[13px] font-medium text-cream">{t('skills.title')}</span>
-        <span className="hidden min-w-0 truncate text-[12px] text-cream-faint md:block">
-          {t('skills.subtitle')}
-        </span>
         <div className="app-no-drag ml-auto flex shrink-0 items-center gap-1">
           <button
             onClick={refresh}
             title={t('skills.refresh')}
-            className="rounded-lg border border-transparent p-1.5 text-cream-faint transition hover:bg-overlay hover:text-cream"
+            aria-label={t('skills.refresh')}
+            className="focus-ring rounded-lg border border-transparent p-1.5 text-cream-dim transition hover:bg-overlay hover:text-cream"
           >
             <RefreshCw size={14} />
           </button>
           <button
             onClick={() => void window.electronAPI.revealSkills()}
             title={t('skills.reveal')}
-            className="rounded-lg border border-transparent p-1.5 text-cream-faint transition hover:bg-overlay hover:text-cream"
+            aria-label={t('skills.reveal')}
+            className="focus-ring rounded-lg border border-transparent p-1.5 text-cream-dim transition hover:bg-overlay hover:text-cream"
           >
             <FolderOpen size={14} />
           </button>
@@ -388,7 +382,7 @@ export default function SkillsPage() {
       </header>
 
       {(loadFailed || importFailed || viewerFailed || deleteFailed) && (
-        <div className="mx-4 mt-3 rounded-lg border border-yellow-500/25 bg-yellow-500/10 px-3 py-2 text-xs leading-5 text-yellow-700 dark:text-yellow-200/90">
+        <div role="alert" className="mx-4 mt-3 rounded-lg border border-yellow-500/25 bg-yellow-500/10 px-3 py-2 text-xs leading-5 text-yellow-700 dark:text-yellow-200/90">
           {loadFailed
             ? t('skills.error.load')
             : importFailed
@@ -400,12 +394,12 @@ export default function SkillsPage() {
       )}
 
       {copied && (
-        <div className="mx-4 mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs leading-5 text-emerald-700 dark:text-emerald-200/90">
+        <div role="status" className="mx-4 mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs leading-5 text-emerald-700 dark:text-emerald-200/90">
           {t('skills.copied')}
         </div>
       )}
 
-      <main className="min-h-0 flex-1 overflow-y-auto p-4">
+      <main aria-busy={loading} className="min-h-0 flex-1 overflow-y-auto p-4">
         {loading ? (
           <div className="flex h-full items-center justify-center text-cream-faint">
             <Loader2 size={18} className="animate-spin" />
@@ -416,9 +410,6 @@ export default function SkillsPage() {
             <p className="text-[13px] font-medium text-cream">{t('skills.empty.title')}</p>
             <p className="max-w-sm text-[12px] leading-5 text-cream-faint">
               {t('skills.empty.desc')}
-            </p>
-            <p className="max-w-sm text-[11px] leading-5 text-cream-faint opacity-70">
-              {t('skills.empty.hint')}
             </p>
           </div>
         ) : (
@@ -446,12 +437,10 @@ export default function SkillsPage() {
                     {entry.kind === 'html' ? t('skills.kind.html') : t('skills.kind.markdown')}
                   </span>
                 </div>
-                {entry.description && <DescriptionWithBubble text={entry.description} />}
-                <p className="mt-auto flex w-full items-center gap-1.5 text-[11px] text-cream-faint opacity-80">
+                <SkillCardSummary description={entry.description} />
+                <p className="mt-auto flex w-full items-center gap-1.5 text-[11px] text-cream-faint" title={formatSize(entry.sizeBytes)}>
                   {entry.author && <span className="max-w-[10rem] truncate">{entry.author}</span>}
                   {entry.author && <span>·</span>}
-                  <span>{formatSize(entry.sizeBytes)}</span>
-                  <span>·</span>
                   <span>{formatRelativeTime(entry.updatedAtMillis, language)}</span>
                 </p>
                 </button>
@@ -532,7 +521,7 @@ export default function SkillsPage() {
                       })}
                     </span>
                   </div>
-                  {skill.description && <DescriptionWithBubble text={skill.description} />}
+                  <SkillCardSummary description={skill.description} />
                 </button>
                 <div className="mt-1 flex w-full items-center gap-2">
                   <button

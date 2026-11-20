@@ -1,0 +1,185 @@
+.app-sidebar[data-sidebar-appearance="lightweight"] {
+  --sidebar-inset: 16px;
+  --sidebar-muted: rgb(var(--text-faint));
+  --sidebar-segment: rgb(var(--bg-sunken));
+  --sidebar-selection: rgb(var(--bg-selected));
+  color: rgb(var(--text));
+  border-right-width: 0;
+}
+
+:root:not(.dark) .app-sidebar[data-sidebar-appearance="lightweight"] {
+  --sidebar-muted: #6f716b;
+  --sidebar-segment: #efefed;
+  --sidebar-selection: #ececea;
+  background: #f8f8f7;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-window-drag {
+  height: 56px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .app-sidebar-brand {
+  height: 40px;
+  flex-shrink: 0;
+  padding: 0 20px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-brand-mark {
+  gap: 6px;
+  line-height: 1;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-brand-mark > span {
+  font-size: 17px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-view-switch {
+  flex-shrink: 0;
+  padding: 15px var(--sidebar-inset) 25px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .app-view-segment {
+  min-height: 38px;
+  border-radius: 999px;
+  background: var(--sidebar-segment);
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .app-view-segment button {
+  border-radius: 999px;
+  color: var(--sidebar-muted);
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .app-view-segment button[aria-pressed="true"] {
+  color: rgb(var(--text));
+  box-shadow: none;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-navigation {
+  flex-shrink: 0;
+  padding-inline: var(--sidebar-inset);
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-nav-row {
+  height: 38px;
+  gap: 14px;
+  padding-inline: 9px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-nav-row > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-connection-icon {
+  rotate: -45deg;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-nav-active {
+  background: var(--sidebar-selection);
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-navigation > .sidebar-nav-row + .sidebar-nav-row {
+  margin-top: 0;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-navigation > .sidebar-new-chat {
+  height: 40px;
+  border-radius: 10px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-navigation > .sidebar-new-chat + .sidebar-nav-row {
+  margin-top: 13px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-projects {
+  margin-top: clamp(12px, calc(19vh - 114px), 48px);
+  padding-inline: var(--sidebar-inset);
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-conversations {
+  min-height: 80px;
+  margin-top: clamp(10px, calc(18vh - 108px), 45px);
+  padding-inline: var(--sidebar-inset);
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-section-header {
+  height: 26px;
+  padding: 0 2px 0 8px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-section-title {
+  color: var(--sidebar-muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-section-title > svg {
+  width: 9px;
+  height: 9px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-section-action {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  place-items: center;
+  padding: 0;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-section-action > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-empty {
+  padding: 13px 8px 1px;
+  color: var(--sidebar-muted);
+  line-height: 17px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-footer {
+  flex-shrink: 0;
+  padding: 0 var(--sidebar-inset) 19px;
+  border-top-width: 0;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-footer > button {
+  height: 36px;
+}
+
+.app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-settings {
+  gap: 14px;
+}
+
+@media (max-height: 720px) {
+  .app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-window-drag {
+    height: 44px;
+  }
+
+  .app-sidebar[data-sidebar-appearance="lightweight"] .app-sidebar-brand {
+    height: 36px;
+  }
+
+  .app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-view-switch {
+    padding-block: 12px 18px;
+  }
+
+  .app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-nav-row {
+    height: 32px;
+  }
+
+  .app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-navigation > .sidebar-new-chat {
+    height: 36px;
+  }
+
+  .app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-navigation > .sidebar-new-chat + .sidebar-nav-row {
+    margin-top: 8px;
+  }
+
+  .app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-footer {
+    padding-bottom: 10px;
+  }
+}

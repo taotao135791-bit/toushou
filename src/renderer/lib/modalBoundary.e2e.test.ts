@@ -35,8 +35,12 @@ describe('modal boundary with a real Electron browser view', () => {
       expect(data.taskDialog).toMatchObject({ portal: true, full: true, focus: true, inViewport: true })
       expect(data.boardDialog).toMatchObject({ portal: true, full: true, focus: true, inViewport: true })
       expect(data).toMatchObject({ taskHidden: true, taskSavedAndClosed: true, taskUnmountGuard: true, boardHidden: true, boardClosed: true })
+      expect(data.schedulerDialog).toMatchObject({ portal: true, full: true, focus: true, inViewport: true })
+      expect(data.schedulerControls).toMatchObject({ title: 'New task', initialFocus: true, trap: true })
+      expect(data.schedulerControls.timeLabel).toContain(data.schedulerControls.zone)
+      expect(data).toMatchObject({ schedulerRestored: true, schedulerFallbackRestored: true })
       const shown = data.calls.filter((call: {kind:string}) => call.kind === 'show')
-      expect(shown).toHaveLength(5)
+      expect(shown).toHaveLength(7)
       expect(shown[1].url).toBeNull()
       // A raw fixed probe inside the transformed page recreates the original bug;
       // the portaled product dialog itself must still cover the viewport.
@@ -46,6 +50,7 @@ describe('modal boundary with a real Electron browser view', () => {
       const clippedData = JSON.parse(clippedLine!.slice('E2E_RESULT '.length))
       expect(clippedData, clipped.stderr).not.toHaveProperty('fatal')
       expect(clippedData.fullViewport, JSON.stringify(clippedData.backdrop)).toBe(true)
+      expect(clippedData.schedulerDialog).toMatchObject({ full: true, inViewport: true })
       expect(clippedData.probeFullViewport).toBe(false)
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })

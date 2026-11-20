@@ -29,8 +29,11 @@ describe('Feishu scheduled task controls in Electron', () => {
       expect(result.legacy).toEqual({ selected: '', disabled: false })
       expect(result.legacySaved.id).toBe('legacy-task')
       expect(result.legacySaved).not.toHaveProperty('feishuChatId')
-      expect(result.history.unknown).toContain('Delivery unknown')
+      expect(result.history.unknown).toContain('Completed')
+      expect(result.history.unknown).toContain('Feishu delivery unconfirmed')
       expect(result.history.unknownRetry).toBe(false)
+      expect(result.history.failed).toContain('Completed')
+      expect(result.history.failed).toContain('Feishu not sent')
       expect(result.history.failedRetry).toBe(true)
       expect(result.retries).toEqual([{ taskId: 'delivery-task', runId: 'failed-run' }])
     } finally { rmSync(dir, { recursive: true, force: true }) }

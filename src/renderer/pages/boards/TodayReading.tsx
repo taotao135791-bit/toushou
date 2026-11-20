@@ -385,7 +385,18 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
   const draftTikTok = scopeTikTokPageData(currentTikTok, ttPageScope, failedAccountIds)
   const goodFacebook = (visibleFacebook ?? []).filter(row => !rowFailures[row.account.act] && !row.readError && refreshingAct !== row.account.act)
   const hasFigures = goodFacebook.some(row => row.spend !== null) || (draftTikTok?.accounts ?? []).some(account => !isTikTokTodayFailure(account))
+  const hasReadingResults = Boolean(visibleFacebook?.length || currentTikTok?.accounts.length)
+  const readingBusy = tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null
+  const readOneLabel = t('boards.today.ttPicker.readOne')
+  const readAllLabel = t('boards.today.ttPicker.readAll')
+  const readingHint = hasFigures
+    ? (zh ? '将当前范围最多 50 个账户的读数发送给所选模型，开始只读分析。' : 'Send up to 50 accounts in the current scope to the selected model for read-only analysis.')
+    : readingBusy ? '' : hasReadingResults ? t('boards.today.askDisabled')
+      : zh ? `选好日期后，点「${readOneLabel}」或「${readAllLabel}」。` : `Choose dates, then select “${readOneLabel}” or “${readAllLabel}.”`
   const rangeLabel = range === 'custom' ? (zh ? '自选日期' : 'Custom dates') : t(rangeKey(range))
+  const comparisonLabel = previous && (range === 'today'
+    ? (zh ? `对比昨天全天（${formatReadingWindow(previous)}）` : `Compared with all of yesterday (${formatReadingWindow(previous)})`)
+    : t('boards.today.compare', { window: formatReadingWindow(previous) }))
   const currentSnapshot = () => snapshotToday({ rangeLabel, window: dateWindow, capturedAt: Date.now(), facebook: visibleFacebook,
     tiktok: scopedTikTok(), facebookLoadError, tiktokFailure, facebookFailures: rowFailures, tiktokFailures: singleFailures, updatedAt: singleUpdatedAt })
   const ask = () => {
@@ -410,7 +421,8 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
         <h1 className="text-[24px] font-semibold leading-[34px] text-cream">{t('boards.today.title')}</h1>
         <p className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px] leading-5 tabular-nums text-cream-dim">
           <span>{rangeLabel} · {formatReadingWindow(dateWindow)}</span>
-          {previous && <span className="text-[12px] text-cream-faint">{t('boards.today.compare').replace('{window}', formatReadingWindow(previous))}</span>}
+          {range === 'today' && <span className="text-amber-700 dark:text-amber-300">{zh ? '截至读取时' : 'Through read time'}</span>}
+          {comparisonLabel && <span className="text-[12px] text-cream-faint">{comparisonLabel}</span>}
         </p>
       </header>
 
@@ -449,14 +461,10 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
         </div>
         <details className="text-[12px] leading-5 text-cream-faint">
           <summary className="focus-ring w-fit cursor-pointer rounded text-cream-dim">{zh ? '日期与对比口径' : 'Date and comparison details'}</summary>
-          <div className="mt-2 space-y-1">
-            <p>{zh ? 'Facebook 按来源日期；TikTok 快捷范围按账户时区，详见账户行。' : 'Facebook uses source dates; TikTok presets use account timezones, shown per account.'}</p>
-            <p>{zh ? `可选单日或起止日期，每次最多 ${TIKTOK_CUSTOM_MAX_DAYS} 天。TikTok 按账户校验日期；Facebook 仅展示与日期完全匹配的读数。` : `Choose a day or a range up to ${TIKTOK_CUSTOM_MAX_DAYS} days. Dates are checked per TikTok account; Facebook only shows exact matching readings.`}</p>
-          </div>
+          <p className="mt-2">{zh ? `最多可选 ${TIKTOK_CUSTOM_MAX_DAYS} 天。TikTok 按账户时区核对日期，实际日期见各账户。Facebook 仅显示与所选日期吻合的源数据。` : `Choose up to ${TIKTOK_CUSTOM_MAX_DAYS} days. TikTok checks dates in each account’s time zone and lists the actual dates per account. Facebook shows readings that match the selected dates.`}</p>
         </details>
         {dateError && <p role="alert" className="text-[12px] leading-5 text-red-600 dark:text-red-400">{zh ? '日期无效、开始晚于结束，或范围过长。' : 'Invalid dates, reversed range, or range too long.'}</p>}
       </form>
-      {range === 'today' && <p role="note" className="text-[12px] text-amber-700 dark:text-amber-300">{zh ? '今天的数据截至读取时，比较项为昨天全天，两者不是等时段。' : 'Today is measured at read time; the comparison is the whole of yesterday. These are not equal elapsed periods.'}</p>}
       <section className="flex flex-col gap-3">
         <h2 className="flex items-center gap-2 text-[15px] font-semibold leading-6 text-cream"><BrandIcon brand="facebook" size={20} />{t('boards.today.facebook')}</h2>
         {/* Archived UI is retained in source, but never mounted. Main also rejects legacy reads. */}
@@ -481,8 +489,8 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
           onStep={step => row.readError ? void loadFacebook() : facebookStep(step, row)} t={t}
         />)}
         </> : <>
-        <p className="text-[12px] text-cream-dim">{zh ? '广告数据改用 Meta Ads 连接读取。旧网页读数已暂停，已有报表仍保留。' : 'Read advertising data through the Meta Ads connection. Legacy browser reading is suspended; saved reports are retained.'}</p>
-        <button type="button" onClick={() => navigate('/connections')} className="focus-ring self-start rounded-full border border-line px-4 py-2 text-[13px] text-cream">{zh ? '前往 Meta Ads 连接' : 'Open Meta Ads connection'}</button>
+        <p className="text-[12px] text-cream-dim">{zh ? '旧网页读数已暂停，已保存的报表仍可查看。' : 'Browser readings are paused. Saved reports remain available.'}</p>
+        <button type="button" onClick={() => navigate('/connections')} className="focus-ring self-start rounded-full border border-line px-4 py-2 text-[13px] text-cream">{zh ? '前往连接页设置 Meta Ads' : 'Set up Meta Ads in Connections'}</button>
         </>}
       </section>
 
@@ -494,12 +502,12 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
           onReadAll={() => chooseTikTokScope({ kind: 'all' })}
           onConnect={() => navigate('/connections')}
           labels={{
-            connect: zh ? '连接 TikTok' : 'Connect TikTok', title: t('boards.today.ttPicker.title'), description: t('boards.today.ttPicker.description'),
+            connect: zh ? '连接 TikTok' : 'Connect TikTok', title: t('boards.today.ttPicker.title'),
             accountLabel: t('boards.today.ttPicker.accountLabel'), accountPlaceholder: t('boards.today.ttPicker.placeholder'),
             manualHint: t('boards.today.ttPicker.manualHint'), loading: t('boards.today.ttPicker.loading'), empty: t('boards.today.ttPicker.empty'),
             discoveryError: t('boards.today.ttPicker.error'), namesIncomplete: t('boards.today.ttPicker.namesIncomplete'), noMatch: t('boards.today.ttPicker.noMatch'),
             retry: t('boards.today.ttPicker.retry'), invalidId: t('boards.today.ttPicker.invalid'),
-            readOne: t('boards.today.ttPicker.readOne'), readAll: t('boards.today.ttPicker.readAll'), readAllHint: t('boards.today.ttPicker.readAllHint')
+            readOne: readOneLabel, readAll: readAllLabel, readAllHint: t('boards.today.ttPicker.readAllHint')
           }}
         />
         {ttPageScope && <p className="text-[12px] text-cream-faint">{t(ttPageScope.kind === 'one' ? 'boards.today.ttPicker.currentOne' : 'boards.today.ttPicker.currentAll')}</p>}
@@ -514,8 +522,6 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
               busy={tiktokBusy}
             />
           </div>
-        ) : tiktokBusy && !currentTikTok ? (
-          <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.loading')}</p>
         ) : currentTikTok ? (
           <>
             {currentTikTok.datasetSync?.ok === false && !tiktokBusy && !['reading-in-progress', 'reading-cancelled'].includes(currentTikTok.datasetSync.error) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(currentTikTok.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : currentTikTok.datasetSync.error === 'proof-failed' ? 'boards.datasets.proofFailed' : currentTikTok.datasetSync.error === 'row-limit' ? 'boards.datasets.ttRowLimit' : 'boards.datasets.syncFailed')}</p>}
@@ -531,6 +537,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
               <TikTokAccount
                 key={account.advertiserId}
                 account={account}
+                zh={zh}
                 generatedAt={singleUpdatedAt[account.advertiserId] ?? currentTikTok.generatedAt}
                 open={openTikTok === account.advertiserId}
                 busy={tiktokBusy || singleActive === account.advertiserId}
@@ -557,21 +564,19 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
 
       <div className="space-y-3 border-t border-line pb-4 pt-5">
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) { setSaveWithAi(false); setSaveSnapshot(currentSnapshot()) } }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring min-h-9 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-not-allowed disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
-          <button type="button" onClick={() => { if (!facebookPending && !tiktokBusy && !refreshingAct && !singleActive) { setSaveWithAi(true); setSaveSnapshot(currentSnapshot()) } }} disabled={tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || !(visibleFacebook?.length || currentTikTok?.accounts.length)} className="focus-ring min-h-9 rounded-lg border border-line px-4 py-2 text-[13px] text-cream transition-colors hover:bg-overlay disabled:cursor-not-allowed disabled:opacity-40">{zh ? '用 AI 生成看板' : 'Create board with AI'}</button>
+          <button type="button" onClick={() => { if (!readingBusy) { setSaveWithAi(false); setSaveSnapshot(currentSnapshot()) } }} disabled={readingBusy || !hasReadingResults} className="focus-ring min-h-9 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-not-allowed disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>
+          <button type="button" onClick={() => { if (!readingBusy) { setSaveWithAi(true); setSaveSnapshot(currentSnapshot()) } }} disabled={readingBusy || !hasReadingResults} className="focus-ring min-h-9 rounded-lg border border-line px-4 py-2 text-[13px] text-cream transition-colors hover:bg-overlay disabled:cursor-not-allowed disabled:opacity-40">{zh ? '用 AI 生成看板' : 'Create board with AI'}</button>
           <button
             type="button"
             onClick={ask}
-            disabled={!hasFigures || tiktokBusy || facebookPending || refreshingAct !== null || singleActive !== null || analysisBusy}
+            disabled={!hasFigures || readingBusy || analysisBusy}
             className="focus-ring min-h-9 rounded-lg border border-line px-4 py-2 text-[13px] leading-5 text-cream transition-colors hover:bg-overlay disabled:cursor-not-allowed disabled:opacity-40"
           >
             {analysisBusy ? (zh ? '正在开始分析…' : 'Starting analysis…') : (zh ? 'AI 分析当前读数' : 'Analyze readings with AI')}
           </button>
         </div>
-        <p className="text-[12px] leading-[18px] text-cream-faint">
-          {hasFigures ? (zh ? '将当前范围最多 50 个账户的读数发送给所选模型，开始只读分析。' : 'Send up to 50 accounts in the current scope to the selected model for read-only analysis.') : t('boards.today.askDisabled')}
-        </p>
-        <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.currencyNote')}</p>
+        {readingHint && <p className="text-[12px] leading-[18px] text-cream-faint">{readingHint}</p>}
+        {hasFigures && <p className="text-[12px] leading-[18px] text-cream-faint">{t('boards.today.currencyNote')}</p>}
       </div>
     </div>
   )
@@ -611,6 +616,7 @@ function Movers({
 
 function TikTokAccount({
   account,
+  zh,
   generatedAt,
   open,
   busy,
@@ -628,6 +634,7 @@ function TikTokAccount({
   t
 }: {
   account: TikTokTodayAccount
+  zh: boolean
   generatedAt: number
   open: boolean
   busy: boolean
@@ -651,11 +658,11 @@ function TikTokAccount({
       </p>
       <p className="truncate text-[12px] leading-[18px] tabular-nums text-cream-faint">
         {account.name ? `ID ${account.advertiserId} · ` : ''}
-        {t('boards.today.official')}
+        TikTok · {t('boards.today.official')}
         {' · '}
         {t('boards.reading.updatedAt', { time: new Date(generatedAt).toLocaleString() })}
       </p>
-      {!isTikTokTodayFailure(account) && account.window && <p className="text-[12px] leading-[18px] text-cream-faint">{formatReadingWindow(account.window)}{account.timezone ? ` · ${account.timezone}` : ''}{account.previousWindow ? ` · ${t('boards.today.compare').replace('{window}', formatReadingWindow(account.previousWindow))}` : ''}</p>}
+      {!isTikTokTodayFailure(account) && account.window && <p className="text-[12px] leading-[18px] text-cream-faint">{zh ? '实际日期 ' : 'Report dates '}{formatReadingWindow(account.window)}{account.timezone ? ` · ${account.timezone}` : ''}{account.previousWindow ? ` · ${t('boards.today.compare', { window: formatReadingWindow(account.previousWindow) })}` : ''}</p>}
     </div>
   )
   const refreshButton = <button type="button" onClick={onRefresh} disabled={refreshDisabled} className="focus-ring rounded-full border border-line px-2.5 py-1 text-[12px] text-cream-dim disabled:opacity-40">{busy ? t('boards.reading.refreshing') : t('boards.today.refreshThisTt')}</button>

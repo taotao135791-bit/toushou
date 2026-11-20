@@ -52,8 +52,9 @@ app.whenReady().then(async () => {
     const click = (label, scope = 'document') => js(`[...${scope}.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify(label)}).click()`)
     const edit = (selector, value) => js(`(() => {const e=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}))})()`)
     const picker = `document.querySelector('[aria-label="Choose a project"]')`
+    const composerPickerButton = `document.querySelector('#composer-projects .composer-tray > button[aria-haspopup="menu"]')`
     const openSidebar = async () => { await js(`document.querySelector('#sidebar-projects [aria-label="New project"]').click()`); await waitFor(`!!${picker}`); await settleMenu(`${picker}.parentElement`) }
-    const openComposer = async () => { await js(`document.querySelector('#composer-projects [aria-label="Choose project"]').click()`); await waitFor(`!!${picker}`); await settleMenu(`${picker}.parentElement`) }
+    const openComposer = async () => { await js(`${composerPickerButton}.click()`); await waitFor(`!!${picker}`); await settleMenu(`${picker}.parentElement`) }
     const bounds = () => settleMenu(`${picker}.parentElement`)
     const beginCreate = async () => { await click('New project', picker); await waitFor(`!!document.querySelector('#project-name')`) }
     const submit = async () => { await js(`document.querySelector('#project-name').form.requestSubmit()`); await waitFor('window.projectsFixture.snapshot().pending===null') }
@@ -62,7 +63,7 @@ app.whenReady().then(async () => {
     await waitFor(`window.projectsFixture?.snapshot().current==='/synthetic/default' && !!document.querySelector('textarea')`)
     await edit('textarea', 'Unsent optimization brief')
     const defaultSelected = await js('window.projectsFixture.snapshot().current')
-    const defaultPresentation = await js(`({hiddenInSidebar:!document.querySelector('[data-project-id="default"]'),composerText:document.querySelector('#composer-projects [aria-label="Choose project"]').textContent.trim(),composerTitle:document.querySelector('#composer-projects [aria-label="Choose project"]').title})`)
+    const defaultPresentation = await js(`(() => {const button=${composerPickerButton};return {hiddenInSidebar:!document.querySelector('[data-project-id="default"]'),composerText:button.textContent.trim(),composerTitle:button.title,composerLabel:button.getAttribute('aria-label')}})()`)
     await openSidebar()
     const defaultPicker = await js(`(() => {const e=[...${picker}.querySelectorAll('button')].find(e=>e.textContent.trim()==='No project');return {present:!!e,title:e?.title,privatePathVisible:${picker}.textContent.includes('/synthetic/default')}})()`)
     const sidebarBounds = await bounds()
@@ -115,7 +116,7 @@ app.whenReady().then(async () => {
     const archiveHiddenInComposer = await js(`!${picker}.textContent.includes('Composer import')`)
     await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`)
     await waitFor(`!${picker}`)
-    const focusAfterEscape = await js(`document.activeElement===document.querySelector('#composer-projects [aria-label="Choose project"]')`)
+    const focusAfterEscape = await js(`document.activeElement===${composerPickerButton}`)
     await js(`document.querySelector('#sidebar-projects [aria-label="Project options"]').click()`)
     await click('Archived projects')
     await actions('Composer import')

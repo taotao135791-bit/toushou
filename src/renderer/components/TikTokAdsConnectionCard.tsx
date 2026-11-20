@@ -170,6 +170,7 @@ export default function TikTokAdsConnectionCard() {
   const isFailed = snapshot.status === 'failed'
   const isDegraded = snapshot.status === 'degraded' || snapshot.status === 'needs_attention'
   const isConnected = snapshot.connected
+  const hasConnection = isConnected && !isWaiting && !isConnecting && !isFailed && !isDegraded
   const tokenExpiry = snapshot.tokenExpiresAt
     ? new Date(snapshot.tokenExpiresAt).toLocaleString()
     : null
@@ -234,12 +235,13 @@ export default function TikTokAdsConnectionCard() {
         </div>
       )}
 
-      {isConnected && (
+      {hasConnection && (
         <div className="mt-4">
-          {!isFailed && !isDegraded && !isWaiting && !isConnecting && <div role="status" className="mb-3 flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400">
-            <CheckCircle2 size={16} /> {t('connections.tiktokConnected')}
-          </div>}
-          {tokenExpired && <p className="mb-3 text-[12px] text-amber-700 dark:text-amber-300">{t('connections.tiktokTokenExpired')}</p>}
+          {tokenExpired ? (
+            <div role="status" className="mb-3 flex items-center gap-2 text-[13px] font-medium text-amber-700 dark:text-amber-300"><AlertTriangle size={16} className="shrink-0" />{t('connections.authorizationExpired')}</div>
+          ) : (
+            <div role="status" className="mb-3 flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400"><CheckCircle2 size={16} className="shrink-0" />{t('connections.tiktokConnected')}</div>
+          )}
           <ReadingAdvertisers />
           <div className="mt-4 flex flex-wrap gap-2">
             <button
@@ -265,7 +267,7 @@ export default function TikTokAdsConnectionCard() {
             </summary>
             <dl className="mt-3 grid gap-x-6 gap-y-3 text-[12px] sm:grid-cols-2">
               <div><dt className="text-cream-faint">{t('connections.tiktokServer')}</dt><dd className="mt-1 text-cream-dim">{t('connections.tiktokOfficial')}</dd></div>
-              <div><dt className="text-cream-faint">{t('connections.tiktokTokenExpires')}</dt><dd className={`mt-1 break-words tabular-nums ${tokenExpired ? 'text-amber-800 dark:text-amber-200' : 'text-cream-dim'}`}>{tokenExpired ? t('connections.tiktokTokenExpired') : tokenExpiry ?? '—'}</dd></div>
+              <div><dt className="text-cream-faint">{t('connections.tiktokTokenExpires')}</dt><dd className="mt-1 break-words tabular-nums text-cream-dim">{tokenExpiry ?? '—'}</dd></div>
               {lastConnected && <div><dt className="text-cream-faint">{t('connections.tiktokLastConnected')}</dt><dd className="mt-1 break-words tabular-nums text-cream-dim">{lastConnected}</dd></div>}
             </dl>
             <p className="mt-3 text-[12px] leading-5 text-cream-faint">{t('connections.tiktokNote')}</p>

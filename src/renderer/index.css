@@ -57,6 +57,38 @@
     --shadow-composer: 0 4px 10px rgba(0, 0, 0, 0.2), 0 12px 28px rgba(0, 0, 0, 0.16);
   }
 
+  /* Body-level menus and dialogs follow the active page. The sidebar keeps its own palette. */
+  :root:not(.dark):has([data-appearance='lightweight']),
+  :root:not(.dark) .app-sidebar[data-sidebar-appearance='lightweight'] {
+    --bg-app: 255 255 255;
+    --bg-sidebar: 248 248 247;
+    --bg-elev: 255 255 255;
+    --bg-sunken: 245 245 243;
+    --bg-selected: 236 236 234;
+    --bubble: 247 247 244;
+    --message-bubble: 241 241 238;
+    --text: 48 48 45;
+    --text-dim: 88 88 82;
+    --text-faint: 111 111 105;
+    --line: rgba(48, 48, 45, 0.085);
+    --line-strong: rgba(48, 48, 45, 0.15);
+    --overlay: rgba(48, 48, 45, 0.045);
+    --overlay-strong: rgba(48, 48, 45, 0.08);
+    --shadow-card: 0 1px 3px rgba(48, 48, 45, 0.035);
+    --shadow-pop: 0 6px 20px rgba(48, 48, 45, 0.075);
+    --shadow-composer: 0 2px 4px rgba(48, 48, 45, 0.025), 0 5px 16px rgba(48, 48, 45, 0.04);
+  }
+
+  :root.dark:has([data-appearance='lightweight']),
+  :root.dark .app-sidebar[data-sidebar-appearance='lightweight'] {
+    --bg-app: 30 30 29;
+    --bg-sidebar: 27 27 26;
+    --bg-elev: 33 33 32;
+    --bg-sunken: 40 40 39;
+    --bg-selected: 47 47 45;
+    --shadow-card: 0 1px 4px rgba(0, 0, 0, 0.16);
+  }
+
   html, body, #root {
     @apply h-full;
   }
@@ -261,8 +293,9 @@
 /* v1.1.0 shell: keep the native window chrome, inset only the white work
    surface, and let the sidebar own the full-height background. */
 .app-shell {
-  gap: 8px;
-  padding: 8px 8px 8px 0;
+  --app-shell-inset: 8px;
+  gap: var(--app-shell-inset);
+  padding: var(--app-shell-inset) var(--app-shell-inset) var(--app-shell-inset) 0;
   background: rgb(var(--bg-app));
 }
 
@@ -277,6 +310,19 @@
   border: 1px solid var(--line);
   border-radius: 19px;
   background: rgb(var(--bg-elev));
+}
+
+.app-shell[data-appearance='lightweight'] {
+  --app-shell-inset: 0px;
+}
+
+.app-shell > .app-sidebar[data-sidebar-appearance='lightweight'] {
+  margin-block: calc(-1 * var(--app-shell-inset));
+}
+
+.app-shell[data-appearance='lightweight'] .app-main {
+  border: 0;
+  border-radius: 0;
 }
 
 .app-sidebar-brand {
@@ -305,45 +351,6 @@
   box-shadow: 0 1px 3px rgba(32, 32, 32, 0.06);
 }
 
-.home-hero {
-  width: min(100%, 880px);
-}
-
-.home-wordmark {
-  color: rgb(var(--text));
-  font-size: clamp(48px, 5vw, 62px);
-  font-weight: 700;
-  line-height: 1.24;
-  letter-spacing: -0.03em;
-  margin-bottom: 29px;
-}
-
-.home-quick-links {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 34px;
-}
-
-.home-quick-links button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: rgb(var(--text-dim));
-  font-size: 14px;
-}
-
-.home-quick-links button:hover {
-  background: rgb(var(--bg-sunken));
-  color: rgb(var(--text));
-  border-color: var(--line-strong);
-}
-
 .composer-shell {
   border-radius: 20px;
   background: rgb(var(--bg-elev));
@@ -370,17 +377,6 @@
   line-height: 24px;
 }
 
-.entry-composer .composer-shell {
-  border-radius: 24px;
-  padding: 10px;
-}
-
-.entry-composer textarea {
-  min-height: 72px;
-  font-size: 17px;
-  line-height: 1.6;
-}
-
 .composer-toolbar {
   min-height: 36px;
   margin: 6px 0 0;
@@ -391,39 +387,18 @@
   min-width: 0;
 }
 
-/* Home only: the white input card floats on a connected soft-gray base
-   (design.md 5.2) — the tray below carries 选择项目 / 插件. */
-.entry-composer {
-  border-radius: 26px;
-  background: rgb(var(--bg-sunken));
-}
-
-.composer-tray {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 48px;
-  padding: 4px 14px 6px;
-}
-
-.composer-tray button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: 8px;
-  padding: 5px 6px;
-  font-size: 13px;
-  color: rgb(var(--text-dim));
-}
-
-.composer-tray button:hover {
-  color: rgb(var(--text));
-}
-
 .workspace-panel {
   background: rgb(var(--bg-elev));
   border-color: var(--line);
   box-shadow: -12px 0 32px rgba(32, 32, 32, 0.06);
+}
+
+.app-shell[data-appearance='lightweight'] .workspace-panel {
+  box-shadow: -6px 0 18px rgba(48, 48, 45, 0.04);
+}
+
+.dark .app-shell[data-appearance='lightweight'] .workspace-panel {
+  box-shadow: -6px 0 18px rgba(0, 0, 0, 0.16);
 }
 
 .page-surface {
@@ -432,12 +407,6 @@
 
 @media (max-width: 1100px) {
   .app-shell { padding-right: 0; }
-  .home-hero { width: min(100%, 760px); }
-}
-
-@media (max-width: 700px) {
-  .home-quick-links { margin-top: 24px; }
-  .home-quick-links button { min-height: 38px; padding-inline: 11px; }
 }
 
 /* react-grid-layout overrides — unlayered on purpose so they beat the vendor

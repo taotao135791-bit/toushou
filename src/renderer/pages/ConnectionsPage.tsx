@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
-import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, LoaderCircle, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
+import { AlertTriangle, ArrowUpRight, Check, LoaderCircle, LockKeyhole, MessageCircle, QrCode, RefreshCw, Unplug } from 'lucide-react'
 import { FeishuCapability, FeishuConnectionSnapshot, FeishuOAuthAuthorizationView, FeishuRegistrationView , FEISHU_CAPABILITY_SCOPES } from '@shared/connections'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
@@ -173,17 +173,18 @@ export default function ConnectionsPage() {
 
   const isWaiting = snapshot.state === 'waiting_for_scan'
   const isRepairScan = snapshot.registrationMode === 'repair'
-  const isConfiguring = ['registration_confirmed', 'storing_credentials', 'configuring_app', 'starting_channel', 'probing'].includes(snapshot.state)
+  const isConfiguring = ['starting_registration', 'registration_confirmed', 'storing_credentials', 'configuring_app', 'starting_channel', 'probing'].includes(snapshot.state)
   const isFailed = snapshot.status === 'failed'
   const isDegraded = snapshot.status === 'degraded'
   // The live websocket wins over the connect-state machine: during an SDK
   // self-reconnect the state field can lag while the channel is actually up.
   const isLive = snapshot.connected || snapshot.websocketState === 'connected'
-  // Scopes the Feishu app console has not configured (requested but the
-  // consent page refuses to grant) — drives the gap-guidance panel.
+  // Capabilities absent from the current user grant are separate from bot messaging.
   const missingScopes = (
     Object.entries(FEISHU_CAPABILITY_SCOPES) as [FeishuCapability, { scope: string; label: string }][]
   ).filter(([capability]) => !snapshot.authorizedCapabilities.includes(capability))
+  const hasLimitedPermissions = isLive && missingScopes.length > 0
+  const showStatusBadge = !isWaiting && !isConfiguring && !isFailed && !isDegraded
   const capabilityLabel: Record<FeishuCapability, I18nKey> = {
     'docs.read': 'connections.scopeDocsRead',
     'docs.write': 'connections.scopeDocsWrite',
@@ -224,9 +225,9 @@ export default function ConnectionsPage() {
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 id="feishu-connection-heading" className="text-[15px] font-semibold text-cream">{t('connections.feishu')}</h2>
-                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${isLive ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
-                      {isLive ? t('connections.connected') : t('connections.notConnected')}
-                    </span>
+                    {showStatusBadge && <span role="status" className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${hasLimitedPermissions ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300' : isLive ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-400' : 'bg-overlay text-cream-faint'}`}>
+                      {t(hasLimitedPermissions ? 'connections.feishuLimited' : isLive ? 'connections.connected' : 'connections.notConnected')}
+                    </span>}
                   </div>
                 </div>
               </div>
@@ -276,16 +277,12 @@ export default function ConnectionsPage() {
 
             {isLive && (
               <div className="px-5 pb-5 pt-4">
-                <div role="status" className="flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400"><CheckCircle2 size={16} className="shrink-0" />{t('connections.connectedHint')}</div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button onClick={tryInChat} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))] hover:bg-accent-bright"><MessageCircle size={12} />{t('connections.tryInChat')}</button>
                   <button onClick={() => void testConnection()} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim hover:text-cream"><RefreshCw size={12} />{checked ? t('connections.checked') : t('connections.check')}</button>
+                  {snapshot.consoleAuthUrl && hasLimitedPermissions && <button type="button" onClick={() => void beginRepair()} disabled={busy} className="focus-ring min-h-8 shrink-0 rounded-lg border border-amber-500/30 px-3 py-1.5 text-[12px] font-medium text-amber-800 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-300">{t('connections.scopeGapRepair')}</button>}
                   <button onClick={() => void disconnect()} disabled={busy} className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg border border-red-500/20 px-3 py-1.5 text-[12px] text-red-500 hover:bg-red-500/10"><Unplug size={12} />{t('connections.disconnect')}</button>
                 </div>
-                {snapshot.consoleAuthUrl && missingScopes.length > 0 && <div role="status" className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-amber-500/10 px-3 py-3">
-                  <div className="flex min-w-0 items-center gap-2 text-[12px] text-amber-800 dark:text-amber-300"><AlertTriangle size={14} className="shrink-0" /><span>{t('connections.scopeGapTitle', { count: missingScopes.length })}</span></div>
-                  <button type="button" onClick={() => void beginRepair()} disabled={busy} className="focus-ring min-h-8 shrink-0 rounded-lg border border-amber-500/30 px-3 py-1.5 text-[12px] font-medium text-amber-800 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-300">{t('connections.scopeGapRepair')}</button>
-                </div>}
                 <details className="mt-4 border-t border-line pt-3">
                   <summary className="focus-ring w-fit cursor-pointer rounded text-[12px] leading-5 text-cream-dim hover:text-cream">{t('connections.tiktokDetails')}</summary>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -337,10 +334,7 @@ export default function ConnectionsPage() {
                     })}
                   </div>
 
-                  {/* Permission-gap guidance: scopes the Feishu app console has
-                      NOT configured — enable + publish a version there, then
-                      re-verify here. The console deep link is built Main-side. */}
-                  {snapshot.consoleAuthUrl && missingScopes.length > 0 && (
+                  {snapshot.consoleAuthUrl && hasLimitedPermissions && (
                     <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/8 p-3">
                       <div className="flex items-center gap-1.5 text-[12px] font-medium text-amber-600 dark:text-amber-400">
                         <AlertTriangle size={12} />
