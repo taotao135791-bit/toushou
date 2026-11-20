@@ -36,7 +36,7 @@ describe('ChatPanel background metadata rendering', () => {
       expect(data.renamed.commits).toBeGreaterThan(data.background.commits)
       expect(data.status).toBeGreaterThan(data.renamed.commits)
       expect(data.permission).toBe(true)
-      expect(data.content).toEqual({ message: true, error: 'Send failed. Retry the message.' })
+      expect(data.content).toEqual({ message: true, error: 'Message failed to send.' })
       expect(data.busyError).toBe('Stop unconfirmed. Try again.')
       expect(data.defaultRecovery).toEqual({ message: true, path: true, button: 'Reselect folder…', destination: 'Default workspace' })
       expect(data.defaultRecovered).toEqual({ calls: ['default'], workspace: '/synthetic/default-save-folder', source: 'default', missing: false, promptGone: true, draft: 'Unsent default folder brief' })
