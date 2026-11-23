@@ -176,32 +176,21 @@ interface LexiconResolution {
   mode: LexiconMode
 }
 
-/** Detect the script of the copy itself and map it to a lexicon language. */
+/** A distinctive script can supply scoring hints for an unlisted language. */
 function detectScriptKey(text: string): string | null {
   if (/\p{Script=Hiragana}|\p{Script=Katakana}/u.test(text)) return 'ja'
   if (/\p{Script=Hangul}/u.test(text)) return 'ko'
   if (/\p{Script=Thai}/u.test(text)) return 'th'
-  if (/\p{Script=Arabic}/u.test(text)) return 'ar'
-  if (/\p{Script=Devanagari}/u.test(text)) return 'hi'
-  if (/\p{Script=Cyrillic}/u.test(text)) return 'ru'
-  if (/\p{Script=Han}/u.test(text)) return 'zh-CN'
   return null
 }
 
-/**
- * Resolution order: exact code → known alias → base code (es-MX→es) →
- * base alias (tl-PH→fil) → script sniffed from the copy (language "zh" with
- * Thai text still scores Thai) → English fallback marked degraded. Degraded
- * never zeroes a candidate: the hook/CTA floors are waived downstream so an
- * unlisted language scores on relevance/space/brand instead of failing all.
- */
 /** Lowercased language code → canonical SCORE_LANGUAGE_TERMS key. */
 const TERMS_BY_LOWER = new Map(Object.keys(SCORE_LANGUAGE_TERMS).map(key => [key.toLowerCase(), key]))
 
 /** Case-insensitive lexicon lookup: 'zh-tw' resolves to the canonical 'zh-TW'. */
 function lexiconKeyFor(code: string): string | null {
   const lower = code.toLowerCase()
-  const alias = SCORE_LANGUAGE_ALIASES[lower]
+  const alias = Object.hasOwn(SCORE_LANGUAGE_ALIASES, lower) ? SCORE_LANGUAGE_ALIASES[lower] : undefined
   return TERMS_BY_LOWER.get(lower) ?? (alias ? TERMS_BY_LOWER.get(alias.toLowerCase()) ?? null : null)
 }
 
@@ -211,9 +200,9 @@ function resolveLexicon(language: string, text?: string): LexiconResolution {
   if (direct) return { key: direct, mode: 'full' }
   const viaBase = lexiconKeyFor(key.split('-')[0])
   if (viaBase) return { key: viaBase, mode: 'full' }
-  const scriptKey = detectScriptKey(String(text ?? ''))
-  if (scriptKey) return { key: scriptKey, mode: 'full' }
-  return { key: 'en', mode: 'degraded' }
+  // A script alone cannot confirm the requested language. Leave the relaxed
+  // gates in place even when text offers better scoring hints than English.
+  return { key: detectScriptKey(text ?? '') ?? 'en', mode: 'degraded' }
 }
 
 /**
@@ -337,19 +326,38 @@ export function financialComplianceViolations(text: string): string[] {
   return financialComplianceMatches(text).map((match) => match.source)
 }
 
-/** Pattern hits with the matched phrase — the caller can exempt matches the
- * user themselves confirmed as product facts (see scoreCopyItem). */
-export function financialComplianceMatches(text: string): Array<{ source: string; match: string }> {
-  const matches: Array<{ source: string; match: string }> = []
+/** Keep every occurrence so one quoted fact cannot validate a second claim. */
+function financialComplianceMatches(text: string): Array<{ source: string; start: number; end: number }> {
+  const matches: Array<{ source: string; start: number; end: number }> = []
   for (const pattern of FINANCIAL_FORBIDDEN_PATTERNS) {
-    // EVERY occurrence must be examined: exempting only the first hit let a
-    // confirmed "zero fees" mask an unconfirmed "lowest fees" in the same line.
-    const global = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`)
+    const global = new RegExp(pattern.source, `${pattern.flags}g`)
     for (const hit of String(text ?? '').matchAll(global)) {
-      matches.push({ source: pattern.source.slice(0, 80), match: hit[0] })
+      const start = hit.index ?? 0
+      matches.push({ source: pattern.source.slice(0, 80), start, end: start + hit[0].length })
     }
   }
   return matches
+}
+
+function normalizeClaimText(value: string): string {
+  return value.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/** Locate complete quoted benefits, keeping word boundaries in Latin text. */
+function quotedBenefitRanges(text: string, benefits: string[]): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = []
+  const wordCharacter = /[\p{Script=Latin}\p{M}\p{N}]/u
+  for (const value of benefits) {
+    const benefit = normalizeClaimText(value)
+    if (!benefit) continue
+    for (let start = text.indexOf(benefit); start >= 0; start = text.indexOf(benefit, start + 1)) {
+      const end = start + benefit.length
+      const joinsPreviousWord = wordCharacter.test(benefit[0]) && wordCharacter.test(text[start - 1] ?? '')
+      const joinsNextWord = wordCharacter.test(benefit.at(-1) ?? '') && wordCharacter.test(text[end] ?? '')
+      if (!joinsPreviousWord && !joinsNextWord) ranges.push({ start, end })
+    }
+  }
+  return ranges
 }
 
 // ---------------------------------------------------------------------------
@@ -389,19 +397,15 @@ export function scoreCopyItem(
   // Weighted total (W:429): 0.22/0.34/0.18/0.10/0.16.
   const total = Math.round(hook * 0.22 + relevance * 0.34 + cta * 0.18 + space * 0.1 + brand * 0.16)
 
-  // The financial red line is "绝不编造" — never "绝不提及". A phrase the user
-  // themselves put in the product sheet (benefits/brandTerms) is a confirmed
-  // fact, not a fabricated claim: a payments product whose confirmed selling
-  // point IS "zero fees" must not have every candidate hard-rejected by the
-  // very phrase it was told to write. Matches NOT covered by user facts stay
-  // hard rejects.
-  const confirmedFacts = [...opts.benefits, ...opts.brandTerms].map(normalizeForScore).filter(Boolean)
-  const violations = financialComplianceMatches(source)
-    .filter((violation) => {
-      const matched = normalizeForScore(violation.match)
-      return !confirmedFacts.some((fact) => fact.includes(matched))
-    })
-    .map((violation) => violation.source)
+  // Require the complete benefit at the claim's location. Otherwise a
+  // scoped "zero fees on the first transfer" would authorize "zero fees"
+  // anywhere, and "not licensed" would authorize an affirmative claim.
+  const claimText = normalizeClaimText(source)
+  const claims = financialComplianceMatches(claimText)
+  const quotes = claims.length > 0 ? quotedBenefitRanges(claimText, opts.benefits) : []
+  const violatesCompliance = claims.some((claim) =>
+    !quotes.some((quote) => quote.start <= claim.start && quote.end >= claim.end)
+  )
   const withinBytes = bytes <= opts.maxBytes
   // Degraded language: hook/CTA floors are unjudgeable in an unlisted
   // language, so only the text-independent gates (relevance, space, brand
@@ -414,20 +418,20 @@ export function scoreCopyItem(
     (degraded || cta >= opts.targets.cta) &&
     space >= opts.targets.space &&
     total >= totalFloor
-  const accepted = withinBytes && violations.length === 0 && passesFloors
+  const accepted = withinBytes && !violatesCompliance && passesFloors
   return {
     text: source,
     bytes,
     scores: { hook, relevance, cta, space, brand, total },
     accepted,
     scoringMode: lexicon.resolution.mode,
-    ...(accepted ? {} : { rejectReason: rejectReasonFor(withinBytes, violations, passesFloors) })
+    ...(accepted ? {} : { rejectReason: rejectReasonFor(withinBytes, violatesCompliance, passesFloors) })
   }
 }
 
-function rejectReasonFor(withinBytes: boolean, violations: string[], passesFloors: boolean): string {
+function rejectReasonFor(withinBytes: boolean, violatesCompliance: boolean, passesFloors: boolean): string {
   if (!withinBytes) return 'over_limit'
-  if (violations.length > 0) return 'financial_compliance_violation'
+  if (violatesCompliance) return 'financial_compliance_violation'
   if (!passesFloors) return 'below_score_targets'
   return 'not_needed'
 }

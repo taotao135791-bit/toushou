@@ -40,6 +40,14 @@ function isUserTurnStart(record: Record<string, unknown>): boolean {
   return entry.role === 'user' && entry.steering !== true
 }
 
+function isFinalAssistantMessage(message: { stopReason?: unknown; content?: unknown }): boolean {
+  const { stopReason, content } = message
+  // The native runtime persists assistant tool requests before those tools
+  // finish. Older transcripts may omit stopReason, so inspect their blocks too.
+  if (stopReason !== undefined && stopReason !== 'stop' && stopReason !== 'length') return false
+  return !Array.isArray(content) || !content.some((block) => block?.type === 'toolCall')
+}
+
 export interface SessionForkResult {
   /** Absolute path of the new forked session file. */
   filePath: string
@@ -76,7 +84,7 @@ export async function forkSessionFile(
   let userTurns = 0
   let truncated = false
   // Trailing-turn completeness tracking for completeTurnsOnly: where the last
-  // user turn started, and whether an assistant message has followed it.
+  // user turn started, and whether its assistant reply has finished.
   let lastUserTurnStart = -1
   let lastTurnHasAssistant = false
   for (const line of lines) {
@@ -100,7 +108,7 @@ export async function forkSessionFile(
       record.type === 'message' &&
       (record.message as { role?: unknown } | undefined)?.role === 'assistant'
     ) {
-      lastTurnHasAssistant = true
+      lastTurnHasAssistant = isFinalAssistantMessage(record.message as { stopReason?: unknown; content?: unknown })
     }
     kept.push({ line })
   }
@@ -111,6 +119,8 @@ export async function forkSessionFile(
     kept.length = lastUserTurnStart
     truncated = true
     userTurns--
+  } else if (Number.isFinite(keep) && userTurns > 0 && !lastTurnHasAssistant) {
+    throw new Error('incomplete-turn')
   }
   if (truncated) {
     // Drop a dangling tail of non-message records that belonged to the NEXT

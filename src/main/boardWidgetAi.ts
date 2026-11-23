@@ -2,6 +2,7 @@ import { spawnCommand } from './command'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { DATASET_LIMITS } from '../shared/datasets'
 import { detectCli } from './omp'
 import { configGet, configPath, makeExecRunner } from './omp/settings/OmpConfigCli'
 import { prepareIsolatedAiHome } from './htmlBoardAi'
@@ -52,6 +53,19 @@ const MAX_TITLE = 60
 
 function isPlainString(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value)
+}
+
+function validBoardContext(context: AiWidgetBoardContext | undefined): boolean {
+  if (!context || !Array.isArray(context.widgets) || !Array.isArray(context.datasets)) return false
+  return context.widgets.length <= 80 && context.datasets.length <= 30 &&
+    context.widgets.every(widget => widget && typeof widget.type === 'string' && widget.type.length <= 80 &&
+      typeof widget.title === 'string' && widget.title.length <= 200) &&
+    context.datasets.every(dataset => dataset && isPlainString(dataset.id, DATASET_LIMITS.maxIdLength) &&
+      isPlainString(dataset.name, DATASET_LIMITS.maxNameLength) && Number.isSafeInteger(dataset.rowCount) &&
+      dataset.rowCount >= 0 && dataset.rowCount <= DATASET_LIMITS.maxRows && Array.isArray(dataset.columns) &&
+      dataset.columns.length <= DATASET_LIMITS.maxColumns && dataset.columns.every(column =>
+        column && isPlainString(column.name, DATASET_LIMITS.maxColumnNameLength) &&
+        (column.type === 'number' || column.type === 'date' || column.type === 'text')))
 }
 
 /** Validate the model's proposal against the REAL datasets — no invented names. */
@@ -164,9 +178,9 @@ export async function requestAiBoardWidget(raw: {
   context: AiWidgetBoardContext
 }, deps: { timeoutMs?: number } = {}): Promise<AiWidgetResult> {
   if (!isPlainString(raw.requestId, 100) || !isPlainString(raw.instruction, MAX_INSTRUCTION)) return { ok: false, error: 'invalid-input' }
-  if (!Array.isArray(raw.context?.datasets) || raw.context.datasets.length === 0) return { ok: false, error: 'no-dataset' }
+  if (!validBoardContext(raw.context)) return { ok: false, error: 'invalid-input' }
+  if (raw.context.datasets.length === 0) return { ok: false, error: 'no-dataset' }
   if (active.has(raw.requestId) || active.size >= 2) return { ok: false, error: 'failed' }
-  if (raw.context.datasets.length > 30 || raw.context.widgets.length > 80) return { ok: false, error: 'invalid-input' }
   active.add(raw.requestId)
   const deadline = Date.now() + (deps.timeoutMs ?? 130_000)
   let directory: string | undefined

@@ -338,6 +338,8 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     now = 1_900_000
     expect(await manager.ensureFreshToken()).toBe(false)
     expect(manager.getSnapshot().lastError).toContain('请重新授权')
+    expect(await manager.keepAliveToken()).toBe(false)
+    expect(await manager.keepAliveToken()).toBe(false)
     await new Promise(r => setTimeout(r, 30))
     expect(tokenCalls).toBe(1)
     await manager.disconnect()
@@ -353,8 +355,8 @@ describe('TikTokAdsConnectionManager connect flow', () => {
       fetchImpl: async (url: string) => {
         if (url === `${ISSUER}/token`) {
           tokenCalls++
-          // Empty payload → the manager surfaces "HTTP 429" verbatim.
-          if (tokenCalls === 1) return jsonResponse({}, 429)
+          // HTTP 429 stays transient even when the provider's body is misleading.
+          if (tokenCalls === 1) return jsonResponse({ error: 'invalid_grant' }, 429)
           return jsonResponse({ access_token: 'new', refresh_token: 'new-refresh', expires_in: 3600 })
         }
         throw new Error('unexpected')

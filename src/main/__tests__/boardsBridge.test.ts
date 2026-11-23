@@ -42,6 +42,25 @@ describe('parseBoardsBridgeRequest', () => {
 })
 
 describe('boards bridge dispatch', () => {
+  it('runs filtered AppsFlyer planning as a read in both ask and read-only modes', async () => {
+    const af = await import('../integrations/appsflyer/appsflyerDataset')
+    const window = { start: '2026-11-05', end: '2026-11-05' }
+    const plan = vi.spyOn(af, 'planAppsFlyerQuery').mockResolvedValue({ appId: 'synthetic', window, events: [], mediaSources: [], countries: [], dateSpan: null, totalRows: 0, partial: false, sampled: false, suggestedCalls: 0 })
+    const confirm = vi.fn(async () => false)
+    const filters = { 'Media source': ['facebook_ads'], Geo: ['US'] }
+    try {
+      for (const mode of ['ask', 'readonly'] as const) {
+        const result = await authorizeAndDispatch('synthetic', { action: 'af_query_plan', appId: 'synthetic', days: 1, mediaSources: ['facebook_ads'], countries: ['us'] }, { getAccess: () => ({ cwd: dir, mode, remoteReadonly: false }), confirm })
+        expect(result).toMatchObject({ ok: true, plan: { filters } })
+      }
+      expect(confirm).not.toHaveBeenCalled()
+      expect(plan).toHaveBeenCalledTimes(2)
+      expect(plan).toHaveBeenCalledWith(expect.objectContaining({ appId: 'synthetic', filters }))
+      expect(await dispatch({ action: 'af_query_plan', appId: 'synthetic', countries: ['all', 'US'] })).toMatchObject({ ok: false, error: 'invalid-countries' })
+      expect(plan).toHaveBeenCalledTimes(2)
+    } finally { plan.mockRestore() }
+  })
+
   it('keeps conversational date scope authoritative while visual-only edits preserve it', async () => {
     const created = await dispatch({ action: 'board_create', name: 'Scoped synthetic', template: 'blank', advertiserIds: '7300000000000000001', masterScope: { range: 'yesterday', metrics: ['spend'] } })
     expect(created.ok).toBe(true)

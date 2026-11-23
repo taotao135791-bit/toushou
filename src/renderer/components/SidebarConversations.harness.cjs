@@ -216,7 +216,33 @@ app.whenReady().then(async () => {
     await waitFor(`window.sidebarFixture.killed.length===1`)
     const finalArchive = await js(`({open:!!document.querySelector('[data-session-action-menu]'),snapshot:window.sidebarFixture.snapshot(),kills:window.sidebarFixture.killed})`)
     const fullTitle = await js(`${row('[data-all-conversations]', 2)}.querySelector('[data-conversation-select]').title`)
-    console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, before, after, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks }))
+    phase = 'duplicate completion follows the latest navigation intent'
+    await openActions(2)
+    await js(`document.querySelector('[data-session-action="duplicate"]').click()`)
+    await waitFor('!!window.sidebarFixture.finishFork')
+    await js('window.sidebarFixture.globalNewChat(); window.sidebarFixture.finishFork()')
+    await waitFor(`window.sidebarFixture.liveIds().includes('fixture-fork')`)
+    const lateFork = await js(`({snapshot:window.sidebarFixture.snapshot(), calls:window.sidebarFixture.forkCalls})`)
+
+    phase = 'live deletion keeps a killed row removed'
+    await js('window.sidebarFixture.allowDelete=true')
+    const stageLiveDelete = async () => {
+      await openActions(2)
+      await js(`document.querySelector('[data-session-action="delete"]').click()`)
+      await waitFor(`!!document.querySelector('[role="alertdialog"]')`)
+      await js(`[...document.querySelectorAll('[role="alertdialog"] button')].find(button=>button.textContent==='Delete session').click()`)
+      await waitFor(`!${row('[data-all-conversations]', 2)}&&!!document.querySelector('[aria-label="Delete now"]')`)
+    }
+    await stageLiveDelete()
+    const beforeUndoKills = await js('window.sidebarFixture.killed.length')
+    await js(`[...document.querySelectorAll('[role="alert"] button')].find(button=>button.textContent==='Undo').click()`)
+    await waitFor(`!!${row('[data-all-conversations]', 2)}`)
+    await stageLiveDelete()
+    await js(`document.querySelector('[aria-label="Delete now"]').click()`)
+    await waitFor('window.sidebarFixture.deleteCalls===1')
+    await frame()
+    const liveDelete = await js(`({beforeUndoKills:${beforeUndoKills}, kills:window.sidebarFixture.killed, retained:window.sidebarFixture.liveIds().includes('live-b'), visible:!!${row('[data-all-conversations]', 2)}})`)
+    console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, before, after, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks, lateFork, liveDelete }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { win?.destroy(); app.quit() }
 })

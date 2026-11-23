@@ -11,26 +11,19 @@ const full = (id: string, name: string, rows: Array<Array<string | number>>): Bo
   rows
 })
 
-describe('boardRefreshWidgetDatasets (slim-result row resolution)', () => {
-  it('serves master-window rows from the reloaded store when the result carries a dataset brief', () => {
-    // The agent-facing result is slimmed: sources carry {id,name,rowCount,columns} only.
+describe('boardRefreshWidgetDatasets (scoped snapshot)', () => {
+  it('keeps an empty TikTok snapshot empty when the shared dataset contains another account', () => {
     const result: BoardRefreshResult = {
       ok: true, boardId: 'b', runId: 'r', planKey: 'p',
       reportWindow: { start: '2026-11-22', end: '2026-11-22' }, generatedAt: 1, status: 'ready',
-      sources: [{ key: 'af:1', kind: 'appsflyer', status: 'updated', window: { start: '2026-11-22', end: '2026-11-22' }, dataset: { id: 'mat-1', name: 'AF-装 · abc', createdAt: 0, columns: [{ name: 'Date', type: 'date' }, { name: '安装', type: 'number' }], rows: [] } }],
-      widgets: [{ widgetId: 'w1', window: { start: '2026-11-22', end: '2026-11-22' }, status: 'updated', bindings: [{ datasetId: 'spec-1', sourceKey: 'af:1', window: { start: '2026-11-22', end: '2026-11-22' } }] }]
+      sources: [{ key: 'tt:111', kind: 'tiktok', status: 'empty', window: { start: '2026-11-22', end: '2026-11-22' }, dataset: full('tt', 'TikTok 报表', []) }],
+      widgets: [{ widgetId: 'w1', window: { start: '2026-11-22', end: '2026-11-22' }, status: 'empty', bindings: [{ datasetId: 'tt', sourceKey: 'tt:111', window: { start: '2026-11-22', end: '2026-11-22' } }] }]
     }
-    // The store (reloaded right after refresh) holds the materialization with rows.
-    const store = [
-      full('spec-1', 'AF-装', [['2026-11-15', 10], ['2026-11-21', 20]]),
-      full('mat-1', 'AF-装 · abc', [['2026-11-22', 7]])
-    ]
-    const projected = boardRefreshWidgetDatasets(result, widget('w1', 'spec-1'), store)
-    const bound = projected.find(dataset => dataset.id === 'spec-1')
-    // The card sees yesterday's materialized rows, keeps the binding identity,
-    // and records the resolved window so labels tell the truth.
-    expect(bound?.rows).toEqual([['2026-11-22', 7]])
-    expect(bound?.name).toBe('AF-装')
+    const shared = full('tt', 'TikTok 报表', [['2026-11-22', 99, '222']])
+    shared.columns.push({ name: '广告主ID', type: 'text' })
+    const bound = boardRefreshWidgetDatasets(result, widget('w1', 'tt'), [shared]).find(dataset => dataset.id === 'tt')
+    expect(bound?.rows).toEqual([])
+    expect(bound?.name).toBe('TikTok 报表')
     expect(bound?.resolvedWindow).toEqual({ start: '2026-11-22', end: '2026-11-22' })
   })
 

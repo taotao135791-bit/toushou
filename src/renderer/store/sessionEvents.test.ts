@@ -1,10 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, flushStreamQueueForTest } from './index'
 
 const sessionId = 'session-event-test'
 
+beforeEach(() => {
+  vi.stubGlobal('window', { electronAPI: { getSubagents: async () => null } })
+})
+
 afterEach(() => {
-  useAppStore.setState({ messages: {}, executions: {} })
+  flushStreamQueueForTest()
+  useAppStore.setState({ messages: {}, executions: {}, sessions: [], resumeRecencySeeds: {} })
+  vi.unstubAllGlobals()
 })
 
 describe('session message events', () => {
@@ -24,6 +30,18 @@ describe('session message events', () => {
         variant: 'info',
         content: 'Extension UI was ignored.'
       })
+    ])
+  })
+
+  it('flushes assistant content received before a provider error', () => {
+    const { applySessionEvent } = useAppStore.getState()
+    applySessionEvent({ type: 'message', sessionId, role: 'assistant', content: 'Partial reply' })
+    applySessionEvent({ type: 'error', sessionId, message: 'Connection failed' })
+    flushStreamQueueForTest()
+
+    expect(useAppStore.getState().messages[sessionId]).toMatchObject([
+      { role: 'assistant', content: 'Partial reply' },
+      { role: 'system', content: 'Error: Connection failed' }
     ])
   })
 })

@@ -181,6 +181,24 @@ function boundedString(value: unknown, max: number): string | null {
   return clean.length > 0 && clean.length <= max ? clean : null
 }
 
+function appsFlyerFilters(mediaSources: unknown, countries: unknown, legacyTikTokDefault = false):
+  { filters: Record<string, string[]> } | { error: 'invalid-media-sources' | 'invalid-countries' } {
+  const filters: Record<string, string[]> = {}
+  if (mediaSources !== undefined) {
+    if (!Array.isArray(mediaSources) || mediaSources.length > 32 || mediaSources.some(value => typeof value !== 'string' || !value.trim() || value.trim().length > 200 || /[\x00-\x1f\x7f]/.test(value) || value.trim().toLowerCase() === 'all')) return { error: 'invalid-media-sources' }
+    const sources = [...new Set((mediaSources as string[]).map(value => value.trim()))]
+    if (sources.length) filters['Media source'] = sources
+  } else if (legacyTikTokDefault) filters['Media source'] = ['tiktokglobal_int']
+  if (countries !== undefined) {
+    if (!Array.isArray(countries) || countries.length === 0 || countries.length > 20 || countries.some(value => typeof value !== 'string' || !/^(?:[A-Za-z]{2,3}|all)$/i.test(value))) return { error: 'invalid-countries' }
+    const geo = [...new Set((countries as string[]).map(value => value.toUpperCase()))]
+    if (geo.includes('ALL')) {
+      if (geo.length > 1) return { error: 'invalid-countries' }
+    } else filters.Geo = geo
+  }
+  return { filters }
+}
+
 const CANVAS_STYLE_KEYS = ['background', 'grid'] as const
 const WIDGET_STYLE_KEYS = ['accent', 'surface', 'text', 'border', 'radius', 'padding', 'titleAlign', 'shadow'] as const
 type StylePatch<T> = { ok: true; value: T | undefined } | { ok: false }
@@ -503,7 +521,7 @@ export async function authorizeAndDispatch(
   if (!access) return { ok: false, error: 'no-session' }
   if (signal?.aborted) return { ok: false, error: 'permission-denied' }
   const turnId = getBoardBuildTurnId(sessionId)
-  const write = !['boards_list', 'board_get', 'board_check', 'board_meta_accounts', 'board_build_status', 'board_build_preflight', 'board_edit_targets'].includes(tool.action) && !(tool.action === 'board_customize' && tool.preview !== false)
+  const write = !['boards_list', 'board_get', 'board_check', 'board_meta_accounts', 'board_build_status', 'board_build_preflight', 'board_edit_targets', 'af_query_plan'].includes(tool.action) && !(tool.action === 'board_customize' && tool.preview !== false)
   if ((write || tool.action === 'board_edit_targets') && (access.remoteReadonly || !['full', 'no-bash', 'ask'].includes(access.mode))) return { ok: false, error: 'permission-denied' }
   if (write && access.mode === 'ask') {
     const confirm = deps?.confirm ?? (async (request: BoardsBridgeRequest) => {
@@ -823,27 +841,15 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       if (groupings.length >= 4) return { ok: false, error: 'invalid-groupings', hint: 'Geo 也是一个维度；groupings 最多四项，请为它留一个位置。' }
       groupings.push('Geo')
     }
-    const filters: Record<string, string[]> = {}
-    if (tool.mediaSources === undefined) filters['Media source'] = ['tiktokglobal_int']
-    else {
-      if (!Array.isArray(tool.mediaSources) || tool.mediaSources.length > 32 || tool.mediaSources.some(value => typeof value !== 'string' || !value.trim() || value.trim().length > 200 || /[\x00-\x1f\x7f]/.test(value) || value.trim().toLowerCase() === 'all')) return { ok: false, error: 'invalid-media-sources' }
-      const mediaSources = [...new Set((tool.mediaSources as string[]).map(value => value.trim()))]
-      if (mediaSources.length) filters['Media source'] = mediaSources
-    }
-    if (tool.countries !== undefined) {
-      if (!Array.isArray(tool.countries) || tool.countries.length === 0 || tool.countries.length > 20 || tool.countries.some(value => typeof value !== 'string' || !/^(?:[A-Za-z]{2,3}|all)$/i.test(value))) return { ok: false, error: 'invalid-countries' }
-      const countries = [...new Set((tool.countries as string[]).map(value => value.toUpperCase()))]
-      if (countries.includes('ALL')) {
-        if (countries.length > 1) return { ok: false, error: 'invalid-countries' }
-      } else filters.Geo = countries
-    }
+    const selection = appsFlyerFilters(tool.mediaSources, tool.countries, true)
+    if ('error' in selection) return { ok: false, error: selection.error }
     const query: Record<string, unknown> = {
       app_ids: [appId],
       row_count: 300,
       metrics: metrics.map((metricName) => ({ metric_name: metricName, attribution_source: 'appsflyer', period: basis })),
       sort_by_metrics: [{ metric_name: metrics[0], order: 'desc' }],
       groupings,
-      filters,
+      filters: selection.filters,
       in_app_event: isCustom ? [eventName!] : []
     }
     const { pullAppsFlyerDatasets, saveQuerySpec, listQuerySpecs, discardUnboundQuerySpec } = await import('./integrations/appsflyer/appsflyerDataset')
@@ -912,6 +918,8 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     if (!appId) return { ok: false, error: 'invalid-input', hint: 'appId 必填（先用 toushou_appsflyer_apps 确认）。' }
     const days = tool.days === undefined ? 7 : Number(tool.days)
     if (!Number.isInteger(days) || days < 1 || days > 366) return { ok: false, error: 'invalid-window' }
+    const selection = appsFlyerFilters(tool.mediaSources, tool.countries)
+    if ('error' in selection) return { ok: false, error: selection.error }
     const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     const end = new Date()
     end.setDate(end.getDate() - 1)
@@ -922,7 +930,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const { planAppsFlyerQuery } = await import('./integrations/appsflyer/appsflyerDataset')
     let plan
     try {
-      plan = await planAppsFlyerQuery({ appId, window: planWindow })
+      plan = await planAppsFlyerQuery({ appId, window: planWindow, filters: selection.filters })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const hints: Record<string, string> = {
@@ -932,18 +940,11 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       }
       return { ok: false, error: message.slice(0, 200), ...(hints[message] ? { hint: hints[message] } : {}) }
     }
+    const coverage = plan.sampled || plan.partial ? '这是部分样本，不能当作完整覆盖或汇总。建议先缩小日期或筛选范围。' : ''
     return {
       ok: true,
-      plan: {
-        appId,
-        window: planWindow,
-        events: plan.events,
-        mediaSources: plan.mediaSources,
-        dateSpan: plan.dateSpan,
-        totalRows: plan.totalRows,
-        suggestedCalls: plan.suggestedCalls
-      },
-      hint: `预审完成（消耗 1 次调用）：窗口内共 ${plan.totalRows} 行、${plan.events.length} 种事件。把清单给用户勾选（全部/按事件/按渠道/按地区），确认后每组一次 toushou_af_dataset_pull 落成 AF-{name} 活数据集（每条 1 次调用）。若某组合行数接近上限请进一步收窄维度。`
+      plan: { ...plan, filters: selection.filters },
+      hint: `预审返回 ${plan.totalRows} 行，观察到 ${plan.events.length} 种事件。${coverage}请用户确认事件、渠道和地区后，再按组合调用 toushou_af_dataset_pull 保存数据。`
     }
   }
 

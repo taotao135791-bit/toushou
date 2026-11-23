@@ -168,6 +168,32 @@ describe('dispatch copy_generate_batch', () => {
     expect((stillOut.provider_pool as { quarantined?: string[] }).quarantined).toContain('relay400')
   })
 
+  it.each([408, 429, 200])('keeps timeout or rate-limited HTTP %s relays in rotation', async status => {
+    const limited = provider(`limited${status}`, 'limited-model')
+    const other = provider(`unaffected${status}`, 'other-model')
+    const pool = poolOf([limited, other], [limited.id, other.id])
+    let limitedCalls = 0
+    for (let i = 0; i < 3; i++) {
+      const result = await dispatch({
+        action: 'copy_generate_batch',
+        request: { ...baseRequest, agentId: undefined, maxAttempts: 1 }
+      }, {
+        pool,
+        fetchImpl: async (_url, init) => {
+          if (JSON.parse(String(init.body)).model !== limited.model) return okFetch('{"short":[]}')()
+          limitedCalls++
+          return {
+            ok: status === 200,
+            status,
+            text: async () => JSON.stringify({ error: { message: 'rate limited' } })
+          }
+        }
+      })
+      expect(result.provider_pool).not.toHaveProperty('quarantined')
+    }
+    expect(limitedCalls).toBe(3)
+  })
+
   it('gives the model the real scoring rubric and changes direction on retry', async () => {
     const members = [provider('a', 'model-a')]
     const prompts: string[] = []
@@ -263,13 +289,16 @@ describe('dispatch copy_generate_batch', () => {
     expect(result).toMatchObject({ ok: true, fulfilled: true, provider_pool: { strategy: 'agent_sticky_fallback' }, score_control: { stagnated: false } })
   })
 
-  it.each(['openai', 'anthropic'] as const)('keeps reflected %s provider secrets out of agent-visible errors', async protocol => {
-    const member = { ...provider('synthetic', 'synthetic-model'), protocol, apiKey: 'synthetic-secret-never-returned' }
+  it.each([
+    ['openai', 200], ['anthropic', 200], ['openai', 401], ['anthropic', 401]
+  ] as const)('keeps reflected %s HTTP %s provider secrets out of agent-visible errors', async (protocol, status) => {
+    const member = { ...provider(`synthetic-${protocol}-${status}`, 'synthetic-model'), protocol, apiKey: 'synthetic-secret-never-returned' }
     const result = await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 1 } }, {
       pool: poolOf([member], [member.id]),
-      fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ error: { message: `Invalid API key ${member.apiKey}` } }) })
+      fetchImpl: async () => ({ ok: status === 200, status, text: async () => JSON.stringify({ error: { message: `Invalid API key ${member.apiKey}` } }) })
     })
-    expect(result).toMatchObject({ ok: false, provider_errors: [{ error: 'api-error: authentication-failed' }], score_control: { stagnated: false } })
+    const error = status === 200 ? 'api-error: authentication-failed' : 'http-401'
+    expect(result).toMatchObject({ ok: false, provider_errors: [{ error }], score_control: { stagnated: false } })
     expect(JSON.stringify(result)).not.toContain(member.apiKey)
   })
 

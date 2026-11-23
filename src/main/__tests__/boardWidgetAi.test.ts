@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 // boardWidgetAi imports the isolated-runtime helper, whose chain touches electron.
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/board-widget-ai-test' } }))
 
-import { validateProposal, type AiWidgetDatasetSummary } from '../boardWidgetAi'
+import { requestAiBoardWidget, validateProposal, type AiWidgetBoardContext, type AiWidgetDatasetSummary } from '../boardWidgetAi'
 
 const datasets: AiWidgetDatasetSummary[] = [{
   id: 'ds-1',
@@ -17,6 +17,14 @@ const datasets: AiWidgetDatasetSummary[] = [{
 }]
 
 describe('validateProposal (AI 看板卡片提案的硬校验)', () => {
+  it('rejects malformed renderer context before starting the runtime', async () => {
+    const request = { requestId: 'fixture', instruction: 'Add a card' }
+    await expect(requestAiBoardWidget({ ...request, context: { datasets } as AiWidgetBoardContext }))
+      .resolves.toEqual({ ok: false, error: 'invalid-input' })
+    await expect(requestAiBoardWidget({ ...request, context: { widgets: [], datasets: [] } }))
+      .resolves.toEqual({ ok: false, error: 'no-dataset' })
+  })
+
   it('accepts a counter bound to a REAL numeric column', () => {
     const proposal = validateProposal({ type: 'counter', title: '安装数', config: { source: 'dataset', datasetId: 'ds-1', metric: '安装', op: 'sum' }, reason: 'r' }, datasets)
     expect(proposal).toMatchObject({ type: 'counter', title: '安装数', config: { source: 'dataset', datasetId: 'ds-1', metric: '安装', op: 'sum' } })

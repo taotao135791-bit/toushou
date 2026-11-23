@@ -40,6 +40,8 @@ import OpenWithMenu from './OpenWithMenu'
 import useElementWidth from '../lib/useElementWidth'
 import { retryFailedMessage } from '../lib/retryMessage'
 import { useTranscriptScroll } from '../lib/useTranscriptScroll'
+import { finishHistoryResume } from '../lib/historyResume'
+import { beginNavigationIntent, isCurrentNavigationIntent } from '../lib/navigationIntent'
 
 const EMPTY_MESSAGES: MessageLike[] = []
 const EMPTY_UI_REQUESTS: UiRequest[] = []
@@ -394,29 +396,32 @@ export default function ChatPanel() {
     await selectWorkspace()
   }
 
-  /**
-   * 开分支：fork the CURRENT live conversation up to (and including) the
-   * chosen turn into a new session. The durable transcript is Main's record;
-   * a turn still streaming must not be branched (MessageList hides the
-   * button) because its tail is not on disk yet.
-   */
-  const handleBranchTurn = useCallback(async (sessionId: string, keepUserTurns: number) => {
+  const forkCurrentSession = useCallback(async (sessionId: string, keepUserTurns?: number) => {
     const workspace = useAppStore.getState().currentWorkspace
     if (!workspace) return
+    const intent = beginNavigationIntent()
     try {
       const result = await window.electronAPI.forkSession(workspace.id, { liveSessionId: sessionId, keepUserTurns })
       if (!result || 'error' in result) {
-        showNotice('history.forkFailed')
+        if (isCurrentNavigationIntent(intent)) showNotice('history.forkFailed')
         return
       }
       const { session, messages: restored, historicalAgents } = result
-      useAppStore.getState().addSession(session, false)
-      useAppStore.getState().setMessages(session.id, restored)
-      useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
-      useAppStore.getState().setCurrentSessionId(session.id)
-      navigate('/')
+      const store = useAppStore.getState()
+      finishHistoryResume(workspace, {
+        save: () => {
+          store.addSession(session, false)
+          store.setMessages(session.id, restored)
+          store.applyHistoricalAgents(session.id, historicalAgents ?? [])
+        },
+        currentWorkspace: () => isCurrentNavigationIntent(intent) ? useAppStore.getState().currentWorkspace : null,
+        select: () => {
+          store.setCurrentSessionId(session.id, intent)
+          navigate('/')
+        }
+      })
     } catch {
-      showNotice('history.forkFailed')
+      if (isCurrentNavigationIntent(intent)) showNotice('history.forkFailed')
     }
   }, [navigate])
 
@@ -428,27 +433,13 @@ export default function ChatPanel() {
   const handleDuplicateSession = useCallback(async () => {
     const sid = currentSessionId
     if (!sid || duplicating) return
-    const workspace = useAppStore.getState().currentWorkspace
-    if (!workspace) return
     setDuplicating(true)
     try {
-      const result = await window.electronAPI.forkSession(workspace.id, { liveSessionId: sid })
-      if (!result || 'error' in result) {
-        showNotice('history.forkFailed')
-        return
-      }
-      const { session, messages: restored, historicalAgents } = result
-      useAppStore.getState().addSession(session, false)
-      useAppStore.getState().setMessages(session.id, restored)
-      useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
-      useAppStore.getState().setCurrentSessionId(session.id)
-      navigate('/')
-    } catch {
-      showNotice('history.forkFailed')
+      await forkCurrentSession(sid)
     } finally {
       setDuplicating(false)
     }
-  }, [currentSessionId, duplicating, navigate])
+  }, [currentSessionId, duplicating, forkCurrentSession])
 
   const openOfficeFile = async () => {
     const picked = await window.electronAPI.officeOpenDialog()
@@ -641,7 +632,7 @@ export default function ChatPanel() {
           </div>
         ) : (
           <div className="mx-auto max-w-[760px]">
-            <MessageList messages={sessionMessages} sessionId={currentSessionId} onRetry={handleRetry} onBranch={handleBranchTurn} />
+            <MessageList messages={sessionMessages} sessionId={currentSessionId} onRetry={handleRetry} onBranch={forkCurrentSession} />
             <ExecutionActivity sessionId={currentSessionId} />
             {showThinking && (
               <div className="msg-in flex items-center gap-1 px-6 pb-6">

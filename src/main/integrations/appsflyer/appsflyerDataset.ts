@@ -203,30 +203,31 @@ function metadataFlags(value: unknown, depth = 0): MetadataFlags {
   }
   return { partial, truncated }
 }
-function partialMetadata(metadata: unknown, allowPartial: boolean): boolean {
+function checkedMetadata(metadata: unknown, options: ParseAfDatasetOptions): MetadataFlags {
   const flags = metadataFlags(metadata)
-  if (flags.truncated) throw new Error('appsflyer-incomplete-data')
-  if (flags.partial && !allowPartial) throw new Error('appsflyer-incomplete-data')
-  return flags.partial
+  if ((flags.truncated && !options.allowSample) || (flags.partial && !options.allowPartial)) throw new Error('appsflyer-incomplete-data')
+  return flags
 }
 
-export interface ParseAfDatasetOptions { allowPartial?: boolean }
-export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.maxRows, options: ParseAfDatasetOptions = {}): { columns: BoardDatasetColumn[]; rows: (string | number)[][]; partial: boolean } {
+export interface ParseAfDatasetOptions { allowPartial?: boolean; allowSample?: boolean }
+export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.maxRows, options: ParseAfDatasetOptions = {}): { columns: BoardDatasetColumn[]; rows: (string | number)[][]; partial: boolean; sampled?: true } {
   const empty = /^\s*## Data:\s*;\s*## Metadata:[ \t]*([^\r\n]*)/m.exec(text)
   if (empty) {
     let metadata: unknown
     try { metadata = JSON.parse(empty[1]) } catch { throw new Error('appsflyer-invalid-metadata') }
-    const partial = partialMetadata(metadata, options.allowPartial === true)
-    return { columns: [], rows: [], partial }
+    const { partial, truncated } = checkedMetadata(metadata, options)
+    return { columns: [], rows: [], partial, ...(truncated ? { sampled: true as const } : {}) }
   }
   const section = /^\s*## Data:\s*([^\r\n]*)\r?\n([\s\S]*?)\r?\n[ \t]*(?:;[ \t]*)?## Metadata:[ \t]*([^\r\n]*)/m.exec(text)
   if (!section) throw new Error('appsflyer-invalid-data')
   let metadata: Obj | null
   try { metadata = obj(JSON.parse(section[3])) } catch { throw new Error('appsflyer-invalid-metadata') }
   if (!metadata) throw new Error('appsflyer-invalid-metadata')
-  const partial = partialMetadata(metadata, options.allowPartial === true)
+  const { partial, truncated } = checkedMetadata(metadata, options)
   const csv = Papa.parse<Record<string, string>>(`${section[1]}\n${section[2]}`, { header: true, skipEmptyLines: true, dynamicTyping: false })
-  if (csv.errors.length || csv.data.length >= Math.min(rowLimit, DATASET_LIMITS.maxRows)) throw new Error('appsflyer-incomplete-data')
+  const limit = Math.min(rowLimit, DATASET_LIMITS.maxRows)
+  const sampled = truncated || csv.data.length === limit
+  if (csv.errors.length || csv.data.length > limit || (sampled && !options.allowSample)) throw new Error('appsflyer-incomplete-data')
   const headerNames = csv.meta.fields ?? Object.keys(csv.data[0] ?? {})
   const columnDefs = headerNames.map(normalizeColumnName)
   const extra: BoardDatasetColumn[] = []
@@ -248,7 +249,7 @@ export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.m
     if (metadata?.currency && typeof metadata.currency === 'string') values.push(metadata.currency)
     return values
   })
-  return { columns, rows, partial }
+  return { columns, rows, partial, ...(sampled ? { sampled: true as const } : {}) }
 }
 
 export type AppsFlyerPullResult = AppsFlyerDatasetRefreshResult
@@ -354,84 +355,73 @@ function selectTargets(options: AppsFlyerPullOptions, specs: AfQuerySpec[], data
 export interface AppsFlyerQueryPlan {
   appId: string
   window: PullWindow
-  events: Array<{ event: string; rows: number; count: number; uniqueUsers: number }>
-  mediaSources: Array<{ source: string; rows: number; installs: number }>
-  dateSpan: { start: string; end: string }
+  events: Array<{ event: string; rows: number }>
+  mediaSources: Array<{ source: string; rows: number }>
+  countries: string[]
+  dateSpan: PullWindow | null
   totalRows: number
   partial: boolean
+  sampled: boolean
   suggestedCalls: number
 }
 
 export async function planAppsFlyerQuery(options: {
   appId: string
   window: PullWindow
+  filters?: Record<string, string[]>
   clientFactory?: (token: string) => QueryClient
 }): Promise<AppsFlyerQueryPlan> {
+  if (!isAppsFlyerDatasetWindow(options.window)) throw new Error('invalid-window')
   const token = await verifiedToken()
   if (!token) throw new Error('not-connected')
   const client = options.clientFactory ? options.clientFactory(token) : new AppsFlyerMcpClient(token, async (url, init) => (await proxyFetchFor(url, 'appsflyer-api'))(url, init))
   await client.initialize()
-  // ONE discovery call: group by Event name + Media source + Date, every
-  // channel, no event filter — the cheapest possible dimension inventory.
+  // Discovery keeps one bounded page. Its dimensions are evidence for the
+  // next query, without summing unique users or installs across groupings.
+  const rowLimit = 100
   const query: Obj = {
     start_date: options.window.start,
     end_date: options.window.end,
     app_ids: [options.appId],
-    row_count: 100,
-    metrics: [
-      { metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' },
-      { metric_name: 'Unique users', attribution_source: 'appsflyer', period: 'activity' }
-    ],
+    row_count: rowLimit,
+    metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' }],
     sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }],
-    groupings: ['Event name', 'Media source', 'Date'],
-    filters: {}
+    groupings: ['Event name', 'Media source', 'Date', 'Geo'],
+    filters: options.filters ?? {}
   }
   const text = await client.queryRaw({ query })
-  const parsed = parseAfDataset(text, 100, { allowPartial: true })
+  const parsed = parseAfDataset(text, rowLimit, { allowPartial: true, allowSample: true })
   const idx = (name: string) => parsed.columns.findIndex((column) => column.name === name)
   const eventIndex = idx('事件')
   const sourceIndex = idx('媒体渠道')
-  const countIndex = idx('事件次数')
-  const installIndex = idx('安装量')
   const dateIndex = idx('日期')
-  const usersIndex = idx('独立用户')
-  const events = new Map<string, { rows: number; count: number; uniqueUsers: number }>()
-  const sources = new Map<string, { rows: number; installs: number }>()
+  const countryIndex = idx('地区')
+  const events = new Map<string, number>()
+  const sources = new Map<string, number>()
+  const countries = new Set<string>()
   let firstDate = ''
   let lastDate = ''
   for (const row of parsed.rows) {
     const day = String(row[dateIndex] ?? '')
     if (day) { if (!firstDate || day < firstDate) firstDate = day; if (!lastDate || day > lastDate) lastDate = day }
-    if (eventIndex >= 0) {
-      const name = String(row[eventIndex] ?? '(未知事件)')
-      const agg = events.get(name) ?? { rows: 0, count: 0, uniqueUsers: 0 }
-      agg.rows += 1
-      const countValue = countIndex >= 0 ? Number(row[countIndex]) : 0
-      if (Number.isFinite(countValue)) agg.count += countValue
-      const usersValue = usersIndex >= 0 ? Number(row[usersIndex]) : 0
-      if (Number.isFinite(usersValue)) agg.uniqueUsers += usersValue
-      events.set(name, agg)
-    }
-    if (sourceIndex >= 0) {
-      const name = String(row[sourceIndex] ?? '(全部)')
-      const agg = sources.get(name) ?? { rows: 0, installs: 0 }
-      agg.rows += 1
-      const installValue = installIndex >= 0 ? Number(row[installIndex]) : 0
-      if (Number.isFinite(installValue)) agg.installs += installValue
-      sources.set(name, agg)
-    }
+    const event = String(row[eventIndex] ?? '').trim()
+    if (event) events.set(event, (events.get(event) ?? 0) + 1)
+    const source = String(row[sourceIndex] ?? '').trim()
+    if (source) sources.set(source, (sources.get(source) ?? 0) + 1)
+    const country = String(row[countryIndex] ?? '').trim()
+    if (country) countries.add(country)
   }
-  const span = firstDate && lastDate ? { start: firstDate, end: lastDate } : { ...options.window }
   return {
     appId: options.appId,
     window: { ...options.window },
-    events: [...events.entries()].map(([event, agg]) => ({ event, ...agg })).sort((a, b) => b.count - a.count),
-    mediaSources: [...sources.entries()].map(([source, agg]) => ({ source, ...agg })).sort((a, b) => b.installs - a.installs),
-    dateSpan: span,
+    events: [...events].map(([event, rows]) => ({ event, rows })),
+    mediaSources: [...sources].map(([source, rows]) => ({ source, rows })),
+    countries: [...countries].sort(),
+    dateSpan: firstDate && lastDate ? { start: firstDate, end: lastDate } : null,
     totalRows: parsed.rows.length,
-    partial: options.window.end === localToday(),
-    // Each confirmed combo (event × media source) = one af_dataset_pull = one call.
-    suggestedCalls: Math.max(1, events.size)
+    partial: parsed.partial || options.window.end === localToday(),
+    sampled: parsed.sampled === true,
+    suggestedCalls: events.size
   }
 }
 

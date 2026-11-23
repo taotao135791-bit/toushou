@@ -135,6 +135,34 @@ describe('forkSessionFile', () => {
     expect(readFileSync(fork.filePath, 'utf8')).toContain('answer 3')
   })
 
+  it.each(['toolUse', 'aborted', 'error', undefined])('drops a trailing non-final assistant record (%s)', async (stopReason) => {
+    const source = sessionFile(1)
+    const toolCall = { type: 'toolCall', id: 'call1', name: 'read', arguments: {} }
+    const content = stopReason === 'aborted' || stopReason === 'error' ? [{ type: 'text', text: 'partial reply' }] : [toolCall]
+    const tail = [msg('user', 'next prompt'), { type: 'message', message: { role: 'assistant', stopReason, content } }]
+    writeFileSync(source, readFileSync(source, 'utf8') + tail.map(record => JSON.stringify(record)).join('\n') + '\n')
+
+    const fork = await forkSessionFile(source, { completeTurnsOnly: true, agentDir: root })
+    expect(fork.keptUserTurns).toBe(1)
+    expect(readFileSync(fork.filePath, 'utf8')).not.toContain('next prompt')
+    await expect(forkSessionFile(source, { keepUserTurns: 2, agentDir: root })).rejects.toThrow('incomplete-turn')
+  })
+
+  it('retains a finished turn that previously used a tool', async () => {
+    const source = sessionFile(1)
+    const tail = [
+      msg('user', 'next prompt'),
+      { type: 'message', message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'call1', name: 'read', arguments: {} }] } },
+      { type: 'message', message: { role: 'toolResult', toolCallId: 'call1', content: [] } },
+      { type: 'message', message: { ...msg('assistant', 'finished reply').message, stopReason: 'stop' } }
+    ]
+    writeFileSync(source, readFileSync(source, 'utf8') + tail.map(record => JSON.stringify(record)).join('\n') + '\n')
+
+    const fork = await forkSessionFile(source, { completeTurnsOnly: true, agentDir: root })
+    expect(fork.keptUserTurns).toBe(2)
+    expect(readFileSync(fork.filePath, 'utf8')).toContain('finished reply')
+  })
+
   it('completeTurnsOnly rejects a source whose only turn is unanswered', async () => {
     const source = writeSource('2026-11-05T00-00-00-000Z_eeeeeeee-0000-0000-0000-000000000005.jsonl', [
       { type: 'session', version: 3, id: 'e', timestamp: '2026-11-05T00:00:00.000Z', cwd: 'D:\work' },

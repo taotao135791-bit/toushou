@@ -266,6 +266,7 @@ describe('scoringLexiconBrief', () => {
     // English leakage stays banned even without a native lexicon.
     expect(brief.forbidden).toContain('guaranteed')
     expect(scoringLexiconBrief('th').degraded).toBe(false)
+    expect(scoringLexiconBrief('constructor').degraded).toBe(true)
   })
 })
 
@@ -284,7 +285,7 @@ describe('multi-language scoring coverage', () => {
     expect(scored.scores.cta).toBe(10)
   })
 
-  it('accepts Thai copy and script-matches an unlisted language code', () => {
+  it('accepts Thai copy and uses its script as a hint for an unlisted language code', () => {
     const opts = {
       benefits: ['ฟรี'],
       brandTerms: [],
@@ -295,10 +296,10 @@ describe('multi-language scoring coverage', () => {
     const thai = scoreCopyItem('ฟรี โหลดเลย', { ...opts, language: 'th' })
     expect(thai.accepted).toBe(true)
     expect(thai.scoringMode).toBe('full')
-    // Unknown code, Thai text: the script sniff rescues it from the English fallback.
     const sniffed = scoreCopyItem('ฟรี โหลดเลย', { ...opts, language: 'xx' })
     expect(sniffed.accepted).toBe(true)
-    expect(sniffed.scoringMode).toBe('full')
+    expect(sniffed.scoringMode).toBe('degraded')
+    expect(sniffed.scores.cta).toBe(10)
   })
 
   it('accepts Vietnamese copy with diacritics normalized on both sides', () => {
@@ -371,6 +372,17 @@ describe('multi-language scoring coverage', () => {
     })
     expect(weak.accepted).toBe(false)
   })
+
+  it.each([
+    ['uk', 'Завантажуй застосунок для переказів', 'переказів'],
+    ['fa', 'همین حالا برنامه انتقال را دریافت کنید', 'انتقال']
+  ])('uses the advertised degraded gates for unlisted %s despite its shared script', (language, text, benefit) => {
+    expect(scoringLexiconBrief(language).degraded).toBe(true)
+    const scored = scoreCopyItem(text, {
+      language, benefits: [benefit], brandTerms: [], targets: DEFAULT_TARGETS, type: 'long', maxBytes: LONG_MAX
+    })
+    expect(scored).toMatchObject({ scoringMode: 'degraded', accepted: true })
+  })
 })
 
 describe('selectTopN compliance gate', () => {
@@ -415,6 +427,34 @@ describe('compliance and byte-rescue hardening', () => {
     // exemption used to let the same pattern's second claim slip through.
     const scored = scoreCopyItem('Zero fees and lowest fees with miclip now', {
       language: 'en', benefits: ['zero fees'], brandTerms: ['miclip'], targets: DEFAULT_TARGETS, type: 'long', maxBytes: LONG_MAX
+    })
+    expect(scored.rejectReason).toBe('financial_compliance_violation')
+  })
+
+  it('accepts the complete confirmed benefit with its qualifier', () => {
+    const scored = scoreCopyItem('Get zero fees on first transfer. Download today and send.', {
+      language: 'en', benefits: ['zero fees on first transfer'], brandTerms: [],
+      targets: DEFAULT_TARGETS, type: 'long', maxBytes: LONG_MAX
+    })
+    expect(scored.accepted).toBe(true)
+  })
+
+  it.each([
+    ['not licensed', 'Discover Acme licensed fast transfers. Download today.'],
+    ['zero fees on first transfer', 'Discover zero fees for every transfer. Download today.'],
+    ['zero fees on first transfer', 'Zero fees on first transfer. Zero fees on all transfers.']
+  ])('rejects a claim that drops the scope of %s', (benefit, text) => {
+    const scored = scoreCopyItem(text, {
+      language: 'en', benefits: [benefit, 'fast transfers'], brandTerms: ['Acme'],
+      targets: DEFAULT_TARGETS, type: 'long', maxBytes: LONG_MAX
+    })
+    expect(scored).toMatchObject({ accepted: false, rejectReason: 'financial_compliance_violation' })
+  })
+
+  it('requires a confirmed benefit instead of taking a brand keyword as a claim', () => {
+    const scored = scoreCopyItem('Get certified fast transfers with Acme. Download today.', {
+      language: 'en', benefits: ['fast transfers'], brandTerms: ['Acme', 'certified'],
+      targets: DEFAULT_TARGETS, type: 'long', maxBytes: LONG_MAX
     })
     expect(scored.rejectReason).toBe('financial_compliance_violation')
   })

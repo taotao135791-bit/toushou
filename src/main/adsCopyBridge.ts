@@ -51,7 +51,7 @@ function providerQuarantined(id: string, now: number): boolean {
 function noteProviderResult(id: string, error: string | undefined, now: number): void {
   if (!error) { breaker.delete(id); return }
   // 408/429 are transient (timeout / rate limit) — never quarantine the provider for them.
-  if (/^http-(?:408|429)/i.test(error)) return
+  if (/^http-(?:408|429)\b/i.test(error) || error === 'api-error: rate-limited') return
   if (!/^http-4|^api-error/i.test(error)) return
   const entry = breaker.get(id) ?? { consecutive: 0, until: 0 }
   entry.consecutive += 1
@@ -343,7 +343,7 @@ function buildBatchPrompt(opts: {
     `- 相关性 Relevance ≥${opts.targets.relevance} 分：必须覆盖至少 2 个卖点（原词或拆词）；覆盖 4 个以上满分。`,
     ctaLine,
     `- 空间 Space ≥${opts.targets.space} 分：短标题 19–25 字节、长描述 56–75 字节，接近上限优于留白；超上限直接淘汰。`,
-    `- 品牌与合规：品牌词自然出现一次；绝对禁止出现：${lexicon.forbidden.join('、')}；也不得出现卖点之外的资质、收益、保证类表述（卖点里已确认的事实可以写）。`,
+    `- 品牌与合规：品牌词自然出现一次。禁用词有 ${lexicon.forbidden.join('、')}。有资质、收益或保证类表述时，需要完整引用已确认的卖点，保留适用范围和限制条件。`,
     `- 总分 ≥ ${opts.targets.total} 分。`,
     `本轮方向：${opts.direction}${opts.attempt > 1 ? `（第 ${opts.attempt} 轮，上一轮未达标，必须换角度而不是在同一方向上微调；创作框架：${opts.frameworkBrief}）` : ''}`,
     opts.fixLines.length > 0 ? `针对性修复要求：\n- ${opts.fixLines.join('\n- ')}` : '',

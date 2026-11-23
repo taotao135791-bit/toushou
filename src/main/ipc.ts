@@ -1505,7 +1505,7 @@ export function registerIpc() {
       payload: { historyId?: unknown; liveSessionId?: unknown; keepUserTurns?: unknown; completeTurnsOnly?: unknown }
     ) => {
       const resolved = requireGrant(grantId)
-      if (!resolved) return null
+      if (!resolved || !payload || typeof payload !== 'object') return null
       const keep =
         payload.keepUserTurns === undefined || payload.keepUserTurns === null
           ? undefined
@@ -1516,16 +1516,21 @@ export function registerIpc() {
       const completeOnly = payload.completeTurnsOnly === true
       const suffix = keep === undefined && !completeOnly ? '（副本）' : '（分支）'
       // LIVE session fork: the durable file comes from Main's own session
-      // record; the workspace is the session's cwd. No history capability is
-      // involved because no user-selected history row was touched.
+      // record. Bind that source to the supplied workspace grant before
+      // writing a copy or starting a process.
       if (typeof payload.liveSessionId === 'string' && payload.historyId === undefined) {
         const live = getSession(payload.liveSessionId)
         const file = live?.sessionFile ?? live?.resumeFrom
         if (!live || !file) return { error: 'session-not-found' }
         const baseTitle = typeof live.title === 'string' && live.title ? live.title : undefined
         try {
+          if (canonicalExistingPath(live.cwd) !== resolved.realPath) return { error: 'invalid-request' }
+          // A locally restricted session keeps its mode. An explicit GUI fork
+          // of a Feishu-origin session follows the existing local resume policy.
+          const permissionMode = live.origin === 'feishu' ? undefined : live.readonly ? 'readonly' : live.nativePermissionMode
           const fork = await forkSessionFile(file, { keepUserTurns: keep, titleSuffix: suffix, completeTurnsOnly: completeOnly })
-          const forked = await resumeSession(live.cwd, broadcastSessionEvent, fork.filePath, {
+          const forked = await resumeSession(resolved.realPath, broadcastSessionEvent, fork.filePath, {
+            ...(permissionMode ? { permissionMode } : {}),
             ...(baseTitle ? { initialTitle: `${baseTitle.slice(0, 100)}${suffix}` } : {})
           })
           if (!forked) return null
@@ -1549,7 +1554,7 @@ export function registerIpc() {
           const overlay = sessionTitleOverlays().get(normalizeSessionTitleFile(filePath))
           const overlayTitle = overlay?.title
           try {
-            const fork = await forkSessionFile(filePath, { keepUserTurns: keep, titleSuffix: suffix })
+            const fork = await forkSessionFile(filePath, { keepUserTurns: keep, titleSuffix: suffix, completeTurnsOnly: completeOnly })
             const forked = await resumeSession(resolved.realPath, broadcastSessionEvent, fork.filePath, {
               ...(overlayTitle ? { initialTitle: `${overlayTitle.slice(0, 100)}${suffix}`, initialTitleMetadata: overlay.metadata } : {})
             })

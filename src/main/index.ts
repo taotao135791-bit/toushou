@@ -203,7 +203,7 @@ app.whenReady().then(async () => {
   tiktokReportService.restoreFromSettings()
   // MCP 令牌后台续签：在令牌到期前主动刷新 TikTok / AppsFlyer 的 OAuth
   // 授权，避免闲置后首次读数才发现令牌过期（详见 tokenKeepAlive.ts）。
-  tokenKeepAlive.registerTarget('tiktok-ads', () => tiktokAdsConnectionManager.ensureFreshToken())
+  tokenKeepAlive.registerTarget('tiktok-ads', () => tiktokAdsConnectionManager.keepAliveToken())
   tokenKeepAlive.registerTarget('appsflyer', () => ensureAppsFlyerFreshToken())
   tokenKeepAlive.start()
 

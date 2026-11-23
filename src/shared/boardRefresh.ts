@@ -41,28 +41,15 @@ export function boardRefreshWidgetDatasets(result: BoardRefreshResult, widget: B
   const projected = view.bindings.map((binding): BoardRefreshDataset | undefined => {
     const source = result.sources.find(item => item.key === binding.sourceKey)
     const original = fallback.find(item => item.id === binding.datasetId || item.name === binding.datasetId)
-    // The renderer's refresh result carries dataset BRIEFS (the agent-facing
-    // payload is slimmed — rows never cross the conversation). The freshly
-    // reloaded store holds the materialization the refresh just committed,
-    // so resolve full rows by id: that IS the master-window data this
-    // projection is meant to serve. Without this, post-refresh cards fell
-    // back to stale pre-refresh numbers ("对不上总控").
-    // The agent-facing refresh result is slimmed (rows never cross the
-    // conversation): a row-less brief resolves full rows from the freshly
-    // reloaded store — the materialization the refresh just committed IS the
-    // master-window data. Main-internal results carry already-scoped rows
-    // (TikTok slices a SHARED store dataset per window) and must keep them:
-    // the store's final state may belong to another window's group.
-    const brief = source?.dataset
-    const materialized = brief && brief.rows.length === 0
-      ? fallback.find(item => item.id === brief.id && item.rows.length > 0)
-      : undefined
-    const data = materialized ?? brief ?? original
+    // IPC supplies the full scoped snapshot. An empty slice is authoritative,
+    // even when the shared store has rows for other accounts under the same ID.
+    const data = source?.dataset ?? original
     if (!data) return undefined
     const date = data.columns.findIndex(column => column.type === 'date'), account = data.columns.findIndex(column => column.name === '广告主ID')
     const ready = source?.status === 'updated' || source?.status === 'empty' || source?.kind === 'dataset'
     const rows = ready ? data.rows.filter(row => {
       const accountWindow = binding.accountWindows?.find(window => window.advertiserId === String(row[account]))
+      if (binding.accountWindows?.length && !accountWindow) return false
       const window = accountWindow ? { start: accountWindow.startDate, end: accountWindow.endDate } : binding.window ?? view.window
       return date < 0 || (String(row[date]) >= window.start && String(row[date]) <= window.end)
     }) : []

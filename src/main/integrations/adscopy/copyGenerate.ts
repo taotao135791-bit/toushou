@@ -58,16 +58,6 @@ function stopReasonSuffix(reason: unknown): string {
   return typeof reason === 'string' && allowed.has(reason) ? ` (stop=${reason})` : ''
 }
 
-/**
- * http-<status> alone says nothing actionable — a 400 (bad key/model/params)
- * needs its body snippet so the user can actually fix the provider. The
- * snippet is provider-controlled text: bounded and surfaced, never parsed.
- */
-async function httpError(response: { status: number; text: () => Promise<string> }): Promise<string> {
-  const snippet = await response.text().then((body) => body.replace(/\s+/g, ' ').trim().slice(0, 120)).catch(() => '')
-  return `http-${response.status}${snippet ? `: ${snippet}` : ''}`
-}
-
 export async function callCopyModel(
   fetchImpl: CopyFetch,
   provider: AdsCopyModelProvider,
@@ -111,7 +101,7 @@ export async function callCopyModel(
           messages: [{ role: 'user', content: request.prompt }]
         })
       })
-      if (!response.ok) return { ok: false, error: await httpError(response) }
+      if (!response.ok) return { ok: false, error: `http-${response.status}` }
       const data = JSON.parse(await response.text()) as {
         content?: Array<{ type?: string; text?: string }>
         choices?: Array<{ message?: { content?: string } }>
@@ -154,7 +144,7 @@ export async function callCopyModel(
         ]
       })
     })
-    if (!response.ok) return { ok: false, error: await httpError(response) }
+    if (!response.ok) return { ok: false, error: `http-${response.status}` }
     const data = JSON.parse(await response.text()) as {
       choices?: Array<{ message?: { content?: string; reasoning_content?: string }; finish_reason?: string }>
       error?: unknown
@@ -201,7 +191,7 @@ export async function discoverModels(
   try {
     // GET carries no body (spec-illegal bodies make some relays reject).
     const response = await fetchImpl(url, { method: 'GET', headers })
-    if (!response.ok) return { ok: false, error: await httpError(response) }
+    if (!response.ok) return { ok: false, error: `http-${response.status}` }
     const data = JSON.parse(await response.text()) as { data?: Array<{ id?: unknown }>; error?: unknown }
     const apiError = apiErrorCode(data.error)
     if (apiError) return { ok: false, error: `api-error: ${apiError}` }

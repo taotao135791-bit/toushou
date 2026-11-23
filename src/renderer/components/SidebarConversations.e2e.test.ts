@@ -57,7 +57,9 @@ describe('project conversations in the real Sidebar', () => {
       expect(data.resetArchive).toBe('Archive')
       expect(data.finalArchive).toEqual({ open: false, snapshot: { current: 'live-b', workspace: '/synthetic/client-b/project' }, kills: ['live-a'] })
       expect(data.fullTitle).toBe('Beta live conversation')
-      expect(data.nativeKeyboardClicks).toEqual(Array(9).fill(1))
+      expect(data.nativeKeyboardClicks).toEqual(Array(12).fill(1))
+      expect(data.lateFork).toEqual({ snapshot: { current: null, workspace: '/synthetic/client-b/project' }, calls: [{ grantId: 'grant-beta', liveSessionId: 'live-b' }] })
+      expect(data.liveDelete).toEqual({ beforeUndoKills: 1, kills: ['live-a', 'live-b'], retained: false, visible: false })
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

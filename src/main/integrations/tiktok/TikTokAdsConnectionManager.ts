@@ -86,6 +86,7 @@ export class TikTokAdsConnectionManager {
   /** Bounded auto-retry after a failed renewal (transient network only). */
   private refreshRetryTimer: ReturnType<typeof setTimeout> | null = null
   private refreshRetryAttempts = 0
+  private automaticRefreshBlocked = false
   private readonly refreshRetryDelays: number[]
   private authorizationSavePending: Promise<void> | null = null
   private disconnectPending: Promise<TikTokAdsConnectionSnapshot> | null = null
@@ -346,6 +347,12 @@ export class TikTokAdsConnectionManager {
     try { return await pending } finally { if (this.refreshPending === pending) this.refreshPending = null }
   }
 
+  /** The app-wide heartbeat leaves a manager's retry cadence in charge. */
+  async keepAliveToken(): Promise<boolean> {
+    if (this.disconnectPending || this.flow || this.automaticRefreshBlocked || this.refreshRetryTimer) return false
+    return this.ensureFreshToken()
+  }
+
   private async refreshTokenOnce(): Promise<boolean> {
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer)
@@ -374,6 +381,7 @@ export class TikTokAdsConnectionManager {
       const nextCredentials = {
         ...credentials,
         ...tokens,
+        refreshToken: tokens.refreshToken ?? credentials.refreshToken,
         ...(tokens.advertiserIds ? {} : { advertiserIds: credentials.advertiserIds }),
         savedAt: 0
       }
@@ -403,7 +411,9 @@ export class TikTokAdsConnectionManager {
       // endpoint must not kill the grant.
       const transient = /HTTP 40[89]|HTTP 429|rate.?limit|too many requests|timeout|timed?\s*out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|network|fetch failed/i.test(message)
       const permanent = !transient && /invalid|expired|unauthorized|forbidden|denied|revoked|HTTP 4\d\d/i.test(message)
-      if (!permanent) this.scheduleRefreshRetry(generation)
+      if (permanent) this.clearRefreshRetry()
+      else this.scheduleRefreshRetry(generation)
+      this.automaticRefreshBlocked = permanent || !this.refreshRetryTimer
       this.state = 'degraded'
       // "请重新授权" only when NO automatic retry is pending — saying it while
       // the 15-minute retry still runs sends users through a needless re-auth.
@@ -428,6 +438,7 @@ export class TikTokAdsConnectionManager {
   private clearRefreshRetry(): void {
     if (this.refreshRetryTimer) { clearTimeout(this.refreshRetryTimer); this.refreshRetryTimer = null }
     this.refreshRetryAttempts = 0
+    this.automaticRefreshBlocked = false
   }
 
   /** Bounded retry cadence, then stop and stay degraded. */
@@ -671,6 +682,7 @@ export class TikTokAdsConnectionManager {
       this.state = 'connected'
       this.lastError = undefined
       this.lastConnectedAt = this.now()
+      this.clearRefreshRetry()
       this.scheduleNextRefresh()
       this.emitState()
     } catch (error) {
@@ -701,7 +713,7 @@ export class TikTokAdsConnectionManager {
       const detail = typeof payload.error_description === 'string'
         ? payload.error_description
         : typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`
-      throw new Error(detail)
+      throw new Error(detail === `HTTP ${response.status}` ? detail : `HTTP ${response.status}: ${detail}`)
     }
     const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : undefined
     // TikTok echoes the granted advertiser ids back on the token response;

@@ -87,6 +87,23 @@ export async function activateSidebarProject(cwd: string, intent: number): Promi
   return isCurrentNavigationIntent(intent) && useAppStore.getState().currentWorkspace?.realPath === cwd ? 'registered' : 'unavailable'
 }
 
+async function resolveLiveWorkspace(cwd: string, intent: number) {
+  const target = await activateSidebarProject(cwd, intent)
+  if (target === 'unavailable') return null
+  const before = useAppStore.getState()
+  if (target === 'legacy' && before.currentWorkspace?.realPath !== cwd) {
+    const recent = before.recentWorkspaces.find(item => item.displayPath === cwd)
+    const grant = recent ? await window.electronAPI.activateRecentWorkspace(recent.id) : null
+    const latest = useAppStore.getState()
+    if (grant && isCurrentNavigationIntent(intent) && latest.currentWorkspace?.id === before.currentWorkspace?.id && latest.currentSessionId === before.currentSessionId) latest.setCurrentWorkspace(grant)
+  }
+  if (!isCurrentNavigationIntent(intent)) return null
+  const workspace = useAppStore.getState().currentWorkspace
+  if (workspace?.realPath === cwd) return workspace
+  showNotice('sidebar.projectNotAdded')
+  return null
+}
+
 export default function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -457,6 +474,7 @@ export default function Sidebar() {
       }
       return false
     } finally {
+      if (previewShown && !isCurrentNavigationIntent(epoch)) useAppStore.getState().clearSessionPreview(previewId)
       resumingHistoryRef.current = false
       setResumingHistoryId(null)
       flushQueuedOpen()
@@ -476,25 +494,31 @@ export default function Sidebar() {
       return
     }
     const grant = access.grant
+    const intent = beginNavigationIntent()
     resumingHistoryRef.current = true
     setResumingHistoryId(info.id)
     try {
       const result = await window.electronAPI.forkSession(grant.id, { historyId: info.id })
       if (!result || 'error' in result) {
-        showNotice(!result ? 'history.restoreFailed' : 'history.forkFailed')
+        if (isCurrentNavigationIntent(intent)) showNotice(!result ? 'history.restoreFailed' : 'history.forkFailed')
         return
       }
       const { session, messages: restored, historicalAgents } = result
-      addSession({ ...session, title: session.title || info.title }, false)
-      setMessages(session.id, restored)
-      useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
-      setCurrentSessionId(session.id)
-      navigate('/')
+      finishHistoryResume(grant, {
+        save: () => {
+          addSession({ ...session, title: session.title || info.title }, false)
+          setMessages(session.id, restored)
+          useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
+        },
+        currentWorkspace: () => isCurrentNavigationIntent(intent) ? useAppStore.getState().currentWorkspace : null,
+        select: () => { setCurrentSessionId(session.id, intent); navigate('/') }
+      })
     } catch {
-      showNotice('history.forkFailed')
+      if (isCurrentNavigationIntent(intent)) showNotice('history.forkFailed')
     } finally {
       resumingHistoryRef.current = false
       setResumingHistoryId(null)
+      flushQueuedOpen()
     }
   }
 
@@ -506,25 +530,32 @@ export default function Sidebar() {
    * app lands in the new conversation.
    */
   const handleForkLive = async (session: (typeof sessions)[number], mode: 'duplicate' | 'branch') => {
-    if (!currentWorkspace || forkingSessionId) return
+    if (forkingSessionId) return
+    const intent = beginNavigationIntent()
     setForkingSessionId(session.id)
     try {
-      const result = await window.electronAPI.forkSession(currentWorkspace.id, {
+      const workspace = await resolveLiveWorkspace(session.cwd, intent)
+      if (!workspace || !isCurrentNavigationIntent(intent)) return
+      const result = await window.electronAPI.forkSession(workspace.id, {
         liveSessionId: session.id,
         ...(mode === 'branch' ? { completeTurnsOnly: true } : {})
       })
       if (!result || 'error' in result) {
-        showNotice('history.forkFailed')
+        if (isCurrentNavigationIntent(intent)) showNotice('history.forkFailed')
         return
       }
       const { session: forked, messages: restored, historicalAgents } = result
-      addSession(forked, false)
-      setMessages(forked.id, restored)
-      useAppStore.getState().applyHistoricalAgents(forked.id, historicalAgents ?? [])
-      useAppStore.getState().setCurrentSessionId(forked.id)
-      navigate('/')
+      finishHistoryResume(workspace, {
+        save: () => {
+          addSession(forked, false)
+          setMessages(forked.id, restored)
+          useAppStore.getState().applyHistoricalAgents(forked.id, historicalAgents ?? [])
+        },
+        currentWorkspace: () => isCurrentNavigationIntent(intent) ? useAppStore.getState().currentWorkspace : null,
+        select: () => { setCurrentSessionId(forked.id, intent); navigate('/') }
+      })
     } catch {
-      showNotice('history.forkFailed')
+      if (isCurrentNavigationIntent(intent)) showNotice('history.forkFailed')
     } finally {
       setForkingSessionId(null)
     }
@@ -616,17 +647,7 @@ export default function Sidebar() {
     }
     openingLiveRef.current = true
     try {
-      const target = await activateSidebarProject(session.cwd, epoch)
-      if (target === 'unavailable') return
-      if (target === 'legacy' && useAppStore.getState().currentWorkspace?.realPath !== session.cwd) {
-        const before = useAppStore.getState()
-        const recent = before.recentWorkspaces.find(item => item.displayPath === session.cwd)
-        const grant = recent ? await window.electronAPI.activateRecentWorkspace(recent.id) : null
-        const latest = useAppStore.getState()
-        if (grant && isCurrentNavigationIntent(epoch) && latest.currentWorkspace?.id === before.currentWorkspace?.id && latest.currentSessionId === before.currentSessionId) latest.setCurrentWorkspace(grant)
-      }
-      if (!isCurrentNavigationIntent(epoch)) return
-      if (useAppStore.getState().currentWorkspace?.realPath !== session.cwd) { showNotice('sidebar.projectNotAdded'); return }
+      if (!(await resolveLiveWorkspace(session.cwd, epoch)) || !isCurrentNavigationIntent(epoch)) return
       if (!useAppStore.getState().sessions.some(item => item.id === session.id)) return
       setCurrentSessionId(session.id, epoch)
       navigate('/')
@@ -695,7 +716,8 @@ export default function Sidebar() {
                 // Session already gone — fall through to the kill below.
               }
             }
-            window.electronAPI.killSession(target.id)
+            await window.electronAPI.killSession(target.id)
+            store().setSessions(store().sessions.filter((session) => session.id !== target.id))
             store().revealLiveSessionPendingDelete(target.id)
             const ok = await deleteByUuidAndRefresh(resolvedUuid)
             if (!ok) {

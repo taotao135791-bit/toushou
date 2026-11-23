@@ -73,6 +73,8 @@ describe('board date refresh in Electron', () => {
       expect(result.legacyAfterDate.calls).toBe(0)
       expect(result.legacyAfterDate.text).not.toContain('Date range changed. Refresh to load data for the new range.')
       expect(result.scopeCases).toEqual({ fixed: false, local: false, absolute: false, trailing: true, legacy: true, legacyAfReady: true, legacyAfNoPlan: false, legacyAfUnbound: false, legacyAfWrongBinding: false, legacyAfWrongBoard: false })
+      expect(result.keptSecondRequest).toBe(true)
+      expect(result.proposalBoards).toEqual(['Static fixture'])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

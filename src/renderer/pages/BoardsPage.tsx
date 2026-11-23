@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout'
 import {
@@ -317,11 +317,23 @@ export default function BoardsPage() {
   const [boardMenuOpen, setBoardMenuOpen] = useState(false)
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
   const undoableDelete = useUndoableDelete()
-  const [aiWidgetOpen, setAiWidgetOpen] = useState(false)
+  const [aiWidgetBoardId, setAiWidgetBoardId] = useState<string | null>(null)
+  const aiWidgetRequest = useRef<string | null>(null)
   const [aiWidgetInstruction, setAiWidgetInstruction] = useState('')
   const [aiWidgetBusy, setAiWidgetBusy] = useState(false)
   const [aiWidgetProposal, setAiWidgetProposal] = useState<{ type: string; title: string; config: Record<string, unknown>; reason: string } | null>(null)
   const [aiWidgetError, setAiWidgetError] = useState<string | null>(null)
+  const dismissAiWidget = useCallback(() => {
+    aiWidgetRequest.current = null
+    setAiWidgetBoardId(null)
+    setAiWidgetInstruction('')
+    setAiWidgetBusy(false)
+    setAiWidgetProposal(null)
+    setAiWidgetError(null)
+  }, [])
+  useEffect(() => {
+    if (aiWidgetBoardId && (aiWidgetBoardId !== currentId || surface !== 'board')) dismissAiWidget()
+  }, [aiWidgetBoardId, currentId, surface, dismissAiWidget])
   const [galleryOpen, setGalleryOpen] = useState(false)
   const [masterMetricsOpen, setMasterMetricsOpen] = useState(false)
   const [masterMetricsDraft, setMasterMetricsDraft] = useState<string[]>([])
@@ -917,30 +929,39 @@ export default function BoardsPage() {
   /** AI 卡片生成：调默认对话模型拿提案，用户确认后走与手动添加相同的落板路径。 */
   const runAiWidget = async () => {
     const instruction = aiWidgetInstruction.trim()
-    if (!instruction || !current || aiWidgetBusy) return
+    if (!instruction || !current || current.id !== aiWidgetBoardId || aiWidgetRequest.current) return
+    const boardId = current.id
+    const requestId = crypto.randomUUID()
+    aiWidgetRequest.current = requestId
+    const isCurrentRequest = () => aiWidgetRequest.current === requestId &&
+      activeView.current.boardId === boardId && activeView.current.surface === 'board'
     setAiWidgetBusy(true)
     setAiWidgetError(null)
     setAiWidgetProposal(null)
     try {
       const result = await window.electronAPI.boardAiWidget({
-        requestId: crypto.randomUUID(),
+        requestId,
         instruction,
         context: {
           widgets: current.widgets.map(widget => ({ type: widget.type, title: widget.title })),
           datasets: datasets.map(dataset => ({ id: dataset.id, name: dataset.name, columns: dataset.columns, rowCount: dataset.rows.length }))
         }
       })
+      if (!isCurrentRequest()) return
       if (result?.ok) setAiWidgetProposal(result.proposal)
       else setAiWidgetError(result?.error ?? 'failed')
     } catch {
-      setAiWidgetError('failed')
+      if (isCurrentRequest()) setAiWidgetError('failed')
     } finally {
-      setAiWidgetBusy(false)
+      if (aiWidgetRequest.current === requestId) {
+        aiWidgetRequest.current = null
+        setAiWidgetBusy(false)
+      }
     }
   }
 
   const applyAiWidget = () => {
-    if (!current || !aiWidgetProposal) return
+    if (!current || current.id !== aiWidgetBoardId || !aiWidgetProposal) return
     const type = aiWidgetProposal.type as WidgetType
     if (!WIDGET_DEFAULT_SIZES[type]) { setAiWidgetError('invalid-output'); return }
     const size = WIDGET_DEFAULT_SIZES[type]
@@ -949,10 +970,7 @@ export default function BoardsPage() {
       const ms = b.masterScope
       return { ...b, widgets: [...b.widgets, ms ? applyMasterScope(widget, ms) : widget] }
     })
-    setAiWidgetOpen(false)
-    setAiWidgetInstruction('')
-    setAiWidgetProposal(null)
-    setAiWidgetError(null)
+    dismissAiWidget()
     setConfigWidgetId(widget.id)
     const target = { boardId: current.id, widgetId: widget.id }
     revealTargetRef.current = target
@@ -2290,8 +2308,8 @@ export default function BoardsPage() {
           )}
         </div>
 
-        {aiWidgetOpen && current && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) setAiWidgetOpen(false) }}>
+        {current?.id === aiWidgetBoardId && surface === 'board' && (
+          <div role="dialog" aria-modal="true" aria-label={t('boards.aiWidget.title')} className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) dismissAiWidget() }}>
             <div className="w-full max-w-lg rounded-2xl border border-line bg-ink-900 p-5 shadow-pop" onMouseDown={(e) => e.stopPropagation()}>
               <div className="text-[13px] font-semibold text-cream">{t('boards.aiWidget.title')}</div>
               <p className="mt-1 text-[11.5px] leading-4 text-cream-faint">{t('boards.aiWidget.hint')}</p>
@@ -2324,7 +2342,7 @@ export default function BoardsPage() {
                   </>
                 ) : (
                   <>
-                    <button onClick={() => setAiWidgetOpen(false)} disabled={aiWidgetBusy} className="rounded-full border border-line px-3 py-1.5 text-[11.5px] text-cream-dim hover:text-cream">{t('boards.aiWidget.close')}</button>
+                    <button onClick={dismissAiWidget} className="rounded-full border border-line px-3 py-1.5 text-[11.5px] text-cream-dim hover:text-cream">{t('boards.aiWidget.close')}</button>
                     <button onClick={() => void runAiWidget()} disabled={aiWidgetBusy || !aiWidgetInstruction.trim()} className="flex items-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[11.5px] font-medium text-ink-950 hover:opacity-90 disabled:opacity-40"><Sparkles size={11} />{t('boards.aiWidget.generate')}</button>
                   </>
                 )}
@@ -2361,7 +2379,7 @@ export default function BoardsPage() {
                   {t('boards.addWidget')}
                 </div>
                 <button
-                  onClick={() => { setGalleryOpen(false); setAiWidgetOpen(true) }}
+                  onClick={() => { setGalleryOpen(false); setAiWidgetBoardId(current.id) }}
                   className={`${menuItemClass} mb-1 text-accent hover:bg-overlay`}
                 >
                   <Sparkles size={12} />

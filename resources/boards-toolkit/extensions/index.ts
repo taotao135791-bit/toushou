@@ -335,11 +335,11 @@ export default function boardsTools(api: ToolHostApi): void {
     label: '拉取 AppsFlyer 数据集',
     description:
       '拉取 AppsFlyer 官方归因数据写入「AF-{name}」数据集，并保留完整查询条件。卡片绑定返回的 dataset.id，日期切换和刷新按看板实际范围重查。默认建活卡，仅用户明确要求固定快照时才手填数值。\n' +
-      '支持多维：groupings 可含 Geo / Event name / Campaign ID / Media source / Date（最多 4 个）；metrics 可用 Count / Unique users / Installs / Active users / Revenue 等官方指标；basis 支持 activity（活动日期）或 ltv（生命周期）。\n' +
+      '支持多维：groupings 可含 Geo / Event name / Campaign ID / Media source / Date（最多 4 个）；metrics 可用 Count / Unique users / Active users / Revenue 等官方指标；basis 支持 activity（活动日期）或 ltv（生命周期）。\n' +
       '用法要求：\n' +
       '1. name 起短且能区分应用/范围的名字（如 产品A注册）；数据集叫 AF-{name}，卡片标题用用户熟悉的简短业务名。\n' +
       '2. 无具体方向的媒体×AF 业务看板包含媒体基础读数与 AF 活数据；按当前实际媒体选择读数来源，不因使用 AF 就强制 TikTok。显式用途、风格、结构、参考和后续定制优先，模板仅为起点；已有板增量添加所需数据，保留未要求修改的内容。\n' +
-      '3. 仅沿用当前客户、项目已确认的 appId 和事件映射。用户使用业务名称时，先发现实际事件，按当前映射、名称和业务含义选择唯一最匹配的候选，再将准确 eventName 保存；自定义事件不限 af_ 前缀。只有同样合理的候选不止一个时才简短询问，不要求用户提供字段。禁止从其他客户复制事件名、阶段命名或漏斗定义。Install/App Active/Session 是内置事件，安装量可直接用 Installs 指标。\n' +
+      '3. 仅沿用当前客户、项目已确认的 appId 和事件映射。用户使用业务名称时，先发现实际事件，按当前映射、名称和业务含义选择唯一最匹配的候选，再将准确 eventName 保存；自定义事件不限 af_ 前缀。只有同样合理的候选不止一个时才简短询问，不要求用户提供字段。禁止从其他客户复制事件名、阶段命名或漏斗定义。Install/App Active/Session 是内置事件。安装量来自官方附带的 Installs 列，查询使用 Count 等受支持的指标。\n' +
       '4. 首次拉取用 startDate/endDate 与看板总控具体日期对齐，后续沿用此查询条件重查；days 备用默认近7个完整日（截至昨天）。geo=true 仅增加 Geo 维度；countries 过滤地区，全部地区应省略过滤，绝不传 Geo=["all"]。最多4个维度。\n' +
       '5. 新业务方案显式传 mediaSources，使用当前App真实发现并已确认的媒体名称；[]为该App全部授权来源，省略仅兼容旧TikTok调用。不要根据媒体品牌猜接口别名，非TikTok方案不得省略后错标来源。\n' +
       '6. 返回的 dataset.columns 是可绑定的列名。事件次数等可加指标可用 op="sum"；独立用户用完整日期范围的专用总量查询，不把多日或多分组去重数相加。首屏只保留关键数字/highlight，不创建大段口径、防御词或原始查询参数说明卡。',
@@ -354,7 +354,7 @@ export default function boardsTools(api: ToolHostApi): void {
         startDate: { type: 'string', description: 'YYYY-MM-DD，与 endDate 一起传，按看板总控的实际日期首次拉取' },
         endDate: { type: 'string', description: 'YYYY-MM-DD，与 startDate 一起传，最长366天' },
         basis: { type: 'string', enum: ['activity', 'ltv'], description: 'activity=活动日期口径（默认），ltv=生命周期口径' },
-        metrics: { type: 'array', description: '官方指标名数组，默认 ["Count","Unique users"]；可用 Installs / Active users / Revenue 等', items: { type: 'string' } },
+        metrics: { type: 'array', description: '官方指标名数组，默认 ["Count","Unique users"]；可用 Active users / Revenue 等，安装量读取官方附带的 Installs 列', items: { type: 'string' } },
         groupings: { type: 'array', description: '维度数组（最多4个），默认按事件类型选；可用 Geo / Event name / Campaign ID / Campaign / Media source / Date', items: { type: 'string' } },
         geo: { type: 'boolean', description: 'true 时附加 Geo 维度（总维度最多4），不代表地区过滤' },
         countries: { type: 'array', items: { type: 'string' }, description: '可选地区筛选；全部地区时省略，不传字面值 all' },
@@ -363,7 +363,7 @@ export default function boardsTools(api: ToolHostApi): void {
       required: ['name', 'appId']
     },
     approval: 'write',
-    execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ action: 'af_dataset_pull', ...params }) }] })
+    execute: async (_id, params, signal) => ({ content: [{ type: 'text', text: await call({ action: 'af_dataset_pull', ...params }, signal) }] })
   })
   api.registerTool({
     name: 'toushou_af_query_plan',
@@ -376,12 +376,12 @@ export default function boardsTools(api: ToolHostApi): void {
         buildId: BUILD_ID,
         appId: { type: 'string', description: 'AppsFlyer App ID（必填）' },
         days: { type: 'integer', description: '预审窗口：最近 N 个完整日（1-366，默认7，截至昨天）' },
-        mediaSources: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 200 }, description: '当前App真实媒体名称；[]为全部授权来源，省略仅兼容旧TikTok调用' },
+        mediaSources: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 200 }, description: '当前 App 的媒体来源名称；省略或 [] 表示全部授权来源' },
         countries: { type: 'array', items: { type: 'string' }, description: '可选地区筛选' }
       },
       required: ['appId']
     },
     approval: 'read',
-    execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ action: 'af_query_plan', ...params }) }] })
+    execute: async (_id, params, signal) => ({ content: [{ type: 'text', text: await call({ action: 'af_query_plan', ...params }, signal) }] })
   })
 }

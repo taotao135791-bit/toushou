@@ -1628,12 +1628,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         // (UI idle while a turn ran), and finalizeThinking then saw the new
         // user bubble as last, leaving the thinking run open forever.
         streamQueue.pushBarrier(event.sessionId, () => {
+          if (get().queueDispatching[event.sessionId]?.phase === 'checkpoint') return
           get().finalizeThinking(event.sessionId)
           get().setBusy(event.sessionId, false)
           // Working→idle with a non-empty queue: send the next queued message.
           // The wasBusy guard plus the optimistic busy=true inside drain keep a
           // stray or repeated 'idle' from draining more than one message.
-          if (wasBusy && get().queueDispatching[event.sessionId]?.phase !== 'checkpoint') {
+          if (wasBusy) {
             const drained = get().drainQueuedMessage(event.sessionId)
             if (!drained && event.sessionId !== get().currentSessionId) {
               // Turn finished in a background session — flag it unread
@@ -1705,10 +1706,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       }))
     } else if (event.type === 'error') {
       if (event.recoverable !== true) get().pauseQueuedMessages(event.sessionId, event.recoverable === false ? 'closed' : 'failed')
-      get().addMessage(event.sessionId, {
-        id: crypto.randomUUID(),
-        role: 'system',
-        content: `Error: ${event.message}`
+      streamQueue.pushBarrier(event.sessionId, () => {
+        if (event.recoverable !== true) get().finalizeThinking(event.sessionId)
+        get().addMessage(event.sessionId, {
+          id: crypto.randomUUID(),
+          role: 'system',
+          content: `Error: ${event.message}`
+        })
       })
       // A dead session can't answer dialogs — drop them
       set((state) => ({

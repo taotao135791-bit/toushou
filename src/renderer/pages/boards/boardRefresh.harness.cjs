@@ -87,7 +87,30 @@ app.whenReady().then(async () => {
     await wait()
     const legacyAfterDate = await wc.executeJavaScript(`({calls:window.boardRefreshFixture.legacyCalls,text:document.body.innerText})`)
     const scopeCases = await wc.executeJavaScript(`window.boardRefreshFixture.scopeCases`)
-    console.log('E2E_RESULT ' + JSON.stringify({ opened, yesterdayOnly, yesterdayPending, yesterday, todayOnly, todayPending, today, unbound, empty, metaSelection, metaReady, metaFailed, metaDisconnected, fixed, fixedAfterDate, staticAfterDate, legacyInitial, legacyAfterDate, scopeCases }))
+    const aiDialog = `document.querySelector('[role="dialog"][aria-label="Describe the card you want"]')`
+    const clickExact = label => wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify(label)}).click()`)
+    const openAi = async () => {
+      await wc.executeJavaScript(`document.querySelector('[title="Add widget"]').click()`)
+      await clickExact('AI generate card')
+    }
+    const requestAi = async (instruction) => {
+      await wc.executeJavaScript(`(() => {const field=${aiDialog}.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(field,${JSON.stringify(instruction)});field.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+      await clickExact('Generate')
+    }
+    await openAi()
+    await requestAi('First board')
+    await wc.executeJavaScript(`${aiDialog}.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))`)
+    await wc.executeJavaScript(`[...document.querySelectorAll('[title="Click to open · drag to reorder tabs"]')].find(e=>e.textContent.includes('Static fixture')).click()`)
+    await openAi()
+    await requestAi('Second board')
+    await wc.executeJavaScript(`window.boardRefreshFixture.aiWidgetResolvers.get('First board')('Late first proposal')`)
+    await wait()
+    const keptSecondRequest = await wc.executeJavaScript(`${aiDialog}.querySelector('textarea').value==='Second board' && !${aiDialog}.textContent.includes('Late first proposal')`)
+    await wc.executeJavaScript(`window.boardRefreshFixture.aiWidgetResolvers.get('Second board')('Second proposal')`)
+    await clickExact('Add card')
+    await wait()
+    const proposalBoards = await wc.executeJavaScript(`window.electronAPI.listBoards().then(boards=>boards.filter(b=>b.widgets.some(w=>w.title==='Second proposal')).map(b=>b.name))`)
+    console.log('E2E_RESULT ' + JSON.stringify({ opened, yesterdayOnly, yesterdayPending, yesterday, todayOnly, todayPending, today, unbound, empty, metaSelection, metaReady, metaFailed, metaDisconnected, fixed, fixedAfterDate, staticAfterDate, legacyInitial, legacyAfterDate, scopeCases, keptSecondRequest, proposalBoards }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), stack: error.stack })) }
   finally { win?.destroy(); app.quit() }
 })

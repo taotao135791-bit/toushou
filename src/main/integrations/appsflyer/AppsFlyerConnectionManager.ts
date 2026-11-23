@@ -23,6 +23,12 @@ type Flow = { server: Server; state: string; verifier: string; redirectUri: stri
 const validEndpoint = (s: unknown): s is string => typeof s === 'string' && (() => { try { const u = new URL(s); return u.origin === BASE && !u.username && !u.password && !u.hash } catch { return false } })()
 const proxyFetch: Fetcher = async (url, init) => (await proxyFetchFor(url, 'appsflyer'))(url, init)
 
+class OAuthRequestError extends Error {
+  constructor(readonly status: number, readonly code?: string, detail?: string) {
+    super(detail ? `request failed: ${detail}` : `request failed (HTTP ${status})`)
+  }
+}
+
 /** Owns interactive OAuth; tokens never enter renderer, settings, or MCP config. */
 export class AppsFlyerConnectionManager {
   private readonly store: Store
@@ -50,6 +56,8 @@ export class AppsFlyerConnectionManager {
   /** Background keep-alive: bounded retry cadence after a failed renewal. */
   private refreshRetryTimer: ReturnType<typeof setTimeout> | null = null
   private refreshRetryAttempts = 0
+  private refreshRetryExhausted = false
+  private refreshRejected = false
   private readonly refreshRetryDelays: number[]
   constructor(options: { credentialStore?: Store; fetchImpl?: Fetcher; openExternal?: (url: string) => Promise<void>; onChange?: (snapshot: AppsFlyerConnectionSnapshot) => void; now?: () => number; probe?: (token: string) => Promise<ToolDescription[]>; refreshRetryDelaysMs?: number[] } = {}) {
     this.filePath = options.credentialStore ? undefined : path.join(app.getPath('userData'), 'appsflyer-credentials.bin')
@@ -125,7 +133,7 @@ export class AppsFlyerConnectionManager {
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
         }
       } catch { this.status = 'degraded'; this.error = '无法删除本机凭据，请重试'; this.emit(); return this.getSnapshot() }
-      this.credentials = null; this.verified = false; this.storageBlocked = false; this.status = 'disconnected'; this.error = undefined; this.emit(); return this.getSnapshot()
+      this.credentials = null; this.refreshRejected = false; this.verified = false; this.storageBlocked = false; this.status = 'disconnected'; this.error = undefined; this.emit(); return this.getSnapshot()
     })()
     this.pendingDisconnect = run
     try { return await run } finally { if (this.pendingDisconnect === run) this.pendingDisconnect = null }
@@ -171,9 +179,14 @@ export class AppsFlyerConnectionManager {
     if (!this.credentials) { try { const c = await this.store.load(); if (generation !== this.generation) return null; this.credentials = c } catch { this.storageBlocked = true; this.status = 'degraded'; this.error = '安全凭据存储不可用，请在连接页重试'; this.emit(); throw new Error('安全凭据存储不可用') } }
     const c = this.credentials
     if (!c?.accessToken) return null
+    if (this.refreshRejected) return null
     if (c.expiresAt && c.expiresAt <= this.now() + 60_000) {
+      if ((this.refreshRetryTimer || this.refreshRetryExhausted) && this.canKeepVerifiedToken(c)) return { accessToken: c.accessToken }
       if (!this.pendingRefresh) { const p = this.refresh(c, generation); this.pendingRefresh = p; void p.finally(() => { if (this.pendingRefresh === p) this.pendingRefresh = null }) }
-      if (!(await this.pendingRefresh)) throw new Error('连接已过期，请重新授权')
+      if (!(await this.pendingRefresh)) {
+        if (generation === this.generation && this.canKeepVerifiedToken(c)) return { accessToken: c.accessToken }
+        throw new Error('连接续期失败，请在连接页重试')
+      }
       if (generation !== this.generation || this.pendingDisconnect || !this.credentials?.accessToken) return null
       if (this.verifiedToken !== this.credentials.accessToken && !(await this.checkConnection(this.credentials.accessToken, generation))) throw new Error('AppsFlyer 只读工具不可用')
     }
@@ -188,7 +201,7 @@ export class AppsFlyerConnectionManager {
    * there is nothing renewable; never throws into the caller.
    */
   async ensureFreshToken(): Promise<boolean> {
-    if (this.pendingDisconnect || this.storageBlocked) return false
+    if (this.pendingDisconnect || this.storageBlocked || this.flow || this.status === 'connecting' || this.refreshRejected || this.refreshRetryTimer || this.refreshRetryExhausted) return false
     const generation = this.generation
     if (!this.credentials) { try { const c = await this.store.load(); if (generation !== this.generation) return false; this.credentials = c } catch { return false } }
     const c = this.credentials
@@ -211,11 +224,12 @@ export class AppsFlyerConnectionManager {
   private clearRefreshRetry(): void {
     if (this.refreshRetryTimer) { clearTimeout(this.refreshRetryTimer); this.refreshRetryTimer = null }
     this.refreshRetryAttempts = 0
+    this.refreshRetryExhausted = false
   }
   /** Bounded retry cadence, then stop and stay degraded. */
   private scheduleRefreshRetry(generation: number): void {
     if (this.refreshRetryTimer || this.pendingDisconnect || generation !== this.generation) return
-    if (this.refreshRetryAttempts >= this.refreshRetryDelays.length) return
+    if (this.refreshRetryAttempts >= this.refreshRetryDelays.length) { this.refreshRetryExhausted = true; return }
     const delay = this.refreshRetryDelays[this.refreshRetryAttempts]
     this.refreshRetryAttempts++
     this.refreshRetryTimer = setTimeout(() => {
@@ -223,6 +237,11 @@ export class AppsFlyerConnectionManager {
       if (generation === this.generation && !this.pendingDisconnect) void this.ensureFreshToken()
     }, delay)
   }
+  private canKeepVerifiedToken(credentials: Credentials): boolean {
+    return this.credentials?.accessToken === credentials.accessToken &&
+      (!credentials.expiresAt || credentials.expiresAt > this.now()) && this.hasVerifiedTools()
+  }
+
   private async refresh(c: Credentials, generation: number): Promise<boolean> {
     if (!c.refreshToken || !validEndpoint(c.tokenEndpoint)) { this.clearVerifiedTools(); this.status = 'degraded'; this.error = '连接已过期，请重新授权'; this.emit(); return false }
     try {
@@ -233,21 +252,19 @@ export class AppsFlyerConnectionManager {
       const saving = this.store.save(next, { beforeCommit: () => generation === this.generation })
       this.pendingSave = saving; try { await saving } finally { if (this.pendingSave === saving) this.pendingSave = null }
       if (generation !== this.generation) return false
-      this.credentials = next; this.clearVerifiedTools(); this.refreshRetryAttempts = 0; return true
+      this.credentials = next; this.clearVerifiedTools(); this.clearRefreshRetry(); return true
     } catch (error) {
       if (generation !== this.generation) return false
-      this.clearVerifiedTools()
-      if (error instanceof TikTokCredentialStorageError) { this.storageBlocked = true; this.status = 'degraded'; this.error = '安全凭据存储不可用，请在连接页重试'; this.emit(); return false }
-      // Transient (network/proxy/timeout) failures retry on a bounded cadence
-      // before declaring the grant dead — one hiccup must not read as "授权掉了".
-      // Permanent OAuth rejections (invalid/expired grant) do not retry.
-      const message = error instanceof Error ? error.message : String(error)
-      const permanent = /invalid|expired|unauthorized|forbidden|denied|revoked/i.test(message)
-      if (!permanent) this.scheduleRefreshRetry(generation)
-      this.status = 'degraded'
-      // Re-auth wording only when no automatic retry remains pending — the
-      // third (15 min) retry timer must not coexist with "请重新授权".
-      this.error = permanent || !this.refreshRetryTimer ? '连接续期失败，请重新授权' : '连接续期失败，正在自动重试'
+      if (error instanceof TikTokCredentialStorageError) { this.clearVerifiedTools(); this.clearRefreshRetry(); this.storageBlocked = true; this.status = 'degraded'; this.error = '安全凭据存储不可用，请在连接页重试'; this.emit(); return false }
+      const permanent = error instanceof OAuthRequestError && (error.status === 401 || error.status === 403 ||
+        (error.status === 400 && ['invalid_grant', 'invalid_client', 'unauthorized_client', 'access_denied'].includes(error.code ?? '')))
+      if (permanent) { this.clearRefreshRetry(); this.refreshRejected = true }
+      else this.scheduleRefreshRetry(generation)
+      // A transient token-endpoint failure does not revoke a verified token
+      // that can still serve reads before expiry.
+      if (permanent || !this.canKeepVerifiedToken(c)) { this.clearVerifiedTools(); this.status = 'degraded' }
+      this.error = permanent ? '连接续期失败，请重新授权'
+        : this.refreshRetryTimer ? '连接续期失败，正在自动重试' : '连接续期暂不可用，请在连接页重试'
       this.emit()
       return false
     }
@@ -258,12 +275,14 @@ export class AppsFlyerConnectionManager {
     if (!r.ok) {
       // Surface the OAuth error payload (invalid_grant / expired …) so callers
       // can classify permanent rejections instead of retrying a dead grant.
-      const detail = await r.clone().json().then((x: unknown) => {
+      const error = await r.json().then((x: unknown) => {
         if (!x || typeof x !== 'object' || Array.isArray(x)) return undefined
         const o = x as Record<string, unknown>
-        return typeof o.error_description === 'string' && o.error_description ? o.error_description : typeof o.error === 'string' ? o.error : undefined
+        const code = typeof o.error === 'string' ? o.error : undefined
+        const detail = typeof o.error_description === 'string' && o.error_description ? o.error_description : code
+        return { code, detail }
       }).catch(() => undefined)
-      throw new Error(typeof detail === 'string' && detail ? `request failed: ${detail}` : 'request failed')
+      throw new OAuthRequestError(r.status, error?.code, error?.detail)
     }
     const x = await r.json()
     if (!x || typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid response')
@@ -310,7 +329,7 @@ export class AppsFlyerConnectionManager {
       if (!current()) return
       const next = { clientId: f.clientId, clientSecret: f.clientSecret, tokenEndpoint: f.tokenEndpoint, ...tokens, savedAt: this.now() }
       let committed = false
-      const saving = this.store.save(next, { retryNewAuthorizationEpoch: f.epoch, beforeCommit: current, onCommitted: () => { committed = true; this.credentials = next; this.clearVerifiedTools(); this.closeFlow() } })
+      const saving = this.store.save(next, { retryNewAuthorizationEpoch: f.epoch, beforeCommit: current, onCommitted: () => { committed = true; this.credentials = next; this.refreshRejected = false; this.clearRefreshRetry(); this.clearVerifiedTools(); this.closeFlow() } })
       this.pendingSave = saving; try { await saving } finally { if (this.pendingSave === saving) this.pendingSave = null }
       if (generation !== this.generation) return
       if (!committed) throw new Error('not committed')
