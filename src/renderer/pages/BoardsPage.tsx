@@ -471,7 +471,7 @@ export default function BoardsPage() {
         if (revealTarget.index) {
           const row = card.querySelector<HTMLElement>(`[data-reading-account-index="${revealTarget.index}"]`)
           row?.scrollIntoView({ block: 'nearest' }); row?.focus({ preventScroll: true })
-        } else (card.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select') ?? card).focus({ preventScroll: true })
+        } else (document.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select') ?? card).focus({ preventScroll: true })
         revealTargetRef.current = null
         setRevealTarget(null)
       })

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Check, FilePlus2, X } from 'lucide-react'
 import { BoardDataset, BoardMasterScope, BoardWidget, BoardWidgetStyle } from '@shared/types'
 import { GRID_COLS, GRID_MAX_H, MASTER_SCOPED_WIDGET_TYPES, ttWindowForMasterRange } from '@shared/boards'
@@ -449,9 +450,11 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
   }
 
   return (
-    // 大编辑对话框（用户要求：卡片内嵌编辑框太小）：从"卡内小浮层"升级为
-    // 居中的大幅对话框——两列布局、整页滚动、点遮罩关闭。编辑期间不改动
-    // 看板画布本身，保存仍走原 onSave 通道。
+    // 大编辑对话框（用户要求：卡片内嵌编辑框太小）：居中的大幅对话框——
+    // 两列布局、整页滚动、点遮罩关闭。经 portal 挂到 body：卡片祖先链上有
+    // react-grid-layout 的 transform 和 overflow-hidden，会把这些 fixed
+    // 元素困在卡片盒子里（遮挡/裁切的根源），portal 后才是真全屏顶层。
+    createPortal(
     <div
       className="widget-config fixed inset-0 z-40 flex items-start justify-center bg-black/40 p-4 backdrop-blur-sm"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
@@ -1097,6 +1100,8 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
         </button>
       </div>
       </div>
-    </div>
+    </div>,
+    document.body
+    )
   )
 }

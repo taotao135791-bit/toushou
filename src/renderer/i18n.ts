@@ -253,6 +253,7 @@ const en = {
   'history.restoredInOtherProject': 'The conversation was restored in its project. Switch back to open it.',
   'history.transcriptUnavailable': "Couldn't load this conversation. Try again in a moment — the session was not modified.",
   'history.duplicate': 'Duplicate this conversation into a new chat',
+  'history.duplicating': 'Creating the copy…',
   'history.forkFailed': 'Failed to create the copy',
   'history.branchFromHere': 'Branch from here',
 
@@ -2338,6 +2339,7 @@ const zh: Record<I18nKey, string> = {
   'history.restoredInOtherProject': '会话已在原项目恢复，请切回该项目查看。',
   'history.transcriptUnavailable': '对话内容暂时加载不出来，请稍后重试——会话本身没有丢失。',
   'history.duplicate': '复制这个对话为新会话',
+  'history.duplicating': '正在创建副本…',
   'history.forkFailed': '创建副本失败',
   'history.branchFromHere': '从这里开分支',
 

@@ -6,6 +6,7 @@ import {
   Download,
   Loader2,
   ChevronDown,
+  CopyPlus,
   PanelRight,
   LayoutDashboard,
   CalendarClock,
@@ -118,6 +119,7 @@ export default function ChatPanel() {
   )
   const [exporting, setExporting] = useState(false)
   const [exportFailed, setExportFailed] = useState(false)
+  const [duplicating, setDuplicating] = useState(false)
   const [exportSuccessPath, setExportSuccessPath] = useState<string | null>(null)
   const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(null)
   const [recoveringQueue, setRecoveringQueue] = useState(false)
@@ -418,6 +420,36 @@ export default function ChatPanel() {
     }
   }, [navigate])
 
+  /**
+   * 复制当前对话（DSH 式入口）：整份 fork 成新会话，标题自动加"（副本）"。
+   * 忙碌（流式中）时按钮隐藏——进行中回合的尾巴还没写进落盘文件，此刻复制
+   * 会缺尾巴，与分支按钮同一条安全策略。
+   */
+  const handleDuplicateSession = useCallback(async () => {
+    const sid = currentSessionId
+    if (!sid || duplicating) return
+    const workspace = useAppStore.getState().currentWorkspace
+    if (!workspace) return
+    setDuplicating(true)
+    try {
+      const result = await window.electronAPI.forkSession(workspace.id, { liveSessionId: sid })
+      if (!result || 'error' in result) {
+        showNotice('history.forkFailed')
+        return
+      }
+      const { session, messages: restored, historicalAgents } = result
+      useAppStore.getState().addSession(session, false)
+      useAppStore.getState().setMessages(session.id, restored)
+      useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
+      useAppStore.getState().setCurrentSessionId(session.id)
+      navigate('/')
+    } catch {
+      showNotice('history.forkFailed')
+    } finally {
+      setDuplicating(false)
+    }
+  }, [currentSessionId, duplicating, navigate])
+
   const openOfficeFile = async () => {
     const picked = await window.electronAPI.officeOpenDialog()
     if (!picked) return
@@ -474,6 +506,17 @@ export default function ChatPanel() {
           >
             <PanelRight size={14} />
           </button>
+          {currentSessionId && !currentSessionId.startsWith('preview:') && !isBusy && (
+            <button
+              onClick={() => void handleDuplicateSession()}
+              disabled={duplicating}
+              title={duplicating ? t('history.duplicating') : t('history.duplicate')}
+              aria-label={t('history.duplicate')}
+              className="focus-ring app-no-drag rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:opacity-60"
+            >
+              {duplicating ? <Loader2 size={13} className="animate-spin" /> : <CopyPlus size={13} />}
+            </button>
+          )}
           {currentSessionId && (
             <button
               onClick={() => void handleExport()}
