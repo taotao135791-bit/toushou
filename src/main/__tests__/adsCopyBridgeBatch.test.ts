@@ -123,6 +123,51 @@ describe('dispatch copy_generate_batch', () => {
     expect(Array.isArray(result.next_steps)).toBe(true)
   })
 
+  it('quarantines a provider after repeated hard failures across batches', async () => {
+    const bad = provider('relay400', 'model-x')
+    const good = provider('goodrelay', 'model-y')
+    const pool = poolOf([bad, good], [bad.id, good.id])
+    const badFetch = async () => ({ ok: false, status: 400, text: async () => '{"error":{"message":"invalid api key"}}' })
+    const goodText = '```json\n{"short":["Discover fast transfers","Get low fees today","Try instant transfers now"],"long":[]}\n```'
+    // Two batches where the bad relay answers http-400 → quarantined.
+    for (let i = 0; i < 2; i++) {
+      await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 1 } }, {
+        fetchImpl: async (_url: unknown, init: unknown) => {
+          const body = JSON.parse(String((init as { body: string }).body)) as { model: string }
+          return body.model === 'model-x' ? badFetch() : okFetch(goodText)()
+        },
+        pool
+      })
+    }
+    // Third batch: the bad relay sits out, the result says so.
+    let badSeen = false
+    const result = await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest } }, {
+      fetchImpl: async (_url: unknown, init: unknown) => {
+        const body = JSON.parse(String((init as { body: string }).body)) as { model: string }
+        if (body.model === 'model-x') { badSeen = true; return badFetch() }
+        return okFetch(goodText)()
+      },
+      pool
+    })
+    expect(badSeen).toBe(false)
+    const poolInfo = result.provider_pool as { quarantined?: string[]; quarantine_notice?: string; size: number }
+    expect(poolInfo.quarantined).toContain('relay400')
+    expect(poolInfo.quarantine_notice).toContain('relay400')
+    expect(poolInfo.size).toBe(1)
+    expect(result.ok).toBe(true)
+    // The quarantine window is time-based (10 minutes): the next batch still
+    // excludes the bad relay instead of letting it burn another round.
+    const stillOut = await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 1 } }, {
+      fetchImpl: async (_url: unknown, init: unknown) => {
+        const body = JSON.parse(String((init as { body: string }).body)) as { model: string }
+        if (body.model === 'model-x') { badSeen = true; return badFetch() }
+        return okFetch(goodText)()
+      },
+      pool
+    })
+    expect((stillOut.provider_pool as { quarantined?: string[] }).quarantined).toContain('relay400')
+  })
+
   it('gives the model the real scoring rubric and changes direction on retry', async () => {
     const members = [provider('a', 'model-a')]
     const prompts: string[] = []

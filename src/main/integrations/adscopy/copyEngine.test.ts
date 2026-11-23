@@ -25,6 +25,7 @@ const item = (text: string, total: number, overrides: Partial<ScoredCopyItem> = 
   bytes: countBytes(text),
   scores: { hook: 6, relevance: 6, cta: 7, space: 5, brand: 6, total, ...overrides.scores },
   accepted: true,
+  scoringMode: 'full',
   ...overrides
 })
 
@@ -125,7 +126,8 @@ describe('financialComplianceViolations (W:478-486)', () => {
     // approval) AND the ZH pattern — W:485 literally embeds ' guaranteed
     // approval' with a leading space, so it fires on the same phrase.
     expect(financialComplianceViolations('Bank-grade security, guaranteed approval')).toHaveLength(3)
-    expect(financialComplianceViolations('实时到账，秒到账')).toHaveLength(1)
+    // Every occurrence counts now (per-match exemption must see them all).
+    expect(financialComplianceViolations('实时到账，秒到账')).toHaveLength(2)
     expect(financialComplianceViolations('Send money to friends')).toHaveLength(0)
   })
 })
@@ -238,15 +240,136 @@ describe('retry helpers (W:759-822, 893-936)', () => {
 })
 
 describe('scoringLexiconBrief', () => {
-  it('exposes the rewarded words per language, falling back to English', () => {
+  it('exposes the rewarded words per language', () => {
     expect(scoringLexiconBrief('es-MX').hook).toContain('descubre')
     expect(scoringLexiconBrief('es-MX').cta).toContain('descarga')
     expect(scoringLexiconBrief('zh-CN').forbidden).toContain('保证')
-    expect(scoringLexiconBrief('xx').hook).toEqual(scoringLexiconBrief('en').hook)
+    expect(scoringLexiconBrief('tl').hook).toContain('libre')
+    expect(scoringLexiconBrief('pt-BR').cta).toContain('baixe')
+    expect(scoringLexiconBrief('zh').hook).toContain('发现')
+    // Region codes are matched case-insensitively: zh-TW must get the
+    // Traditional lexicon, never the Simplified fallback.
+    expect(scoringLexiconBrief('zh-TW').hook).toContain('發現')
+    expect(scoringLexiconBrief('zh-tw').hook).toContain('發現')
+    expect(scoringLexiconBrief('es-MX').hook).toContain('descubre')
     // A caller must not be able to mutate the scorer's own list.
     const brief = scoringLexiconBrief('en')
     brief.hook.push('mutated')
     expect(scoringLexiconBrief('en').hook).not.toContain('mutated')
+  })
+
+  it('marks unlisted languages degraded instead of steering toward English words', () => {
+    const brief = scoringLexiconBrief('sw')
+    expect(brief.degraded).toBe(true)
+    expect(brief.hook).toEqual([])
+    expect(brief.cta).toEqual([])
+    // English leakage stays banned even without a native lexicon.
+    expect(brief.forbidden).toContain('guaranteed')
+    expect(scoringLexiconBrief('th').degraded).toBe(false)
+  })
+})
+
+describe('multi-language scoring coverage', () => {
+  it('accepts native Filipino copy (tl alias → fil)', () => {
+    const scored = scoreCopyItem('Libreng app ngayon para sa bayad online, i-download at mag-register na', {
+      language: 'tl',
+      benefits: ['bayad online'],
+      brandTerms: [],
+      targets: DEFAULT_TARGETS,
+      type: 'long',
+      maxBytes: LONG_MAX
+    })
+    expect(scored.accepted).toBe(true)
+    expect(scored.scoringMode).toBe('full')
+    expect(scored.scores.cta).toBe(10)
+  })
+
+  it('accepts Thai copy and script-matches an unlisted language code', () => {
+    const opts = {
+      benefits: ['ฟรี'],
+      brandTerms: [],
+      targets: DEFAULT_TARGETS,
+      type: 'short' as const,
+      maxBytes: SHORT_MAX
+    }
+    const thai = scoreCopyItem('ฟรี โหลดเลย', { ...opts, language: 'th' })
+    expect(thai.accepted).toBe(true)
+    expect(thai.scoringMode).toBe('full')
+    // Unknown code, Thai text: the script sniff rescues it from the English fallback.
+    const sniffed = scoreCopyItem('ฟรี โหลดเลย', { ...opts, language: 'xx' })
+    expect(sniffed.accepted).toBe(true)
+    expect(sniffed.scoringMode).toBe('full')
+  })
+
+  it('accepts Vietnamese copy with diacritics normalized on both sides', () => {
+    const scored = scoreCopyItem('Khám phá thanh toán miễn phí, tải miclip ngay và dùng thử', {
+      language: 'vi',
+      benefits: ['thanh toán'],
+      brandTerms: ['miclip'],
+      targets: DEFAULT_TARGETS,
+      type: 'long',
+      maxBytes: LONG_MAX
+    })
+    expect(scored.accepted).toBe(true)
+    expect(scored.scores.relevance).toBeGreaterThanOrEqual(6)
+  })
+
+  it('accepts Japanese and Korean copy in their native scripts', () => {
+    const ja = scoreCopyItem('無料で今すぐ即時送金 — ダウンロードして始めよう', {
+      language: 'ja',
+      benefits: ['即時送金'],
+      brandTerms: [],
+      targets: DEFAULT_TARGETS,
+      type: 'long',
+      maxBytes: LONG_MAX
+    })
+    expect(ja.accepted).toBe(true)
+    const ko = scoreCopyItem('무료 간편한 해외 송금 — 지금 다운로드하고 시작하세요', {
+      language: 'ko',
+      benefits: ['간편한 해외 송금'],
+      brandTerms: [],
+      targets: DEFAULT_TARGETS,
+      type: 'long',
+      maxBytes: LONG_MAX
+    })
+    expect(ko.accepted).toBe(true)
+  })
+
+  it('accepts pt-BR copy via base-code resolution', () => {
+    const scored = scoreCopyItem('Descubra o pagamento simples — baixe o miclip agora e comece a usar', {
+      language: 'pt-BR',
+      benefits: ['pagamento'],
+      brandTerms: ['miclip'],
+      targets: DEFAULT_TARGETS,
+      type: 'long',
+      maxBytes: LONG_MAX
+    })
+    expect(scored.accepted).toBe(true)
+  })
+
+  it('degrades unlisted languages instead of failing every line on hook/CTA floors', () => {    // Native Swahili: no English hook word, no English CTA verb — the old
+    // English-fallback floors would have zeroed this exact line.
+    const scored = scoreCopyItem('Malipo ya haraka kwa mtu yote — pakua programu sasa na uhifadhi', {
+      language: 'sw',
+      benefits: ['malipo'],
+      brandTerms: [],
+      targets: DEFAULT_TARGETS,
+      type: 'long',
+      maxBytes: LONG_MAX
+    })
+    expect(scored.scoringMode).toBe('degraded')
+    expect(scored.accepted).toBe(true)
+    expect(scored.scores.cta).toBe(2)
+    // Substance gates stay hard even in degraded mode.
+    const weak = scoreCopyItem('Programu yetu ni nzuri sana kwa kila mtu wetu', {
+      language: 'sw',
+      benefits: ['malipo'],
+      brandTerms: [],
+      targets: DEFAULT_TARGETS,
+      type: 'long',
+      maxBytes: LONG_MAX
+    })
+    expect(weak.accepted).toBe(false)
   })
 })
 
@@ -256,6 +379,7 @@ describe('selectTopN compliance gate', () => {
     bytes: text.length,
     scores: { hook: 8, relevance: 8, cta: 8, space: 8, brand: 8, total },
     accepted,
+    scoringMode: 'full' as const,
     ...(accepted ? {} : { rejectReason: 'financial_compliance_violation' })
   })
 
@@ -267,5 +391,43 @@ describe('selectTopN compliance gate', () => {
     )
     expect(picked.selected.map((entry) => entry.text)).toEqual(['Good line'])
     expect(picked.rejected).toHaveLength(2)
+  })
+})
+
+describe('compliance and byte-rescue hardening', () => {
+  it('exempts financial phrases the user confirmed as product facts', () => {
+    // The user's own fact sheet says "zero fees" — writing it is not a
+    // fabricated claim, so it must not hard-reject the line.
+    const confirmed = scoreCopyItem('Get zero fees transfers with miclip now', {
+      language: 'en', benefits: ['zero fees transfers'], brandTerms: ['miclip'], targets: DEFAULT_TARGETS, type: 'long', maxBytes: LONG_MAX
+    })
+    expect(confirmed.rejectReason).not.toBe('financial_compliance_violation')
+    // An UNCONFIRMED claim stays a hard reject — the red line is "never fabricate".
+    const fabricated = scoreCopyItem('Get guaranteed approval with miclip now', {
+      language: 'en', benefits: ['zero fees transfers'], brandTerms: ['miclip'], targets: DEFAULT_TARGETS, type: 'long', maxBytes: LONG_MAX
+    })
+    expect(fabricated.accepted).toBe(false)
+    expect(fabricated.rejectReason).toBe('financial_compliance_violation')
+  })
+
+  it('exempts each confirmed fact occurrence without masking unconfirmed claims', () => {
+    // "zero fees" is user-confirmed; "lowest fees" is NOT — first-match-only
+    // exemption used to let the same pattern's second claim slip through.
+    const scored = scoreCopyItem('Zero fees and lowest fees with miclip now', {
+      language: 'en', benefits: ['zero fees'], brandTerms: ['miclip'], targets: DEFAULT_TARGETS, type: 'long', maxBytes: LONG_MAX
+    })
+    expect(scored.rejectReason).toBe('financial_compliance_violation')
+  })
+
+  it('rescues small byte overshoots by stripping trailing punctuation', () => {
+    // 13 CJK chars = 26 bytes (over the 25 cap); dropping the trailing 。lands at 24.
+    const parsed = normalizeModelOutput('{"short":["免费转账给家人超方便的啦。"],"long":[]}', { short: SHORT_MAX, long: LONG_MAX })
+    expect(parsed.shorts).toEqual(['免费转账给家人超方便的啦'])
+    // A genuinely too-long line is NOT trimmed into fake compliance — it
+    // stays verbatim and scoring rejects it honestly with over_limit.
+    const overflow = normalizeModelOutput('{"short":["这是一个特别特别特别特别特别长的标题根本塞不下"],"long":[]}', { short: SHORT_MAX, long: LONG_MAX })
+    const scored = scoreCopyItem(overflow.shorts[0], { language: 'zh-CN', benefits: ['转账'], brandTerms: [], targets: DEFAULT_TARGETS, type: 'short', maxBytes: SHORT_MAX })
+    expect(scored.accepted).toBe(false)
+    expect(scored.rejectReason).toBe('over_limit')
   })
 })

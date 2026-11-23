@@ -264,7 +264,7 @@ describe('callCopyModel', () => {
   })
 
   it('surfaces http and network failures as stable errors', async () => {
-    expect(await callCopyModel(async () => jsonResponse({}, 401), provider, { prompt: 'x' })).toEqual({ ok: false, error: 'http-401' })
+    expect(await callCopyModel(async () => jsonResponse({}, 401), provider, { prompt: 'x' })).toEqual({ ok: false, error: 'http-401: {}' })
     expect(await callCopyModel(async () => jsonResponse({ choices: [] }), provider, { prompt: 'x' })).toEqual({ ok: false, error: 'empty-response' })
     const network = await callCopyModel(
       async () => {
@@ -344,7 +344,7 @@ describe('discoverModels', () => {
       return jsonResponse({ data: [{ id: 'claude-x' }] })
     }
     expect(await discoverModels(fetchImpl, anthropic)).toEqual({ ok: true, models: ['claude-x'] })
-    expect(await discoverModels(async () => jsonResponse({}, 403), anthropic)).toEqual({ ok: false, error: 'http-403' })
+    expect(await discoverModels(async () => jsonResponse({}, 403), anthropic)).toEqual({ ok: false, error: 'http-403: {}' })
     expect(await discoverModels(async () => jsonResponse({ data: [] }), relay)).toEqual({ ok: false, error: 'empty-list' })
   })
 })
