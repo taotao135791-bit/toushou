@@ -21,6 +21,9 @@ import type {
 } from '../shared/fbReading'
 import type { FbAccountBalance } from '../shared/fbBillingParser'
 import {
+  DingTalkConnectionResult,
+  DingTalkConnectionSnapshot,
+  DingTalkCredentials,
   FeishuConnectionResult,
   FeishuConnectionSnapshot,
   FeishuManualCredentials,
@@ -558,7 +561,14 @@ export interface ElectronAPI {
   /** Login flow state stream. */
   onLoginState: (callback: (state: LoginState) => void) => () => void
   // ------------------------------------------------------- connections
-  listConnections: () => Promise<FeishuConnectionSnapshot[]>
+  listConnections: () => Promise<(FeishuConnectionSnapshot | DingTalkConnectionSnapshot)[]>
+  dingTalkStatus: () => Promise<DingTalkConnectionSnapshot>
+  dingTalkConnect: (credentials: DingTalkCredentials) => Promise<DingTalkConnectionResult>
+  dingTalkReconnect: () => Promise<DingTalkConnectionResult>
+  dingTalkDisconnect: () => Promise<DingTalkConnectionResult>
+  dingTalkOpenSetup: () => Promise<boolean>
+  dingTalkOpenGuide: () => Promise<boolean>
+  onDingTalkStatus: (callback: (snapshot: DingTalkConnectionSnapshot) => void) => () => void
   feishuStatus: () => Promise<FeishuConnectionSnapshot>
   feishuBeginConnection: (brand?: 'feishu' | 'lark') => Promise<FeishuConnectionResult>
   /** Advanced fallback only; the secret is sent directly to Main. */
@@ -1075,6 +1085,12 @@ const api: ElectronAPI = {
     }
   },
   listConnections: () => ipcRenderer.invoke(IPC_CHANNELS.CONNECTIONS_LIST),
+  dingTalkStatus: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_STATUS),
+  dingTalkConnect: credentials => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_CONNECT, credentials),
+  dingTalkReconnect: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_RECONNECT),
+  dingTalkDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_DISCONNECT),
+  dingTalkOpenSetup: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_OPEN_SETUP),
+  dingTalkOpenGuide: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_OPEN_GUIDE),
   feishuStatus: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_STATUS),
   feishuBeginConnection: (brand?: 'feishu' | 'lark') =>
     ipcRenderer.invoke(IPC_CHANNELS.FEISHU_BEGIN_CONNECTION, brand),
@@ -1238,6 +1254,11 @@ const api: ElectronAPI = {
     const handler = (_event: IpcRendererEvent, snapshot: FeishuConnectionSnapshot) => callback(snapshot)
     ipcRenderer.on(IPC_CHANNELS.FEISHU_STATUS, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.FEISHU_STATUS, handler)
+  },
+  onDingTalkStatus: callback => {
+    const handler = (_event: IpcRendererEvent, snapshot: DingTalkConnectionSnapshot) => callback(snapshot)
+    ipcRenderer.on(IPC_CHANNELS.DINGTALK_STATUS, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.DINGTALK_STATUS, handler)
   },
   readBrowserScreenshot: (filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_SCREENSHOT_DATA, filePath) as Promise<string | null>,

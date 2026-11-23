@@ -11,6 +11,7 @@ import TikTokAdsConnectionCard from '../components/TikTokAdsConnectionCard'
 import MetaAdsConnectionCard from '../components/MetaAdsConnectionCard'
 import AppsFlyerConnectionCard from '../components/AppsFlyerConnectionCard'
 import FigmaConnectionCard from '../components/FigmaConnectionCard'
+import DingTalkConnectionCard from '../components/DingTalkConnectionCard'
 import BrandIcon from '../components/BrandIcon'
 
 const emptySnapshot: FeishuConnectionSnapshot = {
@@ -430,6 +431,7 @@ export default function ConnectionsPage() {
             )}
           </section>
 
+          <DingTalkConnectionCard />
           <TikTokAdsConnectionCard />
           <MetaAdsConnectionCard />
           <AppsFlyerConnectionCard />

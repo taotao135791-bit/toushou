@@ -20,6 +20,7 @@ import { initBoardsBridge } from './boardsBridge'
 import { initAdsCopyBridge } from './adsCopyBridge'
 import { ensureKernelSkill } from './kernelSkill'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
+import { dingTalkConnectionManager } from './integrations/dingtalk/DingTalkConnectionManager'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { tokenKeepAlive } from './tokenKeepAlive'
 import { installFileLogging } from './lib/logger'
@@ -199,6 +200,7 @@ app.whenReady().then(async () => {
   // Background-only recovery: GUI creation is never held up by Feishu DNS or
   // WebSocket handshake latency.
   void feishuConnectionManager.initialize()
+  void dingTalkConnectionManager.initialize()
   // TikTok 报表自动刷新：仅在持久化开关为开时启动 30 分钟定时器。
   tiktokReportService.restoreFromSettings()
   // MCP 令牌后台续签：在令牌到期前主动刷新 TikTok / AppsFlyer 的 OAuth
@@ -217,6 +219,7 @@ app.whenReady().then(async () => {
 // No OMP child should outlive the GUI — a remote or task turn running on
 // after quit keeps consuming provider quota with nobody watching.
 app.on('before-quit', () => {
+  dingTalkConnectionManager.shutdown()
   for (const window of BrowserWindow.getAllWindows()) cancelOwnerHtmlBoardAiEdits(window.webContents.id)
   shutdownSessionsForQuit()
 })

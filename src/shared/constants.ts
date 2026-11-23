@@ -286,6 +286,12 @@ export const IPC_CHANNELS = {
   FEISHU_VERIFY_SCOPES: 'feishu:verify-scopes',
   FEISHU_OAUTH_POLL: 'feishu:oauth-poll',
   FEISHU_OAUTH_CANCEL: 'feishu:oauth-cancel',
+  DINGTALK_STATUS: 'dingtalk:status',
+  DINGTALK_CONNECT: 'dingtalk:connect',
+  DINGTALK_RECONNECT: 'dingtalk:reconnect',
+  DINGTALK_DISCONNECT: 'dingtalk:disconnect',
+  DINGTALK_OPEN_SETUP: 'dingtalk:open-setup',
+  DINGTALK_OPEN_GUIDE: 'dingtalk:open-guide',
   /** MCP service connections (投手 stewards the runtime's native mcp.json). */
   MCP_LIST: 'mcp:list',
   MCP_ADD: 'mcp:add',

@@ -1,6 +1,6 @@
 # 官方品牌图标来源
 
-核验与获取日期：2026-11-04。仅用于识别已接入服务，不表示合作、赞助或认证。商标及图形权利归各品牌所有；这些文件不改变项目其它源码的许可。
+核验与获取日期：2026-11-04。钉钉于 2026-11-23 核验并获取。仅用于识别已接入服务，不表示合作、赞助或认证。商标及图形权利归各品牌所有；这些文件不改变项目其它源码的许可。
 
 图像均从品牌官网或官网引用的官方 CDN 获取，本地打包；运行时不向第三方图标库发送账户、查询或页面地址。未手绘、重配色或拉伸图形。
 
@@ -11,6 +11,7 @@
 | facebook.png / facebook.ico | Facebook | [官网](https://www.facebook.com/) | [官方资源](https://static.xx.fbcdn.net/rsrc.php/y1/r/ay1hV6OlegS.ico) | 官网 shortcut icon；保留 ICO 原件，以系统图像工具仅转换容器格式为 PNG，无重绘或改色。 |
 | tiktok.png | TikTok | [官网](https://developers.tiktok.com/docs/en/getting-started-design-guidelines) | [官方资源](https://lf16-tiktok-common.ttwstatic.com/obj/tiktok-web-common-sg/mtact/static/images/logo_144c91a.png?v=2) | 官方开发者站点的 icon 链接，文件未修改。 |
 | feishu.png | 飞书 / Lark | [官网](https://www.feishu.cn/) | [官方资源](https://p16-hera-overseas.larksuitecdn.com/tos-mya-i-lojyj5t9n9/9b87226605154fb7b8141a9c94de22e9.png~tplv-lojyj5t9n9-origin.image) | 官网在当前地区跳转到 Lark；使用其官方 CDN icon，保留完整彩色鸟标。 |
+| dingtalk.png | 钉钉 | [官网](https://www.dingtalk.com/) | [官方资源](https://gw.alicdn.com/imgextra/i3/O1CN014ZbI6ZTEhdC0ttN2_!!6000000003783-2-tps-444-444.png) | 官网声明的 444 × 444 PNG favicon，原件下载后直接打包。 |
 | figma.svg | Figma | [官网](https://www.figma.com/) | [官方资源](https://static.figma.com/app/icon/2/favicon.svg) | 官网声明的 SVG icon，文件未修改。 |
 | google-ads.svg | Google Ads | [官网](https://business.google.com/us/google-ads/) | [官方资源](https://www.gstatic.com/images/branding/productlogos/ads/v5/192px.svg) | Google Ads 官网产品图标引用，文件未修改；仅用于 Google Ads，不代表其它 Google 产品。 |
 | appsflyer.png | AppsFlyer | [官网](https://www.appsflyer.com/) | [官方资源](https://www.appsflyer.com/wp-content/uploads/2025/11/cropped-54649.-New-Website-favicon-192x192.png) | 官方站点公开的 WordPress favicon，下载原件未修改。 |
@@ -21,6 +22,7 @@ Facebook 图形使用参考：[Meta 官方 Facebook Logo 页面](https://www.met
 
 ```text
 4bbf46a94e73ca973e8e2092caa49616f6d911d26792a1351c63eaa198fb79e5  appsflyer.png
+b3fb0715857df5d23213b5265166fabcb7f7b4b290890d7b5682a027cf39c85d  dingtalk.png
 8924f44d76426a340b105cbdc5b93678c6b772e847b393f2568d94847c0d8d80  facebook.ico
 bc1151d22d5ab16968aa2efe7edaa1ed0176d31d23bea5032e3cdf5552269bc5  facebook.png
 a99925e6db13b5a72c64dde7ec4d9b63b8af6d84ec2e5fd2e7c975d00a519c3c  feishu.png

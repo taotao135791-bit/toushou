@@ -7,10 +7,12 @@ import feishu from '../assets/brands/feishu.png'
 import google from '../assets/brands/google-ads.svg'
 import figma from '../assets/brands/figma.svg'
 import appsflyer from '../assets/brands/appsflyer.png'
+import dingtalk from '../assets/brands/dingtalk.png'
 
-const images: Record<ToolBrand, string> = { facebook, tiktok, feishu, google, figma, appsflyer }
+type Brand = ToolBrand | 'dingtalk'
+const images: Record<Brand, string> = { facebook, tiktok, feishu, google, figma, appsflyer, dingtalk }
 
-interface Props { brand?: ToolBrand | null; size?: number; className?: string; title?: string }
+interface Props { brand?: Brand | null; size?: number; className?: string; title?: string }
 
 /** Bundled official artwork only: no network request, recoloring or guessed initials. */
 export default function BrandIcon({ brand, size = 16, className = '', title }: Props) {

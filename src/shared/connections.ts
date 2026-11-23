@@ -123,6 +123,39 @@ export interface FeishuManualCredentials {
   brand: LarkBrand
 }
 
+export type DingTalkConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
+
+export type DingTalkConnectionError =
+  | 'invalid-credentials'
+  | 'storage-unavailable'
+  | 'network'
+  | 'configuration'
+  | 'connection-failed'
+
+export interface DingTalkCredentials {
+  clientId: string
+  clientSecret: string
+}
+
+export interface DingTalkConnectionSnapshot {
+  definition: ConnectionDefinition
+  state: DingTalkConnectionState
+  status: ConnectionStatus
+  configured: boolean
+  paired: boolean
+  pairingCode?: string
+  clientIdMasked?: string
+  lastConnectedAt?: number
+  lastMessageAt?: number
+  lastError?: DingTalkConnectionError
+}
+
+export interface DingTalkConnectionResult {
+  ok: boolean
+  snapshot: DingTalkConnectionSnapshot
+  error?: DingTalkConnectionError
+}
+
 export interface FeishuToolRequest {
   action:
     | 'message_send'

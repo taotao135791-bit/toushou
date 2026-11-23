@@ -233,6 +233,7 @@ import {
 } from './browserPanel'
 import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
+import { dingTalkConnectionManager, DINGTALK_GUIDE_URL, DINGTALK_SETUP_URL } from './integrations/dingtalk/DingTalkConnectionManager'
 import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
 import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
@@ -879,7 +880,18 @@ export function registerIpc() {
 
   // Connections are Main-owned. The renderer receives only a public status
   // projection and a QR URL; credentials and SDK clients stay here.
-  ipcMain.handle(IPC_CHANNELS.CONNECTIONS_LIST, async () => [feishuConnectionManager.getSnapshot()])
+  ipcMain.handle(IPC_CHANNELS.CONNECTIONS_LIST, () => [feishuConnectionManager.getSnapshot(), dingTalkConnectionManager.getSnapshot()])
+  dingTalkConnectionManager.setStatusListener(snapshot => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(IPC_CHANNELS.DINGTALK_STATUS, snapshot)
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.DINGTALK_STATUS, () => dingTalkConnectionManager.getSnapshot())
+  ipcMain.handle(IPC_CHANNELS.DINGTALK_CONNECT, (_event, input: unknown) => dingTalkConnectionManager.connect(input))
+  ipcMain.handle(IPC_CHANNELS.DINGTALK_RECONNECT, () => dingTalkConnectionManager.reconnect())
+  ipcMain.handle(IPC_CHANNELS.DINGTALK_DISCONNECT, () => dingTalkConnectionManager.disconnect())
+  ipcMain.handle(IPC_CHANNELS.DINGTALK_OPEN_SETUP, () => shell.openExternal(DINGTALK_SETUP_URL).then(() => true, () => false))
+  ipcMain.handle(IPC_CHANNELS.DINGTALK_OPEN_GUIDE, () => shell.openExternal(DINGTALK_GUIDE_URL).then(() => true, () => false))
   ipcMain.handle(IPC_CHANNELS.FEISHU_STATUS, async () => feishuConnectionManager.getSnapshot())
   ipcMain.handle(IPC_CHANNELS.FEISHU_BEGIN_CONNECTION, async (_event, brand: unknown) => {
     return feishuConnectionManager.beginConnection(brand === 'lark' ? 'lark' : 'feishu')
