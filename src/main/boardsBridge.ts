@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { abortBoardBuild, beginBoardBuild, buildStatus, checkFrozenBoardBuild, commitBoardBuild, getBoardBuildSession, getBoardBuildTurnId, hasBoardBuildTurn, recordBoardBuildSourceEvidence, requestBoardEditTargets, withCurrentBoardBuild, type BoardTargetUiEvent } from './boardBuilds'
+import { abortBoardBuild, beginBoardBuild, buildStatus, checkFrozenBoardBuild, commitBoardBuild, getBoardBuildSession, getBoardBuildTurnId, hasBoardBuildTurn, recordBoardBuildSourceEvidence, requestBoardEditTargets, setBoardBuildAfPrefix, withCurrentBoardBuild, type BoardTargetUiEvent } from './boardBuilds'
 import { validateWidgetDateScope } from '../shared/boardWindows'
 import { readBoardMetaAccounts, refreshBoard } from './boardRefresh'
 import { boardBuildRoot } from './boardBuildStorage'
@@ -626,6 +626,12 @@ export async function authorizeAndDispatch(
         return slimRefreshResult(refreshed)
       }
       const result = await dispatch(tool, access.cwd, write ? stillAuthorized : undefined)
+      // tiktok-af：把 afPrefix 记到草稿，commit 按它把预绑卡重绑到本轮实际
+      // 拉到的数据集（模型拉数的命名习惯不可靠，绑定靠证据不靠记忆）。
+      if (tool.action === 'board_create' && result.ok === true && tool.template === 'tiktok-af' && typeof tool.afPrefix === 'string' && tool.afPrefix.trim()) {
+        const buildState = getBoardBuildSession(sessionId)
+        if (buildState?.buildId) setBoardBuildAfPrefix(sessionId, buildState.buildId, tool.afPrefix.trim().replace(/[\x00-\x1f\x7f]/g, '').slice(0, 40))
+      }
       if (tool.action === 'af_dataset_pull' && result.ok === true) {
         const ids = afPullResultDatasetIds(result)
         if (ids.length) recordBoardBuildSourceEvidence(sessionId, 'appsflyer', ids)
@@ -857,7 +863,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     // 拉数侧产出 AF-{前缀}基础分天 / AF-{前缀}次留分天 后卡片即点亮。
     if (template === 'tiktok-af') {
       const afPrefix = typeof tool.afPrefix === 'string' ? tool.afPrefix.trim().replace(/[\x00-\x1f\x7f]/g, '').slice(0, 40) : ''
-      if (!afPrefix) return { ok: false, error: 'af-prefix-required', message: 'tiktok-af 模板需要 afPrefix（产品/市场短名，如 Lemon8泰国）——它决定 AF 数据集名 AF-{afPrefix}基础分天，请让后续 af_dataset_pull 的 name 使用相同前缀（name=「{afPrefix}基础分天」「{afPrefix}次留分天」）。' }
+      if (!afPrefix) return { ok: false, error: 'af-prefix-required', message: 'tiktok-af 模板需要 afPrefix（产品/市场短名，如 Lemon8泰国）——它决定模板预绑的 AF 数据集名 AF-{afPrefix}基础分天；拉数名称不必逐字对齐，提交时会按本轮实际拉到的数据集自动重绑。' }
       composed.widgets = tiktokAfPreset(boardText, afPrefix)
     }
     const name = boundedString(tool.name, BOARD_LIMITS.maxNameLength) ?? composed.name

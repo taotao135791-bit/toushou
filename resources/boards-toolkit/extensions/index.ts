@@ -371,7 +371,9 @@ export default function boardsTools(api: ToolHostApi): void {
         countries: { type: 'array', items: { type: 'string' }, description: '可选地区筛选；全部地区时省略，不传字面值 all' },
         mediaSources: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 200 }, description: '当前App真实媒体名称；[]为全部授权来源，省略仅兼容旧TikTok调用；新业务方案显式传入并保留到刷新配方' }
       },
-      required: ['name', 'appId']
+      // 顶层 name/appId 不设 required：pulls 批量模式下它们本来就不该传。
+      // 单张缺参时主进程返回带修复提示的 invalid-input（比 schema 拒单更能
+      // 引导模型改对——实测 schema 硬拒会让模型整体退回逐张拉，慢 3 倍）。
     },
     approval: 'write',
     execute: async (_id, params, signal) => ({ content: [{ type: 'text', text: await call({ action: 'af_dataset_pull', ...params }, signal) }] })

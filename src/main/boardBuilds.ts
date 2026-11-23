@@ -31,6 +31,8 @@ interface BuildDraft {
   id: string; root: string; profile: string; intent: BoardBuildIntent; targets: Map<string, BoardBuildIntent>
   before: Record<BoardStoreFile, string | null>; boards: KanbanBoard[]; recipes: ReturnType<typeof listQuerySpecs>
   committed?: Record<string, unknown>; busy: number; sourceEvidence: Map<string, string>
+  /** tiktok-af 模板的产品前缀：提交时预绑卡按本轮实际拉到的数据集重绑。 */
+  afPrefix?: string
 }
 const turns = new Map<string, BuildTurn>()
 const TARGET_TIMEOUT_MS = 120_000
@@ -271,6 +273,13 @@ export function buildStatus(sessionId: string, buildId?: unknown): Record<string
 }
 export function frozenBoardBuildOptions(sessionId: string, buildId: unknown): BoardBuildIntent | null {
   return active(sessionId, buildId)?.draft.intent ?? null
+}
+/** tiktok-af 建板的 afPrefix（board_create 时记录）：提交时驱动预绑卡重绑。 */
+export function setBoardBuildAfPrefix(sessionId: string, buildId: unknown, afPrefix: string): boolean {
+  const state = active(sessionId, buildId)
+  if (!state) return false
+  state.draft.afPrefix = afPrefix
+  return true
 }
 
 function changedBoards(draft: BuildDraft, partial = false): KanbanBoard[] | null {
@@ -517,6 +526,38 @@ export function commitBoardBuild(sessionId: string, buildId: unknown, stillAutho
   // Conservative whole-store CAS also catches source-cache changes and other
   // boards changed during generation. No unrelated user write is overwritten.
   if (!isDeepStrictEqual(readBoardStoreBytes(draft.profile), draft.before)) return { ok: false, error: 'conflict', buildId: draft.id }
+  // tiktok-af 契约的确定性收尾：模板预绑卡指向 AF-{afPrefix}…虚拟名，而模型
+  // 拉数用的名字不可靠（实测它会用习惯名）。按本轮已登记证据的数据集重绑——
+  // 绑定靠证据不靠记忆。找不到对应数据集就保留虚拟名（卡片如实显示缺数据集）。
+  if (draft.afPrefix) {
+    const datasets = listDatasetsStrict()
+    const evidenceIds = [...draft.sourceEvidence.keys()].filter(id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))
+    const resolveRole = (role: '基础' | '次留'): string | undefined => {
+      const hits = evidenceIds
+        .map(id => datasets.find(dataset => dataset.id === id))
+        .filter((dataset): dataset is NonNullable<typeof dataset> => !!dataset && dataset.name.includes(role))
+      return hits[0]?.id
+    }
+    const baseId = resolveRole('基础')
+    const retentionId = resolveRole('次留')
+    if (baseId || retentionId) {
+      const targetIds = new Set([...draft.targets.keys()])
+      for (const board of listBoards()) {
+        if (draft.targets.size && !targetIds.has(board.id)) continue
+        let touched = false
+        const widgets = board.widgets.map(widget => {
+          const bound = widget.config?.datasetId
+          if (bound === `AF-${draft.afPrefix}基础分天` && baseId) { touched = true; return { ...widget, config: { ...widget.config, datasetId: baseId } } }
+          if (bound === `AF-${draft.afPrefix}次留分天` && retentionId) { touched = true; return { ...widget, config: { ...widget.config, datasetId: retentionId } } }
+          return widget
+        })
+        if (!touched) continue
+        const next = { ...board, widgets, updatedAt: board.updatedAt + 1 }
+        const saved = saveBoard(next, undefined, board.updatedAt)
+        if (!saved.ok) throw new Error('af-preset-remap-save-failed')
+      }
+    }
+  }
   const results = withBoardBuildRoot(draft.root, () => changedBoards(draft)!.map(board => ({ board, refresh: getLatestBoardRefresh(board) })))
   if (draft.targets.size && hasUnrelatedSourceChanges(draft, results.map(({ board }) => board), readBoardStoreBytes(draft.root))) return { ok: false, error: 'board-source-outside-targets', buildId: draft.id, published: false }
   withBoardBuildRoot(draft.root, () => {
