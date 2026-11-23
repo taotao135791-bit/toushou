@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import YAML from 'yaml'
 import {
@@ -9,13 +10,15 @@ import {
   CustomProviderModelSpec,
   CustomProviderSaveResult,
   CustomProviderSpec,
-  CustomProvidersListResult
+  CustomProvidersListResult,
+  RuntimeModelInfo
 } from '../shared/types'
 import { defaultPiAgentDir } from './piSettings'
 import { detectCli } from './omp'
 import { CliRunner, makeExecRunner } from './omp/settings/OmpConfigCli'
 import { PROVIDER_ID_PATTERN } from './omp/settings/modelSelector'
 import { listOmpModelCatalog } from './omp/settings/OmpModelCatalog'
+import { modelThinkingEfforts, NativeModelThinking } from './omp/modelThinking'
 
 /**
  * Custom provider management via omp's official `~/.omp/agent/models.yml`
@@ -134,9 +137,13 @@ function readModelsFile(file: string): ReadOk | { ok: false; error: 'parse' | 'r
 /** Atomic write (tmp + rename), same pattern as writePiSettings. */
 function writeModelsFile(file: string, content: string): void {
   mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp-${process.pid}`
-  writeFileSync(tmp, content, 'utf-8')
-  renameSync(tmp, file)
+  const tmp = `${file}.tmp-${randomUUID()}`
+  try {
+    writeFileSync(tmp, content, { encoding: 'utf-8', flag: 'wx', mode: 0o600 })
+    renameSync(tmp, file)
+  } finally {
+    try { unlinkSync(tmp) } catch { /* The rename has already removed it. */ }
+  }
 }
 
 /** Restore the exact pre-write state (bytes or absence). Best-effort. */
@@ -223,8 +230,9 @@ function validateSpec(spec: CustomProviderSpec, hasExistingKey: boolean): Custom
   return null
 }
 
-/** Build the models.yml entry for one spec. `existingKey` is reused when no new key is given. */
-function buildEntry(spec: CustomProviderSpec, existingKey?: string): Record<string, unknown> {
+/** Keep native reasoning declarations when editing the same models on the same endpoint. */
+function buildEntry(spec: CustomProviderSpec, existingKey?: string, previous?: Record<string, unknown>): Record<string, unknown> {
+  const sameEndpoint = previous?.baseUrl === spec.baseUrl.trim() && previous?.api === spec.api
   const entry: Record<string, unknown> = {
     baseUrl: spec.baseUrl.trim(),
     api: spec.api
@@ -237,18 +245,23 @@ function buildEntry(spec: CustomProviderSpec, existingKey?: string): Record<stri
   if (spec.discovery) {
     entry.discovery = { type: 'openai-models-list' }
   } else {
+    const previousModels = sameEndpoint && Array.isArray(previous?.models) ? previous.models : []
     entry.models = spec.models.map((m) => {
+      const id = m.id.trim()
+      const previousModel = mapping(previousModels.find((model) => mapping(model)?.id === id))
       const out: Record<string, unknown> = {
-        id: m.id.trim(),
-        name: m.name.trim() || m.id.trim(),
-        reasoning: false,
+        id,
+        name: m.name.trim() || id,
+        reasoning: typeof previousModel?.reasoning === 'boolean' ? previousModel.reasoning : false,
         input: ['text']
       }
+      if (previousModel?.thinking !== undefined) out.thinking = previousModel.thinking
       if (m.contextWindow !== undefined) out.contextWindow = m.contextWindow
       if (m.maxTokens !== undefined) out.maxTokens = m.maxTokens
       return out
     })
   }
+  if (sameEndpoint && previous?.modelOverrides !== undefined) entry.modelOverrides = previous.modelOverrides
   return entry
 }
 
@@ -315,6 +328,55 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   return next
 }
 
+function mapping(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+/** Backfill native reasoning metadata only for an exact same-provider catalog match. */
+export function repairDiscoveredModelThinking(
+  models: readonly RuntimeModelInfo[],
+  capabilities: ReadonlyMap<string, NativeModelThinking>,
+  file: string
+): Promise<boolean> {
+  const candidates = models.flatMap((model) => {
+    if (!PROVIDER_ID_PATTERN.test(model.provider) || modelThinkingEfforts(model.thinking).length > 0) return []
+    const thinking = capabilities.get(`${model.provider}/${model.id}`)
+    return thinking ? [{ provider: model.provider, id: model.id, thinking }] : []
+  })
+  if (candidates.length === 0) return Promise.resolve(false)
+  return enqueue(async () => {
+    try {
+      if (lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) return false
+      const current = readModelsFile(file)
+      if (!current.ok) return false
+      const yaml = YAML.parseDocument(current.raw ?? 'providers: {}\n')
+      let changed = false
+      for (const { provider, id, thinking } of candidates) {
+        const entry = current.doc.providers[provider]
+        const config = mapping(entry)
+        if ((entry !== undefined && !config) || config?.baseUrl !== undefined || config?.api !== undefined) continue
+        if (Array.isArray(config?.models) && config.models.some((model) => mapping(model)?.id === id)) continue
+        const overrides = mapping(config?.modelOverrides)
+        if (config?.modelOverrides !== undefined && !overrides) continue
+        const existing = overrides?.[id]
+        const override = mapping(existing)
+        if ((existing !== undefined && !override) || override?.reasoning !== undefined || override?.thinking !== undefined) continue
+        const target = ['providers', provider, 'modelOverrides', id]
+        yaml.setIn([...target, 'reasoning'], true)
+        yaml.setIn([...target, 'thinking'], thinking)
+        changed = true
+      }
+      if (!changed) return false
+      const latest = readModelsFile(file)
+      if (!latest.ok || latest.raw !== current.raw) return false
+      writeModelsFile(file, yaml.toString())
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 /** List custom providers from models.yml. Keys are NEVER returned — hasKey only. */
 export function listCustomProviders(deps: CustomProvidersDeps = {}): CustomProvidersListResult {
   const file = deps.modelsFile ?? defaultModelsFile()
@@ -375,7 +437,7 @@ export function saveCustomProvider(
     if (invalid) return { ok: false, error: invalid }
 
     const next: ModelsDoc = {
-      providers: { ...read.doc.providers, [rawSpec.id]: buildEntry(rawSpec, existingKey) }
+      providers: { ...read.doc.providers, [rawSpec.id]: buildEntry(rawSpec, existingKey, mapping(existing)) }
     }
     let content: string
     try {

@@ -111,21 +111,17 @@ export default function RuntimeModelSection() {
     loginState.status === 'waiting_for_confirm' ||
     loginState.status === 'verifying'
 
-  // Prefer the full static catalog (concrete models for every provider),
-  // falling back to the credential-filtered live catalog for extension/dynamic
-  // models the static catalog does not know.
+  // Include discovered model IDs even when an older static catalog lists the provider.
   const catalogByProvider = runtimeModelCatalog.filter((m) => m.provider === provider)
-  const modelOptions =
-    catalogByProvider.length > 0
-      ? catalogByProvider
-      : runtimeModels.filter((m) => m.provider === provider)
+  const catalogSelectors = new Set(catalogByProvider.map((m) => m.selector))
+  const liveByProvider = runtimeModels.filter((m) => m.provider === provider)
+  const modelOptions = [...catalogByProvider, ...liveByProvider.filter((m) => !catalogSelectors.has(m.selector))]
   const modelSelectors = modelOptions.map((m) => m.selector)
   const modelState = currentValueState(model, modelSelectors)
 
-  // Derive thinking options from the same source the model dropdown uses
-  // (static catalog first, so a key-less provider still shows its levels).
+  const liveEfforts = liveByProvider.find((m) => m.selector === (model || defaultModel) && m.thinking.length > 0)
   const defaultEntry =
-    modelOptions.find((m) => m.selector === model) ??
+    liveEfforts ?? modelOptions.find((m) => m.selector === model) ??
     modelOptions.find((m) => m.selector === defaultModel) ??
     runtimeModels.find((m) => m.selector === model) ??
     runtimeModels.find((m) => m.selector === defaultModel)
@@ -146,7 +142,7 @@ export default function RuntimeModelSection() {
     setCatalogNote(null)
     const res = await window.electronAPI.runtimeRefreshModelCatalog()
     if (res.ok) {
-      await loadRuntimeModelCatalog()
+      await Promise.all([loadRuntimeModelCatalog(), loadRuntimeModels()])
       setCatalogNote(t('settings.catalogRefreshed', { count: res.providers ?? 0 }))
     } else {
       setCatalogNote(t('settings.saveFailed', { error: res.error ?? 'failed' }))

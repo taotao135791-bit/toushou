@@ -8,11 +8,13 @@ import {
   RuntimeOverview,
   RuntimeProfile
 } from '../../../shared/types'
+import { join } from 'node:path'
 import { detectCli } from '../OmpCapabilities'
 import {
   authBrokerLogout,
   CliRunner,
   configGet,
+  configPath,
   configReset,
   configSet,
   makeExecRunner,
@@ -22,6 +24,8 @@ import { BOOTSTRAP_PROVIDER_ID, RuntimeRpcClient } from './RuntimeRpcClient'
 import { ProviderRegistry } from './ProviderRegistry'
 import { isValidModelSelector, PROVIDER_ID_PATTERN, splitModelSelector } from './modelSelector'
 import { switchModelSelector } from '../../../shared/modelSelector'
+import { modelThinkingEfforts, NativeModelThinking } from '../modelThinking'
+import { listOmpModelThinking } from './OmpModelCatalog'
 
 /**
  * Unified runtime-settings facade for the IPC layer: one API, two adapters.
@@ -59,6 +63,9 @@ export interface RuntimeSettingsDeps {
   registry?: ProviderRegistry
   /** Environment overrides for the runner + probe (test isolation). */
   env?: NodeJS.ProcessEnv
+  /** Custom runners must opt in explicitly to corrections on an isolated profile. */
+  modelsFile?: string
+  thinkingCatalog?: () => ReadonlyMap<string, NativeModelThinking>
 }
 
 const OVERVIEW_TTL_MS = 15_000
@@ -102,6 +109,10 @@ function defaultModelOf(entry: OmpConfigEntry | null): { selector: string; expli
 export class RuntimeSettings {
   private overviewCache: { at: number; overview: RuntimeOverview } | null = null
   private modelsCache: { at: number; models: RuntimeModelInfo[] } | null = null
+  private loadingModels: Promise<RuntimeModelInfo[]> | null = null
+  private readonly repairThinking: boolean
+  private readonly modelsFile?: string
+  private readonly thinkingCatalog: () => ReadonlyMap<string, NativeModelThinking>
   private readonly cli: CliInfo
   private readonly run: CliRunner
   private readonly spawnProbe: typeof RuntimeRpcClient.spawnWithBootstrap
@@ -110,6 +121,9 @@ export class RuntimeSettings {
   constructor(deps: RuntimeSettingsDeps = {}) {
     this.cli = deps.cli ?? detectCli()
     this.run = deps.runner ?? makeExecRunner(this.cli.path ?? this.cli.command, { env: deps.env })
+    this.repairThinking = (!deps.runner && !deps.env) || !!deps.modelsFile
+    this.modelsFile = deps.modelsFile
+    this.thinkingCatalog = deps.thinkingCatalog ?? listOmpModelThinking
     this.spawnProbe = deps.spawnProbe ?? RuntimeRpcClient.spawnWithBootstrap
     this.registry = deps.registry ?? new ProviderRegistry()
     if (deps.env && !deps.spawnProbe) {
@@ -128,6 +142,7 @@ export class RuntimeSettings {
   invalidate(): void {
     this.overviewCache = null
     this.modelsCache = null
+    this.loadingModels = null
     this.registry.invalidate()
   }
 
@@ -274,10 +289,27 @@ export class RuntimeSettings {
     if (this.modelsCache && Date.now() - this.modelsCache.at < OVERVIEW_TTL_MS) {
       return this.modelsCache.models
     }
+    if (this.loadingModels) return this.loadingModels
+    const loading = this.loadModels()
+    this.loadingModels = loading
+    try {
+      const models = await loading
+      if (this.loadingModels === loading) this.modelsCache = { at: Date.now(), models }
+      return models
+    } finally {
+      if (this.loadingModels === loading) this.loadingModels = null
+    }
+  }
+
+  async waitForModelDiscovery(): Promise<void> {
+    await this.loadingModels?.catch(() => undefined)
+  }
+
+  private async loadModels(): Promise<RuntimeModelInfo[]> {
     if (this.profile !== 'current') {
       // Legacy catalog rides the legacy registry/probe path (piModels).
       const { listAvailableModels } = await import('../../piModels')
-      const models = (await listAvailableModels()).map((m) => ({
+      return (await listAvailableModels()).map((m) => ({
         provider: m.provider,
         id: m.id,
         selector: `${m.provider}/${m.id}`,
@@ -285,9 +317,23 @@ export class RuntimeSettings {
         reasoning: m.reasoning,
         thinking: []
       }))
-      this.modelsCache = { at: Date.now(), models }
-      return models
     }
+    const models = await this.readCurrentModels()
+    if (!this.repairThinking || models.every((model) => model.thinking.length > 0)) return models
+    const thinking = this.thinkingCatalog()
+    const candidates = models.filter((model) => !model.thinking.length && thinking.has(`${model.provider}/${model.id}`))
+    if (!candidates.length) return models
+    // The runtime owns profile selection and reports the matching agent directory.
+    const dir = this.modelsFile ? undefined : await configPath(this.run)
+    const file = this.modelsFile ?? (dir ? join(dir, 'models.yml') : undefined)
+    if (!file) return models
+    const { repairDiscoveredModelThinking } = await import('../../customProviders')
+    if (!await repairDiscoveredModelThinking(candidates, thinking, file)) return models
+    const verified = await this.readCurrentModels()
+    return verified.length > 0 ? verified : models
+  }
+
+  private async readCurrentModels(): Promise<RuntimeModelInfo[]> {
     const res = await this.run(['models', '--json'])
     let models: RuntimeModelInfo[] = []
     if (res.ok) {
@@ -299,6 +345,7 @@ export class RuntimeSettings {
             const o = m as Record<string, unknown>
             const provider = typeof o.provider === 'string' ? o.provider : ''
             const id = typeof o.id === 'string' ? o.id : ''
+            const thinking = modelThinkingEfforts(o.thinking)
             return {
               provider,
               id,
@@ -307,10 +354,8 @@ export class RuntimeSettings {
               name: typeof o.name === 'string' ? o.name : id,
               contextWindow: typeof o.contextWindow === 'number' ? o.contextWindow : undefined,
               maxTokens: typeof o.maxTokens === 'number' ? o.maxTokens : undefined,
-              reasoning: o.reasoning === true,
-              thinking: Array.isArray(o.thinking)
-                ? (o.thinking as unknown[]).filter((t): t is string => typeof t === 'string')
-                : []
+              reasoning: typeof o.reasoning === 'boolean' ? o.reasoning : thinking.length > 0,
+              thinking
             }
           })
           .filter((m) => m.provider && m.id)
@@ -318,7 +363,6 @@ export class RuntimeSettings {
         models = []
       }
     }
-    this.modelsCache = { at: Date.now(), models }
     return models
   }
 

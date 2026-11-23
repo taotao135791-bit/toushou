@@ -2,6 +2,7 @@ import { ExtensionUiAnswer, PanelOpenRequest, SessionEvent, SessionState } from 
 import { normalizeToolCall } from '../../shared/toolNames'
 import { safeBrowserPanelUrl } from '../navigation'
 import { safeExtensionExternalUrl } from './extensionLinks'
+import { modelThinkingEfforts } from './modelThinking'
 
 /**
  * Semantic normalization for pi/omp `--mode rpc` frames: raw RPC objects in,
@@ -43,10 +44,8 @@ export type ExtensionUiMethod = 'select' | 'confirm' | 'input' | 'editor'
 /** The live RPC model uses nested efforts; the model-list command uses a flat array. */
 export function sessionModelThinking(model: unknown): SessionState['modelThinking'] {
   if (!model || typeof model !== 'object') return undefined
-  const { reasoning, thinking } = model as { reasoning?: unknown; thinking?: { efforts?: unknown } }
-  const efforts = Array.isArray(thinking?.efforts)
-    ? thinking.efforts.filter((effort): effort is string => typeof effort === 'string')
-    : []
+  const { reasoning, thinking } = model as { reasoning?: unknown; thinking?: unknown }
+  const efforts = modelThinkingEfforts(thinking)
   if (typeof reasoning === 'boolean') return { reasoning, thinking: efforts }
   return efforts.length > 0 ? { thinking: efforts } : undefined
 }

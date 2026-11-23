@@ -1,8 +1,14 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { RuntimeSettings, PROVIDER_ID_PATTERN } from '../omp/settings/RuntimeSettings'
 import { CliRunner } from '../omp/settings/OmpConfigCli'
 import { RuntimeRpcClient } from '../omp/settings/RuntimeRpcClient'
+import { listOmpModelThinking } from '../omp/settings/OmpModelCatalog'
 import { CliInfo } from '../../shared/types'
+
+vi.mock('../omp', () => ({ detectCli: () => ({ command: 'omp', available: false }) }))
 
 /**
  * RuntimeSettings with fully injected runner + probe spawner — no real omp
@@ -345,6 +351,51 @@ describe('RuntimeSettings · current profile writes (read-after-write)', () => {
 })
 
 describe('RuntimeSettings · model catalog', () => {
+  it('recovers capabilities from a different catalog layer with the full model ID and provider', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'native-thinking-layers-'))
+    const catalogDir = path.join(dir, 'resources', 'pi-catalog')
+    const id = 'vendor/reasoner-v2'
+    const entry = { id, name: 'Reasoner V2' }
+    const thinking = { mode: 'budget', efforts: ['low', 'high'] }
+    try {
+      mkdirSync(catalogDir, { recursive: true })
+      writeFileSync(path.join(dir, 'pi-catalog-models.json'), JSON.stringify({ 'sample-a': { [id]: { ...entry, reasoning: false } } }))
+      writeFileSync(path.join(catalogDir, 'models.json'), JSON.stringify({ 'sample-a': { [id]: { ...entry, reasoning: true, thinking } } }))
+      const catalog = listOmpModelThinking({ appPath: dir, userDataDir: dir })
+      expect(catalog.get(`sample-a/${id}`)).toEqual(thinking)
+      expect(catalog.has(`sample-b/${id}`)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('shares one discovery and exposes the capabilities confirmed by the native read-back', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'native-thinking-catalog-'))
+    const modelsFile = path.join(dir, 'models.yml')
+    const published = { provider: 'example', id: 'v2', name: 'Example V2' }
+    const sameName = { provider: 'gateway', id: 'v2', name: 'Example V2' }
+    const { run, calls } = fakeRunner({ 'models --json': () => ({
+      stdout: JSON.stringify({ models: [{
+        ...published, reasoning: existsSync(modelsFile), thinking: existsSync(modelsFile) ? ['medium', 'max'] : []
+      }, { ...sameName, reasoning: false }] })
+    }) })
+    const svc = new RuntimeSettings({
+      cli: OMP_CLI, runner: run, modelsFile,
+      thinkingCatalog: () => new Map([['example/v2', { mode: 'budget', efforts: ['medium', 'max'] }]])
+    })
+    try {
+      const results = await Promise.all([svc.listModels(), svc.listModels()])
+      expect(results[0]).toMatchObject([
+        { ...published, reasoning: true, thinking: ['medium', 'max'] },
+        { ...sameName, reasoning: false, thinking: [] }
+      ])
+      expect(results[0]).toEqual(results[1])
+      expect(calls).toEqual([['models', '--json'], ['models', '--json']])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('parses omp models --json including per-model thinking levels', async () => {
     const { run } = fakeRunner({
       'models --json': {

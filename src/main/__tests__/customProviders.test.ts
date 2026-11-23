@@ -3,8 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
-import { CustomProviderSpec } from '../../shared/types'
+import { CustomProviderSpec, RuntimeModelInfo } from '../../shared/types'
 import { CliRunner } from '../omp/settings/OmpConfigCli'
+import { NativeModelThinking } from '../omp/modelThinking'
 
 // customProviders.ts imports ./omp for the default runner's CLI detection —
 // the tests always inject an explicit modelsFile + runner, so stub it out.
@@ -16,6 +17,7 @@ import {
   clearProviderKey,
   deleteCustomProvider,
   listCustomProviders,
+  repairDiscoveredModelThinking,
   sanitizeCustomProviderSpec,
   saveCustomProvider,
   saveProviderKey
@@ -66,6 +68,16 @@ function readDoc(): Record<string, Record<string, unknown>> {
 }
 
 describe('save → list round-trip', () => {
+  it('retains native capability declarations when editing the same custom model', async () => {
+    const thinking = { mode: 'effort', efforts: ['low', 'high'] }
+    const provider = spec()
+    writeFileSync(modelsFile, YAML.stringify({ providers: { [provider.id]: {
+      baseUrl: provider.baseUrl, api: provider.api,
+      models: [{ id: 'model-a', reasoning: true, thinking }]
+    } } }))
+    expect(await saveCustomProvider(provider, { modelsFile, runner: null })).toMatchObject({ ok: true })
+    expect(readDoc()[provider.id].models).toMatchObject([{ id: 'model-a', reasoning: true, thinking }])
+  })
   it('saves a provider and lists it back without the key material', async () => {
     const r = await saveCustomProvider(spec(), { modelsFile, runner: verifyRunner(['my-gateway']) })
     expect(r).toEqual({ ok: true, verified: true })
@@ -157,6 +169,42 @@ describe('save → list round-trip', () => {
     const entry = readDoc()['my-gateway']
     expect(entry.apiKey).toBe('sk-test-123')
     expect(entry.baseUrl).toBe('https://api2.example.com/v1')
+  })
+})
+
+describe('native model thinking repair', () => {
+  const effort: NativeModelThinking = { mode: 'effort', efforts: ['low', 'max'] }
+  const budget: NativeModelThinking = { mode: 'budget', efforts: ['high'] }
+  const model = (provider: string, id: string, thinking: string[] = []): RuntimeModelInfo => ({
+    provider, id, selector: `${provider}/${id}`, name: id, reasoning: thinking.length > 0, thinking
+  })
+
+  it('uses exact provider and model metadata, including distinct native modes', async () => {
+    writeFileSync(modelsFile, '# provider settings\nproviders:\n  cloud-a:\n    apiKey: synthetic\n')
+    const models = [model('cloud-a', 'same'), model('cloud-b', 'same'), model('unknown', 'same'), model('cloud-a', 'ready', ['high'])]
+    const metadata = new Map([['cloud-a/same', effort], ['cloud-b/same', budget], ['cloud-a/ready', effort]])
+    expect(await repairDiscoveredModelThinking(models, metadata, modelsFile)).toBe(true)
+    expect(readDoc()).toEqual({
+      'cloud-a': { apiKey: 'synthetic', modelOverrides: { same: { reasoning: true, thinking: effort } } },
+      'cloud-b': { modelOverrides: { same: { reasoning: true, thinking: budget } } }
+    })
+    const saved = readFileSync(modelsFile, 'utf8')
+    expect(saved).toContain('# provider settings')
+    expect(await repairDiscoveredModelThinking(models, metadata, modelsFile)).toBe(false)
+    expect(readFileSync(modelsFile, 'utf8')).toBe(saved)
+  })
+
+  it('preserves a configured opt-out, explicit models, and a different endpoint', async () => {
+    const config = YAML.stringify({ providers: {
+      'opted-out': { modelOverrides: { same: { reasoning: false } } },
+      explicit: { models: [{ id: 'same', reasoning: false }] },
+      gateway: { baseUrl: 'https://example.invalid/v1' }
+    } })
+    writeFileSync(modelsFile, config)
+    const models = [model('opted-out', 'same'), model('explicit', 'same'), model('gateway', 'same')]
+    const metadata = new Map(models.map(({ selector }) => [selector, effort]))
+    expect(await repairDiscoveredModelThinking(models, metadata, modelsFile)).toBe(false)
+    expect(readFileSync(modelsFile, 'utf8')).toBe(config)
   })
 })
 

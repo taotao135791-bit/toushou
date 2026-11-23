@@ -5,6 +5,8 @@ describe('session model thinking capabilities', () => {
   it('reads the live model effort list and ignores non-string entries', () => {
     expect(sessionModelThinking({ reasoning: true, thinking: { efforts: ['high', null, 'max'] } }))
       .toEqual({ reasoning: true, thinking: ['high', 'max'] })
+    expect(sessionModelThinking({ thinking: ['auto', 'medium', 'off'] }))
+      .toEqual({ thinking: ['medium'] })
   })
 
   it('distinguishes an explicitly non-reasoning model from absent metadata', () => {

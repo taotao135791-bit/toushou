@@ -1117,6 +1117,7 @@ export function registerIpc() {
       grantId: string,
       overrides?: { modelSelector?: unknown; thinkingLevel?: unknown; skillId?: unknown; permissionMode?: unknown }
     ) => {
+      await runtimeSettings.waitForModelDiscovery()
       const resolved = requireGrant(grantId)
       if (!resolved) {
         throw new Error('createSession requires a valid WorkspaceGrant id')
@@ -1369,6 +1370,7 @@ export function registerIpc() {
   ipcMain.handle(
     IPC_CHANNELS.OMP_RESUME_SESSION,
     async (event: IpcMainInvokeEvent, grantId: string, historyId: unknown) => {
+      await runtimeSettings.waitForModelDiscovery()
       const resolved = requireGrant(grantId)
       if (!resolved || typeof historyId !== 'string') return null
       bindHistorySessionGrantOwnerCleanup(event)
@@ -1680,7 +1682,9 @@ export function registerIpc() {
   })
 
   ipcMain.handle(IPC_CHANNELS.RUNTIME_REFRESH_MODEL_CATALOG, async () => {
-    return refreshModelCatalog()
+    const result = await refreshModelCatalog()
+    if (result.ok) runtimeSettings.invalidate()
+    return result
   })
 
   ipcMain.handle(

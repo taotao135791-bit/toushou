@@ -102,6 +102,13 @@ If a reasoning model has no recognized effort list, the picker offers the
 standard levels and lets the runtime resolve the selection. The Settings
 default picker always offers `auto`.
 
+When a discovered model lacks its effort metadata, the app can recover it
+from a catalog entry for the same provider and model ID. It adds a scoped
+native `modelOverrides` entry and reloads the runtime catalog before showing
+the repaired levels. Explicit model declarations and custom endpoints keep
+their configured behavior. Open a new session or reopen a saved one to pick
+up config changes from an already running session.
+
 `set_thinking_level` never errors — unsupported levels are **clamped**
 (e.g. xhigh → high) or resolve to "auto" (unknown values). The GUI
 therefore displays the runtime-resolved level (`thinking_level_changed` /

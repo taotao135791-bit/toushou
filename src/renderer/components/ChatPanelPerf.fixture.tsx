@@ -1,7 +1,7 @@
 import { Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
-import type { ProjectRecord, Session, WorkspaceGrant } from '@shared/types'
+import type { ProjectRecord, RuntimeModelInfo, RuntimeOverview, Session, SessionState, SessionThinkingLevel, WorkspaceGrant } from '@shared/types'
 import ChatPanel from './ChatPanel'
 import { useAppStore } from '../store'
 import { useProjects } from '../store/projects'
@@ -10,6 +10,26 @@ const current: Session = { id: 'current', cwd: '/synthetic/current', title: 'Cur
 const sessions: Session[] = [current, ...Array.from({ length: 200 }, (_, i) => ({ ...current, id: `background-${i}`, title: `Background ${i}` }))]
 const defaultProject: ProjectRecord = { id: 'default', name: 'TouShou workspace', path: '/synthetic/default-save-folder', isDefault: true, archived: false, missing: true, unavailableReason: 'identity-changed', createdAt: 1 }
 const defaultGrant: WorkspaceGrant = { id: 'grant-default', realPath: defaultProject.path, displayPath: defaultProject.path, source: 'default', createdAt: 1 }
+const deepSeekModel: RuntimeModelInfo = {
+  provider: 'deepseek', id: 'deepseek-flash', selector: 'deepseek/deepseek-flash', name: 'DeepSeek-V4.1-Flash',
+  reasoning: true, thinking: ['low', 'high', 'max']
+}
+const mediumOnlyModel: RuntimeModelInfo = {
+  provider: 'synthetic-budget', id: 'analysis', selector: 'synthetic-budget/analysis', name: 'Synthetic budget model',
+  reasoning: true, thinking: ['medium']
+}
+const plainModel: RuntimeModelInfo = {
+  provider: 'synthetic-plain', id: 'chat', selector: 'synthetic-plain/chat', name: 'Synthetic plain model',
+  reasoning: false, thinking: []
+}
+const fixtureModels = [deepSeekModel, mediumOnlyModel, plainModel]
+const runtimeOverview: RuntimeOverview = {
+  profile: 'current',
+  capabilities: { providers: 'supported', nativeLogin: 'unknown', logout: 'unknown', modelCatalog: 'supported', defaultModelConfig: 'supported', defaultThinkingConfig: 'supported', machineSkillsConfig: 'unknown' },
+  providers: [],
+  modelState: { defaultModel: deepSeekModel.selector, defaultModelExplicit: true, defaultThinkingLevel: 'auto' },
+  machineSkillsState: 'unknown'
+}
 const thinkingTimers = new Set<number>()
 const browserWindow: Window = window
 const setInterval = browserWindow.setInterval.bind(browserWindow)
@@ -26,6 +46,9 @@ browserWindow.clearInterval = (timer) => {
 
 const fixture = {
   commits: 0, renderMs: 0, backgroundUpdates: 0,
+  currentModel: deepSeekModel,
+  currentThinkingLevel: 'auto',
+  thinkingSelections: [] as Array<{ sessionId: string; level: SessionThinkingLevel }>,
   reset() { fixture.commits = 0; fixture.renderMs = 0; fixture.backgroundUpdates = 0 },
   async updateBackground() {
     for (let i = 0; i < 200; i++) {
@@ -72,10 +95,36 @@ declare global { interface Window { chatPerfFixture: typeof fixture } }
 window.chatPerfFixture = fixture
 window.electronAPI = {
   listCommands: async () => [], getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }), listModels: async () => [],
-  gitInfo: async () => null, getSessionState: async () => null, getSessionStats: async () => null, setStore: async () => undefined,
+  runtimeListModels: async () => [{ ...deepSeekModel, reasoning: false, thinking: [] }, mediumOnlyModel, plainModel],
+  getSessionState: async (sessionId: string): Promise<SessionState | null> => {
+    if (sessionId !== current.id) return null
+    const { provider, id, name, reasoning, thinking } = fixture.currentModel
+    return {
+      sessionId, isStreaming: false, isCompacting: false, pendingMessageCount: 0, messageCount: 0,
+      model: { provider, id, name }, modelThinking: { reasoning, thinking }, thinkingLevel: fixture.currentThinkingLevel
+    }
+  },
+  setSessionModel: async (sessionId: string, provider: string, modelId: string) => {
+    const model = fixtureModels.find(item => item.provider === provider && item.id === modelId)
+    if (sessionId !== current.id || !model) return false
+    fixture.currentModel = model
+    fixture.currentThinkingLevel = 'off'
+    const state = useAppStore.getState()
+    state.applySessionEvent({ type: 'thinking_level_changed', sessionId, level: 'off' })
+    state.applySessionEvent({ type: 'model_changed', sessionId })
+    return true
+  },
+  setThinkingLevel: async (sessionId: string, level: SessionThinkingLevel) => {
+    if (sessionId !== current.id) return false
+    fixture.thinkingSelections.push({ sessionId, level })
+    fixture.currentThinkingLevel = level
+    useAppStore.getState().applySessionEvent({ type: 'thinking_level_changed', sessionId, level })
+    return true
+  },
+  gitInfo: async () => null, getSessionStats: async () => null, setStore: async () => undefined,
   checkpointList: async () => [],
   listProjects: async () => [{ ...defaultProject }], listRecentWorkspaces: async () => [],
   recoverProject: async (id: string) => { fixture.recoveryCalls.push(id); defaultProject.missing = false; delete defaultProject.unavailableReason; return { ok: true, project: { ...defaultProject }, grant: defaultGrant } }
 } as unknown as typeof window.electronAPI
-useAppStore.setState({ language: 'en', currentWorkspace: { id: 'grant', realPath: current.cwd, displayPath: current.cwd, source: 'dialog', createdAt: 1 }, currentSessionId: 'current', sessions, sessionRecords: [], messages: {}, busy: {}, sessionErrors: {}, uiRequests: {}, cliAvailable: true })
+useAppStore.setState({ language: 'en', currentWorkspace: { id: 'grant', realPath: current.cwd, displayPath: current.cwd, source: 'dialog', createdAt: 1 }, currentSessionId: 'current', sessions, sessionRecords: [], messages: {}, busy: {}, sessionErrors: {}, uiRequests: {}, cliAvailable: true, runtimeOverview })
 createRoot(document.getElementById('root')!).render(<MemoryRouter><Profiler id="actual-chat-panel" onRender={(_id, _phase, duration) => { fixture.commits += 1; fixture.renderMs += duration }}><ChatPanel /></Profiler></MemoryRouter>)

@@ -36,6 +36,45 @@ app.whenReady().then(async () => {
     const frame = () => js(`new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('animation-frame timeout; visible='+document.visibilityState+' focused='+document.hasFocus())),3000);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}))})`)
     await waitFor(`document.visibilityState==='visible' && document.hasFocus() && !!window.chatPerfFixture && innerWidth===1024 && innerHeight===700`)
     await frame()
+    phase = 'DeepSeek session thinking selector'
+    const modelTrigger = `document.querySelector('button[title="Model"]')`
+    const thinkingTrigger = `document.querySelector('button[title="Thinking"]')`
+    const thinkingMenu = `[...document.querySelectorAll('body > div')].find(element => element.firstElementChild?.tagName === 'BUTTON' && element.firstElementChild.textContent.trim() === 'Auto')`
+    await waitFor(`${modelTrigger}?.ariaLabel === 'Model: DeepSeek-V4.1-Flash' && ${thinkingTrigger}?.ariaLabel === 'Thinking: Auto'`)
+    const showThinkingMenu = async () => {
+      await js(`${thinkingTrigger}.click()`)
+      await waitFor(`!!(${thinkingMenu})`)
+    }
+    const thinkingLabels = () => js(`[...(${thinkingMenu}).children].map(button => button.textContent.trim())`)
+    const chooseThinking = async label => {
+      await js(`[...(${thinkingMenu}).children].find(button => button.textContent.trim() === ${JSON.stringify(label)})?.click()`)
+      await waitFor(`${thinkingTrigger}.ariaLabel === ${JSON.stringify(`Thinking: ${label}`)}`)
+    }
+    await showThinkingMenu()
+    const deepSeekThinking = await thinkingLabels()
+    for (const [index, label] of ['Low', 'High', 'Max', 'Off'].entries()) {
+      if (index > 0) await showThinkingMenu()
+      await chooseThinking(label)
+    }
+    phase = 'switch model thinking capabilities'
+    const chooseModel = async name => {
+      await js(`${modelTrigger}.click()`)
+      const option = `[...document.querySelectorAll('body > div button')].find(button => button.firstElementChild?.firstElementChild?.textContent === ${JSON.stringify(name)})`
+      await waitFor(`!!(${option})`)
+      await js(`(${option}).click()`)
+      await waitFor(`${modelTrigger}.ariaLabel === ${JSON.stringify(`Model: ${name}`)}`)
+      await frame()
+    }
+    await chooseModel('Synthetic budget model')
+    await showThinkingMenu()
+    const mediumOnlyThinking = await thinkingLabels()
+    await chooseThinking('Medium')
+    await chooseModel('Synthetic plain model')
+    await showThinkingMenu()
+    const plainThinking = await thinkingLabels()
+    await js(`${thinkingTrigger}.click()`)
+    await frame()
+    const thinkingSelections = await js('window.chatPerfFixture.thinkingSelections')
     phase = 'background metadata frames'
     await js('window.chatPerfFixture.reset()')
     await js(`Promise.race([window.chatPerfFixture.updateBackground(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('background frame sequence timeout; visible='+document.visibilityState+' focused='+document.hasFocus())),15000))])`)
@@ -69,7 +108,7 @@ app.whenReady().then(async () => {
     await waitFor(`window.chatPerfFixture.recoverySnapshot().workspace==='/synthetic/default-save-folder' && !document.querySelector('.home-hero [data-project-recovery="default"]')`)
     await frame()
     const defaultRecovered = await js(`({ ...window.chatPerfFixture.recoverySnapshot(),promptGone:!document.querySelector('.home-hero').textContent.includes('Confirm the default save folder'),draft:document.querySelector('.home-hero textarea').value })`)
-    console.log('E2E_RESULT ' + JSON.stringify({ background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, defaultRecovery, defaultRecovered }))
+    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, defaultRecovery, defaultRecovered }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

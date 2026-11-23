@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { app } from 'electron'
 import { RuntimeModelInfo } from '../../../shared/types'
 import { detectCli } from '../OmpCapabilities'
+import { NativeModelThinking, nativeModelThinking, modelThinkingEfforts } from '../modelThinking'
 
 /**
  * Static model catalog — the preset model names per provider that the
@@ -24,6 +25,7 @@ export const CATALOG_URL =
   'https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/catalog/src/models.json'
 
 let catalogCache: RuntimeModelInfo[] | null = null
+let thinkingCache: { source: string; entries: ReadonlyMap<string, NativeModelThinking> } | undefined
 
 export interface CatalogOrigin {
   origin: 'install' | 'refreshed' | 'bundled'
@@ -37,7 +39,7 @@ interface CatalogEntry {
   reasoning?: unknown
   baseUrl?: unknown
   api?: unknown
-  thinking?: { efforts?: unknown }
+  thinking?: unknown
 }
 
 /** userData copy written by refreshModelCatalog; injectable for tests. */
@@ -113,8 +115,24 @@ function loadCatalog(layers: CatalogOrigin[]): RuntimeModelInfo[] {
   return []
 }
 
+/** A newer catalog can add capabilities missing from the installed catalog. */
+export function listOmpModelThinking(
+  extra: { userDataDir?: string; appPath?: string } = {}
+): ReadonlyMap<string, NativeModelThinking> {
+  const layers = catalogLayers(extra)
+  const source = layers.map(({ path }) => path).join('\0')
+  const useCache = Object.keys(extra).length === 0
+  if (useCache && thinkingCache?.source === source) return thinkingCache.entries
+  const thinking = new Map<string, NativeModelThinking>()
+  // Older discovery entries use false for models they don't recognize. A later
+  // layer can supply the concrete capability for the exact provider and ID.
+  for (const { path } of layers) parseCatalogFile(path, thinking)
+  if (useCache) thinkingCache = { source, entries: thinking }
+  return thinking
+}
+
 /** Parse a catalog file; null when missing or not the expected shape. */
-function parseCatalogFile(file: string): RuntimeModelInfo[] | null {
+function parseCatalogFile(file: string, modelThinking?: Map<string, NativeModelThinking>): RuntimeModelInfo[] | null {
   let parsed: Record<string, Record<string, CatalogEntry>>
   try {
     parsed = JSON.parse(readFileSync(file, 'utf-8'))
@@ -131,19 +149,18 @@ function parseCatalogFile(file: string): RuntimeModelInfo[] | null {
       if (!e || typeof e.id !== 'string') continue
       const provider = typeof e.provider === 'string' ? e.provider : providerId
       const selector = e.id.includes('/') ? e.id : `${provider}/${e.id}`
-      const efforts =
-        e.thinking && typeof e.thinking === 'object'
-          ? ((e.thinking as { efforts?: unknown }).efforts ?? [])
-          : []
+      if (modelThinking && e.reasoning === true) {
+        const key = e.id.startsWith(`${provider}/`) ? e.id : `${provider}/${e.id}`
+        const config = nativeModelThinking(e.thinking)
+        if (config && !modelThinking.has(key)) modelThinking.set(key, config)
+      }
       models.push({
         provider,
         id: e.id.slice(e.id.lastIndexOf('/') + 1),
         selector,
         name: typeof e.name === 'string' ? e.name : e.id,
         reasoning: e.reasoning === true,
-        thinking: Array.isArray(efforts)
-          ? (efforts as unknown[]).filter((t): t is string => typeof t === 'string')
-          : [],
+        thinking: modelThinkingEfforts(e.thinking),
         baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl : undefined,
         api: typeof e.api === 'string' ? e.api : undefined
       })
@@ -200,5 +217,6 @@ export async function refreshModelCatalog(
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
   catalogCache = null
+  thinkingCache = undefined
   return { ok: true, providers: Object.keys(parsed).length }
 }
