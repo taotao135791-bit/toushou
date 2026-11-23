@@ -31,6 +31,34 @@ const MAX_BODY_BYTES = 64 * 1024
 export const COPY_TOOLS_ENV_KEY = 'TOUSHOU_COPY'
 const MAX_PROMPT_CHARS = 24_000
 
+/**
+ * Cross-batch provider circuit breaker. A member answering with repeated HARD
+ * errors (http-4xx / api-error: bad key, bad model id, rejected params) keeps
+ * its slot in every new batch and burns a round each time — one bad relay was
+ * observed failing 31 times in a row across a day. Two consecutive hard
+ * failures quarantine the provider for 10 minutes; any success resets.
+ * Soft failures (timeout / network / empty) never quarantine — those are
+ * usually transient and the per-batch unhealthy list already handles them.
+ */
+const PROVIDER_QUARANTINE_MS = 10 * 60 * 1000
+const breaker = new Map<string, { consecutive: number; until: number }>()
+
+function providerQuarantined(id: string, now: number): boolean {
+  const entry = breaker.get(id)
+  return !!entry && entry.until > now
+}
+
+function noteProviderResult(id: string, error: string | undefined, now: number): void {
+  if (!error) { breaker.delete(id); return }
+  // 408/429 are transient (timeout / rate limit) — never quarantine the provider for them.
+  if (/^http-(?:408|429)\b/i.test(error) || error === 'api-error: rate-limited') return
+  if (!/^http-4|^api-error/i.test(error)) return
+  const entry = breaker.get(id) ?? { consecutive: 0, until: 0 }
+  entry.consecutive += 1
+  if (entry.consecutive >= 2) entry.until = now + PROVIDER_QUARANTINE_MS
+  breaker.set(id, entry)
+}
+
 export type AdsCopyBridgeRequest =
   | { action: 'copy_models_list' }
   | { action: 'copy_generate'; prompt?: unknown; system?: unknown; model?: unknown; agentId?: unknown }
@@ -285,10 +313,22 @@ function buildBatchPrompt(opts: {
   rejectedSamples: string[]
 }): string {
   const lexicon = scoringLexiconBrief(opts.language)
+  // Models cannot count bytes; they count characters far better. CJK-family
+  // languages count ~2 bytes/char, so give the char band alongside the byte
+  // rule (byte overshoot was the #1 rejection cause in real runs).
+  const cjkish = /^(zh|ja|ko|th)/i.test(opts.language)
   const quantities = [
-    opts.qtyShort > 0 ? `short（短标题）恰好 ${opts.qtyShort} 条，每条 19–25 字节（上限 ${SHORT_MAX_BYTES}）` : '',
-    opts.qtyLong > 0 ? `long（长描述）恰好 ${opts.qtyLong} 条，每条 56–75 字节（上限 ${LONG_MAX_BYTES}）` : ''
+    opts.qtyShort > 0 ? `short（短标题）恰好 ${opts.qtyShort} 条，每条 19–25 字节${cjkish ? '（约10–12个字）' : '（约19–25个字符）'}` : '',
+    opts.qtyLong > 0 ? `long（长描述）恰好 ${opts.qtyLong} 条，每条 56–75 字节${cjkish ? '（约28–37个字）' : '（约56–75个字符）'}` : ''
   ].filter(Boolean).join('；')
+  // Unlisted language: do not steer the writer toward English hook/CTA words
+  // it would then be scored against — the engine degrades those two floors.
+  const hookLine = lexicon.degraded
+    ? `- 钩子 Hook：${opts.language} 暂无内置评分词典，用该语言自然的母语钩子开头（引擎已放宽钩子门槛）；前半句带数字 +2 分、带问号 +2 分（数字必须来自已提供的事实）。`
+    : `- 钩子 Hook ≥${opts.targets.hook} 分：开头 1/3 必须出现钩子词之一（${lexicon.hook.join('、')}）；前半句带数字 +2 分、带问号 +2 分（数字必须来自已提供的事实）。`
+  const ctaLine = lexicon.degraded
+    ? `- 行动号召 CTA：用 ${opts.language} 自然的动作动词收尾（引擎已放宽 CTA 词典门槛，但动词必须出现）。`
+    : `- 行动号召 CTA ≥${opts.targets.cta} 分：必须包含动作动词之一（${lexicon.cta.join('、')}）。`
   const lines = [
     `你是资深谷歌 App Campaign 广告优化师。用${opts.language}生成广告素材，只输出 JSON：{"short":[...],"long":[...]}，无其他文字。`,
     opts.market ? `投放市场：${opts.market}。` : '',
@@ -299,11 +339,11 @@ function buildBatchPrompt(opts: {
     opts.tone ? `语气基调：${opts.tone}。` : '',
     `数量：${quantities}。字节算法：CJK 字符算 2 字节，ASCII 算 1 字节。`,
     '每条文案都会按下面的确定性评分卡打分，达不到达标线直接淘汰——动笔前先对着评分卡写：',
-    `- 钩子 Hook ≥${opts.targets.hook} 分：开头 1/3 必须出现钩子词之一（${lexicon.hook.join('、')}）；前半句带数字 +2 分、带问号 +2 分（数字必须来自已提供的事实）。`,
+    hookLine,
     `- 相关性 Relevance ≥${opts.targets.relevance} 分：必须覆盖至少 2 个卖点（原词或拆词）；覆盖 4 个以上满分。`,
-    `- 行动号召 CTA ≥${opts.targets.cta} 分：必须包含动作动词之一（${lexicon.cta.join('、')}）。`,
+    ctaLine,
     `- 空间 Space ≥${opts.targets.space} 分：短标题 19–25 字节、长描述 56–75 字节，接近上限优于留白；超上限直接淘汰。`,
-    `- 品牌与合规：品牌词自然出现一次；绝对禁止出现：${lexicon.forbidden.join('、')}；也不得出现资质、收益、保证类表述。`,
+    `- 品牌与合规：品牌词自然出现一次。禁用词有 ${lexicon.forbidden.join('、')}。有资质、收益或保证类表述时，需要完整引用已确认的卖点，保留适用范围和限制条件。`,
     `- 总分 ≥ ${opts.targets.total} 分。`,
     `本轮方向：${opts.direction}${opts.attempt > 1 ? `（第 ${opts.attempt} 轮，上一轮未达标，必须换角度而不是在同一方向上微调；创作框架：${opts.frameworkBrief}）` : ''}`,
     opts.fixLines.length > 0 ? `针对性修复要求：\n- ${opts.fixLines.join('\n- ')}` : '',
@@ -348,9 +388,12 @@ function noteFailure(
   const bump = (key: string) => { counts[key] = (counts[key] ?? 0) + 1 }
   if (item.rejectReason === 'below_score_targets') {
     let noted = false
-    if (item.scores.hook < targets.hook) { bump('hook'); noted = true }
+    // Degraded scoring waives the hook/CTA floors, so they can never be why
+    // a line was rejected — don't blame them in the retry advice.
+    const degraded = item.scoringMode === 'degraded'
+    if (!degraded && item.scores.hook < targets.hook) { bump('hook'); noted = true }
     if (item.scores.relevance < targets.relevance) { bump('rel'); noted = true }
-    if (item.scores.cta < targets.cta) { bump('cta'); noted = true }
+    if (!degraded && item.scores.cta < targets.cta) { bump('cta'); noted = true }
     if (item.scores.space < targets.space) { bump('space'); noted = true }
     if (!noted || item.scores.total < targets.total) bump('total')
     return
@@ -406,16 +449,28 @@ async function dispatchBatch(
       hint: '当前文案模式为「跟随对话模型」：不要调用本工具，直接按 ads-copy 技能用当前对话模型生成并交付。'
     }
   }
-  const members = pool.pool
+  const poolMembers = pool.pool
     .map((id) => pool.providers.find((provider) => provider.id === id))
     .filter((provider): provider is AdsCopyModelProvider => provider !== undefined)
-  if (members.length === 0) {
-    return { ok: false, error: 'pool-empty', hint: '模型池为空：请在投手「连接」页的文案模型池里添加模型。' }
+  if (poolMembers.length === 0) {
+    return { ok: false, error: 'pool-empty', hint: '模型池为空：请在投手「连接」页的文案模型池添加模型。' }
   }
+  const startedAtNow = Date.now()
+  const quarantined = poolMembers.filter((provider) => providerQuarantined(provider.id, startedAtNow))
+  // Quarantined members sit out the rotation; a named model still plays (the
+  // caller explicitly asked for THAT provider). Everyone quarantined → run
+  // anyway and say so, rather than pretending the pool is empty.
+  const members = quarantined.length > 0 && quarantined.length < poolMembers.length
+    ? poolMembers.filter((provider) => !providerQuarantined(provider.id, startedAtNow))
+    : poolMembers
+  const quarantineNotice = quarantined.length > 0
+    ? `${quarantined.map((provider) => provider.name).join('、')} 连续报错，已暂停参与本轮生成（约10分钟自动恢复）；请在「连接 → 文案模型池」检查该供应商的密钥/模型名。`
+    : undefined
 
   // Request parsing (bounded; anything malformed falls back or rejects).
   const product = (raw.product ?? {}) as Record<string, unknown>
   const language = typeof product.language === 'string' && product.language.trim() ? product.language.trim().slice(0, 20) : 'en'
+  const lexiconBrief = scoringLexiconBrief(language)
   const market = typeof product.market === 'string' ? product.market.trim().slice(0, 40) : undefined
   const device = typeof product.device === 'string' ? product.device.trim().slice(0, 20) : undefined
   const tone = typeof product.tone === 'string' ? product.tone.trim().slice(0, 60) : undefined
@@ -580,10 +635,12 @@ async function dispatchBatch(
         if (controller.signal.aborted) return
         if (!result.ok || !result.text) {
           failedCounts.set(provider.id, (failedCounts.get(provider.id) ?? 0) + 1)
+          noteProviderResult(provider.id, result.error ?? 'empty-response', Date.now())
           providerErrors.push({ name: provider.name, model: provider.model, attempt, error: result.error ?? 'empty-response' })
           return
         }
         failedCounts.set(provider.id, 0)
+        noteProviderResult(provider.id, undefined, Date.now())
         const normalized = normalizeModelOutput(result.text, { short: SHORT_MAX_BYTES, long: LONG_MAX_BYTES })
         roundScoredCandidates += normalized.shorts.length + normalized.longs.length
         for (const text of normalized.shorts) {
@@ -674,6 +731,12 @@ async function dispatchBatch(
       attempts: retryHistory.length,
       maxAttempts,
       candidateMultiplier: multiplier,
+      lexicon_mode: lexiconBrief.degraded ? 'degraded' : 'full',
+      ...(lexiconBrief.degraded
+        ? {
+            lexicon_notice: `${language} 没有内置评分词典：本批按降级模式评分（钩子/CTA 门槛放宽、总分线按权重折算），相关性/字节/合规仍硬卡；文案已要求用该语言自然母语表达。`
+          }
+        : {}),
       acceptedShort,
       acceptedLong,
       rejectedShort: shortSelection.rejected.length,
@@ -685,6 +748,7 @@ async function dispatchBatch(
     provider_pool: {
       size: members.length,
       strategy: stickyFallback ? `${strategy}_fallback` : strategy,
+      ...(quarantineNotice ? { quarantined: quarantined.map((provider) => provider.name), quarantine_notice: quarantineNotice } : {}),
       agentId: agentId || undefined,
       assignedIndex,
       unhealthy: [...failedCounts]

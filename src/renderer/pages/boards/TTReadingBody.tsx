@@ -230,7 +230,6 @@ export function TTReadingBody({ widget, managedReading, onManagedRefresh }: { wi
       ) : (
         <>
           {summary?.datasetSync?.ok === false && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(summary.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : summary.datasetSync.error === 'proof-failed' ? 'boards.datasets.proofFailed' : summary.datasetSync.error === 'row-limit' ? 'boards.datasets.ttRowLimit' : 'boards.datasets.syncFailed')}</p>}
-          {summary?.datasetSync?.ok === true && Boolean(summary.datasetSync.legacyBackups?.length) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', { names: summary.datasetSync.legacyBackups!.join('、') })}</p>}
           {summary?.accountWindows && summary.accountWindows.length > 0 && <details className="text-[12px] text-cream-faint"><summary className="cursor-pointer">{t('boards.tt.accountWindows')}</summary><div className="max-h-24 overflow-auto">{summary.accountWindows.map(window => <span className="block" key={window.advertiserId}>{window.advertiserId} · {window.timezone} · {formatReadingWindow({start:window.startDate,end:window.endDate})}</span>)}</div></details>}
           {summary && summary.failed.length > 0 && (
             <div role="status" className="rounded-lg bg-[#F8F2E7] px-2.5 py-1.5 text-[12px] leading-[18px] text-[#866021] dark:bg-[#383229] dark:text-[#DAC393]">

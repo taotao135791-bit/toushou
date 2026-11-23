@@ -344,7 +344,7 @@ describe('discoverModels', () => {
       return jsonResponse({ data: [{ id: 'claude-x' }] })
     }
     expect(await discoverModels(fetchImpl, anthropic)).toEqual({ ok: true, models: ['claude-x'] })
-    expect(await discoverModels(async () => jsonResponse({}, 403), anthropic)).toEqual({ ok: false, error: 'http-403' })
+    expect(await discoverModels(async () => jsonResponse({ error: { message: anthropic.apiKey } }, 403), anthropic)).toEqual({ ok: false, error: 'http-403' })
     expect(await discoverModels(async () => jsonResponse({ data: [] }), relay)).toEqual({ ok: false, error: 'empty-list' })
   })
 })

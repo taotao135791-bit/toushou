@@ -15,14 +15,35 @@ function takeUtf16(value: string, limit: number): string {
   return result
 }
 
+/**
+ * Terminal control sequences and deceptive directionality (学 dsh 的标题卫生)：
+ * pasted OSC/CSI/ESC sequences and RLO/LRO overrides would otherwise survive
+ * into sidebar titles — ugly at best, spoofing at worst (an RLO can make a
+ * title read as a different string).
+ */
+const OSC_SEQUENCE = /(?:\u001B\]|\u009D)(?:(?!\u0007|\u001B\\)[\s\S])*(?:\u0007|\u001B\\|$)/gu
+const CSI_SEQUENCE = /(?:\u001B\[|\u009B)[0-?]*[ -/]*[@-~]/gu
+const ESC_SEQUENCE = /\u001B[@-_]/gu
+const CONTROL_CHARACTER = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/gu
+const DIRECTIONAL_CONTROL = /[\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/gu
+
+function stripTerminalAndDirectional(value: string): string {
+  return value
+    .replace(OSC_SEQUENCE, '')
+    .replace(CSI_SEQUENCE, '')
+    .replace(ESC_SEQUENCE, '')
+    .replace(CONTROL_CHARACTER, '')
+    .replace(DIRECTIONAL_CONTROL, '')
+}
+
 /** Durable session names: collapse whitespace and cap at 60 UTF-16 units. */
 export function cleanSessionName(name: string): string {
-  return takeUtf16(name.replace(/\s+/g, ' ').trim(), 60)
+  return takeUtf16(stripTerminalAndDirectional(name).replace(/\s+/g, ' ').trim(), 60)
 }
 
 /** Sidebar metadata must never become a second place to expose credentials or IDs. */
 export function cleanAutomaticSessionTitle(text: string): string {
-  return cleanSessionName(text
+  return cleanSessionName(stripTerminalAndDirectional(text)
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|secret|password|密钥|密码)\s*[=:：]?\s*["']?[^\s,，;；"']+/gi, ' ')
     .replace(/\bBearer\s+\S+/gi, ' ')

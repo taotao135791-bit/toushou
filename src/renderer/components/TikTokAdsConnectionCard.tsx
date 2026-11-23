@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, ArrowUpRight, CheckCircle2, LoaderCircle, RefreshCw, Unplug } from 'lucide-react'
+import { AlertTriangle, ArrowUpRight, CheckCircle2, LoaderCircle, RefreshCw, Signal, Unplug } from 'lucide-react'
 import { TikTokAdsConnectionSnapshot } from '@shared/connections'
 import { useT } from '../i18n'
 import BrandIcon from './BrandIcon'
@@ -132,6 +132,7 @@ export default function TikTokAdsConnectionCard() {
   const t = useT()
   const [snapshot, setSnapshot] = useState<TikTokAdsConnectionSnapshot>(emptySnapshot)
   const [busy, setBusy] = useState(false)
+  const [probe, setProbe] = useState<{ running: boolean; result: { ok: boolean; kind: string; detail?: string; checkedAt: number } | null }>({ running: false, result: null })
 
   useEffect(() => {
     let active = true
@@ -146,6 +147,14 @@ export default function TikTokAdsConnectionCard() {
       unsubscribe()
     }
   }, [])
+
+  // 授权状态与网络可达是两回事：连接成功或重连后清掉上次的探测黄灯。
+  useEffect(() => {
+    if (snapshot.connected && snapshot.lastConnectedAt && (!probe.result || probe.result.checkedAt < snapshot.lastConnectedAt)) {
+      setProbe((current) => (current.result ? { running: current.running, result: null } : current))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot.lastConnectedAt])
 
   const begin = async () => {
     setBusy(true)
@@ -163,6 +172,16 @@ export default function TikTokAdsConnectionCard() {
     setBusy(true)
     setSnapshot(await window.electronAPI.tiktokDisconnect())
     setBusy(false)
+  }
+
+  /** 真实连通检测：点一下做一次真实 MCP 握手，如实显示网络是否到得了 TikTok。 */
+  const runProbe = async () => {
+    setProbe({ running: true, result: null })
+    try {
+      setProbe({ running: false, result: await window.electronAPI.tiktokProbe() })
+    } catch {
+      setProbe({ running: false, result: { ok: false, kind: 'network', checkedAt: Date.now() } })
+    }
   }
 
   const isWaiting = snapshot.status === 'waiting_for_user'
@@ -242,8 +261,34 @@ export default function TikTokAdsConnectionCard() {
           ) : (
             <div role="status" className="mb-3 flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400"><CheckCircle2 size={16} className="shrink-0" />{t('connections.tiktokConnected')}</div>
           )}
+          {/* 真实连通检测：授权正常 ≠ 网络可达。探测失败亮黄灯并给原因。 */}
+          {probe.result && !probe.result.ok && (
+            <div role="alert" className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] leading-[18px] text-amber-800 dark:text-amber-200">
+              <span className="font-medium">{t('connections.tiktokProbeUnreachable')}</span>
+              <span className="mt-0.5 block text-cream-faint">
+                {probe.result.kind === 'network'
+                  ? t('connections.tiktokProbeNetworkHint')
+                  : probe.result.kind === 'not-authorized'
+                    ? t('connections.tiktokProbeNoAuth')
+                    : `${t('connections.tiktokProbeApiFailed')}${probe.result.detail ? `：${probe.result.detail}` : ''}`}
+              </span>
+            </div>
+          )}
+          {probe.result?.ok && (
+            <div role="status" className="mb-3 flex items-center gap-2 text-[12px] text-emerald-700 dark:text-emerald-400">
+              <CheckCircle2 size={14} /> {t('connections.tiktokProbeOk')}
+            </div>
+          )}
           <ReadingAdvertisers />
           <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void runProbe()}
+              disabled={busy || probe.running}
+              className="min-h-8 focus-ring flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] leading-[18px] text-cream-dim hover:bg-overlay hover:text-cream disabled:opacity-50"
+            >
+              {probe.running ? <LoaderCircle size={12} className="animate-spin" /> : <Signal size={12} />} {t('connections.tiktokProbe')}
+            </button>
             <button
               type="button"
               onClick={() => void begin()}

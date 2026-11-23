@@ -7,7 +7,7 @@ app.whenReady().then(async () => {
   let win
   try {
     fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="fixture.css"><div id="root" style="height:100vh"></div><script src="fixture.js"></script>')
-    win = new BrowserWindow({ show: true, width: 1100, height: 1000, webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false } })
+    win = new BrowserWindow({ show: true, focusable: process.env.TOUSHOU_E2E_UNFOCUSED !== '1', width: 1100, height: 1000, webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false } })
     const wc = win.webContents
     await win.loadFile(path.join(dir, 'index.html'))
     const js = code => wc.executeJavaScript(code)

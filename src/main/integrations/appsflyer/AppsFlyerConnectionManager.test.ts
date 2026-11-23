@@ -5,7 +5,7 @@ import { AppsFlyerConnectionManager } from './AppsFlyerConnectionManager'
 import { TikTokCredentialStorageError } from '../tiktok/tiktokCredentialStorageError'
 const json = (x: unknown) => new Response(JSON.stringify(x), { status: 200, headers: { 'content-type': 'application/json' } })
 const flush = async (predicate: () => boolean) => { for (let i = 0; i < 100 && !predicate(); i++) await new Promise(r => setTimeout(r, 5)); expect(predicate()).toBe(true) }
-function fixture(probe: (token: string) => Promise<boolean> = async () => true, now: () => number = Date.now) {
+function fixture(probe: (token: string) => Promise<boolean> = async () => true, now: () => number = Date.now, extra: Partial<ConstructorParameters<typeof AppsFlyerConnectionManager>[0]> = {}) {
   let saved: TikTokStoredCredentials | null = null
   let release: (() => void) | undefined
   let blockSave = false
@@ -21,11 +21,63 @@ function fixture(probe: (token: string) => Promise<boolean> = async () => true, 
     if (url.endsWith('/token')) return json({ access_token: 'synthetic-access', refresh_token: 'synthetic-refresh', expires_in: 3600 })
     throw new Error('unexpected')
   })
-  const manager = new AppsFlyerConnectionManager({ credentialStore: store, fetchImpl, now, probe: async token => await probe(token) ? [{ name: 'get_apps', inputSchema: { type: 'object' } }, { name: 'analytics_fetch_aggregated_data', inputSchema: { type: 'object' } }] : [], openExternal: async url => { opened = url } })
+  const manager = new AppsFlyerConnectionManager({ credentialStore: store, fetchImpl, now, probe: async token => await probe(token) ? [{ name: 'get_apps', inputSchema: { type: 'object' } }, { name: 'analytics_fetch_aggregated_data', inputSchema: { type: 'object' } }] : [], openExternal: async url => { opened = url }, ...extra })
   return { manager, store, fetchImpl, opened: () => opened, saved: () => saved, block: () => { blockSave = true }, release: () => release?.() }
 }
 async function callback(url: string, state: string, code = 'synthetic-code') { const origin = new URL(new URL(url).searchParams.get('redirect_uri')!).origin; return fetch(`${origin}/callback?state=${encodeURIComponent(state)}&code=${code}`) }
 describe('AppsFlyer OAuth', () => {
+  it('keep-alive renews proactively inside the margin and skips far-from-expiry tokens', async () => {
+    let clock = 1_000
+    const probe = vi.fn(async () => true)
+    const f = fixture(probe, () => clock)
+    // expiresAt far away: keep-alive is a pure no-op, no /token call.
+    f.store.load.mockResolvedValueOnce({ clientId: 'synthetic-client', clientSecret: 'synthetic-secret', tokenEndpoint: 'https://mcp.appsflyer.com/token', accessToken: 'synthetic-old', refreshToken: 'synthetic-refresh', expiresAt: clock + 3600_000, savedAt: 1 })
+    await f.manager.initialize()
+    expect(await f.manager.ensureFreshToken()).toBe(true)
+    expect(f.fetchImpl.mock.calls.filter(([url]) => url.endsWith('/token'))).toHaveLength(0)
+    await f.manager.disconnect()
+    // Inside the 10-minute keep-alive margin: renewed before it dies.
+    f.store.load.mockResolvedValueOnce({ clientId: 'synthetic-client', clientSecret: 'synthetic-secret', tokenEndpoint: 'https://mcp.appsflyer.com/token', accessToken: 'synthetic-old', refreshToken: 'synthetic-refresh', expiresAt: clock + 300_000, savedAt: 1 })
+    await f.manager.initialize()
+    expect(await f.manager.ensureFreshToken()).toBe(true)
+    expect(f.fetchImpl.mock.calls.filter(([url]) => url.endsWith('/token'))).toHaveLength(1)
+    expect(f.saved()?.accessToken).toBe('synthetic-access')
+    expect(f.manager.getSnapshot().connected).toBe(true)
+    await f.manager.disconnect()
+  })
+  it('keep-alive retries a transient renewal failure on a bounded cadence and recovers', async () => {
+    let clock = 1_000
+    const probe = vi.fn(async () => true)
+    const f = fixture(probe, () => clock, { refreshRetryDelaysMs: [10] })
+    f.store.load.mockResolvedValueOnce({ clientId: 'synthetic-client', clientSecret: 'synthetic-secret', tokenEndpoint: 'https://mcp.appsflyer.com/token', accessToken: 'synthetic-old', refreshToken: 'synthetic-refresh', expiresAt: clock + 300_000, savedAt: 1 })
+    await f.manager.initialize()
+    f.fetchImpl.mockImplementationOnce(async () => { throw new TypeError('fetch failed') })
+    expect(await f.manager.ensureFreshToken()).toBe(false)
+    expect(f.manager.getSnapshot().lastError).toContain('正在自动重试')
+    expect(await f.manager.getVerifiedAccessToken()).toBe('synthetic-old')
+    await flush(() => f.saved()?.accessToken === 'synthetic-access' && f.manager.getSnapshot().connected === true)
+    expect(f.fetchImpl.mock.calls.filter(([url]) => url.endsWith('/token'))).toHaveLength(2)
+    await f.manager.disconnect()
+  })
+  it('a permanent OAuth renewal rejection never schedules a retry', async () => {
+    let clock = 1_000
+    const f = fixture(async () => true, () => clock, { refreshRetryDelaysMs: [10] })
+    f.store.load.mockResolvedValueOnce({ clientId: 'synthetic-client', clientSecret: 'synthetic-secret', tokenEndpoint: 'https://mcp.appsflyer.com/token', accessToken: 'synthetic-old', refreshToken: 'synthetic-refresh', expiresAt: clock + 300_000, savedAt: 1 })
+    await f.manager.initialize()
+    f.fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({ error: 'invalid_grant', error_description: 'refresh token expired' }), { status: 400 }))
+    expect(await f.manager.ensureFreshToken()).toBe(false)
+    expect(f.manager.getSnapshot().lastError).toContain('请重新授权')
+    clock += 5 * 60_000
+    expect(await f.manager.ensureFreshToken()).toBe(false)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(f.fetchImpl.mock.calls.filter(([url]) => url.endsWith('/token'))).toHaveLength(1)
+    await f.manager.begin()
+    const auth = new URL(f.opened())
+    await callback(f.opened(), auth.searchParams.get('state')!)
+    await flush(() => f.manager.getSnapshot().connected === true)
+    expect(await f.manager.getVerifiedAccessToken()).toBe('synthetic-access')
+    await f.manager.disconnect()
+  })
   it('refreshes an expired verified Main token once before concurrent dataset reads', async () => {
     let clock = 1_000
     const probe = vi.fn(async () => true)

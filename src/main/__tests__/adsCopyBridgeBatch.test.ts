@@ -123,6 +123,77 @@ describe('dispatch copy_generate_batch', () => {
     expect(Array.isArray(result.next_steps)).toBe(true)
   })
 
+  it('quarantines a provider after repeated hard failures across batches', async () => {
+    const bad = provider('relay400', 'model-x')
+    const good = provider('goodrelay', 'model-y')
+    const pool = poolOf([bad, good], [bad.id, good.id])
+    const badFetch = async () => ({ ok: false, status: 400, text: async () => '{"error":{"message":"invalid api key"}}' })
+    const goodText = '```json\n{"short":["Discover fast transfers","Get low fees today","Try instant transfers now"],"long":[]}\n```'
+    // Two batches where the bad relay answers http-400 → quarantined.
+    for (let i = 0; i < 2; i++) {
+      await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 1 } }, {
+        fetchImpl: async (_url: unknown, init: unknown) => {
+          const body = JSON.parse(String((init as { body: string }).body)) as { model: string }
+          return body.model === 'model-x' ? badFetch() : okFetch(goodText)()
+        },
+        pool
+      })
+    }
+    // Third batch: the bad relay sits out, the result says so.
+    let badSeen = false
+    const result = await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest } }, {
+      fetchImpl: async (_url: unknown, init: unknown) => {
+        const body = JSON.parse(String((init as { body: string }).body)) as { model: string }
+        if (body.model === 'model-x') { badSeen = true; return badFetch() }
+        return okFetch(goodText)()
+      },
+      pool
+    })
+    expect(badSeen).toBe(false)
+    const poolInfo = result.provider_pool as { quarantined?: string[]; quarantine_notice?: string; size: number }
+    expect(poolInfo.quarantined).toContain('relay400')
+    expect(poolInfo.quarantine_notice).toContain('relay400')
+    expect(poolInfo.size).toBe(1)
+    expect(result.ok).toBe(true)
+    // The quarantine window is time-based (10 minutes): the next batch still
+    // excludes the bad relay instead of letting it burn another round.
+    const stillOut = await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 1 } }, {
+      fetchImpl: async (_url: unknown, init: unknown) => {
+        const body = JSON.parse(String((init as { body: string }).body)) as { model: string }
+        if (body.model === 'model-x') { badSeen = true; return badFetch() }
+        return okFetch(goodText)()
+      },
+      pool
+    })
+    expect((stillOut.provider_pool as { quarantined?: string[] }).quarantined).toContain('relay400')
+  })
+
+  it.each([408, 429, 200])('keeps timeout or rate-limited HTTP %s relays in rotation', async status => {
+    const limited = provider(`limited${status}`, 'limited-model')
+    const other = provider(`unaffected${status}`, 'other-model')
+    const pool = poolOf([limited, other], [limited.id, other.id])
+    let limitedCalls = 0
+    for (let i = 0; i < 3; i++) {
+      const result = await dispatch({
+        action: 'copy_generate_batch',
+        request: { ...baseRequest, agentId: undefined, maxAttempts: 1 }
+      }, {
+        pool,
+        fetchImpl: async (_url, init) => {
+          if (JSON.parse(String(init.body)).model !== limited.model) return okFetch('{"short":[]}')()
+          limitedCalls++
+          return {
+            ok: status === 200,
+            status,
+            text: async () => JSON.stringify({ error: { message: 'rate limited' } })
+          }
+        }
+      })
+      expect(result.provider_pool).not.toHaveProperty('quarantined')
+    }
+    expect(limitedCalls).toBe(3)
+  })
+
   it('gives the model the real scoring rubric and changes direction on retry', async () => {
     const members = [provider('a', 'model-a')]
     const prompts: string[] = []
@@ -218,13 +289,16 @@ describe('dispatch copy_generate_batch', () => {
     expect(result).toMatchObject({ ok: true, fulfilled: true, provider_pool: { strategy: 'agent_sticky_fallback' }, score_control: { stagnated: false } })
   })
 
-  it.each(['openai', 'anthropic'] as const)('keeps reflected %s provider secrets out of agent-visible errors', async protocol => {
-    const member = { ...provider('synthetic', 'synthetic-model'), protocol, apiKey: 'synthetic-secret-never-returned' }
+  it.each([
+    ['openai', 200], ['anthropic', 200], ['openai', 401], ['anthropic', 401]
+  ] as const)('keeps reflected %s HTTP %s provider secrets out of agent-visible errors', async (protocol, status) => {
+    const member = { ...provider(`synthetic-${protocol}-${status}`, 'synthetic-model'), protocol, apiKey: 'synthetic-secret-never-returned' }
     const result = await dispatch({ action: 'copy_generate_batch', request: { ...baseRequest, maxAttempts: 1 } }, {
       pool: poolOf([member], [member.id]),
-      fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ error: { message: `Invalid API key ${member.apiKey}` } }) })
+      fetchImpl: async () => ({ ok: status === 200, status, text: async () => JSON.stringify({ error: { message: `Invalid API key ${member.apiKey}` } }) })
     })
-    expect(result).toMatchObject({ ok: false, provider_errors: [{ error: 'api-error: authentication-failed' }], score_control: { stagnated: false } })
+    const error = status === 200 ? 'api-error: authentication-failed' : 'http-401'
+    expect(result).toMatchObject({ ok: false, provider_errors: [{ error }], score_control: { stagnated: false } })
     expect(JSON.stringify(result)).not.toContain(member.apiKey)
   })
 

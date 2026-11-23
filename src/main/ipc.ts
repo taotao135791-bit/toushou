@@ -157,8 +157,11 @@ import {
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
 import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions } from './sessionHistory'
-import { readSessionTranscript } from './sessionTranscript'
+import { readSessionTranscript, readSessionFileTranscript } from './sessionTranscript'
 import { HistorySessionGrantManager } from './historySessionGrant'
+import { forkSessionFile } from './sessionFork'
+import { applyWindowTheme } from './windowTheme'
+import { requestAiBoardWidget, type AiWidgetBoardContext } from './boardWidgetAi'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
 import { appendBoardNote, applyBoardCards, deleteBoard, listBoards, reorderBoards, saveBoard } from './boards'
@@ -274,8 +277,9 @@ const historySessionGrantOwnerCleanupHooks = new Set<number>()
 // tasks): keeps origin badges on history rows across restarts, where the live
 // registry's in-memory Session.origin is gone.
 const sessionOriginIndex = new SessionOriginIndex()
-/** TikTok Ads official MCP connector — Main-owned OAuth, one instance per app. */
-const tiktokAdsConnectionManager = new TikTokAdsConnectionManager()
+/** TikTok Ads official MCP connector — Main-owned OAuth, one instance per app.
+ * Exported for the token keep-alive in index.ts. */
+export const tiktokAdsConnectionManager = new TikTokAdsConnectionManager()
 // Reading paths (TT 读数 widget, report auto-refresh) pull their token from
 // this connector through the shared resolver — registered once, lazily used.
 setTikTokOAuthCredentialLoader(
@@ -927,6 +931,37 @@ export function registerIpc() {
   // token refresh, mcp.json bearer entry) stays in Main; the renderer only
   // ever receives secret-free snapshots.
   ipcMain.handle(IPC_CHANNELS.TIKTOK_STATUS, async () => tiktokAdsConnectionManager.getSnapshot())
+  /**
+   * 真实连通检测（用户点击触发）：授权状态与网络可达是两回事——MCP 是
+   * business-api.tiktok.com 远程端点，代理节点出口被拒时卡片仍显示
+   * "已连接"而对话调用全挂。探测做一次真实 MCP 握手（同一路线，绝不
+   * 切换节点），如实回报通/不通与原因。
+   */
+  ipcMain.handle(IPC_CHANNELS.TIKTOK_PROBE, async () => {
+    const checkedAt = Date.now()
+    let token: string | null = null
+    try {
+      const credentials = await tiktokAdsConnectionManager.loadFreshCredentials()
+      token = credentials?.accessToken ?? null
+    } catch {
+      token = null
+    }
+    if (!token) return { ok: false, kind: 'not-authorized', checkedAt }
+    try {
+      const { TikTokMcpReadingClient } = await import('./integrations/tiktok/tiktokMcpReadingClient')
+      const { proxySessionFetch } = await import('./integrations/tiktok/proxyFetch')
+      const client = new TikTokMcpReadingClient(token, await proxySessionFetch())
+      await Promise.race([
+        client.initialize(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('probe-timeout')), 15_000))
+      ])
+      return { ok: true, checkedAt }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const kind = /proxy-fetch|network|fetch failed|timeout|aborted/i.test(message) ? 'network' : 'api'
+      return { ok: false, kind, detail: message.slice(0, 200), checkedAt }
+    }
+  })
   ipcMain.handle(IPC_CHANNELS.TIKTOK_BEGIN, async () => tiktokAdsConnectionManager.begin())
   ipcMain.handle(IPC_CHANNELS.TIKTOK_CANCEL, async () => tiktokAdsConnectionManager.cancel())
   ipcMain.handle(IPC_CHANNELS.TIKTOK_DISCONNECT, async () => tiktokAdsConnectionManager.disconnect())
@@ -1422,6 +1457,112 @@ export function registerIpc() {
           return {
             ...resumed,
             session: { ...session, resumedHistoryId: historyId }
+          }
+        }
+      )
+    }
+  )
+
+  /** AI 看板卡片生成：默认对话模型的一次性隔离调用（无会话、无工具）。 */
+  ipcMain.handle(IPC_CHANNELS.BOARD_AI_WIDGET, async (_event, raw: unknown) => {
+    const request = raw as { requestId?: unknown; instruction?: unknown; context?: unknown }
+    if (!request || typeof request !== 'object') return { ok: false, error: 'invalid-input' }
+    const context = request.context as AiWidgetBoardContext
+    return requestAiBoardWidget({
+      requestId: String(request.requestId ?? ''),
+      instruction: String(request.instruction ?? ''),
+      context
+    })
+  })
+
+  ipcMain.handle(
+    IPC_CHANNELS.OMP_PEEK_SESSION,
+    async (event: IpcMainInvokeEvent, grantId: string, historyId: unknown) => {
+      const resolved = requireGrant(grantId)
+      if (!resolved || typeof historyId !== 'string') return null
+      bindHistorySessionGrantOwnerCleanup(event)
+      return historySessionGrantManager.withResolved(
+        historyId,
+        {
+          workspaceGrantId: resolved.grant.id,
+          workspaceRealPath: resolved.realPath,
+          ownerWebContentsId: event.sender.id
+        },
+        async (filePath) => {
+          const messages = await readSessionFileTranscript(filePath)
+          if (!messages) return { ok: false, error: 'transcript-unreadable' }
+          return { ok: true, messages }
+        }
+      )
+    }
+  )
+
+  ipcMain.handle(
+    IPC_CHANNELS.OMP_FORK_SESSION,
+    async (
+      event: IpcMainInvokeEvent,
+      grantId: string,
+      payload: { historyId?: unknown; liveSessionId?: unknown; keepUserTurns?: unknown; completeTurnsOnly?: unknown }
+    ) => {
+      const resolved = requireGrant(grantId)
+      if (!resolved || !payload || typeof payload !== 'object') return null
+      const keep =
+        payload.keepUserTurns === undefined || payload.keepUserTurns === null
+          ? undefined
+          : typeof payload.keepUserTurns === 'number' && Number.isFinite(payload.keepUserTurns) && payload.keepUserTurns >= 1
+            ? Math.floor(payload.keepUserTurns)
+            : -1
+      if (keep === -1) return { error: 'invalid-request' }
+      const completeOnly = payload.completeTurnsOnly === true
+      const suffix = keep === undefined && !completeOnly ? '（副本）' : '（分支）'
+      // LIVE session fork: the durable file comes from Main's own session
+      // record. Bind that source to the supplied workspace grant before
+      // writing a copy or starting a process.
+      if (typeof payload.liveSessionId === 'string' && payload.historyId === undefined) {
+        const live = getSession(payload.liveSessionId)
+        const file = live?.sessionFile ?? live?.resumeFrom
+        if (!live || !file) return { error: 'session-not-found' }
+        const baseTitle = typeof live.title === 'string' && live.title ? live.title : undefined
+        try {
+          if (canonicalExistingPath(live.cwd) !== resolved.realPath) return { error: 'invalid-request' }
+          // A locally restricted session keeps its mode. An explicit GUI fork
+          // of a Feishu-origin session follows the existing local resume policy.
+          const permissionMode = live.origin === 'feishu' ? undefined : live.readonly ? 'readonly' : live.nativePermissionMode
+          const fork = await forkSessionFile(file, { keepUserTurns: keep, titleSuffix: suffix, completeTurnsOnly: completeOnly })
+          const forked = await resumeSession(resolved.realPath, broadcastSessionEvent, fork.filePath, {
+            ...(permissionMode ? { permissionMode } : {}),
+            ...(baseTitle ? { initialTitle: `${baseTitle.slice(0, 100)}${suffix}` } : {})
+          })
+          if (!forked) return null
+          const { resumeFrom: _resumeFrom, sessionFile: _sessionFile, ...session } = forked.session
+          return { ...forked, session }
+        } catch {
+          return { error: 'fork-failed' }
+        }
+      }
+      // HISTORY fork: resolve through the same capability manager as resume.
+      if (typeof payload.historyId !== 'string') return { error: 'invalid-request' }
+      bindHistorySessionGrantOwnerCleanup(event)
+      return historySessionGrantManager.withResolved(
+        payload.historyId,
+        {
+          workspaceGrantId: resolved.grant.id,
+          workspaceRealPath: resolved.realPath,
+          ownerWebContentsId: event.sender.id
+        },
+        async (filePath) => {
+          const overlay = sessionTitleOverlays().get(normalizeSessionTitleFile(filePath))
+          const overlayTitle = overlay?.title
+          try {
+            const fork = await forkSessionFile(filePath, { keepUserTurns: keep, titleSuffix: suffix, completeTurnsOnly: completeOnly })
+            const forked = await resumeSession(resolved.realPath, broadcastSessionEvent, fork.filePath, {
+              ...(overlayTitle ? { initialTitle: `${overlayTitle.slice(0, 100)}${suffix}`, initialTitleMetadata: overlay.metadata } : {})
+            })
+            if (!forked) return null
+            const { resumeFrom: _resumeFrom, sessionFile: _sessionFile, ...session } = forked.session
+            return { ...forked, session }
+          } catch {
+            return { error: 'fork-failed' }
           }
         }
       )
@@ -2598,6 +2739,9 @@ export function registerIpc() {
     if (key === 'toolAccess' && (value === 'full' || value === 'no-bash' || value === 'readonly')) {
       setStore('permissionMode', value)
     }
+    // macOS exposes the native backdrop during rubber-band overscroll, so a
+    // theme flip must repaint it too (see applyWindowTheme).
+    if (key === 'theme') applyWindowTheme(value)
     return true
   })
 

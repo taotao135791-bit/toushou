@@ -424,6 +424,31 @@ export interface ElectronAPI {
     | { session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] }
     | null
   >
+  /**
+   * Instant read-only view of a history row (no runtime spawn). Same grant
+   * resolution as resumeSession; the full resume still runs for interaction.
+   */
+  peekSession: (
+    grantId: string,
+    historyId: string
+  ) => Promise<{ ok: true; messages: ChatMessage[] } | { ok: false; error: string } | null>
+  /**
+   * Fork a conversation into a NEW live session (开分支/复制会话). Source is
+   * either an opaque history entry or a live session id; `keepUserTurns`
+   * truncates the fork after that many complete user turns (omit = full
+   * copy). `completeTurnsOnly` (with keepUserTurns omitted) keeps every
+   * COMPLETE turn and drops a trailing turn that has no assistant reply yet —
+   * safe to branch a session that is mid-stream. Same result shape as
+   * resumeSession; the original is untouched.
+   */
+  forkSession: (
+    grantId: string,
+    payload: { historyId?: string; liveSessionId?: string; keepUserTurns?: number; completeTurnsOnly?: boolean }
+  ) => Promise<
+    | { error: 'invalid-request' | 'session-not-found' | 'fork-failed' | 'transcript_unavailable' }
+    | { session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] }
+    | null
+  >
   /** Delete an opaque history entry under the workspace grant that listed it. */
   deleteSessionFile: (grantId: string, historyId: string) => Promise<boolean>
   /**
@@ -550,6 +575,10 @@ export interface ElectronAPI {
   onFeishuStatus: (callback: (snapshot: FeishuConnectionSnapshot) => void) => () => void
   /** TikTok Ads official MCP connector (app-side OAuth; Main owns the bearer). */
   tiktokStatus: () => Promise<TikTokAdsConnectionSnapshot>
+  /** 真实连通检测：一次真实 MCP 握手，授权状态与网络可达分开回报。 */
+  /** AI 看板卡片生成（默认对话模型的一次性隔离调用；返回提案，不自动落板）。 */
+  boardAiWidget: (request: { requestId: string; instruction: string; context: { widgets: Array<{ type: string; title: string }>; datasets: Array<{ id: string; name: string; columns: Array<{ name: string; type: 'number' | 'date' | 'text' }>; rowCount: number }> } }) => Promise<{ ok: true; proposal: { type: string; title: string; config: Record<string, unknown>; reason: string } } | { ok: false; error: string }>
+  tiktokProbe: () => Promise<{ ok: boolean; kind: 'network' | 'api' | 'not-authorized' | 'probe-timeout'; detail?: string; checkedAt: number }>
   tiktokBegin: () => Promise<TikTokAdsConnectionSnapshot>
   tiktokCancel: () => Promise<TikTokAdsConnectionSnapshot>
   tiktokDisconnect: () => Promise<TikTokAdsConnectionSnapshot>
@@ -936,6 +965,10 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_SESSION_HISTORY, grantId),
   resumeSession: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_RESUME_SESSION, grantId, historyId),
+  peekSession: (grantId: string, historyId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_PEEK_SESSION, grantId, historyId),
+  forkSession: (grantId: string, payload: { historyId?: string; liveSessionId?: string; keepUserTurns?: number; completeTurnsOnly?: boolean }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_FORK_SESSION, grantId, payload),
   deleteSessionFile: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_FILE, grantId, historyId),
   deleteSessionByUuid: (grantId: string, uuid: string) =>
@@ -1053,6 +1086,8 @@ const api: ElectronAPI = {
   feishuDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_DISCONNECT),
   feishuOpenUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_OPEN_URL, url),
   tiktokStatus: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_STATUS),
+  tiktokProbe: () => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_PROBE),
+  boardAiWidget: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.BOARD_AI_WIDGET, request),
   tiktokBegin: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_BEGIN),
   tiktokCancel: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_CANCEL),
   tiktokDisconnect: (): Promise<TikTokAdsConnectionSnapshot> => ipcRenderer.invoke(IPC_CHANNELS.TIKTOK_DISCONNECT),

@@ -28,7 +28,9 @@ vi.mock('electron', () => ({
     on() {}
     loadFile() {}
   },
-  shell: { openExternal: vi.fn() }
+  shell: { openExternal: vi.fn() },
+  // windowTheme (theme-aware backdrop + native chrome) touches this at startup.
+  nativeTheme: { themeSource: 'system' }
 }))
 vi.mock('node:fs', () => ({ readdirSync: () => [], unlinkSync: vi.fn() }))
 vi.mock('../store', () => ({ getStore: vi.fn(), setStore: vi.fn(), applyFirstRunDefaults: vi.fn() }))

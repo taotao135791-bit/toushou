@@ -8,7 +8,7 @@ let userDataDir: string
 vi.mock('electron', () => ({ app: { getPath: () => userDataDir } }))
 vi.mock('../tiktok/proxyFetch', () => ({ proxyFetchFor: vi.fn() }))
 
-import { listQuerySpecs, saveQuerySpec, parseAfDataset, pullAppsFlyerDatasets, setAppsFlyerDatasetTokenSourceForTest } from './appsflyerDataset'
+import { listQuerySpecs, saveQuerySpec, parseAfDataset, planAppsFlyerQuery, pullAppsFlyerDatasets, setAppsFlyerDatasetTokenSourceForTest } from './appsflyerDataset'
 import { createOrUpdateDataset, listDatasets, renameDataset } from '../../boardDatasets'
 
 let dir: string
@@ -71,6 +71,31 @@ describe('parseAfDataset (generic)', () => {
     expect(parsed.partial).toBe(true)
     expect(parsed.rows).toHaveLength(2)
     expect(() => parseAfDataset(partial.replace('"timezone":"UTC"', '"truncated":true,"timezone":"UTC"'), undefined, { allowPartial: true })).toThrow('appsflyer-incomplete-data')
+  })
+})
+
+describe('AppsFlyer query planning', () => {
+  const window = { start: '2026-11-05', end: '2026-11-05' }
+
+  it('reports a full discovery page as a sample and forwards the requested filters', async () => {
+    const text = [
+      '## Data: Event name,Media source,Date,Geo,Count days activity appsflyer',
+      ...Array.from({ length: 100 }, (_, index) => `event_${index},facebook_ads,2026-11-05,US,1`),
+      '## Metadata: {"timezone":"UTC","truncated":true}'
+    ].join('\n')
+    const queryRaw = vi.fn(async () => text)
+    const filters = { 'Media source': ['facebook_ads'], Geo: ['US'] }
+    const plan = await planAppsFlyerQuery({ appId: 'app.synthetic', window, filters, clientFactory: () => ({ initialize: async () => {}, queryRaw }) })
+    expect(queryRaw).toHaveBeenCalledOnce()
+    expect(queryRaw).toHaveBeenCalledWith({ query: expect.objectContaining({ filters, row_count: 100, groupings: expect.arrayContaining(['Geo']) }) })
+    expect(plan).toMatchObject({ totalRows: 100, sampled: true, dateSpan: window, mediaSources: [{ source: 'facebook_ads', rows: 100 }], countries: ['US'] })
+    expect(plan.events).toHaveLength(100)
+    expect(() => parseAfDataset(text, 100, { allowPartial: true })).toThrow('appsflyer-incomplete-data')
+  })
+
+  it('does not invent date coverage for an empty page', async () => {
+    const plan = await planAppsFlyerQuery({ appId: 'app.synthetic', window, clientFactory: () => ({ initialize: async () => {}, queryRaw: async () => EMPTY_TEXT }) })
+    expect(plan).toMatchObject({ totalRows: 0, sampled: false, dateSpan: null, events: [], countries: [] })
   })
 })
 

@@ -12,7 +12,7 @@ app.whenReady().then(async () => {
     fs.writeFileSync(html, `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="fixture.css"><style>${gridCss}.react-grid-item{transition:none!important}</style></head><body><div id="root"></div><script src="fixture.js"></script></body></html>`)
     // Exercise visible-window rendering: hidden Windows windows may not
     // produce compositor frames even with background throttling disabled.
-    win = new BrowserWindow({ show: true, width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
+    win = new BrowserWindow({ show: true, focusable: process.env.TOUSHOU_E2E_UNFOCUSED !== '1', width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
     const wc = win.webContents
     wc.on('console-message', (_event, _level, message) => console.log('RENDERER ' + message))
     await win.loadFile(html)
@@ -309,7 +309,7 @@ app.whenReady().then(async () => {
       const deadline = Date.now() + 6000
       let state
       do {
-        state = await wc.executeJavaScript(`(() => {const grid=document.querySelector('.react-grid-layout');const viewport=grid?.parentElement?.parentElement;const card=[...(grid?.querySelectorAll('[data-board-widget-id]')??[])].find(e=>!${JSON.stringify(existingIds)}.includes(e.dataset.boardWidgetId));const input=card?.querySelector('.widget-config input');const r=card?.getBoundingClientRect();const v=viewport?.getBoundingClientRect();const i=input?.getBoundingClientRect();return {scrolled:!!viewport&&viewport.scrollTop>0,cardVisible:!!r&&!!v&&r.top>=v.top-1&&r.top<v.bottom,inputVisible:!!i&&!!v&&i.top>=v.top&&i.top<v.bottom,focused:!!input&&document.activeElement===input,diagnostics:{cardFound:!!card,inputFound:!!input,cardTop:r?.top,viewportTop:v?.top,viewportBottom:v?.bottom,inputTop:i?.top,scrollTop:viewport?.scrollTop,scrollHeight:viewport?.scrollHeight,clientHeight:viewport?.clientHeight,visibility:document.visibilityState}}})()`)
+        state = await wc.executeJavaScript(`(() => {const grid=document.querySelector('.react-grid-layout');const viewport=grid?.parentElement?.parentElement;const card=[...(grid?.querySelectorAll('[data-board-widget-id]')??[])].find(e=>!${JSON.stringify(existingIds)}.includes(e.dataset.boardWidgetId));const input=document.querySelector('.widget-config input');const r=card?.getBoundingClientRect();const v=viewport?.getBoundingClientRect();const i=input?.getBoundingClientRect();return {scrolled:!!viewport&&viewport.scrollTop>0,cardVisible:!!r&&!!v&&r.top>=v.top-1&&r.top<v.bottom,inputVisible:!!i&&i.top>=0&&i.bottom<=window.innerHeight,focused:!!input&&document.activeElement===input,diagnostics:{cardFound:!!card,inputFound:!!input,cardTop:r?.top,viewportTop:v?.top,viewportBottom:v?.bottom,inputTop:i?.top,scrollTop:viewport?.scrollTop,scrollHeight:viewport?.scrollHeight,clientHeight:viewport?.clientHeight,visibility:document.visibilityState}}})()`)
         if (state.scrolled && state.cardVisible && state.inputVisible && state.focused) break
         await new Promise(resolve => setTimeout(resolve, 100))
       } while (Date.now() < deadline)

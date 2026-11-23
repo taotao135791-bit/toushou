@@ -68,6 +68,8 @@ export default function SettingsPage() {
       setPermissionMode: s.setPermissionMode
     }))
   )
+  const thinkingAutoExpand = useAppStore((s) => s.thinkingAutoExpand)
+  const thinkingCollapseTiming = useAppStore((s) => s.thinkingCollapseTiming)
   const t = useT()
   const [cli, setCli] = useState<CliInfo | null>(null)
   const [caps, setCaps] = useState<CliCapabilities | null>(null)
@@ -377,6 +379,31 @@ export default function SettingsPage() {
               </div>
             </Row>
             <Note>{t('settings.notifyPreviewsNote')}</Note>
+          </Section>
+
+          <Section title={t('settings.thinkingDisplay')}>
+            <Row label={t('settings.thinkingAutoExpand')}>
+              <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
+                <button onClick={() => useAppStore.getState().setThinkingAutoExpand(true)} className={seg(thinkingAutoExpand)}>
+                  {t('settings.on')}
+                </button>
+                <button onClick={() => useAppStore.getState().setThinkingAutoExpand(false)} className={seg(!thinkingAutoExpand)}>
+                  {t('settings.off')}
+                </button>
+              </div>
+            </Row>
+            <Note>{t('settings.thinkingAutoExpandNote')}</Note>
+            <Row label={t('settings.thinkingCollapseTiming')}>
+              <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
+                <button onClick={() => useAppStore.getState().setThinkingCollapseTiming('on-complete')} className={seg(thinkingCollapseTiming === 'on-complete')}>
+                  {t('settings.thinkingCollapseOnComplete')}
+                </button>
+                <button onClick={() => useAppStore.getState().setThinkingCollapseTiming('until-next-input')} className={seg(thinkingCollapseTiming === 'until-next-input')}>
+                  {t('settings.thinkingCollapseNextInput')}
+                </button>
+              </div>
+            </Row>
+            <Note>{t('settings.thinkingCollapseTimingNote')}</Note>
           </Section>
 
           <Section title="Oh My Pi CLI">

@@ -481,7 +481,10 @@ export default memo(function Composer({
 
   const mentionCount = mcpItems.length + fileItems.length
   const activeMentionIndex = Math.min(atMenuIndex, mentionCount - 1)
-  useEffect(() => { setAtMenuIndex(0) }, [atQuery, mcpItems.length, fileItems.length])
+  // Reset the highlight only when the user's query (or a fresh menu open)
+  // changes — the async MCP/file lists resolving 0 → N must not yank an
+  // in-progress arrow-key selection back to the top.
+  useEffect(() => { setAtMenuIndex(0) }, [atQuery, atOpen])
 
   /** Replace text[start:end] with insert and place the caret after it. */
   const replaceRange = (start: number, end: number, insert: string) => {
@@ -929,12 +932,14 @@ export default memo(function Composer({
     if (atOpen) {
       if (e.key === 'ArrowDown' && mentionCount > 0) {
         e.preventDefault()
-        setAtMenuIndex((activeMentionIndex + 1) % mentionCount)
+        // Advance from the CURRENT index (clamped), not the render-time copy —
+        // two keydowns before a re-render must move two steps.
+        setAtMenuIndex((i) => (Math.min(i, mentionCount - 1) + 1) % mentionCount)
         return
       }
       if (e.key === 'ArrowUp' && mentionCount > 0) {
         e.preventDefault()
-        setAtMenuIndex((activeMentionIndex - 1 + mentionCount) % mentionCount)
+        setAtMenuIndex((i) => (Math.min(i, mentionCount - 1) - 1 + mentionCount) % mentionCount)
         return
       }
       if (

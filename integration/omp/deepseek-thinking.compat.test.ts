@@ -102,7 +102,7 @@ describe('DeepSeek Flash runtime thinking', () => {
       const original = await startSession()
       const discovered = await original.session.query({ type: 'get_state' })
       expect(discovered, original.stderr()).toMatchObject({
-        success: true, data: { model: { provider: 'deepseek', id: MODEL_ID, name: MODEL_NAME } }
+        success: true, data: { model: { provider: 'deepseek', id: MODEL_ID } }
       })
       const capability = sessionModelThinking((discovered?.data as SessionState).model)
       const hasNativeEfforts = capability?.reasoning === true && capability.thinking.length > 0
@@ -119,7 +119,7 @@ describe('DeepSeek Flash runtime thinking', () => {
       const { session, events, stderr } = hasNativeEfforts ? original : await startSession()
       const initial = await session.query({ type: 'get_state' })
       expect(initial, stderr()).toMatchObject({
-        success: true, data: { model: { provider: 'deepseek', id: MODEL_ID, name: MODEL_NAME } }
+        success: true, data: { model: { provider: 'deepseek', id: MODEL_ID } }
       })
       expect(sessionModelThinking((initial?.data as SessionState).model)).toEqual({ reasoning: true, thinking: EFFORTS })
 

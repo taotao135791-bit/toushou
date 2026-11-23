@@ -14,6 +14,17 @@ const ratioKind = (name: string): 'ctr' | 'cpc' | 'cpa' | 'cpm' | 'cpi' | null =
   if (['安装成本', '每次安装费用', 'cpi', 'cost per install'].includes(n)) return 'cpi'
   return null
 }
+// Retention day labels are a common rate shorthand. Require explicit rate
+// suffixes elsewhere so count fields such as "Retention users" remain sums.
+const RETENTION_RATE = /^(?:retention(?: rate)?(?:[ _-]+d(?:ay)?[ _-]*\d+)?|(?:d(?:ay)?[ _-]*\d+[ _-]*)?留存(?:率)?(?:[ _-]*d(?:ay)?[ _-]*\d+)?|churn)$/i
+const PERCENT_SUFFIX = /(?:率|%|\brate|\bpercent|\bpercentage)(?:\s*[)）])?$/i
+export const percentKind = (name: string): boolean => {
+  const n = norm(name)
+  return ratioKind(n) === null && (RETENTION_RATE.test(n) || PERCENT_SUFFIX.test(n))
+}
+/** Unique/active users across rows would double-count — SUM is refused. */
+export const BLOCKED_UNIQUE_USERS = /^(?:unique[ _]users|distinct[ _]users|active[ _]users|独立用户|去重用户|活跃用户)$/i
+export const isBlockedUniqueUsersMetric = (name: string): boolean => BLOCKED_UNIQUE_USERS.test(name.trim())
 export function metricCurrencySafety(dataset: BoardDataset, metric: string): CurrencySafety {
   if (!MONEY.test(metric)) return 'not-money'
   const idx = dataset.columns.findIndex(c => ['币种', 'currency', 'currency code'].includes(norm(c.name)))
@@ -35,7 +46,7 @@ const indexOfAny = (dataset: BoardDataset, names: string[]): number => dataset.c
 export function safeMetricValue(dataset: BoardDataset, rows: Row[], metricIndex: number, op: DatasetOp): number | null {
   if (!rows.length || metricIndex < 0) return null
   const metric = dataset.columns[metricIndex]?.name ?? ''
-  if (op === 'sum' && rows.length > 1 && /^(?:unique[ _]users|distinct[ _]users|active[ _]users|独立用户|去重用户|活跃用户)$/i.test(metric.trim())) return null
+  if (op === 'sum' && rows.length > 1 && isBlockedUniqueUsersMetric(metric)) return null
   const ratio = ratioKind(metric)
   if (ratio && (op === 'avg' || op === 'sum')) {
     const num = indexOfAny(dataset, ratio === 'ctr' ? ['点击', '点击次数', 'clicks'] : ['消耗', '花费', '费用', '媒体成本', 'spend', 'cost', 'media cost'])
@@ -46,7 +57,9 @@ export function safeMetricValue(dataset: BoardDataset, rows: Row[], metricIndex:
     return denominator > 0 ? (numerator / denominator) * (ratio === 'ctr' ? 100 : ratio === 'cpm' ? 1000 : 1) : null
   }
   if (op !== 'count' && rows.some(row => typeof row[metricIndex] !== 'number' || !Number.isFinite(row[metricIndex]))) return null
-  return aggregate(rows.map(row => row[metricIndex] ?? ''), op)
+  // Percent slices are averaged only when all rows have verified values.
+  const effectiveOp = op === 'sum' && rows.length > 1 && percentKind(metric) ? 'avg' : op
+  return aggregate(rows.map(row => row[metricIndex] ?? ''), effectiveOp)
 }
 /** Date and categorical groups, including weighted Other, remain bounded. */
 export function safeMetricGroups(dataset: BoardDataset, dimIndex: number, metricIndex: number, op: DatasetOp, otherLabel: string): {labels:string[];points:number[]} | null {

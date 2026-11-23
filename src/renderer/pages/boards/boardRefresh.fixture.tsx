@@ -54,12 +54,19 @@ const scopeCases = {
   legacyAfWrongBinding: evaluateScope(legacyWidget, datasets, { ...legacyPlan, widgets: [{ ...legacyPlan.widgets[0], bindings: [{ datasetId: 'other-af', sourceKey: 'legacy-source' }] }] }),
   legacyAfWrongBoard: evaluateScope(legacyWidget, datasets, { ...legacyPlan, boardId: 'other-board' })
 }
-const fixture = { board, scopeCases, legacyCalls: 0, datasetReads: 0, meta: { refreshCalls: 0, summaryCalls: 0, accountsCalls: 0, fail: false }, emitMeta: (connected: boolean) => metaListeners.forEach(listener => listener({ connected })), media: [] as Array<{ range: string }>, af: [] as AppsFlyerDatasetRefreshRequest[], pending: false, unbound: false, empty: false, partial: false, resolve: null as null | (() => void) }
+const aiWidgetResolvers = new Map<string, (title: string) => void>()
+const fixture = { board, scopeCases, legacyCalls: 0, datasetReads: 0, meta: { refreshCalls: 0, summaryCalls: 0, accountsCalls: 0, fail: false }, emitMeta: (connected: boolean) => metaListeners.forEach(listener => listener({ connected })), media: [] as Array<{ range: string }>, af: [] as AppsFlyerDatasetRefreshRequest[], pending: false, unbound: false, empty: false, partial: false, resolve: null as null | (() => void), aiWidgetResolvers }
 Object.assign(window, { boardRefreshFixture: fixture, electronAPI: {
   cleanupOrphanedHtmlBoards: async () => ({ ok: true }), listBoards: async () => [board, metaBoard, fixedBoard, staticBoard, legacyAfBoard], listBoardDatasets: async () => { fixture.datasetReads++; return structuredClone(datasets) },
   listFbReadingAccounts: async () => [], listFbReadings: async () => [], ttReadingAdvertisers: async () => ({ selected: [], granted: [], accounts: [] }),
   getBoardDesign: async () => ({ spec: null }), onBoardDesignChanged: () => () => {}, onTtReadingProgress: () => () => {}, fxRatesGet: async () => null,
   saveBoard: async (next: KanbanBoard) => { const target = [board, metaBoard, fixedBoard, staticBoard, legacyAfBoard].find(item => item.id === next.id); if (target) Object.assign(target, structuredClone(next)); return { ok: true } },
+  boardAiWidget: async ({ instruction }: { instruction: string }) => new Promise(resolve => {
+    aiWidgetResolvers.set(instruction, (title) => {
+      aiWidgetResolvers.delete(instruction)
+      resolve({ ok: true, proposal: { type: 'note', title, config: { text: 'Synthetic note' }, reason: '' } })
+    })
+  }),
   onMetaAdsStatus: (listener: (status: { connected: boolean }) => void) => { metaListeners.add(listener); return () => { metaListeners.delete(listener) } },
   metaAdsReading: async (input: { action: string }) => { if (input.action === 'accounts') { fixture.meta.accountsCalls++; return { ok: true, data: { accounts: [{ id: 'act_123', name: 'Synthetic Meta', currency: 'USD', timezone: 'UTC' }], partial: false } } } fixture.meta.summaryCalls++; return { ok: false, error: 'Unexpected direct summary' } },
   ttReadingSummary: async (input: { range: string }) => { fixture.media.push(input); return { ok: false, error: 'no-credentials' } }, ttReadingCancel: async () => true,

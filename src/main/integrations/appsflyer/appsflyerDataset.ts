@@ -203,30 +203,31 @@ function metadataFlags(value: unknown, depth = 0): MetadataFlags {
   }
   return { partial, truncated }
 }
-function partialMetadata(metadata: unknown, allowPartial: boolean): boolean {
+function checkedMetadata(metadata: unknown, options: ParseAfDatasetOptions): MetadataFlags {
   const flags = metadataFlags(metadata)
-  if (flags.truncated) throw new Error('appsflyer-incomplete-data')
-  if (flags.partial && !allowPartial) throw new Error('appsflyer-incomplete-data')
-  return flags.partial
+  if ((flags.truncated && !options.allowSample) || (flags.partial && !options.allowPartial)) throw new Error('appsflyer-incomplete-data')
+  return flags
 }
 
-export interface ParseAfDatasetOptions { allowPartial?: boolean }
-export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.maxRows, options: ParseAfDatasetOptions = {}): { columns: BoardDatasetColumn[]; rows: (string | number)[][]; partial: boolean } {
+export interface ParseAfDatasetOptions { allowPartial?: boolean; allowSample?: boolean }
+export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.maxRows, options: ParseAfDatasetOptions = {}): { columns: BoardDatasetColumn[]; rows: (string | number)[][]; partial: boolean; sampled?: true } {
   const empty = /^\s*## Data:\s*;\s*## Metadata:[ \t]*([^\r\n]*)/m.exec(text)
   if (empty) {
     let metadata: unknown
     try { metadata = JSON.parse(empty[1]) } catch { throw new Error('appsflyer-invalid-metadata') }
-    const partial = partialMetadata(metadata, options.allowPartial === true)
-    return { columns: [], rows: [], partial }
+    const { partial, truncated } = checkedMetadata(metadata, options)
+    return { columns: [], rows: [], partial, ...(truncated ? { sampled: true as const } : {}) }
   }
   const section = /^\s*## Data:\s*([^\r\n]*)\r?\n([\s\S]*?)\r?\n[ \t]*(?:;[ \t]*)?## Metadata:[ \t]*([^\r\n]*)/m.exec(text)
   if (!section) throw new Error('appsflyer-invalid-data')
   let metadata: Obj | null
   try { metadata = obj(JSON.parse(section[3])) } catch { throw new Error('appsflyer-invalid-metadata') }
   if (!metadata) throw new Error('appsflyer-invalid-metadata')
-  const partial = partialMetadata(metadata, options.allowPartial === true)
+  const { partial, truncated } = checkedMetadata(metadata, options)
   const csv = Papa.parse<Record<string, string>>(`${section[1]}\n${section[2]}`, { header: true, skipEmptyLines: true, dynamicTyping: false })
-  if (csv.errors.length || csv.data.length >= Math.min(rowLimit, DATASET_LIMITS.maxRows)) throw new Error('appsflyer-incomplete-data')
+  const limit = Math.min(rowLimit, DATASET_LIMITS.maxRows)
+  const sampled = truncated || csv.data.length === limit
+  if (csv.errors.length || csv.data.length > limit || (sampled && !options.allowSample)) throw new Error('appsflyer-incomplete-data')
   const headerNames = csv.meta.fields ?? Object.keys(csv.data[0] ?? {})
   const columnDefs = headerNames.map(normalizeColumnName)
   const extra: BoardDatasetColumn[] = []
@@ -248,7 +249,7 @@ export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.m
     if (metadata?.currency && typeof metadata.currency === 'string') values.push(metadata.currency)
     return values
   })
-  return { columns, rows, partial }
+  return { columns, rows, partial, ...(sampled ? { sampled: true as const } : {}) }
 }
 
 export type AppsFlyerPullResult = AppsFlyerDatasetRefreshResult
@@ -267,6 +268,8 @@ export interface AppsFlyerPullOptions {
   canCommit?: () => boolean
   /** Deterministic clock for tests and today's partial-window policy. */
   now?: number
+  /** Pace between planned queries — the official tool caps at 20 calls/min. */
+  interCallDelayMs?: number
 }
 
 function emptyQueryColumns(query: Obj): BoardDatasetColumn[] {
@@ -343,9 +346,92 @@ function selectTargets(options: AppsFlyerPullOptions, specs: AfQuerySpec[], data
   })
 }
 
+/**
+ * 预审（query plan）：ONE discovery call inventories the app's dimensions —
+ * events, media sources, date span — without writing any dataset. Broad
+ * user requests ("全部数据") present this inventory for the user to pick
+ * from, then each confirmed combo becomes one af_dataset_pull (one call).
+ */
+export interface AppsFlyerQueryPlan {
+  appId: string
+  window: PullWindow
+  events: Array<{ event: string; rows: number }>
+  mediaSources: Array<{ source: string; rows: number }>
+  countries: string[]
+  dateSpan: PullWindow | null
+  totalRows: number
+  partial: boolean
+  sampled: boolean
+  suggestedCalls: number
+}
+
+export async function planAppsFlyerQuery(options: {
+  appId: string
+  window: PullWindow
+  filters?: Record<string, string[]>
+  clientFactory?: (token: string) => QueryClient
+}): Promise<AppsFlyerQueryPlan> {
+  if (!isAppsFlyerDatasetWindow(options.window)) throw new Error('invalid-window')
+  const token = await verifiedToken()
+  if (!token) throw new Error('not-connected')
+  const client = options.clientFactory ? options.clientFactory(token) : new AppsFlyerMcpClient(token, async (url, init) => (await proxyFetchFor(url, 'appsflyer-api'))(url, init))
+  await client.initialize()
+  // Discovery keeps one bounded page. Its dimensions are evidence for the
+  // next query, without summing unique users or installs across groupings.
+  const rowLimit = 100
+  const query: Obj = {
+    start_date: options.window.start,
+    end_date: options.window.end,
+    app_ids: [options.appId],
+    row_count: rowLimit,
+    metrics: [{ metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' }],
+    sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }],
+    groupings: ['Event name', 'Media source', 'Date', 'Geo'],
+    filters: options.filters ?? {}
+  }
+  const text = await client.queryRaw({ query })
+  const parsed = parseAfDataset(text, rowLimit, { allowPartial: true, allowSample: true })
+  const idx = (name: string) => parsed.columns.findIndex((column) => column.name === name)
+  const eventIndex = idx('事件')
+  const sourceIndex = idx('媒体渠道')
+  const dateIndex = idx('日期')
+  const countryIndex = idx('地区')
+  const events = new Map<string, number>()
+  const sources = new Map<string, number>()
+  const countries = new Set<string>()
+  let firstDate = ''
+  let lastDate = ''
+  for (const row of parsed.rows) {
+    const day = String(row[dateIndex] ?? '')
+    if (day) { if (!firstDate || day < firstDate) firstDate = day; if (!lastDate || day > lastDate) lastDate = day }
+    const event = String(row[eventIndex] ?? '').trim()
+    if (event) events.set(event, (events.get(event) ?? 0) + 1)
+    const source = String(row[sourceIndex] ?? '').trim()
+    if (source) sources.set(source, (sources.get(source) ?? 0) + 1)
+    const country = String(row[countryIndex] ?? '').trim()
+    if (country) countries.add(country)
+  }
+  return {
+    appId: options.appId,
+    window: { ...options.window },
+    events: [...events].map(([event, rows]) => ({ event, rows })),
+    mediaSources: [...sources].map(([source, rows]) => ({ source, rows })),
+    countries: [...countries].sort(),
+    dateSpan: firstDate && lastDate ? { start: firstDate, end: lastDate } : null,
+    totalRows: parsed.rows.length,
+    partial: parsed.partial || options.window.end === localToday(),
+    sampled: parsed.sampled === true,
+    suggestedCalls: events.size
+  }
+}
+
+const localToday = (): string => {
+  const date = new Date()
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
 /** Pull the requested recipes over an exact window; one source never refreshes another board's AF data. */
-export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Promise<AppsFlyerPullResult> {
-  const { window, file, specsFile: specsFilePath, clientFactory } = options
+export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Promise<AppsFlyerPullResult> {  const { window, file, specsFile: specsFilePath, clientFactory, interCallDelayMs = 3_500 } = options
   if (!isAppsFlyerDatasetWindow(window)) return { ok: false, error: 'invalid-window', results: [] }
   const now = options.now ?? Date.now()
   const localToday = (() => {
@@ -403,37 +489,125 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
     bound.forEach(target => fail(target, 'not-connected'))
     return { ok: false, error: 'not-connected', results }
   }
+  // ---- Plan: group bound targets by sanitized query shape — identical
+  // recipes share ONE server call and every dataset in the group is written
+  // from the same answer. The official tool caps at 20 calls/min.
+  const canonicalQuery = (value: unknown): string => {
+    if (Array.isArray(value)) return '[' + value.map(canonicalQuery).join(',') + ']'
+    if (value && typeof value === 'object')
+      return '{' + Object.keys(value as Obj).sort().map(k => JSON.stringify(k) + ':' + canonicalQuery((value as Obj)[k])).join(',') + '}'
+    return JSON.stringify(value ?? null)
+  }
+  interface QueryPlan { key: string; query: Obj; targets: typeof bound }
+  const plans: QueryPlan[] = []
   for (const target of bound) {
     const spec = target.spec!
     if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
     const query: Obj = { ...spec.query, start_date: window.start, end_date: window.end }
-    try {
-      const text = await client.queryRaw({ query })
-      const rowCount = typeof query.row_count === 'number' && query.row_count > 0 ? query.row_count : 100
-      const parsed = parseAfDataset(text, rowCount, { allowPartial })
-      if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
-      const columns = parsed.columns.length > 0 ? parsed.columns : target.dataset?.columns.length ? target.dataset.columns : emptyQueryColumns(query)
-      const status = parsed.rows.length > 0 ? 'updated' : 'empty'
-      const written = createOrUpdateDataset(target.dataset?.name ?? target.outputName ?? spec.datasetName, {
-        columns,
-        rows: parsed.rows,
-        truncated: false
-      }, file, {
-        ...(target.dataset ? { replaceId: target.dataset.id } : {}),
-        appsflyer: { specId: spec.id, status, window: { ...window }, dataWindow: { ...window }, ...(parsed.partial ? { partial: true } : {}), attemptedAt: Date.now(), ...(target.materialization ? { materialization: target.materialization } : {}) }
+    // An explicit Installs metric is rejected by the official API ("doesn't
+    // support period and aggregation type") — it adds the Installs column to
+    // the answer on its own. Strip it so old recipes heal on refresh; a
+    // recipe made ONLY of Installs fails fast here without burning quota.
+    if (Array.isArray(query.metrics)) {
+      const allMetrics = query.metrics as Array<Record<string, unknown>>
+      const kept = allMetrics.filter((metric) => {
+        const entry = obj(metric)
+        return !entry || !/^installs$/i.test(String(entry.metric_name ?? ''))
       })
-      if (!written.ok) { fail(target, written.error); continue }
-      // Bind to identity after the initial pull, including an empty result.
-      // Renames thereafter do not detach the query or redirect it by name.
-      if (!target.materialization && (spec.datasetId !== written.dataset.id || spec.datasetName !== written.dataset.name)) {
-        saveQuerySpec({ ...spec, datasetId: written.dataset.id, datasetName: written.dataset.name }, specsFilePath)
+      if (kept.length > 0) query.metrics = kept
+      else { fail(target, 'Installs 不能单独作为查询指标：用 App Active 等事件查询，Installs 列由官方自动返回'); continue }
+      if (Array.isArray(query.sort_by_metrics)) {
+        const keptSort = (query.sort_by_metrics as Array<Record<string, unknown>>).filter((sort) => {
+          const entry = obj(sort)
+          return !entry || !/^installs$/i.test(String(entry.metric_name ?? ''))
+        })
+        if (keptSort.length > 0) query.sort_by_metrics = keptSort
+        else delete query.sort_by_metrics
       }
-      results.push({ ...base(target), datasetId: written.dataset.id, datasetName: written.dataset.name, ok: true, status, rowCount: written.dataset.rows.length })
+    }
+    const key = canonicalQuery(query)
+    const existingPlan = plans.find((plan) => plan.key === key)
+    if (existingPlan) { existingPlan.targets.push(target); continue }
+    plans.push({ key, query, targets: [target] })
+  }
+  const pace = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+  let planIndex = 0
+  for (const plan of plans) {
+    if (planIndex > 0 && interCallDelayMs > 0) await pace(interCallDelayMs)
+    planIndex++
+    const query = plan.query
+    const planTargets = plan.targets
+    const failPlan = (message: string) => {
+      for (const target of planTargets) fail(target, message)
+    }
+    let text: string
+    try {
+      text = await client.queryRaw({ query })
+    } catch (error) {
+      // A rate-limited call gets ONE retry after a longer backoff — the
+      // per-minute window refills in about a minute. Deterministic tool
+      // errors (validation of a bad recipe) must fail fast instead of
+      // burning 65s each.
+      const message = error instanceof Error ? error.message : String(error)
+      const detailText = String((error as { detail?: string }).detail ?? '')
+      const rateLimited = (error as { statusCode?: number }).statusCode === 429 || /rate.?limit|too many requests|quota|appsflyer-tool-limit/i.test(`${message} ${detailText}`)
+      if (!rateLimited) {
+        const detail = (error as { detail?: string; statusCode?: number }).detail
+        const status = (error as { statusCode?: number }).statusCode
+        const reason = [status ? `http ${status}` : null, detail].filter(Boolean).join(' | ')
+        failPlan(`${message}${reason ? ` — ${reason}` : ''}`.slice(0, 400))
+        continue
+      }
+      await pace(65_000)
+        try {
+        text = await client.queryRaw({ query })
+      } catch (retryError) {
+        // Through fail() so the dataset's AF state records this failure —
+        // a direct result push would leave stale "updated" state behind.
+        for (const target of planTargets) {
+          fail(target, `${retryError instanceof Error ? retryError.message : String(retryError)} (rate-limit retry also failed)`.slice(0, 300))
+        }
+        continue
+      }
+    }
+    const rowCount = typeof query.row_count === 'number' && query.row_count > 0 ? query.row_count : 100
+    let parsed
+    try {
+      parsed = parseAfDataset(text, rowCount, { allowPartial })
     } catch (error) {
       const detail = (error as { detail?: string; statusCode?: number }).detail
       const status = (error as { statusCode?: number }).statusCode
       const reason = [status ? `http ${status}` : null, detail].filter(Boolean).join(' | ')
-      fail(target, `${error instanceof Error ? error.message : String(error)}${reason ? ` — ${reason}` : ''}`)
+      failPlan(`${error instanceof Error ? error.message : String(error)}${reason ? ` — ${reason}` : ''}`)
+      continue
+    }
+    for (const target of planTargets) {
+      if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
+      // The write phase is per-target: a throwing saveQuerySpec (query-limit
+      // on first bind, store hiccup) must fail THIS target, never abort the
+      // whole multi-plan pull and discard earlier plans' results.
+      try {
+        const columns = parsed.columns.length > 0 ? parsed.columns : target.dataset?.columns.length ? target.dataset.columns : emptyQueryColumns(query)
+        const status = parsed.rows.length > 0 ? 'updated' : 'empty'
+        const spec = target.spec!
+        const written = createOrUpdateDataset(target.dataset?.name ?? target.outputName ?? spec.datasetName, {
+          columns,
+          rows: parsed.rows,
+          truncated: false
+        }, file, {
+          ...(target.dataset ? { replaceId: target.dataset.id } : {}),
+          appsflyer: { specId: spec.id, status, window: { ...window }, dataWindow: { ...window }, ...(parsed.partial ? { partial: true } : {}), attemptedAt: Date.now(), ...(target.materialization ? { materialization: target.materialization } : {}) }
+        })
+        if (!written.ok) { fail(target, written.error); continue }
+        // Bind to identity after the initial pull, including an empty result.
+        // Renames thereafter do not detach the query or redirect it by name.
+        if (!target.materialization && (spec.datasetId !== written.dataset.id || spec.datasetName !== written.dataset.name)) {
+          saveQuerySpec({ ...spec, datasetId: written.dataset.id, datasetName: written.dataset.name }, specsFilePath)
+        }
+        results.push({ ...base(target), datasetId: written.dataset.id, datasetName: written.dataset.name, ok: true, status, rowCount: written.dataset.rows.length })
+      } catch (error) {
+        fail(target, `${error instanceof Error ? error.message : String(error)} (write phase)`.slice(0, 400))
+      }
     }
   }
   return { ok: results.every(entry => entry.ok || entry.status === 'superseded'), results }

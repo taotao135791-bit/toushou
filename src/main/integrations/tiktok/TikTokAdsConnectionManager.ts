@@ -83,6 +83,11 @@ export class TikTokAdsConnectionManager {
   private flow: PendingFlow | null = null
   private refreshTimer: ReturnType<typeof setTimeout> | null = null
   private refreshPending: Promise<boolean> | null = null
+  /** Bounded auto-retry after a failed renewal (transient network only). */
+  private refreshRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private refreshRetryAttempts = 0
+  private automaticRefreshBlocked = false
+  private readonly refreshRetryDelays: number[]
   private authorizationSavePending: Promise<void> | null = null
   private disconnectPending: Promise<TikTokAdsConnectionSnapshot> | null = null
   private credentialGeneration = 0
@@ -100,12 +105,15 @@ export class TikTokAdsConnectionManager {
     fetchImpl?: TikTokFetch
     openExternal?: (url: string) => Promise<void>
     now?: () => number
+    /** Test seam: renewal-retry cadence (default 1min/5min/15min). */
+    refreshRetryDelaysMs?: number[]
   } = {}) {
     this.credentialStore = options.credentialStore ?? new TikTokCredentialStore()
     this.mcpPaths = options.mcpPaths ?? defaultMcpStorePaths()
     this.fetchImpl = options.fetchImpl ?? ((url, init) => this.fetchViaProxySession(url, init))
     this.openExternal = options.openExternal ?? ((url) => shell.openExternal(url))
     this.now = options.now ?? Date.now
+    this.refreshRetryDelays = options.refreshRetryDelaysMs ?? [60_000, 300_000, 900_000]
   }
 
   /**
@@ -300,6 +308,7 @@ export class TikTokAdsConnectionManager {
       clearTimeout(this.refreshTimer)
       this.refreshTimer = null
     }
+    this.clearRefreshRetry()
     if (this.refreshPending) await this.refreshPending
     if (this.authorizationSavePending) await this.authorizationSavePending.catch(() => {})
     await this.credentialStore.clear()
@@ -338,6 +347,12 @@ export class TikTokAdsConnectionManager {
     try { return await pending } finally { if (this.refreshPending === pending) this.refreshPending = null }
   }
 
+  /** The app-wide heartbeat leaves a manager's retry cadence in charge. */
+  async keepAliveToken(): Promise<boolean> {
+    if (this.disconnectPending || this.flow || this.automaticRefreshBlocked || this.refreshRetryTimer) return false
+    return this.ensureFreshToken()
+  }
+
   private async refreshTokenOnce(): Promise<boolean> {
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer)
@@ -366,27 +381,76 @@ export class TikTokAdsConnectionManager {
       const nextCredentials = {
         ...credentials,
         ...tokens,
+        refreshToken: tokens.refreshToken ?? credentials.refreshToken,
         ...(tokens.advertiserIds ? {} : { advertiserIds: credentials.advertiserIds }),
         savedAt: 0
       }
-      await this.credentialStore.save(nextCredentials)
+      // The server may rotate the refresh token on every grant: persist the
+      // new material before anything else — a single failed write would
+      // orphan the rotated token and force a full browser re-auth.
+      await this.saveWithRetry(nextCredentials, generation)
       if (generation !== this.credentialGeneration) return false
       this.credentials = nextCredentials
       if (!(await this.applyMcpEntry())) return false
       if (generation !== this.credentialGeneration) return false
       this.state = 'connected'
       this.lastError = undefined
+      this.clearRefreshRetry()
       this.scheduleNextRefresh()
       this.emitState()
       return true
     } catch (error) {
       if (generation !== this.credentialGeneration) return false
       if (error instanceof TikTokCredentialStorageError) { this.markStorageBlocked(error); return false }
+      const message = error instanceof Error ? error.message : String(error)
+      // Permanent OAuth rejections (invalid/expired grant) never retry — the
+      // stored grant is dead and only a browser re-auth helps. Transient
+      // network failures retry on a bounded cadence so one proxy hiccup no
+      // longer reads as "授权掉了". 408/429 are transient by nature (same
+      // exemption as the ads-copy circuit breaker): rate-limiting a token
+      // endpoint must not kill the grant.
+      const transient = /HTTP 40[89]|HTTP 429|rate.?limit|too many requests|timeout|timed?\s*out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|network|fetch failed/i.test(message)
+      const permanent = !transient && /invalid|expired|unauthorized|forbidden|denied|revoked|HTTP 4\d\d/i.test(message)
+      if (permanent) this.clearRefreshRetry()
+      else this.scheduleRefreshRetry(generation)
+      this.automaticRefreshBlocked = permanent || !this.refreshRetryTimer
       this.state = 'degraded'
-      this.lastError = `令牌刷新失败：${friendlyError(error)}（请重新授权）`
+      // "请重新授权" only when NO automatic retry is pending — saying it while
+      // the 15-minute retry still runs sends users through a needless re-auth.
+      this.lastError = permanent || !this.refreshRetryTimer
+        ? `令牌刷新失败：${friendlyError(error)}（请重新授权）`
+        : `令牌刷新失败：${friendlyError(error)}（正在自动重试）`
       this.emitState()
       return false
     }
+  }
+
+  /** Persist rotated OAuth material with bounded retries — see refreshTokenOnce. */
+  private async saveWithRetry(credentials: TikTokStoredCredentials, generation: number, attempts = 3): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try { return await this.credentialStore.save(credentials) } catch (error) {
+        if (error instanceof TikTokCredentialStorageError || attempt >= attempts || generation !== this.credentialGeneration) throw error
+        await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 300 : 1500))
+      }
+    }
+  }
+
+  private clearRefreshRetry(): void {
+    if (this.refreshRetryTimer) { clearTimeout(this.refreshRetryTimer); this.refreshRetryTimer = null }
+    this.refreshRetryAttempts = 0
+    this.automaticRefreshBlocked = false
+  }
+
+  /** Bounded retry cadence, then stop and stay degraded. */
+  private scheduleRefreshRetry(generation: number): void {
+    if (this.refreshRetryTimer || generation !== this.credentialGeneration) return
+    if (this.refreshRetryAttempts >= this.refreshRetryDelays.length) return
+    const delay = this.refreshRetryDelays[this.refreshRetryAttempts]
+    this.refreshRetryAttempts++
+    this.refreshRetryTimer = setTimeout(() => {
+      this.refreshRetryTimer = null
+      if (generation === this.credentialGeneration) void this.ensureFreshToken()
+    }, delay)
   }
 
   /**
@@ -618,6 +682,7 @@ export class TikTokAdsConnectionManager {
       this.state = 'connected'
       this.lastError = undefined
       this.lastConnectedAt = this.now()
+      this.clearRefreshRetry()
       this.scheduleNextRefresh()
       this.emitState()
     } catch (error) {
@@ -648,7 +713,7 @@ export class TikTokAdsConnectionManager {
       const detail = typeof payload.error_description === 'string'
         ? payload.error_description
         : typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`
-      throw new Error(detail)
+      throw new Error(detail === `HTTP ${response.status}` ? detail : `HTTP ${response.status}: ${detail}`)
     }
     const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : undefined
     // TikTok echoes the granted advertiser ids back on the token response;

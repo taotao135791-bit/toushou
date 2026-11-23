@@ -193,6 +193,13 @@ export const IPC_CHANNELS = {
   KNOWLEDGE_READ: 'knowledge:read',
   KNOWLEDGE_WRITE: 'knowledge:write',
   OMP_RESUME_SESSION: 'omp:resume-session',
+  /**
+   * Instant view of a history row WITHOUT spawning the runtime (dsh model:
+   * read = data read). Same grant resolution as resume; returns parsed
+   * messages only. The renderer still runs the full resume for interaction.
+   */
+  OMP_PEEK_SESSION: 'omp:peek-session',
+  OMP_FORK_SESSION: 'omp:fork-session',
   OMP_DELETE_SESSION_FILE: 'omp:delete-session-file',
   /**
    * Delete every durable copy of one session uuid, in any project/layout.
@@ -220,6 +227,8 @@ export const IPC_CHANNELS = {
   NOTIFY_OPEN_HISTORY: 'notify:open-history',
   FEISHU_AUTH_GAP: 'feishu:auth-gap',
   TIKTOK_STATUS: 'tiktok:status',
+  BOARD_AI_WIDGET: 'board:ai-widget',
+  TIKTOK_PROBE: 'tiktok:probe',
   TIKTOK_BEGIN: 'tiktok:begin',
   TIKTOK_CANCEL: 'tiktok:cancel',
   TIKTOK_DISCONNECT: 'tiktok:disconnect',

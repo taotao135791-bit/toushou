@@ -711,6 +711,8 @@ export default function TasksPage() {
           request={{
             title: t('tasks.deleteDialog.title'),
             body: t('tasks.deleteDialog.body', { name: pendingDeleteTask.name }),
+            confirmLabel: t('tasks.deleteDialog.confirm'),
+            cancelLabel: t('tasks.deleteDialog.cancel'),
             danger: true,
             onConfirm: () => deleteTask(pendingDeleteTask.id)
           }}

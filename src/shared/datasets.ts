@@ -436,6 +436,7 @@ export function validateDataset(raw: unknown): BoardDataset | null {
   }
   const result: BoardDataset & { source?: 'tiktok-report-v2' } = { id: d.id, name: d.name, columns, rows, createdAt: d.createdAt }
   if (d.truncated === true) result.truncated = true
+  if (typeof d.refreshedAt === 'number' && Number.isFinite(d.refreshedAt) && d.refreshedAt >= d.createdAt) result.refreshedAt = d.refreshedAt
   if (d.source === 'tiktok-report-v2') result.source = d.source
   const appsflyer = validateAppsFlyerDatasetState(d.appsflyer)
   if (appsflyer) result.appsflyer = appsflyer

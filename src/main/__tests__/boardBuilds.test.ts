@@ -211,6 +211,30 @@ describe('Main-owned generation transactions', () => {
     expect(await authorizeAndDispatch(session, { action: 'board_build_begin' }, readonly)).toMatchObject({ ok: false, error: 'permission-denied' })
     expect(await call({ action: 'board_build_begin' })).toMatchObject({ ok: false, error: 'board-build-request-required' })
   })
+  it('accepts question-form edit requests after a published build instead of dead-ending', async () => {
+    // Natural post-build edits are polite questions ("能不能把背景换成深色？").
+    // The old ？-heuristic read them as inspection and board_build_begin was
+    // rejected with no recovery path.
+    const buildId = await begin('做一个时钟和待办看板')
+    await call({ action: 'board_create', name: 'Utility', template: 'blank', buildId })
+    await call({ action: 'board_add_widget', name: 'Utility', type: 'clock', buildId })
+    await call({ action: 'board_add_widget', name: 'Utility', type: 'todo', buildId })
+    expect(await call({ action: 'board_build_commit', buildId })).toMatchObject({ ok: true, published: true })
+    const boardId = listBoards()[0].id
+    for (const text of ['能不能把背景换成深色？', '帮我加一个便签模块好吗？', 'can you add a note widget?']) {
+      registerBoardBuildTurn(session, '/synthetic-workspace', text)
+      expect(await call({ action: 'board_build_begin', targetBoardId: boardId })).toMatchObject({ ok: true, draft: true })
+      expect(await call({ action: 'board_build_abort', buildId: (await call({ action: 'board_build_status' })).buildId })).toMatchObject({ ok: true })
+    }
+  })
+  it('still treats pure data and listing questions as read-only with an actionable hint', async () => {
+    for (const text of ['加拿大市场的消耗怎么样？', '移动端消耗多少？', '汇率换算有公式吗？', '我有哪些看板？']) {
+      registerBoardBuildTurn(session, '/synthetic-workspace', text)
+      const rejected = await call({ action: 'board_build_begin' })
+      expect(rejected).toMatchObject({ ok: false, error: 'board-build-request-required' })
+      expect(typeof rejected.hint).toBe('string')
+    }
+  })
   it('preserves a utility-only custom board without forcing advertising modules or fake numeric values', async () => {
     const buildId = await begin('做一个时钟和待办看板')
     expect(await call({ action: 'board_build_status', buildId })).toMatchObject({ intent: { mode: 'custom', options: { required: [] } } })
@@ -461,5 +485,47 @@ describe('Main-owned generation transactions', () => {
     vi.stubEnv('TOUSHOU_RELEASE_CHANNEL', 'beta')
     expect(listBoards()).toHaveLength(2)
     expect(readFileSync(path.join(profile, 'synthetic-credential.json'), 'utf8')).toBe('{"testOnly":true}')
+  })
+})
+
+describe('mechanical preflight heal (阶段2)', () => {
+  it('rewrites an aliased metric binding to the real column and reports it', async () => {
+    const buildId = await begin('只做必须有花费的表格看板')
+    const datasetId = await seedNative(buildId, false)
+    await withCurrentBoardBuild(session, async () => recordBoardBuildSourceEvidence(session, 'appsflyer', [datasetId]), buildId)
+    await call({ action: 'board_create', name: 'Heal me', template: 'blank', buildId })
+    // Widget binds metric "spend"; the synthetic dataset's column is 消耗-unrelated —
+    // build one with an alias-mismatched numeric column via a second dataset.
+    await withCurrentBoardBuild(session, async () => {
+      const window = { start: '2026-10-30', end: '2026-11-05' }
+      const result = createOrUpdateDataset('AF-Heal', { columns: [{ name: '花费', type: 'number' }, { name: 'Date', type: 'date' }, { name: '币种', type: 'text' }], rows: [[42, '2026-11-01', 'USD']], truncated: false }, undefined, { appsflyer: { specId: 'heal-spec', status: 'updated', window, dataWindow: window, attemptedAt: Date.now() } })
+      if (!result.ok) throw new Error(result.error)
+      saveQuerySpec({ id: 'heal-spec', name: 'Heal', datasetName: result.dataset.name, datasetId: result.dataset.id, query: { app_ids: ['app.heal'], in_app_event: ['heal'], filters: {} } })
+      recordBoardBuildSourceEvidence(session, 'appsflyer', [result.dataset.id])
+      await call({ action: 'board_add_widget', name: 'Heal me', type: 'counter', title: '花费卡', config: { source: 'dataset', datasetId: result.dataset.id, metric: 'spend', op: 'sum' }, buildId })
+      await call({ action: 'board_add_widget', name: 'Heal me', type: 'table', title: '花费明细', config: { source: 'dataset', datasetId: result.dataset.id, columns: ['Date'] }, buildId })
+    }, buildId)
+    const check = await call({ action: 'board_build_preflight', buildId })
+    expect((check as { healed?: string[] }).healed).toEqual(expect.arrayContaining([expect.stringContaining('spend')]))
+    // The healed binding is the committed truth: commit succeeds through the measure gate.
+    const commit = await call({ action: 'board_build_commit', buildId })
+    expect(commit).toMatchObject({ ok: true, published: true })
+    const board = (commit as { board: { widgets: unknown[] } }).board
+    const widgets = board.widgets as Array<{ config?: { metric?: string } }>
+    expect(widgets.some((widget) => widget.config?.metric === '花费')).toBe(true)
+  })
+
+  it('never guesses on ambiguous or unknown columns', async () => {
+    const buildId = await begin('做必须有转化的看板')
+    const datasetId = await seedNative(buildId, false)
+    await withCurrentBoardBuild(session, async () => recordBoardBuildSourceEvidence(session, 'appsflyer', [datasetId]), buildId)
+    await call({ action: 'board_create', name: 'No heal', template: 'blank', buildId })
+    await withCurrentBoardBuild(session, async () => {
+      await call({ action: 'board_add_widget', name: 'No heal', type: 'counter', title: '未知列', config: { source: 'dataset', datasetId, metric: 'definitely-not-a-column', op: 'sum' }, buildId })
+    }, buildId)
+    const check = await call({ action: 'board_build_preflight', buildId })
+    expect((check as { healed?: string[] }).healed).toBeUndefined()
+    expect(check.ok).toBe(false)
+    await call({ action: 'board_build_abort', buildId })
   })
 })

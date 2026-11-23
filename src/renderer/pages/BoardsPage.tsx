@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import GridLayout, { Layout, WidthProvider } from 'react-grid-layout'
 import {
@@ -18,6 +18,7 @@ import {
   LayoutGrid,
   Link2,
   ListTodo,
+  Loader2,
   Lock,
   LockOpen,
   MessageSquareText,
@@ -92,6 +93,7 @@ import { boardRefreshPlanKey, boardReportWindow, boardWidgetWindow, type BoardWi
 import { tiktokAccountDate } from '@shared/tiktokReport'
 import { combineTikTokScopes, nextTikTokScopeExpiry, tiktokScopeMatchesDataset, type VerifiedTikTokScope } from '../lib/tiktokDatasetScope'
 import { WidgetConfigPanel } from './boards/WidgetConfigPanel'
+import { UndoableDeleteBanner, useUndoableDelete } from '../components/UndoableDelete'
 import { resizeWidgetLayout, resolveResizeStop, shouldRevealMovedWidget } from './boards/widgetSizing'
 import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
@@ -102,6 +104,31 @@ import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 
 /** Only a changed query window on an actual source needs an upstream refresh. */
+/** The board's data freshness: latest refresh stamp across bound datasets. */
+function boardDataRefreshedAt(board: KanbanBoard, datasets: BoardDataset[]): number | null {
+  let latest: number | null = null
+  const consider = (dataset: BoardDataset | undefined): void => {
+    if (!dataset) return
+    const stamp = dataset.refreshedAt ?? dataset.appsflyer?.attemptedAt ?? dataset.createdAt
+    if (stamp && (latest === null || stamp > latest)) latest = stamp
+  }
+  for (const widget of board.widgets) {
+    const config = widget.config as Record<string, unknown> | undefined
+    if (config?.source === 'dataset' && (typeof config.datasetId === 'string')) {
+      consider(datasets.find(item => item.id === config.datasetId || item.name === config.datasetId))
+    }
+    if (widget.type === 'tt-reading') consider(datasets.find(item => item.name === 'TikTok 报表'))
+  }
+  return latest
+}
+
+/** MM-DD HH:mm in local time — same display in both UI languages. */
+function formatRefreshStamp(epochMs: number): string {
+  const date = new Date(epochMs)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 export function boardScopeNeedsRefresh(previous: KanbanBoard, next: KanbanBoard, datasets: BoardDataset[], now: number, plan?: BoardRefreshResult, sourceOnly = false): boolean {
   return next.widgets.some(widget => {
     if (widget.dateScope?.mode === 'absolute' || (!widget.dateScope && widget.config.independent === true)) return false
@@ -289,6 +316,24 @@ export default function BoardsPage() {
   const [readingError, setReadingError] = useState<I18nKey | null>(null)
   const [boardMenuOpen, setBoardMenuOpen] = useState(false)
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
+  const undoableDelete = useUndoableDelete()
+  const [aiWidgetBoardId, setAiWidgetBoardId] = useState<string | null>(null)
+  const aiWidgetRequest = useRef<string | null>(null)
+  const [aiWidgetInstruction, setAiWidgetInstruction] = useState('')
+  const [aiWidgetBusy, setAiWidgetBusy] = useState(false)
+  const [aiWidgetProposal, setAiWidgetProposal] = useState<{ type: string; title: string; config: Record<string, unknown>; reason: string } | null>(null)
+  const [aiWidgetError, setAiWidgetError] = useState<string | null>(null)
+  const dismissAiWidget = useCallback(() => {
+    aiWidgetRequest.current = null
+    setAiWidgetBoardId(null)
+    setAiWidgetInstruction('')
+    setAiWidgetBusy(false)
+    setAiWidgetProposal(null)
+    setAiWidgetError(null)
+  }, [])
+  useEffect(() => {
+    if (aiWidgetBoardId && (aiWidgetBoardId !== currentId || surface !== 'board')) dismissAiWidget()
+  }, [aiWidgetBoardId, currentId, surface, dismissAiWidget])
   const [galleryOpen, setGalleryOpen] = useState(false)
   const [masterMetricsOpen, setMasterMetricsOpen] = useState(false)
   const [masterMetricsDraft, setMasterMetricsDraft] = useState<string[]>([])
@@ -438,7 +483,7 @@ export default function BoardsPage() {
         if (revealTarget.index) {
           const row = card.querySelector<HTMLElement>(`[data-reading-account-index="${revealTarget.index}"]`)
           row?.scrollIntoView({ block: 'nearest' }); row?.focus({ preventScroll: true })
-        } else (card.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select') ?? card).focus({ preventScroll: true })
+        } else (document.querySelector<HTMLElement>('.widget-config input, .widget-config textarea, .widget-config select') ?? card).focus({ preventScroll: true })
         revealTargetRef.current = null
         setRevealTarget(null)
       })
@@ -813,29 +858,32 @@ export default function BoardsPage() {
     setDetailOpen(false)
   }
 
-  // Two-stage confirm, same pattern as the old page / PackagesPage.
-  const performDeleteBoard = async () => {
-    if (!current) return
-    setBoardMenuOpen(false)
-    const id = current.id
+  /**
+   * Real delete, run when the countdown finalizes. Success must not rebuild
+   * state from the render-time `boards` snapshot (boards may have been added
+   * during the wait); failure restores the visually-deleted board — otherwise
+   * a board that still exists on disk stays hidden until reload.
+   */
+  const performDeleteBoardById = async (id: string, rollback: () => void): Promise<void> => {
+    let failure: string | null = null
     try {
       const result = await window.electronAPI.deleteBoard(id)
-      if (!result.ok) {
-        // The lock race (locked between the renderer check and the IPC)
-        // deserves its own hint, not a generic save failure.
-        if (result.error === 'board-locked') flashToast(t('boards.lockedNoDelete'), false)
-        else if (result.error === 'html-cleanup-failed') { setHtmlCleanupFailed(true); flashToast(language === 'zh' ? '看板已删除，但 HTML 副本清理失败，请重试清理。' : 'Board deleted, but HTML cleanup failed. Retry cleanup.', false) }
-        else flashSaveFailed()
-        return
-      }
+      if (!result.ok) failure = result.error ?? 'save-failed'
     } catch {
-      flashSaveFailed()
+      failure = 'save-failed'
+    }
+    if (failure) {
+      rollback()
+      // The lock race (locked between the renderer check and the IPC)
+      // deserves its own hint, not a generic save failure.
+      if (failure === 'board-locked') flashToast(t('boards.lockedNoDelete'), false)
+      else if (failure === 'html-cleanup-failed') { setHtmlCleanupFailed(true); flashToast(language === 'zh' ? '看板已删除，但 HTML 副本清理失败，请重试清理。' : 'Board deleted, but HTML cleanup failed. Retry cleanup.', false) }
+      else flashSaveFailed()
       return
     }
-    const next = (boards ?? []).filter((b) => b.id !== id)
-    setBoards(next)
-    setCurrentId(next[0]?.id ?? null)
+    setBoards((prev) => (prev ?? []).filter((b) => b.id !== id))
   }
+
   const toggleBoardLock = () => {
     if (!currentId) return
     mutateBoard(currentId, (b) => ({ ...b, locked: b.locked !== true }))
@@ -850,15 +898,84 @@ export default function BoardsPage() {
       return
     }
     setBoardMenuOpen(false)
-    setPendingConfirm({
-      title: t('boards.boardDeleteDialog.title'),
-      body: t('boards.deleteBoardDialog', { name: current.name }),
-      danger: true,
-      onConfirm: () => void performDeleteBoard()
+    // 乐观删除：看板立即从界面消失；10 秒内可撤销（原样放回），到期才真正删除。
+    // 到期删除失败时同样原样放回并提示——绝不留下"界面上已删、磁盘上还在"的幽灵。
+    const board = current
+    const wasCurrent = currentId === board.id
+    const originalIndex = Math.max(0, (boards ?? []).findIndex((b) => b.id === board.id))
+    const putBack = () => {
+      setBoards((prev) => {
+        const without = (prev ?? []).filter((b) => b.id !== board.id)
+        const index = Math.min(originalIndex, without.length)
+        return [...without.slice(0, index), board, ...without.slice(index)]
+      })
+      if (wasCurrent) setCurrentId(board.id)
+    }
+    undoableDelete.schedule({
+      key: `board:${board.id}`,
+      title: board.name,
+      visualDelete: () => {
+        setBoards((prev) => (prev ?? []).filter((b) => b.id !== board.id))
+        if (wasCurrent) setCurrentId((boardsRef.current ?? []).filter((b) => b.id !== board.id)[0]?.id ?? null)
+        setDetailOpen(false)
+      },
+      restore: putBack,
+      execute: async () => { await performDeleteBoardById(board.id, putBack) }
     })
   }
 
   // ----------------------------------------------------------------- widgets
+
+  /** AI 卡片生成：调默认对话模型拿提案，用户确认后走与手动添加相同的落板路径。 */
+  const runAiWidget = async () => {
+    const instruction = aiWidgetInstruction.trim()
+    if (!instruction || !current || current.id !== aiWidgetBoardId || aiWidgetRequest.current) return
+    const boardId = current.id
+    const requestId = crypto.randomUUID()
+    aiWidgetRequest.current = requestId
+    const isCurrentRequest = () => aiWidgetRequest.current === requestId &&
+      activeView.current.boardId === boardId && activeView.current.surface === 'board'
+    setAiWidgetBusy(true)
+    setAiWidgetError(null)
+    setAiWidgetProposal(null)
+    try {
+      const result = await window.electronAPI.boardAiWidget({
+        requestId,
+        instruction,
+        context: {
+          widgets: current.widgets.map(widget => ({ type: widget.type, title: widget.title })),
+          datasets: datasets.map(dataset => ({ id: dataset.id, name: dataset.name, columns: dataset.columns, rowCount: dataset.rows.length }))
+        }
+      })
+      if (!isCurrentRequest()) return
+      if (result?.ok) setAiWidgetProposal(result.proposal)
+      else setAiWidgetError(result?.error ?? 'failed')
+    } catch {
+      if (isCurrentRequest()) setAiWidgetError('failed')
+    } finally {
+      if (aiWidgetRequest.current === requestId) {
+        aiWidgetRequest.current = null
+        setAiWidgetBusy(false)
+      }
+    }
+  }
+
+  const applyAiWidget = () => {
+    if (!current || current.id !== aiWidgetBoardId || !aiWidgetProposal) return
+    const type = aiWidgetProposal.type as WidgetType
+    if (!WIDGET_DEFAULT_SIZES[type]) { setAiWidgetError('invalid-output'); return }
+    const size = WIDGET_DEFAULT_SIZES[type]
+    const widget = createWidget(type, aiWidgetProposal.title, findFreeSlot(current.widgets, size.w, size.h), aiWidgetProposal.config)
+    mutateBoard(current.id, (b) => {
+      const ms = b.masterScope
+      return { ...b, widgets: [...b.widgets, ms ? applyMasterScope(widget, ms) : widget] }
+    })
+    dismissAiWidget()
+    setConfigWidgetId(widget.id)
+    const target = { boardId: current.id, widgetId: widget.id }
+    revealTargetRef.current = target
+    setRevealTarget(target)
+  }
 
   const addWidget = (type: WidgetType) => {
     if (!current) return
@@ -1079,8 +1196,9 @@ export default function BoardsPage() {
   const currentAfRefresh = current ? afRefresh[current.id] : undefined
   const displayedDatasets = datasetsForBoardWindow(datasets, currentAfDatasetIds, currentAfWindow, currentAfRefresh?.pending ?? false)
   const scopeCounts = current ? boardScopeCounts(current, datasets, candidatePlan) : { live: 0, fixed: 0, independent: 0, lookback: 0, unbound: 0 }
-  // Opening a board still refreshes its live sources. A manual date change
-  // only updates the scope and waits for the user's refresh action.
+  // 用户拍板：看板不自动刷新（旧逻辑"点进看板就刷"已移除）——一切刷新都
+  // 由用户手动触发（刷新按钮/重试）。这里只负责把陈旧提示状态摆正：
+  // 切换看板或跨天导致生效口径变化时，亮起"待刷新"提示等用户点按钮。
   useEffect(() => {
     if (surface !== 'board' || !current || !datasetsReady) { automaticRefreshKey.current = ''; return }
     if (!afDatasetKey && (!plannerEnabled || (!hasCurrentTtDataset && !ttWidgets.length && !hasCurrentMetaDataset && !metaWidgets.length))) return
@@ -1098,8 +1216,12 @@ export default function BoardsPage() {
     }
     if (currentPlan && automaticRefreshKey.current) { automaticRefreshKey.current = key; return }
     if (automaticRefreshKey.current === key || boardRefreshBusy) return
+    // 不再自动调用 refreshReadingModules：已有生效结果(currentPlan)时仅
+    // 记录键；数据陈旧/口径变化时亮提示，由用户决定何时刷新。
+    if (currentPlan) { automaticRefreshKey.current = key; return }
+    const needsRefresh = boardScopeNeedsRefresh(current, current, datasets, boardNow, candidatePlan)
+    if (needsRefresh) setScopeRefreshPending(true)
     automaticRefreshKey.current = key
-    void refreshReadingModules(current)
   }, [surface, current?.id, current ? boardRefreshPlanKey(current) : '', expectedReport?.start, expectedReport?.end, accountCalendarKey, refreshRevision, master?.range, afDatasetKey, hasCurrentTtDataset, ttWidgets.length, hasCurrentMetaDataset, metaWidgets.length, metaDisconnected, datasetsReady, boardRefreshBusy])
   useEffect(() => {
     manualScopeChange.current = null
@@ -1653,7 +1775,8 @@ export default function BoardsPage() {
       tiktokStatus = zh ? '请刷新以核对 TikTok 数据。' : 'Refresh to verify TikTok data.'
     }
   }
-  const backupNames = snapshotIndependent ? [] : datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name)
+  // User decision: the confusing "old data backed up" notice is gone — the
+  // board header shows the one honest data-refresh timestamp instead.
   const coverage = current?.partialDelivery
   const coverageLabels: Record<string, string> = {
     data: zh ? '完整指标' : 'full metrics',
@@ -1685,12 +1808,12 @@ export default function BoardsPage() {
     { id: 'tt-unbound', message: ttUnbound ? (zh ? '请为看板指定 TikTok 账户。' : 'Select TikTok accounts for this board.') : '', warning: true },
     ...[...new Set(ttCoverage)].map((message, index) => ({ id: `tt-coverage-${index}`, message, warning: true })),
     { id: 'af', message: afStatus, warning: afState?.failed },
-    { id: 'meta', message: metaMissing ? (zh ? '部分 Meta 数据暂不可用。' : 'Some Meta data is unavailable.') : '', warning: true },
-    { id: 'backup', message: backupNames.length ? t('boards.tt.backupNotice', { names: backupNames.join('、') }) : '', warning: true }
+    { id: 'meta', message: metaMissing ? (zh ? '部分 Meta 数据暂不可用。' : 'Some Meta data is unavailable.') : '', warning: true }
   ].filter(item => item.message)
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
+      <UndoableDeleteBanner pending={undoableDelete.pending} remaining={undoableDelete.remaining} onUndo={undoableDelete.cancel} onConfirm={undoableDelete.confirm} />
       <header className="app-drag relative z-30 flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
         <BoardsIcon size={15} className="shrink-0 text-accent" />
         <span className="shrink-0 text-[13px] font-medium text-cream">{t('boards.title')}</span>
@@ -1964,6 +2087,11 @@ export default function BoardsPage() {
           )}
         </div>
       )}
+      {surface === 'board' && current && !snapshotIndependent && boardDataRefreshedAt(current, datasets) !== null && (
+        <p className="px-4 py-2 text-[12px] text-cream-faint">
+          {t('boards.dataRefreshedAt', { time: formatRefreshStamp(boardDataRefreshedAt(current, datasets)!) })}
+        </p>
+      )}
       {surface === 'board' && current && snapshotIndependent && <p className="border-b border-line px-4 py-2 text-[12px] text-cream-dim">{language === 'zh' ? '已保存的快照使用固定日期。可回到“今日”选择其他日期，再保存为新看板。' : 'Saved snapshots keep their original dates. Return to Today to choose dates and save a new board.'}</p>}
       {surface === 'board' && current && !snapshotIndependent && (
         <div className="app-no-drag relative z-20 flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-b border-line bg-ink-900/60 px-4 py-1.5">
@@ -2180,6 +2308,49 @@ export default function BoardsPage() {
           )}
         </div>
 
+        {current?.id === aiWidgetBoardId && surface === 'board' && (
+          <div role="dialog" aria-modal="true" aria-label={t('boards.aiWidget.title')} className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) dismissAiWidget() }}>
+            <div className="w-full max-w-lg rounded-2xl border border-line bg-ink-900 p-5 shadow-pop" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="text-[13px] font-semibold text-cream">{t('boards.aiWidget.title')}</div>
+              <p className="mt-1 text-[11.5px] leading-4 text-cream-faint">{t('boards.aiWidget.hint')}</p>
+              <textarea
+                value={aiWidgetInstruction}
+                onChange={(e) => setAiWidgetInstruction(e.target.value)}
+                maxLength={600}
+                rows={3}
+                disabled={aiWidgetBusy || !!aiWidgetProposal}
+                placeholder={language === 'zh' ? '例如：加一张 TikTok 近 7 天消耗趋势图' : 'e.g. a 7-day TikTok spend trend chart'}
+                className="mt-3 w-full resize-none rounded-lg border border-line bg-ink-850 px-3 py-2 text-[12.5px] text-cream placeholder:text-cream-faint/60 focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+              {aiWidgetBusy && <div className="mt-2 flex items-center gap-2 text-[11.5px] text-cream-faint"><Loader2 size={12} className="animate-spin" />{t('boards.aiWidget.generating')}</div>}
+              {aiWidgetError && <div className="mt-2 text-[11.5px] text-red-500">{(['timeout','invalid-output','no-dataset','unavailable'].includes(aiWidgetError) ? t(`boards.aiWidget.error.${aiWidgetError}` as 'boards.aiWidget.error.timeout') : t('boards.aiWidget.error.failed'))}</div>}
+              {aiWidgetProposal && (
+                <div className="mt-3 rounded-lg border border-line bg-ink-850 p-3">
+                  <div className="flex items-center gap-2">
+                    <Check size={12} className="text-green-500" />
+                    <span className="text-[12.5px] font-medium text-cream">{aiWidgetProposal.title}</span>
+                    <span className="rounded-full border border-line px-1.5 py-px text-[10px] text-cream-faint">{aiWidgetProposal.type}</span>
+                  </div>
+                  {aiWidgetProposal.reason && <p className="mt-1 text-[11px] leading-4 text-cream-faint">{aiWidgetProposal.reason}</p>}
+                </div>
+              )}
+              <div className="mt-4 flex justify-end gap-2">
+                {aiWidgetProposal ? (
+                  <>
+                    <button onClick={() => { setAiWidgetProposal(null) }} disabled={aiWidgetBusy} className="rounded-full border border-line px-3 py-1.5 text-[11.5px] text-cream-dim hover:text-cream">{t('boards.aiWidget.regenerate')}</button>
+                    <button onClick={applyAiWidget} className="rounded-full bg-cream px-3 py-1.5 text-[11.5px] font-medium text-ink-950 hover:opacity-90">{t('boards.aiWidget.addCard')}</button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={dismissAiWidget} className="rounded-full border border-line px-3 py-1.5 text-[11.5px] text-cream-dim hover:text-cream">{t('boards.aiWidget.close')}</button>
+                    <button onClick={() => void runAiWidget()} disabled={aiWidgetBusy || !aiWidgetInstruction.trim()} className="flex items-center gap-1.5 rounded-full bg-cream px-3 py-1.5 text-[11.5px] font-medium text-ink-950 hover:opacity-90 disabled:opacity-40"><Sparkles size={11} />{t('boards.aiWidget.generate')}</button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {toast && (
           <div className="fade-in absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-ink-900 px-3 py-1.5 shadow-pop">
             {toast.ok ? (
@@ -2207,6 +2378,13 @@ export default function BoardsPage() {
                 <div className="px-1.5 pb-1.5 pt-1 text-[10.5px] font-semibold uppercase tracking-wider text-cream-faint">
                   {t('boards.addWidget')}
                 </div>
+                <button
+                  onClick={() => { setGalleryOpen(false); setAiWidgetBoardId(current.id) }}
+                  className={`${menuItemClass} mb-1 text-accent hover:bg-overlay`}
+                >
+                  <Sparkles size={12} />
+                  {t('boards.aiWidget.entry')}
+                </button>
                 <button
                   onClick={() => {
                     setGalleryOpen(false)

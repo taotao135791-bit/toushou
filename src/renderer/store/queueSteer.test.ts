@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mcpMention } from '@shared/mcpMentions'
-import { QueuedMessage, useAppStore } from './index'
+import { QueuedMessage, flushStreamQueueForTest, useAppStore } from './index'
 
 const sessionId = 'queue-steer-test'
 
@@ -153,6 +153,32 @@ describe('queued Steer ownership', () => {
     expect(useAppStore.getState().queuedMessages[sameProject.id]).toHaveLength(3)
     expect(useAppStore.getState().queuePauseReasons[sameProject.id]).toBe('stopped')
     expect(window.electronAPI.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('drains the queued message inside the turn-end barrier without clobbering busy', async () => {
+    // The turn-end barrier clears busy THEN drains; draining outside let the
+    // async busy=false flush land after the next turn's busy=true (UI idle
+    // while the queued turn ran) and left thinking unfinalized.
+    vi.stubGlobal('window', {
+      electronAPI: {
+        getSessionState: vi.fn().mockResolvedValue(null),
+        checkpointCreate: vi.fn().mockResolvedValue(null),
+        sendMessage: vi.fn().mockResolvedValue(true)
+      }
+    })
+    useAppStore.setState({
+      currentSessionId: 'another-session',
+      queuedMessages: { [sessionId]: [message('Q1')] }
+    })
+    useAppStore.getState().applySessionEvent({ type: 'status', sessionId, status: 'working' })
+    useAppStore.getState().applySessionEvent({ type: 'status', sessionId, status: 'idle', isTerminal: true })
+    flushStreamQueueForTest()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useAppStore.getState().queuedMessages[sessionId]).toEqual([])
+    expect((useAppStore.getState().messages[sessionId] || []).some((item) => item.role === 'user' && item.content === 'Q1')).toBe(true)
+    // The drained turn keeps busy true — the turn-end clear must not win.
+    expect(useAppStore.getState().busy[sessionId]).toBe(true)
   })
 
   it('does not clear a fatal session error during normal queue dispatch', async () => {

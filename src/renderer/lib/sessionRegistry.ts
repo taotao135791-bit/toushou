@@ -225,6 +225,8 @@ export interface SortableSessionRow {
   timestamp: number
   /** Pinned rows float to the top under every sort. */
   pinned?: boolean
+  /** Stable identity for the equal-timestamp tiebreak (sidebar conversation key). */
+  key?: string
 }
 
 /**
@@ -244,6 +246,10 @@ export function sortSessionRows<T extends SortableSessionRow>(
       const byTitle = collator.compare(a.title, b.title)
       if (byTitle !== 0) return byTitle
     }
-    return b.timestamp - a.timestamp
+    if (b.timestamp !== a.timestamp) return b.timestamp - a.timestamp
+    // Equal timestamps must not depend on array insertion order — sessions and
+    // history scans refresh independently, and a tie that flips between them
+    // reads as the list "jumping". Fall back to the stable row key.
+    return String(a.key ?? a.title).localeCompare(String(b.key ?? b.title))
   })
 }

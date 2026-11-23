@@ -23,7 +23,10 @@ const rows: HistorySessionRow[] = [
 const fixture = {
   rows, activateCalls: [] as string[], historyCalls: [] as string[], resumeCalls: [] as Array<{ grantId: string; historyId: string; cwd: string }>,
   deleteCalls: 0,
+  allowDelete: false,
   killed: [] as string[],
+  forkCalls: [] as Array<{ grantId: string; liveSessionId: string }>,
+  finishFork: null as (() => void) | null,
   markRunning(id: string) { useAppStore.getState().setBusy(id, true) },
   slowActivation: false, finishActivation: null as (() => void) | null,
   slowCreate: false, finishCreate: null as (() => void) | null,
@@ -47,6 +50,7 @@ const fixture = {
   archivePastConversation() { useAppStore.getState().setSessionArchived(uuid(10), true) },
   caps: new Map<string, { row: HistorySessionRow; grantId: string }>(),
   snapshot: () => ({ current: useAppStore.getState().currentSessionId, workspace: useAppStore.getState().currentWorkspace?.realPath }),
+  liveIds: () => useAppStore.getState().sessions.map(session => session.id),
   pinned: () => useAppStore.getState().pinnedSessionIds,
   uuid
 }
@@ -85,6 +89,14 @@ window.electronAPI = {
     if (fixture.slowResume) fixture.finishResume = finish
     else finish()
   }),
+  forkSession: (grantId: string, { liveSessionId }: { liveSessionId: string }) => new Promise(resolve => {
+    fixture.forkCalls.push({ grantId, liveSessionId })
+    fixture.finishFork = () => {
+      fixture.finishFork = null
+      const source = live.find(session => session.id === liveSessionId)!
+      resolve({ session: { ...source, id: 'fixture-fork', title: `${source.title} copy`, sessionFile: `/synthetic/${uuid(90)}.jsonl` }, messages: [], historicalAgents: [] })
+    }
+  }),
   getSubagents: async () => [],
   getSessionState: async () => null,
   gitInfo: async () => null,
@@ -98,8 +110,13 @@ window.electronAPI = {
   },
   sendMessage: async (id: string, text: string) => { fixture.sent.push({ id, text }); return true },
   deleteSessionFile: async () => { fixture.deleteCalls += 1; return false },
-  deleteSessionByUuid: async () => { fixture.deleteCalls += 1; return false },
-  killSession: async (id: string) => { fixture.killed.push(id) }
+  deleteSessionByUuid: async (_grantId: string, id: string) => {
+    fixture.deleteCalls += 1
+    if (!fixture.allowDelete) return false
+    fixture.rows = fixture.rows.filter(row => row.uuid !== id)
+    return true
+  },
+  killSession: async (id: string) => { fixture.killed.push(id); return true }
 } as unknown as typeof window.electronAPI
 useProjects.setState({ projects, loaded: true, loading: false, pending: null, error: null })
 useAppStore.setState({ language: 'en', currentWorkspace: grant('alpha'), currentSessionId: 'live-a', sessions: live, sessionRecords: live.reduce((records, session) => upsertLiveSessionRecord(records, session, 1), [] as ReturnType<typeof upsertLiveSessionRecord>), globalHistory: [], recentWorkspaces: projects.map(row => ({ id: row.id, displayPath: row.path })), cliAvailable: true, scheduledTasks: [], messages: {}, pinnedSessionIds: [], archivedSessionIds: [], unreadSessionIds: {} })

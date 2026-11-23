@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleanSessionName, dedupeSessionTitle, summarizePromptTitle } from '../promptTitle'
+import { cleanAutomaticSessionTitle, cleanSessionName, dedupeSessionTitle, summarizePromptTitle } from '../promptTitle'
 
 describe('summarizePromptTitle', () => {
   it('keeps a short plain prompt as-is', () => {
@@ -115,5 +115,22 @@ describe('private automatic conversation topics', () => {
       const title = summarizePromptTitle(prompt, '链接')
       expect(title).not.toMatch(/7123456789|synthetic|example\.test/)
     }
+  })
+})
+
+describe('terminal & directional control stripping (dsh title hygiene)', () => {
+  it('removes OSC/CSI/ESC sequences and control characters from titles', () => {
+    const noisy = ']0;fake-window-title帮我[31m看消耗[0m'
+    expect(cleanAutomaticSessionTitle(noisy)).toBe('帮我看消耗')
+  })
+
+  it('removes RLO/LRO and invisible directionality that could spoof a title', () => {
+    const spoof = '‮help​me'
+    expect(cleanAutomaticSessionTitle(spoof)).toBe('helpme')
+  })
+
+  it('keeps normal CJK and ASCII intact through both cleaners', () => {
+    expect(cleanSessionName('  WF 文案生成 SG-MY ')).toBe('WF 文案生成 SG-MY')
+    expect(summarizePromptTitle('帮我看看 TikTok 消耗为什么涨了')).toContain('TikTok')
   })
 })

@@ -86,7 +86,7 @@ const TEMPLATE_HELP = {
 export default function boardsTools(api: ToolHostApi): void {
   for (const operation of [
     { action: 'board_edit_targets', label: '选择要编辑的看板', approval: 'read' as const, description: '在现有看板上继续编辑时，先用此工具确认本轮目标，再开始草稿或取数。用户说“把转化趋势放首屏”“给这个业务的日报加复盘便签”等延续请求，也按编辑处理。先用toushou_boards_list了解已保存的看板；如能从本轮话语和会话上下文识别相关看板，用candidateBoardIds标注候选。应用可识别用户明确指定的单一看板；目标有歧义时由用户在应用中勾选一个或多个。只使用返回的targetBoardIds；用户取消或无法确认目标时停止本轮编辑。', properties: { candidateBoardIds: { ...BOARD_IDS, description: '可选。已保存且与本轮业务有关的看板ID，用于提示候选；省略则由应用展示现有看板' } }, required: [] as string[] },
-    { action: 'board_build_begin', label: '准备看板', approval: 'read' as const, description: '创建本次私有草稿，应用依据真实用户消息冻结要求。编辑已有看板时先调用toushou_board_edit_targets，使用返回的全部targetBoardIds或省略两项沿用该选择；逐块用board_get(buildId,boardId)读回结构再增量修改。每块板保留自己的ID、布局、未指定的模块及日期、数据绑定；只需要改外观或已有绑定可满足时无需重新取数。新建看板省略目标参数。草稿不会出现在正式看板列表；只读查询无需草稿。', properties: { targetBoardId: { ...BOARD_ID, description: '单选兼容参数；与targetBoardIds二选一' }, targetBoardIds: { ...BOARD_IDS, description: '编辑时传应用确认为本轮目标的完整集合；也可直接省略以沿用确认结果' } }, required: [] as string[] },
+    { action: 'board_build_begin', label: '准备看板', approval: 'read' as const, description: '创建本次私有草稿，应用依据真实用户消息冻结要求。编辑已有看板时先调用toushou_board_edit_targets，使用返回的全部targetBoardIds或省略两项沿用该选择；逐块用board_get(buildId,boardId)读回结构再增量修改。每块板保留自己的ID、布局、未指定的模块及日期、数据绑定；只需要改外观或已有绑定可满足时无需重新取数。新建看板省略目标参数。草稿不会出现在正式看板列表；只读查询无需草稿。返回board-build-request-required时不要原样重试：当前用户消息是问句或只读请求，按hint向用户要一条明确的建板/改板指令，等新消息到达后再调用。', properties: { targetBoardId: { ...BOARD_ID, description: '单选兼容参数；与targetBoardIds二选一' }, targetBoardIds: { ...BOARD_IDS, description: '编辑时传应用确认为本轮目标的完整集合；也可直接省略以沿用确认结果' } }, required: [] as string[] },
     { action: 'board_build_status', label: '查看看板进度', approval: 'read' as const, description: '查看本次看板草稿、冻结的用户要求与数据缺口。不能通过修改check参数降低本次要求。', properties: { buildId: { type: 'string' } }, required: [] as string[] },
     { action: 'board_build_preflight', label: '核对看板数据', approval: 'read' as const, description: '按应用保存的原始任务要求核对本次草稿与数据证据，返回各目标的缺口。确认需要的粒度、ID、指标、日期历史及来源绑定；活动级数据不能代替素材或广告级。接口能力与当前缓存列分开核对，未通过时补齐实际缺口。部分来源确实不可用时，保留所有已核对读数和明确的缺项，尝试带allowPartial提交。', properties: { buildId: { type: 'string' } }, required: ['buildId'] },
     { action: 'board_build_commit', label: '保存看板', approval: 'write' as const, description: '一次验收并保存本轮草稿。多选时整体保存，应用分别核对所选看板的冻结要求、适用数据和原版本。AppsFlyer、媒体账户或个别指标确实查不到时，最后使用allowPartial:true保存所有能独立核对的数字，缺项留空并说明原因。应用仍会拒绝错误的账户、日期、粒度或无证据数据。只有成功且published:true才可报告已保存；status:partial代表已保存部分数据，必须写明缺项。由boards（单板兼容board）给出正式看板入口。失败保留草稿，不另建替代板。返回conflict时先abort旧草稿，再begin回读新版本重新应用本次修改。', properties: { buildId: { type: 'string' }, allowPartial: { type: 'boolean', description: '已尝试获取缺项仍不可用时设为true，保留全部可核对的数据' } }, required: ['buildId'] },
@@ -106,7 +106,7 @@ export default function boardsTools(api: ToolHostApi): void {
   })
   api.registerTool({
     name: 'toushou_board_refresh', label: '刷新看板数据',
-    description: '按看板保存的账户及日期统一刷新媒体与三方数据。先在看板明确绑定 TikTok 账户 ID 或 Meta 账户。传boardId，应用一次计算报表及各模块的实际日期、安排查询并返回本次结果，模型不要逐个计算日期。新建/修改时先开始草稿、保存查询绑定和组件，再刷新当前草稿。某来源不可用时保留其余已核对数字，最后用allowPartial提交。七日趋势与昨日指标可有各自窗口；失败、空数据和旧请求均不补零。纯样式调整及明确固定数字快照无需取数。',
+    description: '按看板保存的账户及日期统一刷新媒体与三方数据。先在看板明确绑定 TikTok 账户 ID 或 Meta 账户。传boardId，应用一次计算报表及各模块的实际日期、安排查询并返回本次结果，模型不要逐个计算日期。返回精简结果：每个来源只有状态/窗口/行列概况，不含数据行；需要具体数值用数字卡绑定数据集展示，不要试图从返回里读明细。新建/修改时先开始草稿、保存查询绑定和组件，再刷新当前草稿。某来源不可用时保留其余已核对数字，最后用allowPartial提交。七日趋势与昨日指标可有各自窗口；失败、空数据和旧请求均不补零。纯样式调整及明确固定数字快照无需取数。',
     parameters: { type: 'object', properties: { boardId: { type: 'string' }, buildId: BUILD_ID }, required: ['boardId'], additionalProperties: false }, approval: 'write',
     execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ ...params, action: 'board_refresh' }) }] })
   })
@@ -210,7 +210,7 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_add_widget',
     label: '看板加组件',
-    description: '按用户用途、结构和风格增量添加组件，不因一次修改套回默认模板。向已有看板添加一个组件（默认自动找空位；可提供位置和样式；配置不合法会被整体拒绝）。明确固定数字用counter，config:{source:"manual",value:12}（替换为用户指定值）；不要传manual:true。活指标 counter 使用 config:{source:"dataset",datasetId:"实际ID",metric:"实际列名",op:"sum"}；chart-line/chart-bar 另传 dimension:"实际维度列名"，趋势必须绑定真实日期列，不能把分活动类别或合成点数叫时间趋势。table 使用 config:{source:"dataset",datasetId:"实际ID",columns:["实际列名"],pageSize:20}，columns可省略、最多12列，pageSize为5–100，可传sortColumn/sortDirection；日报保留真实逐日/活动明细，不拿一串指标卡代替表格。funnel 使用 config:{source:"dataset",stages:[{label:"业务阶段",datasetId:"实际ID",metric:"实际列名",op:"sum"}]}，2–12个阶段可各绑不同数据集，可按真实列filterColumn/filterValue(s)筛选；阶段来自当前客户定义，不能手填value或把跨源阶段比值自动叫用户转化率。analysis 使用 config:{source:"dataset",datasetId:"实际ID",metric:"实际列名",dimension:"实际维度列名",op:"sum"}，dimension可省略，随最新数据产生最多3条描述性highlight，不编造因果；绑定当前任务目标事件/指标，若发现数据含多个事件须先过滤目标或另拉目标事件查询，不能混合不同事件的sum当优化成效；无方向方案的分析优先用它。note仅供补充AI解释或说明，内容不会随数据重算，不把旧note当新日期分析，不自动堆成长口径便签。reading-module 专用于引用已保存快照：先 board_get 获取已保存的 reading-snapshot 或 reading-module 的 boardId 和 widgetId，再通过 source 引用；不能自己提供或伪造 snapshot。仅 reading-module 的 config 传 module，kind 为 metric、spend-chart、coverage 或 note；metric 还需 metric（spend、impressions、clicks、conversions）与从0开始的 accountIndex，spend-chart 需 chart（bar、pie、donut），note 需 text。该类型是保存时的快照，不能冒充实时活卡。用户明确要求自定义报告或整页布局时可添加 file，config:{"filePath":"report.html"}，路径相对于已授权工作区，文件类型须受支持；普通业务请求不自动替换成静态文件。layout 的 w 范围1–12、h范围1–20，x/y须一起传且位置不能重叠。成功添加读数模块或 HTML file 后，应用会自动尝试在对话显示实际预览及“打开看板”；简短回复，无需搜索源码、协议、执行 shell、写额外文件或编造围栏来展示预览。',
+    description: '按用户用途、结构和风格增量添加组件，不因一次修改套回默认模板。向已有看板添加一个组件（默认自动找空位；可提供位置和样式；配置不合法会被整体拒绝）。明确固定数字用counter，config:{source:"manual",value:12}（替换为用户指定值）；不要传manual:true。活指标 counter 使用 config:{source:"dataset",datasetId:"实际ID",metric:"实际列名",op:"sum"}；chart-line/chart-bar 另传 dimension:"实际维度列名"，趋势必须绑定真实日期列，不能把分活动类别或合成点数叫时间趋势。table 使用 config:{source:"dataset",datasetId:"实际ID",columns:["实际列名"],pageSize:20}，columns可省略、最多12列，pageSize为5–100，可传sortColumn/sortDirection；日报保留真实逐日/活动明细，不拿一串指标卡代替表格。funnel 使用 config:{source:"dataset",stages:[{label:"业务阶段",datasetId:"实际ID",metric:"实际列名",op:"sum"}]}，2–12个阶段可各绑不同数据集，可按真实列filterColumn/filterValue(s)筛选；阶段来自当前客户定义，不能手填value或把跨源阶段比值自动叫用户转化率。analysis 使用 config:{source:"dataset",datasetId:"实际ID",metric:"实际列名",dimension:"实际维度列名",op:"sum"}，dimension可省略，随最新数据产生最多3条描述性highlight，不编造因果；绑定当前任务目标事件/指标，若发现数据含多个事件须先过滤目标或另拉目标事件查询，不能混合不同事件的sum当优化成效；无方向方案的分析优先用它。note仅供补充AI解释或说明，内容不会随数据重算，不把旧note当新日期分析，不自动堆成长口径便签。reading-module 专用于引用已保存快照：先 board_get 获取已保存的 reading-snapshot 或 reading-module 的 boardId 和 widgetId，再通过 source 引用；不能自己提供或伪造 snapshot。仅 reading-module 的 config 传 module，kind 为 metric、spend-chart、coverage 或 note；metric 还需 metric（spend、impressions、clicks、conversions）与从0开始的 accountIndex，spend-chart 需 chart（bar、pie、donut），note 需 text。该类型是保存时的快照，不能冒充实时活卡。用户明确要求自定义报告或整页布局时可添加 file，config:{"filePath":"report.html"}，路径相对于已授权工作区，文件类型须受支持；普通业务请求不自动替换成静态文件。layout 的 w 范围1–12、h范围1–20，x/y须一起传且位置不能重叠。成功添加读数模块或 HTML file 后，应用会自动尝试在对话显示实际预览及“打开看板”；简短回复，无需搜索源码、协议、执行 shell、写额外文件或编造围栏来展示预览。看板写操作（建板/加改删组件/改名/调样式）返回精简回执（看板概况+受影响组件ID），不含全量看板；要看完整看板用 board_get，验收用 board_check。',
     parameters: {
       type: 'object',
       properties: {
@@ -335,11 +335,11 @@ export default function boardsTools(api: ToolHostApi): void {
     label: '拉取 AppsFlyer 数据集',
     description:
       '拉取 AppsFlyer 官方归因数据写入「AF-{name}」数据集，并保留完整查询条件。卡片绑定返回的 dataset.id，日期切换和刷新按看板实际范围重查。默认建活卡，仅用户明确要求固定快照时才手填数值。\n' +
-      '支持多维：groupings 可含 Geo / Event name / Campaign ID / Media source / Date（最多 4 个）；metrics 可用 Count / Unique users / Installs / Active users / Revenue 等官方指标；basis 支持 activity（活动日期）或 ltv（生命周期）。\n' +
+      '支持多维：groupings 可含 Geo / Event name / Campaign ID / Media source / Date（最多 4 个）；metrics 可用 Count / Unique users / Active users / Revenue 等官方指标；basis 支持 activity（活动日期）或 ltv（生命周期）。\n' +
       '用法要求：\n' +
       '1. name 起短且能区分应用/范围的名字（如 产品A注册）；数据集叫 AF-{name}，卡片标题用用户熟悉的简短业务名。\n' +
       '2. 无具体方向的媒体×AF 业务看板包含媒体基础读数与 AF 活数据；按当前实际媒体选择读数来源，不因使用 AF 就强制 TikTok。显式用途、风格、结构、参考和后续定制优先，模板仅为起点；已有板增量添加所需数据，保留未要求修改的内容。\n' +
-      '3. 仅沿用当前客户、项目已确认的 appId 和事件映射。用户使用业务名称时，先发现实际事件，按当前映射、名称和业务含义选择唯一最匹配的候选，再将准确 eventName 保存；自定义事件不限 af_ 前缀。只有同样合理的候选不止一个时才简短询问，不要求用户提供字段。禁止从其他客户复制事件名、阶段命名或漏斗定义。Install/App Active/Session 是内置事件，安装量可直接用 Installs 指标。\n' +
+      '3. 仅沿用当前客户、项目已确认的 appId 和事件映射。用户使用业务名称时，先发现实际事件，按当前映射、名称和业务含义选择唯一最匹配的候选，再将准确 eventName 保存；自定义事件不限 af_ 前缀。只有同样合理的候选不止一个时才简短询问，不要求用户提供字段。禁止从其他客户复制事件名、阶段命名或漏斗定义。Install/App Active/Session 是内置事件。安装量来自官方附带的 Installs 列，查询使用 Count 等受支持的指标。\n' +
       '4. 首次拉取用 startDate/endDate 与看板总控具体日期对齐，后续沿用此查询条件重查；days 备用默认近7个完整日（截至昨天）。geo=true 仅增加 Geo 维度；countries 过滤地区，全部地区应省略过滤，绝不传 Geo=["all"]。最多4个维度。\n' +
       '5. 新业务方案显式传 mediaSources，使用当前App真实发现并已确认的媒体名称；[]为该App全部授权来源，省略仅兼容旧TikTok调用。不要根据媒体品牌猜接口别名，非TikTok方案不得省略后错标来源。\n' +
       '6. 返回的 dataset.columns 是可绑定的列名。事件次数等可加指标可用 op="sum"；独立用户用完整日期范围的专用总量查询，不把多日或多分组去重数相加。首屏只保留关键数字/highlight，不创建大段口径、防御词或原始查询参数说明卡。',
@@ -354,7 +354,7 @@ export default function boardsTools(api: ToolHostApi): void {
         startDate: { type: 'string', description: 'YYYY-MM-DD，与 endDate 一起传，按看板总控的实际日期首次拉取' },
         endDate: { type: 'string', description: 'YYYY-MM-DD，与 startDate 一起传，最长366天' },
         basis: { type: 'string', enum: ['activity', 'ltv'], description: 'activity=活动日期口径（默认），ltv=生命周期口径' },
-        metrics: { type: 'array', description: '官方指标名数组，默认 ["Count","Unique users"]；可用 Installs / Active users / Revenue 等', items: { type: 'string' } },
+        metrics: { type: 'array', description: '官方指标名数组，默认 ["Count","Unique users"]；可用 Active users / Revenue 等，安装量读取官方附带的 Installs 列', items: { type: 'string' } },
         groupings: { type: 'array', description: '维度数组（最多4个），默认按事件类型选；可用 Geo / Event name / Campaign ID / Campaign / Media source / Date', items: { type: 'string' } },
         geo: { type: 'boolean', description: 'true 时附加 Geo 维度（总维度最多4），不代表地区过滤' },
         countries: { type: 'array', items: { type: 'string' }, description: '可选地区筛选；全部地区时省略，不传字面值 all' },
@@ -363,6 +363,25 @@ export default function boardsTools(api: ToolHostApi): void {
       required: ['name', 'appId']
     },
     approval: 'write',
-    execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ action: 'af_dataset_pull', ...params }) }] })
+    execute: async (_id, params, signal) => ({ content: [{ type: 'text', text: await call({ action: 'af_dataset_pull', ...params }, signal) }] })
+  })
+  api.registerTool({
+    name: 'toushou_af_query_plan',
+    label: '预审 AppsFlyer 查询',
+    description:
+      '宽泛的 AF 需求先花 1 次调用拿到该应用的维度清单（可用事件名、渠道、地区、日期覆盖），确认后再分组调用 toushou_af_dataset_pull——避免大范围查询反复烧官方调用额度。只读，不写数据集、不改看板；用户已明确事件/渠道/地区且范围很小可跳过预审直接拉取。',
+    parameters: {
+      type: 'object',
+      properties: {
+        buildId: BUILD_ID,
+        appId: { type: 'string', description: 'AppsFlyer App ID（必填）' },
+        days: { type: 'integer', description: '预审窗口：最近 N 个完整日（1-366，默认7，截至昨天）' },
+        mediaSources: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 200 }, description: '当前 App 的媒体来源名称；省略或 [] 表示全部授权来源' },
+        countries: { type: 'array', items: { type: 'string' }, description: '可选地区筛选' }
+      },
+      required: ['appId']
+    },
+    approval: 'read',
+    execute: async (_id, params, signal) => ({ content: [{ type: 'text', text: await call({ action: 'af_query_plan', ...params }, signal) }] })
   })
 }

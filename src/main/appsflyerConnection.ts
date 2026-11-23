@@ -196,6 +196,17 @@ export async function initializeAppsFlyerConnection(): Promise<void> {
   try { await pending } finally { if (initializing === pending) initializing = null }
 }
 export async function getAppsFlyerConnectionSnapshot(): Promise<AppsFlyerConnectionSnapshot> { await initializeAppsFlyerConnection(); return projected }
+/**
+ * Background keep-alive entry (tokenKeepAlive): proactively renew the stored
+ * AF grant while it is still valid. No-op when there is no connection; never
+ * opens a browser and never throws — a failed renewal keeps the manager's
+ * honest degraded state.
+ */
+export async function ensureAppsFlyerFreshToken(): Promise<boolean> {
+  await initializeAppsFlyerConnection()
+  if (closing || !manager || !initialized || initFailed) return false
+  return manager.ensureFreshToken()
+}
 export async function beginAppsFlyerConnection(): Promise<AppsFlyerConnectionSnapshot> {
   if (initFailed) { initFailed = false; initialized = false }
   await initializeAppsFlyerConnection()

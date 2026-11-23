@@ -268,8 +268,7 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     expect(mcp.mcpServers['tiktok-ads']).toBeUndefined()
   })
 
-  it('stops repeated refresh attempts when saving renewed credentials fails', async () => {
-    const file = path.join(paths.userData, 'refresh.bin')
+  it('stops repeated refresh attempts when saving renewed credentials fails', async () => {    const file = path.join(paths.userData, 'refresh.bin')
     let available = true
     const backend = { isAvailable: vi.fn(() => available), encrypt: (value: string) => Buffer.from(value), decrypt: (value: Buffer) => value.toString('utf8') }
     const store = new TikTokCredentialStore({ filePath: file, backend })
@@ -286,6 +285,96 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     expect(log.filter((entry) => entry.url === `${ISSUER}/token`)).toHaveLength(1)
     expect(manager.getSnapshot().status).toBe('degraded')
     expect(await readFile(file, 'utf8')).toBe(original)
+    await manager.disconnect()
+  })
+
+  it('retries a transient renewal failure on a bounded cadence and recovers (background keep-alive)', async () => {
+    const file = path.join(paths.userData, 'refresh-retry.bin')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
+    let now = 0, tokenCalls = 0
+    const manager = new TikTokAdsConnectionManager({
+      credentialStore: store,
+      fetchImpl: async (url: string) => {
+        if (url === `${ISSUER}/token`) {
+          tokenCalls++
+          if (tokenCalls === 1) throw new TypeError('fetch failed')
+          return jsonResponse({ access_token: 'new', refresh_token: 'new-refresh', expires_in: 3600 })
+        }
+        throw new Error('unexpected')
+      },
+      now: () => now,
+      openExternal: async () => {},
+      mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') },
+      refreshRetryDelaysMs: [10]
+    })
+    await manager.initialize()
+    now = 1_900_000
+    expect(await manager.ensureFreshToken()).toBe(false)
+    expect(manager.getSnapshot().lastError).toContain('自动重试')
+    for (let i = 0; i < 100 && manager.getSnapshot().status !== 'connected'; i++) await new Promise(r => setTimeout(r, 5))
+    expect(manager.getSnapshot().status).toBe('connected')
+    expect(tokenCalls).toBe(2)
+    await manager.disconnect()
+  })
+
+  it('a permanent OAuth renewal rejection never schedules a retry', async () => {
+    const file = path.join(paths.userData, 'refresh-permanent.bin')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
+    let now = 0, tokenCalls = 0
+    const manager = new TikTokAdsConnectionManager({
+      credentialStore: store,
+      fetchImpl: async (url: string) => {
+        if (url === `${ISSUER}/token`) { tokenCalls++; return jsonResponse({ error: 'invalid_grant' }, 400) }
+        throw new Error('unexpected')
+      },
+      now: () => now,
+      openExternal: async () => {},
+      mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') },
+      refreshRetryDelaysMs: [10]
+    })
+    await manager.initialize()
+    now = 1_900_000
+    expect(await manager.ensureFreshToken()).toBe(false)
+    expect(manager.getSnapshot().lastError).toContain('请重新授权')
+    expect(await manager.keepAliveToken()).toBe(false)
+    expect(await manager.keepAliveToken()).toBe(false)
+    await new Promise(r => setTimeout(r, 30))
+    expect(tokenCalls).toBe(1)
+    await manager.disconnect()
+  })
+
+  it('a 429 rate limit on the token endpoint is transient: retry, not re-auth', async () => {
+    const file = path.join(paths.userData, 'refresh-429.bin')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
+    let now = 0, tokenCalls = 0
+    const manager = new TikTokAdsConnectionManager({
+      credentialStore: store,
+      fetchImpl: async (url: string) => {
+        if (url === `${ISSUER}/token`) {
+          tokenCalls++
+          // HTTP 429 stays transient even when the provider's body is misleading.
+          if (tokenCalls === 1) return jsonResponse({ error: 'invalid_grant' }, 429)
+          return jsonResponse({ access_token: 'new', refresh_token: 'new-refresh', expires_in: 3600 })
+        }
+        throw new Error('unexpected')
+      },
+      now: () => now,
+      openExternal: async () => {},
+      mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') },
+      refreshRetryDelaysMs: [10]
+    })
+    await manager.initialize()
+    now = 1_900_000
+    expect(await manager.ensureFreshToken()).toBe(false)
+    // Rate-limiting must read as "retrying", never as a dead grant demanding
+    // a browser re-auth.
+    expect(manager.getSnapshot().lastError).toContain('自动重试')
+    for (let i = 0; i < 100 && manager.getSnapshot().status !== 'connected'; i++) await new Promise(r => setTimeout(r, 5))
+    expect(manager.getSnapshot().status).toBe('connected')
+    expect(tokenCalls).toBe(2)
     await manager.disconnect()
   })
 

@@ -41,12 +41,15 @@ export function boardRefreshWidgetDatasets(result: BoardRefreshResult, widget: B
   const projected = view.bindings.map((binding): BoardRefreshDataset | undefined => {
     const source = result.sources.find(item => item.key === binding.sourceKey)
     const original = fallback.find(item => item.id === binding.datasetId || item.name === binding.datasetId)
+    // IPC supplies the full scoped snapshot. An empty slice is authoritative,
+    // even when the shared store has rows for other accounts under the same ID.
     const data = source?.dataset ?? original
     if (!data) return undefined
     const date = data.columns.findIndex(column => column.type === 'date'), account = data.columns.findIndex(column => column.name === '广告主ID')
     const ready = source?.status === 'updated' || source?.status === 'empty' || source?.kind === 'dataset'
     const rows = ready ? data.rows.filter(row => {
       const accountWindow = binding.accountWindows?.find(window => window.advertiserId === String(row[account]))
+      if (binding.accountWindows?.length && !accountWindow) return false
       const window = accountWindow ? { start: accountWindow.startDate, end: accountWindow.endDate } : binding.window ?? view.window
       return date < 0 || (String(row[date]) >= window.start && String(row[date]) <= window.end)
     }) : []

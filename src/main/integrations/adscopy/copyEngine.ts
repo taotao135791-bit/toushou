@@ -19,7 +19,11 @@ export function countBytes(text: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// Scoring lexicons (W:379-394) with caller benefit/brand term merge.
+// Scoring lexicons (W:379-394, extended) with caller benefit/brand term merge.
+// Coverage targets the mainstream ad markets: the six worker lexicons plus
+// SEA (fil/th/vi/id/ms), LatAm/Europe (pt/it/nl/pl/tr/ru), MENA/India (ar/hi)
+// and CJK (ja/ko). Every entry must be natural ad-copy phrasing, not
+// dictionary transliterations — the scorer substring-matches normalized text.
 // ---------------------------------------------------------------------------
 
 interface ScoreLexicon {
@@ -65,18 +69,159 @@ const SCORE_LANGUAGE_TERMS: Record<string, { hook: string[]; cta: string[]; forb
     hook: ['entdecke', 'finde', 'kostenlos', 'jetzt', 'beste', 'echte', 'neu', 'warum', 'wie'],
     cta: ['herunterladen', 'installieren', 'jetzt', 'starten', 'entdecken', 'ausprobieren', 'öffnen'],
     forbidden: ['garantiert', 'risikofrei', 'nummer 1', 'am sichersten']
+  },
+  fil: {
+    hook: ['libre', 'tuklasin', 'bagong', 'ngayon', 'madali', 'bakit', 'paano', 'subukan', 'free', 'discover'],
+    cta: ['i-download', 'mag-download', 'download', 'i-install', 'install', 'sumali', 'subukan', 'simulan', 'kunin', 'mag-register', 'mag-sign up', 'try'],
+    forbidden: ['garantisado', 'walang panganib', 'numero uno', 'pinakaligtas', 'milagro', 'guaranteed', 'risk-free', 'safest', 'number one']
+  },
+  th: {
+    hook: ['ฟรี', 'ใหม่', 'ดีที่สุด', 'ทันที', 'วันนี้', 'ง่าย', 'ลอง', 'ค้นพบ', 'ทำไม', 'ยังไง', 'free'],
+    cta: ['ดาวน์โหลด', 'โหลด', 'ติดตั้ง', 'เริ่ม', 'เริ่มต้น', 'ใช้งาน', 'ลอง', 'สมัคร', 'เข้าร่วม'],
+    forbidden: ['การันตี', 'รับประกัน', 'ไม่มีความเสี่ยง', 'ปลอดภัยที่สุด', 'อันดับ 1', 'miracle', 'guaranteed']
+  },
+  vi: {
+    hook: ['khám phá', 'miễn phí', 'ngay', 'mới', 'tốt nhất', 'dễ', 'thử', 'tại sao', 'cách', 'nhận'],
+    cta: ['tải', 'cài đặt', 'bắt đầu', 'đăng ký', 'tham gia', 'dùng thử', 'dùng', 'mở', 'khám phá'],
+    forbidden: ['đảm bảo', 'không rủi ro', 'số 1', 'an toàn nhất', 'phép màu']
+  },
+  id: {
+    hook: ['gratis', 'temukan', 'jelajahi', 'baru', 'terbaik', 'sekarang', 'mudah', 'coba', 'kenapa', 'mengapa', 'cara', 'dapatkan'],
+    cta: ['unduh', 'instal', 'pasang', 'mulai', 'coba', 'gabung', 'bergabung', 'daftar', 'buka', 'pakai', 'gunakan', 'dapatkan'],
+    forbidden: ['dijamin', 'tanpa risiko', 'nomor 1', 'paling aman', 'ajaib']
+  },
+  ms: {
+    hook: ['percuma', 'temui', 'terbaik', 'sekarang', 'mudah', 'baru', 'cuba', 'kenapa', 'cara', 'dapatkan'],
+    cta: ['muat turun', 'pasang', 'mula', 'cuba', 'sertai', 'daftar', 'buka', 'guna', 'gunakan', 'dapatkan'],
+    forbidden: ['dijamin', 'tanpa risiko', 'nombor 1', 'paling selamat', 'ajaib']
+  },
+  pt: {
+    hook: ['descubra', 'grátis', 'agora', 'novo', 'nova', 'fácil', 'experimente', 'por que', 'porque', 'como', 'ganhe'],
+    cta: ['baixe', 'baixar', 'instale', 'comece', 'experimente', 'junte-se', 'cadastre-se', 'abra', 'use', 'assine', 'conheça'],
+    forbidden: ['garantido', 'sem risco', 'número 1', 'milagre', 'o melhor']
+  },
+  ja: {
+    hook: ['無料', '今すぐ', '今', '新', '簡単', '発見', '試す', 'なぜ', '方法'],
+    cta: ['ダウンロード', 'インストール', '始める', '登録', '試す', '使う', '開く', '参加', 'チェック', 'ゲット'],
+    forbidden: ['保証', '必ず', 'リスクなし', 'No.1', '奇跡']
+  },
+  ko: {
+    hook: ['무료', '지금', '새로운', '간편', '쉽게', '발견', '인기', '왜', '방법'],
+    cta: ['다운로드', '설치', '시작', '가입', '이용', '열기', '체험', '받기', '도전'],
+    forbidden: ['보장', '무위험', '위험 없음', '1등', '가장 안전', '기적']
+  },
+  ru: {
+    hook: ['открой', 'бесплатно', 'сейчас', 'новый', 'новинка', 'лучший', 'легко', 'почему', 'как', 'попробуй'],
+    cta: ['скачать', 'скачай', 'установи', 'начни', 'попробуй', 'присоединяйся', 'зарегистрируйся', 'открой', 'используй', 'получи'],
+    forbidden: ['гарантия', 'без риска', 'номер 1', 'самый надёжный', 'чудо']
+  },
+  ar: {
+    hook: ['اكتشف', 'مجان', 'الآن', 'جديد', 'الأفضل', 'سهل', 'لماذا', 'كيف', 'جرّب'],
+    cta: ['حمّل', 'تحميل', 'ثبّت', 'ابدأ', 'جرّب', 'انضم', 'سجّل', 'افتح', 'استخدم', 'احصل'],
+    forbidden: ['مضمون', 'بدون مخاطر', 'الأكثر أماناً', 'معجزة']
+  },
+  tr: {
+    hook: ['keşfet', 'ücretsiz', 'şimdi', 'yeni', 'kolay', 'neden', 'nasıl', 'dene'],
+    cta: ['indir', 'yükle', 'başla', 'dene', 'katıl', 'kaydol', 'kayıt ol', 'aç', 'kullan'],
+    forbidden: ['garantili', 'risksiz', '1 numara', 'en güvenli', 'mucize']
+  },
+  it: {
+    hook: ['scopri', 'gratis', 'ora', 'adesso', 'nuovo', 'nuova', 'facile', 'perché', 'come', 'prova'],
+    cta: ['scarica', 'installa', 'inizia', 'prova', 'unisciti', 'registrati', 'apri', 'usa', 'ottieni'],
+    forbidden: ['miracolo', 'garantito', 'senza rischi', 'numero 1', 'il più sicuro']
+  },
+  hi: {
+    hook: ['मुफ़्त', 'अभी', 'नया', 'सबसे अच्छा', 'आसान', 'क्यों', 'कैसे', 'खोजें', 'आज़माएँ'],
+    cta: ['डाउनलोड', 'इंस्टॉल', 'शुरू', 'आज़माएँ', 'जुड़ें', 'रजिस्टर', 'खोलें', 'पाएं', 'पाएँ'],
+    forbidden: ['गारंटी', 'बिना जोखिम', 'नंबर 1', 'सबसे सुरक्षित', 'चमत्कार']
+  },
+  nl: {
+    hook: ['ontdek', 'gratis', 'nu', 'nieuw', 'makkelijk', 'waarom', 'hoe', 'probeer'],
+    cta: ['download', 'installeer', 'begin', 'start', 'probeer', 'word lid', 'registreer', 'open', 'gebruik', 'krijg'],
+    forbidden: ['gegarandeerd', 'risicovrij', 'nummer 1', 'veiligste', 'wonder']
+  },
+  pl: {
+    hook: ['odkryj', 'darmowy', 'za darmo', 'teraz', 'nowy', 'najlepszy', 'łatwo', 'dlaczego', 'jak', 'spróbuj'],
+    cta: ['pobierz', 'zainstaluj', 'zacznij', 'spróbuj', 'dołącz', 'zarejestruj', 'otwórz', 'użyj', 'zdobądź'],
+    forbidden: ['gwarantowany', 'bez ryzyka', 'numer 1', 'najbezpieczniejszy', 'cud']
   }
+}
+
+/** Legacy/region language codes that resolve to a lexicon under another key. */
+const SCORE_LANGUAGE_ALIASES: Record<string, string> = {
+  tl: 'fil',
+  'tl-ph': 'fil',
+  'fil-ph': 'fil',
+  in: 'id',
+  zh: 'zh-CN',
+  'zh-hk': 'zh-TW',
+  'zh-mo': 'zh-TW',
+  'zh-hant': 'zh-TW',
+  'zh-hans': 'zh-CN'
+}
+
+/**
+ * Share of the weighted total still enforced when no lexicon matches the
+ * language: relevance (.34) + space (.10) + brand (.16) stay hard-gated,
+ * hook (.22) and CTA (.18) floors are waived because they cannot be judged
+ * in an unlisted language.
+ */
+const DEGRADED_TOTAL_KEEP = 0.6
+
+type LexiconMode = 'full' | 'degraded'
+
+interface LexiconResolution {
+  /** Lexicon actually applied (always present in SCORE_LANGUAGE_TERMS). */
+  key: string
+  mode: LexiconMode
+}
+
+/** A distinctive script can supply scoring hints for an unlisted language. */
+function detectScriptKey(text: string): string | null {
+  if (/\p{Script=Hiragana}|\p{Script=Katakana}/u.test(text)) return 'ja'
+  if (/\p{Script=Hangul}/u.test(text)) return 'ko'
+  if (/\p{Script=Thai}/u.test(text)) return 'th'
+  return null
+}
+
+/** Lowercased language code → canonical SCORE_LANGUAGE_TERMS key. */
+const TERMS_BY_LOWER = new Map(Object.keys(SCORE_LANGUAGE_TERMS).map(key => [key.toLowerCase(), key]))
+
+/** Case-insensitive lexicon lookup: 'zh-tw' resolves to the canonical 'zh-TW'. */
+function lexiconKeyFor(code: string): string | null {
+  const lower = code.toLowerCase()
+  const alias = Object.hasOwn(SCORE_LANGUAGE_ALIASES, lower) ? SCORE_LANGUAGE_ALIASES[lower] : undefined
+  return TERMS_BY_LOWER.get(lower) ?? (alias ? TERMS_BY_LOWER.get(alias.toLowerCase()) ?? null : null)
+}
+
+function resolveLexicon(language: string, text?: string): LexiconResolution {
+  const key = String(language ?? '').trim().toLowerCase().replace(/_/g, '-') || 'en'
+  const direct = lexiconKeyFor(key)
+  if (direct) return { key: direct, mode: 'full' }
+  const viaBase = lexiconKeyFor(key.split('-')[0])
+  if (viaBase) return { key: viaBase, mode: 'full' }
+  // A script alone cannot confirm the requested language. Leave the relaxed
+  // gates in place even when text offers better scoring hints than English.
+  return { key: detectScriptKey(text ?? '') ?? 'en', mode: 'degraded' }
 }
 
 /**
  * The exact words the deterministic scorer rewards, per language. Prompt
  * builders embed this so a model writes copy that can actually clear the
- * floors instead of guessing at the rubric.
+ * floors instead of guessing at the rubric. An unlisted language returns
+ * empty hook/cta (so the prompt stops steering toward English words) plus
+ * `degraded: true`; the English forbidden list still travels because
+ * English leakage is banned in every market.
  */
-export function scoringLexiconBrief(language: string): { hook: string[]; cta: string[]; forbidden: string[] } {
-  const key = language || 'en'
-  const base = SCORE_LANGUAGE_TERMS[key] ?? SCORE_LANGUAGE_TERMS[key.split('-')[0]] ?? SCORE_LANGUAGE_TERMS.en
-  return { hook: [...base.hook], cta: [...base.cta], forbidden: [...base.forbidden] }
+export function scoringLexiconBrief(language: string): { hook: string[]; cta: string[]; forbidden: string[]; degraded: boolean } {
+  const { key, mode } = resolveLexicon(language)
+  const base = SCORE_LANGUAGE_TERMS[key]
+  return {
+    hook: mode === 'full' ? [...base.hook] : [],
+    cta: mode === 'full' ? [...base.cta] : [],
+    forbidden: [...base.forbidden],
+    degraded: mode === 'degraded'
+  }
 }
 /** W:443-451 — lowercase, strip diacritics/¡!, collapse whitespace. */export function normalizeForScore(value: string): string {
   return String(value ?? '')
@@ -88,13 +233,15 @@ export function scoringLexiconBrief(language: string): { hook: string[]; cta: st
     .trim()
 }
 
-function buildLexicon(language: string, benefits: string[], brandTerms: string[]): ScoreLexicon {
-  const key = language || 'en'
-  const base = SCORE_LANGUAGE_TERMS[key] ?? SCORE_LANGUAGE_TERMS[key.split('-')[0]] ?? SCORE_LANGUAGE_TERMS.en
+function buildLexicon(language: string, text: string, benefits: string[], brandTerms: string[]): ScoreLexicon & { resolution: LexiconResolution } {
+  const resolution = resolveLexicon(language, text)
+  const base = SCORE_LANGUAGE_TERMS[resolution.key]
   // W:391 — caller benefits split into words (>2 chars) double as relevance
   // terms; the worker's extra score_terms merge rides the same list here.
-  const benefitWords = [...new Set(benefits.flatMap((value) => normalizeForScore(value).split(/[^\p{L}\p{N}]+/u)).filter((word) => word.length > 2))]
-  return { hook: base.hook, cta: base.cta, benefit: benefitWords, brand: brandTerms.map(normalizeForScore).filter(Boolean), forbidden: base.forbidden }
+  // \p{M} keeps combining marks inside words — Thai/Hindi/Arabic diacritics
+  // are Mark-category and must not split the term they belong to.
+  const benefitWords = [...new Set(benefits.flatMap((value) => normalizeForScore(value).split(/[^\p{L}\p{N}\p{M}]+/u)).filter((word) => word.length > 2))]
+  return { hook: base.hook, cta: base.cta, benefit: benefitWords, brand: brandTerms.map(normalizeForScore).filter(Boolean), forbidden: base.forbidden, resolution }
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +285,12 @@ export interface ScoredCopyItem {
   scores: { hook: number; relevance: number; cta: number; space: number; brand: number; total: number }
   accepted: boolean
   rejectReason?: string
+  /**
+   * full = scored with a matched language lexicon; degraded = the language
+   * had no lexicon (hook/CTA floors waived, total floor scaled — see
+   * DEGRADED_TOTAL_KEEP), so consumers can report the weaker gate honestly.
+   */
+  scoringMode: LexiconMode
 }
 
 /** W:453-456 — benefit hits 0/1/3/5 → 2/6/8/10. */
@@ -170,7 +323,41 @@ const FINANCIAL_FORBIDDEN_PATTERNS: RegExp[] = [
 ]
 
 export function financialComplianceViolations(text: string): string[] {
-  return FINANCIAL_FORBIDDEN_PATTERNS.filter((pattern) => pattern.test(text)).map((pattern) => pattern.source.slice(0, 80))
+  return financialComplianceMatches(text).map((match) => match.source)
+}
+
+/** Keep every occurrence so one quoted fact cannot validate a second claim. */
+function financialComplianceMatches(text: string): Array<{ source: string; start: number; end: number }> {
+  const matches: Array<{ source: string; start: number; end: number }> = []
+  for (const pattern of FINANCIAL_FORBIDDEN_PATTERNS) {
+    const global = new RegExp(pattern.source, `${pattern.flags}g`)
+    for (const hit of String(text ?? '').matchAll(global)) {
+      const start = hit.index ?? 0
+      matches.push({ source: pattern.source.slice(0, 80), start, end: start + hit[0].length })
+    }
+  }
+  return matches
+}
+
+function normalizeClaimText(value: string): string {
+  return value.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/** Locate complete quoted benefits, keeping word boundaries in Latin text. */
+function quotedBenefitRanges(text: string, benefits: string[]): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = []
+  const wordCharacter = /[\p{Script=Latin}\p{M}\p{N}]/u
+  for (const value of benefits) {
+    const benefit = normalizeClaimText(value)
+    if (!benefit) continue
+    for (let start = text.indexOf(benefit); start >= 0; start = text.indexOf(benefit, start + 1)) {
+      const end = start + benefit.length
+      const joinsPreviousWord = wordCharacter.test(benefit[0]) && wordCharacter.test(text[start - 1] ?? '')
+      const joinsNextWord = wordCharacter.test(benefit.at(-1) ?? '') && wordCharacter.test(text[end] ?? '')
+      if (!joinsPreviousWord && !joinsNextWord) ranges.push({ start, end })
+    }
+  }
+  return ranges
 }
 
 // ---------------------------------------------------------------------------
@@ -182,16 +369,18 @@ export function scoreCopyItem(
   opts: { type: 'short' | 'long'; maxBytes: number; language: string; benefits: string[]; brandTerms: string[]; targets: Required<CopyScoreTargets> }
 ): ScoredCopyItem {
   const source = String(text ?? '')
-  const lexicon = buildLexicon(opts.language, opts.benefits, opts.brandTerms)
+  const lexicon = buildLexicon(opts.language, source, opts.benefits, opts.brandTerms)
+  const degraded = lexicon.resolution.mode === 'degraded'
   const normalized = normalizeForScore(source)
   const bytes = countBytes(source)
 
   // Hook (W:415-419): hook word in first third +6, digit in first half +2,
-  // question mark +2, capped at 10.
+  // question mark +2, capped at 10. Digits include Arabic-Indic, Thai and
+  // Devanagari numerals; questions include the Arabic ؟.
   const firstThird = normalized.slice(0, Math.ceil(normalized.length / 3))
   const hasHook = lexicon.hook.some((word) => firstThird.includes(normalizeForScore(word)))
-  const hasNumber = /\d/.test(source.slice(0, Math.ceil(source.length / 2)))
-  const hasQuestion = source.includes('?')
+  const hasNumber = /[\d٠-٩۰-۹๐-๙०-९]/.test(source.slice(0, Math.ceil(source.length / 2)))
+  const hasQuestion = source.includes('?') || source.includes('؟')
   const hook = Math.min(10, (hasHook ? 6 : 0) + (hasNumber ? 2 : 0) + (hasQuestion ? 2 : 0))
 
   const relevance = relevanceScore(normalized, lexicon.benefit)
@@ -208,27 +397,41 @@ export function scoreCopyItem(
   // Weighted total (W:429): 0.22/0.34/0.18/0.10/0.16.
   const total = Math.round(hook * 0.22 + relevance * 0.34 + cta * 0.18 + space * 0.1 + brand * 0.16)
 
-  const violations = financialComplianceViolations(source)
+  // Require the complete benefit at the claim's location. Otherwise a
+  // scoped "zero fees on the first transfer" would authorize "zero fees"
+  // anywhere, and "not licensed" would authorize an affirmative claim.
+  const claimText = normalizeClaimText(source)
+  const claims = financialComplianceMatches(claimText)
+  const quotes = claims.length > 0 ? quotedBenefitRanges(claimText, opts.benefits) : []
+  const violatesCompliance = claims.some((claim) =>
+    !quotes.some((quote) => quote.start <= claim.start && quote.end >= claim.end)
+  )
   const withinBytes = bytes <= opts.maxBytes
+  // Degraded language: hook/CTA floors are unjudgeable in an unlisted
+  // language, so only the text-independent gates (relevance, space, brand
+  // forbidden words, financial compliance) stay hard; the total floor scales
+  // with the weight actually enforced (DEGRADED_TOTAL_KEEP).
+  const totalFloor = degraded ? Math.round(opts.targets.total * DEGRADED_TOTAL_KEEP) : opts.targets.total
   const passesFloors =
-    hook >= opts.targets.hook &&
+    (degraded || hook >= opts.targets.hook) &&
     relevance >= opts.targets.relevance &&
-    cta >= opts.targets.cta &&
+    (degraded || cta >= opts.targets.cta) &&
     space >= opts.targets.space &&
-    total >= opts.targets.total
-  const accepted = withinBytes && violations.length === 0 && passesFloors
+    total >= totalFloor
+  const accepted = withinBytes && !violatesCompliance && passesFloors
   return {
     text: source,
     bytes,
     scores: { hook, relevance, cta, space, brand, total },
     accepted,
-    ...(accepted ? {} : { rejectReason: rejectReasonFor(withinBytes, violations, passesFloors) })
+    scoringMode: lexicon.resolution.mode,
+    ...(accepted ? {} : { rejectReason: rejectReasonFor(withinBytes, violatesCompliance, passesFloors) })
   }
 }
 
-function rejectReasonFor(withinBytes: boolean, violations: string[], passesFloors: boolean): string {
+function rejectReasonFor(withinBytes: boolean, violatesCompliance: boolean, passesFloors: boolean): string {
   if (!withinBytes) return 'over_limit'
-  if (violations.length > 0) return 'financial_compliance_violation'
+  if (violatesCompliance) return 'financial_compliance_violation'
   if (!passesFloors) return 'below_score_targets'
   return 'not_needed'
 }
@@ -342,11 +545,31 @@ function classifyLines(lines: string[], maxBytes: { short: number; long: number 
   const longs: string[] = []
   for (const line of lines) {
     if (!line) continue
-    if (countBytes(line) <= maxBytes.short) {
-      if (shorts.length < COPY_CAP) shorts.push(line)
-    } else if (longs.length < COPY_CAP) longs.push(line)
+    const asShort = countBytes(line) <= maxBytes.short ? line : fitTrailingPunctuation(line, maxBytes.short)
+    if (countBytes(asShort) <= maxBytes.short) {
+      if (shorts.length < COPY_CAP) shorts.push(asShort)
+    } else {
+      const asLong = countBytes(line) <= maxBytes.long ? line : fitTrailingPunctuation(line, maxBytes.long)
+      if (longs.length < COPY_CAP) longs.push(asLong)
+    }
   }
   return { shorts, longs }
+}
+
+/**
+ * Models overshoot the cap by a byte or two of trailing punctuation far more
+ * often than by whole words (the #1 rejection cause in real runs). Trailing
+ * punctuation carries no claim — strip it to rescue small overshoots; a
+ * genuinely too-long line is left alone (scoring rejects it honestly).
+ */
+function fitTrailingPunctuation(line: string, cap: number): string {
+  let text = line
+  while (countBytes(text) > cap) {
+    const trimmed = text.replace(/[。，．、,.;；:！!？?\s—-]+$/u, '')
+    if (trimmed === text || trimmed.length === 0) break
+    text = trimmed
+  }
+  return text
 }
 
 /** W:547-564 — brace-matched extraction of the first complete JSON object. */
@@ -423,11 +646,14 @@ function normalizeParsedJson(parsed: unknown, maxBytes: { short: number; long: n
 function classifyInto(shorts: string[], longs: string[], maxBytes: { short: number; long: number }): { shorts: string[]; longs: string[] } {
   // Keyed aliases carry their type (W:566-571 keeps parsed.short as shorts
   // regardless of length — over-limit candidates are rejected later by
-  // scoring, so truncating here would hide real violations).
-  void maxBytes
+  // scoring, so truncating here would hide real violations). Exception:
+  // trailing-punctuation rescue (classifyLines.fit) for small overshoots —
+  // cosmetic tail bytes are the #1 real-world over-limit cause and carry no
+  // content, so stripping them cannot hide a violation.
+  const rescue = (line: string, cap: number) => (countBytes(line) > cap ? fitTrailingPunctuation(line, cap) : line)
   return {
-    shorts: shorts.filter(Boolean).slice(0, COPY_CAP),
-    longs: longs.filter(Boolean).slice(0, COPY_CAP)
+    shorts: shorts.map((line) => rescue(line, maxBytes.short)).filter(Boolean).slice(0, COPY_CAP),
+    longs: longs.map((line) => rescue(line, maxBytes.long)).filter(Boolean).slice(0, COPY_CAP)
   }
 }
 

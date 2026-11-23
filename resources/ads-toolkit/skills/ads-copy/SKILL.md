@@ -49,6 +49,7 @@ description: Google App Campaign 广告文案生成：按产品接入表收集�
 
 - **要投放或交付的每种语言**：各自单独调用一次 `toushou_copy_generate_batch`，把 `product.language` 设成该语言（en / es-MX / pt-BR / zh-CN …），并且必须**原生生成**——不要拿一种语言的稿子翻译成另一种语言顶替，也不要让对话模型代写。一次要几种投放语言，就在同一轮发起几次调用（可以并行）。
 - **只是给你看、对照或汇报用的参考译文**：可以直接由对话模型翻译已经交付的文案，省下文案模型的 token；但必须标注“参考译文（不用于投放）”，不能当成交付物料，也不能再拿去投放。
+- **对照/审核表格里的「文案翻译」列按参考译文处理**：交付表格（送审 Excel 等）里为 reviewer 添加的中文翻译列，由对话模型翻译已交付的文案即可（不调用文案模型、不消耗池 token），并在列头或备注标注“参考译文（不用于投放）”。只有用户明确要求“中文也要投放/送审中文文案”时，才把 zh-CN 当作交付语言原生生成。
 - 用户说法含糊时先确认一句：这套译文是要投放，还是用来对照的。
 
 ### 第三步：评分自检
@@ -79,7 +80,7 @@ mode = pool 时评分与重试由引擎完成：不要自行改写工具返回�
 | 空间利用 Space | 10% | 达到字节上限的 75%-100%；超限直接不合格 |
 | 品牌契合 Brand | 16% | 与品牌调性一致，不生硬 |
 
-总分 = 各维加权求和（四舍五入）。默认达标线：钩子≥6、相关性≥6、CTA≥6、空间≥6、总分≥7；用户指定门槛时以用户为准，不擅自抬高。
+总分 = 各维加权求和（四舍五入）。默认达标线（与引擎 DEFAULT_TARGETS 一致）：钩子≥6、相关性≥6、CTA≥7、空间≥5、总分≥7；用户指定门槛时以用户为准，不擅自抬高。
 
 ### 多语言词典（按投放语言选用）
 
@@ -91,8 +92,23 @@ mode = pool 时评分与重试由引擎完成：不要自行改写工具返回�
 | 繁中 | 發現, 探索, 免費, 立即, 最好, 真實, 加入 | 下載, 安裝, 開始, 加入, 體驗, 註冊 | 保證, 無風險, 第一, 最安全, 穩賺 |
 | 法语 | découvrez, trouvez, gratuit, maintenant, meilleur | téléchargez, installez, commencez, essayez | miracle, garanti, sans risque |
 | 德语 | entdecke, finde, kostenlos, jetzt, beste | herunterladen, installieren, starten, ausprobieren | garantiert, risikofrei, nummer 1 |
+| 菲语 | libre, tuklasin, bagong, ngayon, subukan, free | i-download, sumali, subukan, simulan, kunin, mag-register | garantisado, walang panganib, numero uno, pinakaligtas, guaranteed |
+| 泰语 | ฟรี, ใหม่, ดีที่สุด, ทันที, วันนี้, ง่าย, ลอง | ดาวน์โหลด, โหลด, ติดตั้ง, เริ่ม, ใช้งาน, สมัคร | การันตี, รับประกัน, ไม่มีความเสี่ยง, ปลอดภัยที่สุด, อันดับ 1 |
+| 越语 | khám phá, miễn phí, ngay, mới, tốt nhất, thử | tải, cài đặt, bắt đầu, đăng ký, tham gia, dùng thử | đảm bảo, không rủi ro, số 1, an toàn nhất |
+| 印尼语 | gratis, temukan, baru, terbaik, sekarang, mudah, coba | unduh, instal, mulai, gabung, daftar, buka, dapatkan | dijamin, tanpa risiko, nomor 1, paling aman |
+| 马来语 | percuma, temui, terbaik, sekarang, mudah, cuba | muat turun, pasang, mula, sertai, daftar, guna | dijamin, tanpa risiko, nombor 1, paling selamat |
+| 葡语(含巴) | descubra, grátis, agora, novo, fácil, experimente | baixe, instale, comece, junte-se, cadastre-se, abra | garantido, sem risco, número 1, milagre |
+| 日语 | 無料, 今すぐ, 新, 簡単, 発見, 試す | ダウンロード, インストール, 始める, 登録, チェック, ゲット | 保証, 必ず, リスクなし, No.1, 奇跡 |
+| 韩语 | 무료, 지금, 새로운, 간편, 발견, 인기 | 다운로드, 설치, 시작, 가입, 체험, 받기 | 보장, 무위험, 1등, 가장 안전, 기적 |
+| 俄语 | открой, бесплатно, сейчас, новый, легко, попробуй | скачать, установи, начни, присоединяйся, получи | гарантия, без риска, номер 1, чудо |
+| 阿语 | اكتشف, مجان, الآن, جديد, سهل | حمّل, ثبّت, ابدأ, انضم, سجّل, احصل | مضمون, بدون مخاطر, الأكثر أماناً, معجزة |
+| 土语 | keşfet, ücretsiz, şimdi, yeni, kolay, dene | indir, yükle, başla, katıl, kaydol, kullan | garantili, risksiz, 1 numara, en güvenli, mucize |
+| 意语 | scopri, gratis, ora, nuovo, facile, prova | scarica, installa, inizia, prova, unisciti, registrati | miracolo, garantito, senza rischi, numero 1 |
+| 印地语 | मुफ़्त, अभी, नया, आसान, खोजें | डाउनलोड, इंस्टॉल, शुरू, आज़माएँ, जुड़ें, रजिस्टर | गारंटी, बिना जोखिम, नंबर 1, चमत्कार |
+| 荷语 | ontdek, gratis, nu, nieuw, makkelijk | download, installeer, begin, word lid, registreer, gebruik | gegarandeerd, risicovrij, nummer 1, veiligste |
+| 波语 | odkryj, darmowy, teraz, nowy, łatwo, spróbuj | pobierz, zainstaluj, zacznij, dołącz, zarejestruj | gwarantowany, bez ryzyka, numer 1, cud |
 
-非词典语言：用等效的自然本地表达，遵循同样判定逻辑。
+非词典语言：引擎按降级模式评分——钩子/CTA 门槛自动放宽（总分线按保留权重折算），相关性/字节/合规仍硬卡；文案照常要求目标语言自然母语表达，遵守同样判定逻辑，绝不因语言不支持而整体打 0 分。
 
 ## 文案规则（硬约束）
 
