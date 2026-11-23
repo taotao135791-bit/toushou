@@ -4,8 +4,8 @@ import { readdirSync, unlinkSync } from 'node:fs'
 import { getStore, setStore, applyFirstRunDefaults } from './store'
 import { ensureBundledPackages } from './bundledPackages'
 import { initBrowserUseBridge } from './browserUse'
-import { initializeAppsFlyerToolBridge } from './appsflyerConnection'
-import { registerIpc, shutdownSessionsForQuit } from './ipc'
+import { initializeAppsFlyerToolBridge, ensureAppsFlyerFreshToken } from './appsflyerConnection'
+import { registerIpc, shutdownSessionsForQuit, tiktokAdsConnectionManager } from './ipc'
 import { pruneOrphanedHtmlBoards } from './htmlBoards'
 import { cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { syncMachineSkills } from './piSettings'
@@ -21,7 +21,9 @@ import { initAdsCopyBridge } from './adsCopyBridge'
 import { ensureKernelSkill } from './kernelSkill'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
+import { tokenKeepAlive } from './tokenKeepAlive'
 import { installFileLogging } from './lib/logger'
+import { applyWindowTheme, themeBackgroundColor } from './windowTheme'
 
 // File logging must be the first thing main does: it captures the console
 // output of the startup sequence below into userData/logs/main.log.
@@ -95,7 +97,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     // Slightly inset the native macOS controls within the 44px drag area.
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 14 } } : {}),
-    backgroundColor: '#ffffff',
+    backgroundColor: themeBackgroundColor(getStore('theme') ?? 'light'),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -190,6 +192,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('[bundled-packages] startup preparation failed', error)
   }
+  applyWindowTheme(getStore('theme'))
   registerIpc()
   createWindow()
   initUpdater()
@@ -198,6 +201,11 @@ app.whenReady().then(async () => {
   void feishuConnectionManager.initialize()
   // TikTok 报表自动刷新：仅在持久化开关为开时启动 30 分钟定时器。
   tiktokReportService.restoreFromSettings()
+  // MCP 令牌后台续签：在令牌到期前主动刷新 TikTok / AppsFlyer 的 OAuth
+  // 授权，避免闲置后首次读数才发现令牌过期（详见 tokenKeepAlive.ts）。
+  tokenKeepAlive.registerTarget('tiktok-ads', () => tiktokAdsConnectionManager.ensureFreshToken())
+  tokenKeepAlive.registerTarget('appsflyer', () => ensureAppsFlyerFreshToken())
+  tokenKeepAlive.start()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -11,6 +11,8 @@ import { APPSFLYER_MCP_ENDPOINT } from './constants'
 import type { ConnectionDefinition, ConnectionStatus } from '../../../shared/connections'
 
 const BASE = 'https://mcp.appsflyer.com'
+/** Keep-alive renews this early: idle apps never ride a token into expiry. */
+const KEEPALIVE_MARGIN_MS = 10 * 60 * 1000
 const DEFINITION: ConnectionDefinition = { id: 'appsflyer', kind: 'oauth', label: 'AppsFlyer', description: '连接 AppsFlyer 官方 MCP，读取已有聚合数据。', capabilities: ['mcp'] }
 export interface AppsFlyerConnectionSnapshot { definition: ConnectionDefinition; status: ConnectionStatus; connected: boolean; lastError?: string; lastConnectedAt?: number; tokenExpiresAt?: number; authorizationUrl?: string }
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>
@@ -45,13 +47,18 @@ export class AppsFlyerConnectionManager {
   private verifiedToken: string | null = null
   private verifiedTools: ToolDescription[] = []
   private pendingVerification: { token: string; generation: number; promise: Promise<boolean> } | null = null
-  constructor(options: { credentialStore?: Store; fetchImpl?: Fetcher; openExternal?: (url: string) => Promise<void>; onChange?: (snapshot: AppsFlyerConnectionSnapshot) => void; now?: () => number; probe?: (token: string) => Promise<ToolDescription[]> } = {}) {
+  /** Background keep-alive: bounded retry cadence after a failed renewal. */
+  private refreshRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private refreshRetryAttempts = 0
+  private readonly refreshRetryDelays: number[]
+  constructor(options: { credentialStore?: Store; fetchImpl?: Fetcher; openExternal?: (url: string) => Promise<void>; onChange?: (snapshot: AppsFlyerConnectionSnapshot) => void; now?: () => number; probe?: (token: string) => Promise<ToolDescription[]>; refreshRetryDelaysMs?: number[] } = {}) {
     this.filePath = options.credentialStore ? undefined : path.join(app.getPath('userData'), 'appsflyer-credentials.bin')
     this.store = options.credentialStore ?? new TikTokCredentialStore({ filePath: this.filePath })
     this.fetcher = options.fetchImpl ?? proxyFetch
     this.open = options.openExternal ?? ((url) => shell.openExternal(url))
     this.onChange = options.onChange ?? (() => {})
     this.now = options.now ?? Date.now
+    this.refreshRetryDelays = options.refreshRetryDelaysMs ?? [60_000, 300_000, 900_000]
     this.probe = options.probe ?? (async token => { const client = new AppsFlyerMcpClient(token, this.fetcher); await client.initialize(); return client.toolDescriptions() })
   }
   getSnapshot(): AppsFlyerConnectionSnapshot { return { definition: DEFINITION, status: this.status, connected: this.status === 'connected', ...(this.error ? { lastError: this.error } : {}), ...(this.connectedAt ? { lastConnectedAt: this.connectedAt } : {}), ...(this.credentials?.expiresAt ? { tokenExpiresAt: this.credentials.expiresAt } : {}), ...(this.status === 'waiting_for_user' && this.url ? { authorizationUrl: this.url } : {}) } }
@@ -63,6 +70,7 @@ export class AppsFlyerConnectionManager {
   }
   async begin(): Promise<AppsFlyerConnectionSnapshot> {
     if (this.flow || this.status === 'connecting') return this.getSnapshot()
+    this.clearRefreshRetry()
     const generation = ++this.generation
     const epoch = this.store.sharedStorageBlockedEpoch()
     if (this.pendingDisconnect) await this.pendingDisconnect
@@ -81,14 +89,14 @@ export class AppsFlyerConnectionManager {
         if (fresh && await this.checkConnection(fresh.accessToken, generation)) return this.getSnapshot()
         if (generation !== this.generation) return this.getSnapshot()
       }
-      const meta = await this.json(`${BASE}/.well-known/oauth-authorization-server`)
+      const meta = await this.jsonWithRetry(`${BASE}/.well-known/oauth-authorization-server`)
       if (generation !== this.generation) return this.getSnapshot()
       if (!validEndpoint(meta.authorization_endpoint) || !validEndpoint(meta.token_endpoint) || !validEndpoint(meta.registration_endpoint)) throw new Error('invalid metadata')
       const listener = await this.listen()
       if (generation !== this.generation) { listener.server.close(); return this.getSnapshot() }
       const redirectUri = `http://127.0.0.1:${listener.port}/callback`
       let registration: Record<string, unknown>
-      try { registration = await this.json(meta.registration_endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Toushou', redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'client_secret_post' }) }) }
+      try { registration = await this.jsonWithRetry(meta.registration_endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'Toushou', redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'client_secret_post' }) }) }
       catch (error) { listener.server.close(); throw error }
       if (generation !== this.generation) { listener.server.close(); return this.getSnapshot() }
       if (typeof registration.client_id !== 'string' || !registration.client_id || typeof registration.client_secret !== 'string' || !registration.client_secret) { listener.server.close(); throw new Error('invalid registration') }
@@ -100,12 +108,12 @@ export class AppsFlyerConnectionManager {
       for (const [key, value] of Object.entries({ response_type: 'code', client_id: flow.clientId, redirect_uri: redirectUri, scope: 'user', state, code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', resource: APPSFLYER_MCP_ENDPOINT })) url.searchParams.set(key, value)
       this.url = url.toString(); this.status = 'waiting_for_user'; this.emit()
       try { await this.open(this.url) } catch { if (this.flow === flow) { this.error = '无法打开浏览器，请手动打开授权链接'; this.emit() } }
-    } catch (error) { if (generation === this.generation) { if (error instanceof TikTokCredentialStorageError) this.storageBlocked = true; this.fail('连接初始化失败，请重试或检查安全存储') } }
+    } catch (error) { if (generation === this.generation) { if (error instanceof TikTokCredentialStorageError) this.storageBlocked = true; const detail = error instanceof Error ? error.message : String(error); this.fail(`连接初始化失败：${detail.slice(0, 200) || '请重试或检查安全存储'}`) } }
     return this.getSnapshot()
   }
-  cancel(): AppsFlyerConnectionSnapshot { ++this.generation; this.closeFlow(); this.status = this.storageBlocked ? 'degraded' : this.credentials?.accessToken ? (this.verified ? 'connected' : 'degraded') : 'disconnected'; this.error = this.status === 'degraded' ? 'AppsFlyer 连接尚未验证，请重试' : undefined; this.emit(); return this.getSnapshot() }
+  cancel(): AppsFlyerConnectionSnapshot { ++this.generation; this.closeFlow(); this.clearRefreshRetry(); this.status = this.storageBlocked ? 'degraded' : this.credentials?.accessToken ? (this.verified ? 'connected' : 'degraded') : 'disconnected'; this.error = this.status === 'degraded' ? 'AppsFlyer 连接尚未验证，请重试' : undefined; this.emit(); return this.getSnapshot() }
   async disconnect(): Promise<AppsFlyerConnectionSnapshot> {
-    ++this.generation; this.closeFlow(); this.clearVerifiedTools()
+    ++this.generation; this.closeFlow(); this.clearRefreshRetry(); this.clearVerifiedTools()
     if (this.pendingDisconnect) return this.pendingDisconnect
     const run = (async () => {
       if (this.pendingRefresh) await this.pendingRefresh
@@ -172,6 +180,49 @@ export class AppsFlyerConnectionManager {
     if (generation !== this.generation || this.pendingDisconnect || !this.credentials?.accessToken) return null
     return { accessToken: this.credentials.accessToken }
   }
+  /**
+   * Background keep-alive entry (tokenKeepAlive ticks every few minutes):
+   * renew proactively while the access token is still inside the keep-alive
+   * margin, so an idle app never rides a token into expiry and meets the
+   * renewal server only after it is already dead. Pure no-op (true) when
+   * there is nothing renewable; never throws into the caller.
+   */
+  async ensureFreshToken(): Promise<boolean> {
+    if (this.pendingDisconnect || this.storageBlocked) return false
+    const generation = this.generation
+    if (!this.credentials) { try { const c = await this.store.load(); if (generation !== this.generation) return false; this.credentials = c } catch { return false } }
+    const c = this.credentials
+    if (!c?.accessToken || !c.refreshToken || !validEndpoint(c.tokenEndpoint)) return false
+    if (c.expiresAt && c.expiresAt > this.now() + KEEPALIVE_MARGIN_MS) return true
+    if (this.pendingRefresh) return this.pendingRefresh
+    const pending = (async () => {
+      const ok = await this.refresh(c, generation)
+      if (!ok || generation !== this.generation || this.pendingDisconnect || !this.credentials?.accessToken) return false
+      // Renewal rotated the token: re-verify read tools so the snapshot
+      // recovers to connected on its own instead of lingering degraded.
+      if (this.verifiedToken !== this.credentials.accessToken && !(await this.checkConnection(this.credentials.accessToken, generation))) return false
+      if (generation !== this.generation) return false
+      return !!this.credentials?.accessToken
+    })()
+    this.pendingRefresh = pending
+    void pending.finally(() => { if (this.pendingRefresh === pending) this.pendingRefresh = null })
+    return pending
+  }
+  private clearRefreshRetry(): void {
+    if (this.refreshRetryTimer) { clearTimeout(this.refreshRetryTimer); this.refreshRetryTimer = null }
+    this.refreshRetryAttempts = 0
+  }
+  /** Bounded retry cadence, then stop and stay degraded. */
+  private scheduleRefreshRetry(generation: number): void {
+    if (this.refreshRetryTimer || this.pendingDisconnect || generation !== this.generation) return
+    if (this.refreshRetryAttempts >= this.refreshRetryDelays.length) return
+    const delay = this.refreshRetryDelays[this.refreshRetryAttempts]
+    this.refreshRetryAttempts++
+    this.refreshRetryTimer = setTimeout(() => {
+      this.refreshRetryTimer = null
+      if (generation === this.generation && !this.pendingDisconnect) void this.ensureFreshToken()
+    }, delay)
+  }
   private async refresh(c: Credentials, generation: number): Promise<boolean> {
     if (!c.refreshToken || !validEndpoint(c.tokenEndpoint)) { this.clearVerifiedTools(); this.status = 'degraded'; this.error = '连接已过期，请重新授权'; this.emit(); return false }
     try {
@@ -182,10 +233,59 @@ export class AppsFlyerConnectionManager {
       const saving = this.store.save(next, { beforeCommit: () => generation === this.generation })
       this.pendingSave = saving; try { await saving } finally { if (this.pendingSave === saving) this.pendingSave = null }
       if (generation !== this.generation) return false
-      this.credentials = next; this.clearVerifiedTools(); return true
-    } catch (error) { if (generation === this.generation) { this.clearVerifiedTools(); if (error instanceof TikTokCredentialStorageError) this.storageBlocked = true; this.status = 'degraded'; this.error = this.storageBlocked ? '安全凭据存储不可用，请在连接页重试' : '连接续期失败，请重新授权'; this.emit() }; return false }
+      this.credentials = next; this.clearVerifiedTools(); this.refreshRetryAttempts = 0; return true
+    } catch (error) {
+      if (generation !== this.generation) return false
+      this.clearVerifiedTools()
+      if (error instanceof TikTokCredentialStorageError) { this.storageBlocked = true; this.status = 'degraded'; this.error = '安全凭据存储不可用，请在连接页重试'; this.emit(); return false }
+      // Transient (network/proxy/timeout) failures retry on a bounded cadence
+      // before declaring the grant dead — one hiccup must not read as "授权掉了".
+      // Permanent OAuth rejections (invalid/expired grant) do not retry.
+      const message = error instanceof Error ? error.message : String(error)
+      const permanent = /invalid|expired|unauthorized|forbidden|denied|revoked/i.test(message)
+      if (!permanent) this.scheduleRefreshRetry(generation)
+      this.status = 'degraded'
+      this.error = permanent || this.refreshRetryAttempts >= 3 ? '连接续期失败，请重新授权' : '连接续期失败，正在自动重试'
+      this.emit()
+      return false
+    }
   }
-  private async json(url: string, init: RequestInit = {}): Promise<Record<string, unknown>> { if (!validEndpoint(url)) throw new Error('invalid endpoint'); const r = await this.fetcher(url, { ...init, signal: AbortSignal.timeout(20_000), redirect: 'error' }); if (!r.ok) throw new Error('request failed'); const x = await r.json(); if (!x || typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid response'); return x as Record<string, unknown> }
+  private async json(url: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
+    if (!validEndpoint(url)) throw new Error('invalid endpoint')
+    const r = await this.fetcher(url, { ...init, signal: AbortSignal.timeout(20_000), redirect: 'error' })
+    if (!r.ok) {
+      // Surface the OAuth error payload (invalid_grant / expired …) so callers
+      // can classify permanent rejections instead of retrying a dead grant.
+      const detail = await r.clone().json().then((x: unknown) => {
+        if (!x || typeof x !== 'object' || Array.isArray(x)) return undefined
+        const o = x as Record<string, unknown>
+        return typeof o.error_description === 'string' && o.error_description ? o.error_description : typeof o.error === 'string' ? o.error : undefined
+      }).catch(() => undefined)
+      throw new Error(typeof detail === 'string' && detail ? `request failed: ${detail}` : 'request failed')
+    }
+    const x = await r.json()
+    if (!x || typeof x !== 'object' || Array.isArray(x)) throw new Error('invalid response')
+    return x as Record<string, unknown>
+  }
+  /**
+   * Connect-chain fetch with bounded network-level retries (same proxy route,
+   * short backoff): the discovery/registration round-trips die on transient
+   * proxy hiccups far more often than they fail semantically, and surfacing
+   * "连接初始化失败" for those made AF look permanently broken.
+   */
+  private async jsonWithRetry(url: string, init: RequestInit = {}, attempts = 3): Promise<Record<string, unknown>> {
+    let lastError: unknown
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try { return await this.json(url, init) } catch (error) {
+        lastError = error
+        const message = error instanceof Error ? `${error.message} ${error.name}` : String(error)
+        const networkish = error instanceof TypeError || /timeout|abort|network|fetch failed/i.test(message)
+        if (!networkish || attempt === attempts) throw error
+        await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 500 : 2000))
+      }
+    }
+    throw lastError
+  }
   private async token(url: string, body: URLSearchParams): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scope?: string }> { const x = await this.json(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() }); if (typeof x.access_token !== 'string' || !x.access_token) throw new Error('invalid token'); return { accessToken: x.access_token, ...(typeof x.refresh_token === 'string' && x.refresh_token ? { refreshToken: x.refresh_token } : {}), ...(typeof x.expires_in === 'number' && Number.isFinite(x.expires_in) && x.expires_in > 0 ? { expiresAt: this.now() + x.expires_in * 1000 } : {}), ...(typeof x.scope === 'string' ? { scope: x.scope } : {}) } }
   private listen(): Promise<{ server: Server; port: number }> { return new Promise((resolve, reject) => { const server = createServer((req, res) => this.callback(req, res)); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const addr = server.address(); if (!addr || typeof addr === 'string') { server.close(); reject(new Error('listener failed')); return }; resolve({ server, port: addr.port }) }) }) }
   private callback(req: IncomingMessage, res: ServerResponse): void {

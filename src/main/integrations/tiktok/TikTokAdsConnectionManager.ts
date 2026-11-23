@@ -83,6 +83,10 @@ export class TikTokAdsConnectionManager {
   private flow: PendingFlow | null = null
   private refreshTimer: ReturnType<typeof setTimeout> | null = null
   private refreshPending: Promise<boolean> | null = null
+  /** Bounded auto-retry after a failed renewal (transient network only). */
+  private refreshRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private refreshRetryAttempts = 0
+  private readonly refreshRetryDelays: number[]
   private authorizationSavePending: Promise<void> | null = null
   private disconnectPending: Promise<TikTokAdsConnectionSnapshot> | null = null
   private credentialGeneration = 0
@@ -100,12 +104,15 @@ export class TikTokAdsConnectionManager {
     fetchImpl?: TikTokFetch
     openExternal?: (url: string) => Promise<void>
     now?: () => number
+    /** Test seam: renewal-retry cadence (default 1min/5min/15min). */
+    refreshRetryDelaysMs?: number[]
   } = {}) {
     this.credentialStore = options.credentialStore ?? new TikTokCredentialStore()
     this.mcpPaths = options.mcpPaths ?? defaultMcpStorePaths()
     this.fetchImpl = options.fetchImpl ?? ((url, init) => this.fetchViaProxySession(url, init))
     this.openExternal = options.openExternal ?? ((url) => shell.openExternal(url))
     this.now = options.now ?? Date.now
+    this.refreshRetryDelays = options.refreshRetryDelaysMs ?? [60_000, 300_000, 900_000]
   }
 
   /**
@@ -300,6 +307,7 @@ export class TikTokAdsConnectionManager {
       clearTimeout(this.refreshTimer)
       this.refreshTimer = null
     }
+    this.clearRefreshRetry()
     if (this.refreshPending) await this.refreshPending
     if (this.authorizationSavePending) await this.authorizationSavePending.catch(() => {})
     await this.credentialStore.clear()
@@ -369,24 +377,64 @@ export class TikTokAdsConnectionManager {
         ...(tokens.advertiserIds ? {} : { advertiserIds: credentials.advertiserIds }),
         savedAt: 0
       }
-      await this.credentialStore.save(nextCredentials)
+      // The server may rotate the refresh token on every grant: persist the
+      // new material before anything else — a single failed write would
+      // orphan the rotated token and force a full browser re-auth.
+      await this.saveWithRetry(nextCredentials, generation)
       if (generation !== this.credentialGeneration) return false
       this.credentials = nextCredentials
       if (!(await this.applyMcpEntry())) return false
       if (generation !== this.credentialGeneration) return false
       this.state = 'connected'
       this.lastError = undefined
+      this.clearRefreshRetry()
       this.scheduleNextRefresh()
       this.emitState()
       return true
     } catch (error) {
       if (generation !== this.credentialGeneration) return false
       if (error instanceof TikTokCredentialStorageError) { this.markStorageBlocked(error); return false }
+      const message = error instanceof Error ? error.message : String(error)
+      // Permanent OAuth rejections (invalid/expired grant) never retry — the
+      // stored grant is dead and only a browser re-auth helps. Transient
+      // network failures retry on a bounded cadence so one proxy hiccup no
+      // longer reads as "授权掉了".
+      const permanent = /invalid|expired|unauthorized|forbidden|denied|revoked|HTTP 4\d\d/i.test(message)
+      if (!permanent) this.scheduleRefreshRetry(generation)
       this.state = 'degraded'
-      this.lastError = `令牌刷新失败：${friendlyError(error)}（请重新授权）`
+      this.lastError = permanent || this.refreshRetryAttempts >= 3
+        ? `令牌刷新失败：${friendlyError(error)}（请重新授权）`
+        : `令牌刷新失败：${friendlyError(error)}（正在自动重试）`
       this.emitState()
       return false
     }
+  }
+
+  /** Persist rotated OAuth material with bounded retries — see refreshTokenOnce. */
+  private async saveWithRetry(credentials: TikTokStoredCredentials, generation: number, attempts = 3): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try { return await this.credentialStore.save(credentials) } catch (error) {
+        if (error instanceof TikTokCredentialStorageError || attempt >= attempts || generation !== this.credentialGeneration) throw error
+        await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 300 : 1500))
+      }
+    }
+  }
+
+  private clearRefreshRetry(): void {
+    if (this.refreshRetryTimer) { clearTimeout(this.refreshRetryTimer); this.refreshRetryTimer = null }
+    this.refreshRetryAttempts = 0
+  }
+
+  /** Bounded retry cadence, then stop and stay degraded. */
+  private scheduleRefreshRetry(generation: number): void {
+    if (this.refreshRetryTimer || generation !== this.credentialGeneration) return
+    if (this.refreshRetryAttempts >= this.refreshRetryDelays.length) return
+    const delay = this.refreshRetryDelays[this.refreshRetryAttempts]
+    this.refreshRetryAttempts++
+    this.refreshRetryTimer = setTimeout(() => {
+      this.refreshRetryTimer = null
+      if (generation === this.credentialGeneration) void this.ensureFreshToken()
+    }, delay)
   }
 
   /**

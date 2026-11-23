@@ -267,6 +267,8 @@ export interface AppsFlyerPullOptions {
   canCommit?: () => boolean
   /** Deterministic clock for tests and today's partial-window policy. */
   now?: number
+  /** Pace between planned queries — the official tool caps at 20 calls/min. */
+  interCallDelayMs?: number
 }
 
 function emptyQueryColumns(query: Obj): BoardDatasetColumn[] {
@@ -343,9 +345,101 @@ function selectTargets(options: AppsFlyerPullOptions, specs: AfQuerySpec[], data
   })
 }
 
+/**
+ * 预审（query plan）：ONE discovery call inventories the app's dimensions —
+ * events, media sources, date span — without writing any dataset. Broad
+ * user requests ("全部数据") present this inventory for the user to pick
+ * from, then each confirmed combo becomes one af_dataset_pull (one call).
+ */
+export interface AppsFlyerQueryPlan {
+  appId: string
+  window: PullWindow
+  events: Array<{ event: string; rows: number; count: number; uniqueUsers: number }>
+  mediaSources: Array<{ source: string; rows: number; installs: number }>
+  dateSpan: { start: string; end: string }
+  totalRows: number
+  partial: boolean
+  suggestedCalls: number
+}
+
+export async function planAppsFlyerQuery(options: {
+  appId: string
+  window: PullWindow
+  clientFactory?: (token: string) => QueryClient
+}): Promise<AppsFlyerQueryPlan> {
+  const token = await verifiedToken()
+  if (!token) throw new Error('not-connected')
+  const client = options.clientFactory ? options.clientFactory(token) : new AppsFlyerMcpClient(token, async (url, init) => (await proxyFetchFor(url, 'appsflyer-api'))(url, init))
+  await client.initialize()
+  // ONE discovery call: group by Event name + Media source + Date, every
+  // channel, no event filter — the cheapest possible dimension inventory.
+  const query: Obj = {
+    start_date: options.window.start,
+    end_date: options.window.end,
+    app_ids: [options.appId],
+    row_count: 100,
+    metrics: [
+      { metric_name: 'Count', attribution_source: 'appsflyer', period: 'activity' },
+      { metric_name: 'Unique users', attribution_source: 'appsflyer', period: 'activity' }
+    ],
+    sort_by_metrics: [{ metric_name: 'Count', order: 'desc' }],
+    groupings: ['Event name', 'Media source', 'Date'],
+    filters: {}
+  }
+  const text = await client.queryRaw({ query })
+  const parsed = parseAfDataset(text, 100, { allowPartial: true })
+  const idx = (name: string) => parsed.columns.findIndex((column) => column.name === name)
+  const eventIndex = idx('事件')
+  const sourceIndex = idx('媒体渠道')
+  const countIndex = idx('事件次数')
+  const installIndex = idx('安装量')
+  const events = new Map<string, { rows: number; count: number; uniqueUsers: number }>()
+  const sources = new Map<string, { rows: number; installs: number }>()
+  let firstDate = ''
+  let lastDate = ''
+  for (const row of parsed.rows) {
+    const day = String(row[idx('日期')] ?? '')
+    if (day) { if (!firstDate || day < firstDate) firstDate = day; if (!lastDate || day > lastDate) lastDate = day }
+    if (eventIndex >= 0) {
+      const name = String(row[eventIndex] ?? '(未知事件)')
+      const agg = events.get(name) ?? { rows: 0, count: 0, uniqueUsers: 0 }
+      agg.rows += 1
+      const countValue = countIndex >= 0 ? Number(row[countIndex]) : 0
+      if (Number.isFinite(countValue)) agg.count += countValue
+      const usersValue = idx('独立用户') >= 0 ? Number(row[idx('独立用户')]) : 0
+      if (Number.isFinite(usersValue)) agg.uniqueUsers += usersValue
+      events.set(name, agg)
+    }
+    if (sourceIndex >= 0) {
+      const name = String(row[sourceIndex] ?? '(全部)')
+      const agg = sources.get(name) ?? { rows: 0, installs: 0 }
+      agg.rows += 1
+      const installValue = installIndex >= 0 ? Number(row[installIndex]) : 0
+      if (Number.isFinite(installValue)) agg.installs += installValue
+      sources.set(name, agg)
+    }
+  }
+  const span = firstDate && lastDate ? { start: firstDate, end: lastDate } : { ...options.window }
+  return {
+    appId: options.appId,
+    window: { ...options.window },
+    events: [...events.entries()].map(([event, agg]) => ({ event, ...agg })).sort((a, b) => b.count - a.count),
+    mediaSources: [...sources.entries()].map(([source, agg]) => ({ source, ...agg })).sort((a, b) => b.installs - a.installs),
+    dateSpan: span,
+    totalRows: parsed.rows.length,
+    partial: options.window.end === localToday(),
+    // Each confirmed combo (event × media source) = one af_dataset_pull = one call.
+    suggestedCalls: Math.max(1, events.size)
+  }
+}
+
+const localToday = (): string => {
+  const date = new Date()
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
 /** Pull the requested recipes over an exact window; one source never refreshes another board's AF data. */
-export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Promise<AppsFlyerPullResult> {
-  const { window, file, specsFile: specsFilePath, clientFactory } = options
+export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Promise<AppsFlyerPullResult> {  const { window, file, specsFile: specsFilePath, clientFactory, interCallDelayMs = 3_500 } = options
   if (!isAppsFlyerDatasetWindow(window)) return { ok: false, error: 'invalid-window', results: [] }
   const now = options.now ?? Date.now()
   const localToday = (() => {
@@ -403,17 +497,101 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
     bound.forEach(target => fail(target, 'not-connected'))
     return { ok: false, error: 'not-connected', results }
   }
+  // ---- Plan: group bound targets by sanitized query shape — identical
+  // recipes share ONE server call and every dataset in the group is written
+  // from the same answer. The official tool caps at 20 calls/min.
+  const canonicalQuery = (value: unknown): string => {
+    if (Array.isArray(value)) return '[' + value.map(canonicalQuery).join(',') + ']'
+    if (value && typeof value === 'object')
+      return '{' + Object.keys(value as Obj).sort().map(k => JSON.stringify(k) + ':' + canonicalQuery((value as Obj)[k])).join(',') + '}'
+    return JSON.stringify(value ?? null)
+  }
+  interface QueryPlan { key: string; query: Obj; targets: typeof bound }
+  const plans: QueryPlan[] = []
   for (const target of bound) {
     const spec = target.spec!
     if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
     const query: Obj = { ...spec.query, start_date: window.start, end_date: window.end }
+    // An explicit Installs metric is rejected by the official API ("doesn't
+    // support period and aggregation type") — it adds the Installs column to
+    // the answer on its own. Strip it so old recipes heal on refresh; a
+    // recipe made ONLY of Installs fails fast here without burning quota.
+    if (Array.isArray(query.metrics)) {
+      const allMetrics = query.metrics as Array<Record<string, unknown>>
+      const kept = allMetrics.filter((metric) => {
+        const entry = obj(metric)
+        return !entry || !/^installs$/i.test(String(entry.metric_name ?? ''))
+      })
+      if (kept.length > 0) query.metrics = kept
+      else { fail(target, 'Installs 不能单独作为查询指标：用 App Active 等事件查询，Installs 列由官方自动返回'); continue }
+      if (Array.isArray(query.sort_by_metrics)) {
+        const keptSort = (query.sort_by_metrics as Array<Record<string, unknown>>).filter((sort) => {
+          const entry = obj(sort)
+          return !entry || !/^installs$/i.test(String(entry.metric_name ?? ''))
+        })
+        if (keptSort.length > 0) query.sort_by_metrics = keptSort
+        else delete query.sort_by_metrics
+      }
+    }
+    const key = canonicalQuery(query)
+    const existingPlan = plans.find((plan) => plan.key === key)
+    if (existingPlan) { existingPlan.targets.push(target); continue }
+    plans.push({ key, query, targets: [target] })
+  }
+  const pace = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+  let planIndex = 0
+  for (const plan of plans) {
+    if (planIndex > 0 && interCallDelayMs > 0) await pace(interCallDelayMs)
+    planIndex++
+    const query = plan.query
+    const planTargets = plan.targets
+    const failPlan = (message: string) => {
+      for (const target of planTargets) fail(target, message)
+    }
+    let text: string
     try {
-      const text = await client.queryRaw({ query })
-      const rowCount = typeof query.row_count === 'number' && query.row_count > 0 ? query.row_count : 100
-      const parsed = parseAfDataset(text, rowCount, { allowPartial })
+      text = await client.queryRaw({ query })
+    } catch (error) {
+      // A rate-limited call gets ONE retry after a longer backoff — the
+      // per-minute window refills in about a minute. Deterministic tool
+      // errors (validation of a bad recipe) must fail fast instead of
+      // burning 65s each.
+      const message = error instanceof Error ? error.message : String(error)
+      const detailText = String((error as { detail?: string }).detail ?? '')
+      const rateLimited = (error as { statusCode?: number }).statusCode === 429 || /rate.?limit|too many requests|quota|appsflyer-tool-limit/i.test(`${message} ${detailText}`)
+      if (!rateLimited) {
+        const detail = (error as { detail?: string; statusCode?: number }).detail
+        const status = (error as { statusCode?: number }).statusCode
+        const reason = [status ? `http ${status}` : null, detail].filter(Boolean).join(' | ')
+        failPlan(`${message}${reason ? ` — ${reason}` : ''}`.slice(0, 400))
+        continue
+      }
+      await pace(65_000)
+        try {
+        text = await client.queryRaw({ query })
+      } catch (retryError) {
+        for (const target of planTargets) {
+          results.push({ ...base(target), ok: false, status: 'failed', error: `${retryError instanceof Error ? retryError.message : String(retryError)} (rate-limit retry also failed)`.slice(0, 300) })
+        }
+        continue
+      }
+    }
+    const rowCount = typeof query.row_count === 'number' && query.row_count > 0 ? query.row_count : 100
+    let parsed
+    try {
+      parsed = parseAfDataset(text, rowCount, { allowPartial })
+    } catch (error) {
+      const detail = (error as { detail?: string; statusCode?: number }).detail
+      const status = (error as { statusCode?: number }).statusCode
+      const reason = [status ? `http ${status}` : null, detail].filter(Boolean).join(' | ')
+      failPlan(`${error instanceof Error ? error.message : String(error)}${reason ? ` — ${reason}` : ''}`)
+      continue
+    }
+    for (const target of planTargets) {
       if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
       const columns = parsed.columns.length > 0 ? parsed.columns : target.dataset?.columns.length ? target.dataset.columns : emptyQueryColumns(query)
       const status = parsed.rows.length > 0 ? 'updated' : 'empty'
+      const spec = target.spec!
       const written = createOrUpdateDataset(target.dataset?.name ?? target.outputName ?? spec.datasetName, {
         columns,
         rows: parsed.rows,
@@ -429,11 +607,6 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
         saveQuerySpec({ ...spec, datasetId: written.dataset.id, datasetName: written.dataset.name }, specsFilePath)
       }
       results.push({ ...base(target), datasetId: written.dataset.id, datasetName: written.dataset.name, ok: true, status, rowCount: written.dataset.rows.length })
-    } catch (error) {
-      const detail = (error as { detail?: string; statusCode?: number }).detail
-      const status = (error as { statusCode?: number }).statusCode
-      const reason = [status ? `http ${status}` : null, detail].filter(Boolean).join(' | ')
-      fail(target, `${error instanceof Error ? error.message : String(error)}${reason ? ` — ${reason}` : ''}`)
     }
   }
   return { ok: results.every(entry => entry.ok || entry.status === 'superseded'), results }

@@ -96,7 +96,16 @@ export class AppsFlyerMcpClient {
   private async call(name: AppsFlyerTool, args: Obj): Promise<string> {
     if (!TOOLS.includes(name) || !this.tools.has(name)) throw new Error('appsflyer-tool-unavailable')
     const result = await this.send('tools/call', { name, arguments: args })
-    if (result.isError) throw new Error('appsflyer-tool-error')
+    if (result.isError) {
+      // Keep the tool's own message (bounded): rate-limit vs validation cannot
+      // be told apart from the bare code, and the dataset retry policy needs it.
+      const detail = Array.isArray(result.content)
+        ? result.content.map(obj).find(x => x?.type === 'text' && typeof x.text === 'string')?.text
+        : undefined
+      const error = new Error('appsflyer-tool-error') as Error & { detail?: string }
+      if (typeof detail === 'string' && detail.trim()) error.detail = detail.replace(/\s+/g, ' ').trim().slice(0, 300)
+      throw error
+    }
     const structured = obj(result.structuredContent)
     // The official tools/call answer carries the payload in structuredContent.data
     // (same field the bundled toolkit reads); some relays use .result — try it
