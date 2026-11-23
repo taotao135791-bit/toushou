@@ -40,7 +40,7 @@ const WIDGET_TYPES = [
   'google-report-reading', 'tt-reading', 'meta-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'table', 'funnel', 'analysis', 'todo', 'link', 'file'
 ]
 
-const TEMPLATES = ['meta', 'tiktok', 'fb-daily-v2', 'ads', 'daily', 'blank']
+const TEMPLATES = ['meta', 'tiktok', 'tiktok-af', 'fb-daily-v2', 'ads', 'daily', 'blank']
 const GRANULARITIES = ['account', 'campaign', 'adgroup', 'ad', 'creative']
 const BOARD_ID = { type: 'string', minLength: 1, maxLength: 100 }
 const BOARD_IDS = { type: 'array', minItems: 1, maxItems: 50, uniqueItems: true, items: BOARD_ID }
@@ -77,6 +77,7 @@ const DATE_SCOPE = {
 const TEMPLATE_HELP = {
   meta: 'Meta Ads 原生读数：meta-reading 经 Main 调用只读 MCP，选择已授权账户、随总控切换日期、刷新并联动指标及每日趋势。',
   tiktok: 'TikTok 常用起点：媒体指标、按日趋势、分活动对比和 TT 读数模块；指标和图表绑定「TikTok 报表」。可按任务调整组合与顺序，日期沿用总控。',
+  'tiktok-af': 'TikTok+AF 标配（建板最快路径）：TT 读数 + TikTok 指标/趋势 + AF 安装/活跃/次留卡与趋势，全部预绑定。必须传 afPrefix（产品/市场短名，如 Lemon8泰国），AF 数据集名随之确定为 AF-{afPrefix}基础分天 / AF-{afPrefix}次留分天——后续 af_dataset_pull 的 name 必须逐字使用这两个名字（批量 pulls 两条即可），卡片自动点亮，禁止再手搭 AF 卡或改绑其他名。',
   'fb-daily-v2': 'FB 投放日报：按产品关联已保存报表，自动获取并核验报表读数。',
   ads: '海外广告投放（占位演示数据）：KPI 行 + 趋势 + 渠道对比 + 预算 + 清单。',
   daily: '日常通用：时钟 + 便签 + 待办。',
@@ -190,6 +191,7 @@ export default function boardsTools(api: ToolHostApi): void {
         buildId: BUILD_ID,
         name: { type: 'string', description: '看板名称；缺省用所选起点名称' },
         template: { type: 'string', enum: TEMPLATES, description: '无具体方向时选合适起点；显式用途、风格、结构或参考优先，可用 blank 自由组合数据模块。模板不是平台限制。' },
+        afPrefix: { type: 'string', description: '仅 template=tiktok-af 必填：产品/市场短名（1-40 字符，如 Lemon8泰国），决定 AF 数据集名 AF-{afPrefix}基础分天；后续 af_dataset_pull 的 name 必须逐字对齐。' },
         description: { type: 'string', description: '可选看板说明' },
         masterScope: { ...MASTER_SCOPE, description: '本次用户要求的日期范围与媒体指标；先统一总控，再让媒体和三方查询使用具体起止日期，保存scope不等于已经重查数据' },
         style: { ...CANVAS_STYLE, description: '可选画布样式：background为六位十六进制色，grid为none/dots/lines；按用户要求配置，不影响数据刷新' },
@@ -343,7 +345,8 @@ export default function boardsTools(api: ToolHostApi): void {
       '4. 首次拉取用 startDate/endDate 与看板总控具体日期对齐，后续沿用此查询条件重查；days 备用默认近7个完整日（截至昨天）。geo=true 仅增加 Geo 维度；countries 过滤地区，全部地区应省略过滤，绝不传 Geo=["all"]。最多4个维度。\n' +
       '5. 新业务方案显式传 mediaSources，使用当前App真实发现并已确认的媒体名称；[]为该App全部授权来源，省略仅兼容旧TikTok调用。不要根据媒体品牌猜接口别名，非TikTok方案不得省略后错标来源。\n' +
       '6. 返回的 dataset.columns 是可绑定的列名。事件次数等可加指标可用 op="sum"；独立用户用完整日期范围的专用总量查询，不把多日或多分组去重数相加。首屏只保留关键数字/highlight，不创建大段口径、防御词或原始查询参数说明卡。\n' +
-      '7. 同一时间窗要拉多张数据集时，用 pulls 一次提交 2–8 条（每条含 name/appId 及形状参数；days/startDate/endDate 传顶层），返回的 datasets 数组逐条绑定——比逐张调用快得多（省多轮模型往返）。失败的条目看各自 ok/error，成功的照常绑定。',
+      '7. 同一时间窗要拉多张数据集时，用 pulls 一次提交 2–8 条（每条含 name/appId 及形状参数；days/startDate/endDate 传顶层），返回的 datasets 数组逐条绑定——比逐张调用快得多（省多轮模型往返）。失败的条目看各自 ok/error，成功的照常绑定。\n' +
+      '8. 同一数据集 10 分钟内已按同一配方+同一窗口成功拉过时，调用会直接返回复用（reused:true），不消耗调用额度；数据集的真实拉取时间以返回的 dataset 信息为准，不要向用户重复报告为"刚拉取"。tiktok-af 模板的 name 约定：{afPrefix}基础分天（App Active 发现式）与 {afPrefix}次留分天（(eventName=产品的次留事件)，与模板预绑定逐字对齐。',
     parameters: {
       type: 'object',
       properties: {

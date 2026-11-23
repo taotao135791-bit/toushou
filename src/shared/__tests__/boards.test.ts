@@ -18,6 +18,7 @@ import {
   overseasAdsPreset,
   reflowWidgets,
   tiktokAdsPreset,
+  tiktokAfPreset,
   metaAdsPreset,
   isEmptyMetaStarter,
   validateBoard,
@@ -484,6 +485,26 @@ describe('composeBoard + presets', () => {
     expect(composed.widgets).toHaveLength(1)
     expect(composed.widgets[0]?.type).toBe('fb-report-reading')
     expect(composed.widgets[0]?.config).toEqual({})
+  })
+
+  it('tiktok-af preset pre-binds AF cards to prefix-scoped dataset names', () => {
+    // 前缀进名防跨产品串台：Lemon8 与其他产品绝不共用 AF-{name} 数据集。
+    const lemon = tiktokAfPreset(t, 'Lemon8泰国')
+    const other = tiktokAfPreset(t, '小红书')
+    expect(lemon).toHaveLength(16) // tiktok 模板 9 张 + AF 块 7 张
+    const afBound = lemon.filter((w) => String(w.config.datasetId ?? '').startsWith('AF-'))
+    expect(afBound.length).toBeGreaterThanOrEqual(6)
+    expect(afBound.every((w) => String(w.config.datasetId).startsWith('AF-Lemon8泰国'))).toBe(true)
+    expect(other.some((w) => String(w.config.datasetId) === 'AF-Lemon8泰国基础分天')).toBe(false)
+    // 活跃用户跨日不可加：均值口径。
+    const active = lemon.find((w) => w.config.metric === '活跃用户')
+    expect(active?.config.op).toBe('avg')
+    expect(active?.config.source).toBe('dataset')
+    // 组合器：tiktok-af 壳 + 总控昨天（widgets 由 board_create 按 afPrefix 填充）。
+    const shell = composeBoard('', t, 'tiktok-af')
+    expect(shell.name).toBe('boards.preset.tiktokAf')
+    expect(shell.masterScope?.range).toBe('yesterday')
+    expect(shell.widgets).toEqual([])
   })
 
   it('composes boards that survive validateBoard intact', () => {

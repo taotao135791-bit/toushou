@@ -29,6 +29,7 @@ import {
   applyMasterScope,
   detectPreset,
   findFreeSlot,
+  tiktokAfPreset,
   validateBoard,
   validateBoardStyle,
   validateBoardWidgetStyle,
@@ -75,6 +76,15 @@ const BOARD_TEXT: Record<string, string> = {
   'boards.widget.tt-reading': 'TT 读数',
   'boards.widget.meta-reading': 'Meta 读数',
   'boards.reading.ttModuleName': 'TT 读数',
+  'boards.preset.tiktokAf': 'TikTok+AF 投放看板',
+  'boards.preset.tiktokAf.installs': 'AF 安装·近7日',
+  'boards.preset.tiktokAf.activeDaily': 'AF 日均活跃·近7日',
+  'boards.preset.tiktokAf.retention': 'AF 次留回访·近7日',
+  'boards.preset.tiktokAf.installTrend': 'AF 安装趋势（按日）',
+  'boards.preset.tiktokAf.activeTrend': 'AF 活跃趋势（按日）',
+  'boards.preset.tiktokAf.retentionTrend': 'AF 次留趋势（按日）',
+  'boards.preset.tiktokAf.note': 'AF 归因口径',
+  'boards.preset.tiktokAf.noteBody': '来源：AppsFlyer 官方归因（AF-{前缀}基础分天 / AF-{前缀}次留分天，由 af_dataset_pull 按总控窗口拉取）。安装=安装量列求和；活跃=活跃用户按日均均值（跨日独立用户不可相加）；次留=回访事件计数。金额类指标币种不一致时拒绝汇总。',
   'boards.preset.ads': '海外广告投放',
   'boards.preset.ads.kpiSpend': '今日消耗 ($)',
   'boards.preset.ads.kpiImpressions': '展示次数',
@@ -112,6 +122,7 @@ const boardText: BoardText = (key) => BOARD_TEXT[key] ?? key
 
 export const BOARD_TEMPLATES: readonly BoardPresetId[] = [
   'tiktok',
+  'tiktok-af',
   'meta',
   'fb-daily-v2',
   'ads',
@@ -158,6 +169,7 @@ export type BoardsBridgeRequest = (
       action: 'board_create'
       name?: unknown
       template?: unknown
+      afPrefix?: unknown
       description?: unknown
       advertiserIds?: unknown
       advertiserName?: unknown
@@ -265,6 +277,7 @@ function parseBoardsBridgeAction(raw: unknown): BoardsBridgeRequest | null {
         action: 'board_create',
         name: value.name,
         template: value.template,
+        afPrefix: value.afPrefix,
         description: value.description,
         advertiserIds: value.advertiserIds,
         advertiserName: value.advertiserName,
@@ -657,8 +670,7 @@ export function readWorkspaceDataset(raw: unknown, cwd: string): { name: string;
 }
 
 /** 共享窗口推导（days 或显式日期段），单张与批量拉数同源；非法返回 null。 */
-function afPullWindow(days: unknown, startDate: unknown, endDate: unknown): { start: string; end: string } | null {
-  const d = days === undefined ? 7 : Number(days)
+function afPullWindow(days: unknown, startDate: unknown, endDate: unknown): { start: string; end: string } | null {  const d = days === undefined ? 7 : Number(days)
   if (!Number.isInteger(d) || d < 1 || d > 366) return null
   const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
   const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value
@@ -672,6 +684,45 @@ function afPullWindow(days: unknown, startDate: unknown, endDate: unknown): { st
     window = { start: startDate as string, end: endDate as string }
   }
   return window
+}
+
+/** AF 发现（预审）缓存：应用+窗口 → 事件/渠道/地区清单，24 小时内复用，
+ * 不再为重复建板烧官方调用。内存态即可（主进程生命周期覆盖所有会话）。 */
+const AF_PLAN_CACHE_TTL_MS = 24 * 60 * 60_000
+const afPlanCache = new Map<string, { plan: Record<string, unknown>; at: number }>()
+
+/** AF 新鲜度复用窗口：同一配方 + 同一数据窗口 + 10 分钟内成功拉过 → 跳过
+ * 重拉（建板提速）。任何条件不满足照旧重拉——宁慢不错（用户红线：不能乱
+ * 混数据）。TikTok 报表是跨产品共享数据集，不适用此复用。 */
+const AF_FRESH_TTL_MS = 10 * 60_000
+function afFreshReuseResult(
+  previousSpec: { query: unknown } | undefined,
+  previousDataset: { id: string; name: string; rows: unknown[][]; columns: { name: string }[]; appsflyer?: { status?: unknown; attemptedAt?: unknown; dataWindow?: { start?: unknown; end?: unknown }; window?: { start?: unknown; end?: unknown } } } | undefined,
+  query: Record<string, unknown>,
+  win: { start: string; end: string },
+  name: string
+): Record<string, unknown> | null {
+  if (!previousSpec || !previousDataset || previousDataset.rows.length === 0) return null
+  if (previousDataset.appsflyer?.status !== 'updated') return null
+  // 配方必须逐字相同：查询条件变了，存量行就是另一口径的数据——重拉。
+  if (JSON.stringify(previousSpec.query) !== JSON.stringify(query)) return null
+  const at = typeof previousDataset.appsflyer.attemptedAt === 'number' ? previousDataset.appsflyer.attemptedAt : 0
+  if (!at || Date.now() - at >= AF_FRESH_TTL_MS) return null
+  const covered = previousDataset.appsflyer.dataWindow ?? previousDataset.appsflyer.window
+  if (!covered || covered.start !== win.start || covered.end !== win.end) return null
+  const columns = previousDataset.columns.map((c) => c.name)
+  return {
+    ok: true,
+    reused: true,
+    spec: { id: previousDataset.id },
+    window: win,
+    dataset: { id: previousDataset.id, name: previousDataset.name, rowCount: previousDataset.rows.length, columns },
+    binding: {
+      hint: `把数字卡/图表绑定本数据集：source="dataset"，datasetId="${previousDataset.id}"，metric 用 columns 的列名；事件次数可求和，独立用户使用按完整日期范围查询的专用总量，不跨日相加。可加 filterColumn/filterValue。标题用简短业务名，来源信息放详情。`,
+      columns
+    },
+    results: [{ name, datasetName: previousDataset.name, datasetId: previousDataset.id, window: win, ok: true, status: 'updated', rowCount: previousDataset.rows.length, reused: true }]
+  }
 }
 
 /** 把一张 AF 拉数条目的形状参数（口径/指标/维度/过滤）编译成官方查询体。
@@ -802,6 +853,13 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       return { ok: false, error: 'invalid-platform-scope', message: 'advertiserIds / advertiserName / advertiserNames 仅用于 TikTok；Meta 账户范围请记录在来源模块及本次查询参数中。' }
     }
     const composed = composeBoard('', boardText, template)
+    // tiktok-af 的 AF 卡按产品前缀预绑数据集名（防跨产品串台）：前缀必填，
+    // 拉数侧产出 AF-{前缀}基础分天 / AF-{前缀}次留分天 后卡片即点亮。
+    if (template === 'tiktok-af') {
+      const afPrefix = typeof tool.afPrefix === 'string' ? tool.afPrefix.trim().replace(/[\x00-\x1f\x7f]/g, '').slice(0, 40) : ''
+      if (!afPrefix) return { ok: false, error: 'af-prefix-required', message: 'tiktok-af 模板需要 afPrefix（产品/市场短名，如 Lemon8泰国）——它决定 AF 数据集名 AF-{afPrefix}基础分天，请让后续 af_dataset_pull 的 name 使用相同前缀（name=「{afPrefix}基础分天」「{afPrefix}次留分天」）。' }
+      composed.widgets = tiktokAfPreset(boardText, afPrefix)
+    }
     const name = boundedString(tool.name, BOARD_LIMITS.maxNameLength) ?? composed.name
     if (boards.some((board) => board.name.toLowerCase() === name.toLowerCase())) {
       return { ok: false, error: 'name-exists', existingBoards: boards.map(modelBoardName).slice(0, 50) }
@@ -951,12 +1009,19 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const { pullAppsFlyerDatasets, saveQuerySpec, listQuerySpecs, discardUnboundQuerySpec } = await import('./integrations/appsflyer/appsflyerDataset')
     if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
     const savedSpecs: Array<{ specId: string; name: string; previous: boolean; spec: { id: string; name: string; datasetName: string; query: Record<string, unknown> } }> = []
+    const reusedDatasets: Record<string, unknown>[] = []
     for (const item of entries) {
       // 与单张路径同一身份规则：appId+name 定 spec，改名保留绑定。
       const previousSpec = listQuerySpecs().find(spec => Array.isArray(spec.query.app_ids) && spec.query.app_ids[0] === item.appId && spec.name === item.name)
       const specId = previousSpec?.id ?? `afq-${createHash('sha256').update(JSON.stringify([item.appId, item.name])).digest('hex')}`
       const previousDataset = previousSpec?.datasetId ? listDatasets().find(dataset => dataset.id === previousSpec.datasetId) : undefined
       const datasetName = previousDataset?.name ?? previousSpec?.datasetName ?? `AF-${item.name}`
+      // 新鲜度复用逐条判定：新鲜的条目不登记不拉取，结果并入 datasets。
+      const reusedResult = afFreshReuseResult(previousSpec, previousDataset, item.built, win, item.name) as Record<string, unknown> & { dataset: { id: string; name: string; rowCount: number; columns: string[] }; binding: unknown }
+      if (reusedResult) {
+        reusedDatasets.push({ name: item.name, ok: true, datasetId: reusedResult.dataset.id, datasetName: reusedResult.dataset.name, rowCount: reusedResult.dataset.rowCount, columns: reusedResult.dataset.columns, binding: reusedResult.binding, reused: true })
+        continue
+      }
       const spec = { ...previousSpec, id: specId, name: item.name, datasetName, query: item.built }
       try {
         saveQuerySpec(spec)
@@ -974,6 +1039,10 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
         throw error
       }
       savedSpecs.push({ specId, name: item.name, previous: !!previousSpec, spec })
+    }
+    if (savedSpecs.length === 0) {
+      // 全部条目都是新鲜复用：一次调用都不发。
+      return { ok: true, reused: true, window: win, datasets: reusedDatasets }
     }
     const result = await pullAppsFlyerDatasets({ window: win, specIds: savedSpecs.map(spec => spec.specId), canCommit: stillAuthorized })
     if (!result.ok && !result.results.some((entry) => entry.ok)) {
@@ -1002,7 +1071,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
         }
       }
     })
-    return { ok: datasets.some(dataset => dataset.ok), window: win, datasets }
+    return { ok: [...reusedDatasets, ...datasets].some(dataset => dataset.ok), window: win, datasets: [...reusedDatasets, ...datasets] }
   }
 
   if (tool.action === 'af_dataset_pull') {
@@ -1025,6 +1094,9 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const specId = previousSpec?.id ?? `afq-${createHash('sha256').update(JSON.stringify([appId, name])).digest('hex')}`
     const previousDataset = previousSpec?.datasetId ? listDatasets().find(dataset => dataset.id === previousSpec.datasetId) : undefined
     const datasetName = previousDataset?.name ?? previousSpec?.datasetName ?? `AF-${name}`
+    // 新鲜度复用（宁慢不错，见 afFreshReuseResult）：命中则不烧调用不重写。
+    const reusedResult = afFreshReuseResult(previousSpec, previousDataset, query, win, name)
+    if (reusedResult) return reusedResult
     // Record the spec BEFORE the pull (minus dates): even a transient failure
     // arms the master refresh. Replacing its query must preserve the bound
     // dataset identity, including a name changed since the previous pull.
@@ -1091,6 +1163,13 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     start.setDate(start.getDate() - (days - 1))
     const planWindow = { start: iso(start), end: iso(end) }
     if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    // 发现结果缓存（24h）：同一应用+同一窗口的事件/渠道/地区清单一天内不会
+    // 变，重复建板不再为预审烧调用。命中返回 cached:true，模型可告知用户。
+    const planKey = JSON.stringify([appId, planWindow.start, planWindow.end])
+    const cachedPlan = afPlanCache.get(planKey)
+    if (cachedPlan && Date.now() - cachedPlan.at < AF_PLAN_CACHE_TTL_MS) {
+      return { ok: true, cached: true, plan: { appId, window: planWindow, ...structuredClone(cachedPlan.plan) } }
+    }
     const { planAppsFlyerQuery } = await import('./integrations/appsflyer/appsflyerDataset')
     let plan
     try {
@@ -1105,9 +1184,15 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       return { ok: false, error: message.slice(0, 200), ...(hints[message] ? { hint: hints[message] } : {}) }
     }
     const coverage = plan.sampled || plan.partial ? '这是部分样本，不能当作完整覆盖或汇总。建议先缩小日期或筛选范围。' : ''
+    const planPayload = { ...plan }
+    afPlanCache.set(planKey, { plan: structuredClone(planPayload), at: Date.now() })
+    if (afPlanCache.size > 50) {
+      const oldest = afPlanCache.keys().next().value
+      if (oldest !== undefined) afPlanCache.delete(oldest)
+    }
     return {
       ok: true,
-      plan: { appId, window: planWindow, ...plan },
+      plan: { appId, window: planWindow, ...planPayload },
       hint: `预审完成（消耗 1 次调用）：窗口内共 ${plan.totalRows} 行、${plan.events.length} 种事件。${coverage}把清单给用户勾选（全部/按事件/按渠道/按地区），确认后用 toushou_af_dataset_pull 的 pulls 批量一次提交全部组（2–8 条、同一时间窗），只有单组时才单独调用；落成 AF-{name} 活数据集。若某组合行数接近上限请进一步收窄维度。`
     }
   }
