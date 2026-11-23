@@ -613,9 +613,9 @@ export async function authorizeAndDispatch(
         return slimRefreshResult(refreshed)
       }
       const result = await dispatch(tool, access.cwd, write ? stillAuthorized : undefined)
-      if (tool.action === 'af_dataset_pull' && result.ok === true && result.dataset && typeof result.dataset === 'object') {
-        const id = (result.dataset as { id?: unknown }).id
-        if (typeof id === 'string') recordBoardBuildSourceEvidence(sessionId, 'appsflyer', [id])
+      if (tool.action === 'af_dataset_pull' && result.ok === true) {
+        const ids = afPullResultDatasetIds(result)
+        if (ids.length) recordBoardBuildSourceEvidence(sessionId, 'appsflyer', ids)
       }
       return result
     }, tool.buildId)
@@ -711,6 +711,23 @@ function afEntryQuery(entry: Record<string, unknown>): { ok: true; query: Record
  * medium（仅当当前档位更高），commit/abort 恢复原档位；restore 目标是降档
  * 前从运行时读到的真实档位，不猜全局默认。会话关闭等残留场景随会话消亡。 */
 const savedBuildThinkingLevels = new Map<string, SessionThinkingLevel>()
+
+/** 单张（dataset.id）与批量（datasets[].datasetId）统一收集需要登记来源证据
+ * 的 AF 数据集 id。批量若漏登记，commit 会以 source-query-evidence-required
+ * 拒绝发布整块板——批量功能的生死路径。 */
+export function afPullResultDatasetIds(result: Record<string, unknown>): string[] {
+  const ids = new Set<string>()
+  if (result.dataset && typeof result.dataset === 'object') {
+    const id = (result.dataset as { id?: unknown }).id
+    if (typeof id === 'string') ids.add(id)
+  }
+  if (Array.isArray(result.datasets)) for (const entry of result.datasets) {
+    const datasetId = entry && typeof entry === 'object' && (entry as { ok?: unknown }).ok === true ? (entry as { datasetId?: unknown }).datasetId : undefined
+    if (typeof datasetId === 'string') ids.add(datasetId)
+  }
+  return [...ids]
+}
+
 export async function throttleThinkingForBuild(sessionId: string, omp: { getSessionState: (id: string) => Promise<{ thinkingLevel?: string } | null>; setThinkingLevel: (id: string, level: SessionThinkingLevel) => Promise<boolean> } | undefined): Promise<void> {
   if (!omp) return
   try {
@@ -724,10 +741,19 @@ export async function throttleThinkingForBuild(sessionId: string, omp: { getSess
   } catch { /* 思考降档是纯优化，失败不影响建板 */ }
 }
 export function restoreBuildThinking(sessionId: string, omp: { setThinkingLevel: (id: string, level: SessionThinkingLevel) => Promise<boolean> } | undefined): void {
-  const saved = savedBuildThinkingLevels.get(sessionId)
+  const saved = takeSavedBuildThinking(sessionId)
   if (saved === undefined) return
-  savedBuildThinkingLevels.delete(sessionId)
   void omp?.setThinkingLevel(sessionId, saved).catch(() => {})
+}
+
+/** 取走并清除某会话保存的建板前档位（无则 undefined）。omp 层在回合被
+ * 新消息替换、会话被中止等"不经 commit/abort 结束"的路径上调用，保证降档
+ * 不会把用户选的档位悄悄留在会话里。 */
+export function takeSavedBuildThinking(sessionId: string): SessionThinkingLevel | undefined {
+  const saved = savedBuildThinkingLevels.get(sessionId)
+  if (saved === undefined) return undefined
+  savedBuildThinkingLevels.delete(sessionId)
+  return saved
 }
 
 export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string, stillAuthorized?: () => boolean): Promise<Record<string, unknown>> {
@@ -914,9 +940,10 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       const name = boundedString(entry.name, 60)
       const appId = boundedString(entry.appId, 200)
       if (!name || !appId) return { ok: false, error: 'invalid-pulls', hint: `第 ${index + 1} 个条目缺少 name 或 appId。` }
-      const key = `${appId}\u0000${name}`
-      if (seen.has(key)) return { ok: false, error: 'invalid-pulls', hint: `条目「${name}」在批量里重复；同一批 name+appId 必须唯一。` }
-      seen.add(key)
+      // 批量内 name 必须唯一（不限 appId）：数据集统一叫 AF-{name}，同名会
+      // 让结果回填按名匹配时串台，selectTargets 的未绑定 targetKey 也会折叠。
+      if (seen.has(name)) return { ok: false, error: 'invalid-pulls', hint: `条目名「${name}」在批量里重复（不同应用也不能同名）；请区分命名。` }
+      seen.add(name)
       const built = afEntryQuery(entry)
       if (!built.ok) return { ok: false, error: built.error, hint: `第 ${index + 1} 个条目（${name}）：${built.hint ?? built.error}` }
       entries.push({ name, appId, built: built.query })
@@ -934,10 +961,15 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       try {
         saveQuerySpec(spec)
       } catch (error) {
-        if (error instanceof Error && error.message === 'query-limit') return {
-          ok: false,
-          error: 'query-limit',
-          hint: 'AppsFlyer 已有 20 组可刷新查询；请先复用或清理不再使用的查询再批量拉取。现有数据与看板绑定已保留。'
+        if (error instanceof Error && error.message === 'query-limit') {
+          // 配额在批中途被拒：本批先前已登记且从未被拉取的新 spec 一并撤回，
+          // 否则孤儿会持续占着 20 组配额，之后每次拉数都撞 query-limit。
+          for (const saved of savedSpecs) if (!saved.previous) discardUnboundQuerySpec(saved.spec)
+          return {
+            ok: false,
+            error: 'query-limit',
+            hint: 'AppsFlyer 已有 20 组可刷新查询；请先复用或清理不再使用的查询再批量拉取（本批未拉取的新查询已撤回）。现有数据与看板绑定已保留。'
+          }
         }
         throw error
       }

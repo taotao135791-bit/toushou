@@ -37,6 +37,7 @@ import { canonicalExistingPath } from '../canonicalPath'
 import { SessionBridgePermissionRegistry } from './bridgePermissions'
 import { extensionExternalLinkMessage } from './extensionLinks'
 import { cancelBoardEditTargets, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, type BoardTargetUiEvent } from '../boardBuilds'
+import { takeSavedBuildThinking } from '../boardsBridge'
 import { isUiAnswer } from '../uiAnswer'
 import { isRuntimePreparing } from '../runtimePreparationGate'
 import { listMcpConnections } from '../integrations/mcp/McpConnectionStore'
@@ -323,6 +324,9 @@ export function sendMessage(
   if (!entry || !entry.sendPrompt(mcpTurnPrompt(text, listMcpConnections), images, streamingBehavior)) return false
   // Capture accepted user input in Main before yielding to runtime tool calls.
   // Generation constraints cannot be replaced by model-supplied check options.
+  // A new turn replaces any in-flight build draft — its commit/abort can never
+  // run again, so restore the pre-build thinking level here instead.
+  restorePreBuildThinkingLevel(sessionId)
   registerBoardBuildTurn(sessionId, entry.session.cwd, text)
   onUserTurn?.(sessionId)
   return true
@@ -390,8 +394,18 @@ export function killSession(sessionId: string): boolean {
 
 export function abortSession(sessionId: string): boolean {
   const aborted = sessions.get(sessionId)?.abort() ?? false
-  if (aborted) revokeBoardBuildSession(sessionId)
+  if (aborted) {
+    revokeBoardBuildSession(sessionId)
+    restorePreBuildThinkingLevel(sessionId)
+  }
   return aborted
+}
+
+/** 建板 begin 时降过思考档的会话，在任何"没走到 commit/abort"的结束路径上
+ * 恢复用户原档位（新回合替换草稿 / 会话中止 / 进程退出前的显式中止）。 */
+function restorePreBuildThinkingLevel(sessionId: string): void {
+  const saved = takeSavedBuildThinking(sessionId)
+  if (saved !== undefined) void setThinkingLevel(sessionId, saved).catch(() => {})
 }
 
 export function emitBoardTargetUi(event: BoardTargetUiEvent): void {

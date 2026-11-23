@@ -436,7 +436,9 @@ describe('boards bridge dispatch', () => {
       const { dispatch: freshDispatch } = await import('../boardsBridge')
       // 形状与数量校验不触碰拉取。
       expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }], days: 7 })).toMatchObject({ ok: false, error: 'invalid-pulls' })
+      // 批量内 name 必须唯一——同应用或跨应用同名都拒绝（数据集统一叫 AF-{name}）。
       expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'a', appId: 'app-1' }], days: 7 })).toMatchObject({ ok: false, error: 'invalid-pulls' })
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'a', appId: 'app-2' }], days: 7 })).toMatchObject({ ok: false, error: 'invalid-pulls' })
       const badEntry = await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'b', appId: 'app-1', groupings: 'nope' }], days: 7 })
       expect(badEntry).toMatchObject({ ok: false, error: 'invalid-groupings' })
       expect(badEntry.hint).toContain('第 2 个条目')
@@ -467,6 +469,47 @@ describe('boards bridge dispatch', () => {
       vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
       vi.resetModules()
     }
+  })
+
+  it('af_dataset_pull batch query-limit rolls back the new specs saved so far', async () => {
+    const discardUnboundQuerySpec = vi.fn()
+    const saveQuerySpecMock = vi.fn()
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => { throw new Error('query-limit') })
+    const pull = vi.fn()
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      saveQuerySpec: saveQuerySpecMock,
+      discardUnboundQuerySpec,
+      listQuerySpecs: () => [],
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const limited = await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: '基础', appId: 'app-1' }, { name: '安装', appId: 'app-1' }], days: 7 })
+      expect(limited).toMatchObject({ ok: false, error: 'query-limit' })
+      // 第一个条目已登记但从未被拉取：一并撤回，否则占着 20 组配额变孤儿。
+      expect(discardUnboundQuerySpec).toHaveBeenCalledTimes(1)
+      expect(discardUnboundQuerySpec.mock.calls[0][0]).toMatchObject({ name: '基础' })
+      expect(pull).not.toHaveBeenCalled()
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('collects source-evidence dataset ids from both single and batch pull results', async () => {
+    const { afPullResultDatasetIds } = await import('../boardsBridge')
+    expect(afPullResultDatasetIds({ ok: true, dataset: { id: 'single-1' } })).toEqual(['single-1'])
+    expect(afPullResultDatasetIds({
+      ok: true,
+      datasets: [
+        { name: 'a', ok: true, datasetId: 'batch-1' },
+        { name: 'b', ok: false, error: 'validation' },
+        { name: 'c', ok: true },
+        'garbage'
+      ]
+    })).toEqual(['batch-1'])
+    expect(afPullResultDatasetIds({ ok: true })).toEqual([])
   })
 
   it('af_dataset_pull batch mode discards only new specs when the whole batch fails', async () => {
