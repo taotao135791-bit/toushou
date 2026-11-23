@@ -32,7 +32,8 @@ import {
   stopSchedulerForTest,
   reconcileInterruptedTaskRuns,
   beginTaskDelivery,
-  finishTaskDelivery
+  finishTaskDelivery,
+  MAX_CONSECUTIVE_FAILURES
 } from '../scheduledTasks'
 
 const { getStore, setStore } = await import('../store')
@@ -695,6 +696,18 @@ describe('run ledger', () => {
     reconcileInterruptedTaskRuns(3)
     expect(tasks[0].runs![0].delivery?.status).toBe('unknown')
     expect(beginTaskDelivery('t1', 'old', true)).toBeNull()
+  })
+
+  it('interrupted runs never feed the auto-disable counter', () => {
+    // Three restarts mid-run must not disable a task that never had an
+    // execution failure — the run is marked interrupted, the counter is not.
+    const runs = Array.from({ length: 3 }, (_, i) => ({ runId: `old-${i}`, startedAt: i * 10 + 1 }))
+    tasks.push(baseTask({ enabled: true, consecutiveFailures: MAX_CONSECUTIVE_FAILURES - 1, runs, lastRunId: 'old-2' }))
+    reconcileInterruptedTaskRuns(100)
+    expect(tasks[0].consecutiveFailures).toBe(MAX_CONSECUTIVE_FAILURES - 1)
+    expect(tasks[0].enabled).toBe(true)
+    expect(tasks[0].lastRunStatus).toBe('interrupted')
+    expect(tasks[0].runs!.every((run) => run.status === 'interrupted')).toBe(true)
   })
   it('a finished run lands in the ledger as success with a duration', async () => {
     tasks.push(baseTask())

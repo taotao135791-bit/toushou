@@ -33,6 +33,9 @@ export function useUndoableDelete() {
   const [remaining, setRemaining] = useState(COUNTDOWN_SECONDS)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pendingRef = useRef<PendingDeletion | null>(null)
+  // Countdown source of truth: React state updaters run asynchronously, so
+  // the interval decides from this ref and merely mirrors it into state.
+  const remainingRef = useRef(COUNTDOWN_SECONDS)
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -70,21 +73,25 @@ export function useUndoableDelete() {
     }
     pendingRef.current = request
     setPending(request)
+    remainingRef.current = COUNTDOWN_SECONDS
     setRemaining(COUNTDOWN_SECONDS)
     // 乐观删除：点删除的瞬间就从界面消失；撤销才回来。
     request.visualDelete()
     timerRef.current = setInterval(() => {
-      setRemaining((seconds) => {
-        if (seconds <= 1) {
-          clearTimer()
-          const target = pendingRef.current
-          pendingRef.current = null
-          setPending(null)
-          if (target) void target.execute().catch(() => {})
-          return 0
-        }
-        return seconds - 1
-      })
+      // The countdown lives in the ref; the destructive execute fires here in
+      // the interval callback — never inside a state updater, which React may
+      // invoke more than once (StrictMode/replays).
+      remainingRef.current -= 1
+      if (remainingRef.current > 0) {
+        setRemaining(remainingRef.current)
+        return
+      }
+      setRemaining(0)
+      clearTimer()
+      const target = pendingRef.current
+      pendingRef.current = null
+      setPending(null)
+      if (target) void target.execute().catch(() => {})
     }, 1000)
   }, [clearTimer])
 

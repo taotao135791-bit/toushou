@@ -343,6 +343,39 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     await manager.disconnect()
   })
 
+  it('a 429 rate limit on the token endpoint is transient: retry, not re-auth', async () => {
+    const file = path.join(paths.userData, 'refresh-429.bin')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
+    let now = 0, tokenCalls = 0
+    const manager = new TikTokAdsConnectionManager({
+      credentialStore: store,
+      fetchImpl: async (url: string) => {
+        if (url === `${ISSUER}/token`) {
+          tokenCalls++
+          // Empty payload → the manager surfaces "HTTP 429" verbatim.
+          if (tokenCalls === 1) return jsonResponse({}, 429)
+          return jsonResponse({ access_token: 'new', refresh_token: 'new-refresh', expires_in: 3600 })
+        }
+        throw new Error('unexpected')
+      },
+      now: () => now,
+      openExternal: async () => {},
+      mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') },
+      refreshRetryDelaysMs: [10]
+    })
+    await manager.initialize()
+    now = 1_900_000
+    expect(await manager.ensureFreshToken()).toBe(false)
+    // Rate-limiting must read as "retrying", never as a dead grant demanding
+    // a browser re-auth.
+    expect(manager.getSnapshot().lastError).toContain('自动重试')
+    for (let i = 0; i < 100 && manager.getSnapshot().status !== 'connected'; i++) await new Promise(r => setTimeout(r, 5))
+    expect(manager.getSnapshot().status).toBe('connected')
+    expect(tokenCalls).toBe(2)
+    await manager.disconnect()
+  })
+
   it('walks discovery → registration → PKCE authorize → callback → connected, writing mcp + skill', async () => {
     const { fetch, log } = makeFetch({})
     const { manager, openedUrls } = makeManager({ fetch })

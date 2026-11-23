@@ -32,7 +32,7 @@ const STARTUP_CATCHUP_MS = 10_000
 /** Fallback guard lifetime if the session's terminal event never arrives. */
 export const MAX_RUN_MS = 6 * 60 * 60 * 1000
 /** Consecutive execution failures before a task disables itself. */
-const MAX_CONSECUTIVE_FAILURES = 3
+export const MAX_CONSECUTIVE_FAILURES = 3
 /** Cap on stored tasks — mainly so an agent-created loop cannot flood the store. */
 export const MAX_TASKS = 50
 /** Per-task run-ledger length. Older entries fall off the front. */
@@ -732,8 +732,9 @@ export function reconcileInterruptedTaskRuns(now = Date.now()): void {
       run.recovery = '应用已重启；请核对会话后手动重试。'
       if (task.lastRunId === run.runId) task.lastRunStatus = 'interrupted'
       task.lastFailureReason = 'interrupted'
-      task.consecutiveFailures = (task.consecutiveFailures ?? 0) + 1
-      if (task.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) task.enabled = false
+      // An interrupted run is an app restart, not a task execution failure —
+      // it must not feed the auto-disable counter, or three restarts during a
+      // long task permanently disable a task that never actually failed.
       changed = true
     }
   }

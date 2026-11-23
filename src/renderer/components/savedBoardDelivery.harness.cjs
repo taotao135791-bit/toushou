@@ -6,7 +6,7 @@ app.whenReady().then(async () => {
   let win
   try {
     fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="fixture.js"></script></body></html>')
-    win = new BrowserWindow({ show: true, width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
+    win = new BrowserWindow({ show: true, focusable: process.env.TOUSHOU_E2E_UNFOCUSED !== '1', width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
     await win.loadFile(path.join(dir, 'index.html'))
     const wc = win.webContents, wait = () => new Promise(resolve => setTimeout(resolve, 150))
     const read = () => wc.executeJavaScript(`({count:document.querySelectorAll('section[aria-label="Board result"]').length,text:document.querySelector('section[aria-label="Board result"]')?.innerText,iframes:document.querySelectorAll('iframe').length,listCalls:window.deliveryFixture.listCalls,checks:window.deliveryFixture.checks})`)

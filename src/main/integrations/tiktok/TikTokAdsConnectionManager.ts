@@ -398,11 +398,16 @@ export class TikTokAdsConnectionManager {
       // Permanent OAuth rejections (invalid/expired grant) never retry — the
       // stored grant is dead and only a browser re-auth helps. Transient
       // network failures retry on a bounded cadence so one proxy hiccup no
-      // longer reads as "授权掉了".
-      const permanent = /invalid|expired|unauthorized|forbidden|denied|revoked|HTTP 4\d\d/i.test(message)
+      // longer reads as "授权掉了". 408/429 are transient by nature (same
+      // exemption as the ads-copy circuit breaker): rate-limiting a token
+      // endpoint must not kill the grant.
+      const transient = /HTTP 40[89]|HTTP 429|rate.?limit|too many requests|timeout|timed?\s*out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|network|fetch failed/i.test(message)
+      const permanent = !transient && /invalid|expired|unauthorized|forbidden|denied|revoked|HTTP 4\d\d/i.test(message)
       if (!permanent) this.scheduleRefreshRetry(generation)
       this.state = 'degraded'
-      this.lastError = permanent || this.refreshRetryAttempts >= 3
+      // "请重新授权" only when NO automatic retry is pending — saying it while
+      // the 15-minute retry still runs sends users through a needless re-auth.
+      this.lastError = permanent || !this.refreshRetryTimer
         ? `令牌刷新失败：${friendlyError(error)}（请重新授权）`
         : `令牌刷新失败：${friendlyError(error)}（正在自动重试）`
       this.emitState()

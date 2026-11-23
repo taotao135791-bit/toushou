@@ -1183,7 +1183,12 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...current.queuePauseReasons,
             [sessionId]: reason === 'unknown' ? reason : current.queuePauseReasons[sessionId] ?? reason
           },
-          messages: { ...current.messages, [sessionId]: (current.messages[sessionId] ?? []).filter((message) => message.id !== bubbleId) }
+          // A lost ACK (sent === null) may still mean the prompt RUNS — keep
+          // the user bubble and flag it, exactly like the direct-send path,
+          // instead of deleting it and orphaning the streamed reply.
+          messages: { ...current.messages, [sessionId]: sent === null
+            ? (current.messages[sessionId] ?? []).map((message) => message.id === bubbleId ? { ...message, deliveryUnknown: true } : message)
+            : (current.messages[sessionId] ?? []).filter((message) => message.id !== bubbleId) }
         }))
         if (get().sessionErrors[sessionId] !== 'chat.sessionDead') {
           get().setSessionError(sessionId, sent === null ? 'chat.queueDeliveryUnknown' : 'chat.sendFailed')

@@ -123,9 +123,23 @@ function writeRegistryAfterConfig(paths: McpStorePaths, registry: JsonSnapshot, 
   catch { throw new Error('MCP 配置已更新，但管理记录未能保存；请检查文件后重试') }
 }
 
+/** The only messages this store throws by design — fixed user-facing strings
+ * with no private paths. Anything else (filesystem exceptions carry absolute
+ * paths) is masked into the generic save-failure text. */
+const SAFE_STORE_MESSAGES = new Set([
+  '配置文件不是安全的普通文件',
+  '无法安全读取 MCP 配置，请检查文件和访问权限',
+  'MCP 配置不是合法 JSON，原文件已保留',
+  'MCP 配置格式无效，原文件已保留',
+  'MCP 管理记录格式无效，原文件已保留',
+  'MCP 配置结构无效，原文件已保留',
+  'MCP 配置已被其他程序修改，请重试',
+  'MCP 配置已更新，但管理记录未能保存；请检查文件后重试'
+])
+
 function failure(error: unknown): { ok: false; error: string } {
   // Never return filesystem exceptions which can contain private paths.
-  return { ok: false, error: error instanceof Error && error.message.startsWith('MCP ') ? error.message : '无法安全保存 MCP 配置，请检查文件和访问权限' }
+  return { ok: false, error: error instanceof Error && SAFE_STORE_MESSAGES.has(error.message) ? error.message : '无法安全保存 MCP 配置，请检查文件和访问权限' }
 }
 
 function maskEndpoint(entry: Record<string, unknown>): string {

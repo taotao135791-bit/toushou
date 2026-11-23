@@ -393,12 +393,14 @@ export async function planAppsFlyerQuery(options: {
   const sourceIndex = idx('媒体渠道')
   const countIndex = idx('事件次数')
   const installIndex = idx('安装量')
+  const dateIndex = idx('日期')
+  const usersIndex = idx('独立用户')
   const events = new Map<string, { rows: number; count: number; uniqueUsers: number }>()
   const sources = new Map<string, { rows: number; installs: number }>()
   let firstDate = ''
   let lastDate = ''
   for (const row of parsed.rows) {
-    const day = String(row[idx('日期')] ?? '')
+    const day = String(row[dateIndex] ?? '')
     if (day) { if (!firstDate || day < firstDate) firstDate = day; if (!lastDate || day > lastDate) lastDate = day }
     if (eventIndex >= 0) {
       const name = String(row[eventIndex] ?? '(未知事件)')
@@ -406,7 +408,7 @@ export async function planAppsFlyerQuery(options: {
       agg.rows += 1
       const countValue = countIndex >= 0 ? Number(row[countIndex]) : 0
       if (Number.isFinite(countValue)) agg.count += countValue
-      const usersValue = idx('独立用户') >= 0 ? Number(row[idx('独立用户')]) : 0
+      const usersValue = usersIndex >= 0 ? Number(row[usersIndex]) : 0
       if (Number.isFinite(usersValue)) agg.uniqueUsers += usersValue
       events.set(name, agg)
     }
@@ -570,8 +572,10 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
         try {
         text = await client.queryRaw({ query })
       } catch (retryError) {
+        // Through fail() so the dataset's AF state records this failure —
+        // a direct result push would leave stale "updated" state behind.
         for (const target of planTargets) {
-          results.push({ ...base(target), ok: false, status: 'failed', error: `${retryError instanceof Error ? retryError.message : String(retryError)} (rate-limit retry also failed)`.slice(0, 300) })
+          fail(target, `${retryError instanceof Error ? retryError.message : String(retryError)} (rate-limit retry also failed)`.slice(0, 300))
         }
         continue
       }
@@ -589,24 +593,31 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
     }
     for (const target of planTargets) {
       if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
-      const columns = parsed.columns.length > 0 ? parsed.columns : target.dataset?.columns.length ? target.dataset.columns : emptyQueryColumns(query)
-      const status = parsed.rows.length > 0 ? 'updated' : 'empty'
-      const spec = target.spec!
-      const written = createOrUpdateDataset(target.dataset?.name ?? target.outputName ?? spec.datasetName, {
-        columns,
-        rows: parsed.rows,
-        truncated: false
-      }, file, {
-        ...(target.dataset ? { replaceId: target.dataset.id } : {}),
-        appsflyer: { specId: spec.id, status, window: { ...window }, dataWindow: { ...window }, ...(parsed.partial ? { partial: true } : {}), attemptedAt: Date.now(), ...(target.materialization ? { materialization: target.materialization } : {}) }
-      })
-      if (!written.ok) { fail(target, written.error); continue }
-      // Bind to identity after the initial pull, including an empty result.
-      // Renames thereafter do not detach the query or redirect it by name.
-      if (!target.materialization && (spec.datasetId !== written.dataset.id || spec.datasetName !== written.dataset.name)) {
-        saveQuerySpec({ ...spec, datasetId: written.dataset.id, datasetName: written.dataset.name }, specsFilePath)
+      // The write phase is per-target: a throwing saveQuerySpec (query-limit
+      // on first bind, store hiccup) must fail THIS target, never abort the
+      // whole multi-plan pull and discard earlier plans' results.
+      try {
+        const columns = parsed.columns.length > 0 ? parsed.columns : target.dataset?.columns.length ? target.dataset.columns : emptyQueryColumns(query)
+        const status = parsed.rows.length > 0 ? 'updated' : 'empty'
+        const spec = target.spec!
+        const written = createOrUpdateDataset(target.dataset?.name ?? target.outputName ?? spec.datasetName, {
+          columns,
+          rows: parsed.rows,
+          truncated: false
+        }, file, {
+          ...(target.dataset ? { replaceId: target.dataset.id } : {}),
+          appsflyer: { specId: spec.id, status, window: { ...window }, dataWindow: { ...window }, ...(parsed.partial ? { partial: true } : {}), attemptedAt: Date.now(), ...(target.materialization ? { materialization: target.materialization } : {}) }
+        })
+        if (!written.ok) { fail(target, written.error); continue }
+        // Bind to identity after the initial pull, including an empty result.
+        // Renames thereafter do not detach the query or redirect it by name.
+        if (!target.materialization && (spec.datasetId !== written.dataset.id || spec.datasetName !== written.dataset.name)) {
+          saveQuerySpec({ ...spec, datasetId: written.dataset.id, datasetName: written.dataset.name }, specsFilePath)
+        }
+        results.push({ ...base(target), datasetId: written.dataset.id, datasetName: written.dataset.name, ok: true, status, rowCount: written.dataset.rows.length })
+      } catch (error) {
+        fail(target, `${error instanceof Error ? error.message : String(error)} (write phase)`.slice(0, 400))
       }
-      results.push({ ...base(target), datasetId: written.dataset.id, datasetName: written.dataset.name, ok: true, status, rowCount: written.dataset.rows.length })
     }
   }
   return { ok: results.every(entry => entry.ok || entry.status === 'superseded'), results }

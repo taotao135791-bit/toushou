@@ -245,7 +245,9 @@ export class AppsFlyerConnectionManager {
       const permanent = /invalid|expired|unauthorized|forbidden|denied|revoked/i.test(message)
       if (!permanent) this.scheduleRefreshRetry(generation)
       this.status = 'degraded'
-      this.error = permanent || this.refreshRetryAttempts >= 3 ? '连接续期失败，请重新授权' : '连接续期失败，正在自动重试'
+      // Re-auth wording only when no automatic retry remains pending — the
+      // third (15 min) retry timer must not coexist with "请重新授权".
+      this.error = permanent || !this.refreshRetryTimer ? '连接续期失败，请重新授权' : '连接续期失败，正在自动重试'
       this.emit()
       return false
     }
