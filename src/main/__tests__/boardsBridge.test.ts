@@ -55,10 +55,11 @@ describe('boards bridge dispatch', () => {
         expect(result).toMatchObject({ ok: true, plan: { filters } })
       }
       expect(confirm).not.toHaveBeenCalled()
-      expect(plan).toHaveBeenCalledTimes(2)
+      // 第二次命中 24h 预审缓存（产品拍板）：同一应用+窗口+过滤不重查。
+      expect(plan).toHaveBeenCalledTimes(1)
       expect(plan).toHaveBeenCalledWith(expect.objectContaining({ appId: 'synthetic', filters }))
       expect(await dispatch({ action: 'af_query_plan', appId: 'synthetic', countries: ['all', 'US'] })).toMatchObject({ ok: false, error: 'invalid-countries' })
-      expect(plan).toHaveBeenCalledTimes(2)
+      expect(plan).toHaveBeenCalledTimes(1)
     } finally { plan.mockRestore() }
   })
 
@@ -570,8 +571,28 @@ describe('boards bridge dispatch', () => {
     }
   })
 
-  // 预审不做缓存：维护者契约是"每次调用=一次真实查询"（显式计费动作）。
-  // 重复建板的提速由批量拉数与新鲜度复用承担，不再缓存发现结果。
+  it('af_query_plan caches discovery per app+window+filters for a day', async () => {
+    const plan = vi.fn(async () => ({ events: [{ event: 'App Active', count: 5 }], mediaSources: [], countries: [], dateSpan: { start: '2026-01-01', end: '2026-01-07' }, totalRows: 5, partial: false, sampled: false, suggestedCalls: 1 }))
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({ planAppsFlyerQuery: plan }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const first = await freshDispatch({ action: 'af_query_plan', appId: 'app-cache' })
+      const second = await freshDispatch({ action: 'af_query_plan', appId: 'app-cache' })
+      expect(first.ok).toBe(true)
+      expect(second.ok).toBe(true)
+      expect(second.cached).toBe(true)
+      // 产品拍板：预审命中缓存不烧第二次调用（与旧"每次=一次查询"契约不同）。
+      expect(plan).toHaveBeenCalledTimes(1)
+      expect((second.plan as { events: unknown }).events).toEqual((first.plan as { events: unknown }).events)
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  // 预审不做无缓存的重复查询：维护者契约是"每次调用=一次真实查询"的旧语义，
+  // 已按产品决策改为 24h 缓存（上面的用例）；重复建板的提速靠批量拉数与
+  // 新鲜度复用共同承担。
 
   it('af_dataset_pull batch query-limit rolls back the new specs saved so far', async () => {
     const discardUnboundQuerySpec = vi.fn()

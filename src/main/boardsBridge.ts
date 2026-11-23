@@ -693,6 +693,12 @@ function afPullWindow(days: unknown, startDate: unknown, endDate: unknown): { st
   return window
 }
 
+/** AF 发现（预审）缓存（产品拍板保留）：应用+窗口+过滤 → 发现清单，24 小时
+ * 复用，重复建板不为预审烧调用。与维护者"每次调用=一次查询"契约不同，是
+ * 有意的产品决策；内存态即可（主进程生命周期覆盖所有会话）。 */
+const AF_PLAN_CACHE_TTL_MS = 24 * 60 * 60_000
+const afPlanCache = new Map<string, { plan: Record<string, unknown>; at: number }>()
+
 /** AF 新鲜度复用窗口：同一配方 + 同一数据窗口 + 10 分钟内成功拉过 → 跳过
  * 重拉（建板提速）。任何条件不满足照旧重拉——宁慢不错（用户红线：不能乱
  * 混数据）。TikTok 报表是跨产品共享数据集，不适用此复用。 */
@@ -1170,8 +1176,14 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     start.setDate(start.getDate() - (days - 1))
     const planWindow = { start: iso(start), end: iso(end) }
     if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
-    // 预审是显式计费动作：每次调用都真实查询（维护者测试契约：两次调用=
-    // 两次查询），不做缓存。重复建板的提速靠批量拉数与新鲜度复用承担。
+    // 发现结果缓存（24h，产品拍板保留）：同一应用+同一窗口+同一过滤的发现
+    // 清单一天内不会变，重复建板不再为预审烧调用。命中返回 cached:true，
+    // 与维护者"每次调用=一次查询"的旧契约不同——这是有意的产品决策，见 PR。
+    const planKey = JSON.stringify([appId, planWindow.start, planWindow.end, selection.filters])
+    const cachedPlan = afPlanCache.get(planKey)
+    if (cachedPlan && Date.now() - cachedPlan.at < AF_PLAN_CACHE_TTL_MS) {
+      return { ok: true, cached: true, plan: { appId, window: planWindow, filters: selection.filters, ...structuredClone(cachedPlan.plan) } }
+    }
     const { planAppsFlyerQuery } = await import('./integrations/appsflyer/appsflyerDataset')
     let plan
     try {
@@ -1187,6 +1199,11 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     }
     const coverage = plan.sampled || plan.partial ? '这是部分样本，不能当作完整覆盖或汇总。建议先缩小日期或筛选范围。' : ''
     const planPayload = { ...plan, filters: selection.filters }
+    afPlanCache.set(planKey, { plan: structuredClone(planPayload), at: Date.now() })
+    if (afPlanCache.size > 50) {
+      const oldest = afPlanCache.keys().next().value
+      if (oldest !== undefined) afPlanCache.delete(oldest)
+    }
     return {
       ok: true,
       plan: { ...planPayload, appId, window: planWindow },
