@@ -16,6 +16,7 @@ import { saveBoard } from '../boards'
 import { saveReadingSnapshot } from '../readingSnapshots'
 import { applyBoardHighlights, validateBoardHighlights } from '../boardHighlights'
 import type { ReadingSnapshot } from '../../shared/readingSnapshot'
+import type { SessionThinkingLevel } from '../../shared/types'
 import { createWidget } from '../../shared/boards'
 import { createOrUpdateDataset, listDatasets, renameDataset } from '../boardDatasets'
 
@@ -406,6 +407,112 @@ describe('boards bridge dispatch', () => {
       vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
       vi.resetModules()
     }
+  })
+
+  it('af_dataset_pull batch mode registers and pulls multiple specs in one call', async () => {
+    const pullCalls: unknown[] = []
+    const saveQuerySpecMock = vi.fn()
+    const discardUnboundQuerySpec = vi.fn()
+    const pull = vi.fn(async (input?: unknown) => {
+      pullCalls.push(input)
+      const arg = (input ?? {}) as { specIds: string[]; window: { start: string; end: string } }
+      const names = ['基础', '安装']
+      const results = arg.specIds.map((_specId, index) => {
+        const name = names[index]
+        if (index === 1) return { name, ok: false, error: 'appsflyer-query-validation-error' }
+        const created = createOrUpdateDataset(`AF-${name}`, { columns: [{ name: '事件次数', type: 'number' }], rows: [[index + 1]], truncated: false })
+        if (!created.ok) throw new Error(created.error)
+        return { name, datasetName: `AF-${name}`, datasetId: created.dataset.id, ok: true, rowCount: 1 }
+      })
+      return { ok: results.every(entry => entry.ok), results }
+    })
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      saveQuerySpec: saveQuerySpecMock,
+      discardUnboundQuerySpec,
+      listQuerySpecs: () => [],
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      // 形状与数量校验不触碰拉取。
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }], days: 7 })).toMatchObject({ ok: false, error: 'invalid-pulls' })
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'a', appId: 'app-1' }], days: 7 })).toMatchObject({ ok: false, error: 'invalid-pulls' })
+      const badEntry = await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'b', appId: 'app-1', groupings: 'nope' }], days: 7 })
+      expect(badEntry).toMatchObject({ ok: false, error: 'invalid-groupings' })
+      expect(badEntry.hint).toContain('第 2 个条目')
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'b', appId: 'app-1' }], days: 0 })).toMatchObject({ ok: false, error: 'invalid-window' })
+      expect(pull).not.toHaveBeenCalled()
+
+      // 部分成功：一次调用登记 2 个 spec、发 1 次拉取，逐条返回绑定信息。
+      const ok = await freshDispatch({
+        action: 'af_dataset_pull',
+        pulls: [{ name: '基础', appId: 'app-1', eventName: 'App Active' }, { name: '安装', appId: 'app-1', metrics: ['Count'] }],
+        startDate: '2026-10-01',
+        endDate: '2026-10-07'
+      })
+      expect(pull).toHaveBeenCalledTimes(1)
+      const arg = (pullCalls[0] ?? {}) as { specIds: string[]; window: { start: string; end: string } }
+      expect(arg.specIds).toHaveLength(2)
+      expect(arg.window).toEqual({ start: '2026-10-01', end: '2026-10-07' })
+      expect(saveQuerySpecMock).toHaveBeenCalledTimes(2)
+      expect(ok.ok).toBe(true)
+      const datasets = ok.datasets as Array<{ name: string; ok: boolean; datasetId?: string; columns?: string[]; error?: string }>
+      expect(datasets).toHaveLength(2)
+      expect(datasets[0]).toMatchObject({ name: '基础', ok: true })
+      expect(datasets[0].columns).toContain('事件次数')
+      expect((datasets[0].datasetId as string).length).toBeGreaterThan(0)
+      expect(datasets[1]).toMatchObject({ name: '安装', ok: false, error: 'appsflyer-query-validation-error' })
+      expect(discardUnboundQuerySpec).not.toHaveBeenCalled()
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('af_dataset_pull batch mode discards only new specs when the whole batch fails', async () => {
+    const saveQuerySpecMock = vi.fn()
+    const discardUnboundQuerySpec = vi.fn()
+    const pull = vi.fn(async () => ({ ok: false, error: 'not-connected', results: [{ name: '基础', ok: false, error: 'not-connected' }, { name: '安装', ok: false, error: 'not-connected' }] }))
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      saveQuerySpec: saveQuerySpecMock,
+      discardUnboundQuerySpec,
+      listQuerySpecs: () => [],
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const { withBoardBuildRoot } = await import('../boardBuildStorage')
+      // 撤回登记只发生在建板草稿上下文内。
+      const failed = await withBoardBuildRoot('/synthetic/build-root', () => freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: '基础', appId: 'app-1' }, { name: '安装', appId: 'app-1' }], days: 7 }))
+      expect(failed).toMatchObject({ ok: false, error: 'not-connected' })
+      const datasets = failed.datasets as Array<{ name: string; ok: boolean }>
+      expect(datasets.every(entry => entry.ok === false)).toBe(true)
+      // 两个都是新配方（无既有绑定）：整批失败 → 全部撤回登记。
+      expect(discardUnboundQuerySpec).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('board build thinking throttle downgrades a higher level and restores it at the end', async () => {
+    const { throttleThinkingForBuild, restoreBuildThinking } = await import('../boardsBridge')
+    const sets: Array<string | undefined> = []
+    const omp = {
+      getSessionState: async () => ({ thinkingLevel: 'max' }),
+      setThinkingLevel: async (_id: string, level: SessionThinkingLevel) => { sets.push(level); return true }
+    }
+    await throttleThinkingForBuild('throttle-session-a', omp)
+    expect(sets).toEqual(['medium'])
+    restoreBuildThinking('throttle-session-a', omp)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(sets).toEqual(['medium', 'max'])
+    // 已在 medium 及以下的会话不动，restore 也没有保存值可恢复。
+    await throttleThinkingForBuild('throttle-session-b', { getSessionState: async () => ({ thinkingLevel: 'low' }), setThinkingLevel: omp.setThinkingLevel })
+    expect(sets).toEqual(['medium', 'max'])
+    restoreBuildThinking('throttle-session-b', omp)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(sets).toEqual(['medium', 'max'])
   })
 
   it('keeps an AF recipe and card bound after dataset rename and a repeated pull', async () => {

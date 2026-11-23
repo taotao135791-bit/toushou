@@ -41,6 +41,7 @@ export default function tiktokTools(api: ToolHostApi): void {
     description:
       '生成看板时先board_build_begin并携带buildId，媒体与AF绑定完成后优先board_refresh让应用统一算日期。独立更新报表仍可调用本工具。按 startDate/endDate 精确日期（最多30天）拉取 TikTok Ads 分活动报表，写入 "TikTok 报表" 看板数据集；首次建板与AF查询必须传相同的总控具体日期。省略日期默认近7个完整日，截至昨天；今天请传今天的起止日期。' +
       '与看板读数共用 TikTok 官方授权；此操作还会更新本地数据集，因此受当前会话写入权限和确认约束。' +
+      '广告主列表/授权信息由本工具自动发现，或用 toushou_tiktok_status 查看；不要直连 mcp__tiktok_ads_* 原始工具（会话内 MCP 连接可能尚未就绪而失败，主进程桥始终可用）。' +
       'permission-denied 表示本地写入未获允许，按返回 reason/hint 解释，不能称为 TikTok 未连接或要求重新授权。',
     parameters: {
       type: 'object',

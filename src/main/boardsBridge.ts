@@ -36,7 +36,8 @@ import {
   type BoardPresetId,
   type BoardText
 } from '../shared/boards'
-import type { BoardStyle, BoardWidget, BoardWidgetLayout, BoardWidgetStyle, KanbanBoard, WidgetType } from '../shared/types'
+import type { BoardStyle, BoardWidget, BoardWidgetLayout, BoardWidgetStyle, KanbanBoard, SessionThinkingLevel, WidgetType } from '../shared/types'
+import { SESSION_THINKING_LEVELS } from '../shared/types'
 import type { BoardRefreshResult } from '../shared/boardRefresh'
 
 /**
@@ -170,7 +171,7 @@ export type BoardsBridgeRequest = (
   | { action: 'board_customize'; version?: unknown; boardId?: unknown; name?: unknown; expectedUpdatedAt?: unknown; preview?: unknown; style?: unknown; masterScope?: unknown; widgets?: unknown }
   | { action: 'board_rename'; boardId?: unknown; name?: unknown; newName?: unknown }
   | { action: 'dataset_import'; filePath?: unknown; name?: unknown }
-  | { action: 'af_dataset_pull'; name?: unknown; appId?: unknown; eventName?: unknown; days?: unknown; startDate?: unknown; endDate?: unknown; basis?: unknown; metrics?: unknown; groupings?: unknown; geo?: unknown; countries?: unknown; mediaSources?: unknown }
+  | { action: 'af_dataset_pull'; name?: unknown; appId?: unknown; eventName?: unknown; days?: unknown; startDate?: unknown; endDate?: unknown; basis?: unknown; metrics?: unknown; groupings?: unknown; geo?: unknown; countries?: unknown; mediaSources?: unknown; pulls?: unknown }
   | { action: 'af_query_plan'; appId?: unknown; days?: unknown; mediaSources?: unknown; countries?: unknown }
 ) & { buildId?: unknown }
 
@@ -305,7 +306,7 @@ function parseBoardsBridgeAction(raw: unknown): BoardsBridgeRequest | null {
     case 'dataset_import':
       return { action: 'dataset_import', filePath: value.filePath, name: value.name }
     case 'af_dataset_pull':
-      return { action: 'af_dataset_pull', name: value.name, appId: value.appId, eventName: value.eventName, days: value.days, startDate: value.startDate, endDate: value.endDate, basis: value.basis, metrics: value.metrics, groupings: value.groupings, geo: value.geo, countries: value.countries, mediaSources: value.mediaSources }
+      return { action: 'af_dataset_pull', name: value.name, appId: value.appId, eventName: value.eventName, days: value.days, startDate: value.startDate, endDate: value.endDate, basis: value.basis, metrics: value.metrics, groupings: value.groupings, geo: value.geo, countries: value.countries, mediaSources: value.mediaSources, pulls: value.pulls }
     case 'af_query_plan':
       return { action: 'af_query_plan', appId: value.appId, days: value.days, mediaSources: value.mediaSources, countries: value.countries }
     default:
@@ -554,7 +555,16 @@ export async function authorizeAndDispatch(
     const emit = deps?.requestBoardTargets ?? ((event: BoardTargetUiEvent) => omp?.emitBoardTargetUi(event))
     return requestBoardEditTargets(sessionId, access.cwd, tool.candidateBoardIds, emit, stillAuthorized, signal)
   }
-  if (tool.action === 'board_build_begin') return beginBoardBuild(sessionId, access.cwd, tool.targetBoardId, tool.targetBoardIds)
+  if (tool.action === 'board_build_begin') {
+    const status = beginBoardBuild(sessionId, access.cwd, tool.targetBoardId, tool.targetBoardIds)
+    if (status.ok === true) {
+      // 提速三件套在 begin 生效：降思考档（commit/abort 恢复）；提示模型走
+      // 批量拉数与主进程桥工具（避开会话内 MCP 连接未就绪的原始工具）。
+      void throttleThinkingForBuild(sessionId, omp)
+      return { ...status, hint: '建板回合已自动降低思考档位提速（提交或中止后恢复你的档位）。多张 AF 数据集用 af_dataset_pull 的 pulls 一次提交；TikTok 账户/广告主信息用 toushou_board_meta_accounts / toushou_tiktok_status（主进程桥，已预热），不要直连 mcp__tiktok_ads_* 原始工具。' }
+    }
+    return status
+  }
   if (tool.action === 'board_build_status') return buildStatus(sessionId, tool.buildId)
   if (tool.action === 'board_build_preflight') return checkFrozenBoardBuild(sessionId, tool.buildId, true)
   if (tool.action === 'board_build_commit') {
@@ -564,9 +574,14 @@ export async function authorizeAndDispatch(
     // Each saved board must survive the tool-output budget, even for a large
     // selection. The agent can read the complete saved board with board_get.
     const boards = (result.boards as KanbanBoard[]).map(({ id, name, updatedAt, widgets, partialDelivery }) => ({ id, name, updatedAt, widgetCount: widgets.length, ...(partialDelivery ? { partialDelivery } : {}) }))
+    restoreBuildThinking(sessionId, omp)
     return { ...result, boards, ...(result.board ? { board: boardSummary(result.board as KanbanBoard) } : {}) }
   }
-  if (tool.action === 'board_build_abort') return abortBoardBuild(sessionId, tool.buildId)
+  if (tool.action === 'board_build_abort') {
+    const result = abortBoardBuild(sessionId, tool.buildId)
+    if (result.ok === true) restoreBuildThinking(sessionId, omp)
+    return result
+  }
   if (tool.action === 'board_meta_accounts') return { ...(await readBoardMetaAccounts()) }
   const boardRead = tool.action === 'boards_list' || tool.action === 'board_get' || tool.action === 'board_check'
   if (boardRead && tool.buildId === undefined) return dispatch(tool, access.cwd)
@@ -639,6 +654,80 @@ export function readWorkspaceDataset(raw: unknown, cwd: string): { name: string;
     if (after.dev !== opened.dev || after.ino !== opened.ino || finalHandle.dev !== opened.dev || finalHandle.ino !== opened.ino || finalHandle.size !== opened.size || finalHandle.mtimeMs !== opened.mtimeMs || finalHandle.ctimeMs !== opened.ctimeMs || used !== opened.size) return null
     return { name: path.basename(real), bytes: buffer.subarray(0, used) }
   } catch { return null } finally { if (fd !== undefined) closeSync(fd) }
+}
+
+/** 共享窗口推导（days 或显式日期段），单张与批量拉数同源；非法返回 null。 */
+function afPullWindow(days: unknown, startDate: unknown, endDate: unknown): { start: string; end: string } | null {
+  const d = days === undefined ? 7 : Number(days)
+  if (!Number.isInteger(d) || d < 1 || d > 366) return null
+  const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value
+  const end = new Date()
+  end.setDate(end.getDate() - 1)
+  const start = new Date(end)
+  start.setDate(start.getDate() - (d - 1))
+  let window = { start: iso(start), end: iso(end) }
+  if (startDate !== undefined || endDate !== undefined) {
+    if (!validDate(startDate) || !validDate(endDate) || (startDate as string) > (endDate as string) || Date.parse(endDate as string) - Date.parse(startDate as string) > 365 * 86_400_000) return null
+    window = { start: startDate as string, end: endDate as string }
+  }
+  return window
+}
+
+/** 把一张 AF 拉数条目的形状参数（口径/指标/维度/过滤）编译成官方查询体。
+ * 单张与批量拉数共用；错误码与提示与原单张路径逐字一致。 */
+function afEntryQuery(entry: Record<string, unknown>): { ok: true; query: Record<string, unknown> } | { ok: false; error: string; hint?: string } {
+  const basis = entry.basis === 'ltv' ? 'ltv' : 'activity'
+  const eventName = typeof entry.eventName === 'string' && entry.eventName.trim() ? entry.eventName.trim().slice(0, 200) : undefined
+  const appId = boundedString(entry.appId, 200)
+  const metrics = Array.isArray(entry.metrics) && entry.metrics.length > 0 && entry.metrics.length <= 10 && entry.metrics.every((m) => typeof m === 'string' && m.length > 0 && m.length <= 100)
+    ? (entry.metrics as string[]) : ['Count', 'Unique users']
+  if (entry.groupings !== undefined && (!Array.isArray(entry.groupings) || entry.groupings.length > 4 || entry.groupings.some(g => typeof g !== 'string' || !g.trim() || g.length > 100))) return { ok: false, error: 'invalid-groupings' }
+  const isCustom = !!eventName && !isAppsFlyerBuiltInEvent(eventName)
+  const groupings = entry.groupings === undefined
+    ? (isCustom ? (entry.geo === true ? ['Campaign ID', 'Media source', 'Date'] : ['Campaign ID', 'Campaign', 'Media source', 'Date']) : (entry.geo === true ? ['Event name', 'Media source', 'Date'] : ['Event name', 'Media source', 'Date', 'Campaign ID']))
+    : [...entry.groupings as string[]]
+  if (entry.geo === true && !groupings.includes('Geo')) {
+    if (groupings.length >= 4) return { ok: false, error: 'invalid-groupings', hint: 'Geo 也是一个维度；groupings 最多四项，请为它留一个位置。' }
+    groupings.push('Geo')
+  }
+  const selection = appsFlyerFilters(entry.mediaSources, entry.countries, entry.mediaSources === undefined)
+  if ('error' in selection) return { ok: false, error: selection.error }
+  const filters = selection.filters
+  const query: Record<string, unknown> = {
+    app_ids: [appId],
+    row_count: 300,
+    metrics: metrics.map((metricName) => ({ metric_name: metricName, attribution_source: 'appsflyer', period: basis })),
+    sort_by_metrics: [{ metric_name: metrics[0], order: 'desc' }],
+    groupings,
+    filters,
+    in_app_event: isCustom ? [eventName!] : []
+  }
+  return { ok: true, query }
+}
+
+/** 建板期间的思考降档（用户拍板的提速项）：max 档下 glm 每个工具回合要
+ * 深度思考 25–60 秒，建板全程 30+ 回合 ≈ 70% 墙钟时间。build begin 时降到
+ * medium（仅当当前档位更高），commit/abort 恢复原档位；restore 目标是降档
+ * 前从运行时读到的真实档位，不猜全局默认。会话关闭等残留场景随会话消亡。 */
+const savedBuildThinkingLevels = new Map<string, SessionThinkingLevel>()
+export async function throttleThinkingForBuild(sessionId: string, omp: { getSessionState: (id: string) => Promise<{ thinkingLevel?: string } | null>; setThinkingLevel: (id: string, level: SessionThinkingLevel) => Promise<boolean> } | undefined): Promise<void> {
+  if (!omp) return
+  try {
+    const state = await omp.getSessionState(sessionId)
+    const current = state?.thinkingLevel
+    if (!current) return
+    if (SESSION_THINKING_LEVELS.indexOf(current as SessionThinkingLevel) > SESSION_THINKING_LEVELS.indexOf('medium')) {
+      savedBuildThinkingLevels.set(sessionId, current as SessionThinkingLevel)
+      await omp.setThinkingLevel(sessionId, 'medium')
+    }
+  } catch { /* 思考降档是纯优化，失败不影响建板 */ }
+}
+export function restoreBuildThinking(sessionId: string, omp: { setThinkingLevel: (id: string, level: SessionThinkingLevel) => Promise<boolean> } | undefined): void {
+  const saved = savedBuildThinkingLevels.get(sessionId)
+  if (saved === undefined) return
+  savedBuildThinkingLevels.delete(sessionId)
+  void omp?.setThinkingLevel(sessionId, saved).catch(() => {})
 }
 
 export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string, stillAuthorized?: () => boolean): Promise<Record<string, unknown>> {
@@ -809,49 +898,92 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     }
   }
 
+  // 批量拉数（建板提速）：一次调用登记并拉取 2–8 张 AF-{name} 数据集，共享
+  // 顶层时间窗。省掉模型侧 N−1 个思考回合（每回合 25–60 秒）；相同查询形状
+  // 在数据集管线里仍共享同一次服务器调用。单张（不带 pulls）走下面原路径。
+  if (tool.action === 'af_dataset_pull' && tool.pulls !== undefined) {
+    if (!Array.isArray(tool.pulls) || tool.pulls.length < 2 || tool.pulls.length > 8) {
+      return { ok: false, error: 'invalid-pulls', hint: 'pulls 必须是 2–8 个条目的数组；单张数据集用顶层参数，不要带 pulls。' }
+    }
+    const win = afPullWindow(tool.days, tool.startDate, tool.endDate)
+    if (!win) return { ok: false, error: 'invalid-window', hint: '批量拉取的窗口在顶层传（days 或 startDate/endDate），对本批所有数据集生效。' }
+    const seen = new Set<string>()
+    const entries: Array<{ name: string; appId: string; built: Record<string, unknown> }> = []
+    for (const [index, raw] of tool.pulls.entries()) {
+      const entry = (raw ?? {}) as Record<string, unknown>
+      const name = boundedString(entry.name, 60)
+      const appId = boundedString(entry.appId, 200)
+      if (!name || !appId) return { ok: false, error: 'invalid-pulls', hint: `第 ${index + 1} 个条目缺少 name 或 appId。` }
+      const key = `${appId}\u0000${name}`
+      if (seen.has(key)) return { ok: false, error: 'invalid-pulls', hint: `条目「${name}」在批量里重复；同一批 name+appId 必须唯一。` }
+      seen.add(key)
+      const built = afEntryQuery(entry)
+      if (!built.ok) return { ok: false, error: built.error, hint: `第 ${index + 1} 个条目（${name}）：${built.hint ?? built.error}` }
+      entries.push({ name, appId, built: built.query })
+    }
+    const { pullAppsFlyerDatasets, saveQuerySpec, listQuerySpecs, discardUnboundQuerySpec } = await import('./integrations/appsflyer/appsflyerDataset')
+    if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    const savedSpecs: Array<{ specId: string; name: string; previous: boolean; spec: { id: string; name: string; datasetName: string; query: Record<string, unknown> } }> = []
+    for (const item of entries) {
+      // 与单张路径同一身份规则：appId+name 定 spec，改名保留绑定。
+      const previousSpec = listQuerySpecs().find(spec => Array.isArray(spec.query.app_ids) && spec.query.app_ids[0] === item.appId && spec.name === item.name)
+      const specId = previousSpec?.id ?? `afq-${createHash('sha256').update(JSON.stringify([item.appId, item.name])).digest('hex')}`
+      const previousDataset = previousSpec?.datasetId ? listDatasets().find(dataset => dataset.id === previousSpec.datasetId) : undefined
+      const datasetName = previousDataset?.name ?? previousSpec?.datasetName ?? `AF-${item.name}`
+      const spec = { ...previousSpec, id: specId, name: item.name, datasetName, query: item.built }
+      try {
+        saveQuerySpec(spec)
+      } catch (error) {
+        if (error instanceof Error && error.message === 'query-limit') return {
+          ok: false,
+          error: 'query-limit',
+          hint: 'AppsFlyer 已有 20 组可刷新查询；请先复用或清理不再使用的查询再批量拉取。现有数据与看板绑定已保留。'
+        }
+        throw error
+      }
+      savedSpecs.push({ specId, name: item.name, previous: !!previousSpec, spec })
+    }
+    const result = await pullAppsFlyerDatasets({ window: win, specIds: savedSpecs.map(spec => spec.specId), canCommit: stillAuthorized })
+    if (!result.ok && !result.results.some((entry) => entry.ok)) {
+      // 整批失败且全是新配方：撤回登记（不占查询配额）；已有绑定的照旧保留。
+      if (boardBuildRoot()) for (const spec of savedSpecs) if (!spec.previous) discardUnboundQuerySpec(spec.spec)
+      const failedEntry = result.results[0]
+      return { ok: false, error: failedEntry?.error ?? result.error ?? 'pull-failed', datasets: result.results.map(entry => ({ name: entry.name, ok: false, ...(entry.error ? { error: entry.error } : {}) })) }
+    }
+    const datasetsStrict = (await import('./boardDatasets')).listDatasetsStrict()
+    const datasets = savedSpecs.map(spec => {
+      const entry = result.results.find(candidate => candidate.name === spec.name)
+      if (!entry?.ok || !entry.datasetId) return { name: spec.name, ok: false, error: entry?.error ?? 'pull-failed' }
+      const dataset = datasetsStrict.find(candidate => candidate.id === entry.datasetId)
+      if (!dataset) return { name: spec.name, ok: false, error: 'dataset-not-ready' }
+      const columns = dataset.columns.map((c) => c.name)
+      return {
+        name: spec.name,
+        ok: true,
+        datasetId: dataset.id,
+        datasetName: dataset.name,
+        rowCount: dataset.rows.length,
+        columns,
+        binding: {
+          hint: `把数字卡/图表绑定本数据集：source="dataset"，datasetId="${dataset.id}"，metric 用 columns 的列名；事件次数可求和，独立用户使用按完整日期范围查询的专用总量，不跨日相加。可加 filterColumn/filterValue。标题用简短业务名，来源信息放详情。`,
+          columns
+        }
+      }
+    })
+    return { ok: datasets.some(dataset => dataset.ok), window: win, datasets }
+  }
+
   if (tool.action === 'af_dataset_pull') {
     const appId = boundedString(tool.appId, 200)
     const name = boundedString(tool.name, 60)
-    const eventName = typeof tool.eventName === 'string' && tool.eventName.trim() ? tool.eventName.trim().slice(0, 200) : undefined
     if (!appId || !name) {
       return { ok: false, error: 'invalid-input', hint: 'appId 和 name 都是必填。name 是这组数据的短名（数据集叫 AF-{name}，卡片标题建议写「AF-{name}」）。' }
     }
-    const basis = tool.basis === 'ltv' ? 'ltv' : 'activity'
-    const days = tool.days === undefined ? 7 : Number(tool.days)
-    if (!Number.isInteger(days) || days < 1 || days > 366) return { ok: false, error: 'invalid-window' }
-    const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value
-    const end = new Date()
-    end.setDate(end.getDate() - 1)
-    const start = new Date(end)
-    start.setDate(start.getDate() - (days - 1))
-    let window = { start: iso(start), end: iso(end) }
-    if (tool.startDate !== undefined || tool.endDate !== undefined) {
-      if (!validDate(tool.startDate) || !validDate(tool.endDate) || tool.startDate > tool.endDate || Date.parse(tool.endDate) - Date.parse(tool.startDate) > 365 * 86_400_000) return { ok: false, error: 'invalid-window' }
-      window = { start: tool.startDate, end: tool.endDate }
-    }
-    const metrics = Array.isArray(tool.metrics) && tool.metrics.length > 0 && tool.metrics.length <= 10 && tool.metrics.every((m) => typeof m === 'string' && m.length > 0 && m.length <= 100)
-      ? (tool.metrics as string[]) : ['Count', 'Unique users']
-    if (tool.groupings !== undefined && (!Array.isArray(tool.groupings) || tool.groupings.length > 4 || tool.groupings.some(g => typeof g !== 'string' || !g.trim() || g.length > 100))) return { ok: false, error: 'invalid-groupings' }
-    const isCustom = !!eventName && !isAppsFlyerBuiltInEvent(eventName)
-    const groupings = tool.groupings === undefined
-      ? (isCustom ? (tool.geo === true ? ['Campaign ID', 'Media source', 'Date'] : ['Campaign ID', 'Campaign', 'Media source', 'Date']) : (tool.geo === true ? ['Event name', 'Media source', 'Date'] : ['Event name', 'Media source', 'Date', 'Campaign ID']))
-      : [...tool.groupings as string[]]
-    if (tool.geo === true && !groupings.includes('Geo')) {
-      if (groupings.length >= 4) return { ok: false, error: 'invalid-groupings', hint: 'Geo 也是一个维度；groupings 最多四项，请为它留一个位置。' }
-      groupings.push('Geo')
-    }
-    const selection = appsFlyerFilters(tool.mediaSources, tool.countries, true)
-    if ('error' in selection) return { ok: false, error: selection.error }
-    const query: Record<string, unknown> = {
-      app_ids: [appId],
-      row_count: 300,
-      metrics: metrics.map((metricName) => ({ metric_name: metricName, attribution_source: 'appsflyer', period: basis })),
-      sort_by_metrics: [{ metric_name: metrics[0], order: 'desc' }],
-      groupings,
-      filters: selection.filters,
-      in_app_event: isCustom ? [eventName!] : []
-    }
+    const win = afPullWindow(tool.days, tool.startDate, tool.endDate)
+    if (!win) return { ok: false, error: 'invalid-window' }
+    const built = afEntryQuery(tool)
+    if (!built.ok) return { ok: false, error: built.error, ...(built.hint ? { hint: built.hint } : {}) }
+    const query = built.query
     const { pullAppsFlyerDatasets, saveQuerySpec, listQuerySpecs, discardUnboundQuerySpec } = await import('./integrations/appsflyer/appsflyerDataset')
     if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
     // Legacy IDs were truncated and could alias different applications/names.
@@ -875,7 +1007,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       }
       throw error
     }
-    const result = await pullAppsFlyerDatasets({ window, specIds: [specId], canCommit: stillAuthorized })
+    const result = await pullAppsFlyerDatasets({ window: win, specIds: [specId], canCommit: stillAuthorized })
     if (!result.ok && !result.results.some((entry) => entry.ok)) {
       // A new unbound recipe has no widget that can refresh it. Leaving it in
       // an edit draft would block saving unrelated, verified data.
@@ -901,7 +1033,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     return {
       ok: true,
       spec: { id: specId },
-      window,
+      window: win,
       dataset: { id: dataset.id, name: dataset.name, rowCount: dataset.rows.length, columns },
       binding: {
         hint: `把数字卡/图表绑定本数据集：source="dataset"，datasetId="${dataset.id}"，metric 用 dataset.columns 的列名；事件次数可求和，独立用户使用按完整日期范围查询的专用总量，不跨日相加。可加 filterColumn/filterValue。标题用简短业务名，来源信息放详情。`,

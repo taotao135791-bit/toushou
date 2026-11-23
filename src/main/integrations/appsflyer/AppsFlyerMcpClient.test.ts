@@ -75,6 +75,15 @@ describe('AppsFlyer aggregation', () => {
     })
     const client = new AppsFlyerMcpClient('synthetic-token', fetcher)
     await client.initialize()
-    await expect(client.queryRaw(eventQueryArguments(query))).rejects.toThrow('appsflyer-query-validation-error')
+    let rejection: Error & { detail?: string }
+    try {
+      await client.queryRaw(eventQueryArguments(query))
+      throw new Error('expected queryRaw to reject')
+    } catch (error) {
+      rejection = error as Error & { detail?: string }
+    }
+    expect(rejection.message).toBe('appsflyer-query-validation-error')
+    // The official validation text rides along so one round-trip fixes the recipe.
+    expect(rejection.detail).toContain('Metric Count is an in-app metric')
   })
 })

@@ -205,7 +205,8 @@ function metadataFlags(value: unknown, depth = 0): MetadataFlags {
 }
 function checkedMetadata(metadata: unknown, options: ParseAfDatasetOptions): MetadataFlags {
   const flags = metadataFlags(metadata)
-  if ((flags.truncated && !options.allowSample) || (flags.partial && !options.allowPartial)) throw new Error('appsflyer-incomplete-data')
+  if (flags.truncated && !options.allowSample) throw new Error('appsflyer-incomplete-data (官方标记数据被截断；请收窄日期窗口或过滤条件后重试)')
+  if (flags.partial && !options.allowPartial) throw new Error('appsflyer-incomplete-data (窗口含当天/部分数据；请把结束日期设为昨天，或确认后带 allowPartial 提交)')
   return flags
 }
 
@@ -227,7 +228,7 @@ export function parseAfDataset(text: string, rowLimit: number = DATASET_LIMITS.m
   const csv = Papa.parse<Record<string, string>>(`${section[1]}\n${section[2]}`, { header: true, skipEmptyLines: true, dynamicTyping: false })
   const limit = Math.min(rowLimit, DATASET_LIMITS.maxRows)
   const sampled = truncated || csv.data.length === limit
-  if (csv.errors.length || csv.data.length > limit || (sampled && !options.allowSample)) throw new Error('appsflyer-incomplete-data')
+  if (csv.errors.length || csv.data.length > limit || (sampled && !options.allowSample)) throw new Error(`appsflyer-incomplete-data (${csv.errors.length ? `CSV 解析有 ${csv.errors.length} 处错误` : `${csv.data.length} 行达到单次上限 ${limit} 行`}；请收窄维度或分批拉取)`)
   const headerNames = csv.meta.fields ?? Object.keys(csv.data[0] ?? {})
   const columnDefs = headerNames.map(normalizeColumnName)
   const extra: BoardDatasetColumn[] = []

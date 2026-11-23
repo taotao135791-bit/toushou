@@ -342,11 +342,19 @@ export default function boardsTools(api: ToolHostApi): void {
       '3. 仅沿用当前客户、项目已确认的 appId 和事件映射。用户使用业务名称时，先发现实际事件，按当前映射、名称和业务含义选择唯一最匹配的候选，再将准确 eventName 保存；自定义事件不限 af_ 前缀。只有同样合理的候选不止一个时才简短询问，不要求用户提供字段。禁止从其他客户复制事件名、阶段命名或漏斗定义。Install/App Active/Session 是内置事件。安装量来自官方附带的 Installs 列，查询使用 Count 等受支持的指标。\n' +
       '4. 首次拉取用 startDate/endDate 与看板总控具体日期对齐，后续沿用此查询条件重查；days 备用默认近7个完整日（截至昨天）。geo=true 仅增加 Geo 维度；countries 过滤地区，全部地区应省略过滤，绝不传 Geo=["all"]。最多4个维度。\n' +
       '5. 新业务方案显式传 mediaSources，使用当前App真实发现并已确认的媒体名称；[]为该App全部授权来源，省略仅兼容旧TikTok调用。不要根据媒体品牌猜接口别名，非TikTok方案不得省略后错标来源。\n' +
-      '6. 返回的 dataset.columns 是可绑定的列名。事件次数等可加指标可用 op="sum"；独立用户用完整日期范围的专用总量查询，不把多日或多分组去重数相加。首屏只保留关键数字/highlight，不创建大段口径、防御词或原始查询参数说明卡。',
+      '6. 返回的 dataset.columns 是可绑定的列名。事件次数等可加指标可用 op="sum"；独立用户用完整日期范围的专用总量查询，不把多日或多分组去重数相加。首屏只保留关键数字/highlight，不创建大段口径、防御词或原始查询参数说明卡。\n' +
+      '7. 同一时间窗要拉多张数据集时，用 pulls 一次提交 2–8 条（每条含 name/appId 及形状参数；days/startDate/endDate 传顶层），返回的 datasets 数组逐条绑定——比逐张调用快得多（省多轮模型往返）。失败的条目看各自 ok/error，成功的照常绑定。',
     parameters: {
       type: 'object',
       properties: {
         buildId: BUILD_ID,
+        pulls: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 8,
+          description: '批量模式：2–8 个条目数组，每个条目 {name, appId, eventName?, basis?, metrics?, groupings?, geo?, countries?, mediaSources?}；窗口参数传顶层。返回 {datasets:[{name, ok, datasetId, columns, binding?, error?}]}',
+          items: { type: 'object', properties: { name: { type: 'string' }, appId: { type: 'string' } }, required: ['name', 'appId'] }
+        },
         name: { type: 'string', description: '短名（1-60 字符），包含必要的应用/范围以避免重名；数据集叫 AF-{name}' },
         appId: { type: 'string', description: 'AppsFlyer App ID' },
         eventName: { type: 'string', description: '发现并匹配后的准确自定义事件名，不限前缀；业务词由助手匹配，不要求用户报字段' },

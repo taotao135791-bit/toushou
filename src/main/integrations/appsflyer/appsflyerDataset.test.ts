@@ -224,9 +224,9 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
       clientFactory: () => ({ initialize: async () => {}, queryRaw: async () => partial })
     })
     expect(historical.ok).toBe(false)
-    expect(listDatasets(datasetsFile).find(dataset => dataset.name === 'AF-安装量')?.appsflyer).toMatchObject({
-      status: 'failed', error: 'appsflyer-incomplete-data'
-    })
+    // The stored error keeps the bare code as prefix plus a fix hint (诊断
+    // 上下文必须随错误落盘，不然每轮都要重新盲猜——见 2026-11-10 复盘)。
+    expect(String(listDatasets(datasetsFile).find(dataset => dataset.name === 'AF-安装量')?.appsflyer?.error)).toContain('appsflyer-incomplete-data')
   })
 
   it('one failing spec does not block the others', async () => {
