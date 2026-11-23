@@ -1204,7 +1204,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     }
     return {
       ok: true,
-      plan: { appId, window: planWindow, ...planPayload },
+      plan: { ...planPayload, appId, window: planWindow },
       hint: `预审完成（消耗 1 次调用）：窗口内共 ${plan.totalRows} 行、${plan.events.length} 种事件。${coverage}把清单给用户勾选（全部/按事件/按渠道/按地区），确认后用 toushou_af_dataset_pull 的 pulls 批量一次提交全部组（2–8 条、同一时间窗），只有单组时才单独调用；落成 AF-{name} 活数据集。若某组合行数接近上限请进一步收窄维度。`
     }
   }
