@@ -1107,8 +1107,8 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const coverage = plan.sampled || plan.partial ? '这是部分样本，不能当作完整覆盖或汇总。建议先缩小日期或筛选范围。' : ''
     return {
       ok: true,
-      plan: { ...plan, filters: selection.filters },
-      hint: `预审返回 ${plan.totalRows} 行，观察到 ${plan.events.length} 种事件。${coverage}请用户确认事件、渠道和地区后，再按组合调用 toushou_af_dataset_pull 保存数据。`
+      plan: { appId, window: planWindow, ...plan },
+      hint: `预审完成（消耗 1 次调用）：窗口内共 ${plan.totalRows} 行、${plan.events.length} 种事件。${coverage}把清单给用户勾选（全部/按事件/按渠道/按地区），确认后用 toushou_af_dataset_pull 的 pulls 批量一次提交全部组（2–8 条、同一时间窗），只有单组时才单独调用；落成 AF-{name} 活数据集。若某组合行数接近上限请进一步收窄维度。`
     }
   }
 
