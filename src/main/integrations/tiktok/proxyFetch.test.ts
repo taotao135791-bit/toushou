@@ -104,4 +104,30 @@ describe('proxyFetchFor', () => {
     directSession.fetch.mockImplementation(async () => { throw new Error('ECONNRESET') })
     await expect(proxied('https://remote.invalid/')).rejects.toThrow('proxy-fetch-failed')
   })
+
+  it('routes the AppsFlyer channel direct-only even with a proxy configured', async () => {
+    const fetch = await proxyFetchFor('https://appsflyer.invalid/', 'appsflyer-api')
+    await fetch('https://appsflyer.invalid/')
+    const sessions = [...fixture.sessions.values()]
+    expect(sessions).toHaveLength(1)
+    // 环境代理已配置（HTTPS_PROXY=proxy.invalid），AF 通道也绝不碰它。
+    expect(sessions[0].setProxy).toHaveBeenCalledWith({ mode: 'direct' })
+  })
+
+  it('routes the second AF partition name (connection manager) direct-only too', async () => {
+    const fetch = await proxyFetchFor('https://appsflyer.invalid/', 'appsflyer')
+    await fetch('https://appsflyer.invalid/')
+    const sessions = [...fixture.sessions.values()]
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].setProxy).toHaveBeenCalledWith({ mode: 'direct' })
+  })
+
+  it('keeps the TikTok channel proxy-only: a dead proxy errors instead of trying direct', async () => {
+    const fetch = await proxyFetchFor('https://remote.invalid/', 'tiktok-api')
+    const proxySession = [...fixture.sessions.values()].find((s) => s.setProxy.mock.calls[0][0].mode === 'fixed_servers')!
+    proxySession.fetch.mockImplementation(async () => { throw new Error('socket disconnected before secure TLS connection was established') })
+    await expect(fetch('https://remote.invalid/')).rejects.toThrow('socket disconnected')
+    // 不创建直连会话：直连 TikTok 必然不通，静默降级只会白烧超时。
+    expect([...fixture.sessions.values()].some((s) => s.setProxy.mock.calls[0][0].mode === 'direct')).toBe(false)
+  })
 })
