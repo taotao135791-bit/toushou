@@ -277,6 +277,11 @@ describe('isSessionFilePath / deleteSessionFile', () => {
     expect(existsSync(filePath)).toBe(false)
   })
 
+  it('treats an already-gone file as deleted (idempotent)', async () => {
+    const filePath = path.join(sessionDirFor(projectDir, agentDir), 'del_uuid-missing.jsonl')
+    expect(await deleteSessionFile(filePath, agentDir)).toBe(true)
+  })
+
   it('refuses paths outside the sessions root', async () => {
     const outside = path.join(projectDir, 'keep.jsonl')
     writeFileSync(outside, '{}')
@@ -303,10 +308,12 @@ describe('isSessionFilePath / deleteSessionFile', () => {
     expect(existsSync(path.join(agentDir, 'escape.jsonl'))).toBe(true)
   })
 
-  it('returns false for a missing file inside the root', async () => {
+  it('treats a missing file inside the root as already deleted', async () => {
+    // 用户意图是"这行消失"——文件已不在就是目标已达成，如实报 false 会让
+    // 回滚把行复活，看起来像"删不掉"（2026-11-24 实测的复现路径之一）。
     const ghost = path.join(agentDir, 'sessions', expectedDirName(projectDir), 'ghost.jsonl')
     expect(isSessionFilePath(ghost, agentDir)).toBe(true)
-    expect(await deleteSessionFile(ghost, agentDir)).toBe(false)
+    expect(await deleteSessionFile(ghost, agentDir)).toBe(true)
   })
 
   it('refuses a session symlink whose target escapes the sessions root', () => {
