@@ -121,6 +121,16 @@ describe('data-source priority baseline', () => {
     expect(en[1]).toContain('data-source-priority')
   })
 
+  it('delivers verified readings when attribution or another metric is unavailable', () => {
+    for (const language of ['zh', 'en'] as const) {
+      const prompt = buildAgentArgs(language)[1]
+      expect(prompt).toContain('继续使用可用的专用来源完成独立读数')
+      expect(prompt).toContain('在最终回复中先交付当前账户、日期与粒度下已核验的读数')
+      expect(prompt).toContain('再标明缺项、已知原因与恢复方式')
+      expect(prompt).toContain('缺失值保持未知，禁止填零、换口径')
+    }
+  })
+
   it('distinguishes local dataset permissions from TikTok authorization in both languages', () => {
     for (const language of ['zh', 'en'] as const) {
       const prompt = buildAgentArgs(language)[1]
