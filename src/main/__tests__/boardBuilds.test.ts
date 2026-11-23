@@ -9,7 +9,7 @@ import { authorizeAndDispatch, dispatch } from '../boardsBridge'
 import { createOrUpdateDataset, listDatasets } from '../boardDatasets'
 import { listBoards, saveBoard } from '../boards'
 import { saveQuerySpec, listQuerySpecs } from '../integrations/appsflyer/appsflyerDataset'
-import { recordBoardBuildSourceEvidence, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, withCurrentBoardBuild, type BoardTargetUiEvent } from '../boardBuilds'
+import { recordBoardBuildSourceEvidence, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, setBoardBuildAfPrefix, withCurrentBoardBuild, type BoardTargetUiEvent } from '../boardBuilds'
 import { atomicBoardFile, BOARD_STORE_FILES, boardBuildRoot, boardProfileRoot, readBoardStoreBytes, recoverBoardBuild } from '../boardBuildStorage'
 import { freezeBoardBuildIntent } from '../../shared/boardBuild'
 
@@ -55,6 +55,36 @@ async function seedNative(buildId: string, proven = true): Promise<string> {
 }
 
 describe('trusted request extraction', () => {
+  it('remaps tiktok-af preset bindings to the datasets actually pulled this build', async () => {
+    const buildId = await begin('做固定快照看板，只有固定数字，产品是 Lemon8 泰国')
+    // board_create 的 authorize 路径会记录 afPrefix；这里直接落到草稿模拟。
+    expect(setBoardBuildAfPrefix(session, buildId, 'Lemon8泰国')).toBe(true)
+    // 模型按习惯名拉数：草稿库里的数据集名与模板虚拟名（AF-{prefix}基础分天）不同。
+    const datasetId = await withCurrentBoardBuild(session, async () => {
+      const win = { start: '2026-10-30', end: '2026-11-05' }
+      const made: string[] = []
+      for (const [name, columns, row] of [
+        ['AF-Lemon8泰国TikTok基础', [{ name: '活跃用户', type: 'number' }, { name: '安装量', type: 'number' }, { name: '日期', type: 'date' }], [1105, 244, '2026-11-04']],
+        ['AF-Lemon8泰国TikTok次留', [{ name: '事件次数', type: 'number' }, { name: '独立用户', type: 'number' }, { name: '日期', type: 'date' }], [74, 74, '2026-11-04']]
+      ] as const) {
+        const result = createOrUpdateDataset(name, { columns, rows: [row], truncated: false }, undefined, { appsflyer: { specId: 'spec-' + name.slice(-4), status: 'updated', window: win, dataWindow: win, attemptedAt: Date.now() } })
+        if (!result.ok) throw new Error(result.error)
+        recordBoardBuildSourceEvidence(session, 'appsflyer', [result.dataset.id])
+        made.push(result.dataset.id)
+      }
+      return made.join(',')
+    }, buildId)
+    await call({ action: 'board_create', name: 'AF preset remap', template: 'tiktok-af', afPrefix: 'Lemon8泰国', buildId })
+    const committed = await call({ action: 'board_build_commit', buildId, allowPartial: true })
+    expect(committed).toMatchObject({ ok: true, published: true })
+    const board = listBoards().find((candidate) => candidate.name === 'AF preset remap')!
+    // 预绑的虚拟名在提交时被重绑到本轮实际拉到的数据集——绑定靠证据不靠记忆。
+    const afCards = board.widgets.filter((w) => (w.title ?? '').startsWith('AF ') && w.config.source === 'dataset')
+    expect(afCards.length).toBeGreaterThanOrEqual(5)
+    const pulled = datasetId.split(',')
+    expect(afCards.every((w) => pulled.includes(String(w.config.datasetId)))).toBe(true)
+    expect(new Set(afCards.map((w) => w.config.datasetId)).size).toBe(2)
+  })
   it('keeps defaults for unspecified commerce, subscriptions and daily reports', () => {
     for (const text of ['做一个电商投放看板，你安排', '做订阅产品的获客看板', '做昨天的投放日报看板，你安排']) {
       const intent = freezeBoardBuildIntent(text, 'trusted', 1)
