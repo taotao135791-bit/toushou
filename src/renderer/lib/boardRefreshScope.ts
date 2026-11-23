@@ -140,7 +140,13 @@ export function datasetsForBoardWindow(datasets: BoardDataset[], ids: string[], 
   return datasets.map(dataset => {
     if (!selected.has(dataset.id)) return dataset
     const state = dataset.appsflyer
-    const ready = state && (state.status === 'updated' || state.status === 'empty') && state.window.start === window.start && state.window.end === window.end && state.dataWindow?.start === window.start && state.dataWindow.end === window.end
+    // 覆盖即放行（2026-11-24 实测修正）：拉取窗口往往比总控窗口宽（近7天
+    // 拉取、总控昨天），只要数据窗口**覆盖**总控窗口就是本次口径的合法数据；
+    // 旧的逐字段全等判定会把刚建好的板的 AF 行全部清空（开板即空）。
+    // 覆盖不住（数据早于总控窗口，典型=隔夜后没刷新）才如实清空待刷新。
+    const covered = typeof state?.dataWindow?.start === 'string' && typeof state.dataWindow.end === 'string'
+      && state.dataWindow.start <= window.start && state.dataWindow.end >= window.end
+    const ready = state && (state.status === 'updated' || state.status === 'empty') && covered
     return !pending && ready ? dataset : { ...dataset, rows: [] }
   })
 }

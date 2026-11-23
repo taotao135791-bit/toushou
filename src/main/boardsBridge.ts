@@ -34,6 +34,7 @@ import {
   validateBoardStyle,
   validateBoardWidgetStyle,
   validateMasterScope,
+  MASTER_SCOPED_WIDGET_TYPES,
   type BoardPresetId,
   type BoardText
 } from '../shared/boards'
@@ -890,6 +891,11 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       const scope = validateMasterScope(tool.masterScope)
       if (!scope) return { ok: false, error: 'invalid-master-scope' }
       board.masterScope = scope
+    }
+    // 模板出生即对齐总控：读数类预设模块（TT/Meta 等）跟随 masterScope，
+    // 否则模块带着默认口径出生、总控一切换就永远"日期已切换"（实测）。
+    if (board.masterScope) {
+      board.widgets = board.widgets.map(widget => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type) ? applyMasterScope(widget, board.masterScope!) : widget)
     }
     // A TikTok advertiser request binds a reading module to those advertisers
     // (empty string = every advertiser the connected grant covers) AND scopes

@@ -121,5 +121,9 @@ describe('board refresh scope', () => {
     expect(datasetsForBoardWindow([fresh], [old.id], window, true)[0].rows).toEqual([])
     expect(datasetsForBoardWindow([{ ...fresh, appsflyer: { ...fresh.appsflyer, dataWindow: { start: '2026-11-04', end: '2026-11-04' } } }], [old.id], window, false)[0].rows).toEqual([])
     expect(old.rows).toEqual([['2026-11-04', 99]])
+    // 覆盖即放行：拉取窗口比总控宽（近7天拉取、总控当天）是合法数据，
+    // 不得清空——否则刚建好的板开板即空（2026-11-24 实测）。
+    const wider = { ...old, appsflyer: { status: 'updated' as const, window: { start: '2026-11-04', end: '2026-11-05' }, dataWindow: { start: '2026-11-04', end: '2026-11-05' }, attemptedAt: 1 } }
+    expect(datasetsForBoardWindow([wider], [old.id], window, false)[0].rows).toEqual([['2026-11-04', 99]])
   })
 })
