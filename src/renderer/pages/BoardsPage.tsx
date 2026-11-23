@@ -1642,7 +1642,11 @@ export default function BoardsPage() {
       return binding.datasetId.startsWith('meta-reading:') || data?.name === 'TikTok 报表' || binding.datasetId === 'TikTok 报表' || !!data?.appsflyer || (data?.name ?? binding.datasetId).startsWith('AF-') || (data?.name ?? binding.datasetId) === 'AppsFlyer 报表'
     }))
     const view = currentPlan?.widgets.find(item => item.widgetId === widget.id)
-    const widgetDatasets = view && currentPlan ? boardRefreshWidgetDatasets(currentPlan, widget, datasets) : managedSource ? datasets.map(data => data.name === 'TikTok 报表' || !!data.appsflyer || data.name.startsWith('AF-') || data.name === 'AppsFlyer 报表' ? { ...data, rows: [] } : data) : displayedDatasets
+    // 刚建好的板必须开板即有数（用户拍板）：托管数据源（TikTok 报表 / AF）不再
+    // 在无刷新视图时清空存量行——那会让交付后的板打开全是"—"。数据新鲜度由
+    // 头部「数据最后刷新」时间戳和「请刷新以核对」提示表达，手动刷新仍是唯一
+    // 拉数动作（不变）。行窗口与当前口径不符时卡片自然显示缺行，不会假装有数。
+    const widgetDatasets = view && currentPlan ? boardRefreshWidgetDatasets(currentPlan, widget, datasets) : displayedDatasets
     const truncated = bindings.some(binding => widgetDatasets.some(dataset => dataset.truncated && (dataset.id === binding.datasetId || dataset.name === binding.datasetId)))
     const widgetWindow = view?.window ?? (current ? boardWidgetWindow(current, widget, boardNow) : undefined)
     const widgetBrand = widget.type === 'tt-reading' ? 'tiktok' : widget.type === 'google-report-reading' ? 'google' : ['meta-reading', 'fb-reading', 'fb-reading-summary', 'fb-report-reading'].includes(widget.type) ? 'facebook' : null
