@@ -1,118 +1,106 @@
-import { randomBytes } from 'node:crypto'
+import { app } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import type {
   ConnectionDefinition,
   ConnectionStatus,
   DingTalkConnectionError,
   DingTalkConnectionResult,
   DingTalkConnectionSnapshot,
-  DingTalkConnectionState
+  DingTalkConnectionState,
+  DingTalkReadRequest,
+  DingTalkReadResult
 } from '../../../shared/connections'
-import { secureStorageCoordinator } from '../secureStorageCoordinator'
-import { DingTalkChat } from './DingTalkChat'
-import { DingTalkCredentialStore, type DingTalkConfiguration, parseDingTalkCredentials } from './DingTalkCredentialStore'
-import { DingTalkStream, DingTalkStreamError, type DingTalkIncomingMessage } from './DingTalkStream'
+import { DingTalkCli, DingTalkCliError, type DingTalkCliIdentity, type DingTalkCliInstallation } from './DingTalkCli'
 
-export const DINGTALK_SETUP_URL = 'https://open-dev.dingtalk.com/'
-export const DINGTALK_GUIDE_URL = 'https://open-dingtalk.github.io/developerpedia/docs/explore/tutorials/stream/bot/python/create-bot/'
+export const DINGTALK_GUIDE_URL = 'https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/README_zh.md#开始使用'
 
 const definition: ConnectionDefinition = {
   id: 'dingtalk',
   kind: 'channel',
   label: '钉钉',
-  description: '在钉钉私聊中向投手提问。',
-  capabilities: ['messaging']
+  description: '授权投手在对话中搜索钉钉消息和阅读文档。',
+  capabilities: ['messages.read', 'docs.read']
 }
 
 const statusByState: Record<DingTalkConnectionState, ConnectionStatus> = {
   idle: 'disconnected',
-  connecting: 'connecting',
+  checking: 'connecting',
+  installing: 'connecting',
+  authorizing: 'waiting_for_user',
   connected: 'connected',
-  reconnecting: 'degraded',
   error: 'failed'
 }
 
-type Transport = Pick<DingTalkStream, 'connect' | 'close' | 'reply'>
-type StreamFactory = (configuration: DingTalkConfiguration, callbacks: {
-  onMessage: (message: DingTalkIncomingMessage) => void
-  onDisconnect: () => void
-}) => Transport
+type Cli = Pick<DingTalkCli, 'find' | 'install' | 'status' | 'login' | 'currentUser' | 'searchMessages' | 'searchDocuments' | 'readDocument'>
+type ConnectionOperation = 'connect' | 'check'
 
-interface Dependencies {
-  storage?: Pick<DingTalkCredentialStore, 'load' | 'save' | 'clear'>
-  createStream?: StreamFactory
-  chat?: Pick<DingTalkChat, 'turn' | 'reset'>
+function exactProfile(value: unknown): value is string {
+  return typeof value === 'string' && /^[^:\s\x00-\x1f\x7f]{1,256}:[^:\s\x00-\x1f\x7f]{1,256}$/.test(value)
+}
+
+function unlinkLink(file: string): void {
+  try { unlinkSync(file) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+}
+
+function saveLink(file: string, profile: string): void {
+  const temporary = `${file}.${randomUUID()}.tmp`
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+  try {
+    writeFileSync(temporary, JSON.stringify({ version: 1, profile }), { flag: 'wx', mode: 0o600 })
+    renameSync(temporary, file)
+  } finally {
+    unlinkLink(temporary)
+  }
 }
 
 function connectionError(error: unknown): DingTalkConnectionError {
-  if (error instanceof DingTalkStreamError) {
-    if (error.code === 'credentials') return 'invalid-credentials'
-    if (error.code === 'protocol') return 'configuration'
-    if (error.code === 'network') return 'network'
+  if (error instanceof DingTalkCliError) {
+    if (error.code === 'permission-denied') return 'authorization-failed'
+    if (error.code !== 'read-failed' && error.code !== 'cancelled') return error.code
   }
   return 'connection-failed'
 }
 
-function splitReply(text: string): string[] {
-  const parts: string[] = []
-  let part = ''
-  let size = 0
-  for (const char of text) {
-    const length = Buffer.byteLength(char)
-    if (size + length > 4_000) {
-      parts.push(part)
-      part = ''
-      size = 0
-    }
-    part += char
-    size += length
-  }
-  if (part) parts.push(part)
-  return parts
-}
+const authorizationExpired = (error: unknown): boolean => error instanceof DingTalkCliError && error.code === 'not-authorized'
 
+/** Stores the explicitly linked user/organization ID only. DWS owns authentication. */
 export class DingTalkConnectionManager {
-  private readonly storage: NonNullable<Dependencies['storage']>
-  private readonly createStream: StreamFactory
-  private readonly chat: NonNullable<Dependencies['chat']>
-  private configuration: DingTalkConfiguration | null = null
+  private readonly cli: Cli
+  private readonly file: string
+  private profile?: string
+  private identity?: DingTalkCliIdentity
+  private installation: DingTalkCliInstallation | null = null
   private state: DingTalkConnectionState = 'idle'
-  private configured = false
-  private pairingCode?: string
   private lastError?: DingTalkConnectionError
   private lastConnectedAt?: number
-  private lastMessageAt?: number
   private listener?: (snapshot: DingTalkConnectionSnapshot) => void
-  private stream?: Transport
-  private candidate?: Transport
-  private retryTimer?: ReturnType<typeof setTimeout>
-  private retryCount = 0
-  private epoch = 0
-  private pending = Promise.resolve()
+  private loaded?: Promise<void>
+  private initialized?: Promise<void>
+  private operation?: { controller: AbortController; completion: Promise<DingTalkConnectionResult> }
+  private readLifetime = new AbortController()
+  private readers = 0
   private stopped = false
-  private initialized = false
-  private chatLifetime = new AbortController()
-  private runningTurn?: symbol
-  private readonly seen = new Map<string, number>()
 
-  constructor(dependencies: Dependencies = {}) {
-    this.storage = dependencies.storage ?? new DingTalkCredentialStore()
-    this.createStream = dependencies.createStream ?? ((configuration, callbacks) => new DingTalkStream(configuration, callbacks))
-    this.chat = dependencies.chat ?? new DingTalkChat()
+  constructor(options: { cli?: Cli; file?: string } = {}) {
+    this.cli = options.cli ?? new DingTalkCli()
+    this.file = options.file ?? path.join(app.getPath('userData'), 'dingtalk-cli-link.json')
   }
 
   getSnapshot(): DingTalkConnectionSnapshot {
-    const clientId = this.configuration?.clientId
-    const paired = Boolean(this.configuration?.owner)
     return {
       definition,
       state: this.state,
-      status: this.state === 'connected' && !paired ? 'waiting_for_user' : statusByState[this.state],
-      configured: this.configured,
-      paired,
-      pairingCode: this.state === 'connected' ? this.pairingCode : undefined,
-      clientIdMasked: clientId ? `••••${clientId.length > 8 ? clientId.slice(-4) : ''}` : undefined,
+      status: statusByState[this.state],
+      configured: this.profile !== undefined,
+      cliInstalled: this.installation !== null,
+      accountName: this.identity?.accountName,
+      organizationName: this.identity?.organizationName,
       lastConnectedAt: this.lastConnectedAt,
-      lastMessageAt: this.lastMessageAt,
       lastError: this.lastError
     }
   }
@@ -122,308 +110,208 @@ export class DingTalkConnectionManager {
   }
 
   initialize(): Promise<void> {
-    if (this.initialized) return Promise.resolve()
-    this.initialized = true
-    return this.serialize(async epoch => {
-      if (await this.loadConfiguration(epoch) && this.configuration && this.current(epoch)) {
-        await this.start(this.configuration, epoch)
-      }
+    this.initialized ??= this.loadLink().then(async () => {
+      if (this.profile && !this.stopped) await this.reconnect()
     })
+    return this.initialized
   }
 
-  connect(raw: unknown): Promise<DingTalkConnectionResult> {
-    const credentials = parseDingTalkCredentials(raw)
-    if (!credentials) return Promise.resolve(this.result('invalid-credentials'))
-    const retryEpoch = secureStorageCoordinator.blockedEpoch()
-    return this.serialize(async epoch => {
-      // If a saved credential could not be read, a manual retry may unlock it.
-      // Keep its verified pairing if the application ID matches.
-      if (!this.configuration && this.configured) {
-        if (!await this.loadConfiguration(epoch, retryEpoch)) return this.result('storage-unavailable')
-      }
-      if (!this.current(epoch)) return this.result('connection-failed')
-      const current = this.configuration
-      if (this.stream && current?.clientId === credentials.clientId && current.clientSecret === credentials.clientSecret) {
-        return this.recoverStorage(epoch, retryEpoch)
-      }
-      const owner = current?.clientId === credentials.clientId ? current.owner : undefined
-      return this.start({ ...credentials, ...(owner ? { owner } : {}) }, epoch, { retryEpoch })
-    })
+  connect(): Promise<DingTalkConnectionResult> {
+    if (this.state === 'connected') return Promise.resolve(this.result())
+    return this.start('connect')
   }
 
   reconnect(): Promise<DingTalkConnectionResult> {
-    const retryEpoch = secureStorageCoordinator.blockedEpoch()
-    return this.serialize(async epoch => {
-      if (!this.configuration && !await this.loadConfiguration(epoch, retryEpoch)) return this.result('storage-unavailable')
-      if (!this.current(epoch)) return this.result('connection-failed')
-      if (this.stream) return this.recoverStorage(epoch, retryEpoch)
-      if (!this.configuration) return this.result('invalid-credentials')
-      return this.start(this.configuration, epoch)
-    })
+    return this.start('check')
   }
 
-  disconnect(): Promise<DingTalkConnectionResult> {
-    this.stopActivity()
-    this.configuration = null
+  cancel(): DingTalkConnectionResult {
+    if (this.operation) {
+      this.cancelOperation()
+      this.setState(this.identity ? 'connected' : this.profile ? 'error' : 'idle',
+        this.profile && !this.identity ? 'not-authorized' : undefined)
+    }
+    return this.result()
+  }
+
+  async disconnect(): Promise<DingTalkConnectionResult> {
+    this.cancelOperation()
+    this.cancelReads()
+    await this.loadLink()
+    // A caller may have queued another action during the initial disk read.
+    this.cancelOperation()
+    this.cancelReads()
+    this.identity = undefined
     this.lastConnectedAt = undefined
-    this.lastMessageAt = undefined
-    this.setState('idle')
-    return this.serialize(async epoch => {
-      try {
-        await this.storage.clear()
-        if (this.current(epoch)) {
-          this.configured = false
-          this.setState('idle')
-        }
-        return this.result()
-      } catch {
-        if (this.current(epoch)) this.setState('error', 'storage-unavailable')
-        return this.result('storage-unavailable')
-      }
-    })
+    try {
+      unlinkLink(this.file)
+      this.profile = undefined
+      this.setState('idle')
+      return this.result()
+    } catch {
+      this.setState('error', 'connection-failed')
+      return this.result('connection-failed')
+    }
   }
 
   shutdown(): void {
     this.stopped = true
-    this.stopActivity()
+    this.cancelOperation()
+    this.cancelReads()
   }
 
-  private serialize<T>(action: (epoch: number) => Promise<T>): Promise<T> {
-    const epoch = this.epoch
-    const run = this.pending.then(() => action(epoch))
-    this.pending = run.then(() => undefined, () => undefined)
-    return run
-  }
-
-  private current(epoch: number): boolean { return epoch === this.epoch && !this.stopped }
-
-  private async recoverStorage(epoch: number, retryEpoch: number | null): Promise<DingTalkConnectionResult> {
-    if (this.lastError !== 'storage-unavailable') return this.result()
+  async read(request: DingTalkReadRequest, signal?: AbortSignal): Promise<DingTalkReadResult> {
+    await this.initialize()
+    const cli = this.installation
+    const profile = this.identity?.profile
+    if (this.stopped || !cli || !profile || this.profile !== profile || this.state !== 'connected') {
+      return { ok: false, error: 'not-connected' }
+    }
+    if (this.readers >= 3) return { ok: false, error: 'read-failed' }
+    const lifetime = this.readLifetime.signal
+    const task = signal ? AbortSignal.any([signal, lifetime]) : lifetime
+    this.readers++
     try {
-      const saved = await this.storage.load({ retry: true, retryEpoch })
-      if (!this.current(epoch)) return this.result('connection-failed')
-      if (saved && saved.clientId === this.configuration?.clientId && saved.clientSecret === this.configuration.clientSecret) {
-        this.setState(this.stream ? 'connected' : 'reconnecting')
-        return this.result()
+      task.throwIfAborted()
+      let data: unknown
+      if (request.action === 'read_document') {
+        if (!/^[A-Za-z0-9_-]{1,200}$/.test(request.documentId)) return { ok: false, error: 'invalid-input' }
+        data = await this.cli.readDocument(cli, profile, request.documentId, task)
+      } else {
+        const query = request.query.trim()
+        if (!query || query.length > 200 || /[\x00-\x1f\x7f]/.test(query)) return { ok: false, error: 'invalid-input' }
+        data = request.action === 'search_messages'
+          ? await this.cli.searchMessages(cli, profile, query, 20, task)
+          : await this.cli.searchDocuments(cli, profile, query, 10, task)
       }
-    } catch { /* Keep the current connection and report the next local action. */ }
-    return this.result('storage-unavailable')
-  }
-
-  private async loadConfiguration(epoch: number, retryEpoch?: number | null): Promise<boolean> {
-    if (!this.current(epoch)) return false
-    try {
-      const configuration = await this.storage.load(retryEpoch === undefined ? undefined : { retry: true, retryEpoch })
-      if (!this.current(epoch)) return false
-      this.configuration = configuration
-      this.configured = configuration !== null
-      return true
-    } catch {
-      if (this.current(epoch)) {
-        this.configured = true
-        this.setState('error', 'storage-unavailable')
+      task.throwIfAborted()
+      return { ok: true, data }
+    } catch (error) {
+      if (lifetime.aborted) return { ok: false, error: 'not-connected' }
+      if (error instanceof DingTalkCliError) {
+        const code = error.code
+        if (code === 'not-authorized' || code === 'organization-access-required' || code === 'cli-unavailable') {
+          this.cancelReads()
+          this.identity = undefined
+          this.setState('error', code)
+          return { ok: false, error: code }
+        }
+        if (code === 'network' || code === 'permission-denied') return { ok: false, error: code }
       }
-      return false
+      return { ok: false, error: 'read-failed' }
+    } finally {
+      this.readers--
     }
   }
 
-  private async start(
-    configuration: DingTalkConfiguration,
-    epoch: number,
-    save?: { retryEpoch: number | null }
-  ): Promise<DingTalkConnectionResult> {
-    this.clearRetry()
-    if (!this.stream) this.setState(this.state === 'reconnecting' ? 'reconnecting' : 'connecting')
-    let dropped = false
-    const candidate = this.createStream(configuration, {
-      onMessage: message => this.receive(candidate, message),
-      onDisconnect: () => {
-        dropped = true
-        if (this.stream === candidate) {
-          this.stream = undefined
-          this.setState('reconnecting', 'network')
-          this.scheduleRetry()
-        }
-      }
+  private loadLink(): Promise<void> {
+    this.loaded ??= (async () => {
+      try {
+        const content = await readFile(this.file, 'utf8')
+        if (content.length > 1024) return
+        const value = JSON.parse(content) as { version?: unknown; profile?: unknown } | null
+        if (value?.version === 1 && exactProfile(value.profile)) this.profile = value.profile
+      } catch { /* An absent or unreadable app link requires an explicit login. */ }
+    })()
+    return this.loaded
+  }
+
+  private start(kind: ConnectionOperation): Promise<DingTalkConnectionResult> {
+    if (this.stopped) return Promise.resolve(this.result('connection-failed'))
+    if (this.operation) return this.operation.completion
+    const controller = new AbortController()
+    const completion = this.run(kind, controller.signal).finally(() => {
+      if (this.operation?.controller === controller) this.operation = undefined
     })
-    this.candidate = candidate
-    let failure: DingTalkConnectionError | undefined
+    this.operation = { controller, completion }
+    return completion
+  }
+
+  private async run(kind: ConnectionOperation, signal: AbortSignal): Promise<DingTalkConnectionResult> {
     try {
-      await candidate.connect()
-      if (!this.current(epoch)) return this.result('connection-failed')
-      if (dropped) return this.startFailed('network')
-      if (save) {
+      await this.loadLink()
+      signal.throwIfAborted()
+      if (kind === 'check' && !this.profile) return this.result('not-authorized')
+      this.setState('checking')
+      let cli = await this.cli.find(signal)
+      signal.throwIfAborted()
+      this.installation = cli
+      if (!cli && kind === 'connect') {
+        this.setState('installing')
+        cli = await this.cli.install(signal)
+        signal.throwIfAborted()
+        this.installation = cli
+      }
+      if (!cli) throw new DingTalkCliError('cli-unavailable')
+
+      let identity = await this.cli.status(cli, this.profile, signal).catch(error => {
+        // Some older DWS vaults return an inconclusive readonly snapshot.
+        // A new explicit login can recover it via the official browser flow.
+        if (kind === 'connect' && error instanceof DingTalkCliError &&
+            (error.code === 'not-authorized' || error.code === 'authorization-failed')) return null
+        throw error
+      })
+      signal.throwIfAborted()
+      if (identity && (!exactProfile(identity.profile) || (this.profile && identity.profile !== this.profile))) {
+        throw new DingTalkCliError('not-authorized')
+      }
+      if (identity) {
         try {
-          const committed = await this.storage.save(
-            configuration,
-            { retry: true, retryEpoch: save.retryEpoch },
-            () => this.current(epoch) && !dropped
-          )
-          if (!committed && this.current(epoch)) failure = 'network'
-        } catch {
-          failure = 'storage-unavailable'
+          await this.cli.currentUser(cli, identity.profile, signal)
+        } catch (error) {
+          if (kind !== 'connect' || !authorizationExpired(error)) throw error
+          identity = null
         }
-        if (!this.current(epoch)) return this.result('connection-failed')
-        if (failure) return this.startFailed(failure)
+        signal.throwIfAborted()
       }
-      if (this.configuration?.clientId !== configuration.clientId) {
-        this.resetChat()
-        this.pairingCode = undefined
-        this.lastMessageAt = undefined
+      if (!identity && kind === 'connect') {
+        this.setState('authorizing')
+        identity = await this.cli.login(cli, signal)
+        signal.throwIfAborted()
+        if (!identity || !exactProfile(identity.profile)) throw new DingTalkCliError('not-authorized')
+        this.setState('checking')
+        await this.cli.currentUser(cli, identity.profile, signal)
+        signal.throwIfAborted()
       }
-      this.configured = true
-      this.configuration = configuration
-      const previous = this.stream
-      this.stream = dropped ? undefined : candidate
-      previous?.close()
-      if (dropped) return this.startFailed('network')
-      if (!configuration.owner) this.pairingCode ??= randomBytes(6).toString('hex')
-      this.clearRetry()
-      this.retryCount = 0
+      if (!identity) throw new DingTalkCliError('not-authorized')
+      if (this.profile !== identity.profile) {
+        saveLink(this.file, identity.profile)
+        this.cancelReads()
+        this.profile = identity.profile
+      }
+      this.identity = identity
       this.lastConnectedAt = Date.now()
       this.setState('connected')
       return this.result()
     } catch (error) {
-      return this.current(epoch) ? this.startFailed(connectionError(error)) : this.result('connection-failed')
-    } finally {
-      this.candidate = undefined
-      if (this.stream !== candidate) candidate.close()
+      if (signal.aborted) return this.result('connection-failed')
+      const code = connectionError(error)
+      this.identity = undefined
+      this.setState('error', code)
+      return this.result(code)
     }
   }
 
-  private startFailed(error: DingTalkConnectionError): DingTalkConnectionResult {
-    if (this.stream) return this.result(error)
-    const retryable = error === 'network' || error === 'connection-failed'
-    const retry = retryable && this.configuration !== null
-    this.setState(retry ? 'reconnecting' : 'error', error)
-    if (retry) this.scheduleRetry()
-    return this.result(error)
+  private cancelOperation(): void {
+    const active = this.operation
+    this.operation = undefined
+    active?.controller.abort()
   }
 
-  private scheduleRetry(): void {
-    if (!this.configuration || this.stopped || this.retryTimer) return
-    const delay = Math.min(60_000, 2_000 * 2 ** this.retryCount++)
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = undefined
-      void this.serialize(async epoch => {
-        if (this.current(epoch) && this.configuration && !this.stream) await this.start(this.configuration, epoch)
-      })
-    }, delay)
-    this.retryTimer.unref()
-  }
-
-  private clearRetry(): void {
-    clearTimeout(this.retryTimer)
-    this.retryTimer = undefined
-  }
-
-  private stopActivity(): void {
-    this.epoch++
-    this.clearRetry()
-    this.retryCount = 0
-    const active = this.stream
-    this.stream = undefined
-    active?.close()
-    this.candidate?.close()
-    this.pairingCode = undefined
-    this.resetChat()
-  }
-
-  private resetChat(): void {
-    this.chatLifetime.abort()
-    this.chatLifetime = new AbortController()
-    this.runningTurn = undefined
-    this.chat.reset()
-    this.seen.clear()
-  }
-
-  private receive(stream: Transport, message: DingTalkIncomingMessage): void {
-    if (this.stream !== stream || message.conversationType !== 'direct' || !this.configuration) return
-    const owner = this.configuration.owner
-    if (!owner) {
-      const code = this.pairingCode
-      if (!code || message.text.trim() !== `/pair ${code}`) return
-      void this.serialize(async epoch => {
-        if (!this.current(epoch) || this.stream !== stream || this.pairingCode !== code || !this.configuration || this.configuration.owner) return
-        const bound = { ...this.configuration, owner: { senderId: message.senderId, conversationId: message.conversationId } }
-        const signal = this.chatLifetime.signal
-        try {
-          if (!await this.storage.save(bound, undefined, () => this.current(epoch))) return
-        } catch {
-          if (this.current(epoch)) this.setState(this.state, 'storage-unavailable')
-          await this.reply(stream, message, '投手无法存储绑定。请在桌面端重试连接。', signal)
-          return
-        }
-        if (!this.current(epoch)) return
-        this.configuration = bound
-        this.pairingCode = undefined
-        this.lastMessageAt = Date.now()
-        this.setState(this.state, this.state === 'connected' ? undefined : this.lastError)
-        await this.reply(stream, message, '钉钉已绑定投手。现在可以发文字提问，也可以发 /ping 检查连接。', signal)
-      })
-      return
-    }
-    if (owner.senderId !== message.senderId || owner.conversationId !== message.conversationId) return
-    const now = Date.now()
-    for (const [id, receivedAt] of this.seen) {
-      if (now - receivedAt <= 10 * 60_000) break
-      this.seen.delete(id)
-    }
-    if (this.seen.has(message.id)) return
-    this.seen.set(message.id, now)
-    const oldest = this.seen.keys().next().value
-    if (this.seen.size > 512 && oldest !== undefined) this.seen.delete(oldest)
-    this.lastMessageAt = now
-    this.emit()
-    void this.answer(stream, message)
-  }
-
-  private async answer(stream: Transport, message: DingTalkIncomingMessage): Promise<void> {
-    const signal = this.chatLifetime.signal
-    const text = message.text.trim()
-    if (text === '/ping') return this.reply(stream, message, '投手连接正常。', signal)
-    if (text.startsWith('/pair ')) return
-    if (this.runningTurn) return this.reply(stream, message, '上一条消息仍在处理，请稍后重试。', signal)
-    if (text === '/new') {
-      this.chat.reset()
-      return this.reply(stream, message, '已开始新的对话。', signal)
-    }
-    if (!text) return this.reply(stream, message, '请发送文字消息。', signal)
-    const turn = Symbol()
-    this.runningTurn = turn
-    try {
-      const answer = await this.chat.turn(text, signal)
-      await this.reply(stream, message, answer, signal)
-    } catch {
-      await this.reply(stream, message, '这次没有生成回复。请检查投手桌面端的模型设置，稍后重试。', signal)
-    } finally {
-      if (this.runningTurn === turn) this.runningTurn = undefined
-    }
-  }
-
-  private async reply(stream: Transport, message: DingTalkIncomingMessage, text: string, signal: AbortSignal): Promise<void> {
-    try {
-      for (const part of splitReply(text)) {
-        if (signal.aborted) return
-        await stream.reply(message, part, signal)
-      }
-    } catch {
-      // Session webhooks expire. Retrying a reply without a delivery receipt
-      // could duplicate it or deliver it to a different conversation.
-    }
-  }
-
-  private result(error?: DingTalkConnectionError): DingTalkConnectionResult {
-    return { ok: !error, snapshot: this.getSnapshot(), ...(error ? { error } : {}) }
+  private cancelReads(): void {
+    this.readLifetime.abort()
+    this.readLifetime = new AbortController()
   }
 
   private setState(state: DingTalkConnectionState, error?: DingTalkConnectionError): void {
     this.state = state
     this.lastError = error
-    this.emit()
+    this.listener?.(this.getSnapshot())
   }
 
-  private emit(): void { this.listener?.(this.getSnapshot()) }
+  private result(error?: DingTalkConnectionError): DingTalkConnectionResult {
+    return { ok: !error, snapshot: this.getSnapshot(), ...(error ? { error } : {}) }
+  }
 }
 
 export const dingTalkConnectionManager = new DingTalkConnectionManager()

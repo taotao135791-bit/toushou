@@ -169,6 +169,7 @@ import { AdsCopyModelStore, MAX_PROVIDERS, validateAdsCopyModelInput, type AdsCo
 import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
+import { revokeDingTalkBridgeTokens } from './dingTalkBridge'
 import { refreshBoard } from './boardRefresh'
 import { parseBoardRefreshRequest } from '../shared/boardRefresh'
 import { getUsdRates } from './integrations/tiktok/fxRates'
@@ -233,7 +234,7 @@ import {
 } from './browserPanel'
 import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkbook } from './officeFile'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
-import { dingTalkConnectionManager, DINGTALK_GUIDE_URL, DINGTALK_SETUP_URL } from './integrations/dingtalk/DingTalkConnectionManager'
+import { dingTalkConnectionManager, DINGTALK_GUIDE_URL } from './integrations/dingtalk/DingTalkConnectionManager'
 import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
 import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
@@ -439,7 +440,7 @@ const nameSessionDurally = createSessionNamer({
   onTitleChanged: (id, result) => broadcastSessionEvent({ type: 'title_changed', sessionId: id, ...result })
 })
 setSessionUserTurnHook(id => { nameSessionDurally.advance(id) })
-setSessionGoneHook(id => { revokeSessionTopicBridge(id); nameSessionDurally.forget(id) })
+setSessionGoneHook(id => { revokeSessionTopicBridge(id); revokeDingTalkBridgeTokens(id); nameSessionDurally.forget(id) })
 
 /** Drop one overlay entry (session file deleted — keep the map orphan-free). */
 function forgetSessionTitle(filePath: string): void {
@@ -887,10 +888,10 @@ export function registerIpc() {
     }
   })
   ipcMain.handle(IPC_CHANNELS.DINGTALK_STATUS, () => dingTalkConnectionManager.getSnapshot())
-  ipcMain.handle(IPC_CHANNELS.DINGTALK_CONNECT, (_event, input: unknown) => dingTalkConnectionManager.connect(input))
+  ipcMain.handle(IPC_CHANNELS.DINGTALK_CONNECT, () => dingTalkConnectionManager.connect())
+  ipcMain.handle(IPC_CHANNELS.DINGTALK_CANCEL, () => dingTalkConnectionManager.cancel())
   ipcMain.handle(IPC_CHANNELS.DINGTALK_RECONNECT, () => dingTalkConnectionManager.reconnect())
   ipcMain.handle(IPC_CHANNELS.DINGTALK_DISCONNECT, () => dingTalkConnectionManager.disconnect())
-  ipcMain.handle(IPC_CHANNELS.DINGTALK_OPEN_SETUP, () => shell.openExternal(DINGTALK_SETUP_URL).then(() => true, () => false))
   ipcMain.handle(IPC_CHANNELS.DINGTALK_OPEN_GUIDE, () => shell.openExternal(DINGTALK_GUIDE_URL).then(() => true, () => false))
   ipcMain.handle(IPC_CHANNELS.FEISHU_STATUS, async () => feishuConnectionManager.getSnapshot())
   ipcMain.handle(IPC_CHANNELS.FEISHU_BEGIN_CONNECTION, async (_event, brand: unknown) => {

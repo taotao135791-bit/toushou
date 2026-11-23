@@ -1,6 +1,6 @@
 import type { ToolCallRecord } from './toolCalls'
 
-export type ToolBrand = 'facebook' | 'tiktok' | 'feishu' | 'google' | 'figma' | 'appsflyer'
+export type ToolBrand = 'facebook' | 'tiktok' | 'feishu' | 'dingtalk' | 'google' | 'figma' | 'appsflyer'
 export interface WebsiteSource { url: string; hostname: string }
 
 const record = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -60,6 +60,7 @@ export function toolBrandForCall(call: ToolCallRecord): ToolBrand | null {
   if (/^(?:mcp__tiktok_ads_|toushou_tiktok_|touhou_tiktok_)/.test(name) || ['auth_advertiser_get', 'advertiser_info_get', 'report_integrated_get'].includes(name)) return 'tiktok'
   if (/^(?:mcp__appsflyer_|toushou_appsflyer_)/.test(name) || ['get_apps', 'analytics_fetch_aggregated_data'].includes(name)) return 'appsflyer'
   if (/^(?:mcp__feishu_|mcp__lark_|feishu_|lark_)/.test(name)) return 'feishu'
+  if (name.startsWith('toushou_dingtalk_')) return 'dingtalk'
   if (/^(?:mcp__facebook_ads_|mcp__meta_ads_|toushou_facebook_|toushou_fb_|facebook_ads_|fb_)/.test(name)) return 'facebook'
   if (/^(?:mcp__google_ads_|mcp__googleads_|toushou_google_|google_ads_|googleads_)/.test(name)) return 'google'
   if (/^(?:mcp__figma_|figma_)/.test(name) || ['use_figma', 'get_design_context'].includes(name)) return 'figma'

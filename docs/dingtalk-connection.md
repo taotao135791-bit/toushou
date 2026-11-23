@@ -1,19 +1,15 @@
 # 钉钉连接
 
-「连接」页的钉钉入口位于飞书下方。投手使用钉钉官方 Stream 模式接收企业自建应用的机器人消息，桌面端连网即可使用，无需配置公网回调。[钉钉 Stream 协议](https://open-dingtalk.github.io/developerpedia/docs/learn/stream/protocol/)
+## 登录与验证
 
-## 接入与验证
-
-1. 在投手「连接 → 钉钉」打开开发者后台，选择所属组织并创建企业自建应用。在「应用信息」复制 Client ID（AppKey）和 Client Secret（AppSecret）。[钉钉开发者后台](https://open-dev.dingtalk.com/)
-2. 在「机器人与消息推送」启用机器人配置，选择 Stream 模式并发布。将自己的钉钉账号加入应用可见范围。[钉钉官方配置教程](https://open-dingtalk.github.io/developerpedia/docs/explore/tutorials/stream/bot/python/create-bot/)
-3. 把两项凭证填入投手的钉钉连接表单。显示「待绑定」后，复制 `/pair` 命令。在钉钉里搜索刚发布的机器人名称并打开私聊，将整条命令发送给机器人。[钉钉官方私聊测试教程](https://open-dingtalk.github.io/developerpedia/docs/explore/tutorials/stream/bot/java/test-bot/)
-4. 机器人回复绑定成功后，发送 `/ping`。收到「投手连接正常。」表示私聊收发已通。发一条文字问题验证模型回复，例如「花费 200 元获得 8 个安装，CPI 是多少？」。
+1. 在投手打开「连接 → 钉钉」，点击「钉钉账号登录」。投手会复用兼容的官方钉钉 CLI，首次缺少客户端时会自动下载并校验官方发行文件。[钉钉 CLI 官方发行](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/tag/v1.0.69)
+2. 如果浏览器打开钉钉授权页，选择组织并授权。组织还没开通 CLI 访问时，按授权页提示向管理员申请。通过后回到投手重新点击登录。[钉钉官方授权说明](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/README_zh.md#开始使用)
+3. 投手自动验证连接并显示账号和组织。可以点击「检查连接」复验，也可以在投手对话中输入「在钉钉里搜客户群消息里的周报」或「找标题有投放复盘的钉钉文档，打开我指定的那份」。查询范围由授权账号的权限决定。[钉钉官方命令文档](https://open.dingtalk.com/dingtalk-dev/wiki)
 
 ## 日常使用
 
-- 投手桌面端运行时会保持连接。网络恢复后会自动重连，也可以在「连接」页手动重试。应用退出后，下一次启动会读取保存的凭证并尝试恢复。
-- 连接只接受已绑定账号在该机器人私聊中的文字消息。可发送 `/new` 从空白上下文开始。模型仅根据私聊中提供的文字回答，看板、广告账户和本地文件在桌面端操作。
-- `/ping` 独立于模型设置。若能收到 `/ping` 回复但文字问题没有生成回复，请确认投手设置里的默认模型能用支持的 API Key 连接。仅通过 OAuth 授权的模型暂未接入钉钉对话。
-- 更换钉钉账号时，在投手里断开连接并重新配对。断开会移除本机凭证和绑定。Client Secret 应保管在投手连接页与钉钉后台，配对命令仅发送给自己创建的机器人。
+- 如果本机已经登录钉钉 CLI，投手会直接验证并连接该账号。连接成功后，投手固定使用这次确认的账号和组织。退出或切换终端的默认账号后，投手仍按已绑定的身份验证。
+- 投手对话支持搜索消息、搜索文档和读取文档。账号授权由钉钉 CLI 保存，投手只记录绑定的账号和组织标识。断开投手连接后，CLI 的现有授权仍可供其他程序使用。
+- 使用 v2.7.0 机器人方式的用户升级后，需要点击「钉钉账号登录」完成一次新的授权。[v2.7.0 连接历史](https://github.com/taotao135791-bit/toushou/blob/v2.7.0/docs/dingtalk-connection.md)
 
-钉钉图标来自官网首页引用的原始 PNG。机器人回复使用钉钉签发的临时会话地址。[钉钉官网](https://www.dingtalk.com/) · [官网图标](https://gw.alicdn.com/imgextra/i3/O1CN014ZbI6ZTEhdC0ttN2_!!6000000003783-2-tps-444-444.png) · [钉钉机器人回复文档](https://open-dingtalk.github.io/developerpedia/docs/learn/bot/appbot/reply/)
+连接卡片的图标取自钉钉官网首页引用的 PNG。[钉钉官网](https://www.dingtalk.com/) · [官网图标](https://gw.alicdn.com/imgextra/i3/O1CN014ZbI6ZTEhdC0ttN2_!!6000000003783-2-tps-444-444.png)
