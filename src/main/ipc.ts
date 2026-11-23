@@ -1502,7 +1502,7 @@ export function registerIpc() {
     async (
       event: IpcMainInvokeEvent,
       grantId: string,
-      payload: { historyId?: unknown; liveSessionId?: unknown; keepUserTurns?: unknown }
+      payload: { historyId?: unknown; liveSessionId?: unknown; keepUserTurns?: unknown; completeTurnsOnly?: unknown }
     ) => {
       const resolved = requireGrant(grantId)
       if (!resolved) return null
@@ -1513,7 +1513,8 @@ export function registerIpc() {
             ? Math.floor(payload.keepUserTurns)
             : -1
       if (keep === -1) return { error: 'invalid-request' }
-      const suffix = keep === undefined ? '（副本）' : '（分支）'
+      const completeOnly = payload.completeTurnsOnly === true
+      const suffix = keep === undefined && !completeOnly ? '（副本）' : '（分支）'
       // LIVE session fork: the durable file comes from Main's own session
       // record; the workspace is the session's cwd. No history capability is
       // involved because no user-selected history row was touched.
@@ -1523,7 +1524,7 @@ export function registerIpc() {
         if (!live || !file) return { error: 'session-not-found' }
         const baseTitle = typeof live.title === 'string' && live.title ? live.title : undefined
         try {
-          const fork = await forkSessionFile(file, { keepUserTurns: keep, titleSuffix: suffix })
+          const fork = await forkSessionFile(file, { keepUserTurns: keep, titleSuffix: suffix, completeTurnsOnly: completeOnly })
           const forked = await resumeSession(live.cwd, broadcastSessionEvent, fork.filePath, {
             ...(baseTitle ? { initialTitle: `${baseTitle.slice(0, 100)}${suffix}` } : {})
           })

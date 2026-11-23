@@ -254,6 +254,10 @@ const en = {
   'history.transcriptUnavailable': "Couldn't load this conversation. Try again in a moment — the session was not modified.",
   'history.duplicate': 'Duplicate this conversation into a new chat',
   'history.duplicating': 'Creating the copy…',
+  'sidebar.duplicateSession': 'Duplicate chat',
+  'sidebar.branchSession': 'Branch from latest turn',
+  'sidebar.branchSessionHint': 'Create a new conversation from the latest finished exchange; the original is untouched',
+  'sidebar.forkBusyHint': 'The chat is running; duplicate it once this turn finishes',
   'history.forkFailed': 'Failed to create the copy',
   'history.branchFromHere': 'Branch from here',
 
@@ -2340,6 +2344,10 @@ const zh: Record<I18nKey, string> = {
   'history.transcriptUnavailable': '对话内容暂时加载不出来，请稍后重试——会话本身没有丢失。',
   'history.duplicate': '复制这个对话为新会话',
   'history.duplicating': '正在创建副本…',
+  'sidebar.duplicateSession': '复制对话',
+  'sidebar.branchSession': '开分支',
+  'sidebar.branchSessionHint': '从最后一个完成的回合创建新对话，原对话不受影响',
+  'sidebar.forkBusyHint': '对话进行中，本轮结束后即可复制',
   'history.forkFailed': '创建副本失败',
   'history.branchFromHere': '从这里开分支',
 

@@ -451,17 +451,16 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
 
   return (
     // 大编辑对话框（用户要求：卡片内嵌编辑框太小）：居中的大幅对话框——
-    // 两列布局、整页滚动、点遮罩关闭。经 portal 挂到 body：卡片祖先链上有
+    // 两列布局、整页滚动。经 portal 挂到 body：卡片祖先链上有
     // react-grid-layout 的 transform 和 overflow-hidden，会把这些 fixed
     // 元素困在卡片盒子里（遮挡/裁切的根源），portal 后才是真全屏顶层。
+    // 只能通过关闭/取消按钮关闭——点遮罩不关（用户要求：防误关丢草稿）。
     createPortal(
     <div
       className="widget-config fixed inset-0 z-40 flex items-start justify-center bg-black/40 p-4 backdrop-blur-sm"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
         className="mt-[5vh] flex max-h-[88vh] w-full max-w-3xl flex-col rounded-2xl border border-line bg-ink-900 p-5 shadow-pop"
-        onMouseDown={(e) => e.stopPropagation()}
       >
       <div className="flex shrink-0 items-center justify-between">
         <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-cream-faint">

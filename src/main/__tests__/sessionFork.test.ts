@@ -107,4 +107,40 @@ describe('forkSessionFile', () => {
     const fork = await forkSessionFile(source, { keepUserTurns: 99, agentDir: root })
     expect(fork.keptUserTurns).toBe(2)
   })
+
+  it('completeTurnsOnly drops a trailing unanswered turn but keeps everything complete', async () => {
+    // Two finished turns plus a third whose user message was sent while the
+    // assistant is still streaming (progress records, no assistant message).
+    const source = writeSource('2026-11-04T00-00-00-000Z_dddddddd-0000-0000-0000-000000000004.jsonl', [
+      { type: 'session', version: 3, id: 'd', timestamp: '2026-11-04T00:00:00.000Z', cwd: 'D:\work' },
+      msg('user', 'turn one'),
+      msg('assistant', 'answer one'),
+      msg('user', 'turn two'),
+      msg('assistant', 'answer two'),
+      msg('user', 'turn three'),
+      { type: 'progress', label: 'streaming' }
+    ])
+    const fork = await forkSessionFile(source, { completeTurnsOnly: true, titleSuffix: '（分支）', agentDir: root })
+    expect(fork.keptUserTurns).toBe(2)
+    const text = readFileSync(fork.filePath, 'utf8')
+    expect(text).toContain('answer two')
+    expect(text).not.toContain('turn three')
+    expect(text).not.toContain('progress')
+  })
+
+  it('completeTurnsOnly is a no-op when the last turn is already answered', async () => {
+    const source = sessionFile(3)
+    const fork = await forkSessionFile(source, { completeTurnsOnly: true, agentDir: root })
+    expect(fork.keptUserTurns).toBe(3)
+    expect(readFileSync(fork.filePath, 'utf8')).toContain('answer 3')
+  })
+
+  it('completeTurnsOnly rejects a source whose only turn is unanswered', async () => {
+    const source = writeSource('2026-11-05T00-00-00-000Z_eeeeeeee-0000-0000-0000-000000000005.jsonl', [
+      { type: 'session', version: 3, id: 'e', timestamp: '2026-11-05T00:00:00.000Z', cwd: 'D:\work' },
+      msg('user', 'only turn'),
+      { type: 'progress', label: 'streaming' }
+    ])
+    await expect(forkSessionFile(source, { completeTurnsOnly: true, agentDir: root })).rejects.toThrow('no-user-turns')
+  })
 })

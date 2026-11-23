@@ -436,11 +436,14 @@ export interface ElectronAPI {
    * Fork a conversation into a NEW live session (开分支/复制会话). Source is
    * either an opaque history entry or a live session id; `keepUserTurns`
    * truncates the fork after that many complete user turns (omit = full
-   * copy). Same result shape as resumeSession; the original is untouched.
+   * copy). `completeTurnsOnly` (with keepUserTurns omitted) keeps every
+   * COMPLETE turn and drops a trailing turn that has no assistant reply yet —
+   * safe to branch a session that is mid-stream. Same result shape as
+   * resumeSession; the original is untouched.
    */
   forkSession: (
     grantId: string,
-    payload: { historyId?: string; liveSessionId?: string; keepUserTurns?: number }
+    payload: { historyId?: string; liveSessionId?: string; keepUserTurns?: number; completeTurnsOnly?: boolean }
   ) => Promise<
     | { error: 'invalid-request' | 'session-not-found' | 'fork-failed' | 'transcript_unavailable' }
     | { session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] }
@@ -964,7 +967,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_RESUME_SESSION, grantId, historyId),
   peekSession: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_PEEK_SESSION, grantId, historyId),
-  forkSession: (grantId: string, payload: { historyId?: string; liveSessionId?: string; keepUserTurns?: number }) =>
+  forkSession: (grantId: string, payload: { historyId?: string; liveSessionId?: string; keepUserTurns?: number; completeTurnsOnly?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_FORK_SESSION, grantId, payload),
   deleteSessionFile: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_FILE, grantId, historyId),

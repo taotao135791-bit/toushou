@@ -25,6 +25,7 @@ import {
   Link2,
   Clock,
   CopyPlus,
+  GitBranch,
   BriefcaseBusiness,
   MoreHorizontal
 } from 'lucide-react'
@@ -141,6 +142,8 @@ export default function Sidebar() {
 
   const [sessionMenuId, setSessionMenuId] = useState<string | null>(null)
   const sessionMenuTrigger = useRef<HTMLButtonElement | null>(null)
+  // One menu fork in flight at a time (复制对话/开分支 double-click guard).
+  const [forkingSessionId, setForkingSessionId] = useState<string | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [archiveOpen, setArchiveOpen] = useState(false)
@@ -492,6 +495,38 @@ export default function Sidebar() {
     } finally {
       resumingHistoryRef.current = false
       setResumingHistoryId(null)
+    }
+  }
+
+  /**
+   * Live-row fork from the conversation menu (三个点). duplicate = the whole
+   * durable file (（副本）); branch = every COMPLETE turn (（分支）), so a
+   * session that is mid-stream branches at its last finished exchange instead
+   * of a half-written tail. Either way the original stays untouched and the
+   * app lands in the new conversation.
+   */
+  const handleForkLive = async (session: (typeof sessions)[number], mode: 'duplicate' | 'branch') => {
+    if (!currentWorkspace || forkingSessionId) return
+    setForkingSessionId(session.id)
+    try {
+      const result = await window.electronAPI.forkSession(currentWorkspace.id, {
+        liveSessionId: session.id,
+        ...(mode === 'branch' ? { completeTurnsOnly: true } : {})
+      })
+      if (!result || 'error' in result) {
+        showNotice('history.forkFailed')
+        return
+      }
+      const { session: forked, messages: restored, historicalAgents } = result
+      addSession(forked, false)
+      setMessages(forked.id, restored)
+      useAppStore.getState().applyHistoricalAgents(forked.id, historicalAgents ?? [])
+      useAppStore.getState().setCurrentSessionId(forked.id)
+      navigate('/')
+    } catch {
+      showNotice('history.forkFailed')
+    } finally {
+      setForkingSessionId(null)
     }
   }
 
@@ -1418,6 +1453,18 @@ export default function Sidebar() {
             {pinnedSet.has(menuSession.id) ? <PinOff size={13} /> : <Pin size={13} />}{t(pinnedSet.has(menuSession.id) ? 'sidebar.unpin' : 'sidebar.pin')}
           </button>
           <button type="button" data-session-action="rename" className="project-menu-action" onClick={() => { closeSessionMenu(); sessionMenuTrigger.current?.focus(); setRenamingId(menuSession.id); setRenameDraft(menuSession.title) }}><Pencil size={13} />{t('sidebar.rename')}</button>
+          <button type="button" data-session-action="duplicate" disabled={Boolean(busy[menuSession.id]) || forkingSessionId !== null}
+            title={busy[menuSession.id] ? t('sidebar.forkBusyHint') : t('history.duplicate')}
+            className="project-menu-action disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={() => { closeSessionMenu(); void handleForkLive(menuSession, 'duplicate') }}>
+            {forkingSessionId === menuSession.id ? <Loader2 size={13} className="animate-spin" /> : <CopyPlus size={13} />}{t('sidebar.duplicateSession')}
+          </button>
+          <button type="button" data-session-action="branch" disabled={forkingSessionId !== null}
+            title={t('sidebar.branchSessionHint')}
+            className="project-menu-action disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={() => { closeSessionMenu(); void handleForkLive(menuSession, 'branch') }}>
+            {forkingSessionId === menuSession.id ? <Loader2 size={13} className="animate-spin" /> : <GitBranch size={13} />}{t('sidebar.branchSession')}
+          </button>
           <button type="button" data-session-action="archive" className={`project-menu-action ${archiveSessionConfirm.confirmingId === menuSession.id ? 'text-red-500' : ''}`} onClick={() => {
             const needsConfirm = Boolean(busy[menuSession.id]) || (useAppStore.getState().queuedMessages[menuSession.id]?.length ?? 0) > 0
             const confirmed = archiveSessionConfirm.confirmingId === menuSession.id

@@ -51,12 +51,15 @@ export interface SessionForkResult {
 
 /**
  * Write the forked copy. `keepUserTurns` undefined/Infinity = duplicate the
- * whole conversation. Throws for oversized or malformed sources — the caller
- * reports honestly instead of resuming a half-written file.
+ * whole conversation. `completeTurnsOnly` (with keepUserTurns omitted) keeps
+ * every COMPLETE turn and drops a trailing turn that never got an assistant
+ * reply — branching a mid-stream session lands on the last finished exchange
+ * instead of a half-written tail. Throws for oversized or malformed sources —
+ * the caller reports honestly instead of resuming a half-written file.
  */
 export async function forkSessionFile(
   sourceFilePath: string,
-  options: { keepUserTurns?: number; titleSuffix?: string; agentDir?: string } = {}
+  options: { keepUserTurns?: number; titleSuffix?: string; agentDir?: string; completeTurnsOnly?: boolean } = {}
 ): Promise<SessionForkResult> {
   if (!isSessionFilePath(sourceFilePath, options.agentDir)) throw new Error('not-a-session-file')
   const keep = options.keepUserTurns === undefined || !Number.isFinite(options.keepUserTurns)
@@ -72,6 +75,10 @@ export async function forkSessionFile(
   const kept: ForkedLine[] = []
   let userTurns = 0
   let truncated = false
+  // Trailing-turn completeness tracking for completeTurnsOnly: where the last
+  // user turn started, and whether an assistant message has followed it.
+  let lastUserTurnStart = -1
+  let lastTurnHasAssistant = false
   for (const line of lines) {
     let record: Record<string, unknown> | null = null
     if (line) {
@@ -84,9 +91,26 @@ export async function forkSessionFile(
     }
     if (record && isUserTurnStart(record)) {
       if (userTurns >= keep) { truncated = true; break }
+      lastUserTurnStart = kept.length
+      lastTurnHasAssistant = false
       userTurns++
     }
+    if (
+      record &&
+      record.type === 'message' &&
+      (record.message as { role?: unknown } | undefined)?.role === 'assistant'
+    ) {
+      lastTurnHasAssistant = true
+    }
     kept.push({ line })
+  }
+  if (!truncated && options.completeTurnsOnly && userTurns > 0 && !lastTurnHasAssistant) {
+    // The final turn is still unanswered (mid-stream source): drop it so the
+    // branch starts from a complete exchange. Reuses the truncated-tail
+    // cleanup below to strip that turn's dangling non-message records.
+    kept.length = lastUserTurnStart
+    truncated = true
+    userTurns--
   }
   if (truncated) {
     // Drop a dangling tail of non-message records that belonged to the NEXT
