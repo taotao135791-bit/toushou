@@ -104,6 +104,18 @@ describe('listDatasets', () => {
 })
 
 describe('importDataset', () => {
+  it('preserves textual ad identifiers and the import coverage marker on disk', () => {
+    const ids = ['09100000000000000001', '9100000000000000002']
+    const csv = ['Campaign ID,素材编号,花费', ...Array.from({ length: DATASET_LIMITS.maxRows + 1 }, () => `${ids.join(',')},12.4`)].join('\n')
+    const result = importDatasetBuffer('campaigns.csv', Buffer.from(csv), file)
+    expect(result).toMatchObject({ ok: true, truncated: true, dataset: { truncated: true } })
+    const [saved] = listDatasets(file)
+    expect(saved.truncated).toBe(true)
+    expect(saved.columns.map(column => column.type)).toEqual(['text', 'text', 'number'])
+    expect(saved.rows).toHaveLength(DATASET_LIMITS.maxRows)
+    expect(saved.rows[0]).toEqual([...ids, 12.4])
+  })
+
   it('refuses to overwrite a corrupt dataset store', () => {
     writeFileSync(file, '{not json')
     const csv = writeFixture('new.csv', 'a\n1\n')

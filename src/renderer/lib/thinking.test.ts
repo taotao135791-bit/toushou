@@ -37,6 +37,25 @@ describe('sessionThinkingOptionsFor', () => {
     expect(sessionThinkingOptionsFor('current', { thinking: [] })).toHaveLength(7)
   })
 
+  it('does not mistake off, auto or unknown values for a full capability list', () => {
+    expect(sessionThinkingOptionsFor('current', { reasoning: true, thinking: ['off', 'auto', 'future'] })).toEqual([
+      'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'
+    ])
+    expect(sessionThinkingOptionsFor('current', { reasoning: false, thinking: ['off'] })).toEqual(['off'])
+  })
+
+  it('uses the live model capabilities ahead of a stale or incomplete catalog', () => {
+    expect(sessionThinkingOptionsFor('current', { reasoning: false, thinking: ['off'] }, {
+      reasoning: true, thinking: ['high', 'max']
+    })).toEqual(['off', 'high', 'max'])
+    expect(sessionThinkingOptionsFor('current', { reasoning: true, thinking: ['high'] }, {
+      reasoning: false, thinking: []
+    })).toEqual(['off'])
+    expect(sessionThinkingOptionsFor('current', { reasoning: false, thinking: ['off'] }, {
+      reasoning: true, thinking: []
+    })).toContain('high')
+  })
+
   it('legacy profile never offers max', () => {
     expect(sessionThinkingOptionsFor('legacy', undefined)).toEqual([
       'off',
@@ -73,5 +92,9 @@ describe('defaultThinkingOptionsFor', () => {
 
   it('never includes off (not a legal config default)', () => {
     expect(defaultThinkingOptionsFor({ thinking: ['off', 'max'] })).toEqual(['auto', 'max'])
+  })
+
+  it('keeps configurable defaults available when the catalog only lists sentinel values', () => {
+    expect(defaultThinkingOptionsFor({ reasoning: true, thinking: ['off', 'auto'] })).toContain('high')
   })
 })

@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import { isDeepStrictEqual } from 'node:util'
 import Papa from 'papaparse'
 import type { BoardDataset, BoardDatasetColumn } from '../../../shared/types'
 import { createOrUpdateDataset, listDatasets, updateDatasetAppsFlyerState } from '../../boardDatasets'
@@ -116,6 +117,14 @@ export function saveQuerySpec(spec: AfQuerySpec, file: string = specsFile()): Af
   return next
 }
 
+/** Discard a newly staged recipe if a first pull left it unbound. */
+export function discardUnboundQuerySpec(spec: AfQuerySpec, file: string = specsFile()): void {
+  const current = listQuerySpecs(file, { persistMigration: false })
+  if (current.some(entry => !entry.datasetId && isDeepStrictEqual(entry, spec))) {
+    saveSpecs(current.filter(entry => entry.id !== spec.id), file)
+  }
+}
+
 /** Verified AF access from the connection module; null when not connected. */
 let tokenSource: () => Promise<string | null> = async function defaultTokenSource(): Promise<string | null> {
   try {
@@ -123,7 +132,7 @@ let tokenSource: () => Promise<string | null> = async function defaultTokenSourc
     // acyclic (a lazy require here compiled to a runtime file lookup that
     // always threw MODULE_NOT_FOUND).
     const { verifiedAppsFlyerAccessToken } = await import('../../appsflyerConnection')
-    return verifiedAppsFlyerAccessToken()
+    return await verifiedAppsFlyerAccessToken()
   } catch {
     return null
   }

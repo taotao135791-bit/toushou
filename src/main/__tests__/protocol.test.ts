@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'vitest'
-import { extensionUiCancel, extensionUiResponse, extensionUiSuccess, parseRpcLine } from '../omp/OmpProtocol'
+import { extensionUiCancel, extensionUiResponse, extensionUiSuccess, parseRpcLine, sessionModelThinking } from '../omp/OmpProtocol'
+
+describe('session model thinking capabilities', () => {
+  it('reads the live model effort list and ignores non-string entries', () => {
+    expect(sessionModelThinking({ reasoning: true, thinking: { efforts: ['high', null, 'max'] } }))
+      .toEqual({ reasoning: true, thinking: ['high', 'max'] })
+  })
+
+  it('distinguishes an explicitly non-reasoning model from absent metadata', () => {
+    expect(sessionModelThinking({ reasoning: false })).toEqual({ reasoning: false, thinking: [] })
+    expect(sessionModelThinking({ id: 'example' })).toBeUndefined()
+  })
+})
 
 describe('parseRpcLine', () => {
   it('reports failed responses as command_failed (never an error event)', () => {

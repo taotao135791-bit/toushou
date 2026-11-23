@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { BoardDataset, BoardWidget, KanbanBoard } from '../shared/types'
-import type { BoardRefreshRequest, BoardRefreshResult, BoardRefreshSource, BoardRefreshWidget } from '../shared/boardRefresh'
+import { boardRefreshCoverageStatus, dropBoardRefreshSource, type BoardRefreshRequest, type BoardRefreshResult, type BoardRefreshSource, type BoardRefreshWidget } from '../shared/boardRefresh'
 import { boardReportWindow, boardWidgetWindow, boardRefreshPlanKey, type BoardDateWindow } from '../shared/boardWindows'
 import { boardWidgetDatasetBindings } from '../shared/boardDataWidgets'
 import { buildTikTokDatasetProofPayloads } from '../shared/tiktokDatasetProof'
@@ -38,7 +38,9 @@ const latest = new Map<string, BoardRefreshResult>()
 /** Source disconnects invalidate trusted ready runs in every local draft/profile context. */
 export function invalidateBoardRefreshSource(kind: BoardRefreshSource['kind']): void {
   for (const [key, result] of latest) if (result.sources.some(source => source.kind === kind)) {
-    latest.delete(key)
+    const remaining = dropBoardRefreshSource(result, kind)
+    if (remaining) latest.set(key, remaining)
+    else latest.delete(key)
     generations.set(key, (generations.get(key) ?? 0) + 1)
   }
 }
@@ -190,21 +192,27 @@ export async function refreshBoard(request: BoardRefreshRequest, deps: BoardRefr
       result.sources.push(source)
       for (const task of batch) { if (task.widget.type === 'tt-reading') task.view.nativeSourceKey = sourceKey; else task.view.bindings.push({ datasetId: task.datasetId, sourceKey, window: task.window }) }
       if (accounts === '__invalid__' || !isTikTokReportWindow(window)) { source.error = 'unsupported-query-window'; continue }
+      // Saved boards must not inherit a mutable global account selection.
+      if (!accounts) { source.status = 'unbound'; source.error = 'source-selection-required'; continue }
       try {
         const summary = await readTt({ advertiserIds: accounts, window, ...(accountLookbackDays ? { accountLookbackDays } : {}) }, current)
         if (!current()) return { ...result, status: 'superseded', error: 'superseded' }
-        if ('ok' in summary || summary.failed.length || summary.truncated || summary.datasetSync?.ok !== true || !summary.datasetSync.proofs?.length) throw new Error('tiktok-read-unverified')
+        if ('ok' in summary) throw new Error(summary.detail ?? summary.error)
+        if (summary.truncated || summary.datasetSync?.ok !== true || !summary.datasetSync.proofs?.length) throw new Error(summary.datasetSync?.ok === false ? summary.datasetSync.error : 'tiktok-read-unverified')
         const data = readDatasets().find(item => item.name === 'TikTok 报表')
         if (!data) throw new Error('dataset-missing')
         const proofs = summary.datasetSync.proofs
         const accountIds = summary.advertisers.map(item => item.advertiserId).sort()
-        if (JSON.stringify(accountIds) !== JSON.stringify(proofs.map(proof => proof.advertiserId).sort()) || (accounts && JSON.stringify(accountIds) !== JSON.stringify(accounts.split(',').sort()))) throw new Error('tiktok-account-scope-mismatch')
+        const attempted = [...accountIds, ...summary.failed.map(item => item.advertiserId)].sort()
+        if (JSON.stringify(accountIds) !== JSON.stringify(proofs.map(proof => proof.advertiserId).sort()) || JSON.stringify(attempted) !== JSON.stringify(accounts.split(',').sort())) throw new Error('tiktok-account-scope-mismatch')
         if (accountLookbackDays && (!summary.accountWindows || summary.accountWindows.length !== proofs.length || proofs.some(proof => !summary.accountWindows!.some(account => account.advertiserId === proof.advertiserId && account.startDate === proof.startDate && account.endDate === proof.endDate && tiktokAccountDate(now, account.timezone) === proof.endDate && Date.parse(proof.endDate) - Date.parse(proof.startDate) === (accountLookbackDays - 1) * 86_400_000)))) throw new Error('tiktok-account-window-mismatch')
         const actual = buildTikTokDatasetProofPayloads(data, proofs)
         if (actual.length !== proofs.length || !actual.every(item => proofs.some(proof => proof.advertiserId === item.advertiserId && (accountLookbackDays || (proof.startDate === window.start && proof.endDate === window.end)) && proof.digest === digest(item.payload)))) throw new Error('tiktok-proof-mismatch')
         source.window = { start: proofs.map(proof => proof.startDate).sort()[0], end: proofs.map(proof => proof.endDate).sort().at(-1)! }
         source.dataset = scopedRows(data, source.window, summary.advertisers.map(item => item.advertiserId))
         source.proofs = structuredClone(proofs)
+        source.coverage = { available: accountIds.length, requested: attempted.length }
+        if (summary.failed.length) { source.partial = true; source.error = 'source-coverage-partial' }
         if (accountLookbackDays && summary.accountWindows) source.accountWindows = structuredClone(summary.accountWindows)
         source.status = source.dataset.rows.length ? 'updated' : 'empty'
         for (const task of batch) {
@@ -254,8 +262,7 @@ export async function refreshBoard(request: BoardRefreshRequest, deps: BoardRefr
     if (sources.some(source => !success(source.status))) widget.status = sources.find(source => !success(source.status))!.status
     else if (sources.length && sources.every(source => source.status === 'empty')) widget.status = 'empty'
   }
-  const good = result.widgets.filter(widget => success(widget.status)).length
-  result.status = good === result.widgets.length ? 'ready' : good ? 'partial' : 'failed'
+  result.status = boardRefreshCoverageStatus(result)
   result.ok = result.status === 'ready'
   latest.set(key, structuredClone(result))
   return result

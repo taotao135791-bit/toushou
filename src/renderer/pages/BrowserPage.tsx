@@ -55,7 +55,8 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
   // Mount-only: show the panel over the placeholder, keep bounds synced, and
   // hide (not destroy) it when the page unmounts. The initial URL is captured
   // once from ?url= so re-renders never retrigger a load.
-  const initialUrl = requestedInitialUrl ?? searchParams.get('url')
+  const routeUrl = embedded ? null : searchParams.get('url')
+  const initialUrl = routeUrl ?? requestedInitialUrl
   useLayoutEffect(() => {
     if (!active || suspended) {
       void window.electronAPI.browserHide()
@@ -92,14 +93,15 @@ export default function BrowserPage({ embedded = false, active = true, initialUr
   // An extension open (or a fresh /browser?url=… navigation) while the page
   // is already mounted must drive the panel — the mount effect alone would
   // keep showing the previously loaded page.
-  const lastOpenedUrl = useRef(initialUrl)
+  const previousRequests = useRef({ requestedInitialUrl, routeUrl })
   useEffect(() => {
-    const target = requestedInitialUrl ?? searchParams.get('url')
-    if (target && target !== lastOpenedUrl.current) {
-      lastOpenedUrl.current = target
-      void window.electronAPI.browserNavigate('go', target)
-    }
-  }, [requestedInitialUrl, searchParams])
+    const previous = previousRequests.current
+    previousRequests.current = { requestedInitialUrl, routeUrl }
+    const target = routeUrl && routeUrl !== previous.routeUrl
+      ? routeUrl
+      : requestedInitialUrl !== previous.requestedInitialUrl ? requestedInitialUrl : undefined
+    if (target) void window.electronAPI.browserNavigate('go', target)
+  }, [requestedInitialUrl, routeUrl])
 
   // Main pushes navigation state; keep the toolbar in sync. While the address
   // input is focused, don't yank the user's in-progress edit away.

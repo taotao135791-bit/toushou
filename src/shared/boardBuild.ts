@@ -14,6 +14,7 @@ export interface BoardBuildIntent {
   addedUtilityTypes?: Array<'clock' | 'note' | 'todo' | 'link'>
   utilityTypes?: Array<'clock' | 'note' | 'todo' | 'link'>
   requireLiveBindings?: true
+  refreshRequested?: true
   unresolved?: string[]
   evidence: string[]
 }
@@ -29,23 +30,28 @@ export function freezeBoardBuildIntent(text: string, requestId: string, revision
   // instruction. Looking only at the word immediately before a capability
   // misreads “不要指标卡、趋势、漏斗和分析”.
   const positive = records.replace(/(?:不要|不需要|不用)\s*默认(?:方案|模板)?[，,]?/g, '').replace(/(?:不要|无需|不需要|别加|不做|不含|不能用|不得用|without\b|\bno\b)([^。.;；\n]*)/gi, (_match, tail: string) => {
-    const resume = /但|而|只(?:要|做|看)|保留|需要|添加|增加|改成|给我|\bbut\b|\bonly\b/i.exec(tail)
+    const resume = /但|而|只(?:要|做|看)|保留|需要|添加|增加|加入|补上|改成|给我|\bbut\b|\bonly\b/i.exec(tail)
     return resume && resume.index > 0 ? tail.slice(resume.index) : ''
   })
   // A source object's old name is not the requested output mode. Explicit
   // conversion to live data wins over “fixed snapshot” in the same request.
   const liveRepair = /(?:接通|启用|接入|恢复)[^。;；\n]{0,16}(?:刷新|实时|取数)|(?:改成|改为|变成|换成|转换为)[^。;；\n]{0,16}(?:可刷新|实时)|实时取数|\b(?:convert|make|turn)\b[^.;\n]{0,64}\b(?:live|refreshable)\b/i.test(positive)
   const snapshot = !liveRepair && /固定(?:快照|数字|数值|参考|值)|静态(?:快照|报告|报表)|\b(?:fixed|static|manual)\s+snapshot\b|\b(?:make|create|build|save|generate|want|need|only)\b[^.;\n]{0,40}\bsnapshot\b|^\s*(?:a\s+)?snapshot\b/i.test(positive)
-  const changing = records.replace(/保留[^，,。;；\n]*日期|日期(?:保持)?不变|不(?:改|调整|更改)日期|keep[^,.;\n]*date[^,.;\n]*unchanged/gi, '')
-  const addition = /(?:添加|新增|加(?:个|一个|一张)?|\badd\b|\bappend\b)([^。;；\n]*)/i.exec(positive)?.[1]
+  const changing = positive
+    .replace(/(?:保留|保持|维持)[^。;；\n]{0,66}?(?:不变|保持原样)|(?:保留|保持|维持)[^，,。;；\n]{0,46}?日期(?:范围|口径)?|日期(?:保持)?不变|不(?:改|调整|更改)日期|keep[^.;\n]{0,80}?date[^.;\n]{0,30}?unchanged/gi, '')
+  const addition = /(?:添加|新增|增加|加入|补充|补上|加(?:个|一个|一张)?|\badd\b|\bappend\b|\binclude\b)([^。;；\n]*)/i.exec(positive)?.[1]
+  const dataAddition = !!addition && /图表|趋势|漏斗|分析|指标|数据|花费|消耗|转化|收入|归因|第三方|三方|appsflyer|\bAF\b|\b(?:spend|conversions?|revenue|attribution|metrics?)\b|chart|counter|gauge|reading|table/i.test(addition)
   const addedUtilityTypes: NonNullable<BoardBuildIntent['addedUtilityTypes']> = []
-  if (existing && addition && !/图表|趋势|漏斗|分析|指标|chart|counter|gauge|reading/i.test(addition)) {
+  if (existing && addition && !dataAddition) {
     if (/时钟|\bclock\b/i.test(addition)) addedUtilityTypes.push('clock')
     if (/便签|\bnotes?\b/i.test(addition)) addedUtilityTypes.push('note')
     if (/待办|\btodo\b/i.test(addition)) addedUtilityTypes.push('todo')
     if (/链接|\blink\b/i.test(addition)) addedUtilityTypes.push('link')
   }
-  const presentation = !liveRepair && !!existing && (addedUtilityTypes.length > 0 || /样式|布局|颜色|字体|背景|调宽|排版|标题|命名|改名|移除|删掉|删除|style|layout|rename|font|color|background|remove.*(?:widget|module)/i.test(records)) && !/重新?取数|查询|刷新|新数据|日期|昨天|今天|近\s*\d+\s*天|改.*(?:指标|事件|筛选)/i.test(changing)
+  const refreshRequested = /重新取数|同步最新|重查|刷新|\brefresh\b|pull (?:fresh|latest)/i.test(changing)
+  const dataChange = liveRepair || refreshRequested || /查询|新数据|日期范围|日期口径|昨天|昨日|今天|今日|近\s*\d+\s*天|改(?:成|为|用)[^。;；\n]{0,32}(?:指标|事件|筛选|日期)|change (?:the )?(?:metric|event|filter|date)/i.test(changing)
+  const editingColumns = /字段|列(?:[:：]|名|表)|(?:表格|表里|表中)[^。;；\n]{0,50}(?:列|字段)|\bcolumns?\b/i.test(changing)
+  const presentation = !!existing && !dataChange && !dataAddition && !editingColumns && (addedUtilityTypes.length > 0 || /样式|布局|颜色|字体|背景|调宽|排版|移到|挪到|放到|首屏|位置|标题|命名|改名|移除|删掉|删除|style|layout|move.*(?:top|position)|rename|font|color|background|remove.*(?:widget|module)/i.test(records))
   const granularities: BoardGenerationGranularity[] = []
   const grains: Array<[BoardGenerationGranularity, RegExp]> = [
     ['creative', /素材(?:级|维度|粒度|明细|日报|报表|\s*ID)|按素材|素材(?:或|\/|和)广告|creative[ -]level|creative\s*id/i],
@@ -66,7 +72,7 @@ export function freezeBoardBuildIntent(text: string, requestId: string, revision
     if (/链接|\blink\b/i.test(positive)) utilityTypes.push('link')
   }
   const required = new Set<BoardGenerationCapability>()
-  if (!presentation && !snapshot && !utility) required.add('data')
+  if (!presentation && !snapshot && !utility && (!existing || dataChange)) required.add('data')
   const caps: Array<[BoardGenerationCapability, RegExp]> = [['trend', /趋势|trend/i], ['funnel', /漏斗|funnel/i], ['analysis', /分析|highlight|analysis/i], ['third-party', /三方|第三方|appsflyer|\bAF\b/i], ['table', /表格|明细|日报|table/i]]
   if (!presentation) for (const [capability, expression] of caps) if (expression.test(positive)) required.add(capability)
   const daily = !presentation && /日报|daily report/i.test(positive)
@@ -85,13 +91,13 @@ export function freezeBoardBuildIntent(text: string, requestId: string, revision
     else unresolved.push('removal-target-unresolved')
   }
   const measures: NonNullable<BoardBuildIntent['measures']> = []
-  if (!presentation && !snapshot) {
+  if (!presentation && !snapshot && (!existing || dataChange || dataAddition)) {
     if (/花费|消耗|\bspend\b/i.test(positive)) measures.push('spend')
     if (/转化|\bconversions?\b/i.test(positive)) measures.push('conversion')
     if (/收入|\brevenue\b/i.test(positive)) measures.push('revenue')
   }
-  const range = utility ? existing?.masterScope?.range : /昨天|昨日|yesterday/i.test(records) ? 'yesterday' : /今天|今日|today/i.test(records) ? 'today' : /近\s*3\s*天/.test(records) ? 'last3' : /近\s*30\s*天/.test(records) ? 'last30' : /近\s*7\s*天|近七天/.test(records) ? 'last7' : existing?.masterScope?.range
-  const fixed = snapshot ? /固定(?:数字|数值|参考|值)\s*(?:为|是|[:：])?\s*(\d+(?:\.\d+)?(?:\s*(?:\/|、|和|与|,|，)\s*\d+(?:\.\d+)?)*)/.exec(positive) : null
+  const range = utility || presentation ? existing?.masterScope?.range : /昨天|昨日|yesterday/i.test(changing) ? 'yesterday' : /今天|今日|today/i.test(changing) ? 'today' : /近\s*3\s*天/.test(changing) ? 'last3' : /近\s*30\s*天/.test(changing) ? 'last30' : /近\s*7\s*天|近七天/.test(changing) ? 'last7' : existing?.masterScope?.range
+  const fixed = snapshot ? /固定(?:数字|数值|参考|值)\s*(?:改成|改为|为|是|[:：])?\s*(\d+(?:\.\d+)?(?:\s*(?:\/|、|和|与|,|，)\s*\d+(?:\.\d+)?)*)/.exec(positive) : null
   const fixedValues = fixed ? fixed[1].match(/\d+(?:\.\d+)?/g)!.map(Number) : undefined
-  return { version: 1, requestId, revision, mode, options, ...(liveRepair ? { requireLiveBindings: true } : {}), ...(range ? { range } : {}), ...(fixedValues ? { fixedValues } : {}), ...(measures.length ? { measures } : {}), ...(removedWidgetIds ? { removedWidgetIds } : {}), ...(presentation && addedUtilityTypes.length ? { addedUtilityTypes } : {}), ...(utilityTypes.length ? { utilityTypes } : {}), ...(unresolved.length ? { unresolved } : {}), evidence }
+  return { version: 1, requestId, revision, mode, options, ...(liveRepair ? { requireLiveBindings: true } : {}), ...(refreshRequested ? { refreshRequested: true } : {}), ...(range ? { range } : {}), ...(fixedValues ? { fixedValues } : {}), ...(measures.length ? { measures } : {}), ...(removedWidgetIds ? { removedWidgetIds } : {}), ...(presentation && addedUtilityTypes.length ? { addedUtilityTypes } : {}), ...(utilityTypes.length ? { utilityTypes } : {}), ...(unresolved.length ? { unresolved } : {}), evidence }
 }

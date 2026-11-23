@@ -1,6 +1,5 @@
-import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect, useRef, useState } from 'react'
+import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
-import { useShallow } from 'zustand/react/shallow'
 import { HistorySessionDescriptor, SessionEvent } from '@shared/types'
 import { useAppStore } from './store'
 import { useProjects } from './store/projects'
@@ -80,32 +79,29 @@ function App() {
   useWindowDropGuard()
   // Route changes swap content with a short fade/rise (see .page-enter) —
   // keying by pathname re-runs the entrance on each real navigation only.
-  const location = useLocation()
-  const {
-    setupComplete,
-    setTheme,
-    setLanguage,
-    setCliAvailable,
-    setSetupComplete,
-    applySessionEvent,
-    registerSessions,
-    setWorkspacePanel
-  } = useAppStore(
-    useShallow((s) => ({
-      setupComplete: s.setupComplete,
-      setTheme: s.setTheme,
-      setLanguage: s.setLanguage,
-      setCliAvailable: s.setCliAvailable,
-      setSetupComplete: s.setSetupComplete,
-      applySessionEvent: s.applySessionEvent,
-      registerSessions: s.registerSessions,
-      setWorkspacePanel: s.setWorkspacePanel
-    }))
-  )
+  const { pathname, search, hash } = useLocation()
+  const setupComplete = useAppStore((s) => s.setupComplete)
+  const workspacePanel = useAppStore((s) => s.workspacePanel)
   const t = useT()
   const navigate = useNavigate()
+  const navigateRef = useRef(navigate)
+  const route = pathname + search + hash
+  const previousRoute = useRef(route)
+
+  useLayoutEffect(() => {
+    navigateRef.current = navigate
+    if (route !== previousRoute.current) {
+      previousRoute.current = route
+      // A late history restore or analysis launch belongs to the view it started in.
+      beginNavigationIntent()
+    }
+  }, [navigate, route])
 
   useEffect(() => {
+    const {
+      setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent,
+      registerSessions, setScheduledTasks, setWorkspacePanel
+    } = useAppStore.getState()
     window.electronAPI.getStore('theme').then((theme) => {
       setTheme(theme)
     })
@@ -141,9 +137,16 @@ function App() {
     // covers a renderer reload and closes the race where a connected event
     // arrives before the create-session response is committed locally.
     syncLiveSessions()
-    // Load scheduled tasks and subscribe to state changes from Main.
-    window.electronAPI.listTasks().then(useAppStore.getState().setScheduledTasks)
-    window.electronAPI.onTasksStateChanged(useAppStore.getState().setScheduledTasks)
+    // Main can push a change while the initial task snapshot is in flight.
+    let receivedTaskUpdate = false
+    let disposed = false
+    const unsubscribeTasks = window.electronAPI.onTasksStateChanged((tasks) => {
+      receivedTaskUpdate = true
+      setScheduledTasks(tasks)
+    })
+    void window.electronAPI.listTasks().then((tasks) => {
+      if (!disposed && !receivedTaskUpdate) setScheduledTasks(tasks)
+    }).catch(() => undefined)
 
     // Micro-batch streaming text: consecutive assistant message/thinking
     // deltas coalesce inside a 32ms window (one store write + render per
@@ -232,7 +235,7 @@ function App() {
       const state = useAppStore.getState()
       if (state.sessions.some((s) => s.id === sessionId)) {
         state.setCurrentSessionId(sessionId)
-        navigate('/')
+        navigateRef.current('/')
       }
     })
 
@@ -240,7 +243,6 @@ function App() {
     // durable history row (task sessions are titled after their task).
     const unsubscribeNotifyOpenHistory = window.electronAPI.onNotifyOpenHistory((target) => {
       useAppStore.getState().setPendingOpenHistory(target)
-      navigate('/')
     })
 
     // Deterministic feishu guidance: Main pushes permission gaps and breaker
@@ -267,31 +269,23 @@ function App() {
       })
     })
 
-    // Runtime extensions can ask to open an in-app panel (validated in Main).
+    // Runtime panels have their own surface and can open alongside the current page.
     const unsubscribePanelOpen = window.electronAPI.onPanelOpen((request) => {
       if (request.panel === 'browser' && request.url) {
         setWorkspacePanel({ kind: 'browser', url: request.url })
-        // keepRoute: background refreshes (e.g. FB reading module) open the
-        // panel without yanking the user off the page they are on.
-        if (
-          request.keepRoute !== true &&
-          window.location.hash !== '#/' &&
-          !window.location.hash.startsWith('#/?')
-        ) {
-          navigate('/')
-        }
       } else if (request.panel === 'office' && request.office) {
         setWorkspacePanel({
           kind: 'office',
           grant: request.office.grant,
           name: request.office.name
         })
-        if (window.location.hash !== '#/' && !window.location.hash.startsWith('#/?')) navigate('/')
       }
     })
 
     return () => {
+      disposed = true
       flushDeltas()
+      unsubscribeTasks()
       unsubscribe()
       unsubscribeExternal()
       unsubscribeNotify()
@@ -300,7 +294,7 @@ function App() {
       unsubscribeLogin()
       unsubscribePanelOpen()
     }
-  }, [setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent, registerSessions, setWorkspacePanel, navigate])
+  }, [])
 
   // ⌘N goes home with a clean composer from anywhere. No session is created
   // up front — the first sent message creates it (same as the 对话 nav row).
@@ -316,12 +310,12 @@ function App() {
         e.preventDefault()
         setPaletteOpen(false)
         useAppStore.getState().setCurrentSessionId(null)
-        navigate('/')
+        navigateRef.current('/')
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [navigate])
+  }, [])
 
   // ⌘K / Ctrl+K toggles the global command palette from anywhere.
   useEffect(() => {
@@ -356,10 +350,11 @@ function App() {
     if (result && 'error' in result) {
       // Transcript could not be loaded — the row is not dead; keep it and
       // tell the user instead of opening a blank chat.
-      showNotice('history.transcriptUnavailable')
+      if (isCurrentNavigationIntent(intent)) showNotice('history.transcriptUnavailable')
       return false
     }
     if (!result) {
+      if (!isCurrentNavigationIntent(intent)) return false
       showNotice('history.restoreFailed')
       // Dead rows (rewritten/removed files) must vanish instead of lingering.
       void state.loadHistorySessions(state.currentWorkspace?.id ?? null)
@@ -405,6 +400,7 @@ function App() {
         loadHistory: id => useAppStore.getState().loadHistorySessions(id),
         resume: (info, workspace) => resumeHistoryDescriptor(info, workspace, intent)
       })
+      if (!isCurrentNavigationIntent(intent)) return
       if (result === 'loading') showNotice('history.loading')
       else if (result === 'project-not-added') showNotice('sidebar.projectNotAdded')
       else if (result === 'history-unavailable') showNotice('history.restoreFailed')
@@ -417,7 +413,10 @@ function App() {
   }
 
   const paletteHandlers: CommandPaletteHandlers = {
-    navigate: (path) => navigate(path),
+    navigate: (path) => {
+      beginNavigationIntent()
+      navigate(path)
+    },
     // Same flow as the sidebar 对话 row and ⌘N: clear the selection; the
     // session is created by the first message.
     newChat: () => {
@@ -483,6 +482,9 @@ function App() {
     return <div className="h-full" data-appearance="lightweight"><SetupWizard /></div>
   }
 
+  const browserPanel = workspacePanel?.kind === 'browser' ? workspacePanel : null
+  const officePanel = workspacePanel?.kind === 'office' ? workspacePanel : null
+
   return (
     <RendererErrorBoundary>
       <Layout>
@@ -493,14 +495,14 @@ function App() {
             </div>
           }
         >
-          <div key={location.pathname} className="page-enter h-full">
+          <div key={pathname} className="page-enter h-full">
             <Routes>
               <Route path="/" element={<ChatPage />} />
               <Route path="/plugins" element={<PackagesPage />} />
               <Route path="/plugins/new" element={<PluginAuthorPage />} />
               <Route path="/boards" element={<BoardsPage />} />
-              <Route path="/browser" element={<BrowserPage />} />
-              <Route path="/office" element={<OfficePage />} />
+              <Route path="/browser" element={<BrowserPage initialUrl={browserPanel?.url} />} />
+              <Route path="/office" element={<OfficePage initialGrant={officePanel?.grant} initialName={officePanel?.name} />} />
               <Route path="/skills" element={<SkillsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/connections" element={<ConnectionsPage />} />

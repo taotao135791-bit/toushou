@@ -87,6 +87,43 @@ describe('Main board refresh planner', () => {
     f.setDatasets(f.datasets().map(data => data.id === 'media' ? { ...data, rows: [] } : data))
     expect(boardRefreshWidgetDatasets(result, f.board().widgets[1], f.datasets()).find(data => data.id === 'media')!.rows).toHaveLength(7)
   })
+  it('reports partial even when both source states belong to one widget', async () => {
+    const f = fixture()
+    f.setDatasets(f.datasets().map(data => data.id === 'media' ? { ...data, name: 'Imported media', rows: [['2030-01-07', advertiser, 'campaign', 'Campaign', 10, 100, 5, 2, 'USD']] } : data))
+    const mixed = widget('mixed', 'funnel', { source: 'dataset', stages: [
+      { label: 'Media', source: 'dataset', datasetId: 'media', metric: '转化', op: 'sum' },
+      { label: 'Attribution', source: 'dataset', datasetId: 'af', metric: 'Count', op: 'sum' }
+    ] })
+    f.setBoard({ ...f.board(), widgets: [mixed] })
+    f.deps.pullAf = async () => ({ ok: false, error: 'network', results: [] })
+    const result = await refreshBoard({ boardId: f.board().id }, f.deps)
+    expect(result.status).toBe('partial')
+    const projected = boardRefreshWidgetDatasets(result, mixed, f.datasets())
+    expect(projected.find(data => data.id === 'media')?.rows).toHaveLength(1)
+    expect(projected.find(data => data.id === 'af')?.rows).toEqual([])
+  })
+  it('retains proof-verified TikTok rows for successful accounts only when part of the batch fails', async () => {
+    const f = fixture(), read = f.deps.readTt!, failedAccount = '7300000000000000002'
+    f.setBoard({ ...f.board(), widgets: f.board().widgets.map(item => item.id === 'native' ? { ...item, config: { ...item.config, advertiserIds: advertiser + ',' + failedAccount } } : item) })
+    f.deps.readTt = async (input, canCommit) => {
+      const result = await read(input, canCommit)
+      if ('ok' in result) throw new Error('expected reading summary')
+      result.failed.push({ advertiserId: failedAccount, name: null, currency: null, error: 'permission' })
+      f.setDatasets(f.datasets().map(data => data.id === 'media' ? { ...data, rows: [...data.rows, ['2030-01-07', failedAccount, 'old-campaign', 'Old data', 999, 1000, 99, 9, 'USD']] } : data))
+      return result
+    }
+    const result = await refreshBoard({ boardId: f.board().id }, f.deps)
+    expect(result.status).toBe('partial')
+    expect(result.sources.find(source => source.kind === 'tiktok')).toMatchObject({ status: 'updated', partial: true, coverage: { available: 1, requested: 2 } })
+    expect(boardRefreshWidgetDatasets(result, f.board().widgets[0], f.datasets()).find(data => data.id === 'media')?.rows).toEqual([['2030-01-07', advertiser, '9100000000000000001', 'Synthetic campaign', 10, 100, 5, 2, 'USD']])
+  })
+  it('requires saved TikTok account scope before querying a board', async () => {
+    const f = fixture()
+    f.setBoard({ ...f.board(), widgets: [f.board().widgets[0]] })
+    const result = await refreshBoard({ boardId: f.board().id }, f.deps)
+    expect(result.sources).toEqual([expect.objectContaining({ kind: 'tiktok', status: 'unbound', error: 'source-selection-required' })])
+    expect(f.calls.tt).toEqual([])
+  })
   it('rejects forged proofs and discards results when the saved request changed during the read', async () => {
     const f = fixture(), read = f.deps.readTt!
     f.deps.readTt = async (input, canCommit) => { const result = await read(input, canCommit); if (!('ok' in result) && result.datasetSync?.ok) result.datasetSync.proofs![0].digest = '0'.repeat(64); return result }
@@ -117,7 +154,10 @@ describe('Main board refresh planner', () => {
   })
   it('isolates incompatible absolute TT windows and retains legacy name bindings by stable ID', async () => {
     const f = fixture()
-    f.setBoard({ ...f.board(), widgets: f.board().widgets.filter(item => item.id === 'daily' || item.id === 'trend').map(item => item.id === 'trend' ? { ...item, dateScope: { mode: 'absolute', start: '2029-10-01', end: '2029-10-02' } } : { ...item, config: { ...item.config, datasetId: 'TikTok 报表' } }) })
+    f.setBoard({ ...f.board(), widgets: f.board().widgets.filter(item => item.id === 'daily' || item.id === 'trend').map(item => ({
+      ...item, config: { ...item.config, datasetId: 'TikTok 报表', filterColumn: '广告主ID', filterValue: advertiser },
+      ...(item.id === 'trend' ? { dateScope: { mode: 'absolute', start: '2029-10-01', end: '2029-10-02' } as const } : {})
+    })) })
     const result = await refreshBoard({ boardId: f.board().id }, f.deps)
     expect(result.status).toBe('ready'); expect(f.calls.tt).toHaveLength(2)
     const projected = boardRefreshWidgetDatasets(result, f.board().widgets[0], f.datasets())
@@ -156,7 +196,7 @@ describe('Main Meta board source adapter with the real structured response parse
       const account = accounts.accounts.find(account => account.id === input.accountId) as MetaReadingAccount
       return { ok: true, data: await readMetaSummary(client, account, input.range, input.window) }
     } }
-    return { deps, calls, board: () => board, select: () => { board = { ...board, widgets: board.widgets.map(item => item.type === 'meta-reading' ? { ...item, config: { ...item.config, accountId: 'act_123' } } : item) } }, independentRange: () => { board = { ...board, widgets: board.widgets.map(item => item.type === 'meta-reading' ? { ...item, config: { ...item.config, independent: true, range: 'last3' } } : item) } }, corrupt: () => { corrupt = true } }
+    return { deps, calls, board: () => board, addWidget: (item: BoardWidget) => { board = { ...board, widgets: [...board.widgets, item] } }, select: () => { board = { ...board, widgets: board.widgets.map(item => item.type === 'meta-reading' ? { ...item, config: { ...item.config, accountId: 'act_123' } } : item) } }, independentRange: () => { board = { ...board, widgets: board.widgets.map(item => item.type === 'meta-reading' ? { ...item, config: { ...item.config, independent: true, range: 'last3' } } : item) } }, corrupt: () => { corrupt = true } }
   }
   it('serves a selected native reader and linked KPI/trend from one verified Meta read', async () => {
     const f = metaFixture(), result = await refreshBoard({ boardId: f.board().id }, f.deps)
@@ -176,6 +216,21 @@ describe('Main Meta board source adapter with the real structured response parse
     expect(independent.widgets.find(view => view.widgetId === 'meta-spend')!.bindings[0].window).toEqual(independent.sources[0].window)
     invalidateBoardRefreshSource('meta')
     expect(getLatestBoardRefresh(f.board(), f.deps.contextKey, now)).toBeUndefined()
+  })
+  it('keeps independently verified TikTok rows when Meta disconnects', async () => {
+    const f = metaFixture(), tt = fixture()
+    const native = tt.board().widgets.find(item => item.type === 'tt-reading')!
+    f.addWidget(native)
+    f.deps.readTt = tt.deps.readTt
+    f.deps.readDatasets = tt.deps.readDatasets
+    expect((await refreshBoard({ boardId: f.board().id }, f.deps)).status).toBe('ready')
+    invalidateBoardRefreshSource('meta')
+    const result = getLatestBoardRefresh(f.board(), f.deps.contextKey, now)!
+    expect(result.status).toBe('partial')
+    expect(result.sources.find(source => source.kind === 'meta')).toMatchObject({ status: 'failed', error: 'source-disconnected' })
+    expect(result.sources.find(source => source.kind === 'meta')?.dataset).toBeUndefined()
+    expect(result.widgets.find(item => item.widgetId === 'meta-reader')?.metaSummary).toBeUndefined()
+    expect(result.widgets.find(item => item.widgetId === native.id)?.ttSummary?.totals.spend).toBeGreaterThan(0)
   })
   it('returns authorized choices without guessing an account, then succeeds after selection and masks invalid rows', async () => {
     const f = metaFixture(false)

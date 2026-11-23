@@ -143,6 +143,11 @@ export class OmpSession {
     this.options.onEvent(event)
   }
 
+  /** Forward a Main-owned interaction through this session's existing event sink. */
+  emitHostUi(event: Extract<SessionEvent, { type: 'ui_request' | 'ui_cancel' }>): void {
+    this.emit(event)
+  }
+
   /** Debug-only log channel (never carries user content). */
   private debug(message: string): void {
     this.options.onDebug?.(message)

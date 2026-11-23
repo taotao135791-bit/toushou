@@ -18,13 +18,14 @@ interface ToolHostApi {
 
 const bridge = process.env.TOUSHOU_BOARDS
 
-async function call(params: Record<string, unknown>): Promise<string> {
+async function call(params: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
   if (!bridge) return JSON.stringify({ ok: false, error: '看板工具只在投手桌面端内可用' })
   try {
     const response = await fetch(bridge, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(params)
+      body: JSON.stringify(params),
+      signal
     })
     // Main already returns bounded JSON with explicit truncation metadata;
     // slicing here would corrupt JSON and hide a large account scope.
@@ -41,8 +42,10 @@ const WIDGET_TYPES = [
 
 const TEMPLATES = ['meta', 'tiktok', 'fb-daily-v2', 'ads', 'daily', 'blank']
 const GRANULARITIES = ['account', 'campaign', 'adgroup', 'ad', 'creative']
+const BOARD_ID = { type: 'string', minLength: 1, maxLength: 100 }
+const BOARD_IDS = { type: 'array', minItems: 1, maxItems: 50, uniqueItems: true, items: BOARD_ID }
 
-const BUILD_ID = { type: 'string', description: 'board_build_begin返回的本次buildId；生成期间每次读写必须携带，不能复用旧轮次ID' }
+const BUILD_ID = { type: 'string', description: 'board_build_begin返回的本次buildId；新建和编辑草稿期间每次读写必须携带，不能复用旧轮次ID' }
 const HEX_COLOR = { type: 'string', pattern: '^#[0-9a-fA-F]{6}$' }
 const CANVAS_STYLE = { type: 'object', properties: { background: HEX_COLOR, grid: { type: 'string', enum: ['none', 'dots', 'lines'] } }, additionalProperties: false }
 const WIDGET_STYLE = {
@@ -82,16 +85,17 @@ const TEMPLATE_HELP = {
 
 export default function boardsTools(api: ToolHostApi): void {
   for (const operation of [
-    { action: 'board_build_begin', label: '准备看板', approval: 'read' as const, description: '生成或修改看板前先调用。应用依据当前真实用户消息冻结任务要求，并创建本次私有草稿；仅修改已有板时传targetBoardId。不要重述或自行降级用户要求。返回buildId、要求、数据范围及后续步骤。草稿不会出现在正式看板列表；只是查询已有看板不需要开始生成。', properties: { targetBoardId: { type: 'string', description: '仅修改现有看板时传其真实ID；新建时省略' } }, required: [] as string[] },
+    { action: 'board_edit_targets', label: '选择要编辑的看板', approval: 'read' as const, description: '在现有看板上继续编辑时，先用此工具确认本轮目标，再开始草稿或取数。用户说“把转化趋势放首屏”“给这个业务的日报加复盘便签”等延续请求，也按编辑处理。先用toushou_boards_list了解已保存的看板；如能从本轮话语和会话上下文识别相关看板，用candidateBoardIds标注候选。应用可识别用户明确指定的单一看板；目标有歧义时由用户在应用中勾选一个或多个。只使用返回的targetBoardIds；用户取消或无法确认目标时停止本轮编辑。', properties: { candidateBoardIds: { ...BOARD_IDS, description: '可选。已保存且与本轮业务有关的看板ID，用于提示候选；省略则由应用展示现有看板' } }, required: [] as string[] },
+    { action: 'board_build_begin', label: '准备看板', approval: 'read' as const, description: '创建本次私有草稿，应用依据真实用户消息冻结要求。编辑已有看板时先调用toushou_board_edit_targets，使用返回的全部targetBoardIds或省略两项沿用该选择；逐块用board_get(buildId,boardId)读回结构再增量修改。每块板保留自己的ID、布局、未指定的模块及日期、数据绑定；只需要改外观或已有绑定可满足时无需重新取数。新建看板省略目标参数。草稿不会出现在正式看板列表；只读查询无需草稿。', properties: { targetBoardId: { ...BOARD_ID, description: '单选兼容参数；与targetBoardIds二选一' }, targetBoardIds: { ...BOARD_IDS, description: '编辑时传应用确认为本轮目标的完整集合；也可直接省略以沿用确认结果' } }, required: [] as string[] },
     { action: 'board_build_status', label: '查看看板进度', approval: 'read' as const, description: '查看本次看板草稿、冻结的用户要求与数据缺口。不能通过修改check参数降低本次要求。', properties: { buildId: { type: 'string' } }, required: [] as string[] },
-    { action: 'board_build_preflight', label: '核对看板数据', approval: 'read' as const, description: '按应用保存的原始任务要求核对本次草稿及真实数据，返回缺口。优先确认所需粒度、ID、指标、日期历史和来源绑定；缺少数据时报告具体缺口，不把活动级数据替代用户指定的素材/广告级。接口能力和当前缓存列分开核对，不从一张活动表推断整个平台不支持广告。未通过不得交付成品。', properties: { buildId: { type: 'string' } }, required: ['buildId'] },
-    { action: 'board_build_commit', label: '保存看板', approval: 'write' as const, description: '将本次已完成草稿验收后整体保存为正式看板。应用再次按冻结的原始要求、实际数据、日期和已有板版本验收；模型无法通过省略required/granularity绕过。只有成功且published:true才可报告已保存并给正式看板入口。失败保留草稿，不能另建默认替代板或宣称已完成。返回conflict时先abort旧草稿，再begin回读新版本重新应用本次修改，不反复提交过期buildId。', properties: { buildId: { type: 'string' } }, required: ['buildId'] },
+    { action: 'board_build_preflight', label: '核对看板数据', approval: 'read' as const, description: '按应用保存的原始任务要求核对本次草稿与数据证据，返回各目标的缺口。确认需要的粒度、ID、指标、日期历史及来源绑定；活动级数据不能代替素材或广告级。接口能力与当前缓存列分开核对，未通过时补齐实际缺口。部分来源确实不可用时，保留所有已核对读数和明确的缺项，尝试带allowPartial提交。', properties: { buildId: { type: 'string' } }, required: ['buildId'] },
+    { action: 'board_build_commit', label: '保存看板', approval: 'write' as const, description: '一次验收并保存本轮草稿。多选时整体保存，应用分别核对所选看板的冻结要求、适用数据和原版本。AppsFlyer、媒体账户或个别指标确实查不到时，最后使用allowPartial:true保存所有能独立核对的数字，缺项留空并说明原因。应用仍会拒绝错误的账户、日期、粒度或无证据数据。只有成功且published:true才可报告已保存；status:partial代表已保存部分数据，必须写明缺项。由boards（单板兼容board）给出正式看板入口。失败保留草稿，不另建替代板。返回conflict时先abort旧草稿，再begin回读新版本重新应用本次修改。', properties: { buildId: { type: 'string' }, allowPartial: { type: 'boolean', description: '已尝试获取缺项仍不可用时设为true，保留全部可核对的数据' } }, required: ['buildId'] },
     { action: 'board_build_abort', label: '取消看板草稿', approval: 'read' as const, description: '放弃本次未发布的看板草稿，保留原有看板与数据。用户取消或明确改任务时使用，不删除正式板。', properties: { buildId: { type: 'string' } }, required: ['buildId'] }
   ]) {
     api.registerTool({ name: `toushou_${operation.action}`, label: operation.label, description: operation.description,
       parameters: { type: 'object', properties: operation.properties, required: operation.required, additionalProperties: false },
       approval: operation.approval,
-      execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ ...params, action: operation.action }) }] })
+      execute: async (_id, params, signal) => ({ content: [{ type: 'text', text: await call({ ...params, action: operation.action }, signal) }] })
     })
   }
   api.registerTool({
@@ -102,7 +106,7 @@ export default function boardsTools(api: ToolHostApi): void {
   })
   api.registerTool({
     name: 'toushou_board_refresh', label: '刷新看板数据',
-    description: '按看板保存的配置统一刷新媒体与三方数据。只传boardId，应用一次计算报表及各模块的实际日期、安排查询并返回本次结果，模型不要逐个计算日期。新建/修改时先开始草稿、保存查询绑定和组件，再刷新当前草稿；只有数据完成且草稿commit成功才交付。七日趋势与昨日指标可有各自窗口；失败、空数据和旧请求均不补零。纯样式调整及明确固定数字快照无需取数。',
+    description: '按看板保存的账户及日期统一刷新媒体与三方数据。先在看板明确绑定 TikTok 账户 ID 或 Meta 账户。传boardId，应用一次计算报表及各模块的实际日期、安排查询并返回本次结果，模型不要逐个计算日期。新建/修改时先开始草稿、保存查询绑定和组件，再刷新当前草稿。某来源不可用时保留其余已核对数字，最后用allowPartial提交。七日趋势与昨日指标可有各自窗口；失败、空数据和旧请求均不补零。纯样式调整及明确固定数字快照无需取数。',
     parameters: { type: 'object', properties: { boardId: { type: 'string' }, buildId: BUILD_ID }, required: ['boardId'], additionalProperties: false }, approval: 'write',
     execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ ...params, action: 'board_refresh' }) }] })
   })
@@ -111,7 +115,7 @@ export default function boardsTools(api: ToolHostApi): void {
     label: '列出看板',
     description:
       '列出投手的全部看板（名称/组件数/是否锁定）和看板数据集概况（名称/行数/列结构）。' +
-      '用户问"我有哪些看板"或某个项目的数据在哪时先用它。',
+      '用户问"我有哪些看板"或某个项目的数据在哪时先用它。用户要继续改同一业务的看板时，可用返回的名称和真实ID为toushou_board_edit_targets提示相关候选。',
     parameters: { type: 'object', properties: { buildId: BUILD_ID }, required: [] },
     approval: 'read',
     execute: async (_id, params) => ({ content: [{ type: 'text', text: await call({ ...params, action: 'boards_list' }) }] })
@@ -144,9 +148,9 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_check',
     label: '检查生成看板',
-    description: '生成期间按应用冻结的原始用户要求检查草稿，工具参数不能降低冻结要求；最终须board_build_commit。也可只读检查已保存看板的实际完成度，返回status、missing和issues，不修改看板或填补数据。所有生成并保存的看板都须在交付前执行检查；未执行不得声称验收通过。无具体方向的商业看板完成后用mode="default"检查可刷新数据、趋势、漏斗、分析和三方对应，日报再传daily:true检查表格。用户明确用途、风格、结构、参考或后续定制时用mode="custom"（默认），仅在required指定本次用户明确要求的能力；不要按默认清单补回用户删除或不需要的模块。用户明确固定数字或快照时用custom，优先counter，传required:[]；data在这里专指可刷新来源，不代表任意数字。若快照误传required:["data"]导致missing:data，应纠正本次验收要求后重查，不把预期未通过当作交付结论。' +
+    description: '按应用冻结的原始用户要求检查草稿，工具参数不能降低冻结要求；多选编辑时，可传boardId检查其中一块，最终由board_build_commit整体验收保存。也可只读检查已保存看板的实际完成度，返回status、missing和issues，不修改看板或填补数据。所有生成并保存的看板都须在交付前执行检查；未执行不得声称验收通过。无具体方向的商业看板完成后用mode="default"检查可刷新数据、趋势、漏斗、分析和三方对应，日报再传daily:true检查表格。用户明确用途、风格、结构、参考或后续定制时用mode="custom"（默认），仅在required指定本次用户明确要求的能力；不要按默认清单补回用户删除或不需要的模块。用户明确固定数字或快照时用custom，优先counter，传required:[]；data在这里专指可刷新来源，不代表任意数字。若快照误传required:["data"]导致missing:data，应纠正本次验收要求后重查，不把预期未通过当作交付结论。' +
       '用户明确账户/活动/广告组/广告/素材粒度时必须传granularity；可接受广告或素材时传["ad","creative"]（OR），不能因为数据源只有活动级就改传campaign或省略约束。dimensions传返回结构中本次必须一起展示的精确列名（AND），例如实际ID列与花费、转化列；检查真实表格可见列或图表分组及当前有效ID，不以标题或隐藏字段充数。没有所需粒度时明确未完成/blocked，不擅自交付活动级替代板并称已完成。' +
-      '检查实际组件和数据绑定，不以标题、占位点、手填数字、静态note或HTML文字冒充能力。只有passed:true且status为ready才算通过；否则在同一轮修复missing/issues指向的绑定、筛选或组件，再次检查。日期问题直接复用check.window的精确start/end重拉，不重新推算“近几天”；看板名和组件标题的已知日期错位也在同一轮改正，不能留待用户再次要求。源权限、连接或无数据受阻时明确blocked和保留结果，不把检查调用本身当作已完成。检查通过也不等于完成了真实平台对账。',
+      '检查实际组件和数据绑定，不以标题、占位点、手填数字、静态note或HTML文字冒充能力。只有passed:true且status为ready才算完整通过；否则在同一轮修复missing/issues指向的绑定、筛选或组件，再次检查。日期问题直接复用check.window的精确start/end重拉，不重新推算“近几天”；看板名和组件标题的已知日期错位也在同一轮改正。源权限、连接或无数据仍受阻时，提交可核验并可独立展示的读数，使用allowPartial:true及部分交付说明；没有可核对数值时明确说明受阻。检查通过也不等于完成了真实平台对账。',
     parameters: {
       type: 'object',
       properties: {
@@ -168,7 +172,7 @@ export default function boardsTools(api: ToolHostApi): void {
     name: 'toushou_board_create',
     label: '新建看板',
     description:
-      '先board_build_begin取得本次草稿；本工具只在草稿中建板。完成后board_refresh统一取数、board_build_preflight核对并board_build_commit正式保存。draft:true不代表已交付。新建本机看板并回报结果；需要确认时等待用户批准，不触碰广告平台。\n' +
+      '仅用于独立新建看板。继续编辑已有看板时先toushou_board_edit_targets，选定后增量修改。新建时先board_build_begin取得本次草稿；本工具只在草稿中建板。需要取数时由board_refresh统一安排，随后board_build_preflight核对并board_build_commit正式保存。draft:true不代表已交付。不触碰广告平台。\n' +
       '没有具体方向时，默认使用本地前端模块（可独立拖动、缩放的指标、图表与内容模块）。用户指定用途、风格、结构、参考或后续定制时优先满足该要求，不套回默认模板，不重置已有看板。用户明确要求自定义报告或整页布局时可使用 file；普通业务数据请求不自动改成静态 HTML。\n' +
       '业务数据看板默认可刷新：保留查询条件，指标和图表绑定数据源，日期切换实际重查；只有用户明确要求固定/快照时才使用 manual 固定值。不要把一次查询结果手填成默认看板，不要用大段说明卡堆砌技术参数或防御文案；首屏只留关键指标、短来源/日期标签与2–3条业务 highlight，来源细节和失败诊断按需查看。\n' +
       '用户直接给定固定数字且未要求实时查询时，优先用counter呈现该快照，用custom验收，不强加趋势或实时来源。用户明确素材/广告等数据粒度时，先核对实际ID列、查询能力与当前行；缺少所需粒度就报告未完成，不擅自用活动级数据替代。验收granularity与dimensions沿用用户任务，不随现有数据降级。\n' +
@@ -176,7 +180,7 @@ export default function boardsTools(api: ToolHostApi): void {
       '漏斗阶段和业务名称来自当前项目的真实事件与已确认映射，不能照搬其他客户；跨源阶段读数不自动等同于同一批用户的转化率。广告后台与三方分别保留指标定义、事件映射、统计范围和币种，按已确认业务口径对应；源时区不同本身不是故障。\n' +
       '未指定平台与结构时默认创建空白看板；无具体结构要求的 TT/TikTok 可从 tiktok 开始、Meta 可从 meta 开始、FB 已保存报表可从 fb-daily-v2 开始。用户自定义结构可选 blank 并按需接入读数与数据绑定；平台不决定唯一外观。可选模板：\n' +
       Object.entries(TEMPLATE_HELP).map(([id, help]) => `- ${id}：${help}`).join('\n') +
-      '\n用户指定 TikTok 广告主时，必须先通过 TikTok 连接信息查询其数字 ID，并以逗号分隔的字符串传 advertiserIds；不知道 ID 时先查明或请用户提供，不能留空代替指定范围。未指定账户时留空会读取连接页所选账户，未选择时读取授权账户。' +
+      '\n保存和刷新 TikTok 看板前，核对本业务的广告主数字 ID，并以逗号分隔的字符串保存在 advertiserIds；未明确账户范围时先请用户选择。看板刷新按已保存的账户范围读取。' +
       '\nMeta 模板已内置 meta-reading 和自动绑定的卡片。先用board_meta_accounts读取已授权账户，按本次任务确认账户并写入meta-reading的config.accountId；也保留模块中的账户选择。不要把其卡片改为 manual 或替换成固定快照。缺失指标不补零，时区以模块实际显示为准。不需要生成 HTML/CSV 文件。\n' +
       '\nTikTok 模板可能需要报表数据；只有用户明确要求读取时才调用 touhou_tiktok_update。要求展示账户/应用业务数据的看板已包含读取意图，按指定范围获取并绑定；只是新建空白画布时不自动查询广告账户。' +
       '\n创建或修改后回读 board_get，再用toushou_board_check核对实际保存的数据绑定、具体日期、趋势日期列、漏斗阶段来源、分析引用与日报表格。无方向方案用mode="default"；明确的定制用mode="custom"并只声明本次required，不能借验收重置为默认模板。按用户信息优先级组织紧凑连续的内容，检查无意义的整行/半屏空洞、重复读数和过多技术note并在同轮整理；布局可自由定制，不新增统一模块顺序。所有已保存生成结果都要检查，未执行不得声称验收通过；已知标题日期错误与check.window在同轮修正。查询配方和组件配置通过，不等于真实生成已验收；不能把未测项目报告为通过。',
@@ -230,7 +234,7 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_remove_widget',
     label: '看板删组件',
-    description: '从看板移除一个组件（先用 toushou_board_get 拿到 widgetId）。',
+    description: '从本轮已确认的目标看板移除一个指定组件。用 toushou_board_get 回读这块板并取得 widgetId；保留用户未要求移除的组件。',
     parameters: {
       type: 'object',
       properties: {
@@ -248,7 +252,7 @@ export default function boardsTools(api: ToolHostApi): void {
   api.registerTool({
     name: 'toushou_board_update_widget',
     label: '看板改组件',
-    description: '按用户要求修改单个模块的标题、位置、样式或配置。config增量合并并整体校验；仅改外观时不要重传config，不要丢失实时数据绑定。多个模块同时换布局/样式使用toushou_board_customize原子预览/应用，避免半成品。改看板名用toushou_board_rename。',
+    description: '按用户要求修改本轮已确认看板上的单个模块标题、位置、样式或配置。config增量合并并整体校验；仅改外观时省略config，保留实时绑定。多个模块同时换布局/样式使用toushou_board_customize原子预览/应用。例如“把消耗和安装指标移到首屏”只调对应布局，“复盘加一条备注”用便签；如要新增花费趋势，核对现有数据源的日期和花费列，必要时按实际窗口查询，禁止用占位数字或别的业务口径。改看板名用toushou_board_rename。',
     parameters: {
       type: 'object',
       properties: {

@@ -22,6 +22,8 @@ export const KERNEL_SKILL_ID = KERNEL_SKILL_FILE_NAME
 export const KERNEL_SKILL_VERSION = 1
 
 const VERSION_MARKER_RE = /<!-- toushou:kernel-skill v(\d+) -->/
+const LEGACY_BOARD_DELIVERY = '- 用户在看板语境下要求数据时：把素材/榜单整理成 ```board-cards 围栏（JSON 一行、双引号、无尾逗号，最多 12 张卡），用户点 Apply 才落板——围栏是唯一入口，禁止另写文件交付看板数据'
+const BOARD_DELIVERY = '- 用户要直接更新已有看板时，先用 toushou_board_edit_targets 确认一个或多个目标，再在本轮草稿里增量编辑，保存后回报真实结果和看板入口。用户明确要求先提议卡片、由本人点应用时，可把素材或榜单整理成 ```board-cards 围栏（JSON 一行、双引号、无尾逗号，最多 12 张卡）。'
 
 /** The task template prompt references the skill by name; keep in sync. */
 export const KERNEL_SKILL_DISPLAY_NAME = '爆款竞品分析'
@@ -94,7 +96,7 @@ description: 周度爆款竞品分析打法：从我方 TikTok 账户表现找�
 
 ## 第 5 步：分发
 
-- 用户在看板语境下要求数据时：把素材/榜单整理成 \`\`\`board-cards 围栏（JSON 一行、双引号、无尾逗号，最多 12 张卡），用户点 Apply 才落板——围栏是唯一入口，禁止另写文件交付看板数据
+${BOARD_DELIVERY}
 - 提醒用户：本分析可每周自动执行。用户同意后直接用 toushou_task_create 工具创建（weekly 周一 09:00、skillId 填「爆款竞品分析.md」），或指引到定时任务页使用「每周爆款竞品分析」模板并开启"推送到飞书"
 - 需求单的"动作假设"确认后，可直接进入《素材需求文档》流程（飞书里建素材需求批次）
 `
@@ -113,9 +115,10 @@ export function ensureKernelSkill(): { ok: boolean; error?: string } {
     }
     if (current !== null) {
       const currentVersion = Number(VERSION_MARKER_RE.exec(current)?.[1] ?? 0)
+      const bundledLegacy = KERNEL_SKILL_MARKDOWN.replace(BOARD_DELIVERY, LEGACY_BOARD_DELIVERY)
       // Same version → keep whatever is on disk (the user may have tuned the
-      // playbook for the team); a newer bundled version replaces it.
-      if (currentVersion >= KERNEL_SKILL_VERSION) return { ok: true }
+      // playbook for the team). Refresh this line only in the old stock copy.
+      if (currentVersion >= KERNEL_SKILL_VERSION && current !== bundledLegacy) return { ok: true }
     }
     writeFileSync(file, KERNEL_SKILL_MARKDOWN, 'utf-8')
     return { ok: true }

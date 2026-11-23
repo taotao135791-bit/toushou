@@ -308,6 +308,10 @@ export interface Session {
    * plain local one.
    */
   origin?: 'feishu' | 'task'
+  /** Main-reported mode of the live runtime's own tools. */
+  nativePermissionMode?: PermissionMode
+  /** Legacy approval configuration supports live switching between ask and full. */
+  nativePermissionMutable?: boolean
   /** True when Main spawned this live session with a fixed read-only profile. */
   readonly?: boolean
   /** True when Main spawned a remote session with downgraded permissions. */
@@ -365,10 +369,11 @@ export type SessionEvent =
       type: 'ui_request'
       sessionId: string
       id: string
-      method: 'select' | 'confirm' | 'input' | 'editor'
+      method: 'select' | 'confirm' | 'input' | 'editor' | 'board_targets'
       title: string
       message?: string
       options?: string[]
+      boards?: Array<{ id: string; name: string; description?: string; locked?: boolean; suggested?: boolean }>
       placeholder?: string
       prefill?: string
       timeout?: number
@@ -472,6 +477,8 @@ export interface LaunchableTool {
 
 /** Answer to an extension UI dialog, sent back over the session's stdin. */
 export type ExtensionUiAnswer = { cancelled: true } | { value: string } | { confirmed: boolean }
+/** Local board selection is resolved by Main and never sent to an extension over stdin. */
+export type SessionUiAnswer = ExtensionUiAnswer | { boardIds: string[] }
 
 /** pi model/agent configuration, persisted in pi's own settings.json. */
 export interface ModelConfig {
@@ -1207,6 +1214,8 @@ export interface KanbanBoard {
   style?: BoardStyle
   /** Optional master date+metric scope governing the reading modules. */
   masterScope?: BoardMasterScope
+  /** Gaps in the last saved draft when its verified subset was published. */
+  partialDelivery?: { missing: string[]; issues: string[] }
   /** Locked boards refuse deletion until unlocked from the board tab. */
   locked?: boolean
   createdAt: number
@@ -1546,6 +1555,8 @@ export interface BoardDataset {
   /** Parsed values; number columns hold numbers, everything else strings. */
   rows: (string | number)[][]
   createdAt: number
+  /** Verified row or column limits cut this import short. */
+  truncated?: true
   /** Query status and the exact period represented by an AppsFlyer dataset. */
   appsflyer?: import('./appsflyerDataset').AppsFlyerDatasetState
 }
@@ -1769,6 +1780,8 @@ export interface SessionState {
   messageCount: number
   thinkingLevel: string
   model?: unknown
+  /** Thinking capabilities reported by the live model, when exposed by the runtime. */
+  modelThinking?: { reasoning?: boolean; thinking: string[] }
   autoCompactionEnabled?: boolean
 }
 

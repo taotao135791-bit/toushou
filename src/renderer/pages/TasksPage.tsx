@@ -330,7 +330,6 @@ export default function TasksPage() {
         )
     if (row) {
       state.setPendingOpenHistory({ uuid: row.uuid, cwd: row.cwd })
-      navigate('/')
     } else {
       showNotice('tasks.runSessionMissing')
     }

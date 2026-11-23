@@ -16,7 +16,34 @@ app.whenReady().then(async () => {
     const ready = await read()
     await wc.executeJavaScript(`document.querySelector('section[aria-label="Board result"] button').click()`); await wait()
     const route = await wc.executeJavaScript(`document.getElementById('route').innerText`)
-    console.log('E2E_RESULT ' + JSON.stringify({ unavailable, ready, route }))
+    await wc.executeJavaScript(`document.getElementById('edit').click()`); await wait()
+    const multi = await wc.executeJavaScript(`Array.from(document.querySelectorAll('section[aria-label="Board result"]'), area => area.innerText)`)
+    await wc.executeJavaScript(`Array.from(document.querySelectorAll('section[aria-label="Board result"]')).at(-1).querySelectorAll('button')[1].click()`)
+    const draft = await wc.executeJavaScript(`({text:window.deliveryFixture.state.getState().composerPrefill, autosend:window.deliveryFixture.state.getState().composerAutosend})`)
+    await wc.executeJavaScript(`Array.from(document.querySelectorAll('section[aria-label="Board result"]')).at(-1).querySelector('button').click()`); await wait()
+    const emptyRoute = await wc.executeJavaScript(`document.getElementById('route').innerText`)
+    const openPicker = () => wc.executeJavaScript(`document.getElementById('choose').focus(); document.getElementById('choose').click()`)
+    const inspectPicker = () => wc.executeJavaScript(`(() => {
+      const dialog = document.querySelector('[role=dialog]');
+      const inputs = [...dialog.querySelectorAll('input[type=checkbox]')];
+      return {
+        checked: inputs.filter(input => input.checked).length,
+        locked: inputs[2].disabled,
+        focused: document.activeElement === inputs[0],
+        confirm: [...dialog.querySelectorAll('button')].at(-1).disabled
+      };
+    })()`)
+    await openPicker(); await wait()
+    const picker = await inspectPicker()
+    await wc.executeJavaScript(`for (const input of document.querySelectorAll('[role=dialog] input[type=checkbox]')) input.click()`)
+    await wait()
+    const checked = await inspectPicker()
+    await wc.executeJavaScript(`[...document.querySelectorAll('[role=dialog] button')].at(-1).click()`); await wait()
+    await openPicker(); await wait()
+    const reopened = await inspectPicker()
+    await wc.executeJavaScript(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`); await wait()
+    const answers = await wc.executeJavaScript(`({answers: window.deliveryFixture.answers, open: !!document.querySelector('[role=dialog]'), focus: document.activeElement.id})`)
+    console.log('E2E_RESULT ' + JSON.stringify({ unavailable, ready, route, multi, draft, emptyRoute, picker, checked, reopened, answers }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), stack: error.stack })) }
   finally { win?.destroy(); app.quit() }
 })

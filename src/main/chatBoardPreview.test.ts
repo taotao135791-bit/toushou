@@ -46,6 +46,17 @@ describe('chat board preview', () => {
     expect(getChatBoardPreview(input, deps)).toMatchObject({ ok: true, source: 'file', boardName: 'Synthetic' })
   })
 
+  it('verifies a saved board without a widget only in an authorized live session', () => {
+    const board = createBoard('Empty synthetic board')
+    const input = { sessionId: 'session', boardId: board.id }
+    const readFile = vi.fn(() => null)
+    const deps = { access: () => ({ cwd: '/synthetic' }), authorized: () => true, boards: () => [board], readFile }
+    expect(getChatBoardPreview(input, { ...deps, access: () => null })).toEqual({ ok: false, error: 'unauthorized' })
+    expect(getChatBoardPreview({ ...input, boardId: 'missing' }, deps)).toEqual({ ok: false, error: 'not-found' })
+    expect(getChatBoardPreview(input, deps)).toEqual({ ok: false, error: 'unsupported' })
+    expect(readFile).not.toHaveBeenCalled()
+  })
+
   it('does not follow a file widget symlink outside its authorized workspace', () => {
     const workspace = mkdtempSync(path.join(tmpdir(), 'chat-preview-'))
     const outside = mkdtempSync(path.join(tmpdir(), 'chat-preview-outside-'))

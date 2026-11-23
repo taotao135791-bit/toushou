@@ -75,6 +75,9 @@ export default function ChatPanel() {
   const sessionError = useAppStore((s) =>
     currentSessionId ? s.sessionErrors[currentSessionId] : undefined
   )
+  const queuedCount = useAppStore((s) => currentSessionId ? s.queuedMessages[currentSessionId]?.length ?? 0 : 0)
+  const queuePauseReason = useAppStore((s) => currentSessionId ? s.queuePauseReasons[currentSessionId] : undefined)
+  const queueDispatching = useAppStore((s) => currentSessionId ? s.queueDispatching[currentSessionId] : undefined)
   const { viewportRef: scrollRef, contentRef, onScroll: handleTranscriptScroll, showJump, jumpToBottom } = useTranscriptScroll(currentSessionId)
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
   const navigate = useNavigate()
@@ -108,6 +111,8 @@ export default function ChatPanel() {
   const [exportFailed, setExportFailed] = useState(false)
   const [exportSuccessPath, setExportSuccessPath] = useState<string | null>(null)
   const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(null)
+  const [recoveringQueue, setRecoveringQueue] = useState(false)
+  const preparingPrompts = useRef(new Map<string, string>())
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const stoppingBusy = useAppStore((s) =>
     stoppingSessionId ? Boolean(s.busy[stoppingSessionId]) : false
@@ -117,6 +122,7 @@ export default function ChatPanel() {
   // Home hero: inline "new project folder" naming state
 
   const isStopping = currentSessionId !== null && stoppingSessionId === currentSessionId
+  const closedQueue = queuePauseReason === 'closed' || currentSession?.status === 'error'
   const actionError = sessionError === 'chat.stopFailed' || sessionError === 'chat.steerComposerFailed' || sessionError === 'chat.steerQueueFailed'
   const statusError = !isBusy || actionError ? sessionError ?? sendError : null
 
@@ -191,12 +197,20 @@ export default function ChatPanel() {
         }
       }
       const store = useAppStore.getState()
+      const liveSession = store.sessions.find((session) => session.id === sessionId)
+      if (store.currentSessionId === sessionId && liveSession && store.currentWorkspace && liveSession.cwd !== store.currentWorkspace.realPath) {
+        store.setSessionError(sessionId, 'chat.queueWorkspaceChanged')
+        return false
+      }
+      if (store.busy[sessionId] || store.queueDispatching[sessionId]) return false
       store.setSessionError(sessionId, null)
       // The user bubble lands immediately; the runtime snapshot below (a
       // get_state RPC with an 8s timeout on a hung session) resolves
       // concurrently and tags the message whenever it comes back.
       const snapshot = captureSessionSnapshot(sessionId)
       const messageId = crypto.randomUUID()
+      preparingPrompts.current.set(sessionId, messageId)
+      store.setBusy(sessionId, true)
       store.addMessage(sessionId, {
         id: messageId,
         role: 'user',
@@ -214,16 +228,19 @@ export default function ChatPanel() {
       } catch {
         store.setSessionError(sessionId, 'chat.checkpointFailed')
       }
-      // Optimistic: show the working state until agent_end / error lands
-      store.setBusy(sessionId, true)
-      const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images).catch(() => false)
-      if (!sent) {
-        // The session's process is gone: never leave "Running" on and never
-        // drain the parked queue into the void — flag the failure instead.
-        store.setBusy(sessionId, false)
-        store.clearQueuedMessages(sessionId)
-        store.setSessionError(sessionId, 'chat.sendFailed')
+      if (preparingPrompts.current.get(sessionId) !== messageId) {
         store.updateMessage(sessionId, messageId, { failed: true })
+        return false
+      }
+      preparingPrompts.current.delete(sessionId)
+      const sent = await window.electronAPI.sendMessage(sessionId, trimmed, images).catch(() => null)
+      if (sent !== true) {
+        store.setBusy(sessionId, false)
+        store.pauseQueuedMessages(sessionId, sent === null ? 'unknown' : 'failed')
+        if (useAppStore.getState().sessionErrors[sessionId] !== 'chat.sessionDead') {
+          store.setSessionError(sessionId, sent === null ? 'chat.queueDeliveryUnknown' : 'chat.sendFailed')
+        }
+        store.updateMessage(sessionId, messageId, sent === null ? { deliveryUnknown: true } : { failed: true })
         return false
       }
       store.touchSession(sessionId)
@@ -276,19 +293,15 @@ export default function ChatPanel() {
     const sid = currentSessionId
     if (!sid || stoppingSessionId === sid) return
     const store = useAppStore.getState()
-    const queuedCount = (store.queuedMessages[sid] || []).length
-    setStoppingSessionId(sid)
-    // Stop means stop: clear parked work before the terminal idle event can
-    // drain it, and tell the user what happened.
-    store.clearQueuedMessages(sid)
-    if (queuedCount > 0) {
-      store.addMessage(sid, {
-        id: crypto.randomUUID(),
-        role: 'system',
-        variant: 'info',
-        content: t('chat.queueCleared', { count: queuedCount })
-      })
+    // Pause before asking Main to stop, including while a queue head is
+    // still taking its pre-send checkpoint.
+    store.pauseQueuedMessages(sid, 'stopped')
+    if (preparingPrompts.current.delete(sid)) {
+      store.setBusy(sid, false)
+      return
     }
+    if (store.queueDispatching[sid]?.phase === 'checkpoint') return
+    setStoppingSessionId(sid)
     // Cancel pending dialogs first: an unanswered select/confirm holds the
     // turn open, and aborting underneath it wedges the session as busy
     // forever (no agent_end ever arrives).
@@ -313,7 +326,29 @@ export default function ChatPanel() {
       setStoppingSessionId(null)
       store.setSessionError(sid, 'chat.stopFailed')
     }
-  }, [t, currentSessionId, stoppingSessionId])
+  }, [currentSessionId, stoppingSessionId])
+
+  const recoverQueuedMessages = async () => {
+    if (!currentSessionId || recoveringQueue) return
+    const store = useAppStore.getState()
+    const source = store.sessions.find((session) => session.id === currentSessionId)
+    if (!source || store.currentWorkspace?.realPath !== source.cwd) {
+      store.setSessionError(currentSessionId, 'chat.queueWorkspaceChanged')
+      return
+    }
+    setRecoveringQueue(true)
+    try {
+      const readOnly = source.readonly || source.remoteReadonly || source.nativePermissionMode === 'no-bash'
+      const target = await createSessionForCurrentProject(readOnly ? { permissionMode: 'readonly' } : undefined)
+      if (!target || !useAppStore.getState().moveClosedQueue(source.id, target)) {
+        store.setSessionError(source.id, 'chat.queueRecoveryFailed')
+      }
+    } catch {
+      store.setSessionError(source.id, 'chat.queueRecoveryFailed')
+    } finally {
+      setRecoveringQueue(false)
+    }
+  }
 
   const handleCompact = useCallback(async () => {
     const sid = currentSessionId
@@ -558,6 +593,23 @@ export default function ChatPanel() {
 
       {!showHero && (
         <>
+          {currentSessionId && queuedCount > 0 && queuePauseReason && (
+            <div className="px-4 pb-1">
+              <div className="mx-auto flex max-w-[760px] flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-overlay px-3 py-2 text-xs text-cream-dim">
+                <span role="status">
+                  {t(queuePauseReason === 'unknown' ? 'chat.queueUnknownHeld' : 'chat.queueHeld', { count: queuedCount })}
+                </span>
+                <button
+                  type="button"
+                  onClick={closedQueue ? recoverQueuedMessages : () => { useAppStore.getState().resumeQueuedMessages(currentSessionId) }}
+                  disabled={isBusy || isStopping || Boolean(queueDispatching) || recoveringQueue}
+                  className="focus-ring shrink-0 rounded-md border border-line px-2.5 py-1 text-cream transition-colors hover:bg-overlay-strong disabled:opacity-50"
+                >
+                  {t(closedQueue ? 'chat.queueRecover' : queuePauseReason === 'unknown' ? 'chat.queueRetryUnknown' : 'chat.queueResume')}
+                </button>
+              </div>
+            </div>
+          )}
           <Composer
             onSend={handleSend}
             onStop={handleStop}

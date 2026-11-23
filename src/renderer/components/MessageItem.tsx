@@ -34,6 +34,8 @@ interface MessageItemProps {
   index?: number
   sessionId?: string | null
   onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
+  /** Whether this is the latest message of the active turn. */
+  streaming?: boolean
   /** Intermediate process messages keep their details but do not offer result actions. */
   showBoardAction?: boolean
 }
@@ -79,7 +81,7 @@ function SkillMessageCard({
   )
 }
 
-function MessageItem({ message, index = -1, sessionId = null, onRetry, showBoardAction = true }: MessageItemProps) {
+function MessageItem({ message, index = -1, sessionId = null, onRetry, streaming = false, showBoardAction = true }: MessageItemProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
   const copyRequest = useRef(0)
   const copyBusy = useRef(false)
@@ -114,8 +116,9 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry, showBoard
       : runtimeModel
     : undefined
 
-  // Thinking elapsed time: ticks once a second while the run streams.
-  const thinkingStreaming = Boolean(message.thinking) && message.thinkingEndTs === undefined
+  // Restored transcripts can contain reasoning without timestamps.
+  const thinkingStreaming = streaming && Boolean(message.thinking) &&
+    message.thinkingStartTs !== undefined && message.thinkingEndTs === undefined
   const [now, setNow] = useState(0)
   useEffect(() => {
     if (!thinkingStreaming) return
@@ -276,6 +279,11 @@ function MessageItem({ message, index = -1, sessionId = null, onRetry, showBoard
               message.content
             )}
           </div>
+          {message.deliveryUnknown && (
+            <span className="mt-1 block text-right text-[11px] font-medium text-amber-700 dark:text-amber-400">
+              {t('msg.sendUnknown')}
+            </span>
+          )}
           {message.failed && (
             <div className="mt-1 flex items-center justify-end gap-1.5">
               <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-px text-[10px] font-medium text-red-500">

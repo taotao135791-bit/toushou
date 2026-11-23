@@ -13,7 +13,7 @@ export interface RuntimeSnapshot {
   thinkingLevel?: string
 }
 
-function modelSelectorOf(state: SessionState | null): string | undefined {
+export function modelSelectorOf(state: SessionState | null): string | undefined {
   const m = state?.model
   if (!m || typeof m !== 'object') return undefined
   const o = m as { provider?: unknown; id?: unknown }

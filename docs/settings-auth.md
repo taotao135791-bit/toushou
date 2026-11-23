@@ -95,10 +95,12 @@ against 17.2.12). `auto` is legal; `off` is NOT. The GUI keeps these as
 separate TypeScript types (`SessionThinkingLevel` vs `DefaultThinkingLevel`)
 so a session enum value can never be written to global config.
 
-Per-model subsets exist (`omp models --json` → `thinking: [...]`) and both
-pickers filter by the current model's capability list. The Settings default
-picker additionally keeps `auto` offered regardless of model metadata, since
-`auto` is a runtime-side classifier, not a model capability.
+Per-model subsets are available from the live session model and from
+`omp models --json`. The composer prefers the live model's capabilities in
+an active session and uses the catalog for the selected next-session model.
+If a reasoning model has no recognized effort list, the picker offers the
+standard levels and lets the runtime resolve the selection. The Settings
+default picker always offers `auto`.
 
 `set_thinking_level` never errors — unsupported levels are **clamped**
 (e.g. xhigh → high) or resolve to "auto" (unknown values). The GUI

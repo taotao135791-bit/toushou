@@ -36,7 +36,6 @@ import {
   AppSettings,
   InstallStatus,
   ReadFileResult,
-  ExtensionUiAnswer,
   ModelConfig,
   CheckpointInfo,
   PermissionMode,
@@ -1190,9 +1189,8 @@ export function registerIpc() {
 
   ipcMain.handle(
     IPC_CHANNELS.OMP_RESPOND_UI,
-    async (_event: IpcMainInvokeEvent, sessionId: string, requestId: string, answer: ExtensionUiAnswer) => {
-      if (typeof requestId !== 'string' || !requestId) return false
-      if (!isUiAnswer(answer)) return false
+    async (_event: IpcMainInvokeEvent, sessionId: string, requestId: string, answer: unknown) => {
+      if (typeof sessionId !== 'string' || typeof requestId !== 'string' || !requestId) return false
       return respondExtensionUi(sessionId, requestId, answer)
     }
   )

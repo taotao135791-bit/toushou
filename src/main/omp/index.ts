@@ -5,7 +5,6 @@ import { IPC_CHANNELS } from '../../shared/constants'
 import { cleanSessionName } from '../../shared/promptTitle'
 import {
   ChatMessage,
-  ExtensionUiAnswer,
   PanelOpenRequest,
   PermissionMode,
   PromptImage,
@@ -31,13 +30,17 @@ import { reconstructSessionMetadata, reconstructHistoricalAgents } from '../sess
 import { isSessionFilePath } from '../sessionHistory'
 import { planSpawn, removeApprovalConfig, resolvePermissionMode, spawnProcess, writeApprovalConfig } from './OmpProcess'
 import { OmpSession } from './OmpSession'
+import { sessionModelThinking } from './OmpProtocol'
 import { isProjectDeletionInProgress, pathsOverlap } from '../projectDeletionGate'
 import { ProjectChildTracker } from '../projectChildTracker'
 import { canonicalExistingPath } from '../canonicalPath'
 import { SessionBridgePermissionRegistry } from './bridgePermissions'
 import { extensionExternalLinkMessage } from './extensionLinks'
-import { registerBoardBuildTurn, revokeBoardBuildSession } from '../boardBuilds'
+import { cancelBoardEditTargets, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, type BoardTargetUiEvent } from '../boardBuilds'
+import { isUiAnswer } from '../uiAnswer'
 import { isRuntimePreparing } from '../runtimePreparationGate'
+import { listMcpConnections } from '../integrations/mcp/McpConnectionStore'
+import { mcpTurnPrompt } from './mcpMentions'
 import {
   detectCli,
   noteHandshake,
@@ -247,6 +250,8 @@ export function createSession(
     ...(opts?.initialTitleMetadata ? { titleSource: opts.initialTitleMetadata.source, titleRevision: opts.initialTitleMetadata.revision } : {}),
     createdAt: Date.now(),
     status: 'idle',
+    nativePermissionMode: permissionMode,
+    nativePermissionMutable: cli.command !== 'omp' && (permissionMode === 'ask' || permissionMode === 'full'),
     ...(opts?.resumeSessionPath ? { resumeFrom: opts.resumeSessionPath } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {}),
     ...(permissionMode === 'readonly' ? { readonly: true } : {}),
@@ -265,7 +270,10 @@ export function createSession(
     id,
     new OmpSession(session, proc, {
       label: cli.command,
-      onEvent,
+      onEvent: event => {
+        if (event.type === 'status' && event.status === 'idle' && event.isTerminal === true) cancelBoardEditTargets(id)
+        onEvent(event)
+      },
       onGone: () => { retireProjectChild(); sessions.delete(id); sessionBridgePermissions.remove(id); revokeBoardBuildSession(id); onSessionGone?.(id) },
       onHandshake: (outcome) => {
         noteHandshake(outcome)
@@ -312,7 +320,7 @@ export function sendMessage(
 ): boolean {
   const entry = sessions.get(sessionId)
   if (entry && isProjectDeletionInProgress(entry.session.cwd)) return false
-  if (!entry || !entry.sendPrompt(text, images, streamingBehavior)) return false
+  if (!entry || !entry.sendPrompt(mcpTurnPrompt(text, listMcpConnections), images, streamingBehavior)) return false
   // Capture accepted user input in Main before yielding to runtime tool calls.
   // Generation constraints cannot be replaced by model-supplied check options.
   registerBoardBuildTurn(sessionId, entry.session.cwd, text)
@@ -381,16 +389,24 @@ export function killSession(sessionId: string): boolean {
 }
 
 export function abortSession(sessionId: string): boolean {
-  return sessions.get(sessionId)?.abort() ?? false
+  const aborted = sessions.get(sessionId)?.abort() ?? false
+  if (aborted) revokeBoardBuildSession(sessionId)
+  return aborted
+}
+
+export function emitBoardTargetUi(event: BoardTargetUiEvent): void {
+  sessions.get(event.sessionId)?.emitHostUi(event)
 }
 
 /** Answer (or cancel) a pending extension UI dialog for a session. */
 export function respondExtensionUi(
   sessionId: string,
   requestId: string,
-  answer: ExtensionUiAnswer
+  answer: unknown
 ): boolean {
-  return sessions.get(sessionId)?.respondExtensionUi(requestId, answer) ?? false
+  const host = respondBoardEditTargets(sessionId, requestId, answer)
+  if (host !== undefined) return host
+  return isUiAnswer(answer) && (sessions.get(sessionId)?.respondExtensionUi(requestId, answer) ?? false)
 }
 
 /** Hot-switch the model of a live session via the RPC set_model command. */
@@ -500,7 +516,7 @@ export async function steer(
   if (session) onUserTurn?.(sessionId)
   const res = await querySession(sessionId, {
     type: 'steer',
-    message,
+    message: mcpTurnPrompt(message, listMcpConnections),
     ...(images?.length ? { images } : {})
   })
   return Boolean(res && res.success === true)
@@ -517,7 +533,7 @@ export async function followUp(
   if (session) onUserTurn?.(sessionId)
   const res = await querySession(sessionId, {
     type: 'follow_up',
-    message,
+    message: mcpTurnPrompt(message, listMcpConnections),
     ...(images?.length ? { images } : {})
   })
   return Boolean(res && res.success === true)
@@ -539,11 +555,12 @@ export async function setThinkingLevel(sessionId: string, level: SessionThinking
  */
 export function updateApprovalConfig(sessionId: string, mode: PermissionMode): boolean {
   const entry = sessions.get(sessionId)
-  if (!entry || entry.session.readonly === true || entry.session.remoteReadonly === true) return false
+  if (!entry?.session.nativePermissionMutable || entry.session.readonly === true || entry.session.remoteReadonly === true) return false
   if (mode !== 'ask' && mode !== 'full') return false
   const { approval } = resolvePermissionMode(mode)
   writeApprovalConfig(sessionId, approval)
   sessionBridgePermissions.update(sessionId, mode)
+  entry.session.nativePermissionMode = mode
   return true
 }
 
@@ -566,7 +583,7 @@ export async function getSessionState(sessionId: string): Promise<SessionState |
   const state = res.data as SessionState
   // A live get_state response doubles as the runtime capability probe.
   noteSessionState(state)
-  return state
+  return { ...state, modelThinking: sessionModelThinking(state.model) }
 }
 
 /** Full transcript of a session, mapped to GUI chat messages (get_messages). */

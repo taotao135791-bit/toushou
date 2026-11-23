@@ -56,6 +56,8 @@ export interface MessageLike {
   runtimeThinking?: string
   /** User prompt that could not be delivered (dead session); renders a badge. */
   failed?: boolean
+  /** IPC acknowledgement was lost; the prompt may have reached the runtime. */
+  deliveryUnknown?: boolean
 }
 
 /** Verb buckets / turn-progress shapes now live in `../lib/execution` (single source). */
@@ -96,6 +98,9 @@ export interface QueuedMessage {
   text: string
   images?: PromptImage[]
 }
+
+type QueuePauseReason = 'stopped' | 'failed' | 'unknown' | 'closed'
+interface QueuedDispatch { id: string; phase: 'checkpoint' | 'sending'; runtimeStarted?: boolean }
 
 /** A contextual work surface shown beside the active conversation. */
 export type WorkspacePanel =
@@ -189,6 +194,8 @@ interface AppState {
   busy: Record<string, boolean>
   /** sessionId -> messages queued while the session is busy (FIFO) */
   queuedMessages: Record<string, QueuedMessage[]>
+  queuePauseReasons: Record<string, QueuePauseReason | undefined>
+  queueDispatching: Record<string, QueuedDispatch | undefined>
   /** sessionId -> queued ids temporarily reserved for an in-flight Steer RPC */
   steeringQueuedIds: Record<string, string[]>
   /** sessionId -> user-visible failure banner key (dead session / send failure). */
@@ -258,6 +265,7 @@ interface AppState {
   /** Merge Main's live registry without clobbering a session created concurrently. */
   registerSessions: (sessions: Session[]) => void
   addSession: (session: Session, select?: boolean) => void
+  setSessionNativePermission: (sessionId: string, mode: PermissionMode) => void
   /**
    * Register a session Main created outside the GUI (e.g. a Feishu chat
    * route) from its minimal descriptor. Idempotent: the descriptor fires
@@ -325,16 +333,15 @@ interface AppState {
   enqueueQueuedMessage: (sessionId: string, message: QueuedMessage) => void
   /** Remove one queued message by id. */
   removeQueuedMessage: (sessionId: string, id: string) => void
-  /** Pop the first queued message (returns it, or undefined when empty). */
-  shiftQueuedMessage: (sessionId: string) => QueuedMessage | undefined
   /** Reserve one queued message without changing FIFO ownership. */
   reserveQueuedMessage: (sessionId: string, id: string) => boolean
   /** Release a queued-message Steer reservation after ACK failure. */
   releaseQueuedMessage: (sessionId: string, id: string) => void
   /** Drain one queued message when the runtime is idle. */
   drainQueuedMessage: (sessionId: string) => boolean
-  /** Drop every queued message of a session. */
-  clearQueuedMessages: (sessionId: string) => void
+  pauseQueuedMessages: (sessionId: string, reason: QueuePauseReason) => void
+  resumeQueuedMessages: (sessionId: string) => boolean
+  moveClosedQueue: (from: string, to: string) => boolean
   setCompacting: (sessionId: string, compacting: boolean) => void
   setStats: (sessionId: string, stats: SessionStats) => void
   /** Replace the pinned list (startup load; does not persist). */
@@ -470,6 +477,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   modelConfig: null,
   busy: {},
   queuedMessages: {},
+  queuePauseReasons: {},
+  queueDispatching: {},
   steeringQueuedIds: {},
   sessionErrors: {},
   compacting: {},
@@ -640,6 +649,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const guarded = {
         ...merged,
         ...(previous?.readonly === true ? { readonly: true } : {}),
+        nativePermissionMode: merged.nativePermissionMode ?? previous?.nativePermissionMode,
+        nativePermissionMutable: merged.nativePermissionMutable ?? previous?.nativePermissionMutable,
         title,
         titleSource: merged.titleSource ?? previous?.titleSource,
         titleRevision: merged.titleRevision ?? previous?.titleRevision,
@@ -661,6 +672,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous.origin === guarded.origin &&
         previous.remoteReadonly === guarded.remoteReadonly &&
         previous.readonly === guarded.readonly &&
+        previous.nativePermissionMode === guarded.nativePermissionMode &&
+        previous.nativePermissionMutable === guarded.nativePermissionMutable &&
         previous.lastActivityAt === guarded.lastActivityAt &&
         previous.pendingActivityAt === guarded.pendingActivityAt
       const nextCurrentSessionId = select ? guarded.id : state.currentSessionId
@@ -686,6 +699,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Hydrate the (possibly already-running) subagent roster.
     void get().hydrateSubagents(session.id)
   },
+  setSessionNativePermission: (sessionId, mode) => set((state) => {
+    const session = state.sessions.find((item) => item.id === sessionId)
+    if (!session?.nativePermissionMutable || session.nativePermissionMode === mode) return state
+    return { sessions: state.sessions.map((item) => item.id === sessionId ? { ...item, nativePermissionMode: mode } : item) }
+  }),
   registerExternalSession: (descriptor) => {
     if (!descriptor || typeof descriptor.sessionId !== 'string' || !descriptor.sessionId) return
     set((state) => {
@@ -708,6 +726,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         // own default permission profile.
         remoteReadonly: descriptor.origin === 'feishu',
         ...(previous?.readonly === true ? { readonly: true } : {}),
+        nativePermissionMode: previous?.nativePermissionMode,
+        nativePermissionMutable: previous?.nativePermissionMutable,
         ...(previous?.resumeFrom ? { resumeFrom: previous.resumeFrom } : {}),
         ...(previous?.sessionFile ? { sessionFile: previous.sessionFile } : {}),
         ...(previous?.resumedHistoryId ? { resumedHistoryId: previous.resumedHistoryId } : {})
@@ -1024,18 +1044,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     })),
   removeQueuedMessage: (sessionId, id) =>
-    set((state) => ({
-      queuedMessages: {
-        ...state.queuedMessages,
-        [sessionId]: (state.queuedMessages[sessionId] || []).filter((m) => m.id !== id)
-      },
-      steeringQueuedIds: {
-        ...state.steeringQueuedIds,
-        [sessionId]: (state.steeringQueuedIds[sessionId] || []).filter((queuedId) => queuedId !== id)
+    set((state) => {
+      if (state.queueDispatching[sessionId]?.id === id) return state
+      const remaining = (state.queuedMessages[sessionId] || []).filter((m) => m.id !== id)
+      return {
+        queuedMessages: { ...state.queuedMessages, [sessionId]: remaining },
+        ...(!remaining.length && state.queuePauseReasons[sessionId] !== 'closed'
+          ? { queuePauseReasons: { ...state.queuePauseReasons, [sessionId]: undefined } }
+          : {}),
+        steeringQueuedIds: {
+          ...state.steeringQueuedIds,
+          [sessionId]: (state.steeringQueuedIds[sessionId] || []).filter((queuedId) => queuedId !== id)
+        }
       }
-    })),
+    }),
   reserveQueuedMessage: (sessionId, id) => {
     const state = get()
+    if (state.queuePauseReasons[sessionId] || state.queueDispatching[sessionId]?.id === id) return false
     if (!(state.queuedMessages[sessionId] || []).some((message) => message.id === id)) return false
     const reserved = state.steeringQueuedIds[sessionId] || []
     if (reserved.includes(id)) return false
@@ -1054,69 +1079,105 @@ export const useAppStore = create<AppState>((set, get) => ({
         [sessionId]: (state.steeringQueuedIds[sessionId] || []).filter((queuedId) => queuedId !== id)
       }
     })),
-  shiftQueuedMessage: (sessionId) => {
-    const state = get()
-    const first = (state.queuedMessages[sessionId] || [])[0]
-    if (!first) return undefined
-    // A reserved head must stay in FIFO ownership until its Steer RPC is
-    // acknowledged. Do not let an idle event drain it as a normal prompt.
-    if ((state.steeringQueuedIds[sessionId] || []).includes(first.id)) return undefined
-    set((state) => ({
-      queuedMessages: {
-        ...state.queuedMessages,
-        [sessionId]: (state.queuedMessages[sessionId] || []).slice(1)
-      }
-    }))
-    return first
-  },
   drainQueuedMessage: (sessionId) => {
-    const next = get().shiftQueuedMessage(sessionId)
-    if (!next) return false
-    // The bubble lands immediately — waiting for the runtime snapshot (up to
-    // its 8s timeout) used to leave a silent gap after the queue chip went
-    // away. The dispatch-time model/thinking tag catches up when it resolves.
-    const bubbleId = crypto.randomUUID()
-    get().addMessage(sessionId, {
-      id: bubbleId,
-      role: 'user',
-      kind: 'prompt',
-      content: next.text,
-      images: next.images?.map(({ data, mimeType }) => ({ data, mimeType }))
-    })
-    get().setBusy(sessionId, true)
-    void captureSessionSnapshot(sessionId).then((snap) => {
-      get().updateMessage(sessionId, bubbleId, {
-        runtimeModel: snap.modelSelector,
-        runtimeThinking: snap.thinkingLevel
+    const state = get()
+    const next = state.queuedMessages[sessionId]?.[0]
+    if (!next || state.busy[sessionId] || state.queuePauseReasons[sessionId] || state.queueDispatching[sessionId] ||
+      state.steeringQueuedIds[sessionId]?.includes(next.id)) return false
+    set((current) => ({
+      busy: { ...current.busy, [sessionId]: true },
+      queueDispatching: { ...current.queueDispatching, [sessionId]: { id: next.id, phase: 'checkpoint' } }
+    }))
+    void (async () => {
+      // Keep the queue head while snapshotting the pre-edit workspace. Stop
+      // or closure can pause the queue before any prompt is delivered.
+      let checkpointFailed = false
+      try {
+        await get().createCheckpointForMessage(sessionId, get().messages[sessionId]?.length ?? 0, next.text)
+      } catch { checkpointFailed = true }
+      if (get().queueDispatching[sessionId]?.id !== next.id) return
+      if (get().queuePauseReasons[sessionId]) {
+        set((current) => ({
+          busy: { ...current.busy, [sessionId]: false },
+          queueDispatching: { ...current.queueDispatching, [sessionId]: undefined }
+        }))
+        return
+      }
+
+      const bubbleId = crypto.randomUUID()
+      get().addMessage(sessionId, {
+        id: bubbleId,
+        role: 'user',
+        kind: 'prompt',
+        content: next.text,
+        images: next.images?.map(({ data, mimeType }) => ({ data, mimeType }))
       })
-    })
-    void window.electronAPI
-      .sendMessage(sessionId, next.text, next.images)
-      .then((sent) => {
-        if (sent) {
-          // A queued item successfully became a normal prompt; clear only
-          // the stale recoverable Steer feedback, never fatal session state.
-          get().clearSessionErrorIf(sessionId, 'chat.steerQueueFailed')
-          get().touchSession(sessionId)
-          const list = get().messages[sessionId] || []
-          void get().createCheckpointForMessage(sessionId, list.length - 1, next.text)
-          void get().maybeNameSession(sessionId)
-        } else {
-          // The session died underneath the queue: stop draining into
-          // the void — drop the rest, release busy, flag the failure.
-          get().setBusy(sessionId, false)
-          get().clearQueuedMessages(sessionId)
-          get().setSessionError(sessionId, 'chat.sendFailed')
-          get().updateMessage(sessionId, bubbleId, { failed: true })
+      set((current) => ({ queueDispatching: { ...current.queueDispatching, [sessionId]: { id: next.id, phase: 'sending' } } }))
+      const snapshot = captureSessionSnapshot(sessionId)
+      let sent: boolean | null = null
+      try { sent = await window.electronAPI.sendMessage(sessionId, next.text, next.images) } catch { /* A lost ACK can mean the prompt ran. */ }
+      if (get().queueDispatching[sessionId]?.id !== next.id) return
+
+      if (sent === true) {
+        set((current) => ({ queueDispatching: { ...current.queueDispatching, [sessionId]: undefined } }))
+        get().removeQueuedMessage(sessionId, next.id)
+        get().clearSessionErrorIf(sessionId, 'chat.steerQueueFailed')
+        get().clearSessionErrorIf(sessionId, 'chat.sendFailed')
+        get().clearSessionErrorIf(sessionId, 'chat.queueDeliveryUnknown')
+        if (checkpointFailed && !get().sessionErrors[sessionId]) get().setSessionError(sessionId, 'chat.checkpointFailed')
+        get().touchSession(sessionId)
+        void snapshot.then((snap) => get().updateMessage(sessionId, bubbleId, {
+          runtimeModel: snap.modelSelector,
+          runtimeThinking: snap.thinkingLevel
+        }))
+        void get().maybeNameSession(sessionId)
+        // A terminal status can arrive before IPC resolves, e.g. a local
+        // command. In that case this ACK releases the next FIFO slot.
+        if (!get().busy[sessionId]) get().drainQueuedMessage(sessionId)
+      } else {
+        const reason = sent === null ? 'unknown' : 'failed'
+        set((current) => ({
+          busy: { ...current.busy, [sessionId]: current.queueDispatching[sessionId]?.runtimeStarted ? current.busy[sessionId] : false },
+          queueDispatching: { ...current.queueDispatching, [sessionId]: undefined },
+          queuePauseReasons: {
+            ...current.queuePauseReasons,
+            [sessionId]: reason === 'unknown' ? reason : current.queuePauseReasons[sessionId] ?? reason
+          },
+          messages: { ...current.messages, [sessionId]: (current.messages[sessionId] ?? []).filter((message) => message.id !== bubbleId) }
+        }))
+        if (get().sessionErrors[sessionId] !== 'chat.sessionDead') {
+          get().setSessionError(sessionId, sent === null ? 'chat.queueDeliveryUnknown' : 'chat.sendFailed')
         }
-      })
+      }
+    })()
     return true
   },
-  clearQueuedMessages: (sessionId) =>
-    set((state) => ({
-      queuedMessages: { ...state.queuedMessages, [sessionId]: [] },
-      steeringQueuedIds: { ...state.steeringQueuedIds, [sessionId]: [] }
-    })),
+  pauseQueuedMessages: (sessionId, reason) => set((state) => {
+    if (!state.queuedMessages[sessionId]?.length || state.queuePauseReasons[sessionId] === 'unknown' || state.queuePauseReasons[sessionId] === 'closed') return state
+    return { queuePauseReasons: { ...state.queuePauseReasons, [sessionId]: reason } }
+  }),
+  resumeQueuedMessages: (sessionId) => {
+    const state = get()
+    const first = state.queuedMessages[sessionId]?.[0]
+    if (!first || state.busy[sessionId] || state.queueDispatching[sessionId] || state.queuePauseReasons[sessionId] === 'closed' ||
+      state.steeringQueuedIds[sessionId]?.includes(first.id) || state.sessions.find((session) => session.id === sessionId)?.status === 'error') return false
+    set((current) => ({ queuePauseReasons: { ...current.queuePauseReasons, [sessionId]: undefined } }))
+    return get().drainQueuedMessage(sessionId)
+  },
+  moveClosedQueue: (from, to) => {
+    const state = get()
+    const source = state.sessions.find((session) => session.id === from)
+    const target = state.sessions.find((session) => session.id === to)
+    const parked = state.queuedMessages[from]
+    if (!parked?.length || from === to || !source || !target || source.cwd !== target.cwd || target.status === 'error' ||
+      state.queueDispatching[from] || state.queueDispatching[to] || state.queuedMessages[to]?.length ||
+      (state.queuePauseReasons[from] !== 'closed' && source.status !== 'error')) return false
+    set((current) => ({
+      queuedMessages: { ...current.queuedMessages, [from]: [], [to]: parked },
+      queuePauseReasons: { ...current.queuePauseReasons, [from]: undefined, [to]: current.queuePauseReasons[from] === 'unknown' ? 'unknown' : 'stopped' }
+    }))
+    return true
+  },
   setCompacting: (sessionId, compacting) =>
     set((state) =>
       state.compacting[sessionId] === compacting
@@ -1478,11 +1539,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       const wasBusy = Boolean(get().busy[event.sessionId])
       const nextBusy = STATUS_BUSY[event.status]
       if (event.status === 'working') {
+        const pending = get().queueDispatching[event.sessionId]
+        if (pending?.phase === 'sending' && !pending.runtimeStarted) {
+          set((state) => ({ queueDispatching: { ...state.queueDispatching, [event.sessionId]: { ...pending, runtimeStarted: true } } }))
+        }
         get().setBusy(event.sessionId, true)
       } else if (nextBusy === true) {
         // waiting_for_user / aborting: the turn is still open — stay busy.
+        if (event.status === 'aborting') get().pauseQueuedMessages(event.sessionId, 'stopped')
         get().setBusy(event.sessionId, true)
-      } else if (nextBusy === false) {
+      } else if (nextBusy === false && event.isTerminal !== false && get().queueDispatching[event.sessionId]?.phase !== 'checkpoint') {
         // Turn ended: close any open thinking run and clear busy. The turn's
         // summary is derived from the execution projection — never a second copy.
         get().finalizeThinking(event.sessionId)
@@ -1498,7 +1564,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // working→idle with a non-empty queue: send the next queued message.
       // The wasBusy guard plus the optimistic busy=true below keep a stray or
       // repeated 'idle' from draining more than one message per real turn.
-      if (event.status === 'idle' && wasBusy) {
+      if (event.status === 'idle' && event.isTerminal !== false && wasBusy && get().queueDispatching[event.sessionId]?.phase !== 'checkpoint') {
         const drained = get().drainQueuedMessage(event.sessionId)
         if (!drained && event.sessionId !== get().currentSessionId) {
           // Turn finished in a background session — flag it unread
@@ -1550,6 +1616,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }))
     } else if (event.type === 'error') {
+      if (event.recoverable !== true) get().pauseQueuedMessages(event.sessionId, event.recoverable === false ? 'closed' : 'failed')
       get().addMessage(event.sessionId, {
         id: crypto.randomUUID(),
         role: 'system',
@@ -1588,7 +1655,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         busy: { ...state.busy, [event.sessionId]: false },
         compacting: { ...state.compacting, [event.sessionId]: false },
         uiRequests: { ...state.uiRequests, [event.sessionId]: [] },
-        queuedMessages: { ...state.queuedMessages, [event.sessionId]: [] },
+        ...(state.queuedMessages[event.sessionId]?.length ? {
+          sessions: state.sessions.map((session) => session.id === event.sessionId ? { ...session, status: 'error' } : session),
+          queuePauseReasons: {
+            ...state.queuePauseReasons,
+            [event.sessionId]: state.queuePauseReasons[event.sessionId] === 'unknown' ? 'unknown' : 'closed'
+          }
+        } : {}),
         steeringQueuedIds: { ...state.steeringQueuedIds, [event.sessionId]: [] }
       }))
     }

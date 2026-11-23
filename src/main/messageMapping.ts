@@ -1,5 +1,6 @@
 import { ChatMessage } from '../shared/types'
 import { normalizeToolCall } from '../shared/toolNames'
+import { displayMcpTurnPrompt } from './omp/mcpMentions'
 
 /**
  * Mapping from pi-agent-core's AgentMessage (as returned by the RPC
@@ -74,7 +75,7 @@ export function mapAgentMessages(messages: AgentMessage[]): ChatMessage[] {
     if (!msg || typeof msg !== 'object') continue
 
     if (msg.role === 'user') {
-      const text = joinText(msg.content, '\n').trim()
+      const text = displayMcpTurnPrompt(joinText(msg.content, '\n').trim())
       if (!text) continue
       out.push({
         id: crypto.randomUUID(),

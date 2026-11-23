@@ -52,6 +52,13 @@ app.whenReady().then(async () => {
     const content = await js(`({message:document.body.textContent.includes('Synthetic current message'),error:document.querySelector('header [role=alert]')?.textContent})`)
     await js('window.chatPerfFixture.showStopError()'); await frame()
     const busyError = await js(`document.querySelector('header [role=alert]')?.textContent`)
+    phase = 'restored and active reasoning'
+    await js('window.chatPerfFixture.showRestoredThinking()'); await frame()
+    const restoredThinking = await js(`({timers:window.chatPerfFixture.thinkingTimerCount(),message:document.body.textContent.includes('Restored response 39')})`)
+    await js('window.chatPerfFixture.streamThinking()'); await frame()
+    const activeThinking = await js('window.chatPerfFixture.thinkingTimerCount()')
+    await js('window.chatPerfFixture.interruptThinking()'); await frame()
+    const interruptedThinking = await js('window.chatPerfFixture.thinkingTimerCount()')
     phase = 'default save folder recovery on home'
     await js('window.chatPerfFixture.showUnavailableDefault()')
     await waitFor(`!!document.querySelector('.home-hero [data-project-recovery="default"] button')`)
@@ -62,7 +69,7 @@ app.whenReady().then(async () => {
     await waitFor(`window.chatPerfFixture.recoverySnapshot().workspace==='/synthetic/default-save-folder' && !document.querySelector('.home-hero [data-project-recovery="default"]')`)
     await frame()
     const defaultRecovered = await js(`({ ...window.chatPerfFixture.recoverySnapshot(),promptGone:!document.querySelector('.home-hero').textContent.includes('Confirm the default save folder'),draft:document.querySelector('.home-hero textarea').value })`)
-    console.log('E2E_RESULT ' + JSON.stringify({ background, renamed, status, permission, content, busyError, defaultRecovery, defaultRecovered }))
+    console.log('E2E_RESULT ' + JSON.stringify({ background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, defaultRecovery, defaultRecovered }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

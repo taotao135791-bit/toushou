@@ -30,3 +30,25 @@ describe('extension approval display', () => {
     expect(html).not.toContain('Technical details (received request)')
   })
 })
+
+describe('board target chooser', () => {
+  it('opens with no selections, disables locked boards and prompts for an explicit choice', () => {
+    const html = renderToStaticMarkup(<ExtensionUiDialog sessionId="synthetic" request={{
+      type: 'ui_request', sessionId: 'synthetic', id: 'board-targets', method: 'board_targets', title: 'ignored',
+      boards: [
+        { id: 'daily', name: '北美投放日报', description: 'Meta 获客与消耗', suggested: true },
+        { id: 'creative', name: '北美素材复盘', suggested: true },
+        { id: 'archive', name: '历史归档', locked: true }
+      ]
+    }} />)
+    expect(html).toContain('Choose boards to update')
+    expect(html).toContain('Select one or more boards')
+    expect(html).toContain('aria-label="Likely matches"')
+    expect(html).toContain('aria-label="Other boards"')
+    expect(html).toContain('Meta 获客与消耗')
+    expect(html.match(/type="checkbox"/g)).toHaveLength(3)
+    expect(html).not.toContain('checked=""')
+    expect(html).toMatch(/type="checkbox" disabled=""[^>]*>/)
+    expect(html).toMatch(/<button type="button" disabled=""[^>]*>Continue update<\/button>/)
+  })
+})

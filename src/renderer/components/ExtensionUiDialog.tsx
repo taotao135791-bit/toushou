@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { MessageCircleQuestion, X } from 'lucide-react'
-import { ExtensionUiAnswer } from '@shared/types'
+import { SessionUiAnswer } from '@shared/types'
 import { approvalToolNameFromTitle } from '@shared/toolNames'
 import { approvalDisplaySummary } from '../lib/approvalDisplay'
 import { UiRequest, useAppStore } from '../store'
 import { useT } from '../i18n'
 
 /**
- * Modal dialog for pi extension UI requests (select / confirm / input / editor).
- * Extensions pause mid-turn until the answer goes back over the session stdin;
- * cancelling returns `{ cancelled: true }`, which pi treats as a dismissed dialog.
+ * Modal for interactive session requests. Extensions answer over session
+ * stdin and the host handles board target selection before editing starts.
  *
  * A request may carry a timeout (ms). The runtime resolves the dialog with its
  * default at the deadline WITHOUT notifying the client, so the dialog runs its
@@ -26,6 +25,7 @@ export default function ExtensionUiDialog({
   const resolveUiRequest = useAppStore((s) => s.resolveUiRequest)
   const language = useAppStore((s) => s.language) === 'zh' ? 'zh' : 'en'
   const [text, setText] = useState(request.method === 'editor' ? request.prefill ?? '' : '')
+  const [selectedBoards, setSelectedBoards] = useState<Set<string>>(new Set())
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState(false)
   const [remaining, setRemaining] = useState<number | null>(
@@ -38,6 +38,7 @@ export default function ExtensionUiDialog({
 
   useEffect(() => {
     setText(request.method === 'editor' ? request.prefill ?? '' : '')
+    setSelectedBoards(new Set())
     setSending(false)
     setSendError(false)
     setRemaining(request.timeout !== undefined ? Math.ceil(request.timeout / 1000) : null)
@@ -47,11 +48,21 @@ export default function ExtensionUiDialog({
   // A modal must own focus. The request controls mark their intended first
   // target, so select/confirm dialogs are keyboard-usable too.
   useEffect(() => {
-    dialogRef.current?.querySelector<HTMLElement>('[data-dialog-autofocus]')?.focus()
+    const dialog = dialogRef.current
+    const previousFocus = document.activeElement
+    dialog?.querySelector<HTMLElement>('[data-dialog-autofocus]')?.focus()
+    if (request.method === 'board_targets') {
+      return () => {
+        const active = document.activeElement
+        if ((active === document.body || dialog?.contains(active)) && previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+          previousFocus.focus()
+        }
+      }
+    }
   }, [request.id, request.method])
 
   const answer = useCallback(
-    async (a: ExtensionUiAnswer) => {
+    async (a: SessionUiAnswer) => {
       if (sending) return
       setSending(true)
       setSendError(false)
@@ -122,6 +133,17 @@ export default function ExtensionUiDialog({
   const display = approvalDisplaySummary(request.method, request.title, request.message, language)
   const possiblyTruncated = request.title.length >= 2000 || (request.message?.length ?? 0) >= 16000
   const isTextual = request.method === 'input' || request.method === 'editor'
+  const isBoardTargets = request.method === 'board_targets'
+  const boards = request.boards ?? []
+  const suggested = boards.filter(board => board.suggested)
+  const boardGroups = suggested.length
+    ? [
+        { label: t('boards.chat.suggestedTargets'), boards: suggested },
+        { label: t('boards.chat.otherTargets'), boards: boards.filter(board => !board.suggested) }
+      ]
+    : [{ label: null, boards }]
+  const firstEditableBoard = boardGroups.flatMap(group => group.boards).find(board => !board.locked)
+  const boardIds = boards.filter(board => !board.locked && selectedBoards.has(board.id)).map(board => board.id)
   // Runtime approval prompts for extension tools carry raw plumbing in the
   // title ("Allow tool: write Path: xd://browser_click"); show the real tool
   // name in the header and keep the full original in the mono block below.
@@ -144,12 +166,12 @@ export default function ExtensionUiDialog({
           </span>
           <div className="min-w-0 flex-1">
             <h3 id={titleId} className="max-h-16 overflow-y-auto whitespace-pre-wrap break-all text-[14px] font-semibold text-cream">
-              {display ? display.title : approvalToolName
+              {isBoardTargets ? t('boards.chat.targetsTitle') : display ? display.title : approvalToolName
                 ? t('uiDialog.extensionTool', { name: approvalToolName })
                 : request.title || t('uiDialog.untitled')}
             </h3>
             <p id={descriptionId} className="mt-0.5 text-[11px] text-cream-faint">
-              {t('uiDialog.subtitle')}
+              {isBoardTargets ? t('boards.chat.targetsHint') : t('uiDialog.subtitle')}
               {remaining !== null && ` · ${t('uiDialog.timeout', { count: remaining })}`}
             </p>
           </div>
@@ -174,6 +196,54 @@ export default function ExtensionUiDialog({
             {request.message && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-ink-800 p-3 font-mono text-[12px]">{request.message}</pre>}
           </details>}
           {!display && possiblyTruncated && <p role="note" className="mb-3 text-[12px] text-amber-500">{language === 'zh' ? '收到的请求可能已被截断。' : 'The received request may have been truncated.'}</p>}
+          {isBoardTargets && (
+            <>
+              <div className="flex max-h-64 flex-col gap-3 overflow-y-auto">
+                {boardGroups.filter(group => group.boards.length > 0).map(group => (
+                  <div key={group.label ?? ''} role="group" aria-label={group.label ?? undefined} aria-labelledby={group.label ? undefined : titleId} className="flex flex-col gap-1.5">
+                    {group.label && <p aria-hidden="true" className="text-[12px] font-medium text-cream-dim">{group.label}</p>}
+                    {group.boards.map(board => (
+                      <label key={board.id} className="flex items-start gap-2.5 rounded-lg border border-line px-3 py-2.5 text-[13px] text-cream has-[:checked]:border-accent/60 has-[:checked]:bg-accent-soft has-[:disabled]:text-cream-faint">
+                        <input
+                          type="checkbox"
+                          checked={selectedBoards.has(board.id)}
+                          disabled={sending || board.locked}
+                          data-dialog-autofocus={firstEditableBoard?.id === board.id ? true : undefined}
+                          onChange={event => {
+                            const checked = event.currentTarget.checked
+                            setSelectedBoards(previous => {
+                              const next = new Set(previous)
+                              if (checked) next.add(board.id)
+                              else next.delete(board.id)
+                              return next
+                            })
+                          }}
+                          className="focus-ring mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                        />
+                        <span className="min-w-0 flex-1 break-words">
+                          <span className="font-medium">{board.name}</span>
+                          {board.locked && <span className="ml-2 text-[12px]">{t('boards.chat.targetLocked')}</span>}
+                          {board.description && <span className="mt-0.5 block text-[12px] text-cream-dim">{board.description}</span>}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                ))}
+                {!firstEditableBoard && <p className="text-[13px] text-cream-dim">{t('boards.chat.targetsUnavailable')}</p>}
+              </div>
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <button type="button" onClick={() => answer({ cancelled: true })} disabled={sending}
+                  data-dialog-autofocus={!firstEditableBoard ? true : undefined}
+                  className="focus-ring rounded-lg border border-line px-4 py-2 text-[13px] text-cream-dim transition hover:bg-overlay">
+                  {t('uiDialog.cancel')}
+                </button>
+                <button type="button" onClick={() => answer({ boardIds })} disabled={sending || boardIds.length === 0}
+                  className="focus-ring rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:opacity-50">
+                  {boardIds.length ? t('boards.chat.targetsUpdateCount', { count: boardIds.length }) : t('boards.chat.targetsUpdate')}
+                </button>
+              </div>
+            </>
+          )}
           {request.method === 'select' && (
             <div className="flex max-h-64 flex-col gap-1.5 overflow-y-auto">
               {/* Approval-style requests pack a command summary into a long
@@ -291,7 +361,7 @@ export default function ExtensionUiDialog({
           )}
           {sendError && (
             <p className="mt-3 text-[12px] text-red-500" role="alert">
-              {t('uiDialog.sendFailed')}
+              {isBoardTargets ? t('boards.chat.targetsSendFailed') : t('uiDialog.sendFailed')}
             </p>
           )}
         </div>

@@ -88,6 +88,10 @@ export default function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const t = useT()
+  const navigateFromSidebar = (path: string) => {
+    beginNavigationIntent()
+    navigate(path)
+  }
   /**
    * omp spawns untitled sessions with the project-dir name as an internal
    * default. The list must never show that raw name — a fresh chat displays
@@ -115,7 +119,6 @@ export default function Sidebar() {
   const globalHistory = useAppStore((s) => s.globalHistory)
   const loadAllHistorySessions = useAppStore((s) => s.loadAllHistorySessions)
   const scheduledTasks = useAppStore((s) => s.scheduledTasks)
-  const setScheduledTasks = useAppStore((s) => s.setScheduledTasks)
   const projectRecords = useProjects(state => state.projects)
   const archivedProjectPaths = useMemo(() => new Set(projectRecords.filter(project => project.archived).map(project => project.path)), [projectRecords])
   const defaultProjectPaths = useMemo(() => new Set(projectRecords.filter(project => project.isDefault).map(project => project.path)), [projectRecords])
@@ -254,11 +257,6 @@ export default function Sidebar() {
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [currentWorkspace?.realPath, loadAllHistorySessions])
-
-  // Scheduled task state changes come from Main via push.
-  useEffect(() => {
-    return window.electronAPI.onTasksStateChanged(setScheduledTasks)
-  }, [setScheduledTasks])
 
   // Runtime id → registry record. The record is the renderer's only link
   // between a live session and its durable transcript identity.
@@ -408,11 +406,14 @@ export default function Sidebar() {
         // The session opened but its transcript could not be loaded. Keep the
         // row (it is NOT dead) and tell the user instead of showing a blank
         // chat that reads as data loss.
-        setRestoreFailedHistoryId(info.id)
-        showNotice('history.transcriptUnavailable')
+        if (isCurrentNavigationIntent(epoch)) {
+          setRestoreFailedHistoryId(info.id)
+          showNotice('history.transcriptUnavailable')
+        }
         return false
       }
       if (!result) {
+        if (!isCurrentNavigationIntent(epoch)) return false
         setRestoreFailedHistoryId(info.id)
         showNotice('history.restoreFailed')
         // A dead row (file rewritten in place or removed) must not linger as
@@ -445,8 +446,10 @@ export default function Sidebar() {
       if (!selected && isCurrentNavigationIntent(epoch)) showNotice('history.restoredInOtherProject')
       return selected
     } catch {
-      setRestoreFailedHistoryId(info.id)
-      showNotice('history.restoreFailed')
+      if (isCurrentNavigationIntent(epoch)) {
+        setRestoreFailedHistoryId(info.id)
+        showNotice('history.restoreFailed')
+      }
       return false
     } finally {
       resumingHistoryRef.current = false
@@ -523,6 +526,7 @@ export default function Sidebar() {
         },
         resume: (info, workspace) => handleResumeHistory(info, workspace, epoch, true)
       })
+      if (!isCurrentNavigationIntent(epoch)) return
       if (result === 'loading') showNotice('history.loading')
       else if (result === 'project-not-added') showNotice('sidebar.projectNotAdded')
       else if (result === 'history-unavailable') showNotice('history.restoreFailed')
@@ -1040,7 +1044,7 @@ export default function Sidebar() {
             role="tab"
             aria-selected={location.pathname === '/boards'}
             aria-pressed={location.pathname === '/boards'}
-            onClick={() => navigate('/boards')}
+            onClick={() => navigateFromSidebar('/boards')}
             className="focus-ring flex items-center justify-center gap-1.5 px-2 text-[12px] font-medium"
           >
             <BriefcaseBusiness size={14} aria-hidden="true" />
@@ -1053,7 +1057,7 @@ export default function Sidebar() {
             aria-pressed={location.pathname === '/'}
             onClick={() => {
               setWorkspacePanel(null)
-              navigate('/')
+              navigateFromSidebar('/')
             }}
             className="focus-ring flex items-center justify-center gap-1.5 px-2 text-[12px] font-medium"
           >
@@ -1078,35 +1082,35 @@ export default function Sidebar() {
           <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">{modShortcut('N')}</span>
         </button>
         <button
-          onClick={() => navigate('/plugins')}
+          onClick={() => navigateFromSidebar('/plugins')}
           className={navRow(location.pathname === '/plugins')}
         >
           <Layers size={16} className="shrink-0" aria-hidden="true" />
           {t('sidebar.plugins')}
         </button>
         <button
-          onClick={() => navigate('/boards')}
+          onClick={() => navigateFromSidebar('/boards')}
           className={navRow(location.pathname === '/boards')}
         >
           <BoardsIcon size={14} className="shrink-0" aria-hidden="true" />
           {t('sidebar.boards')}
         </button>
         <button
-          onClick={() => navigate('/skills')}
+          onClick={() => navigateFromSidebar('/skills')}
           className={navRow(location.pathname === '/skills')}
         >
           <BookOpen size={16} className="shrink-0" aria-hidden="true" />
           {t('sidebar.skills')}
         </button>
         <button
-          onClick={() => navigate('/connections')}
+          onClick={() => navigateFromSidebar('/connections')}
           className={navRow(location.pathname === '/connections')}
         >
           <Link2 size={14} className="sidebar-connection-icon shrink-0" aria-hidden="true" />
           {t('sidebar.connections')}
         </button>
         <button
-          onClick={() => navigate('/tasks')}
+          onClick={() => navigateFromSidebar('/tasks')}
           className={navRow(location.pathname === '/tasks')}
         >
           <Clock size={14} className="shrink-0" />
@@ -1272,7 +1276,7 @@ export default function Sidebar() {
 
       <div className="sidebar-footer flex items-center gap-1 border-t border-line px-2.5 py-2">
         <button
-          onClick={() => navigate('/settings')}
+          onClick={() => navigateFromSidebar('/settings')}
           title={t('sidebar.settings')}
           aria-label={t('sidebar.settings')}
           aria-current={location.pathname === '/settings' ? 'page' : undefined}

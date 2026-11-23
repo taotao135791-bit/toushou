@@ -67,7 +67,7 @@ import {
   AppSettings,
   InstallStatus,
   ReadFileResult,
-  ExtensionUiAnswer,
+  SessionUiAnswer,
   ModelConfig,
   PiModel,
   CommunityPackageInfo,
@@ -383,7 +383,7 @@ export interface ElectronAPI {
   /** Pick an image file; resolves its base64 bytes (null when cancelled). */
   selectImage: () => Promise<SelectImageResult>
   showCliSettings: () => Promise<boolean>
-  respondUi: (sessionId: string, requestId: string, answer: ExtensionUiAnswer) => Promise<boolean>
+  respondUi: (sessionId: string, requestId: string, answer: SessionUiAnswer) => Promise<boolean>
   setSessionModel: (sessionId: string, provider: string, modelId: string) => Promise<boolean>
   /** Token/context usage of a session; null when unavailable. */
   getSessionStats: (sessionId: string) => Promise<SessionStats | null>
@@ -908,7 +908,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_FILE, filters),
   selectImage: () => ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_IMAGE),
   showCliSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SHELL_SHOW_CLI_SETTINGS),
-  respondUi: (sessionId: string, requestId: string, answer: ExtensionUiAnswer) =>
+  respondUi: (sessionId: string, requestId: string, answer: SessionUiAnswer) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_RESPOND_UI, sessionId, requestId, answer),
   setSessionModel: (sessionId: string, provider: string, modelId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_MODEL, sessionId, provider, modelId),

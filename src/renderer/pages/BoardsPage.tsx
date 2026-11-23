@@ -21,6 +21,7 @@ import {
   Lock,
   LockOpen,
   MessageSquareText,
+  MessageSquarePlus,
   Maximize,
   Minimize,
   MoreHorizontal,
@@ -63,7 +64,7 @@ import {
   ttWindowForMasterRange,
   type BoardPresetId
 } from '@shared/boards'
-import { buildBoardCardsPrompt, buildBoardChatPrompt } from '@shared/boardChat'
+import { buildBoardCardsPrompt, buildBoardChatPrompt, buildBoardEditPrompt } from '@shared/boardChat'
 import { DatasetImportError } from '@shared/datasets'
 import { useT, I18nKey } from '../i18n'
 import { useAppStore } from '../store'
@@ -86,7 +87,7 @@ import { widgetCardStyle } from './boards/widgetCardStyle'
 import { reloadLatestDataset, type DatasetReloadState } from '../lib/latestDatasetReload'
 import { afBindingHasRefreshSource, boardAppsFlyerDatasetIds, boardMasterWindow, boardRefreshWindow, boardScopeCounts, boardScopeSummary, boardScopedBoardTitle, boardScopedWidgetTitle, datasetsForBoardWindow } from '../lib/boardRefreshScope'
 import { boardWidgetDatasetBindings } from '@shared/boardDataWidgets'
-import { boardRefreshWidgetDatasets, type BoardRefreshResult } from '@shared/boardRefresh'
+import { boardRefreshWidgetDatasets, dropBoardRefreshSource, type BoardRefreshResult } from '@shared/boardRefresh'
 import { boardRefreshPlanKey, boardReportWindow, boardWidgetWindow, type BoardWidgetDateScope } from '@shared/boardWindows'
 import { tiktokAccountDate } from '@shared/tiktokReport'
 import { combineTikTokScopes, nextTikTokScopeExpiry, tiktokScopeMatchesDataset, type VerifiedTikTokScope } from '../lib/tiktokDatasetScope'
@@ -366,7 +367,10 @@ export default function BoardsPage() {
     const reconnected = metaConnectionWasDisconnected.current && status.connected
     metaConnectionWasDisconnected.current = !status.connected
     setMetaDisconnected(!status.connected)
-    if (!status.connected) setPlanResults(previous => Object.fromEntries(Object.entries(previous).filter(([, result]) => !result.sources.some(source => source.kind === 'meta'))))
+    if (!status.connected) setPlanResults(previous => Object.fromEntries(Object.entries(previous).flatMap(([id, result]) => {
+      const remaining = dropBoardRefreshSource(result, 'meta')
+      return remaining ? [[id, remaining]] : []
+    })))
     else if (reconnected) setRefreshRevision(revision => revision + 1)
   }), [])
   const retryHtmlCleanup = async () => {
@@ -404,16 +408,16 @@ export default function BoardsPage() {
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const boardId = params.get('board'), widgetId = params.get('widget')
-    if (!boardId || !widgetId || params.has('evidenceBoard')) return
+    if (!boardId || params.has('evidenceBoard')) return
     let alive = true
     void window.electronAPI.listBoards().then(list => {
       if (!alive) return
       const board = list.find(item => item.id === boardId)
-      if (!board?.widgets.some(widget => widget.id === widgetId)) {
+      if (!board || (widgetId && !board.widgets.some(widget => widget.id === widgetId))) {
         setToast({ ok: false, text: language === 'zh' ? '看板或模块已不存在。' : 'The board or module no longer exists.' }); return
       }
       setBoards(list); setCurrentId(boardId); setSurface('board')
-      const target = { boardId, widgetId }
+      const target = widgetId ? { boardId, widgetId } : null
       revealTargetRef.current = target; setRevealTarget(target)
     }).catch(() => { if (alive) setToast({ ok: false, text: language === 'zh' ? '无法打开看板，请重试。' : 'Could not open the board. Retry.' }) })
     return () => { alive = false }
@@ -1276,6 +1280,16 @@ export default function BoardsPage() {
     navigate('/')
   }
 
+  const editBoardInChat = () => {
+    if (!current || current.locked) return
+    closeMenus()
+    const store = useAppStore.getState()
+    store.setCurrentSessionId(null)
+    store.setComposerAutosend(false)
+    store.setComposerPrefill(buildBoardEditPrompt(current, language))
+    navigate('/')
+  }
+
   const connectBoardAfRefresh = () => {
     if (!current) return
     closeMenus()
@@ -1507,6 +1521,7 @@ export default function BoardsPage() {
     }))
     const view = currentPlan?.widgets.find(item => item.widgetId === widget.id)
     const widgetDatasets = view && currentPlan ? boardRefreshWidgetDatasets(currentPlan, widget, datasets) : managedSource ? datasets.map(data => data.name === 'TikTok 报表' || !!data.appsflyer || data.name.startsWith('AF-') || data.name === 'AppsFlyer 报表' ? { ...data, rows: [] } : data) : displayedDatasets
+    const truncated = bindings.some(binding => widgetDatasets.some(dataset => dataset.truncated && (dataset.id === binding.datasetId || dataset.name === binding.datasetId)))
     const widgetWindow = view?.window ?? (current ? boardWidgetWindow(current, widget, boardNow) : undefined)
     const widgetBrand = widget.type === 'tt-reading' ? 'tiktok' : widget.type === 'google-report-reading' ? 'google' : ['meta-reading', 'fb-reading', 'fb-reading-summary', 'fb-report-reading'].includes(widget.type) ? 'facebook' : null
     return (
@@ -1540,6 +1555,7 @@ export default function BoardsPage() {
         >
           {widgetTitle}
         </span>
+        {truncated && <span role="status" title={language === 'zh' ? '数据超出导入上限，当前读数基于已保存部分。' : 'The input exceeded the import limit. Figures use the portion saved.'} className="shrink-0 text-[10px] text-amber-600 dark:text-amber-400">{language === 'zh' ? '数据已截断' : 'Data truncated'}</span>}
         <div
           className={`flex shrink-0 items-center gap-0.5 transition focus-within:opacity-100 ${widget.type === 'reading-module' || widget.type === 'file' ? 'opacity-100' : 'opacity-0 group-hover/widget:opacity-100'}`}
         >
@@ -1638,10 +1654,38 @@ export default function BoardsPage() {
     }
   }
   const backupNames = snapshotIndependent ? [] : datasets.filter(dataset => dataset.name.startsWith('TikTok 报表（旧数据备份）')).map(dataset => dataset.name)
+  const coverage = current?.partialDelivery
+  const coverageLabels: Record<string, string> = {
+    data: zh ? '完整指标' : 'full metrics',
+    trend: zh ? '趋势' : 'trend',
+    funnel: zh ? '漏斗' : 'funnel',
+    analysis: zh ? '分析' : 'analysis',
+    'third-party': zh ? '三方归因（如 AF）' : 'third-party attribution (such as AF)',
+    table: zh ? '明细' : 'table',
+    'dataset-truncated': zh ? '导入数据超过上限' : 'import exceeded the size limit',
+    'table-columns-partial': zh ? '部分表格指标' : 'some table columns',
+    'intent-measure-missing:spend': zh ? '花费' : 'spend',
+    'intent-measure-missing:conversion': zh ? '转化' : 'conversions',
+    'intent-measure-missing:revenue': zh ? '收入' : 'revenue'
+  }
+  const gaps = coverage ? [...new Set([...coverage.missing, ...coverage.issues].flatMap(code => coverageLabels[code] ? [coverageLabels[code]] : []))] : []
+  const coverageStatus = coverage ? (zh
+    ? `保存时仅有部分数据${gaps.length ? ` · 缺项：${gaps.join('、')}` : ' · 部分读数或来源暂不可用'}`
+    : `Partial data at save · ${gaps.length ? `missing: ${gaps.join(', ')}` : 'some readings or sources were unavailable'}`) : ''
+  const ttCoverage = currentPlan?.sources.filter(source => source.kind === 'tiktok' && source.partial && source.coverage).map(source => {
+    const { available, requested } = source.coverage!
+    return zh ? `TikTok 已核对 ${available}/${requested} 个账户 · 仅显示成功账户` : `TikTok verified ${available}/${requested} accounts · showing successful accounts`
+  }) ?? []
+  const ttUnbound = currentPlan?.sources.some(source => source.kind === 'tiktok' && source.status === 'unbound')
+  const metaMissing = currentPlan?.sources.some(source => source.kind === 'meta' && !['updated', 'empty'].includes(source.status))
   const statusMessages = [
+    { id: 'coverage', message: coverageStatus, warning: true },
     { id: 'range', message: rangeStatus, warning: true },
     { id: 'tiktok', message: tiktokStatus, warning: ttFailed },
+    { id: 'tt-unbound', message: ttUnbound ? (zh ? '请为看板指定 TikTok 账户。' : 'Select TikTok accounts for this board.') : '', warning: true },
+    ...[...new Set(ttCoverage)].map((message, index) => ({ id: `tt-coverage-${index}`, message, warning: true })),
     { id: 'af', message: afStatus, warning: afState?.failed },
+    { id: 'meta', message: metaMissing ? (zh ? '部分 Meta 数据暂不可用。' : 'Some Meta data is unavailable.') : '', warning: true },
     { id: 'backup', message: backupNames.length ? t('boards.tt.backupNotice', { names: backupNames.join('、') }) : '', warning: true }
   ].filter(item => item.message)
 
@@ -1879,6 +1923,14 @@ export default function BoardsPage() {
                 >
                   <MessageSquareText size={12} />
                   {t('boards.chat.ask')}
+                </button>
+                <button
+                  onClick={editBoardInChat}
+                  disabled={current.locked}
+                  className={`${menuItemClass} text-cream-dim hover:bg-overlay hover:text-cream disabled:opacity-50`}
+                >
+                  <MessageSquarePlus size={12} />
+                  {t('boards.chat.edit')}
                 </button>
                 <button
                   onClick={askAgentToProposeCards}
@@ -2366,6 +2418,9 @@ export default function BoardsPage() {
               <ToolButton title={t('boards.chat.ask')} onClick={askAgentAboutBoard}>
                 <MessageSquareText size={14} />
               </ToolButton>
+              {!current?.locked && <ToolButton title={t('boards.chat.edit')} onClick={editBoardInChat}>
+                <MessageSquarePlus size={14} />
+              </ToolButton>}
               <ToolButton
                 title={t('boards.addWidget')}
                 onClick={() => {
@@ -2461,6 +2516,7 @@ export default function BoardsPage() {
                           rows: d.rows.length,
                           cols: d.columns.length
                         })}
+                        {d.truncated && t('boards.datasets.truncatedNote')}
                       </div>
                     </div>
                   )}

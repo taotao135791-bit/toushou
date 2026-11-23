@@ -1,4 +1,4 @@
-import { ExtensionUiAnswer, PanelOpenRequest, SessionEvent } from '../../shared/types'
+import { ExtensionUiAnswer, PanelOpenRequest, SessionEvent, SessionState } from '../../shared/types'
 import { normalizeToolCall } from '../../shared/toolNames'
 import { safeBrowserPanelUrl } from '../navigation'
 import { safeExtensionExternalUrl } from './extensionLinks'
@@ -39,6 +39,17 @@ import { safeExtensionExternalUrl } from './extensionLinks'
  */
 
 export type ExtensionUiMethod = 'select' | 'confirm' | 'input' | 'editor'
+
+/** The live RPC model uses nested efforts; the model-list command uses a flat array. */
+export function sessionModelThinking(model: unknown): SessionState['modelThinking'] {
+  if (!model || typeof model !== 'object') return undefined
+  const { reasoning, thinking } = model as { reasoning?: unknown; thinking?: { efforts?: unknown } }
+  const efforts = Array.isArray(thinking?.efforts)
+    ? thinking.efforts.filter((effort): effort is string => typeof effort === 'string')
+    : []
+  if (typeof reasoning === 'boolean') return { reasoning, thinking: efforts }
+  return efforts.length > 0 ? { thinking: efforts } : undefined
+}
 
 /**
  * Untrusted extensions can send UI frames while a session is running. Keep

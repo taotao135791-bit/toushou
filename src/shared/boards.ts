@@ -1317,6 +1317,14 @@ export function validateBoard(raw: unknown, strict = false): KanbanBoard | null 
     // would keep it in state while disk loses it.
     return null
   }
+  if (b.partialDelivery !== undefined) {
+    const coverage = b.partialDelivery as Record<string, unknown> | null
+    const validCodes = (values: unknown): values is string[] => Array.isArray(values) && values.length <= 100 &&
+      values.every(value => typeof value === 'string' && /^[a-z][a-z:-]{0,79}$/.test(value))
+    if (coverage && validCodes(coverage.missing) && validCodes(coverage.issues) && (coverage.missing.length || coverage.issues.length)) {
+      board.partialDelivery = { missing: coverage.missing, issues: coverage.issues }
+    } else if (strict) return null
+  }
   // Keep the flag exactly as given: the strict save path compares the
   // validated board with the renderer's payload field by field, so dropping an
   // explicit `locked: false` made every unlock fail as `invalid-board`.

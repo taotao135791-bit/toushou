@@ -38,8 +38,9 @@ function TurnProcess({ entries, sessionId, active, elapsedMs }: Props) {
       <span className="ml-auto shrink-0 text-cream-faint">{expanded ? (zh ? '收起' : 'Hide') : (zh ? '展开' : 'Show')}</span>
     </button>
     <div id={id} hidden={!expanded} className="mt-2 space-y-3 border-l border-line pl-3">
-      {expanded && entries.map(({ message, index }) => <div key={message.id} data-message-id={message.id} className="min-w-0">
-        {message.toolCall ? <ToolCallCard toolCall={message.toolCall} /> : <MessageItem message={message} index={index} sessionId={sessionId} showBoardAction={false} />}
+      {expanded && entries.map(({ message, index }, entryIndex) => <div key={message.id} data-message-id={message.id} className="min-w-0">
+        {message.toolCall ? <ToolCallCard toolCall={message.toolCall} /> : <MessageItem message={message} index={index}
+          sessionId={sessionId} streaming={active && entryIndex === entries.length - 1} showBoardAction={false} />}
       </div>)}
     </div>
   </section>

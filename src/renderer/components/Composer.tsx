@@ -1,5 +1,5 @@
 import { autosendForPrefill } from '../lib/composerAutosend'
-import { useState, useRef, useMemo, useEffect, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
+import { useState, useRef, useMemo, useEffect, useId, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowUp,
@@ -16,10 +16,12 @@ import {
   Loader2,
   MessageCircle,
   Plus,
+  Plug,
   ChevronDown,
   Layers
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
+import { isMcpMentionName, MCP_MENTION_PREFIX, mcpMention } from '@shared/mcpMentions'
 import { QueuedMessage, useAppStore } from '../store'
 import {
   ComposerDraftFile,
@@ -87,6 +89,7 @@ interface PendingImage {
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_IMAGES = 4
 const MAX_FILE_ITEMS = 20
+const MAX_MCP_ITEMS = 20
 /** Hard cap for one paste; anything larger freezes the composer pipeline. */
 const MAX_PASTE_CHARS = 100_000
 /** Mirrors the main-process listProjectFiles cache window. */
@@ -226,8 +229,11 @@ export default memo(function Composer({
   /** A file drag hovers over the composer; drives the drop-zone highlight. */
   const [dropping, setDropping] = useState(false)
   const dragDepth = useRef(0)
-  const [projectFiles, setProjectFiles] = useState<string[]>([])
-  const filesLoadedAt = useRef(0)
+  const [workspaceFiles, setWorkspaceFiles] = useState<{ id: string; files: string[] } | null>(null)
+  const filesLoadedAt = useRef<{ id: string; time: number } | null>(null)
+  const [mcpNames, setMcpNames] = useState<string[]>([])
+  const [mcpStatus, setMcpStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const mentionMenuId = useId()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const { info: gitInfo } = useGitInfo()
   const t = useT()
@@ -257,6 +263,8 @@ export default memo(function Composer({
   const queue = useAppStore((s) =>
     currentSessionId ? (s.queuedMessages[currentSessionId] ?? EMPTY_QUEUE) : EMPTY_QUEUE
   )
+  const queuePaused = useAppStore((s) => Boolean(currentSessionId && s.queuePauseReasons[currentSessionId]))
+  const dispatchingId = useAppStore((s) => currentSessionId ? s.queueDispatching[currentSessionId]?.id : undefined)
   const enqueueQueuedMessage = useAppStore((s) => s.enqueueQueuedMessage)
   const removeQueuedMessage = useAppStore((s) => s.removeQueuedMessage)
   const reserveQueuedMessage = useAppStore((s) => s.reserveQueuedMessage)
@@ -401,48 +409,79 @@ export default memo(function Composer({
     [menuItems, t]
   )
 
-  // @ file menu: active on a trailing "@token". Without a workspace there is
-  // no file list to show — surface the reason instead of swallowing the "@".
-  const atTokenMatch = useMemo(() => {
-    if (atDismissed || slashQuery !== null) return null
+  const at = useMemo(() => {
+    if (disabled || atDismissed || slashQuery !== null || loadedSessionId !== currentSessionId) return null
     return atToken(text, caret)
-  }, [text, caret, atDismissed, slashQuery])
-  const at = currentWorkspace ? atTokenMatch : null
+  }, [text, caret, disabled, atDismissed, slashQuery, loadedSessionId, currentSessionId])
   const atOpen = at !== null
-  const atNeedProject = !currentWorkspace && atTokenMatch !== null
+  const atQuery = at?.query.toLowerCase() ?? ''
+  const mcpOnly = atQuery.startsWith(MCP_MENTION_PREFIX)
+  const workspaceId = currentWorkspace?.id
+  const projectFiles = workspaceFiles?.id === workspaceId ? workspaceFiles?.files : undefined
+  const wantFiles = atOpen && !mcpOnly && Boolean(workspaceId)
 
-  // Fetch the flat project file list when the @ menu opens (main caches 30s)
+  // A closed menu or workspace change must not apply stale file results.
   useEffect(() => {
-    if (!atOpen || !currentWorkspace) return
-    if (Date.now() - filesLoadedAt.current < FILE_LIST_TTL_MS) return
+    if (!wantFiles || !workspaceId || !window.electronAPI.listProjectFiles) return
+    const cached = filesLoadedAt.current
+    if (cached?.id === workspaceId && Date.now() - cached.time < FILE_LIST_TTL_MS) return
     let cancelled = false
-    filesLoadedAt.current = Date.now()
-    window.electronAPI.listProjectFiles(currentWorkspace.id).then((files) => {
-      if (!cancelled) setProjectFiles(files)
+    window.electronAPI.listProjectFiles(workspaceId).then((files) => {
+      if (!cancelled) {
+        filesLoadedAt.current = { id: workspaceId, time: Date.now() }
+        setWorkspaceFiles({ id: workspaceId, files })
+      }
+    }).catch(() => {
+      if (!cancelled) setWorkspaceFiles({ id: workspaceId, files: [] })
     })
     return () => {
       cancelled = true
     }
-  }, [atOpen, currentWorkspace])
+  }, [wantFiles, workspaceId])
 
   useEffect(() => {
-    setAtMenuIndex(0)
-  }, [at?.query])
+    if (!atOpen) return
+    if (!window.electronAPI.mcpList) {
+      setMcpNames([])
+      setMcpStatus('ready')
+      return
+    }
+    let cancelled = false
+    setMcpNames([])
+    setMcpStatus('loading')
+    window.electronAPI.mcpList().then((connections) => {
+      if (cancelled) return
+      setMcpNames(connections.filter(({ enabled, name }) => enabled && isMcpMentionName(name)).map(({ name }) => name))
+      setMcpStatus('ready')
+    }).catch(() => {
+      if (!cancelled) setMcpStatus('error')
+    })
+    return () => { cancelled = true }
+  }, [atOpen])
+
+  const mcpItems = useMemo(() => {
+    if (!atOpen) return []
+    const query = mcpOnly ? atQuery.slice(MCP_MENTION_PREFIX.length) : atQuery
+    return mcpNames.filter(name => name.toLowerCase().includes(query)).slice(0, MAX_MCP_ITEMS)
+  }, [atOpen, atQuery, mcpNames, mcpOnly])
 
   const fileItems = useMemo(() => {
-    if (!at) return []
-    const q = at.query.toLowerCase()
-    const hits = q ? projectFiles.filter((f) => f.toLowerCase().includes(q)) : projectFiles
+    if (!wantFiles || !projectFiles) return []
+    const hits = atQuery ? projectFiles.filter((f) => f.toLowerCase().includes(atQuery)) : projectFiles
     // Basename hits first, then shorter paths
     return [...hits]
       .sort((a, b) => {
-        if (!q) return 0
-        const an = (a.split('/').pop() ?? a).toLowerCase().includes(q) ? 0 : 1
-        const bn = (b.split('/').pop() ?? b).toLowerCase().includes(q) ? 0 : 1
+        if (!atQuery) return 0
+        const an = basename(a).toLowerCase().includes(atQuery) ? 0 : 1
+        const bn = basename(b).toLowerCase().includes(atQuery) ? 0 : 1
         return an - bn || a.length - b.length
       })
       .slice(0, MAX_FILE_ITEMS)
-  }, [at, projectFiles])
+  }, [wantFiles, atQuery, projectFiles])
+
+  const mentionCount = mcpItems.length + fileItems.length
+  const activeMentionIndex = Math.min(atMenuIndex, mentionCount - 1)
+  useEffect(() => { setAtMenuIndex(0) }, [atQuery, mcpItems.length, fileItems.length])
 
   /** Replace text[start:end] with insert and place the caret after it. */
   const replaceRange = (start: number, end: number, insert: string) => {
@@ -487,9 +526,12 @@ export default memo(function Composer({
     })
   }
 
-  const pickFile = (relPath: string) => {
+  const pickMention = (index: number) => {
     if (!at) return
-    replaceRange(at.start, caret, `@${relPath} `)
+    const mention = index < mcpItems.length
+      ? mcpMention(mcpItems[index])
+      : `@${fileItems[index - mcpItems.length]}`
+    replaceRange(at.start, caret, `${mention} `)
   }
 
   const addImage = (data: string, mimeType: string) => {
@@ -883,28 +925,23 @@ export default memo(function Composer({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (atNeedProject && e.key === 'Escape') {
-      e.preventDefault()
-      setAtDismissed(true)
-      return
-    }
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (atOpen) {
-      if (e.key === 'ArrowDown' && fileItems.length > 0) {
+      if (e.key === 'ArrowDown' && mentionCount > 0) {
         e.preventDefault()
-        setAtMenuIndex((i) => (i + 1) % fileItems.length)
+        setAtMenuIndex((activeMentionIndex + 1) % mentionCount)
         return
       }
-      if (e.key === 'ArrowUp' && fileItems.length > 0) {
+      if (e.key === 'ArrowUp' && mentionCount > 0) {
         e.preventDefault()
-        setAtMenuIndex((i) => (i - 1 + fileItems.length) % fileItems.length)
+        setAtMenuIndex((activeMentionIndex - 1 + mentionCount) % mentionCount)
         return
       }
       if (
-        (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) &&
-        fileItems.length > 0
+        !e.shiftKey && (e.key === 'Tab' || e.key === 'Enter') && mentionCount > 0
       ) {
         e.preventDefault()
-        pickFile(fileItems[Math.min(atMenuIndex, fileItems.length - 1)])
+        pickMention(activeMentionIndex)
         return
       }
       if (e.key === 'Escape') {
@@ -961,7 +998,7 @@ export default memo(function Composer({
   // get clipped. Measure the room above and cap every panel to it.
   const panelAnchorRef = useRef<HTMLDivElement>(null)
   const [aboveMax, setAboveMax] = useState<number | null>(null)
-  const panelsOpen = slashQuery !== null || atOpen || atNeedProject
+  const panelsOpen = slashQuery !== null || atOpen
   useEffect(() => {
     if (!panelsOpen) return
     const measure = () => {
@@ -1040,55 +1077,84 @@ export default memo(function Composer({
             )}
           </div>
         )}
-        {atNeedProject && (
-          <div
-            className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
-            style={aboveMax !== null ? { maxHeight: aboveMax } : undefined}
-          >
-            <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
-              {t('composer.atTitle')}
-            </div>
-            <div className="px-2.5 py-2 text-[12px] text-cream-faint">
-              {t('composer.atNeedProject')}
-            </div>
-          </div>
-        )}
         {atOpen && (
           <div
+            id={mentionMenuId}
+            role="listbox"
+            aria-label={t('composer.atMenu')}
             className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-72 overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
             style={aboveMax !== null ? { maxHeight: Math.min(aboveMax, 288) } : undefined}
           >
-            <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
-              {t('composer.atTitle')}
-            </div>
-            {fileItems.length === 0 ? (
-              <div className="px-2.5 py-2 text-[12px] text-cream-faint">
-                {projectFiles.length === 0 ? t('composer.workspaceEmpty') : t('composer.noFiles')}
+            <div role="group" aria-label={t('composer.atMcpTitle')}>
+              <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
+                {t('composer.atMcpTitle')}
               </div>
-            ) : (
-              fileItems.map((f, i) => {
-                const slash = f.lastIndexOf('/')
-                const dir = slash === -1 ? '' : f.slice(0, slash)
-                const name = slash === -1 ? f : f.slice(slash + 1)
-                return (
-                  <button
-                    key={f}
-                    onMouseEnter={() => setAtMenuIndex(i)}
-                    onClick={() => pickFile(f)}
-                    className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
-                      i === atMenuIndex ? 'bg-overlay-strong' : ''
-                    }`}
-                  >
-                    <File size={12} className="shrink-0 text-cream-faint" />
-                    <span className="shrink-0 whitespace-nowrap font-mono text-[12px] text-cream">
-                      {name}
-                    </span>
-                    {dir && (
-                      <span className="min-w-0 truncate text-[11px] text-cream-faint">{dir}</span>
-                    )}
-                  </button>
-                )
-              })
+              {mcpItems.map((name, i) => (
+                <button
+                  key={name}
+                  id={`${mentionMenuId}-${i}`}
+                  type="button"
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={i === activeMentionIndex}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onMouseEnter={() => setAtMenuIndex(i)}
+                  onClick={() => pickMention(i)}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
+                    i === activeMentionIndex ? 'bg-overlay-strong' : ''
+                  }`}
+                >
+                  <Plug size={13} className="shrink-0 text-accent" />
+                  <span className="min-w-0 truncate text-[12px] text-cream">{name}</span>
+                </button>
+              ))}
+              {mcpItems.length === 0 && (
+                <div className="px-2.5 py-2 text-[12px] text-cream-faint">
+                  {t(mcpStatus === 'loading' ? 'composer.atLoading' : mcpStatus === 'error' ? 'composer.atMcpError' : 'composer.atMcpEmpty')}
+                </div>
+              )}
+            </div>
+            {!mcpOnly && (
+              <div role="group" aria-label={t('composer.atTitle')}>
+                <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
+                  {t('composer.atTitle')}
+                </div>
+                {fileItems.map((f, i) => {
+                  const index = mcpItems.length + i
+                  const slash = f.lastIndexOf('/')
+                  const dir = slash === -1 ? '' : f.slice(0, slash)
+                  const name = slash === -1 ? f : f.slice(slash + 1)
+                  return (
+                    <button
+                      key={f}
+                      id={`${mentionMenuId}-${index}`}
+                      type="button"
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={index === activeMentionIndex}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={() => setAtMenuIndex(index)}
+                      onClick={() => pickMention(index)}
+                      className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
+                        index === activeMentionIndex ? 'bg-overlay-strong' : ''
+                      }`}
+                    >
+                      <File size={12} className="shrink-0 text-cream-faint" />
+                      <span className="shrink-0 whitespace-nowrap font-mono text-[12px] text-cream">
+                        {name}
+                      </span>
+                      {dir && (
+                        <span className="min-w-0 truncate text-[11px] text-cream-faint">{dir}</span>
+                      )}
+                    </button>
+                  )
+                })}
+                {fileItems.length === 0 && (
+                  <div className="px-2.5 py-2 text-[12px] text-cream-faint">
+                    {t(!workspaceId ? 'composer.atNeedProject' : !projectFiles ? 'composer.atLoading' : projectFiles.length ? 'composer.noFiles' : 'composer.workspaceEmpty')}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -1134,7 +1200,7 @@ export default memo(function Composer({
                   ) : null}
                   <button
                     onClick={() => handleSteerNow(m)}
-                    disabled={steeringQueuedId === m.id}
+                    disabled={!busy || stopping || queuePaused || dispatchingId === m.id || steeringQueuedId === m.id}
                     title={steeringQueuedId === m.id ? t('composer.steering') : t('composer.steerNow')}
                     aria-label={steeringQueuedId === m.id ? t('composer.steering') : t('composer.steerNow')}
                     className="focus-ring shrink-0 rounded-full p-1 text-accent transition-colors hover:bg-overlay-strong disabled:cursor-wait disabled:opacity-60"
@@ -1147,7 +1213,7 @@ export default memo(function Composer({
                   </button>
                   <button
                     onClick={() => currentSessionId && removeQueuedMessage(currentSessionId, m.id)}
-                    disabled={steeringQueuedId === m.id}
+                    disabled={dispatchingId === m.id || steeringQueuedId === m.id}
                     title={t('composer.remove')}
                     className="focus-ring shrink-0 rounded-full p-1 text-cream-faint transition-colors hover:bg-overlay-strong hover:text-cream disabled:cursor-wait disabled:opacity-60"
                   >
@@ -1222,6 +1288,9 @@ export default memo(function Composer({
           )}
           <textarea
             ref={textareaRef}
+            aria-haspopup="listbox"
+            aria-controls={atOpen ? mentionMenuId : undefined}
+            aria-activedescendant={activeMentionIndex >= 0 ? `${mentionMenuId}-${activeMentionIndex}` : undefined}
             value={loadedSessionId === currentSessionId ? text : ''}
             onChange={(e) => {
               const nextText = e.target.value

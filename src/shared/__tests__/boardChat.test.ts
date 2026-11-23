@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildBoardCardsPrompt, buildBoardChatPrompt, buildBoardDesignPrompt } from '../boardChat'
+import { buildBoardCardsPrompt, buildBoardChatPrompt, buildBoardDesignPrompt, buildBoardEditPrompt } from '../boardChat'
 import { BoardDataset, KanbanBoard } from '../types'
 
 const board: KanbanBoard = {
@@ -87,6 +87,18 @@ describe('buildBoardDesignPrompt', () => {
   it('bounds an oversized current design', () => {
     const prompt = buildBoardDesignPrompt(`## widget\naccent: #7aa2f7\n${'x'.repeat(20_000)}`)
     expect(prompt.length).toBeLessThanOrEqual(12_000)
+  })
+})
+
+describe('buildBoardEditPrompt', () => {
+  it('identifies only the existing target in an editable draft', () => {
+    const prompt = buildBoardEditPrompt(board, 'zh')
+    expect(prompt).toContain('修改已有看板')
+    expect(prompt).toContain(board.name)
+    expect(prompt).toContain(board.id)
+    expect(prompt).not.toContain('只读')
+    expect(prompt).not.toContain('This must not leave')
+    expect(prompt.endsWith('\n\n')).toBe(true)
   })
 })
 

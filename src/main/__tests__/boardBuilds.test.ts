@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 let profile: string
 vi.mock('electron', () => ({ app: { getPath: () => profile } }))
+vi.mock('../appsflyerConnection', () => ({ verifiedAppsFlyerAccessToken: async () => null }))
 import { authorizeAndDispatch, dispatch } from '../boardsBridge'
 import { createOrUpdateDataset, listDatasets } from '../boardDatasets'
-import { listBoards } from '../boards'
+import { listBoards, saveBoard } from '../boards'
 import { saveQuerySpec, listQuerySpecs } from '../integrations/appsflyer/appsflyerDataset'
-import { recordBoardBuildSourceEvidence, registerBoardBuildTurn, revokeBoardBuildSession, withCurrentBoardBuild } from '../boardBuilds'
+import { recordBoardBuildSourceEvidence, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, withCurrentBoardBuild, type BoardTargetUiEvent } from '../boardBuilds'
 import { atomicBoardFile, BOARD_STORE_FILES, boardBuildRoot, boardProfileRoot, readBoardStoreBytes, recoverBoardBuild } from '../boardBuildStorage'
 import { freezeBoardBuildIntent } from '../../shared/boardBuild'
 
@@ -23,6 +24,24 @@ async function begin(text: string, targetBoardId?: string): Promise<string> {
   const result = await call({ action: 'board_build_begin', targetBoardId })
   expect(result.ok).toBe(true)
   return result.buildId as string
+}
+
+async function seedEditTargets() {
+  for (const name of ['远洋商城投放日报', '远洋商城素材复盘', '另一业务投放看板', '已锁定的远洋商城归档']) {
+    await dispatch({ action: 'board_create', name, template: 'blank' })
+    await dispatch({ action: 'board_add_widget', name, type: 'note', title: '待优化', config: { text: 'Original evidence' } })
+  }
+  const archive = listBoards().find(board => board.name === '已锁定的远洋商城归档')!
+  expect(saveBoard({ ...archive, locked: true }).ok).toBe(true)
+  return listBoards()
+}
+
+function askForTargets(candidates: string[]) {
+  const requestBoardTargets = vi.fn<(event: BoardTargetUiEvent) => void>()
+  const result = authorizeAndDispatch(session, { action: 'board_edit_targets', candidateBoardIds: candidates }, { ...deps, requestBoardTargets })
+  const event = requestBoardTargets.mock.calls[0]?.[0]
+  if (!event || event.type !== 'ui_request') throw new Error('expected a board selection dialog')
+  return { event, result, requestBoardTargets }
 }
 async function seedNative(buildId: string, proven = true): Promise<string> {
   return withCurrentBoardBuild(session, async () => {
@@ -66,6 +85,101 @@ describe('trusted request extraction', () => {
 })
 
 describe('Main-owned generation transactions', () => {
+  it('asks before editing ambiguous business boards and publishes all selected changes together', async () => {
+    const boards = await seedEditTargets()
+    const [daily, creative] = boards.filter(board => board.name.startsWith('远洋商城'))
+    const unrelated = boards.find(board => board.name.startsWith('另一业务'))!
+    const locked = boards.find(board => board.locked)!
+    registerBoardBuildTurn(session, '/synthetic-workspace', '给远洋商城的投放看板把便签标题改成待验证，保留已有读数、日期和其他模块。')
+    expect(await call({ action: 'board_build_begin' })).toMatchObject({ ok: false, error: 'board-target-selection-required' })
+    expect(await call({ action: 'board_build_begin', targetBoardId: daily.id })).toMatchObject({ ok: false, error: 'board-target-selection-required' })
+    const { event, result } = askForTargets([daily.id, creative.id])
+    expect(event.boards?.slice(0, 2)).toEqual(expect.arrayContaining([expect.objectContaining({ id: daily.id, suggested: true }), expect.objectContaining({ id: creative.id, suggested: true })]))
+    expect(event.boards).toContainEqual(expect.objectContaining({ id: locked.id, locked: true }))
+    expect(respondBoardEditTargets('other-session', event.id, { boardIds: [daily.id] })).toBe(false)
+    for (const invalid of [[], [daily.id, daily.id], ['outside-dialog'], [locked.id]]) expect(respondBoardEditTargets(session, event.id, { boardIds: invalid })).toBe(false)
+    expect(respondBoardEditTargets(session, event.id, { boardIds: [daily.id, creative.id] })).toBe(true)
+    expect(await result).toEqual({ ok: true, targetBoardIds: [daily.id, creative.id] })
+    expect(await call({ action: 'board_build_begin', targetBoardIds: [daily.id, unrelated.id] })).toMatchObject({ ok: false, error: 'board-target-not-selected' })
+    const draft = await call({ action: 'board_build_begin' })
+    expect(draft).toMatchObject({ ok: true, targetBoardIds: [daily.id, creative.id] })
+    const buildId = draft.buildId as string
+    expect(await call({ action: 'board_create', name: 'Replacement', buildId })).toMatchObject({ ok: false, error: 'board-target-not-selected' })
+    expect(await call({ action: 'board_update_widget', boardId: unrelated.id, widgetId: unrelated.widgets[0].id, title: 'Unwanted change', buildId })).toMatchObject({ ok: false, error: 'board-target-not-selected' })
+    await call({ action: 'board_update_widget', boardId: daily.id, widgetId: daily.widgets[0].id, title: '待验证', buildId })
+    expect(await call({ action: 'board_build_commit', buildId })).toMatchObject({ ok: false, published: false })
+    expect(listBoards()).toEqual(boards)
+    await call({ action: 'board_update_widget', boardId: creative.id, widgetId: creative.widgets[0].id, title: '待验证', buildId })
+    const saved = await call({ action: 'board_build_commit', buildId })
+    expect(saved).toMatchObject({ ok: true, published: true, boards: [{ id: daily.id }, { id: creative.id }] })
+    for (const target of [daily, creative]) expect(listBoards().find(board => board.id === target.id)?.widgets).toEqual([{ ...target.widgets[0], title: '待验证' }])
+    expect(listBoards().find(board => board.id === unrelated.id)).toEqual(unrelated)
+    expect(await call({ action: 'board_build_commit', buildId })).toEqual(saved)
+  })
+
+  it('stops a cancelled choice from falling back to a guessed target or a new board', async () => {
+    const boards = await seedEditTargets()
+    const candidates = boards.filter(board => board.name.startsWith('远洋商城')).map(board => board.id)
+    registerBoardBuildTurn(session, '/synthetic-workspace', '给远洋商城的投放看板加一块素材观察清单便签。')
+    expect(await call({ action: 'board_build_begin' })).toMatchObject({ ok: false, error: 'board-target-selection-required' })
+    const { event, result, requestBoardTargets } = askForTargets(candidates)
+    expect(respondBoardEditTargets(session, event.id, { cancelled: true })).toBe(true)
+    expect(await result).toEqual({ ok: false, error: 'board-target-selection-cancelled' })
+    expect(requestBoardTargets).toHaveBeenLastCalledWith({ type: 'ui_cancel', sessionId: session, id: event.id })
+    expect(await call({ action: 'board_build_begin', targetBoardId: candidates[0] })).toMatchObject({ ok: false, error: 'board-target-selection-cancelled' })
+    expect(listBoards()).toEqual(boards)
+  })
+
+  it('allows edits naming an exact board and discards stale choices after a new turn', async () => {
+    const boards = await seedEditTargets()
+    const [daily, creative] = boards.filter(board => board.name.startsWith('远洋商城'))
+    registerBoardBuildTurn(session, '/synthetic-workspace', '修改远洋商城看板的样式')
+    const pending = askForTargets([daily.id, creative.id])
+    registerBoardBuildTurn(session, '/synthetic-workspace', `更新「${creative.name}」的背景色，不要新建看板。`)
+    expect(await pending.result).toMatchObject({ ok: false, error: 'board-target-selection-cancelled' })
+    expect(respondBoardEditTargets(session, pending.event.id, { boardIds: [daily.id] })).toBe(false)
+    expect(await call({ action: 'board_edit_targets', candidateBoardIds: [daily.id, creative.id] })).toEqual({ ok: true, targetBoardIds: [creative.id] })
+    expect(await call({ action: 'board_build_begin' })).toMatchObject({ ok: true, targetBoardIds: [creative.id] })
+  })
+
+  it('does not auto-select a board the user names only to exclude', async () => {
+    const boards = await seedEditTargets()
+    const [daily, creative] = boards.filter(board => board.name.startsWith('远洋商城'))
+    registerBoardBuildTurn(session, '/synthetic-workspace', `更新远洋商城的投放看板，别改「${creative.name}」。`)
+    const pending = askForTargets([daily.id, creative.id])
+    expect(respondBoardEditTargets(session, pending.event.id, { boardIds: [daily.id] })).toBe(true)
+    expect(await pending.result).toEqual({ ok: true, targetBoardIds: [daily.id] })
+  })
+
+  it('protects unrelated datasets and recipes during a selected board edit', async () => {
+    const [board] = await seedEditTargets()
+    const buildId = await begin(`编辑看板 ${board.id}，修改复盘便签内容。`, board.id)
+    await withCurrentBoardBuild(session, async () => {
+      const dataset = createOrUpdateDataset('Synthetic Unrelated', { columns: [{ name: 'Count', type: 'number' }], rows: [[9]], truncated: false })
+      expect(dataset.ok).toBe(true)
+    }, buildId)
+    await call({ action: 'board_update_widget', boardId: board.id, widgetId: board.widgets[0].id, config: { text: 'Updated review' }, buildId })
+    expect(await call({ action: 'board_build_commit', buildId })).toMatchObject({ ok: false, error: 'board-source-outside-targets', published: false })
+    expect(listDatasets()).toEqual([])
+    expect(listBoards().find(item => item.id === board.id)).toEqual(board)
+  })
+
+  it('keeps date words in saved titles and different board clauses from becoming shared requirements', async () => {
+    const [daily, creative] = (await seedEditTargets()).filter(board => board.name.startsWith('远洋商城'))
+    const renamed = { ...daily, name: '远洋商城昨日报告' }
+    expect(saveBoard(renamed).ok).toBe(true)
+    registerBoardBuildTurn(session, '/synthetic-workspace', `把「${renamed.name}」的背景改深色；给「${creative.name}」加一个待办。`)
+    const pending = askForTargets([daily.id, creative.id])
+    expect(respondBoardEditTargets(session, pending.event.id, { boardIds: [daily.id, creative.id] })).toBe(true)
+    await pending.result
+    const draft = await call({ action: 'board_build_begin' })
+    expect(draft.targetIntents).toMatchObject({
+      [daily.id]: { mode: 'presentation', options: { required: [] } },
+      [creative.id]: { mode: 'presentation', addedUtilityTypes: ['todo'] }
+    })
+    expect((draft.targetIntents as Record<string, Record<string, unknown>>)[daily.id].range).toBeUndefined()
+  })
+
   it('can begin an explicit single-chart task without requiring the literal board keyword', async () => {
     const buildId = await begin('只做第三方付费事件按天趋势，不要媒体读数卡、漏斗或说明墙。')
     expect(await call({ action: 'board_build_status', buildId })).toMatchObject({ intent: { mode: 'custom', options: { required: ['data', 'trend', 'third-party'] } } })
@@ -152,12 +266,52 @@ describe('Main-owned generation transactions', () => {
     await call({ action: 'board_add_widget', name: 'Synthetic live', type: 'table', config: { source: 'dataset', datasetId }, buildId })
     const failed = await call({ action: 'board_build_commit', buildId })
     expect(failed.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'source-query-evidence-required' })]))
+    expect(await call({ action: 'board_build_commit', buildId, allowPartial: true })).toMatchObject({ ok: false, published: false })
     expect(listBoards()).toEqual([]); expect(listDatasets()).toEqual([])
     await withCurrentBoardBuild(session, async () => recordBoardBuildSourceEvidence(session, 'appsflyer', [datasetId]), buildId)
     const saved = await call({ action: 'board_build_commit', buildId })
     expect(saved).toMatchObject({ ok: true, published: true, draft: false })
     expect(listBoards()).toHaveLength(1); expect(listDatasets()).toHaveLength(1); expect(listQuerySpecs()).toHaveLength(1)
     expect(await call({ action: 'board_build_commit', buildId })).toEqual(saved)
+  })
+  it('publishes verified saved media with a visible AppsFlyer gap after a rejected full commit', async () => {
+    const media = createOrUpdateDataset('Imported media', {
+      columns: [{ name: 'Date', type: 'date' }, { name: 'Spend', type: 'number' }],
+      rows: [['2026-11-05', 89.25]], truncated: false
+    })
+    if (!media.ok) throw new Error(media.error)
+    await dispatch({ action: 'board_create', name: 'Acme Media', template: 'blank' })
+    await dispatch({ action: 'board_add_widget', name: 'Acme Media', type: 'table', config: { source: 'dataset', datasetId: media.dataset.id } })
+    const [target] = listBoards()
+    const text = `编辑看板 ID ${target.id}。换成紫色背景并加入 AF 付费事件转化模块。保留已有读数，日期不变。`
+    expect(freezeBoardBuildIntent(text, 'trusted', 1, target)).toMatchObject({ mode: 'custom', options: { required: ['third-party'] }, measures: ['conversion'] })
+    const buildId = await begin(text, target.id)
+    const pull = await call({ action: 'af_dataset_pull', name: 'AF Checkout', appId: 'app.synthetic', eventName: 'checkout', days: 1, buildId })
+    expect(pull.ok).toBe(false)
+    expect(await call({ action: 'board_rename', boardId: target.id, newName: 'Acme Report', buildId })).toMatchObject({ ok: true })
+    expect(await call({ action: 'board_build_commit', buildId })).toMatchObject({ ok: false, published: false, numericCoverage: true, missing: expect.arrayContaining(['third-party']) })
+    expect(listBoards()).toEqual([target])
+    expect(await call({ action: 'board_build_commit', buildId, allowPartial: true })).toMatchObject({ ok: true, published: true, status: 'partial', passed: false })
+    expect(listBoards()[0]).toMatchObject({ id: target.id, name: 'Acme Report', widgets: target.widgets, partialDelivery: { missing: expect.arrayContaining(['third-party']) } })
+    expect(listDatasets()).toEqual([media.dataset])
+    expect(listQuerySpecs()).toEqual([])
+  })
+  it('publishes a table with known columns and preserves the missing ones as coverage gaps', async () => {
+    const media = createOrUpdateDataset('Imported reports', {
+      columns: [{ name: 'Date', type: 'date' }, { name: 'Spend', type: 'number' }],
+      rows: [['2026-11-05', 89.25]], truncated: false
+    })
+    if (!media.ok) throw new Error(media.error)
+    await dispatch({ action: 'board_create', name: 'Acme Data', template: 'blank' })
+    await dispatch({ action: 'board_add_widget', name: 'Acme Data', type: 'table', config: { source: 'dataset', datasetId: media.dataset.id } })
+    const [target] = listBoards()
+    const buildId = await begin('给现有表格增加转化列，保留已保存日期与数据', target.id)
+    await call({ action: 'board_update_widget', boardId: target.id, widgetId: target.widgets[0].id, config: { columns: ['Date', 'Spend', 'Conversions'] }, buildId })
+    const rejected = await call({ action: 'board_build_commit', buildId })
+    expect(rejected).toMatchObject({ published: false, numericCoverage: true, issues: expect.arrayContaining([expect.objectContaining({ code: 'table-columns-partial' })]) })
+    expect(await call({ action: 'board_build_commit', buildId, allowPartial: true })).toMatchObject({ ok: true, status: 'partial' })
+    expect(listBoards()[0].partialDelivery?.issues).toContain('table-columns-partial')
+    expect(listDatasets()[0].rows).toEqual([['2026-11-05', 89.25]])
   })
   it('preserves an existing manual board during style-only customization without live queries', async () => {
     await dispatch({ action: 'board_create', name: 'Existing', template: 'blank' })
@@ -206,6 +360,7 @@ describe('Main-owned generation transactions', () => {
     const added = await call({ action: 'board_add_widget', name: 'Live plus fake', type: 'counter', config: { value: 0 }, buildId })
     const result = await call({ action: 'board_build_commit', buildId })
     expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'fixed-value-requires-explicit-snapshot' })]))
+    expect(await call({ action: 'board_build_commit', buildId, allowPartial: true })).toMatchObject({ ok: false, published: false })
     expect(listBoards()).toEqual([])
     await call({ action: 'board_remove_widget', name: 'Live plus fake', widgetId: added.createdWidgetId, buildId })
     expect(await call({ action: 'board_build_commit', buildId })).toMatchObject({ ok: true, published: true })
@@ -267,6 +422,14 @@ describe('Main-owned generation transactions', () => {
     await expect(pending).rejects.toThrow('board-build-conflict')
     expect(await call({ action: 'board_build_status', buildId: next })).toMatchObject({ ok: true, intent: { options: { granularity: ['creative'] } } })
     expect(listDatasets()).toEqual([])
+  })
+
+  it('rejects an old draft ID after an unrelated turn without letting it write the formal store', async () => {
+    const buildId = await begin('创建新看板')
+    registerBoardBuildTurn(session, '/synthetic-workspace', '现在几点？')
+    const operation = vi.fn(async () => 'unreachable')
+    await expect(withCurrentBoardBuild(session, operation, buildId)).rejects.toThrow('board-build-conflict')
+    expect(operation).not.toHaveBeenCalled()
   })
   it('rolls all store files back from a fixed-name crash journal before any normal read', () => {
     const before = readBoardStoreBytes(profile)

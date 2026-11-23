@@ -6,24 +6,35 @@ import {
   SESSION_THINKING_LEVELS
 } from '@shared/types'
 
+type ThinkingCapabilities = Pick<RuntimeModelInfo, 'thinking'> & Partial<Pick<RuntimeModelInfo, 'reasoning'>>
+
+const EFFORT_LEVELS = SESSION_THINKING_LEVELS.filter((level) => level !== 'off')
+
+function knownEfforts(capabilities?: ThinkingCapabilities) {
+  return EFFORT_LEVELS.filter((level) => capabilities?.thinking.includes(level))
+}
+
 /**
  * Session thinking options (composer picker / set_thinking_level / --thinking).
- * Session RPC enum includes `off`. Current profile: filtered by the model's
- * own capability set when the catalog knows it; unknown → full session set.
- * Legacy Pi accepts off..xhigh (no max).
+ * Prefer the live model, then its catalog entry. A list without a recognized
+ * effort gives no upper bound; the runtime resolves the requested level.
  */
 export function sessionThinkingOptionsFor(
   profile: 'current' | 'legacy',
-  catalogEntry: Pick<RuntimeModelInfo, 'thinking'> | undefined
+  catalogEntry?: ThinkingCapabilities,
+  liveModel?: ThinkingCapabilities
 ): readonly SessionThinkingLevel[] {
   if (profile !== 'current') {
     return SESSION_THINKING_LEVELS.filter((l) => l !== 'max')
   }
-  if (catalogEntry && catalogEntry.thinking.length > 0) {
-    const supported = new Set(catalogEntry.thinking)
-    return SESSION_THINKING_LEVELS.filter((l) => l === 'off' || supported.has(l))
-  }
-  return SESSION_THINKING_LEVELS
+  if (liveModel?.reasoning === false) return ['off']
+  const liveEfforts = knownEfforts(liveModel)
+  if (liveEfforts.length > 0) return ['off', ...liveEfforts]
+  const catalogEfforts = knownEfforts(catalogEntry)
+  if (catalogEfforts.length > 0) return ['off', ...catalogEfforts]
+  return catalogEntry?.reasoning === false && liveModel?.reasoning !== true
+    ? ['off']
+    : SESSION_THINKING_LEVELS
 }
 
 /**
@@ -31,17 +42,12 @@ export function sessionThinkingOptionsFor(
  * This is a DIFFERENT domain from the session enum: `auto` is legal, `off`
  * is not — verified against current Oh My Pi 17.2.12.
  *
- * Capability filtering: when the catalog knows the default model's thinking
- * set and it does not mention `auto`, `auto` is still preserved per the
- * runtime's own semantics (the `auto` classifier is runtime-side); every
- * other level must be explicitly listed by the model. Unknown model → full
- * default set.
+ * The default always offers `auto`, and uses the model's concrete efforts
+ * when available. Unknown model capabilities fall back to the config enum.
  */
 export function defaultThinkingOptionsFor(
-  catalogEntry?: Pick<RuntimeModelInfo, 'thinking'> | undefined
+  catalogEntry?: ThinkingCapabilities
 ): readonly DefaultThinkingLevel[] {
-  if (!catalogEntry || catalogEntry.thinking.length === 0) return DEFAULT_THINKING_LEVELS
-  const supported = new Set(catalogEntry.thinking)
-  // `super` keep: auto is a runtime classifier, not a model capability.
-  return DEFAULT_THINKING_LEVELS.filter((l) => l === 'auto' || supported.has(l))
+  const efforts = knownEfforts(catalogEntry)
+  return efforts.length > 0 ? ['auto', ...efforts] : DEFAULT_THINKING_LEVELS
 }

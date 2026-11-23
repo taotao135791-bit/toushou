@@ -18,6 +18,14 @@ function compact(value: string, max: number): string {
   return normalized.length <= max ? normalized : `${normalized.slice(0, Math.max(0, max - 1))}…`
 }
 
+/** Explicitly target the saved board while leaving the edit instruction to the user. */
+export function buildBoardEditPrompt(board: Pick<KanbanBoard, 'id' | 'name'>, language: Language = 'en'): string {
+  const name = compact(board.name, 200)
+  return language === 'zh'
+    ? `请按我下面的要求修改已有看板「${name}」（看板 ID ${board.id}）。\n\n`
+    : `Please edit the existing board “${name}” (board ID ${board.id}) according to my instructions below.\n\n`
+}
+
 function configuredBinding(widget: BoardWidget): string {
   if (widget.config.source !== 'dataset') return ''
   const dataset = typeof widget.config.datasetId === 'string' ? widget.config.datasetId : '?'

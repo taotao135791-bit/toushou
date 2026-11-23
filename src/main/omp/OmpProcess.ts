@@ -180,6 +180,13 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
   let approval: ApprovalConfig = { mode: 'off' }
   if (isCurrent) {
     const plan = resolvePermissionModeCurrent(opts.permissionMode)
+    // Restricted runtime profiles keep their fixed tool allowlist.
+    if (!plan.tools) {
+      const mentionExtension = app.isPackaged
+        ? path.join(process.resourcesPath, 'mcp-mention', 'index.ts')
+        : path.join(app.getAppPath(), 'resources', 'mcp-mention', 'index.ts')
+      if (existsSync(mentionExtension)) args.push('-e', mentionExtension)
+    }
     if (plan.tools) args.push('--tools', plan.tools)
     if (plan.approvalMode) args.push('--approval-mode', plan.approvalMode)
   } else {

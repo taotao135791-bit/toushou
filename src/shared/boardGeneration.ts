@@ -33,10 +33,13 @@ export interface BoardGenerationCheck {
   status: 'ready' | 'incomplete' | 'needs-attention'
   missing: BoardGenerationCapability[]
   issues: BoardGenerationIssue[]
+  issuesTruncated?: true
   /** Exact requested dates: callers should reuse them rather than recalculate a relative range. */
   window?: { start: string; end: string }
   granularity?: { requested: BoardGenerationGranularity[]; displayed: BoardGenerationGranularity[] }
   dimensions?: { requested: string[]; missing: string[]; displayedTogether: boolean }
+  /** At least one displayed numerical field has valid rows and source scope. */
+  numericCoverage: boolean
   capabilities: Record<BoardGenerationCapability, boolean> & { refreshable: boolean; dataAvailable: boolean; alignment: BoardGenerationAlignment }
 }
 
@@ -90,6 +93,10 @@ function masterWindow(board: KanbanBoard, now: number): { start: string; end: st
   return { start: value, end: value }
 }
 
+function hasUnavailableSource(check: BindingCheck): boolean {
+  return !check.valid && check.issues.some(issue => ['source-failed', 'source-not-refreshable', 'query-binding-missing', 'dataset-missing', 'native-data-unverified'].includes(issue.code))
+}
+
 /** Checks saved structure and visible source evidence; it never queries or modifies a board. */
 export function checkBoardGeneration(
   board: KanbanBoard,
@@ -106,9 +113,11 @@ export function checkBoardGeneration(
   const issues: BoardGenerationIssue[] = []
   const sourceChecks: BindingCheck[] = []
   const projections: DisplayProjection[] = []
+  let numericCoverage = false
   const window = masterWindow(board, now)
   const currentRun = refreshResult?.boardId === board.id && refreshResult.planKey === boardRefreshPlanKey(board) && refreshResult.status !== 'superseded' && (!window || (refreshResult.reportWindow.start === window.start && refreshResult.reportWindow.end === window.end)) ? refreshResult : undefined
   if (refreshResult && !currentRun && [...required].some(capability => ['data', 'trend', 'funnel', 'analysis', 'third-party'].includes(capability))) issues.push({ code: 'refresh-run-stale' })
+  if (currentRun?.sources.some(source => source.kind === 'tiktok' && source.partial)) issues.push({ code: 'source-coverage-partial' })
   const allTtIds = board.widgets.filter(widget => widget.type === 'tt-reading').flatMap(widget => typeof widget.config.advertiserIds === 'string' ? widget.config.advertiserIds.split(/[,，;；\s]+/).filter(Boolean) : [])
   const addIssues = (caps: BoardGenerationCapability[], list: BoardGenerationIssue[]) => { if (caps.some(capability => required.has(capability))) issues.push(...list) }
 
@@ -129,6 +138,20 @@ export function checkBoardGeneration(
     const reportScope = !widget.dateScope || widget.dateScope.mode === 'inherit' || !!(window && effectiveWindow?.start === window.start && effectiveWindow.end === window.end)
     const local: BoardGenerationIssue[] = []
     const issue = (code: string, detail: Pick<BoardGenerationIssue, 'expectedWindow' | 'actualWindow'> = {}) => local.push({ code, widgetId: widget.id, datasetId: dataset?.id ?? binding.datasetId, ...detail })
+    // A failed live projection intentionally hides its rows. Validate available
+    // sources independently instead of diagnosing stale fallback data as live.
+    if (source && source.kind !== 'dataset' && !['updated', 'empty'].includes(source.status)) {
+      issue(source.status === 'unbound' ? 'query-binding-missing' : source.status === 'unsupported' ? 'source-not-refreshable' : 'source-failed')
+      const unavailable: BindingCheck = { valid: false, live: false, attribution: source.kind === 'appsflyer', media: source.kind !== 'appsflyer', reportScope, rows: [], issues: local }
+      sourceChecks.push(unavailable)
+      return unavailable
+    }
+    if (dataset?.appsflyer?.status === 'failed' || dataset?.appsflyer?.status === 'unbound') {
+      issue(dataset.appsflyer.status === 'failed' ? 'source-failed' : 'query-binding-missing')
+      const unavailable: BindingCheck = { valid: false, live: false, attribution: true, media: false, reportScope, rows: [], issues: local }
+      sourceChecks.push(unavailable)
+      return unavailable
+    }
     if (!dataset) {
       issue(binding.datasetId.startsWith('meta-reading:') ? 'native-data-unverified' : 'dataset-missing')
       const missing = { valid: false, live: false, attribution: false, media: binding.datasetId.startsWith('meta-reading:'), reportScope, rows: [], issues: local }
@@ -141,6 +164,7 @@ export function checkBoardGeneration(
     let live = media
     if (source && !['updated', 'empty'].includes(source.status)) issue(source.status === 'unbound' ? 'query-binding-missing' : source.status === 'unsupported' ? 'source-not-refreshable' : 'source-failed')
     if (source?.kind === 'tiktok' && !source.proofs?.length) issue('native-data-unverified')
+    if (dataset.truncated) issues.push({ code: 'dataset-truncated', widgetId: widget.id, datasetId: dataset.id })
     if (attribution) {
       const state = dataset.appsflyer
       live = !!recipe && !!state?.specId && state.specId === recipe.id && (!recipe.datasetId || recipe.datasetId === (original?.id ?? dataset.id))
@@ -149,9 +173,7 @@ export function checkBoardGeneration(
       if (!query || !Array.isArray(query.app_ids) || query.app_ids.length !== 1 || !text(query.app_ids[0])) issue('application-scope-unverified')
       const mediaFilter = object(query?.filters) ? query.filters['Media source'] : undefined
       if (mediaFilter !== undefined && (!Array.isArray(mediaFilter) || mediaFilter.some(value => !text(value) || value.toLowerCase() === 'all'))) issue('media-scope-invalid')
-      if (state?.status === 'failed') issue('source-failed')
-      else if (state?.status === 'unbound') issue('query-binding-missing')
-      else if (state?.status === 'empty') issue('source-empty')
+      if (state?.status === 'empty') issue('source-empty')
       if (!state?.dataWindow || state.dataWindow.start !== state.window.start || state.dataWindow.end !== state.window.end || (effectiveWindow && (state.window.start !== effectiveWindow.start || state.window.end !== effectiveWindow.end))) issue('source-window-unverified', { ...(effectiveWindow ? { expectedWindow: { ...effectiveWindow } } : {}), ...(state ? { actualWindow: { ...(state.dataWindow ?? state.window) } } : {}) })
     }
     const metricIndex = binding.metric ? dataset.columns.findIndex(column => column.name === binding.metric && column.type === 'number') : -1
@@ -182,9 +204,10 @@ export function checkBoardGeneration(
       const filteredEvent = !!binding.filterColumn && eventKeys.has(key(binding.filterColumn)) && (text(binding.filterValue) || !!binding.filterValues?.some(text))
       if (!selectedEvent && !filteredEvent) issue('event-mapping-unverified')
     }
+    const hasMetricValues = metricIndex >= 0 && rows.some(row => typeof row[metricIndex] === 'number' && Number.isFinite(row[metricIndex]))
     if (!rows.length) issue('source-empty')
-    else if (binding.metric && metricIndex >= 0 && !rows.some(row => typeof row[metricIndex] === 'number' && Number.isFinite(row[metricIndex]))) issue('metric-data-empty')
-    if (binding.metric && metricIndex >= 0 && rows.length) {
+    else if (binding.metric && metricIndex >= 0 && !hasMetricValues && binding.op !== 'count') issue('metric-data-empty')
+    if (binding.metric && metricIndex >= 0 && (hasMetricValues || (rows.length && binding.op === 'count'))) {
       const scoped = { ...dataset, rows }
       const safety = metricCurrencySafety(scoped, binding.metric)
       if (safety === 'mixed') issue('currency-mixed')
@@ -201,6 +224,11 @@ export function checkBoardGeneration(
       if (index >= 0 && values.length && rows.some(row => truth(row[index]) && !values.includes(String(row[index])))) issue('media-scope-mismatch')
     }
     const result = { valid, live, attribution, media, reportScope, dataset, rows, issues: local }
+    if (valid && local.every(issue => issue.code === 'source-coverage-partial' || (source?.kind === 'dataset' && issue.code === 'source-not-refreshable')) && dataset.columns.some((column, index) =>
+      column.type === 'number' && (binding.metric === undefined || metricIndex === index) &&
+      (widget.type !== 'table' || (Array.isArray(widget.config.columns) ? widget.config.columns.includes(column.name) : index < 8)) &&
+      rows.some(row => typeof row[index] === 'number' && Number.isFinite(row[index]))
+    )) numericCoverage = true
     sourceChecks.push(result)
     return result
   }
@@ -216,7 +244,8 @@ export function checkBoardGeneration(
     const display = checks.length === 1 ? checks[0] : undefined
     if (display?.valid && display.dataset && display.rows.length && !display.issues.length) {
       const columns = widget.type === 'table' ? (Array.isArray(widget.config.columns) ? widget.config.columns.filter((value): value is string => typeof value === 'string') : display.dataset.columns.slice(0, 8).map(column => column.name)) : ['chart-line', 'chart-bar', 'analysis'].includes(widget.type) && typeof widget.config.dimension === 'string' ? [widget.config.dimension, ...(bindings[0]?.metric ? [bindings[0].metric] : [])] : []
-      if (columns.length && columns.every(name => display.dataset!.columns.some(column => column.name === name))) projections.push({ dataset: display.dataset, rows: display.rows, columns })
+      const visible = widget.type === 'table' ? columns.filter(name => display.dataset!.columns.some(column => column.name === name)) : columns
+      if (visible.length && visible.every(name => display.dataset!.columns.some(column => column.name === name))) projections.push({ dataset: display.dataset, rows: display.rows, columns: visible })
     }
     const numeric = checks.some(check => check.valid && check.live && (check.dataset?.columns.some((column, index) => column.type === 'number' && (widget.type !== 'table' || !Array.isArray(widget.config.columns) || widget.config.columns.includes(column.name)) && check.rows.some(row => typeof row[index] === 'number' && Number.isFinite(row[index])))))
     if (numeric) found.data = true
@@ -238,7 +267,9 @@ export function checkBoardGeneration(
       const valid = checks.length === 1 && checks[0].valid && !!bindings[0]?.metric && dateDimension
       if (valid) found.trend = true
       if (required.has('trend') && trendCandidate) {
-        if (!valid) issues.push({ code: 'trend-date-binding-missing', widgetId: widget.id })
+        if (!valid) {
+          if (!checks.some(hasUnavailableSource)) issues.push({ code: 'trend-date-binding-missing', widgetId: widget.id })
+        }
         else {
           const dataset = checks[0].dataset!
           const dateIndex = dataset.columns.findIndex(column => column.name === widget.config.dimension)
@@ -256,7 +287,7 @@ export function checkBoardGeneration(
       const valid = bindings.length >= 2 && bindings.length <= 12 && checks.every(check => check.valid)
       if (valid) found.funnel = true
       if (required.has('funnel')) {
-        if (!valid) issues.push({ code: 'funnel-stage-binding-missing', widgetId: widget.id })
+        if (!valid && (bindings.length < 2 || bindings.length > 12 || checks.some(check => !check.valid && !hasUnavailableSource(check)))) issues.push({ code: 'funnel-stage-binding-missing', widgetId: widget.id })
         addIssues(['funnel'], checks.flatMap(check => [...check.issues, ...(!check.live ? [{ code: 'source-not-refreshable', widgetId: widget.id, datasetId: check.dataset?.id }] : [])]))
       }
     }
@@ -264,17 +295,20 @@ export function checkBoardGeneration(
       const valid = checks.length === 1 && checks[0].valid && checks[0].live && !!bindings[0]?.metric
       if (valid) found.analysis = true
       if (required.has('analysis')) {
-        if (!valid) issues.push({ code: 'analysis-binding-missing', widgetId: widget.id })
+        if (!valid && !checks.some(hasUnavailableSource)) issues.push({ code: 'analysis-binding-missing', widgetId: widget.id })
         addIssues(['analysis'], checks.flatMap(check => check.issues))
       }
     }
     if (widget.type === 'table') {
       const dataset = checks[0]?.dataset
       const columns = widget.config.columns
-      const valid = checks.length === 1 && checks[0].valid && !!dataset && (columns === undefined || (Array.isArray(columns) && columns.length > 0 && columns.every(name => dataset.columns.some(column => column.name === name)))) && (!widget.config.sortColumn || dataset.columns.some(column => column.name === widget.config.sortColumn))
+      const matched = Array.isArray(columns) && dataset ? columns.filter(name => dataset.columns.some(column => column.name === name)).length : 0
+      const valid = checks.length === 1 && checks[0].valid && !!dataset && (columns === undefined || matched > 0)
+      const missingColumns = Array.isArray(columns) && matched < columns.length
+      if (valid && missingColumns) issues.push({ code: 'table-columns-partial', widgetId: widget.id, datasetId: dataset?.id })
       if (valid) found.table = true
       if (required.has('table')) {
-        if (!valid) issues.push({ code: 'table-column-binding-missing', widgetId: widget.id })
+        if (!valid && !checks.some(hasUnavailableSource)) issues.push({ code: 'table-column-binding-missing', widgetId: widget.id })
         addIssues(['table'], checks.flatMap(check => [...check.issues, ...(options.mode === 'default' && !check.live ? [{ code: 'source-not-refreshable', widgetId: widget.id, datasetId: check.dataset?.id }] : [])]))
       }
     }
@@ -325,7 +359,8 @@ export function checkBoardGeneration(
   const missing = BOARD_GENERATION_CAPABILITIES.filter(capability => required.has(capability) && !found[capability])
   const uniqueIssues = [...new Map(issues.map(issue => [`${issue.code}:${issue.widgetId ?? ''}:${issue.datasetId ?? ''}`, issue])).values()]
   return {
-    status: missing.length ? 'incomplete' : uniqueIssues.length ? 'needs-attention' : 'ready', missing, issues: uniqueIssues.slice(0, 100), ...(window ? { window: { ...window } } : {}),
+    status: missing.length ? 'incomplete' : uniqueIssues.length ? 'needs-attention' : 'ready', missing, issues: uniqueIssues.slice(0, 100), numericCoverage,
+    ...(uniqueIssues.length > 100 ? { issuesTruncated: true as const } : {}), ...(window ? { window: { ...window } } : {}),
     ...(requestedGrains.length ? { granularity: { requested: requestedGrains, displayed: displayedGrains } } : {}),
     ...(requestedDimensions.length ? { dimensions: { requested: requestedDimensions, missing: dimensionsMissing, displayedTogether: dimensionsTogether } } : {}),
     capabilities: { ...found, refreshable: sourceChecks.length > 0 && sourceChecks.every(check => check.valid && check.live), dataAvailable: sourceChecks.some(check => check.valid && check.rows.length > 0), alignment }

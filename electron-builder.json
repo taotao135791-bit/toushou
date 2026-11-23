@@ -27,6 +27,10 @@
       "to": "session-topic"
     },
     {
+      "from": "resources/mcp-mention",
+      "to": "mcp-mention"
+    },
+    {
       "from": "resources/ads-toolkit",
       "to": "ads-toolkit"
     },

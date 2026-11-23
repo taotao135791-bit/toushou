@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Brain, Check, ChevronUp } from 'lucide-react'
 import { SessionState, SessionThinkingLevel } from '@shared/types'
+import { parseModelSelector } from '@shared/modelSelector'
 import { useAppStore } from '../store'
 import { useT, I18nKey } from '../i18n'
+import { modelSelectorOf } from '../lib/runtimeSnapshot'
 import { sessionThinkingOptionsFor } from '../lib/thinking'
 import MenuPortal from './MenuPortal'
 
@@ -28,15 +30,6 @@ function levelLabel(raw: string | undefined, t: ReturnType<typeof useT>): string
   return raw.charAt(0).toUpperCase() + raw.slice(1)
 }
 
-/** Extract the current session's model selector from get_state (tolerant). */
-function modelSelectorOf(state: SessionState | null): string {
-  const m = state?.model
-  if (!m || typeof m !== 'object') return ''
-  const o = m as { provider?: unknown; id?: unknown }
-  if (typeof o.provider !== 'string' || typeof o.id !== 'string') return ''
-  return `${o.provider}/${o.id}`
-}
-
 interface ThinkingPickerProps {
   /** Live session to read/change; without one the picker sets the next-session override. */
   sessionId: string | null
@@ -55,15 +48,16 @@ interface ThinkingPickerProps {
  * `defaultThinkingLevel` (`auto`, no `off`) — never the two shall mix.
  */
 export default function ThinkingPicker({ sessionId, compact = false }: ThinkingPickerProps) {
-  const [level, setLevel] = useState<string | undefined>(undefined)
-  const [loaded, setLoaded] = useState(false)
   const [open, setOpen] = useState(false)
-  const [failed, setFailed] = useState(false)
-  const [sessionSelector, setSessionSelector] = useState('')
+  const [failedSession, setFailedSession] = useState<string | null>(null)
+  const [snapshot, setSnapshot] = useState<{ sessionId: string; modelVersion: number; state: SessionState | null }>()
+  const [stateRefresh, setStateRefresh] = useState(0)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const t = useT()
   const overview = useAppStore((s) => s.runtimeOverview)
   const runtimeModels = useAppStore((s) => s.runtimeModels)
+  const modelConfig = useAppStore((s) => s.modelConfig)
+  const pendingModel = useAppStore((s) => s.pendingModel)
   const pendingThinking = useAppStore((s) => s.pendingThinking)
   const setPendingThinking = useAppStore((s) => s.setPendingThinking)
   const setCurrentSessionThinking = useAppStore((s) => s.setCurrentSessionThinking)
@@ -72,86 +66,57 @@ export default function ThinkingPicker({ sessionId, compact = false }: ThinkingP
   const modelVersion = useAppStore((s) => (sessionId ? (s.sessionModelVersion[sessionId] ?? 0) : 0))
 
   const isCurrent = overview?.profile === 'current'
+  const failed = failedSession !== null && failedSession === sessionId
 
   // Transient pick-failure hint on the pill (dead session / rejected switch)
   useEffect(() => {
-    if (!failed) return
-    const timer = setTimeout(() => setFailed(false), 2500)
+    if (failedSession === null) return
+    const timer = setTimeout(() => setFailedSession(null), 2500)
     return () => clearTimeout(timer)
-  }, [failed])
+  }, [failedSession])
 
-  // The session's model — the capability filter for the offered levels.
+  // One RPC gets both the current effort and the model's actual capabilities.
   useEffect(() => {
-    if (!sessionId) {
-      setSessionSelector('')
-      return
-    }
+    if (!sessionId) return
     let cancelled = false
-    window.electronAPI.getSessionState(sessionId).then((state) => {
-      if (!cancelled) setSessionSelector(modelSelectorOf(state))
-    })
+    window.electronAPI.getSessionState(sessionId)
+      .catch(() => null)
+      .then((state) => {
+        if (!cancelled) setSnapshot({ sessionId, modelVersion, state })
+      })
     return () => {
       cancelled = true
     }
-  }, [sessionId, modelVersion])
+  }, [sessionId, modelVersion, stateRefresh])
 
-  // Sync the current level: event-resolved first, then probes/defaults.
-  useEffect(() => {
-    if (hasEventLevel) {
-      setLevel(eventLevel)
-      setLoaded(true)
-      return
-    }
-    setLoaded(false)
-    if (sessionId) {
-      let cancelled = false
-      window.electronAPI.getSessionState(sessionId).then((state) => {
-        if (!cancelled) {
-          setLevel(state?.thinkingLevel ?? undefined)
-          setLoaded(true)
-        }
-      })
-      return () => {
-        cancelled = true
-      }
-    }
-    // No session: the next-session override, else the runtime default.
-    setLevel(pendingThinking ?? (isCurrent ? overview?.modelState.defaultThinkingLevel || undefined : undefined))
-    if (!isCurrent) {
-      let cancelled = false
-      window.electronAPI.getModelConfig().then((cfg) => {
-        if (!cancelled) {
-          setLevel(pendingThinking ?? (cfg.defaultThinkingLevel || undefined))
-          setLoaded(true)
-        }
-      })
-      return () => {
-        cancelled = true
-      }
-    }
-    setLoaded(true)
-  }, [sessionId, hasEventLevel, eventLevel, pendingThinking, isCurrent, overview?.modelState.defaultThinkingLevel])
-
-  // Offered levels: the model's own capability set when known.
-  const catalogEntry = runtimeModels.find((m) => m.selector === sessionSelector)
-  const options = sessionThinkingOptionsFor(isCurrent ? 'current' : 'legacy', catalogEntry)
+  const live = snapshot?.sessionId === sessionId && snapshot.modelVersion === modelVersion ? snapshot : undefined
+  const nextModel = parseModelSelector(pendingModel ?? overview?.modelState.defaultModel ?? '')
+  const selector = sessionId ? modelSelectorOf(live?.state ?? null) : nextModel?.modelSelector
+  const catalogEntry = runtimeModels.find((model) => model.selector === selector)
+  const options = sessionThinkingOptionsFor(isCurrent ? 'current' : 'legacy', catalogEntry, live?.state?.modelThinking)
+  const defaultThinking = isCurrent
+    ? nextModel?.thinkingOverride ?? overview.modelState.defaultThinkingLevel
+    : modelConfig?.defaultThinkingLevel
+  const level = sessionId
+    ? (hasEventLevel ? eventLevel : live?.state?.thinkingLevel)
+    : pendingThinking ?? defaultThinking
+  const loaded = sessionId ? hasEventLevel || !!live : !!pendingThinking || isCurrent || !!modelConfig
 
   const pick = async (next: SessionThinkingLevel) => {
     setOpen(false)
     if (sessionId) {
-      // Session scope only; display follows the runtime-resolved event. The
-      // legacy path has no event, so it applies the level locally — but only
-      // when the switch actually landed (never leave a lie on the pill).
-      const ok = await setCurrentSessionThinking(next)
+      const ok = await setCurrentSessionThinking(next).catch(() => false)
+      if (useAppStore.getState().currentSessionId !== sessionId) return
       if (!ok) {
-        setFailed(true)
+        setFailedSession(sessionId)
         return
       }
-      if (!isCurrent) setLevel(next)
+      setFailedSession(null)
+      // Legacy sessions do not emit thinking_level_changed.
+      if (!isCurrent) setStateRefresh((previous) => previous + 1)
       return
     }
     setPendingThinking(next)
-    setLevel(next)
   }
 
   const isAuto = !level || level === 'auto'
@@ -163,7 +128,6 @@ export default function ThinkingPicker({ sessionId, compact = false }: ThinkingP
     setOpen(false)
     if (sessionId) return
     setPendingThinking(null)
-    setLevel(undefined)
   }
 
   return (

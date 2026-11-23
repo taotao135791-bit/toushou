@@ -186,8 +186,8 @@ describe('generated board evidence checks', () => {
       const f = fixture(); f.datasets[1].appsflyer!.status = status
       if (status === 'empty') f.datasets[1].rows = []
       const result = checkBoardGeneration(f.board, f.datasets, { mode: 'default', daily: true }, f.recipes, now)
-      expect(result.status).toBe('needs-attention')
-      expect(result.missing).toEqual([])
+      expect(result.status).toBe(status === 'empty' ? 'needs-attention' : 'incomplete')
+      expect(result.missing).toEqual(status === 'empty' ? [] : ['funnel', 'third-party'])
       expect(result.issues.some(issue => issue.code === (status === 'empty' ? 'source-empty' : 'source-failed'))).toBe(true)
     }
     const f = fixture(); f.datasets[1].appsflyer!.dataWindow = { start: '2020-01-01', end: '2020-01-07' }

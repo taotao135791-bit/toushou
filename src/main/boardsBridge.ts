@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { abortBoardBuild, beginBoardBuild, buildStatus, checkFrozenBoardBuild, commitBoardBuild, getBoardBuildSession, hasBoardBuildTurn, recordBoardBuildSourceEvidence, withCurrentBoardBuild } from './boardBuilds'
+import { abortBoardBuild, beginBoardBuild, buildStatus, checkFrozenBoardBuild, commitBoardBuild, getBoardBuildSession, getBoardBuildTurnId, hasBoardBuildTurn, recordBoardBuildSourceEvidence, requestBoardEditTargets, withCurrentBoardBuild, type BoardTargetUiEvent } from './boardBuilds'
 import { validateWidgetDateScope } from '../shared/boardWindows'
 import { readBoardMetaAccounts, refreshBoard } from './boardRefresh'
 import { boardBuildRoot } from './boardBuildStorage'
@@ -141,10 +141,11 @@ const WIDGET_TITLE_ZH: Record<WidgetType, string> = {
 }
 
 export type BoardsBridgeRequest = (
-  | { action: 'board_build_begin'; targetBoardId?: unknown }
+  | { action: 'board_edit_targets'; candidateBoardIds?: unknown }
+  | { action: 'board_build_begin'; targetBoardId?: unknown; targetBoardIds?: unknown }
   | { action: 'board_build_status' }
   | { action: 'board_build_preflight' }
-  | { action: 'board_build_commit' }
+  | { action: 'board_build_commit'; allowPartial?: unknown }
   | { action: 'board_build_abort' }
   | { action: 'board_refresh'; boardId?: unknown }
   | { action: 'board_meta_accounts' }
@@ -220,9 +221,13 @@ function parseBoardsBridgeAction(raw: unknown): BoardsBridgeRequest | null {
   if (!raw || typeof raw !== 'object') return null
   const value = raw as Record<string, unknown>
   switch (value.action) {
+    case 'board_edit_targets':
+      return { action: 'board_edit_targets', candidateBoardIds: value.candidateBoardIds }
     case 'board_build_begin':
-      return { action: 'board_build_begin', targetBoardId: value.targetBoardId }
-    case 'board_build_status': case 'board_build_preflight': case 'board_build_commit': case 'board_build_abort':
+      return { action: 'board_build_begin', targetBoardId: value.targetBoardId, targetBoardIds: value.targetBoardIds }
+    case 'board_build_commit':
+      return { action: 'board_build_commit', allowPartial: value.allowPartial }
+    case 'board_build_status': case 'board_build_preflight': case 'board_build_abort':
       return { action: value.action }
     case 'board_refresh':
       return { action: 'board_refresh', boardId: value.boardId }
@@ -351,10 +356,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   const tool = parseBoardsBridgeRequest(raw)
   if (!tool) return json(response, 400, { ok: false, error: 'unsupported-action' })
+  const controller = new AbortController()
+  response.once('close', () => { if (!response.writableEnded) controller.abort() })
   try {
-    return json(response, 200, await authorizeAndDispatch(sessionId, tool))
+    const result = await authorizeAndDispatch(sessionId, tool, undefined, controller.signal)
+    if (!response.destroyed) json(response, 200, result)
   } catch {
-    return json(response, 200, { ok: false, error: 'store-unreadable' })
+    if (!response.destroyed) json(response, 200, { ok: false, error: 'store-unreadable' })
   }
 }
 
@@ -377,6 +385,7 @@ function boardSummary(board: KanbanBoard): Record<string, unknown> {
     locked: board.locked === true,
     widgetCount: board.widgets.length,
     updatedAt: board.updatedAt,
+    ...(board.partialDelivery ? { partialDelivery: board.partialDelivery } : {}),
     ...(board.style ? { style: { ...board.style } } : {}),
     ...(board.masterScope ? { masterScope: structuredClone(board.masterScope) } : {}),
     widgets: board.widgets.map((widget) => ({
@@ -421,6 +430,7 @@ export interface BoardsSessionAccess { cwd: string; mode: PermissionMode; remote
 export interface BoardsAuthorizationDeps {
   getAccess: (sessionId: string) => BoardsSessionAccess | null
   confirm: (tool: BoardsBridgeRequest) => Promise<boolean>
+  requestBoardTargets?: (event: BoardTargetUiEvent) => void
 }
 
 /** Display-only lookup: boardId still controls the operation and is retained in details. */
@@ -441,13 +451,17 @@ export function boardConfirmationDetails(request: BoardsBridgeRequest, readBoard
 export async function authorizeAndDispatch(
   sessionId: string,
   tool: BoardsBridgeRequest,
-  deps?: BoardsAuthorizationDeps
+  deps?: BoardsAuthorizationDeps,
+  signal?: AbortSignal
 ): Promise<Record<string, unknown>> {
-  const getAccess = deps?.getAccess ?? (await import('./omp')).getSessionBridgeAccess
+  const omp = deps ? undefined : await import('./omp')
+  const getAccess = deps?.getAccess ?? omp!.getSessionBridgeAccess
   const access = getAccess(sessionId)
   if (!access) return { ok: false, error: 'no-session' }
-  const write = !['boards_list', 'board_get', 'board_check', 'board_meta_accounts', 'board_build_status', 'board_build_preflight'].includes(tool.action) && !(tool.action === 'board_customize' && tool.preview !== false)
-  if (write && (access.remoteReadonly || !['full', 'no-bash', 'ask'].includes(access.mode))) return { ok: false, error: 'permission-denied' }
+  if (signal?.aborted) return { ok: false, error: 'permission-denied' }
+  const turnId = getBoardBuildTurnId(sessionId)
+  const write = !['boards_list', 'board_get', 'board_check', 'board_meta_accounts', 'board_build_status', 'board_build_preflight', 'board_edit_targets'].includes(tool.action) && !(tool.action === 'board_customize' && tool.preview !== false)
+  if ((write || tool.action === 'board_edit_targets') && (access.remoteReadonly || !['full', 'no-bash', 'ask'].includes(access.mode))) return { ok: false, error: 'permission-denied' }
   if (write && access.mode === 'ask') {
     const confirm = deps?.confirm ?? (async (request: BoardsBridgeRequest) => {
       const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
@@ -470,16 +484,26 @@ export async function authorizeAndDispatch(
   }
   const stillAuthorized = (): boolean => {
     const current = getAccess(sessionId)
-    return Boolean(current && !current.remoteReadonly && ['full', 'no-bash', 'ask'].includes(current.mode) && current.cwd === access.cwd && (current.mode !== 'ask' || access.mode === 'ask'))
+    return Boolean(!signal?.aborted && getBoardBuildTurnId(sessionId) === turnId && current && !current.remoteReadonly && ['full', 'no-bash', 'ask'].includes(current.mode) && current.cwd === access.cwd && (current.mode !== 'ask' || access.mode === 'ask'))
   }
+  if (write && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
   const state = getBoardBuildSession(sessionId)
   if (state?.buildId && state.cwd !== access.cwd) return { ok: false, error: 'board-build-conflict' }
-  if (tool.action === 'board_build_begin') return beginBoardBuild(sessionId, access.cwd, tool.targetBoardId)
+  if (tool.action === 'board_edit_targets') {
+    const emit = deps?.requestBoardTargets ?? ((event: BoardTargetUiEvent) => omp?.emitBoardTargetUi(event))
+    return requestBoardEditTargets(sessionId, access.cwd, tool.candidateBoardIds, emit, stillAuthorized, signal)
+  }
+  if (tool.action === 'board_build_begin') return beginBoardBuild(sessionId, access.cwd, tool.targetBoardId, tool.targetBoardIds)
   if (tool.action === 'board_build_status') return buildStatus(sessionId, tool.buildId)
   if (tool.action === 'board_build_preflight') return checkFrozenBoardBuild(sessionId, tool.buildId, true)
   if (tool.action === 'board_build_commit') {
-    const result = commitBoardBuild(sessionId, tool.buildId, stillAuthorized)
-    return result.board ? { ...result, board: boardSummary(result.board as KanbanBoard) } : result
+    if (tool.allowPartial !== undefined && typeof tool.allowPartial !== 'boolean') return { ok: false, error: 'invalid-partial-option' }
+    const result = commitBoardBuild(sessionId, tool.buildId, stillAuthorized, tool.allowPartial === true)
+    if (!Array.isArray(result.boards)) return result
+    // Each saved board must survive the tool-output budget, even for a large
+    // selection. The agent can read the complete saved board with board_get.
+    const boards = (result.boards as KanbanBoard[]).map(({ id, name, updatedAt, widgets, partialDelivery }) => ({ id, name, updatedAt, widgetCount: widgets.length, ...(partialDelivery ? { partialDelivery } : {}) }))
+    return { ...result, boards, ...(result.board ? { board: boardSummary(result.board as KanbanBoard) } : {}) }
   }
   if (tool.action === 'board_build_abort') return abortBoardBuild(sessionId, tool.buildId)
   if (tool.action === 'board_meta_accounts') return { ...(await readBoardMetaAccounts()) }
@@ -490,7 +514,7 @@ export async function authorizeAndDispatch(
   // deps without a trusted turn are a legacy unit-test seam. Production never
   // receives requirements or authority from this seam or from model arguments.
   if (boardWrite && (!deps || hasBoardBuildTurn(sessionId)) && !state?.buildId) return { ok: false, error: 'board-build-required' }
-  if (state?.buildId && tool.action === 'board_check') return checkFrozenBoardBuild(sessionId, tool.buildId)
+  if (state?.buildId && tool.action === 'board_check') return checkFrozenBoardBuild(sessionId, tool.buildId, false, typeof tool.boardId === 'string' ? tool.boardId : undefined)
   if (state?.published && (tool.action === 'board_get' || tool.action === 'boards_list')) {
     if (tool.buildId !== undefined && tool.buildId !== state.buildId) return { ok: false, error: 'board-build-conflict' }
     return dispatch(tool, access.cwd)
@@ -498,6 +522,11 @@ export async function authorizeAndDispatch(
   const inDraft = !!state?.buildId
   try {
     const result = await withCurrentBoardBuild(sessionId, async () => {
+      if (state?.targetBoardIds?.length && (boardWrite || tool.action === 'board_refresh')) {
+        if (tool.action === 'board_create') return { ok: false, error: 'board-target-not-selected' }
+        const target = findBoard(tool as { boardId?: unknown; name?: unknown })
+        if (!target || !state.targetBoardIds.includes(target.id)) return { ok: false, error: 'board-target-not-selected' }
+      }
       if (tool.action === 'board_refresh') {
         if (typeof tool.boardId !== 'string') return { ok: false, error: 'invalid-board-id' }
         const refreshed = await refreshBoard({ boardId: tool.boardId }, { stillAuthorized })
@@ -550,11 +579,11 @@ export function readWorkspaceDataset(raw: unknown, cwd: string): { name: string;
 }
 
 export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string, stillAuthorized?: () => boolean): Promise<Record<string, unknown>> {
-  if (tool.action === 'board_build_begin' || tool.action === 'board_build_status' || tool.action === 'board_build_preflight' || tool.action === 'board_build_commit' || tool.action === 'board_build_abort' || tool.action === 'board_refresh' || tool.action === 'board_meta_accounts') return { ok: false, error: 'session-required' }
+  if (tool.action === 'board_edit_targets' || tool.action === 'board_build_begin' || tool.action === 'board_build_status' || tool.action === 'board_build_preflight' || tool.action === 'board_build_commit' || tool.action === 'board_build_abort' || tool.action === 'board_refresh' || tool.action === 'board_meta_accounts') return { ok: false, error: 'session-required' }
   if (tool.action === 'boards_list') {
     return {
       ok: true,
-      boards: listBoards().map((board) => ({ id: board.id, name: modelBoardName(board), widgetCount: board.widgets.length, locked: board.locked === true, updatedAt: board.updatedAt })),
+      boards: listBoards().map((board) => ({ id: board.id, name: modelBoardName(board), ...(board.description ? { description: board.description } : {}), widgetCount: board.widgets.length, locked: board.locked === true, updatedAt: board.updatedAt })),
       datasets: datasetsOverview()
     }
   }
@@ -772,7 +801,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       filters,
       in_app_event: isCustom ? [eventName!] : []
     }
-    const { pullAppsFlyerDatasets, saveQuerySpec, listQuerySpecs } = await import('./integrations/appsflyer/appsflyerDataset')
+    const { pullAppsFlyerDatasets, saveQuerySpec, listQuerySpecs, discardUnboundQuerySpec } = await import('./integrations/appsflyer/appsflyerDataset')
     if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
     // Legacy IDs were truncated and could alias different applications/names.
     // Match the complete recipe identity before preserving an existing binding;
@@ -784,8 +813,9 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     // Record the spec BEFORE the pull (minus dates): even a transient failure
     // arms the master refresh. Replacing its query must preserve the bound
     // dataset identity, including a name changed since the previous pull.
+    const nextSpec = { ...previousSpec, id: specId, name, datasetName, query }
     try {
-      saveQuerySpec({ ...previousSpec, id: specId, name, datasetName, query })
+      saveQuerySpec(nextSpec)
     } catch (error) {
       if (error instanceof Error && error.message === 'query-limit') return {
         ok: false,
@@ -794,8 +824,11 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       }
       throw error
     }
-    const result = await pullAppsFlyerDatasets({ window, specIds: [specId] })
+    const result = await pullAppsFlyerDatasets({ window, specIds: [specId], canCommit: stillAuthorized })
     if (!result.ok && !result.results.some((entry) => entry.ok)) {
+      // A new unbound recipe has no widget that can refresh it. Leaving it in
+      // an edit draft would block saving unrelated, verified data.
+      if (boardBuildRoot() && !previousSpec) discardUnboundQuerySpec(nextSpec)
       const failedEntry = result.results[0]
       const hints: Record<string, string> = {
         'not-connected': 'AppsFlyer 未连接或授权未验证，请先在连接页完成 AppsFlyer 授权。',

@@ -16,11 +16,19 @@ describe('session permission display', () => {
     expect(fixture.state.permissionMode).toBe('ask')
     expect(fixture.state.setPermissionMode).not.toHaveBeenCalled()
   })
-  it('leaves a normal session using the global mode and the remote tooltip distinct', () => {
-    Object.assign(fixture.state, { currentSessionId: 'normal', sessions: [{ id: 'normal' }] })
+  it('shows Main mode for a live session and labels the future default separately', () => {
+    Object.assign(fixture.state, { currentSessionId: 'normal', sessions: [{ id: 'normal', nativePermissionMode: 'full', nativePermissionMutable: false }] })
     const normal = renderToStaticMarkup(<PermissionPicker />)
     expect(normal).not.toContain(' disabled=""')
-    expect(normal).toContain('>Ask</span>')
+    expect(normal).toContain('>Full access</span>')
+    expect(normal).toContain('Current chat · Full access')
+    expect(normal).toContain('New chat default · Ask')
+    Object.assign(fixture.state, { currentSessionId: '', sessions: [] })
+    const home = renderToStaticMarkup(<PermissionPicker />)
+    expect(home).toContain('>Ask</span>')
+    expect(home).not.toContain('Current chat')
+  })
+  it('preserves the distinct remote tooltip', () => {
     Object.assign(fixture.state, { currentSessionId: 'remote', sessions: [{ id: 'remote', remoteReadonly: true }] })
     const remote = renderToStaticMarkup(<PermissionPicker />)
     expect(remote).toContain('Remote (Feishu) sessions are fixed to read-only.')

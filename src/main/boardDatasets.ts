@@ -294,6 +294,7 @@ export function importDatasetBuffer(
     name: explicitName ?? datasetNameFromPath(fileName),
     columns: built.columns,
     rows: built.rows,
+    ...(built.truncated ? { truncated: true } : {}),
     createdAt: replaced?.createdAt ?? Date.now()
   }
   const next = explicitName
@@ -347,6 +348,7 @@ export function createOrUpdateDataset(
     name: options.replaceId && index >= 0 ? datasets[index].name : name as string,
     columns: built.columns,
     rows: built.rows,
+    ...(built.truncated ? { truncated: true } : {}),
     createdAt: index >= 0 ? datasets[index].createdAt : Date.now(),
     ...(options.appsflyer ? { appsflyer: options.appsflyer } : {})
   }

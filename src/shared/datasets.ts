@@ -204,6 +204,12 @@ export interface BuiltDataset {
   truncated: boolean
 }
 
+/** Advertising identifiers can exceed the precision of a JavaScript number. */
+function isIdentifierColumn(header: string): boolean {
+  const normalized = header.normalize('NFKC').toLowerCase().replace(/[\s_-]+/g, '')
+  return /^(?:id|(?:ad|adaccount|account|advertiser|campaign|adgroup|adset|creative|material|asset|media|app|assetgroup|keyword|placement|user|click|customer)id|(?:广告|广告账户|广告主|账户|活动|广告系列|广告组|素材|媒体|应用|资源|关键词|用户|点击|客户)(?:id|编号))$/.test(normalized)
+}
+
 /**
  * Build typed columns/rows from a raw string grid (first row = headers).
  * Number columns store cleaned numbers, date columns normalized YYYY-MM-DD
@@ -234,7 +240,7 @@ export function buildDataset(headers: string[], rawRows: string[][]): BuiltDatas
     }
     usedNames.add(name)
     const samples = rawRows.slice(0, SAMPLE_SIZE).map((r) => String(r[c] ?? ''))
-    return { name, type: inferColumnType(samples) }
+    return { name, type: isIdentifierColumn(base) ? 'text' : inferColumnType(samples) }
   })
 
   const rows: (string | number)[][] = []
@@ -429,6 +435,7 @@ export function validateDataset(raw: unknown): BoardDataset | null {
     return null
   }
   const result: BoardDataset & { source?: 'tiktok-report-v2' } = { id: d.id, name: d.name, columns, rows, createdAt: d.createdAt }
+  if (d.truncated === true) result.truncated = true
   if (d.source === 'tiktok-report-v2') result.source = d.source
   const appsflyer = validateAppsFlyerDatasetState(d.appsflyer)
   if (appsflyer) result.appsflyer = appsflyer

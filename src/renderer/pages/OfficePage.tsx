@@ -461,18 +461,20 @@ export default function OfficePage({ embedded = false, initialGrant, initialName
     [dirty, loadSnapshot]
   )
 
-  // Passive open (extension open_panel): App routes here with the Main-minted
-  // grant in location.state. Consume it once, then clear the state so a
-  // reload doesn't re-open it.
+  // A routed grant is stored in location.state; workspace panels receive it
+  // through props. Consume either once and clear only the routed grant.
   useEffect(() => {
-    const state = location.state as { grant?: FileGrant; name?: string } | null
+    const state = embedded ? null : location.state as { grant?: FileGrant; name?: string } | null
     const grant = state?.grant ?? initialGrant
     if (!grant || typeof grant.id !== 'string') return
     if (consumedGrantIds.current.has(grant.id)) return
     consumedGrantIds.current.add(grant.id)
-    navigate(location.pathname, { replace: true, state: null })
+    if (state?.grant) {
+      const { pathname, search, hash } = location
+      navigate({ pathname, search, hash }, { replace: true, state: null })
+    }
     void openWithGrant(grant)
-  }, [location.state, location.pathname, navigate, openWithGrant, initialGrant])
+  }, [embedded, location, navigate, openWithGrant, initialGrant])
 
   const openFile = useCallback(async () => {
     if (dirty && !window.confirm(t('office.discardConfirm'))) return

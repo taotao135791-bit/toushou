@@ -38,6 +38,9 @@ describe('ChatPanel background metadata rendering', () => {
       expect(data.permission).toBe(true)
       expect(data.content).toEqual({ message: true, error: 'Message failed to send.' })
       expect(data.busyError).toBe('Stop unconfirmed. Try again.')
+      expect(data.restoredThinking).toEqual({ timers: 0, message: true })
+      expect(data.activeThinking).toBe(1)
+      expect(data.interruptedThinking).toBe(0)
       expect(data.defaultRecovery).toEqual({ message: true, path: true, button: 'Reselect folder…', destination: 'Default workspace' })
       expect(data.defaultRecovered).toEqual({ calls: ['default'], workspace: '/synthetic/default-save-folder', source: 'default', missing: false, promptGone: true, draft: 'Unsent default folder brief' })
     } finally { rmSync(dir, { recursive: true, force: true }) }

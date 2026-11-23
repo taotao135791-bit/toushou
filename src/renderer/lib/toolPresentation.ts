@@ -26,6 +26,7 @@ const LABELS: Record<string, Label> = {
   analytics_fetch_aggregated_data: ['查询 AppsFlyer 归因', 'Query AppsFlyer attribution'],
   toushou_boards_list: ['查看看板列表', 'View boards'], toushou_board_get: ['查看看板', 'View board'], toushou_board_create: ['新建看板', 'Create board'],
   toushou_board_customize: ['定制看板', 'Customize board'], toushou_board_check: ['检查看板', 'Check board'], toushou_af_dataset_pull: ['更新归因数据', 'Update attribution data'],
+  toushou_board_edit_targets: ['选择要编辑的看板', 'Choose boards to edit'],
   toushou_board_build_begin: ['准备看板', 'Prepare board'], toushou_board_build_status: ['查看看板进度', 'View board progress'],
   toushou_board_build_preflight: ['核对看板数据', 'Verify board data'], toushou_board_build_commit: ['保存看板', 'Save board'],
   toushou_board_build_abort: ['取消看板草稿', 'Discard board draft'], toushou_board_refresh: ['刷新看板数据', 'Refresh board data'],
@@ -41,7 +42,7 @@ const TYPES: Record<string, Label> = {
   'tt-reading': ['TikTok 读数', 'TikTok reading'], 'fb-reading': ['Facebook 读数', 'Facebook reading'], 'fb-reading-summary': ['Facebook 读数汇总', 'Facebook summary'],
   'fb-report-reading': ['Facebook 报表', 'Facebook report'], 'google-report-reading': ['Google 报表', 'Google report']
 }
-const PROXY_TOOLS = new Set(['toushou_boards_list', 'toushou_board_get', 'toushou_board_create', 'toushou_board_customize', 'toushou_board_check', 'toushou_af_dataset_pull', 'toushou_board_add_widget', 'toushou_board_update_widget', 'toushou_board_remove_widget', 'toushou_board_rename', 'toushou_dataset_import', 'toushou_tiktok_status', 'toushou_tiktok_update', 'toushou_appsflyer_apps', 'toushou_appsflyer_query', 'toushou_board_build_begin', 'toushou_board_build_status', 'toushou_board_build_preflight', 'toushou_board_build_commit', 'toushou_board_build_abort', 'toushou_board_refresh', 'toushou_board_meta_accounts'])
+const PROXY_TOOLS = new Set(['toushou_boards_list', 'toushou_board_get', 'toushou_board_create', 'toushou_board_customize', 'toushou_board_check', 'toushou_af_dataset_pull', 'toushou_board_add_widget', 'toushou_board_update_widget', 'toushou_board_remove_widget', 'toushou_board_rename', 'toushou_dataset_import', 'toushou_tiktok_status', 'toushou_tiktok_update', 'toushou_appsflyer_apps', 'toushou_appsflyer_query', 'toushou_board_edit_targets', 'toushou_board_build_begin', 'toushou_board_build_status', 'toushou_board_build_preflight', 'toushou_board_build_commit', 'toushou_board_build_abort', 'toushou_board_refresh', 'toushou_board_meta_accounts'])
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 function parse(value: unknown): unknown {
   if (typeof value !== 'string') return value

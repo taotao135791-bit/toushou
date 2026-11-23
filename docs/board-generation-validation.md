@@ -1,4 +1,20 @@
-# Board generation validation — 2.4.0 Beta
+# Board generation and editing validation
+
+## 对话编辑回归 — 2026-11-23
+
+本地生产构建通过 Electron 界面、Main、预加载接口及 OMP 17.2.7 执行。用本机确定性模型响应驱动工具调用，使用商城投放日报、素材复盘板、另一个业务的对照板和 6 行合成读数。
+
+| 优化师操作 | 保存后核对 |
+| --- | --- |
+| 点名日报，调整背景 | 原看板 ID、模块、日期和数据绑定保留。 |
+| 从同业务候选中单选素材板，加观察清单 | 素材板新增便签，未选日报的修改请求被拒绝。 |
+| 多选日报和素材板，统一复盘便签标题 | 两张板一起保存，对话分别显示可打开的结果。 |
+| 从成果继续编辑素材明细表，增加币种列 | 仍写入原表，原广告和素材 ID 列、日期及来源读数保留。 |
+| 取消目标选择 | 三张板保持当时的正式版本。 |
+
+这轮验证覆盖桌面端到保存的路径。模型理解、真实媒体取数和广告平台对账需在对应账户和模型环境另行验收。
+
+## 2.4.0 Beta validation
 
 Validated on 2026-11-06. This is a candidate validation record, not a release or
 a claim that generation succeeds for every request. Earlier candidate findings

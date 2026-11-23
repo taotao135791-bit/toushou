@@ -108,13 +108,19 @@ interface Dependencies {
 export function getChatBoardPreview(raw: unknown, deps: Dependencies): ChatBoardPreviewResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'invalid-input' }
   const request = raw as Record<string, unknown>
-  if (Object.keys(request).some(k => !['sessionId', 'boardId', 'widgetId'].includes(k)) || !['sessionId', 'boardId', 'widgetId'].every(k => typeof request[k] === 'string' && (request[k] as string).length > 0 && (request[k] as string).length <= 100 && !/[\x00-\x1f\x7f]/.test(request[k] as string))) return { ok: false, error: 'invalid-input' }
-  const access = deps.access(request.sessionId as string)
+  const validId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 100 && !/[\x00-\x1f\x7f]/.test(value)
+  if (Object.keys(request).some(key => !['sessionId', 'boardId', 'widgetId'].includes(key)) ||
+    !validId(request.sessionId) || !validId(request.boardId) ||
+    (request.widgetId !== undefined && !validId(request.widgetId))) return { ok: false, error: 'invalid-input' }
+  const access = deps.access(request.sessionId)
   if (!access || !deps.authorized(access.cwd)) return { ok: false, error: 'unauthorized' }
   try {
     const board = (deps.boards ?? listBoards)().find(item => item.id === request.boardId)
-    const widget = board?.widgets.find(item => item.id === request.widgetId)
-    if (!board || !widget) return { ok: false, error: 'not-found' }
+    if (!board) return { ok: false, error: 'not-found' }
+    // A result card can verify a saved board without requesting any file.
+    if (request.widgetId === undefined) return { ok: false, error: 'unsupported' }
+    const widget = board.widgets.find(item => item.id === request.widgetId)
+    if (!widget) return { ok: false, error: 'not-found' }
     if (widget.type === 'reading-snapshot' || widget.type === 'reading-module') {
       const found = (deps.find ?? findHtmlBoardForReading)({ boardId: board.id, widgetId: widget.id })
       let html: string

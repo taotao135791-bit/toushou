@@ -109,7 +109,9 @@ describe('board toolkit prompt contract', () => {
       expect(tool.parameters).toMatchObject({ properties: { buildId: { type: 'string' } }, required: expect.arrayContaining(['buildId']) })
     }
     const begin = registered.find(item => item.name === 'toushou_board_build_begin')!
-    expect(begin.parameters).toMatchObject({ additionalProperties: false, properties: { targetBoardId: { type: 'string' } } })
+    expect(begin.parameters).toMatchObject({ additionalProperties: false, properties: {
+      targetBoardId: { type: 'string' }, targetBoardIds: { type: 'array', minItems: 1, uniqueItems: true }
+    } })
     expect(begin.parameters).not.toHaveProperty('properties.required')
     const commit = registered.find(item => item.name === 'toushou_board_build_commit')!
     expect(commit.parameters).toMatchObject({ required: ['buildId'], additionalProperties: false })
@@ -119,5 +121,19 @@ describe('board toolkit prompt contract', () => {
     expect(refresh.parameters).not.toHaveProperty('properties.startDate')
     const add = registered.find(item => item.name === 'toushou_board_add_widget')!
     expect(add.parameters).toMatchObject({ properties: { dateScope: { anyOf: expect.arrayContaining([expect.objectContaining({ properties: expect.objectContaining({ mode: { const: 'lookback' }, anchor: { const: 'reportEnd' } }) })]) } } })
+  })
+
+  it('exposes the confirmed selection before a multi-board edit draft', () => {
+    const registered: Array<{ name: string; description: string; parameters: unknown; approval?: string }> = []
+    registerBoardsTools({ registerTool: tool => { registered.push(tool) } })
+    const select = registered.find(item => item.name === 'toushou_board_edit_targets')!
+    expect(select.approval).toBe('read')
+    expect(select.parameters).toMatchObject({ additionalProperties: false, required: [], properties: {
+      candidateBoardIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string' } }
+    } })
+    expect(select.description).toContain('由用户在应用中勾选一个或多个')
+    expect(select.description).toContain('只使用返回的targetBoardIds')
+    expect(registered.find(item => item.name === 'toushou_board_build_begin')?.description).toContain('使用返回的全部targetBoardIds')
+    expect(registered.find(item => item.name === 'toushou_board_build_commit')?.description).toContain('多选时整体保存')
   })
 })

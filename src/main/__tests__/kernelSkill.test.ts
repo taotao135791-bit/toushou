@@ -40,6 +40,23 @@ describe('ensureKernelSkill', () => {
     expect(readFileSync(file(), 'utf-8')).toBe(edited)
   })
 
+  it('refreshes legacy board guidance in the stock playbook while preserving a customized copy', () => {
+    expect(ensureKernelSkill().ok).toBe(true)
+    const stock = KERNEL_SKILL_MARKDOWN.replace(
+      /^- 用户要直接更新已有看板时.*$/m,
+      '- 用户在看板语境下要求数据时：把素材/榜单整理成 ```board-cards 围栏（JSON 一行、双引号、无尾逗号，最多 12 张卡），用户点 Apply 才落板——围栏是唯一入口，禁止另写文件交付看板数据'
+    )
+    expect(stock).not.toBe(KERNEL_SKILL_MARKDOWN)
+    writeFileSync(file(), stock, 'utf-8')
+    expect(ensureKernelSkill().ok).toBe(true)
+    expect(readFileSync(file(), 'utf-8')).toBe(KERNEL_SKILL_MARKDOWN)
+
+    const edited = stock.replace('第 0 步', '团队定制的第 0 步')
+    writeFileSync(file(), edited, 'utf-8')
+    expect(ensureKernelSkill().ok).toBe(true)
+    expect(readFileSync(file(), 'utf-8')).toBe(edited)
+  })
+
   it('upgrades an outdated kernel version', () => {
     const outdated = KERNEL_SKILL_MARKDOWN.replace(
       `<!-- toushou:kernel-skill v${KERNEL_SKILL_VERSION} -->`,

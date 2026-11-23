@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 
-const mocks = vi.hoisted(() => ({ writeApproval: vi.fn(), plan: vi.fn((..._args: unknown[]) => ({})), spawn: vi.fn(() => ({})), prompt: vi.fn(() => true), registerBuild: vi.fn(), revokeBuild: vi.fn(), gone: undefined as undefined | (() => void) }))
+const mocks = vi.hoisted(() => ({ command: 'pi', writeApproval: vi.fn(), plan: vi.fn((..._args: unknown[]) => ({})), spawn: vi.fn(() => ({})), prompt: vi.fn(() => true), registerBuild: vi.fn(), revokeBuild: vi.fn(), gone: undefined as undefined | (() => void) }))
 vi.mock('electron', () => ({ app: { isPackaged: true, getPath: () => '/tmp' }, BrowserWindow: { getAllWindows: () => [] } }))
 vi.mock('../store', () => ({ getStore: (key: string) => key === 'permissionMode' ? 'ask' : 'en', rememberRecentProject: vi.fn() }))
-vi.mock('./OmpCapabilities', () => ({ detectCli: () => ({ available: true, command: 'synthetic' }), noteHandshake: vi.fn(), noteSessionState: vi.fn(), noteSubagentCapabilityOutcome: vi.fn(), invalidateCliCache: vi.fn(), executableSearchDirs: vi.fn(), getCapabilities: vi.fn() }))
+vi.mock('./OmpCapabilities', () => ({ detectCli: () => ({ available: true, command: mocks.command }), noteHandshake: vi.fn(), noteSessionState: vi.fn(), noteSubagentCapabilityOutcome: vi.fn(), invalidateCliCache: vi.fn(), executableSearchDirs: vi.fn(), getCapabilities: vi.fn() }))
 vi.mock('./OmpProcess', () => ({ planSpawn: mocks.plan, spawnProcess: mocks.spawn, resolvePermissionMode: () => ({ approval: 'off' }), writeApprovalConfig: mocks.writeApproval, removeApprovalConfig: vi.fn() }))
 vi.mock('../boardBuilds', () => ({ registerBoardBuildTurn: mocks.registerBuild, revokeBoardBuildSession: mocks.revokeBuild }))
 vi.mock('./OmpSession', () => ({ OmpSession: class { sendPrompt = mocks.prompt; constructor(public session: unknown, _proc: unknown, hooks: { onGone: () => void }) { mocks.gone = hooks.onGone } } }))
@@ -47,8 +47,23 @@ describe('fixed readonly session', () => {
     expect(mocks.writeApproval).not.toHaveBeenCalled()
     const normal = createSession(process.cwd(), () => {})
     expect(normal.readonly).toBeUndefined()
-    expect(updateApprovalConfig(normal.id, 'ask')).toBe(true)
+    expect(normal).toMatchObject({ nativePermissionMode: 'ask', nativePermissionMutable: true })
+    expect(updateApprovalConfig(normal.id, 'full')).toBe(true)
+    expect(getSession(normal.id)?.nativePermissionMode).toBe('full')
     expect(mocks.writeApproval).toHaveBeenCalledOnce()
+  })
+  it('keeps current OMP permission metadata fixed at the actual spawn mode', () => {
+    mocks.command = 'omp'
+    mocks.writeApproval.mockClear()
+    try {
+      const session = createSession(process.cwd(), () => {}, { permissionMode: 'full' })
+      expect(session).toMatchObject({ nativePermissionMode: 'full', nativePermissionMutable: false })
+      expect(updateApprovalConfig(session.id, 'ask')).toBe(false)
+      expect(getSession(session.id)?.nativePermissionMode).toBe('full')
+      expect(mocks.writeApproval).not.toHaveBeenCalled()
+    } finally {
+      mocks.command = 'pi'
+    }
   })
   it('publishes restored manual title metadata at session creation', () => {
     mocks.spawn.mockImplementation(() => new EventEmitter())

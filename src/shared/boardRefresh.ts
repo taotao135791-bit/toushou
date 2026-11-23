@@ -11,8 +11,9 @@ export interface BoardRefreshSource {
   kind: 'tiktok' | 'meta' | 'appsflyer' | 'dataset'
   status: BoardRefreshStatus
   window: BoardDateWindow
-  /** Today's AF response is partial (as of now), not a complete day. */
+  /** Coverage gap, such as today's AF data or a failed TikTok account. */
   partial?: boolean
+  coverage?: { available: number; requested: number }
   dataset?: BoardDataset
   proofs?: TikTokDatasetProof[]
   accountWindows?: TikTokReadingSummary['accountWindows']
@@ -69,6 +70,41 @@ export interface BoardRefreshResult {
   queryVersions?: Array<{ specId: string; digest: string }>
   error?: string
 }
+
+const completed = (status: BoardRefreshStatus) => status === 'updated' || status === 'empty'
+
+export function boardRefreshCoverageStatus(result: BoardRefreshResult): 'ready' | 'partial' | 'failed' {
+  if (result.widgets.every(widget => completed(widget.status)) && !result.sources.some(source => source.kind === 'tiktok' && source.partial)) return 'ready'
+  // A mixed widget can still render its independent bindings after another
+  // binding fails. Count at the source level to keep that coverage visible.
+  const available = result.sources.some(source => {
+    if (completed(source.status)) return true
+    const data = source.kind === 'dataset' ? source.dataset : undefined
+    if (!data?.rows.length) return false
+    const date = data.columns.findIndex(column => column.type === 'date')
+    if (date < 0) return true
+    const windows = result.widgets.flatMap(widget => widget.bindings.filter(binding => binding.sourceKey === source.key).map(binding => binding.window ?? widget.window))
+    return data.rows.some(row => windows.some(window => String(row[date]) >= window.start && String(row[date]) <= window.end))
+  })
+  return available ? 'partial' : 'failed'
+}
+
+/** Remove authorized rows for a disconnected source while keeping other reads. */
+export function dropBoardRefreshSource(result: BoardRefreshResult, kind: BoardRefreshSource['kind']): BoardRefreshResult | undefined {
+  const keys = new Set(result.sources.filter(source => source.kind === kind).map(source => source.key))
+  if (!keys.size) return result
+  const sources = result.sources.map(source => keys.has(source.key)
+    ? { key: source.key, kind, window: source.window, status: 'failed' as const, error: 'source-disconnected' }
+    : source)
+  const widgets = result.widgets.map(widget => {
+    if (widget.nativeSourceKey && keys.has(widget.nativeSourceKey)) return { widgetId: widget.widgetId, window: widget.window, status: 'failed' as const, bindings: widget.bindings, nativeSourceKey: widget.nativeSourceKey }
+    if (widget.bindings.some(binding => keys.has(binding.sourceKey))) return { ...widget, status: 'failed' as const }
+    return widget
+  })
+  const next: BoardRefreshResult = { ...result, sources, widgets, ok: false, status: 'partial' }
+  return boardRefreshCoverageStatus(next) === 'partial' ? next : undefined
+}
+
 export function parseBoardRefreshRequest(raw: unknown): BoardRefreshRequest | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const value = raw as Record<string, unknown>
