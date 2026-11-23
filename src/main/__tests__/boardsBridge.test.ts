@@ -329,8 +329,10 @@ describe('boards bridge dispatch', () => {
       return { ok: true, results: [{ name: '安装量', datasetName: 'AF-安装量', datasetId: created.dataset.id, ok: true, rowCount: 1 }] }
     })
     const saveQuerySpecMock = vi.fn()
+    const discardUnboundQuerySpec = vi.fn()
     vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
       saveQuerySpec: saveQuerySpecMock,
+      discardUnboundQuerySpec,
       listQuerySpecs: () => [],
       pullAppsFlyerDatasets: pull
     }))
@@ -345,6 +347,7 @@ describe('boards bridge dispatch', () => {
       expect(arg.window).toEqual({ start: '2026-10-01', end: '2026-10-07' })
       expect(ok).toMatchObject({ spec: { id: arg.specIds[0] }, window: arg.window })
       expect(saveQuerySpecMock).toHaveBeenCalledTimes(1)
+      expect(discardUnboundQuerySpec).not.toHaveBeenCalled()
       const saved = saveQuerySpecMock.mock.calls[0][0] as { id: string; query: { in_app_event: string[]; groupings: string[]; filters: Record<string, string[]> } }
       expect(saved.query.in_app_event).toEqual(['custom_checkout'])
       expect(saved.query.groupings).toContain('Geo')
