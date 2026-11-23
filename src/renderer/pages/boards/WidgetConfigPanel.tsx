@@ -449,12 +449,19 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
   }
 
   return (
+    // 大编辑对话框（用户要求：卡片内嵌编辑框太小）：从"卡内小浮层"升级为
+    // 居中的大幅对话框——两列布局、整页滚动、点遮罩关闭。编辑期间不改动
+    // 看板画布本身，保存仍走原 onSave 通道。
     <div
-      className="widget-config absolute inset-0 z-20 flex flex-col rounded-[16px] border border-line bg-ink-900/95 p-3 backdrop-blur-sm"
-      onMouseDown={(e) => e.stopPropagation()}
+      className="widget-config fixed inset-0 z-40 flex items-start justify-center bg-black/40 p-4 backdrop-blur-sm"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
+      <div
+        className="mt-[5vh] flex max-h-[88vh] w-full max-w-3xl flex-col rounded-2xl border border-line bg-ink-900 p-5 shadow-pop"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
       <div className="flex shrink-0 items-center justify-between">
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
+        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
           {t('boards.config')}
         </span>
         <button
@@ -462,10 +469,10 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
           title={t('boards.cancel')}
           className="rounded-md p-1 text-cream-faint transition hover:bg-overlay hover:text-cream"
         >
-          <X size={12} />
+          <X size={14} />
         </button>
       </div>
-      <div className="mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto">
+      <div className="mt-3 min-h-0 flex-1 columns-1 space-y-2 overflow-y-auto md:columns-2">
         <Field label={t('boards.config.title')}>
           <input
             value={title}
@@ -1088,6 +1095,7 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
           <Check size={10} />
           {t('boards.save')}
         </button>
+      </div>
       </div>
     </div>
   )

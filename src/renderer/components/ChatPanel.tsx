@@ -17,12 +17,14 @@ import {
   Settings2,
   BarChart3,
   Globe2,
-  Table2
+  Table2,
+  CircleAlert
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { MessageLike, UiRequest, useAppStore } from '../store'
 import { useProjects } from '../store/projects'
 import { I18nKey, useT } from '../i18n'
+import { showNotice } from '../lib/notice'
 import { createSessionForCurrentProject } from '../lib/session'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { exportFilename } from '../lib/exportFilename'
@@ -52,6 +54,13 @@ export default function ChatPanel() {
   // Background metadata keeps this object reference, so it must not rerender
   // the active transcript/composer just because another session was renamed.
   const currentSession = useAppStore((s) => s.sessions.find(session => session.id === s.currentSessionId))
+  // History preview (preview:<historyId>): the peeked transcript renders while
+  // the runtime resume continues in the background. Input stays gated until the
+  // live session swaps in — a failed resume keeps the conversation readable.
+  const sessionPreview = useAppStore((s) =>
+    s.currentSessionId?.startsWith('preview:') ? s.sessionPreviews[s.currentSessionId] : undefined
+  )
+  const previewActive = Boolean(sessionPreview)
   const cliAvailable = useAppStore((s) => s.cliAvailable)
   const workspacePanel = useAppStore((s) => s.workspacePanel)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
@@ -171,14 +180,21 @@ export default function ChatPanel() {
     }
   }, [currentSessionId])
 
+  // First-message spawn wait: the user sees an honest "creating session" row
+  // instead of a cleared composer and silence (学 dsh 的 pending echo 思路).
+  const [creatingSession, setCreatingSession] = useState(false)
+
   // useCallback-stabilized: Composer is memoized, so identity-stable handlers
   // are what let the input surface skip streaming re-renders entirely.
   const handleSend = useCallback(
     async (text: string, images?: PromptImage[]): Promise<boolean> => {
       const trimmed = text.trim()
       if (!trimmed || cliAvailable === false) return false
+      // Preview sessions are read-only; the live swap-in re-enables the composer.
+      if (currentSessionId?.startsWith('preview:')) return false
       let sessionId = currentSessionId
       if (!sessionId) {
+        setCreatingSession(true)
         try {
           sessionId = await createSessionForCurrentProject()
         } catch (err) {
@@ -188,6 +204,8 @@ export default function ChatPanel() {
           setSendError('chat.createFailed')
           setTimeout(() => setSendError(null), 3000)
           return false
+        } finally {
+          setCreatingSession(false)
         }
         if (!sessionId) {
           // No workspace could be resolved (default workspace creation failed).
@@ -374,6 +392,32 @@ export default function ChatPanel() {
     await selectWorkspace()
   }
 
+  /**
+   * 开分支：fork the CURRENT live conversation up to (and including) the
+   * chosen turn into a new session. The durable transcript is Main's record;
+   * a turn still streaming must not be branched (MessageList hides the
+   * button) because its tail is not on disk yet.
+   */
+  const handleBranchTurn = useCallback(async (sessionId: string, keepUserTurns: number) => {
+    const workspace = useAppStore.getState().currentWorkspace
+    if (!workspace) return
+    try {
+      const result = await window.electronAPI.forkSession(workspace.id, { liveSessionId: sessionId, keepUserTurns })
+      if (!result || 'error' in result) {
+        showNotice('history.forkFailed')
+        return
+      }
+      const { session, messages: restored, historicalAgents } = result
+      useAppStore.getState().addSession(session, false)
+      useAppStore.getState().setMessages(session.id, restored)
+      useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
+      useAppStore.getState().setCurrentSessionId(session.id)
+      navigate('/')
+    } catch {
+      showNotice('history.forkFailed')
+    }
+  }, [navigate])
+
   const openOfficeFile = async () => {
     const picked = await window.electronAPI.officeOpenDialog()
     if (!picked) return
@@ -393,7 +437,7 @@ export default function ChatPanel() {
         <header className="app-drag flex h-12 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
         {/* ZCode-style order: bold session title first, then context pills */}
         <span className="min-w-0 shrink truncate text-[13px] font-semibold tracking-tight text-cream">
-          {currentSession ? currentSession.title : t('chat.noActiveSession')}
+          {sessionPreview ? sessionPreview.title : currentSession ? currentSession.title : t('chat.noActiveSession')}
         </span>
         {/* project pill: full path on hover; collapses to icon-only when the
             column is squeezed (browser panel open) */}
@@ -520,7 +564,7 @@ export default function ChatPanel() {
                   busy={isBusy}
                   stopping={isStopping}
                   focusKey={currentSessionId}
-                  disabled={cliAvailable === false}
+                  disabled={cliAvailable === false || previewActive}
                   commands={slashCommands}
                   appCommands={appCommands}
                   onCompact={currentSessionId ? handleCompact : undefined}
@@ -554,7 +598,7 @@ export default function ChatPanel() {
           </div>
         ) : (
           <div className="mx-auto max-w-[760px]">
-            <MessageList messages={sessionMessages} sessionId={currentSessionId} onRetry={handleRetry} />
+            <MessageList messages={sessionMessages} sessionId={currentSessionId} onRetry={handleRetry} onBranch={handleBranchTurn} />
             <ExecutionActivity sessionId={currentSessionId} />
             {showThinking && (
               <div className="msg-in flex items-center gap-1 px-6 pb-6">
@@ -563,6 +607,18 @@ export default function ChatPanel() {
                 <span className="think-dot h-1.5 w-1.5 rounded-full bg-cream-dim" />
               </div>
             )}
+          </div>
+        )}
+        {previewActive && (
+          <div className="msg-in flex items-center gap-2 px-6 pb-2 text-[12px] text-cream-faint">
+            {sessionPreview?.failed ? <CircleAlert size={13} className="text-amber-600" /> : <Loader2 size={13} className="animate-spin" />}
+            {sessionPreview?.failed ? t('chat.previewFailed') : t('chat.previewRestoring')}
+          </div>
+        )}
+        {creatingSession && (
+          <div className="msg-in flex items-center gap-2 px-6 pb-6 text-[12px] text-cream-faint">
+            <Loader2 size={13} className="animate-spin" />
+            {t('chat.creatingSession')}
           </div>
         )}
         </div>
@@ -616,7 +672,7 @@ export default function ChatPanel() {
             busy={isBusy}
             stopping={isStopping}
             focusKey={currentSessionId}
-            disabled={cliAvailable === false}
+            disabled={cliAvailable === false || previewActive}
             commands={slashCommands}
             appCommands={appCommands}
             onCompact={currentSessionId ? handleCompact : undefined}

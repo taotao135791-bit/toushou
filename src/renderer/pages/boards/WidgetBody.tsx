@@ -22,6 +22,7 @@ import {
 } from '@shared/datasets'
 import { usdHint, useFxRates } from '../../lib/fxRates'
 import { hasAmbiguousAdvertiserFilter, metricCurrencySafety, safeMetricGroups, safeMetricValue, uniformCurrency } from '../../lib/boardMetricSafety'
+import { isBlockedUniqueUsersMetric, isPercentMetric } from '../../lib/metricDisplay'
 import { useTweenNumber } from '../../lib/useTweenNumber'
 import { useAppStore } from '../../store'
 import { useT } from '../../i18n'
@@ -110,9 +111,43 @@ function datasetScopeLabel(
     if (!days.length) return null
     return days[0] === days[days.length - 1] ? days[0] : `${days[0]} – ${days[days.length - 1]}`
   }
+  // 数据实际覆盖（对齐口径的第一步）：标签永远说真话——显示过滤后行里
+  // 真实存在的日期范围，而不是总控"想要"的范围。缺头缺尾一眼可见。
+  const covered = datasetCoverage(dataset)
+  if (covered) return covered.start === covered.end ? short(covered.start) : `${short(covered.start)}~${short(covered.end)}`
   return masterWindow.start === masterWindow.end
     ? short(masterWindow.start)
     : `${short(masterWindow.start)}~${short(masterWindow.end)}`
+}
+
+/** Actual min/max of ISO date rows in the (already window-filtered) dataset. */
+function datasetCoverage(dataset: BoardDataset): { start: string; end: string } | null {
+  const dateIndex = dataset.columns.findIndex((column) => column.type === 'date')
+  if (dateIndex < 0) return null
+  let start: string | null = null, end: string | null = null
+  for (const row of dataset.rows) {
+    const value = row[dateIndex]
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) continue
+    if (start === null || value < start) start = value
+    if (end === null || value > end) end = value
+  }
+  return start && end ? { start, end } : null
+}
+
+/**
+ * 口径对齐检查：卡片数据实际覆盖 vs 总控要求。差一天也要显式说出来
+ * （AF 默认拉到昨天，总控"今天"口径天然差一天；数据陈旧差更多）。
+ * null = 完全对齐或无法判断（不显示提示，避免噪音）。
+ */
+function coverageMismatch(
+  dataset: BoardDataset,
+  masterWindow?: { start: string; end: string; latestDay?: boolean }
+): { covered: { start: string; end: string } } | null {
+  if (!masterWindow || masterWindow.latestDay) return null
+  const covered = datasetCoverage(dataset)
+  if (!covered) return null
+  if (covered.start === masterWindow.start && covered.end === masterWindow.end) return null
+  return { covered }
 }
 
 function tikTokScopeLabel(scope: VerifiedTikTokScope): string {
@@ -272,12 +307,12 @@ function NoteBody({ widget }: { widget: BoardWidget }) {
 }
 
 /** The big KPI number: tweens toward its new value instead of snapping. */
-function CounterValue({ value, className, animate = true }: { value: number | null; className: string; animate?: boolean }) {
+function CounterValue({ value, className, animate = true, suffix = '' }: { value: number | null; className: string; animate?: boolean; suffix?: string }) {
   const tween = useTweenNumber(animate ? value : null)
   const shown = animate ? (value === null ? null : tween) : value
   return (
     <div className={className}>
-      {shown === null ? '—' : shown.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+      {shown === null ? '—' : `${shown.toLocaleString('en-US', { maximumFractionDigits: 2 })}${suffix}`}
     </div>
   )
 }
@@ -306,6 +341,9 @@ function CounterBody({
   let usdHintText: string | null = null
   let currencyBadge: string | null = null
   let scopeLabel: string | null = null
+  let percentSuffix = ''
+  let uniqueBlocked = false
+  let coverageNote: { start: string; end: string } | null = null
   // Where this number came from (TikTok / AppsFlyer / a named import) — shown
   // as a small source chip so mixed-source boards read honestly at a glance.
   let sourceLabel: string | null = null
@@ -329,6 +367,18 @@ function CounterBody({
         currencyBadge = currency
         if (typeof value === 'number') usdHintText = usdHint(value, currencyBadge, fxRates)
       }
+      // 口径提示：数据实际覆盖 ≠ 总控时明确标出（AF 默认拉到昨天、总控
+      // 今天口径差一天；数据陈旧差更多）。零行时给出可操作的刷新指引。
+      const mismatch = coverageMismatch(binding.dataset, masterWindow)
+      if (mismatch) coverageNote = mismatch.covered
+      if (value === null && binding.dataset.rows.length === 0) coverageNote = coverageNote ?? datasetCoverage(binding.dataset)
+      // 留存率/xx率 这类百分比指标：显示补 % 后缀（聚合层已按均值处理）。
+      percentSuffix = isPercentMetric(configStr(widget.config.metric)) ? '%' : ''
+      // 独立/活跃用户跨行相加会重复计数被安全层拦下：卡片解释原因而不是
+      // 一个光秃秃的 "—"，用户才知道要绑定全窗口单行查询。
+      if (value === null && isBlockedUniqueUsersMetric(configStr(widget.config.metric)) && configOp(widget.config.op) === 'sum' && binding.dataset.rows.length > 1) {
+        uniqueBlocked = true
+      }
     }
   } else {
     value = widget.config.value === null ? null : typeof widget.config.value === 'number' ? widget.config.value : 0
@@ -348,9 +398,19 @@ function CounterBody({
           {[sourceLabel, scopeLabel].filter(Boolean).join(' · ')}
         </span>
       )}
-      <CounterValue value={value} animate={widget.config.source !== 'dataset'} className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream" />
+      <CounterValue value={value} animate={widget.config.source !== 'dataset'} suffix={percentSuffix} className="break-all text-center font-mono text-[38px] leading-none tabular-nums text-cream" />
       {usdHintText && (
         <div className="text-center text-[10.5px] leading-4 tabular-nums text-cream-faint">{usdHintText}</div>
+      )}
+      {uniqueBlocked && (
+        <div className="max-w-[92%] text-center text-[9.5px] leading-4 text-amber-700 dark:text-amber-300">{t('boards.metric.uniqueUsersBlocked')}</div>
+      )}
+      {coverageNote && (
+        <div className="max-w-[92%] text-center text-[9.5px] leading-4 text-cream-faint">
+          {value === null
+            ? t('boards.coverage.stale', { range: `${coverageNote.start.slice(5)}~${coverageNote.end.slice(5)}` })
+            : t('boards.coverage.partial', { range: `${coverageNote.start.slice(5)}~${coverageNote.end.slice(5)}` })}
+        </div>
       )}
       {label && (
         <div className="text-[10.5px] uppercase tracking-[0.14em] text-cream-faint">{label}</div>

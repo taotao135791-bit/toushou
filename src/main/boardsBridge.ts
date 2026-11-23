@@ -37,6 +37,7 @@ import {
   type BoardText
 } from '../shared/boards'
 import type { BoardStyle, BoardWidget, BoardWidgetLayout, BoardWidgetStyle, KanbanBoard, WidgetType } from '../shared/types'
+import type { BoardRefreshResult } from '../shared/boardRefresh'
 
 /**
  * Loopback bridge for the bundled boards toolkit: the OMP extension registers
@@ -170,6 +171,7 @@ export type BoardsBridgeRequest = (
   | { action: 'board_rename'; boardId?: unknown; name?: unknown; newName?: unknown }
   | { action: 'dataset_import'; filePath?: unknown; name?: unknown }
   | { action: 'af_dataset_pull'; name?: unknown; appId?: unknown; eventName?: unknown; days?: unknown; startDate?: unknown; endDate?: unknown; basis?: unknown; metrics?: unknown; groupings?: unknown; geo?: unknown; countries?: unknown; mediaSources?: unknown }
+  | { action: 'af_query_plan'; appId?: unknown; days?: unknown; mediaSources?: unknown; countries?: unknown }
 ) & { buildId?: unknown }
 
 function boundedString(value: unknown, max: number): string | null {
@@ -286,6 +288,8 @@ function parseBoardsBridgeAction(raw: unknown): BoardsBridgeRequest | null {
       return { action: 'dataset_import', filePath: value.filePath, name: value.name }
     case 'af_dataset_pull':
       return { action: 'af_dataset_pull', name: value.name, appId: value.appId, eventName: value.eventName, days: value.days, startDate: value.startDate, endDate: value.endDate, basis: value.basis, metrics: value.metrics, groupings: value.groupings, geo: value.geo, countries: value.countries, mediaSources: value.mediaSources }
+    case 'af_query_plan':
+      return { action: 'af_query_plan', appId: value.appId, days: value.days, mediaSources: value.mediaSources, countries: value.countries }
     default:
       return null
   }
@@ -400,8 +404,47 @@ function boardSummary(board: KanbanBoard): Record<string, unknown> {
   }
 }
 
-function persistedBoardSummary(board: KanbanBoard): Record<string, unknown> {
-  return boardSummary(listBoards().find(item => item.id === board.id) ?? board)
+/**
+ * Mutation receipt — the slim confirmation every board WRITE returns to the
+ * agent. Full board JSON used to ride along on every add/update/remove (a
+ * 10-widget build echoed the whole board 10+ times; single echoes reached
+ * 45KB and dominated the conversation context). The agent still gets the
+ * affected widget id; for the full picture it calls board_get / preflight.
+ */
+function mutationReceipt(board: KanbanBoard, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ok: true,
+    board: {
+      id: board.id,
+      name: modelBoardName(board),
+      widgetCount: board.widgets.length,
+      widgetTypes: board.widgets.map((widget) => widget.type)
+    },
+    ...extra
+  }
+}
+
+/**
+ * Agent-facing refresh result: sources keep status/window/identifiers, the
+ * per-source dataset is reduced to a brief (row payloads never enter the
+ * conversation — a 7k-row TikTok report otherwise lands in context whole).
+ * Main's internal refresh snapshot is untouched; validation reads that, not
+ * this projection.
+ */
+function slimRefreshResult(refreshed: BoardRefreshResult): Record<string, unknown> {
+  return {
+    ...refreshed,
+    sources: refreshed.sources.map((source) => ({
+      key: source.key,
+      kind: source.kind,
+      status: source.status,
+      window: source.window,
+      ...(source.partial ? { partial: true } : {}),
+      error: source.error,
+      ...(source.dataset ? { dataset: { id: source.dataset.id, name: source.dataset.name, rowCount: source.dataset.rows.length, columns: source.dataset.columns.map((column) => column.name) } } : {})
+    })),
+    widgets: refreshed.widgets.map((widget) => ({ widgetId: widget.widgetId, status: widget.status, window: widget.window, bindings: widget.bindings }))
+  } satisfies Record<string, unknown> as Record<string, unknown>
 }
 
 /** Model-facing board reads use a bounded snapshot projection and omit provider errors. */
@@ -532,7 +575,9 @@ export async function authorizeAndDispatch(
         const refreshed = await refreshBoard({ boardId: tool.boardId }, { stillAuthorized })
         const ids = refreshed.sources.filter(source => ['updated', 'empty'].includes(source.status) && source.kind !== 'dataset').flatMap(source => source.dataset ? [source.dataset.id] : [])
         if (ids.length) recordBoardBuildSourceEvidence(sessionId, 'refresh', ids)
-        return { ...refreshed }
+        // The agent gets the slim projection; Main-side snapshots/validation
+        // use the full result object, untouched.
+        return slimRefreshResult(refreshed)
       }
       const result = await dispatch(tool, access.cwd, write ? stillAuthorized : undefined)
       if (tool.action === 'af_dataset_pull' && result.ok === true && result.dataset && typeof result.dataset === 'object') {
@@ -708,7 +753,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const datasetReady = listDatasets().some((dataset) => dataset.name === 'TikTok 报表' && dataset.rows.length > 0)
     return {
       ok: true,
-      board: persistedBoardSummary(board),
+      ...mutationReceipt(board),
       ...(template === 'tiktok' ? { datasetReady } : {}),
       note: template === 'meta'
         ? '已创建 Meta 原生读数看板。请在 Meta 读数模块加载并选择已授权账户，刷新和总控日期切换会经 Main 只读 MCP 更新绑定的指标及每日趋势。不要将这些卡片改为 manual 固定快照，也不要添加整页 HTML 代替原生模块；缺失指标不补零。'
@@ -860,6 +905,48 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     }
   }
 
+  // 预审：宽泛需求先花 1 次调用拿该应用的维度清单（事件/渠道/地区/日期范围），
+  // 给用户勾选后再逐组 af_dataset_pull——避免大范围查询反复烧调用额度。
+  if (tool.action === 'af_query_plan') {
+    const appId = boundedString(tool.appId, 200)
+    if (!appId) return { ok: false, error: 'invalid-input', hint: 'appId 必填（先用 toushou_appsflyer_apps 确认）。' }
+    const days = tool.days === undefined ? 7 : Number(tool.days)
+    if (!Number.isInteger(days) || days < 1 || days > 366) return { ok: false, error: 'invalid-window' }
+    const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const end = new Date()
+    end.setDate(end.getDate() - 1)
+    const start = new Date(end)
+    start.setDate(start.getDate() - (days - 1))
+    const planWindow = { start: iso(start), end: iso(end) }
+    if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    const { planAppsFlyerQuery } = await import('./integrations/appsflyer/appsflyerDataset')
+    let plan
+    try {
+      plan = await planAppsFlyerQuery({ appId, window: planWindow })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const hints: Record<string, string> = {
+        'not-connected': 'AppsFlyer 未连接或授权未验证，请先在连接页完成授权。',
+        'appsflyer-invalid-data': '查询窗口内没有该应用的归因数据（可能未投放或数据未回传）。',
+        'appsflyer-authorization-error': '授权已失效或权限不足，请重新连接。'
+      }
+      return { ok: false, error: message.slice(0, 200), ...(hints[message] ? { hint: hints[message] } : {}) }
+    }
+    return {
+      ok: true,
+      plan: {
+        appId,
+        window: planWindow,
+        events: plan.events,
+        mediaSources: plan.mediaSources,
+        dateSpan: plan.dateSpan,
+        totalRows: plan.totalRows,
+        suggestedCalls: plan.suggestedCalls
+      },
+      hint: `预审完成（消耗 1 次调用）：窗口内共 ${plan.totalRows} 行、${plan.events.length} 种事件。把清单给用户勾选（全部/按事件/按渠道/按地区），确认后每组一次 toushou_af_dataset_pull 落成 AF-{name} 活数据集（每条 1 次调用）。若某组合行数接近上限请进一步收窄维度。`
+    }
+  }
+
   const board = findBoard(tool)
   if (!board) return { ok: false, error: 'board-not-found' }
   if (board.locked === true) return { ok: false, error: 'board-locked' }
@@ -928,13 +1015,13 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       if (!isDeepStrictEqual(previous.config, widget.config)) changes.push({ widgetId: widget.id, target: 'scope', before: { range: previous.config.range ?? null, metrics: previous.config.metrics ?? null, independent: previous.config.independent === true }, after: { range: widget.config.range ?? null, metrics: widget.config.metrics ?? null, independent: widget.config.independent === true } })
     }
     if (tool.preview !== false) return { ok: true, preview: true, expectedUpdatedAt: board.updatedAt, changes, previewBoard: boardSummary(next) }
-    if (changes.length === 0) return { ok: true, applied: false, board: boardSummary(board), changes }
+    if (changes.length === 0) return { ok: true, applied: false, ...mutationReceipt(board), changes }
     if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
     next.updatedAt = Math.max(Date.now(), board.updatedAt + 1)
     const result = saveBoard(next, undefined, board.updatedAt)
     if (!result.ok) return { ok: false, error: result.error }
     const saved = listBoards().find(item => item.id === board.id)
-    return { ok: true, applied: true, board: boardSummary(saved ?? next), changes }
+    return mutationReceipt(saved ?? next, { applied: true, changes })
   }
 
   if (tool.action === 'board_add_widget') {
@@ -987,7 +1074,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     board.widgets = [...board.widgets, board.masterScope && widget.config.independent !== true ? applyMasterScope(widget, board.masterScope) : widget]
     const result = saveBoard(board)
     if (!result.ok) return { ok: false, error: 'invalid-widget-config' }
-    return { ok: true, board: persistedBoardSummary(board), createdWidgetId: widget.id }
+    return mutationReceipt(board, { createdWidgetId: widget.id, hint: '变更回执只含看板概况；查看完整看板用 board_get，验收用 board_check/board_build_preflight。' })
   }
 
   if (tool.action === 'board_remove_widget') {
@@ -1000,7 +1087,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     if (!result.ok) return { ok: false, error: 'save-failed' }
     const cleanup = boardBuildRoot() ? { ok: true } : pruneHtmlBoardsForBoard({ boardId: board.id, retainedWidgetIds: board.widgets.filter(widget => widget.type === 'reading-snapshot' || widget.type === 'reading-module').map(widget => widget.id) })
     if (!cleanup.ok) return { ok: false, error: 'html-cleanup-failed', message: '组件已删除，但本地 HTML 副本清理失败；请在看板中重试清理。' }
-    return { ok: true, board: persistedBoardSummary(board) }
+    return mutationReceipt(board, { removedWidgetId: widgetId })
   }
 
   if (tool.action === 'board_update_widget') {
@@ -1041,7 +1128,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     if (tool.style === null) delete board.widgets.find(widget => widget.id === widgetId)!.style
     const result = saveBoard(board)
     if (!result.ok) return { ok: false, error: 'invalid-widget-config' }
-    return { ok: true, board: persistedBoardSummary(board) }
+    return mutationReceipt(board, { updatedWidgetId: widgetId })
   }
 
   // board_rename
@@ -1052,7 +1139,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
   }
   const result = saveBoard({ ...board, name: newName, updatedAt: Date.now() })
   if (!result.ok) return { ok: false, error: 'save-failed' }
-  return { ok: true, board: persistedBoardSummary({ ...board, name: newName }) }
+  return mutationReceipt({ ...board, name: newName }, { renamedTo: newName })
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {

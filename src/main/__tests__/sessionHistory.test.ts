@@ -132,7 +132,10 @@ describe('listSessionHistory', () => {
     expect(list.map((s) => s.uuid)).toEqual(['uuid-b', 'uuid-a'])
     expect(list[0].title).toBe('add dark mode')
     expect(list[1].title).toBe('fix the login bug')
-    expect(list[1].timestamp).toBe(Date.parse('2025-01-01T00:00:00.000Z'))
+    // Recency = the LAST MESSAGE timestamp (opening-adjacent writes such as
+    // title/metadata lines must not float a merely-opened conversation to the
+    // top). The fixture file's mtime is "now" — it must NOT win.
+    expect(list[1].timestamp).toBe(Date.parse('2025-01-01T00:00:02.000Z'))
     expect(list[1].cwd).toBe(projectDir)
     expect(list[1].filePath.endsWith('.jsonl')).toBe(true)
   })
@@ -143,7 +146,22 @@ describe('listSessionHistory', () => {
       userMessage('epoch session')
     ])
     const list = await listSessionHistory(projectDir, agentDir)
-    expect(list[0].timestamp).toBe(1735689600000)
+    expect(list[0].timestamp).toBe(Date.parse('2025-01-01T00:00:01.000Z'))
+  })
+
+  it('keeps recency at the last message when resume machinery appends newer metadata lines', async () => {
+    writeSessionFile('touched_uuid-t.jsonl', [
+      sessionHeader('uuid-t', '2024-12-01T00:00:00.000Z'),
+      userMessage('original turn'),
+      assistantMessage('original answer'),
+      // Resume/open can append title + metadata records with NEW timestamps;
+      // they are not interaction and must not float the row.
+      JSON.stringify({ type: 'title', v: 1, title: 'renamed later', updatedAt: '2026-06-01T00:00:00.000Z' }),
+      JSON.stringify({ type: 'model_change', id: 'mc', timestamp: '2026-06-01T00:00:01.000Z', model: 'x' })
+    ])
+    const list = await listSessionHistory(projectDir, agentDir)
+    const touched = list.find((entry) => entry.uuid === 'uuid-t')
+    expect(touched?.timestamp).toBe(Date.parse('2025-01-01T00:00:02.000Z'))
   })
 
   it('parses current-omp files with a title line before the session header', async () => {

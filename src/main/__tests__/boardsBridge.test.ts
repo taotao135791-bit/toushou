@@ -68,8 +68,12 @@ describe('boards bridge dispatch', () => {
     expect((await dispatch({ action: 'board_add_widget', name: 'Custom synthetic', type: 'counter', title: 'Metric', config: { source: 'dataset', datasetId: 'synthetic-live', metric: 'Count', op: 'sum' }, layout: { x: 0, y: 0, w: 6, h: 3 }, style: { accent: '#123456', radius: 12 } })).ok).toBe(true)
     const addedNote = await dispatch({ action: 'board_add_widget', name: 'Custom synthetic', type: 'note', title: 'Highlight', config: { text: 'Synthetic observation' }, layout: { x: 6, y: 0, w: 6, h: 3 } })
     expect(addedNote.ok).toBe(true)
+    // Mutations answer with slim receipts (no full board echo): the receipt
+    // names the affected widget, state is read from the store.
+    expect(typeof (addedNote as { createdWidgetId?: string }).createdWidgetId).toBe('string')
+    expect((addedNote.board as { widgetCount: number }).widgetCount).toBe(2)
     const before = listBoards()[0]
-    expect((addedNote.board as { updatedAt: number }).updatedAt).toBe(before.updatedAt)
+    expect(before.widgets).toHaveLength(2)
     const [metric, note] = before.widgets
     const request = { action: 'board_customize' as const, version: 1, boardId: before.id, expectedUpdatedAt: before.updatedAt, style: { background: '#FFFFFF' }, widgets: [
       { widgetId: metric.id, layout: note.layout, style: { padding: 16 }, title: 'Orders' },
@@ -121,7 +125,8 @@ describe('boards bridge dispatch', () => {
   it('creates an empty board by default without adding a live platform reader or requesting a report', async () => {
     const created = await dispatch({ action: 'board_create', name: 'Synthetic' })
     expect(created.ok).toBe(true)
-    expect(created.board).toMatchObject({ name: 'Synthetic', widgets: [] })
+    // Slim receipt: name + widget count; state assertions read the store.
+    expect(created.board).toMatchObject({ name: 'Synthetic', widgetCount: 0, widgetTypes: [] })
     expect(created.note).toBe('看板已创建。')
     expect(created).not.toHaveProperty('datasetReady')
     expect(listBoards()[0].widgets).toEqual([])
@@ -179,9 +184,9 @@ describe('boards bridge dispatch', () => {
     const proposal = { version: 1, boardId: config.evidence.boardId, widgetId: config.evidence.widgetId, revision: config.evidence.revision, highlights: [{ text: 'Review this spending', evidence: [{ accountIndex: 1, metric: 'spend', value: 42 }] }] }
     const raw = JSON.stringify(proposal)
     expect(validateBoardHighlights({ raw })).toMatchObject({ ok: true })
-    expect(listBoards()[0].widgets).toHaveLength(created.board.widgets.length)
+    expect(listBoards()[0].widgets).toHaveLength((created.board as { widgets: unknown[] }).widgets.length)
     expect(applyBoardHighlights({ raw })).toMatchObject({ ok: true, boardId: created.board.id })
-    expect(listBoards()[0].widgets).toHaveLength(created.board.widgets.length + 1)
+    expect(listBoards()[0].widgets).toHaveLength((created.board as { widgets: unknown[] }).widgets.length + 1)
   })
   it('exposes a bounded account projection of reading snapshots to model board operations', async () => {
     const snapshot: ReadingSnapshot = {
@@ -221,7 +226,8 @@ describe('boards bridge dispatch', () => {
       advertiserIds: '7300000000001, 7300000000002'
     })
     expect(created.ok).toBe(true)
-    const board = (created.board as { id: string; widgets: Array<{ type: string; config: Record<string, unknown> }> })
+    // Receipt gives the board id; template contents are read from the store.
+    const board = listBoards().find(b => b.id === (created.board as { id: string }).id)!
     expect(board.widgets.some((w) => w.type === 'counter')).toBe(true)
     expect(board.widgets.some((w) => w.type === 'chart-line')).toBe(true)
     const readings = board.widgets.filter((w) => w.type === 'tt-reading')
@@ -260,7 +266,7 @@ describe('boards bridge dispatch', () => {
       config: { advertiserIds: '7300000000001', range: '28' }
     })
     expect(added.ok).toBe(true)
-    const widgets = (added.board as { widgets: Array<{ id: string; type: string; config: Record<string, unknown> }> }).widgets
+    const widgets = listBoards().find(b => b.name === '看板A')!.widgets
     const widget = widgets.find((w) => w.type === 'tt-reading')
     expect(widget?.config.range).toBe('28')
 
@@ -271,12 +277,12 @@ describe('boards bridge dispatch', () => {
       config: { range: '7' }
     })
     expect(updated.ok).toBe(true)
-    const after = (updated.board as { widgets: Array<{ config: Record<string, unknown> }> }).widgets.find((w) => w.config.range !== undefined)
+    const after = listBoards().find(b => b.name === '看板A')!.widgets.find((w) => w.config.range !== undefined)
     expect(after?.config.range).toBe('7')
 
     const removed = await dispatch({ action: 'board_remove_widget', name: '看板A', widgetId: widget!.id })
     expect(removed.ok).toBe(true)
-    expect((removed.board as { widgets: unknown[] }).widgets).toHaveLength(0)
+    expect((removed.board as { widgetCount: number }).widgetCount).toBe(0)
   })
 
   it('does not let model board tools fabricate reading snapshot widgets', async () => {
@@ -544,7 +550,7 @@ describe('dispatch board_create cross-account', () => {
       advertiserIds: '7300000000001, 7300000000002'
     })
     expect(created.ok).toBe(true)
-    const board = (created.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> })
+    const board = listBoards().find(b => b.id === (created.board as { id: string }).id)!
     const counter = board.widgets.find((w) => w.type === 'counter')!
     expect(counter.config.filterColumn).toBe('广告主ID')
     expect(counter.config.filterValues).toEqual(['7300000000001', '7300000000002'])
@@ -570,7 +576,7 @@ describe('dispatch board_create cross-account', () => {
   it('adds exactly one scoped module to a template without a TikTok module', async () => {
     const created = await dispatch({ action: 'board_create', name: 'custom', template: 'blank', advertiserIds: '7300000000001\n7300000000002' })
     expect(created.ok).toBe(true)
-    const board = created.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> }
+    const board = listBoards().find(b => b.id === (created.board as { id: string }).id)! as { widgets: Array<{ type: string; config: Record<string, unknown> }> }
     const readings = board.widgets.filter(w => w.type === 'tt-reading')
     expect(readings).toHaveLength(1)
     expect(readings[0].config.advertiserIds).toBe('7300000000001, 7300000000002')
@@ -588,7 +594,7 @@ describe('dispatch board_create cross-account', () => {
   it('keeps unscoped TikTok boards readable using the connection selection or grant', async () => {
     const created = await dispatch({ action: 'board_create', name: 'unscoped', template: 'tiktok' })
     expect(created.ok).toBe(true)
-    const board = created.board as { widgets: Array<{ type: string; config: Record<string, unknown> }> }
+    const board = listBoards().find(b => b.id === (created.board as { id: string }).id)! as { widgets: Array<{ type: string; config: Record<string, unknown> }> }
     const readings = board.widgets.filter(w => w.type === 'tt-reading')
     expect(readings).toHaveLength(1)
     expect(readings[0].config.advertiserIds).toBe('')

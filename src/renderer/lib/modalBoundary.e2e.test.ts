@@ -25,7 +25,10 @@ describe('modal boundary with a real Electron browser view', () => {
       expect(data.tt.mixed).toContain('Dataset synchronization failed')
       expect(data.tt.mixed).toContain('2026-10-31')
       expect(data.tt.mixed).toContain('2026-10-30')
-      expect(data.tt.backup).toContain('TikTok 报表（旧数据备份）')
+      // The legacy-backup notice was removed (confusing new-vs-old signal);
+      // the backup-scenario widget must still render its real reading data.
+      expect(data.tt.backup).not.toContain('旧数据备份')
+      expect(data.tt.backup).toContain('2026-10-31')
       expect(data.tt.modelsAlert).toContain('Could not read the model pool')
       expect(data.metrics.unknown).toContain('—')
       expect(data.metrics.chart).toBeTruthy()

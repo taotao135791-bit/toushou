@@ -525,7 +525,6 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
         ) : currentTikTok ? (
           <>
             {currentTikTok.datasetSync?.ok === false && !tiktokBusy && !['reading-in-progress', 'reading-cancelled'].includes(currentTikTok.datasetSync.error) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(currentTikTok.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : currentTikTok.datasetSync.error === 'proof-failed' ? 'boards.datasets.proofFailed' : currentTikTok.datasetSync.error === 'row-limit' ? 'boards.datasets.ttRowLimit' : 'boards.datasets.syncFailed')}</p>}
-            {currentTikTok.datasetSync?.ok === true && Boolean(currentTikTok.datasetSync.legacyBackups?.length) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t('boards.tt.backupNotice', {names:currentTikTok.datasetSync.legacyBackups!.join('、')})}</p>}
             <div className="flex flex-wrap items-center gap-3 text-[12px] text-cream-dim">
               <input type="search" aria-label={zh ? '筛选巡检结果' : 'Filter inspection results'} placeholder={zh ? '筛选账户名或 ID' : 'Filter account name or ID'} value={resultQuery} onChange={e => setResultQuery(e.target.value)} className="rounded-lg border border-line bg-ink-850 px-3 py-1.5 text-cream" />
               <label className="flex items-center gap-1"><input type="checkbox" checked={onlyFailed} onChange={e => setOnlyFailed(e.target.checked)} />{zh ? '仅失败或未读取' : 'Failed or unread only'}</label>

@@ -3,9 +3,10 @@ import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
-import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHistoryUuid, replaceHistoricalSessionRecords, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
+import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHistoryUuid, replaceHistoricalSessionRecords, sessionFileUuid, updateSessionRecordFile, updateSessionRecordTitle, upsertLiveSessionRecord } from '../lib/sessionRegistry'
 import { summarizePromptTitle } from '@shared/promptTitle'
 import { mergeTranscriptBackfill } from '../lib/transcriptMerge'
+import { createStreamQueue } from './streamQueue'
 import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
 import type { BoardReadingLaunch } from '../lib/boardReading'
 import { basename } from '../lib/path'
@@ -23,6 +24,43 @@ let globalHistoryReadEpoch = 0
 let scopedHistoryReadEpoch = 0
 let scopedHistoryInFlight: { grantId: string; epoch: number; promise: Promise<void> } | null = null
 const deletedHistoryUuids = new Set<string>()
+
+/**
+ * Stream-delta appliers, extracted pure so the frame-batched queue (streamQueue)
+ * folds a whole frame of segments with ONE store notification while the
+ * single-delta actions keep their exact historical semantics.
+ */
+function applyContentDelta(list: MessageLike[], content: string): MessageLike[] {
+  if (list.length === 0) return [{ id: crypto.randomUUID(), role: 'assistant', content }]
+  const last = list[list.length - 1]!
+  if (last.role !== 'assistant' || last.toolCall) {
+    return [...list, { id: crypto.randomUUID(), role: 'assistant', content }]
+  }
+  const updated = [...list]
+  updated[updated.length - 1] = {
+    ...last,
+    content: last.content + content,
+    // The first text delta after a thinking run closes it (for the elapsed time)
+    ...(last.thinking && last.thinkingEndTs === undefined ? { thinkingEndTs: Date.now() } : {})
+  }
+  return updated
+}
+
+function applyThinkingDelta(list: MessageLike[], delta: string, now: number): MessageLike[] {
+  const last = list[list.length - 1]
+  // Thinking streams before its message's text; once text started (or the
+  // previous thinking run closed), a fresh message carries the new run.
+  if (last && last.role === 'assistant' && !last.toolCall && !last.content && last.thinkingEndTs === undefined) {
+    const updated = [...list]
+    updated[updated.length - 1] = {
+      ...last,
+      thinking: (last.thinking ?? '') + delta,
+      thinkingStartTs: last.thinkingStartTs ?? now
+    }
+    return updated
+  }
+  return [...list, { id: crypto.randomUUID(), role: 'assistant' as const, content: '', thinking: delta, thinkingStartTs: now }]
+}
 
 export interface MessageLike {
   id: string
@@ -130,6 +168,10 @@ export interface OfficeEditHandoff {
 interface AppState {
   theme: 'dark' | 'light'
   language: Language
+  /** 思维链展示策略（学 deepseek-harness TranscriptViewPolicy）：流式时自动展开。 */
+  thinkingAutoExpand: boolean
+  /** 折叠时机：完成即折（默认）还是保留到下一条用户消息。 */
+  thinkingCollapseTiming: 'on-complete' | 'until-next-input'
   /** Default permission mode for new sessions (persisted in electron-store). */
   permissionMode: PermissionMode
   /** Main-owned workspace grant for the current project; UI paths come from grant.displayPath. */
@@ -202,6 +244,17 @@ interface AppState {
   sessionErrors: Record<string, I18nKey | undefined>
   /** sessionId -> whether context compaction is running */
   compacting: Record<string, boolean>
+  /**
+   * Instant read-only previews of history rows (preview:<historyId> → title &
+   * failure flag). The conversation renders from the peeked transcript while
+   * the runtime resume continues in the background; a failed resume keeps the
+   * preview readable instead of a blank chat.
+   */
+  sessionPreviews: Record<string, { title: string; failed: boolean }>
+  /** Live session ids hidden by an in-flight optimistic delete (still running). */
+  pendingDeleteLiveIds: Record<string, true>
+  /** 点击历史行时按 uuid 种下的稳定时间：注册表行落地即用，消灭先顶到顶再落回的跳动。 */
+  resumeRecencySeeds: Record<string, number>
   /** sessionId -> latest known token/context usage */
   stats: Record<string, SessionStats>
   /** Sidebar: pinned sessions, listed first (persisted in electron-store). */
@@ -251,6 +304,8 @@ interface AppState {
   loginState: LoginState
   setTheme: (theme: 'dark' | 'light') => void
   setLanguage: (language: Language) => void
+  setThinkingAutoExpand: (value: boolean) => void
+  setThinkingCollapseTiming: (value: 'on-complete' | 'until-next-input') => void
   /** Set the default permission mode for new sessions and persist it. */
   setPermissionMode: (mode: PermissionMode) => void
   /** Replace the active workspace grant (and sync the MRU real paths). */
@@ -343,6 +398,9 @@ interface AppState {
   resumeQueuedMessages: (sessionId: string) => boolean
   moveClosedQueue: (from: string, to: string) => boolean
   setCompacting: (sessionId: string, compacting: boolean) => void
+  setSessionPreview: (previewId: string, preview: { title: string; failed: boolean }) => void
+  seedResumeRecency: (uuid: string, timestamp: number) => void
+  clearSessionPreview: (previewId: string) => void
   setStats: (sessionId: string, stats: SessionStats) => void
   /** Replace the pinned list (startup load; does not persist). */
   setPinnedSessionIds: (ids: string[]) => void
@@ -370,6 +428,14 @@ interface AppState {
   setScheduledTasks: (tasks: ScheduledTask[]) => void
   /** Drop one entry from the history list (after its opaque capability was deleted). */
   removeHistorySession: (historyId: string) => void
+  /** 乐观删除期的持久隐藏：加入墓碑集合并立即从两侧列表移除（跨重扫描生效）。 */
+  hideSessionPendingDelete: (uuid: string) => void
+  /** 乐观删除期间：把 LIVE 会话从侧栏隐藏但保持进程运行（撤销即原样恢复）。 */
+  hideLiveSessionPendingDelete: (sessionId: string) => void
+  /** 撤销 live 删除：会话重新出现在侧栏。 */
+  revealLiveSessionPendingDelete: (sessionId: string) => void
+  /** 撤销乐观删除：移出墓碑集合（行由随后的重扫描恢复）。 */
+  revealSessionPendingDelete: (uuid: string) => void
   /**
    * Purge a deleted session's durable uuid from every in-memory cache —
    * registry records of every workspace plus the cross-project history rows —
@@ -447,6 +513,8 @@ interface AppState {
 export const useAppStore = create<AppState>((set, get) => ({
   theme: 'light',
   language: 'en',
+  thinkingAutoExpand: true,
+  thinkingCollapseTiming: 'on-complete',
   permissionMode: 'ask',
   currentWorkspace: null,
   sessions: [],
@@ -482,6 +550,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   steeringQueuedIds: {},
   sessionErrors: {},
   compacting: {},
+  sessionPreviews: {},
+  pendingDeleteLiveIds: {},
+  resumeRecencySeeds: {},
   stats: {},
   pinnedSessionIds: [],
   sessionRecords: [],
@@ -515,6 +586,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ language })
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'
     window.electronAPI.setStore('language', language)
+  },
+  setThinkingAutoExpand: (value) => {
+    set({ thinkingAutoExpand: value })
+    window.electronAPI.setStore('thinkingAutoExpand', value)
+  },
+  setThinkingCollapseTiming: (value) => {
+    set({ thinkingCollapseTiming: value })
+    window.electronAPI.setStore('thinkingCollapseTiming', value)
   },
   setPermissionMode: (permissionMode) => {
     set({ permissionMode })
@@ -654,7 +733,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         title,
         titleSource: merged.titleSource ?? previous?.titleSource,
         titleRevision: merged.titleRevision ?? previous?.titleRevision,
-        lastActivityAt: previous?.lastActivityAt ?? merged.lastActivityAt,
+        lastActivityAt:
+          previous?.lastActivityAt ??
+          state.resumeRecencySeeds[sessionFileUuid(merged.resumeFrom ?? merged.sessionFile) ?? ''] ??
+          merged.lastActivityAt,
         // Renderer-owned pending stamp must also survive registry re-reports.
         pendingActivityAt: previous?.pendingActivityAt
       }
@@ -860,67 +942,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
   setMessages: (sessionId, messages) =>
     set((state) => ({ messages: { ...state.messages, [sessionId]: messages } })),
-  appendMessageContent: (sessionId, content) => set((state) => {
-    const list = state.messages[sessionId] || []
-    if (list.length === 0) {
-      return {
-        messages: {
-          ...state.messages,
-          [sessionId]: [{ id: crypto.randomUUID(), role: 'assistant', content }]
-        }
-      }
-    }
-    const last = list[list.length - 1]
-    if (last.role !== 'assistant' || last.toolCall) {
-      return {
-        messages: {
-          ...state.messages,
-          [sessionId]: [...list, { id: crypto.randomUUID(), role: 'assistant', content }]
-        }
-      }
-    }
-    const updated = [...list]
-    updated[updated.length - 1] = {
-      ...last,
-      content: last.content + content,
-      // The first text delta after a thinking run closes it (for the elapsed time)
-      ...(last.thinking && last.thinkingEndTs === undefined
-        ? { thinkingEndTs: Date.now() }
-        : {})
-    }
-    return { messages: { ...state.messages, [sessionId]: updated } }
-  }),
+  appendMessageContent: (sessionId, content) => set((state) => ({
+    messages: { ...state.messages, [sessionId]: applyContentDelta(state.messages[sessionId] || [], content) }
+  })),
   appendThinking: (sessionId, delta) =>
+    set((state) => ({
+      messages: { ...state.messages, [sessionId]: applyThinkingDelta(state.messages[sessionId] || [], delta, Date.now()) }
+    })),
+  setSessionPreview: (previewId, preview) =>
+    set((state) => ({ sessionPreviews: { ...state.sessionPreviews, [previewId]: preview } })),
+  seedResumeRecency: (uuid, timestamp) =>
+    set((state) => ({ resumeRecencySeeds: { ...state.resumeRecencySeeds, [uuid]: timestamp } })),
+  clearSessionPreview: (previewId) =>
     set((state) => {
-      const list = state.messages[sessionId] || []
-      const now = Date.now()
-      const last = list[list.length - 1]
-      // Thinking streams before its message's text; once text started (or the
-      // previous thinking run closed), a fresh message carries the new run.
-      if (last && last.role === 'assistant' && !last.toolCall && !last.content && last.thinkingEndTs === undefined) {
-        const updated = [...list]
-        updated[updated.length - 1] = {
-          ...last,
-          thinking: (last.thinking ?? '') + delta,
-          thinkingStartTs: last.thinkingStartTs ?? now
-        }
-        return { messages: { ...state.messages, [sessionId]: updated } }
-      }
-      return {
-        messages: {
-          ...state.messages,
-          [sessionId]: [
-            ...list,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content: '',
-              thinking: delta,
-              thinkingStartTs: now
-            }
-          ]
-        }
-      }
+      if (!(previewId in state.sessionPreviews) && !state.messages[previewId]) return state
+      const previews = { ...state.sessionPreviews }
+      delete previews[previewId]
+      const messages = { ...state.messages }
+      delete messages[previewId]
+      return { sessionPreviews: previews, messages }
     }),
   finalizeThinking: (sessionId) =>
     set((state) => {
@@ -1280,6 +1320,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       sessionRecords: removeHistoryRecord(state.sessionRecords, historyId)
     })),
+  hideLiveSessionPendingDelete: (sessionId) =>
+    set((state) => (state.pendingDeleteLiveIds[sessionId] ? state : { pendingDeleteLiveIds: { ...state.pendingDeleteLiveIds, [sessionId]: true } })),
+  revealLiveSessionPendingDelete: (sessionId) =>
+    set((state) => {
+      if (!state.pendingDeleteLiveIds[sessionId]) return state
+      const next = { ...state.pendingDeleteLiveIds }
+      delete next[sessionId]
+      return { pendingDeleteLiveIds: next }
+    }),
+  hideSessionPendingDelete: (uuid) => {
+    if (!uuid) return
+    // The loaders already filter by this set, so the hide survives the
+    // rescans that a sibling deletion's finalize triggers.
+    deletedHistoryUuids.add(uuid)
+    set((state) => ({
+      sessionRecords: purgeHistoryUuid(state.sessionRecords, uuid),
+      globalHistory: state.globalHistory.filter((row) => row.uuid !== uuid)
+    }))
+  },
+  revealSessionPendingDelete: (uuid) => {
+    if (!uuid) return
+    deletedHistoryUuids.delete(uuid)
+  },
   purgeDeletedSession: (uuid) => {
     deletedHistoryUuids.add(uuid)
     globalHistoryReadEpoch += 1
@@ -1494,47 +1557,52 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
     } else if (event.type === 'message') {
       if (event.role === 'user') {
-        get().addMessage(event.sessionId, {
+        // Barrier: the user turn must land AFTER this frame's assistant tail.
+        streamQueue.pushBarrier(event.sessionId, () => get().addMessage(event.sessionId, {
           id: crypto.randomUUID(),
           role: 'user',
           content: event.content
-        })
+        }))
       } else if (event.role === 'system') {
-        get().addMessage(event.sessionId, {
+        streamQueue.pushBarrier(event.sessionId, () => get().addMessage(event.sessionId, {
           id: crypto.randomUUID(),
           role: 'system',
           variant: event.variant,
           content: event.content
-        })
+        }))
       } else {
-        get().appendMessageContent(event.sessionId, event.content)
+        streamQueue.push({ kind: 'content', sessionId: event.sessionId, delta: event.content })
       }
     } else if (event.type === 'thinking') {
-      get().appendThinking(event.sessionId, event.delta)
+      streamQueue.push({ kind: 'thinking', sessionId: event.sessionId, delta: event.delta })
     } else if (event.type === 'tool_call') {
-      // A tool call ends any open thinking run of the previous message
-      get().finalizeThinking(event.sessionId)
-      get().addMessage(event.sessionId, {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: '',
-        toolCall: {
-          id: event.id,
-          tool: event.tool,
-          input: event.input,
-          output: event.output
-        }
+      // A tool call ends any open thinking run of the previous message. It is
+      // an ORDERING BARRIER: it must run after every buffered delta of this
+      // frame, or a pending thinking tail would split into a stray message.
+      streamQueue.pushBarrier(event.sessionId, () => {
+        get().finalizeThinking(event.sessionId)
+        get().addMessage(event.sessionId, {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: '',
+          toolCall: {
+            id: event.id,
+            tool: event.tool,
+            input: event.input,
+            output: event.output
+          }
+        })
       })
     } else if (event.type === 'tool_result') {
       // Merge the result into its tool-call card: by toolCallId when the event
       // carries one (parallel calls pair by id, order-independent); the legacy
       // name+recency fallback inside applyToolResult covers id-less events.
-      set((state) => ({
+      streamQueue.pushBarrier(event.sessionId, () => set((state) => ({
         messages: {
           ...state.messages,
           [event.sessionId]: applyToolResult(state.messages[event.sessionId] || [], event)
         }
-      }))
+      })))
     } else if (event.type === 'status') {
       const wasBusy = Boolean(get().busy[event.sessionId])
       const nextBusy = STATUS_BUSY[event.status]
@@ -1549,10 +1617,25 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (event.status === 'aborting') get().pauseQueuedMessages(event.sessionId, 'stopped')
         get().setBusy(event.sessionId, true)
       } else if (nextBusy === false && event.isTerminal !== false && get().queueDispatching[event.sessionId]?.phase !== 'checkpoint') {
-        // Turn ended: close any open thinking run and clear busy. The turn's
-        // summary is derived from the execution projection — never a second copy.
-        get().finalizeThinking(event.sessionId)
-        get().setBusy(event.sessionId, false)
+        // Turn ended: close the thinking run, clear busy, THEN drain the queued
+        // message — all inside ONE barrier. Draining outside let setBusy(false)
+        // flush after the next turn's optimistic setBusy(true) and clobber it
+        // (UI idle while a turn ran), and finalizeThinking then saw the new
+        // user bubble as last, leaving the thinking run open forever.
+        streamQueue.pushBarrier(event.sessionId, () => {
+          get().finalizeThinking(event.sessionId)
+          get().setBusy(event.sessionId, false)
+          // Working→idle with a non-empty queue: send the next queued message.
+          // The wasBusy guard plus the optimistic busy=true inside drain keep a
+          // stray or repeated 'idle' from draining more than one message.
+          if (wasBusy && get().queueDispatching[event.sessionId]?.phase !== 'checkpoint') {
+            const drained = get().drainQueuedMessage(event.sessionId)
+            if (!drained && event.sessionId !== get().currentSessionId) {
+              // Turn finished in a background session — flag it unread
+              get().markSessionUnread(event.sessionId)
+            }
+          }
+        })
         // A first-message naming fired right after the send times out — the
         // runtime drops control queries mid-turn. The idle event itself
         // fires while omp is still finalizing (same drop, observed live), so
@@ -1560,21 +1643,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         // sessions self-guard inside.
         setTimeout(() => void get().maybeNameSession(event.sessionId), 2000)
       }
-      // Statuses outside STATUS_BUSY leave busy/turn state untouched.
-      // working→idle with a non-empty queue: send the next queued message.
-      // The wasBusy guard plus the optimistic busy=true below keep a stray or
-      // repeated 'idle' from draining more than one message per real turn.
-      if (event.status === 'idle' && event.isTerminal !== false && wasBusy && get().queueDispatching[event.sessionId]?.phase !== 'checkpoint') {
-        const drained = get().drainQueuedMessage(event.sessionId)
-        if (!drained && event.sessionId !== get().currentSessionId) {
-          // Turn finished in a background session — flag it unread
-          get().markSessionUnread(event.sessionId)
-        }
-      }
     } else if (event.type === 'compaction') {
       set((state) => ({
         compacting: { ...state.compacting, [event.sessionId]: event.phase === 'start' }
       }))
+      // 学 deepseek-harness 的 CompactionCommandCard：压缩不是"静默失忆"，
+      // 对话流里留下一条可见记录，用户知道上下文被摘要过。
+      if (event.phase === 'end') {
+        const zh = get().language === 'zh'
+        streamQueue.pushBarrier(event.sessionId, () => get().addMessage(event.sessionId, {
+          id: crypto.randomUUID(),
+          role: 'system',
+          variant: 'info',
+          content: zh ? '已压缩对话上下文：较早的细节被摘要保留，最新内容原样保留。' : 'Conversation context compacted: earlier details summarized, recent content kept verbatim.'
+        }))
+      }
     } else if (event.type === 'ui_request') {
       set((state) => {
         const requests = state.uiRequests[event.sessionId] || []
@@ -1667,3 +1750,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   }
 }))
+
+/**
+ * Frame-batched stream queue (rafBatch pattern): one animation frame of model
+ * deltas folds into ONE store notification instead of one render per token.
+ * Ordering barriers keep message-shaping events (tool calls, user turns, turn
+ * end) strictly after the buffered tail. A 100ms timer guards against rAF
+ * throttling in hidden windows. See streamQueue.ts.
+ */
+const streamQueue = createStreamQueue({
+  apply: (sessionId, segments) => {
+    useAppStore.setState((state) => {
+      let list = state.messages[sessionId] || []
+      const now = Date.now()
+      for (const segment of segments) {
+        list = segment.kind === 'thinking'
+          ? applyThinkingDelta(list, segment.delta, now)
+          : applyContentDelta(list, segment.delta)
+      }
+      return { messages: { ...state.messages, [sessionId]: list } }
+    })
+  },
+  barrier: (fn) => fn()
+})
+
+/**
+ * Test/deterministic access point: apply everything queued so far. Production
+ * code never needs this — the frame scheduler flushes within ~16ms (100ms in
+ * hidden windows).
+ */
+export function flushStreamQueueForTest(): void {
+  streamQueue.flushNow()
+}

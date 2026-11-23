@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatMessage, ExternalSessionDescriptor } from '@shared/types'
-import { useAppStore } from './index'
+import { flushStreamQueueForTest, useAppStore } from './index'
 
 const workspacePath = '/Users/tester/Documents/投手工作区'
 const sessionId = 'session-feishu-1'
@@ -108,8 +108,23 @@ describe('registerExternalSession', () => {
     useAppStore.getState().applySessionEvent({ type: 'status', sessionId, status: 'working' })
     expect(useAppStore.getState().busy[sessionId]).toBe(true)
     useAppStore.getState().applySessionEvent({ type: 'status', sessionId, status: 'idle', isTerminal: true })
+    // Turn-end effects run inside the frame barrier (drain must not be clobbered
+    // by the async busy=false flush) — apply the queued work before asserting.
+    flushStreamQueueForTest()
 
     expect(useAppStore.getState().unreadSessionIds[sessionId]).toBe(true)
+  })
+})
+
+describe('optimistic live deletion hides without killing', () => {
+  it('hides and reveals a running session without touching the sessions list', () => {
+    useAppStore.setState({ sessions: [{ id: 'live-1', cwd: 'D:/w', title: 'T', createdAt: 1, status: 'running' }], pendingDeleteLiveIds: {} })
+    useAppStore.getState().hideLiveSessionPendingDelete('live-1')
+    expect(useAppStore.getState().pendingDeleteLiveIds['live-1']).toBe(true)
+    // The session itself stays registered (still running) — only the sidebar hides it.
+    expect(useAppStore.getState().sessions.some((session) => session.id === 'live-1')).toBe(true)
+    useAppStore.getState().revealLiveSessionPendingDelete('live-1')
+    expect(useAppStore.getState().pendingDeleteLiveIds['live-1']).toBeUndefined()
   })
 })
 

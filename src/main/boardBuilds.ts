@@ -48,7 +48,7 @@ export function registerBoardBuildTurn(sessionId: string, cwd: string, text: str
   const continuation = !!previous?.requiresBuild && /^(?:继续|开始|好了|就这样|按这个|可以|重试|continue|retry)[。！!\s]*$/i.test(text.trim())
   const refreshOnly = /(?:^|[，,。\s])(?:请|帮我|再|重新)?\s*(?:刷新|更新数据|取最新|refresh)|看板\s*(?:刷新|更新)/i.test(text) && !/创建|新建|生成|搭建|添加|布局|样式|结构|定制|create|build/i.test(text)
   const editContinuation = !!previous?.requiresBuild && /背景|颜色|布局|样式|排版|改名|深色|浅色|交换|模块|style|layout|rename/i.test(text)
-  const update = /更新|编辑|修改|改成|改为|调整|添加|新增|加(?:一|个|块|张|上)|删掉|删除|移除|改名|重命名|定制|改一下|挪|\b(?:edit|update|change|remove|customize|rename|add|move)\b/i
+  const update = /更新|编辑|修改|改成|改为|换成|换(?!算)|改|调整|添加|新增|加(?!拿)|删掉|删除|移除|改名|重命名|定制|改一下|挪|弄|搞|移(?!动端)|放大|缩小|对齐|排列|重排|去掉|\b(?:edit|update|change|remove|customize|rename|add|move|swap|resize|reorder|align)\b/i
   const boardContext = /看板|(?:时钟|待办|便签)板|dashboard|\bboards?\b/i
   const directives = text.replace(/(?:不要|不另|不|别|禁止)(?:再|另外|另)?\s*(?:创建|新建)|\b(?:do not|don’t|don't)\s+(?:create|build)\b/gi, '')
   const preventCreate = directives !== text
@@ -218,8 +218,8 @@ export async function withCurrentBoardBuild<T>(sessionId: string, operation: () 
 
 export function beginBoardBuild(sessionId: string, cwd: string, targetBoardId?: unknown, targetBoardIds?: unknown): Record<string, unknown> {
   const turn = turns.get(sessionId)
-  if (!turn || turn.cwd !== cwd) return { ok: false, error: 'board-build-request-required' }
-  if (!turn.text.trim() || turn.readOnlyRequest) return { ok: false, error: 'board-build-request-required' }
+  if (!turn || turn.cwd !== cwd) return { ok: false, error: 'board-build-request-required', hint: '本会话当前没有可冻结的建板回合（工作目录已变化）。请等用户在下一条消息里直接下达建板或改板指令后再调用，不要原样重试。' }
+  if (!turn.text.trim() || turn.readOnlyRequest) return { ok: false, error: 'board-build-request-required', hint: '当前用户消息被判定为问句或只读请求，不能作为冻结建板要求的依据，原样重试不会成功。若用户确实要新建或修改看板，请向用户转述需要一条明确的指令（例如「把XX看板的YY改成ZZ」「新建一个XX看板」），等用户发出后再调用本工具。' }
   if (targetBoardId !== undefined && targetBoardIds !== undefined) return { ok: false, error: 'invalid-board-id' }
   const requested = targetBoardId !== undefined ? targetIds([targetBoardId]) : targetBoardIds !== undefined ? targetIds(targetBoardIds) : undefined
   if (requested === null || requested?.length === 0) return { ok: false, error: 'invalid-board-id' }
@@ -309,6 +309,95 @@ function hasRequiredMeasure(board: KanbanBoard, data: BoardDataset[], intent: Bo
   })
 }
 
+/** Cross-language metric aliases for the mechanical heal below. */
+const HEAL_ALIASES: string[][] = [
+  ['消耗', '花费', '费用', '媒体成本', 'spend', 'cost', 'mediacost'],
+  ['转化', '转化次数', '转化数', 'conversion', 'conversions'],
+  ['收入', 'revenue'],
+  ['点击', '点击数', 'clicks'],
+  ['展示', '展示数', 'impressions'],
+  ['安装', '安装数', 'installs']
+]
+
+const healNorm = (name: string) => name.toLowerCase().replace(/[\s_-]/g, '')
+
+/**
+ * Resolve a wanted column name to the dataset's real column when the match is
+ * UNAMBIGUOUS: exact → normalized-equal → same alias bucket. Ambiguous or
+ * unknown names return null — the heal never guesses.
+ */
+function healResolveColumn(wanted: string, columns: string[]): string | null {
+  if (columns.includes(wanted)) return wanted
+  const normalized = columns.filter((column) => healNorm(column) === healNorm(wanted))
+  if (normalized.length === 1) return normalized[0]
+  const bucket = HEAL_ALIASES.find((list) => list.some((entry) => healNorm(entry) === healNorm(wanted)))
+  if (!bucket) return null
+  const matches = columns.filter((column) => bucket.some((entry) => healNorm(entry) === healNorm(column)))
+  return matches.length === 1 ? matches[0] : null
+}
+
+/**
+ * 阶段2 mechanical heal, run inside the draft root just before validation.
+ * Rewrites dataset-bound widget references that miss by exact name but match
+ * unambiguously by normalization/alias (spend vs 消耗), and aligns the board's
+ * masterScope range with the frozen intent. Returns human-readable notes for
+ * the check payload; persists only when something actually changed.
+ */
+function healBoardDraft(board: KanbanBoard, datasets: BoardDataset[], intentRange?: string): string[] {
+  const notes: string[] = []
+  let changed = false
+  const datasetOf = (id: unknown): BoardDataset | undefined => typeof id === 'string' ? datasets.find(dataset => dataset.id === id || dataset.name === id) : undefined
+  const healField = (holder: Record<string, unknown>, field: string, dataset: BoardDataset, context: string): void => {
+    const wanted = holder[field]
+    if (typeof wanted !== 'string' || !wanted) return
+    const resolved = healResolveColumn(wanted, dataset.columns.map((column) => column.name))
+    if (resolved && resolved !== wanted) {
+      holder[field] = resolved
+      notes.push(`${context}: ${field}「${wanted}」→「${resolved}」`)
+      changed = true
+    }
+  }
+  for (const widget of board.widgets) {
+    const config = widget.config as Record<string, unknown>
+    if (config?.source === 'dataset') {
+      const dataset = datasetOf(config.datasetId)
+      if (dataset) {
+        healField(config, 'metric', dataset, `组件「${widget.title || widget.type}」`)
+        healField(config, 'dimension', dataset, `组件「${widget.title || widget.type}」`)
+        healField(config, 'filterColumn', dataset, `组件「${widget.title || widget.type}」`)
+        if (Array.isArray(config.columns)) {
+          config.columns = (config.columns as unknown[]).map((column) => {
+            if (typeof column !== 'string') return column
+            const resolved = healResolveColumn(column, dataset.columns.map((entry) => entry.name))
+            if (resolved && resolved !== column) {
+              notes.push(`组件「${widget.title || widget.type}」: 列「${column}」→「${resolved}」`)
+              changed = true
+              return resolved
+            }
+            return column
+          })
+        }
+      }
+    }
+    if (Array.isArray(config?.stages)) {
+      const stages = config.stages as Array<Record<string, unknown>>
+      for (const [index, stage] of stages.entries()) {
+        const dataset = datasetOf(stage.datasetId)
+        if (!dataset) continue
+        healField(stage, 'metric', dataset, `漏斗阶段${index + 1}`)
+        healField(stage, 'filterColumn', dataset, `漏斗阶段${index + 1}`)
+      }
+    }
+  }
+  if (intentRange && board.masterScope && board.masterScope.range !== intentRange) {
+    notes.push(`总控日期范围「${board.masterScope.range}」→「${intentRange}」`)
+    board.masterScope = { ...board.masterScope, range: intentRange as typeof board.masterScope.range }
+    changed = true
+  }
+  if (changed) saveBoard(board)
+  return notes
+}
+
 function inspectBoardBuild(
   draft: BuildDraft, board: KanbanBoard, intent: BoardBuildIntent, data: BoardDataset[],
   recipes: ReturnType<typeof listQuerySpecs>, savedDatasets: Map<string, BoardDataset>, feasibility: boolean
@@ -318,6 +407,10 @@ function inspectBoardBuild(
     ? { ...intent.options, mode: 'custom' as const, required: presentation || intent.mode === 'snapshot' ? [] as const : ['data'] as const, daily: false }
     : intent.options
   const previous = draft.boards.find(item => item.id === board.id)
+  // Mechanical preflight heal: deterministic alias/column rewrites and the
+  // masterScope range alignment kill a whole class of model round-trips.
+  // The synthetic feasibility board is never healed (it is not persisted).
+  const healed = board.id !== 'feasibility' && !presentation ? healBoardDraft(board, data, intent.range) : []
   const refresh = getLatestBoardRefresh(board)
   const check = checkBoardGeneration(board, data, options, recipes, Date.now(), refresh)
   const issues = [...check.issues]
@@ -369,7 +462,7 @@ function inspectBoardBuild(
     }
   }
   const passed = check.status === 'ready' && issues.length === 0
-  return { ...check, status: check.missing.length ? 'incomplete' : issues.length ? 'needs-attention' : 'ready', issues, ok: passed, passed, ...(passed ? {} : { error: feasibility ? 'board-data-not-feasible' : 'board-incomplete' }), buildId: draft.id, boardId: board.id, draft: !draft.committed, published: !!draft.committed,
+  return { ...check, status: check.missing.length ? 'incomplete' : issues.length ? 'needs-attention' : 'ready', issues, ok: passed, passed, ...(healed.length ? { healed } : {}), ...(passed ? {} : { error: feasibility ? 'board-data-not-feasible' : 'board-incomplete' }), buildId: draft.id, boardId: board.id, draft: !draft.committed, published: !!draft.committed,
     ...(feasibility && !passed ? { hint: '当前数据或已接入适配器尚不能证明本次要求；这不代表媒体平台本身不支持。请在草稿补齐真实数据或说明受阻，不能自动降级后发布。' } : {}) }
 }
 

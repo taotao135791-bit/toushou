@@ -299,6 +299,8 @@ export default function AdsCopyModelsSection() {
                     setPendingDelete({
                       title: t('adsCopy.deleteDialog.title'),
                       body: t('adsCopy.deleteDialog.body', { name: row.name }),
+                      confirmLabel: t('adsCopy.deleteDialog.confirm'),
+                      cancelLabel: t('adsCopy.deleteDialog.cancel'),
                       danger: true,
                       onConfirm: () => void remove(row.id)
                     })

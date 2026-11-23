@@ -1557,6 +1557,10 @@ export interface BoardDataset {
   createdAt: number
   /** Verified row or column limits cut this import short. */
   truncated?: true
+  /** Last successful write (pull/refresh/import). The board header shows this
+   *  as the data's actual freshness — one honest timestamp instead of
+   *  new-vs-backup guessing games. Absent on datasets written by older builds. */
+  refreshedAt?: number
   /** Query status and the exact period represented by an AppsFlyer dataset. */
   appsflyer?: import('./appsflyerDataset').AppsFlyerDatasetState
 }
@@ -1585,6 +1589,10 @@ export interface AppSettings {
   notifications: boolean
   /** Show a preview of the assistant response in turn-finished notifications. */
   notificationPreviews: boolean
+  /** 思维链展示策略：模型思考时自动展开推理内容（默认开）。 */
+  thinkingAutoExpand: boolean
+  /** 思维链折叠时机：本轮结束即折（默认）或保留到下一条用户消息。 */
+  thinkingCollapseTiming: 'on-complete' | 'until-next-input'
   /** Sidebar: sessions pinned to the top of the list. */
   pinnedSessionIds: string[]
   /** Sidebar: sessions folded away into the archived group. */
@@ -1755,6 +1763,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   machineSkills: false,
   notifications: true,
   notificationPreviews: false,
+  thinkingAutoExpand: true,
+  thinkingCollapseTiming: 'on-complete',
   pinnedSessionIds: [],
   archivedSessionIds: [],
   sessionSort: 'recent',

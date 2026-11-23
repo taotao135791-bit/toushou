@@ -343,6 +343,61 @@ async function readHead(filePath: string, bytes: number): Promise<string> {
   }
 }
 
+/**
+ * Read at most `bytes` from the END of a file (the first line may be partial;
+ * callers tolerating that skip it). Used to find the last message timestamp.
+ */
+async function readTail(filePath: string, bytes: number): Promise<string> {
+  const fh = await open(filePath, 'r')
+  try {
+    const size = (await fh.stat()).size
+    const start = Math.max(0, size - bytes)
+    const buf = Buffer.alloc(size - start)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, start)
+    return buf.toString('utf-8', 0, bytesRead)
+  } finally {
+    await fh.close()
+  }
+}
+
+/** Bytes of the file tail scanned for the last message timestamp. */
+const LAST_MESSAGE_SCAN_BYTES = 256 * 1024
+
+/**
+ * Timestamp of the last MESSAGE entry in the file. Message entries are the
+ * only records that exist purely because someone interacted — title lines and
+ * metadata records can be appended by opening/resuming machinery, so using
+ * them (or mtime) made a merely-opened conversation jump to the top of the
+ * list ("一点进去就被激活"). Null when the tail holds no message timestamp;
+ * callers fall back to mtime.
+ */
+async function lastMessageTimestamp(filePath: string): Promise<number | null> {
+  let tail: string
+  try {
+    tail = await readTail(filePath, LAST_MESSAGE_SCAN_BYTES)
+  } catch {
+    return null
+  }
+  const lines = tail.split('\n')
+  // A resumed/forked file can exceed the scan window on huge conversations:
+  // walk backward and take the first parseable message entry.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (!line || !line.includes('"message"')) continue
+    try {
+      const entry: unknown = JSON.parse(line)
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+      const record = entry as { type?: unknown; timestamp?: unknown }
+      if (record.type !== 'message') continue
+      const ts = typeof record.timestamp === 'number' ? record.timestamp : typeof record.timestamp === 'string' ? Date.parse(record.timestamp) : NaN
+      if (Number.isFinite(ts)) return ts
+    } catch {
+      // partial first line of the window or non-JSON — keep walking back
+    }
+  }
+  return null
+}
+
 /** Join the text blocks of an AgentMessage content array (or plain string). */
 function textContentOf(content: unknown): string {
   if (typeof content === 'string') return content
@@ -419,8 +474,15 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
 
   let timestamp =
     typeof header.timestamp === 'number' ? header.timestamp : Date.parse(String(header.timestamp))
-  if (!Number.isFinite(timestamp)) {
-    // Header without a usable timestamp — fall back to the file's mtime.
+  if (!Number.isFinite(timestamp)) timestamp = 0
+  // Recency = LAST MESSAGE time, not session start and not mtime: live rows
+  // order by last activity, and only real interaction adds messages. Open/
+  // resume machinery (title lines, metadata records, file touches) must not
+  // reorder the list — that read as "一点进去就被激活". Start time stays the
+  // floor; mtime is the last resort for files whose tail has no timestamps.
+  const lastMessage = await lastMessageTimestamp(filePath)
+  if (lastMessage !== null && lastMessage > timestamp) timestamp = lastMessage
+  if (timestamp === 0) {
     timestamp = await stat(filePath).then((s) => s.mtimeMs, () => 0)
   }
 

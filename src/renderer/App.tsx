@@ -111,6 +111,12 @@ function App() {
     window.electronAPI.getStore('permissionMode').then((mode) => {
       useAppStore.getState().setPermissionMode(mode)
     })
+    window.electronAPI.getStore('thinkingAutoExpand').then((value) => {
+      if (typeof value === 'boolean') useAppStore.getState().setThinkingAutoExpand(value)
+    })
+    window.electronAPI.getStore('thinkingCollapseTiming').then((value) => {
+      if (value === 'on-complete' || value === 'until-next-input') useAppStore.getState().setThinkingCollapseTiming(value)
+    })
     window.electronAPI.getStore('setupComplete').then((complete) => {
       setSetupComplete(complete)
     })

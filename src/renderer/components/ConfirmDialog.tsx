@@ -10,6 +10,8 @@ export interface ConfirmDialogRequest {
   body: string
   /** Confirm button label; defaults to the shared 删除/Delete wording. */
   confirmLabel?: string
+  /** Outcome-verb cancel label (规范：按钮写明点了会怎样); default = generic cancel. */
+  cancelLabel?: string
   /** Destructive actions render the confirm button in red. */
   danger?: boolean
   onConfirm: () => void
@@ -72,7 +74,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmDialogRequ
             disabled={closing}
             className="focus-ring rounded-full border border-line px-3 py-1 text-[11.5px] text-cream-dim transition-colors hover:border-ink-600 hover:text-cream disabled:cursor-default disabled:opacity-60"
           >
-            {t('common.cancel')}
+            {request.cancelLabel ?? t('common.cancel')}
           </button>
           <button
             onClick={() => dismiss(true)}

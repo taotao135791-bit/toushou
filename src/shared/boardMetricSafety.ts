@@ -14,6 +14,23 @@ const ratioKind = (name: string): 'ctr' | 'cpc' | 'cpa' | 'cpm' | 'cpi' | null =
   if (['安装成本', '每次安装费用', 'cpi', 'cost per install'].includes(n)) return 'cpi'
   return null
 }
+/**
+ * Percent-kind metrics (留存率/retention/任意 xx率/xx rate/%). Unlike CTR they
+ * have no numerator/denominator columns to weight by, so multi-row SUM would
+ * produce nonsense (30 days of 46% → 1380%); the honest window aggregate is
+ * the arithmetic mean. Kept AFTER ratioKind so weighted ratios stay weighted.
+ */
+/** Strong percent signals match anywhere ("Retention Day 1", "D1 留存"); weak
+ *  generic suffixes (xx率 / xx rate / percent / %) only at the end. */
+const PERCENT_ANYWHERE = /留存|保持率|retention|churn/i
+const PERCENT_SUFFIX = /(?:率|rate|percent|%)$/i
+export const percentKind = (name: string): boolean => {
+  const n = norm(name)
+  return ratioKind(n) === null && (PERCENT_ANYWHERE.test(n) || PERCENT_SUFFIX.test(n))
+}
+/** Unique/active users across rows would double-count — SUM is refused. */
+export const BLOCKED_UNIQUE_USERS = /^(?:unique[ _]users|distinct[ _]users|active[ _]users|独立用户|去重用户|活跃用户)$/i
+export const isBlockedUniqueUsersMetric = (name: string): boolean => BLOCKED_UNIQUE_USERS.test(name.trim())
 export function metricCurrencySafety(dataset: BoardDataset, metric: string): CurrencySafety {
   if (!MONEY.test(metric)) return 'not-money'
   const idx = dataset.columns.findIndex(c => ['币种', 'currency', 'currency code'].includes(norm(c.name)))
@@ -35,7 +52,12 @@ const indexOfAny = (dataset: BoardDataset, names: string[]): number => dataset.c
 export function safeMetricValue(dataset: BoardDataset, rows: Row[], metricIndex: number, op: DatasetOp): number | null {
   if (!rows.length || metricIndex < 0) return null
   const metric = dataset.columns[metricIndex]?.name ?? ''
-  if (op === 'sum' && rows.length > 1 && /^(?:unique[ _]users|distinct[ _]users|active[ _]users|独立用户|去重用户|活跃用户)$/i.test(metric.trim())) return null
+  if (op === 'sum' && rows.length > 1 && isBlockedUniqueUsersMetric(metric)) return null
+  // Percent metrics (留存率/retention/xx率): a multi-row sum compounds into
+  // nonsense; the window aggregate is the mean. Single rows pass through any op.
+  if (op === 'sum' && rows.length > 1 && percentKind(metric)) {
+    return aggregate(rows.map(row => row[metricIndex] ?? ''), 'avg')
+  }
   const ratio = ratioKind(metric)
   if (ratio && (op === 'avg' || op === 'sum')) {
     const num = indexOfAny(dataset, ratio === 'ctr' ? ['点击', '点击次数', 'clicks'] : ['消耗', '花费', '费用', '媒体成本', 'spend', 'cost', 'media cost'])

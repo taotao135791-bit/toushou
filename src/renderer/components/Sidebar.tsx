@@ -24,6 +24,7 @@ import {
   Loader2,
   Link2,
   Clock,
+  CopyPlus,
   BriefcaseBusiness,
   MoreHorizontal
 } from 'lucide-react'
@@ -35,6 +36,7 @@ import { cleanSessionName } from '@shared/promptTitle'
 import { useModalBoundary } from '../lib/modalBoundary'
 import { finishHistoryResume, historyResumeGrant, openGlobalHistory } from '../lib/historyResume'
 import { ConfirmDialog } from './ConfirmDialog'
+import { UndoableDeleteBanner, useUndoableDelete } from './UndoableDelete'
 import { runThemeTransition } from '../lib/themeTransition'
 import {
   recordDurableUuid,
@@ -105,6 +107,7 @@ export default function Sidebar() {
   // (the search reads transcript tails), never on the default grouped view.
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
   const sessions = useAppStore((s) => s.sessions)
+  const pendingDeleteLiveIds = useAppStore((s) => s.pendingDeleteLiveIds)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const cliAvailable = useAppStore((s) => s.cliAvailable)
   const sessionRecords = useAppStore((s) => s.sessionRecords)
@@ -291,41 +294,6 @@ export default function Sidebar() {
     return ok
   }
 
-  const handleDeleteSession = async (id: string) => {
-    // The durable identity must be captured before the kill: the record is the
-    // renderer's only link between the runtime id and the transcript file.
-    const record = recordByRuntimeId.get(id)
-    let uuid = recordDurableUuid(record)
-    if (!uuid) {
-      // Last chance before the process dies: get_state carries the session
-      // file, whose name embeds the durable uuid. Without it the sweep below
-      // would silently skip and the transcript would resurrect as a history
-      // row — reading as a broken delete button.
-      try {
-        const st = await window.electronAPI.getSessionState(id)
-        if (st?.sessionFile) {
-          uuid = sessionFileUuid(st.sessionFile)
-          if (uuid) useAppStore.getState().setSessionFile(id, st.sessionFile)
-        }
-      } catch {
-        // Session already dead — fall through to the kill with no uuid.
-      }
-    }
-    window.electronAPI.killSession(id)
-    setSessions(sessions.filter((s) => s.id !== id))
-    if (currentSessionId === id) {
-      setCurrentSessionId(null)
-    }
-    // A killed session's transcript stays on disk and would resurface in the
-    // durable scan (immediately as a history row, after restart via the
-    // cross-project list) — delete every copy of it too.
-    const ok = await deleteByUuidAndRefresh(uuid)
-    if (!ok) {
-      // The transcript is still on disk; the rescan above will re-add it as a
-      // history row. Surface that — never a silent no-op delete.
-      showNotice('sidebar.deleteFailedDurable')
-    }
-  }
 
   /**
    * Archive/unarchive by the session's durable key (uuid when the registry
@@ -400,13 +368,40 @@ export default function Sidebar() {
     resumingHistoryRef.current = true
     setResumingHistoryId(info.id)
     setRestoreFailedHistoryId(null)
+    // Instant preview (dsh model: reading a conversation is a data read).
+    // The peek parses the durable file — no runtime spawn — so the
+    // conversation renders in milliseconds while the real resume continues.
+    // A failed or slow resume then degrades to a readable preview instead
+    // of a blank chat.
+    const previewId = `preview:${info.id}`
+    // Seed the stable recency BEFORE any registry push can land: the runtime's
+    // 'connected' sync adds the row with createdAt = spawn time, which sorted
+    // it to the top for one frame before the resume response repositioned it
+    // (the visible bounce). Seeded by durable uuid, matched via resumeFrom.
+    useAppStore.getState().seedResumeRecency(info.uuid, info.timestamp)
+    let previewShown = false
+    try {
+      const peek = await window.electronAPI.peekSession(grant.id, info.id)
+      if (peek?.ok && isCurrentNavigationIntent(epoch)) {
+        const store = useAppStore.getState()
+        store.setMessages(previewId, peek.messages)
+        store.setSessionPreview(previewId, { title: info.title, failed: false })
+        store.setCurrentSessionId(previewId, epoch)
+        navigate('/')
+        previewShown = true
+      }
+    } catch {
+      // Peek is best-effort: fall through to the plain (slow) resume path.
+    }
     try {
       const result = await window.electronAPI.resumeSession(grant.id, info.id)
       if (result && 'error' in result) {
         // The session opened but its transcript could not be loaded. Keep the
         // row (it is NOT dead) and tell the user instead of showing a blank
-        // chat that reads as data loss.
+        // chat that reads as data loss. The peeked preview (if any) stays
+        // readable with a failed marker.
         if (isCurrentNavigationIntent(epoch)) {
+          if (previewShown) useAppStore.getState().setSessionPreview(previewId, { title: info.title, failed: true })
           setRestoreFailedHistoryId(info.id)
           showNotice('history.transcriptUnavailable')
         }
@@ -414,6 +409,7 @@ export default function Sidebar() {
       }
       if (!result) {
         if (!isCurrentNavigationIntent(epoch)) return false
+        if (previewShown) useAppStore.getState().setSessionPreview(previewId, { title: info.title, failed: true })
         setRestoreFailedHistoryId(info.id)
         showNotice('history.restoreFailed')
         // A dead row (file rewritten in place or removed) must not linger as
@@ -441,12 +437,18 @@ export default function Sidebar() {
           useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
         },
         currentWorkspace: () => isCurrentNavigationIntent(epoch) ? useAppStore.getState().currentWorkspace : null,
-        select: () => { setCurrentSessionId(session.id, epoch); navigate('/') }
+        select: () => {
+          if (previewShown) useAppStore.getState().clearSessionPreview(previewId)
+          setCurrentSessionId(session.id, epoch); navigate('/')
+        }
       })
       if (!selected && isCurrentNavigationIntent(epoch)) showNotice('history.restoredInOtherProject')
       return selected
     } catch {
       if (isCurrentNavigationIntent(epoch)) {
+        if (previewShown && useAppStore.getState().currentSessionId === previewId) {
+          useAppStore.getState().setSessionPreview(previewId, { title: info.title, failed: true })
+        }
         setRestoreFailedHistoryId(info.id)
         showNotice('history.restoreFailed')
       }
@@ -458,8 +460,43 @@ export default function Sidebar() {
     }
   }
 
-  const handleDeleteHistory = async (info: HistorySessionDescriptor) => {
-    if (historyLoading || !currentWorkspace) return
+  /**
+   * Duplicate a durable history row into a NEW live conversation (复制会话).
+   * Main writes a full fork with a fresh uuid and resumes it; the original
+   * row and its file are untouched, so nothing is removed from the list.
+   */
+  const handleForkHistory = async (info: HistorySessionDescriptor) => {
+    if (historyLoading || !currentWorkspace || resumingHistoryRef.current) return
+    const access = historyResumeGrant(useAppStore.getState(), info, undefined)
+    if (!access.ok) {
+      showNotice(access.error === 'loading' ? 'history.loading' : 'history.restoreFailed')
+      return
+    }
+    const grant = access.grant
+    resumingHistoryRef.current = true
+    setResumingHistoryId(info.id)
+    try {
+      const result = await window.electronAPI.forkSession(grant.id, { historyId: info.id })
+      if (!result || 'error' in result) {
+        showNotice(!result ? 'history.restoreFailed' : 'history.forkFailed')
+        return
+      }
+      const { session, messages: restored, historicalAgents } = result
+      addSession({ ...session, title: session.title || info.title }, false)
+      setMessages(session.id, restored)
+      useAppStore.getState().applyHistoricalAgents(session.id, historicalAgents ?? [])
+      setCurrentSessionId(session.id)
+      navigate('/')
+    } catch {
+      showNotice('history.forkFailed')
+    } finally {
+      resumingHistoryRef.current = false
+      setResumingHistoryId(null)
+    }
+  }
+
+  const handleDeleteHistory = async (info: HistorySessionDescriptor): Promise<boolean> => {
+    if (historyLoading || !currentWorkspace) return false
     // Capability delete first (tightest binding). It can legitimately fail for
     // a stale or expired capability — e.g. a row that failed to restore — so
     // fall back to the uuid sweep, which is copy-proof and works regardless of
@@ -481,11 +518,12 @@ export default function Sidebar() {
       setDeleteFailedHistoryId(info.id)
       setTimeout(() => setDeleteFailedHistoryId((id) => (id === info.id ? null : id)), 3000)
     }
+    return ok
   }
 
   /** Cross-project durable row delete: resolved Main-side by uuid. */
-  const handleDeleteGlobal = async (row: HistorySessionRow) => {
-    if (!currentWorkspace) return
+  const handleDeleteGlobal = async (row: HistorySessionRow): Promise<boolean> => {
+    if (!currentWorkspace) return false
     const ok = await deleteByUuidAndRefresh(row.uuid)
     if (ok) {
       setDeleteFailedGlobalUuid(null)
@@ -493,6 +531,7 @@ export default function Sidebar() {
       setDeleteFailedGlobalUuid(row.uuid)
       setTimeout(() => setDeleteFailedGlobalUuid((uuid) => (uuid === row.uuid ? null : uuid)), 3000)
     }
+    return ok
   }
 
   /**
@@ -568,24 +607,77 @@ export default function Sidebar() {
   const [pendingDelete, setPendingDelete] = useState<
     { kind: 'live' | 'history' | 'global'; id: string; title: string } | null
   >(null)
+  const undoableDelete = useUndoableDelete()
   const renameDialogRef = useRef<HTMLDivElement>(null)
   useModalBoundary(renameDialogRef, Boolean(renamingId), () => setRenamingId(null))
+  // 乐观删除 + 可撤销：目标立即从界面消失；10 秒内撤销则原样恢复，到期才
+  // 真正删除文件/记录。LIVE 会话在倒计时期间**不杀进程**——只从侧栏隐藏，
+  // 撤销可原样恢复仍在运行的会话；失败则回滚隐藏并如实报错。
   const confirmPendingDelete = () => {
     if (!pendingDelete) return
     const target = pendingDelete
     setPendingDelete(null)
-    if (target.kind === 'live') {
-      void handleDeleteSession(target.id)
-    } else if (target.kind === 'history') {
-      setDeleteFailedHistoryId(null)
-      const info = visibleHistory.find((entry) => entry.id === target.id)
-      if (info) void handleDeleteHistory(info)
-    } else {
-      setDeleteFailedGlobalUuid(null)
-      const row = globalHistory.find((entry) => entry.uuid === target.id)
-      if (row) void handleDeleteGlobal(row)
+    const info = target.kind === 'history' ? visibleHistory.find((entry) => entry.id === target.id) ?? null : null
+    const row = target.kind === 'global' ? globalHistory.find((entry) => entry.uuid === target.id) ?? null : null
+    if (target.kind === 'history' && !info) return
+    if (target.kind === 'global' && !row) return
+    const uuid = target.kind === 'live'
+      ? recordDurableUuid(recordByRuntimeId.get(target.id))
+      : info?.uuid ?? row?.uuid ?? null
+    const store = () => useAppStore.getState()
+    const rollback = () => {
+      if (target.kind === 'live') store().revealLiveSessionPendingDelete(target.id)
+      if (uuid) store().revealSessionPendingDelete(uuid)
+      const grant = currentWorkspace?.id
+      if (grant) void loadHistorySessions(grant)
+      void loadAllHistorySessions()
     }
+    undoableDelete.schedule({
+      key: `${target.kind}:${target.id}`,
+      title: target.title,
+      visualDelete: () => {
+        if (target.kind === 'live') {
+          store().hideLiveSessionPendingDelete(target.id)
+          if (store().currentSessionId === target.id) setCurrentSessionId(null)
+        }
+        // 按 uuid 做持久墓碑隐藏：同一会话会同时以"工作区历史行"和"跨项目
+        // 行"两副面孔渲染，且兄弟删除终局触发的重扫描会把仅内存级的隐藏
+        // 扫回来。墓碑集合两侧列表和两个加载器都过滤，跨重扫描生效。
+        if (uuid) store().hideSessionPendingDelete(uuid)
+      },
+      restore: rollback,
+      execute: async () => {
+        try {
+          if (target.kind === 'live') {
+            // 会话仍在运行：到期时再解 uuid（记录里没有就向运行时要），
+            // 然后结束进程并删除所有持久副本。失败则回滚，避免"幽灵删除"。
+            let resolvedUuid = uuid
+            if (!resolvedUuid) {
+              try {
+                const st = await window.electronAPI.getSessionState(target.id)
+                resolvedUuid = sessionFileUuid(st?.sessionFile ?? null)
+              } catch {
+                // Session already gone — fall through to the kill below.
+              }
+            }
+            window.electronAPI.killSession(target.id)
+            store().revealLiveSessionPendingDelete(target.id)
+            const ok = await deleteByUuidAndRefresh(resolvedUuid)
+            if (!ok) {
+              rollback()
+              showNotice('sidebar.deleteFailedDurable')
+            }
+            return
+          }
+          const done = info ? await handleDeleteHistory(info) : row ? await handleDeleteGlobal(row) : false
+          if (!done) rollback()
+        } catch {
+          rollback()
+        }
+      }
+    })
   }
+
 
   const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   const archivedSet = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds])
@@ -632,11 +724,18 @@ export default function Sidebar() {
   // makes the sidebar survive restarts.
   type RecentEntry = SidebarConversation
 
+  // Live sessions hidden by an in-flight optimistic delete look gone but keep
+  // running until the countdown finalizes (undo restores them untouched).
+  const visibleSessions = useMemo(
+    () => sessions.filter((session) => !pendingDeleteLiveIds[session.id]),
+    [sessions, pendingDeleteLiveIds]
+  )
+
   const allEntries = useMemo(() => sidebarConversations({
-    sessions, records: sessionRecords, globalHistory,
+    sessions: visibleSessions, records: sessionRecords, globalHistory,
     currentPath: currentWorkspace?.realPath ?? null,
     archivedProjects: archivedProjectPaths, pinned: pinnedSet
-  }), [sessions, sessionRecords, globalHistory, currentWorkspace?.realPath, archivedProjectPaths, pinnedSet])
+  }), [visibleSessions, sessionRecords, globalHistory, currentWorkspace?.realPath, archivedProjectPaths, pinnedSet])
 
   // Archived test per entry kind. Live rows consult their durable uuid too, so
   // a killed-and-resurfaced session stays archived across the handoff.
@@ -911,17 +1010,30 @@ export default function Sidebar() {
         {resuming ? (
           <Loader2 size={12} className="shrink-0 animate-spin text-cream-faint" />
         ) : (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              setPendingDelete({ kind: 'history', id: info.id, title: info.title })
-            }}
-            title={t('history.delete')}
-            className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
-          >
-            <Trash2 size={12} />
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                void handleForkHistory(info)
+              }}
+              title={t('history.duplicate')}
+              className={`${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`}
+            >
+              <CopyPlus size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setPendingDelete({ kind: 'history', id: info.id, title: info.title })
+              }}
+              title={t('history.delete')}
+              className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
+            >
+              <Trash2 size={12} />
+            </button>
+          </>
         )}
       </div>
     )
@@ -1381,12 +1493,14 @@ export default function Sidebar() {
               title: pendingDelete.title === 'Untitled' ? t('history.untitled') : pendingDelete.title
             }),
             confirmLabel: t('sidebar.deleteDialog.confirm'),
+            cancelLabel: t('sidebar.deleteDialog.cancel'),
             danger: true,
             onConfirm: confirmPendingDelete
           }}
           onClose={() => setPendingDelete(null)}
         />
       )}
+      <UndoableDeleteBanner pending={undoableDelete.pending} remaining={undoableDelete.remaining} onUndo={undoableDelete.cancel} onConfirm={undoableDelete.confirm} />
     </aside>
   )
 }
