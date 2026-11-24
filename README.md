@@ -4,13 +4,13 @@
 
 ## 下载与安装
 
-当前公开版本为 **v2.7.0**。安装包、更新清单和校验文件见 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.7.0)。
+当前公开版本为 **v2.7.2**。安装包、更新清单和校验文件见 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.7.2)。
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.0/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.0/TouShou-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.0/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.0/TouShou-x64.zip) |
-| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.0/TouShou-x64.exe) |
+| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.2/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.2/TouShou-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.2/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.2/TouShou-x64.zip) |
+| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.7.2/TouShou-x64.exe) |
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 
@@ -33,7 +33,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 最新发版
 
-**v2.7.0** 在「连接」页的飞书下方新增钉钉，绑定企业自建应用机器人后即可在钉钉私聊提问。看板增加 AI 卡片提案，对话支持复制与创建分支。详见[钉钉接入说明](docs/dingtalk-connection.md)、[更新日志](CHANGELOG.md)和 [v2.7.0 发布说明](docs/releases/v2.7.0.md)。
+**v2.7.2** 在「连接 → 钉钉」提供一键账号登录。投手会自动准备官方 CLI，按需打开浏览器授权，并在授权后连接账号。连接后可在对话中搜索钉钉消息和阅读文档。[钉钉接入说明](docs/dingtalk-connection.md) · [更新日志](CHANGELOG.md) · [发布说明](docs/releases/v2.7.2.md)
 
 ## 开发
 
