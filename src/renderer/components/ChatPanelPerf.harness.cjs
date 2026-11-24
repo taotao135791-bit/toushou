@@ -173,9 +173,31 @@ app.whenReady().then(async () => {
     await js(`document.querySelector('button[aria-label="Set thinking level automatically"]').click()`)
     await waitFor(`${thinkingTrigger}.ariaLabel === 'Thinking: Auto'`)
     await checkMenu()
-    wc.sendInputEvent({ type: 'mouseDown', x: 4, y: 4, button: 'left', clickCount: 1 })
-    wc.sendInputEvent({ type: 'mouseUp', x: 4, y: 4, button: 'left', clickCount: 1 })
-    await waitFor(`!(${thinkingMenu})`)
+    // A visible point in the editor is a real outside click. (4, 4) falls
+    // in native window chrome on Windows and never reaches the DOM there.
+    const closeFromEditor = async () => {
+      const editor = `document.querySelector('textarea')`
+      const point = await js(`(() => {
+        const field = ${editor}, rect = field.getBoundingClientRect()
+        for (const fraction of [0.1, 0.5, 0.9]) {
+          const x = Math.round(rect.left + rect.width * fraction), y = Math.round(rect.top + rect.height / 2)
+          if (document.elementFromPoint(x, y) === field) return { x, y }
+        }
+        throw new Error('No visible editor point outside the thinking menu')
+      })()`)
+      wc.sendInputEvent({ type: 'mouseMove', ...point })
+      wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 })
+      wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
+      await waitFor(`!(${thinkingMenu}) && document.activeElement === ${editor}`)
+    }
+    await closeFromEditor()
+    win.setContentSize(narrowWidth, 700)
+    await waitFor(`innerWidth === ${narrowWidth}`)
+    await showThinkingMenu()
+    await waitFor(narrowMenuPosition)
+    await closeFromEditor()
+    win.setContentSize(1024, 700)
+    await waitFor('innerWidth === 1024')
     await chooseModel('Synthetic plain model')
     await showThinkingMenu()
     const plainThinking = await thinkingLabels()
