@@ -3,6 +3,7 @@ import {
   clearComposerDraft,
   ComposerDraftFile,
   ComposerDrafts,
+  NEW_CHAT_DRAFT_KEY,
   SessionComposerDraft,
   pruneComposerDrafts,
   setComposerDraft
@@ -61,6 +62,20 @@ describe('session-scoped composer drafts', () => {
 
     const remaining = pruneComposerDrafts(drafts, new Set(['B']))
     expect(remaining).toEqual({ B: draft('BBB') })
+  })
+
+  it('keeps the new-chat sentinel draft through session pruning and consumes it like any session', () => {
+    let drafts: ComposerDrafts = {}
+    drafts = setComposerDraft(drafts, NEW_CHAT_DRAFT_KEY, draft('not sent yet'))
+    drafts = setComposerDraft(drafts, 'A', draft('AAA'))
+
+    // The live registry flipping empty must not eat the unsent new-chat words.
+    const afterPrune = pruneComposerDrafts(drafts, new Set(['A']))
+    expect(afterPrune[NEW_CHAT_DRAFT_KEY]?.text).toBe('not sent yet')
+
+    drafts = clearComposerDraft(drafts, NEW_CHAT_DRAFT_KEY)
+    expect(drafts[NEW_CHAT_DRAFT_KEY]).toBeUndefined()
+    expect(drafts.A?.text).toBe('AAA')
   })
 
   it('persists attachment chips alongside text+images, isolated per session', () => {

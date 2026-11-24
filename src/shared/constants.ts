@@ -67,6 +67,9 @@ export const IPC_CHANNELS = {
   PLUGINS_SCAFFOLD_INSTALL: 'plugins:scaffold-install',
   STORE_GET: 'store:get',
   STORE_SET: 'store:set',
+  /** Composer drafts (image-bearing, so they live in their own file). */
+  COMPOSER_DRAFTS_GET: 'composer-drafts:get',
+  COMPOSER_DRAFTS_SET: 'composer-drafts:set',
   BOARDS_LIST: 'boards:list',
   BOARDS_REFRESH: 'boards:refresh',
   BOARDS_SAVE: 'boards:save',

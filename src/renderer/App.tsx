@@ -135,6 +135,8 @@ function App() {
     window.electronAPI.getStore('archivedSessionIds').then((ids) => {
       useAppStore.getState().setArchivedSessionIds(ids ?? [])
     })
+    // Unsent composer drafts survive restarts (per session + new chat).
+    void useAppStore.getState().hydrateComposerDrafts()
 
     const syncLiveSessions = () => {
       void window.electronAPI.listSessions().then(registerSessions)

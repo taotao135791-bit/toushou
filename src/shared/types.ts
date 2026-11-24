@@ -770,6 +770,32 @@ export interface PromptImage {
   mimeType: string
 }
 
+/** Visual class of a non-image attachment chip in the composer (persisted form). */
+export type ComposerFileKind = 'folder' | 'archive' | 'file'
+
+/** Draft-persisted form of an attachment chip: identity-free and structured. */
+export interface ComposerDraftFile {
+  path: string
+  name: string
+  isDirectory: boolean
+  kind: ComposerFileKind
+}
+
+/**
+ * Unsent composer state that belongs to one runtime session (or the
+ * new-chat sentinel key — see composerDraft.ts). Shared with Main, which
+ * validates the shape before persisting it to disk.
+ */
+export interface SessionComposerDraft {
+  text: string
+  images: PromptImage[]
+  /** Optional so drafts written before attachment chips existed still load. */
+  files?: ComposerDraftFile[]
+}
+
+/** Drafts keyed by runtime session id (plus the new-chat sentinel). */
+export type ComposerDrafts = Record<string, SessionComposerDraft>
+
 /**
  * Result of the image picker dialog: the image bytes as base64, or a
  * categorized failure. `null` means the user cancelled the dialog.

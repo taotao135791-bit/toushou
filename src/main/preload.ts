@@ -67,6 +67,7 @@ import {
   PackageActionResult,
   PackageManagerCapabilities,
   AppSettings,
+  ComposerDrafts,
   InstallStatus,
   ReadFileResult,
   SessionUiAnswer,
@@ -277,6 +278,9 @@ export interface ElectronAPI {
   officeSave: (grantId: string, snapshot: OfficeWorkbookSnapshot) => Promise<OfficeSaveResult>
   getStore: <K extends keyof AppSettings>(key: K) => Promise<AppSettings[K]>
   setStore: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => Promise<boolean>
+  /** Unsent composer drafts (per session + new-chat sentinel), persisted by Main. */
+  getComposerDrafts: () => Promise<ComposerDrafts>
+  setComposerDrafts: (drafts: ComposerDrafts) => Promise<boolean>
   /** Kanban boards (local-only, validated in main on every read/write). */
   listBoards: () => Promise<KanbanBoard[]>
   /** Main resolves every module's dates and refreshes the board as one run. */
@@ -837,6 +841,9 @@ const api: ElectronAPI = {
   getStore: (key: keyof AppSettings) => ipcRenderer.invoke(IPC_CHANNELS.STORE_GET, key),
   setStore: (key: keyof AppSettings, value: unknown) =>
     ipcRenderer.invoke(IPC_CHANNELS.STORE_SET, key, value),
+  getComposerDrafts: () => ipcRenderer.invoke(IPC_CHANNELS.COMPOSER_DRAFTS_GET),
+  setComposerDrafts: (drafts: ComposerDrafts) =>
+    ipcRenderer.invoke(IPC_CHANNELS.COMPOSER_DRAFTS_SET, drafts),
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   boardRefresh: (request: BoardRefreshRequest) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REFRESH, request),
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_SAVE, input),
