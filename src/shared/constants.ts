@@ -213,6 +213,8 @@ export const IPC_CHANNELS = {
    * inside the runtime's sessions root (the renderer never sends a path).
    */
   OMP_DELETE_SESSION_BY_UUID: 'omp:delete-session-by-uuid',
+  OMP_DELETE_LIVE_SESSION: 'omp:delete-live-session',
+  OMP_SET_SESSION_LOCKED: 'omp:set-session-locked',
   OMP_SET_SESSION_NAME: 'omp:set-session-name',
   OMP_GET_SUBAGENTS: 'omp:get-subagents',
   OMP_GET_SUBAGENT_MESSAGES: 'omp:get-subagent-messages',

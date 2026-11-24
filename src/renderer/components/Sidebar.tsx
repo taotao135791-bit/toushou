@@ -138,6 +138,7 @@ export default function Sidebar() {
   const pinnedSessionIds = useAppStore((s) => s.pinnedSessionIds)
   const archivedSessionIds = useAppStore((s) => s.archivedSessionIds)
   const lockedSessionIds = useAppStore((s) => s.lockedSessionIds)
+  const pendingSessionLocks = useAppStore((s) => s.pendingSessionLocks)
   const setSessionLocked = useAppStore((s) => s.setSessionLocked)
   const unreadSessionIds = useAppStore((s) => s.unreadSessionIds)
   const uiRequests = useAppStore((s) => s.uiRequests)
@@ -708,6 +709,14 @@ export default function Sidebar() {
       ? recordDurableUuid(recordByRuntimeId.get(target.id))
       : info?.uuid ?? row?.uuid ?? null
     const store = () => useAppStore.getState()
+    if (uuid && store().pendingSessionLocks.includes(uuid)) {
+      showNotice('sidebar.lockUpdating')
+      return
+    }
+    if (uuid && store().lockedSessionIds.includes(uuid)) {
+      showNotice('sidebar.deleteLocked')
+      return
+    }
     const rollback = () => {
       if (target.kind === 'live') store().revealLiveSessionPendingDelete(target.id)
       if (uuid) store().revealSessionPendingDelete(uuid)
@@ -732,41 +741,35 @@ export default function Sidebar() {
       execute: async () => {
         try {
           if (target.kind === 'live') {
-            // 会话仍在运行：到期时再解 uuid（记录里没有就向运行时要），
-            // 然后结束进程并删除所有持久副本。失败则回滚，避免"幽灵删除"。
-            let resolvedUuid = uuid
-            try {
-              const freshRecord = store().sessionRecords.find((record) => record.isLive && record.runtimeSessionId === target.id)
-              resolvedUuid = recordDurableUuid(freshRecord) ?? resolvedUuid
-            } catch {
-              // Registry shape shifted between arm and fire — the snapshot uuid still stands.
+            const activeGrant = currentWorkspace?.id
+            const freshRecord = store().sessionRecords.find(record => record.isLive && record.runtimeSessionId === target.id)
+            let durableUuid = recordDurableUuid(freshRecord) ?? uuid
+            if (activeGrant && !durableUuid) {
+              // Main resolves the identity for deletion. Here it is only
+              // needed to invalidate the renderer's durable history caches.
+              const session = await window.electronAPI.getSessionState(target.id).catch(() => null)
+              durableUuid = sessionFileUuid(session?.sessionFile)
             }
-            if (!resolvedUuid) {
-              try {
-                const st = await window.electronAPI.getSessionState(target.id)
-                resolvedUuid = sessionFileUuid(st?.sessionFile ?? null)
-              } catch {
-                // Session already gone — fall through to the kill below.
+            // Main is responsible for checking the lock before stopping the runtime.
+            const result = activeGrant ? await window.electronAPI.deleteLiveSession(activeGrant, target.id) : false
+            if (result === true) {
+              store().setSessions(store().sessions.filter(session => session.id !== target.id))
+              store().revealLiveSessionPendingDelete(target.id)
+              if (uuid && uuid !== durableUuid) store().revealSessionPendingDelete(uuid)
+              if (durableUuid) purgeDeletedSession(durableUuid)
+              if (activeGrant) void loadHistorySessions(activeGrant)
+              void loadAllHistorySessions()
+            } else {
+              // If file removal failed after the runtime stopped, let history
+              // show the transcript instead of revealing a stale live row.
+              if (result === false && activeGrant) {
+                const stillLive = await window.electronAPI.listSessions().catch(() => null)
+                if (stillLive && !stillLive.some(session => session.id === target.id)) {
+                  store().setSessions(store().sessions.filter(session => session.id !== target.id))
+                }
               }
-            }
-            // 锁定检查必须在 killSession 之前：杀进程是不可逆动作，Main 的
-            // 文件拦截救得回数据救不回正在跑的进程。入口守卫用的是渲染期
-            // 快照（可能过期/未水合），这里用最新 store 值再拦一次。
-            if (resolvedUuid && store().lockedSessionIds.includes(resolvedUuid)) {
               rollback()
-              showNotice('sidebar.deleteLocked')
-              return
-            }
-            await window.electronAPI.killSession(target.id)
-            store().setSessions(store().sessions.filter((session) => session.id !== target.id))
-            store().revealLiveSessionPendingDelete(target.id)
-            const ok = await deleteByUuidAndRefresh(resolvedUuid)
-            if (ok === 'locked') {
-              rollback()
-              showNotice('sidebar.deleteLocked')
-            } else if (!ok) {
-              rollback()
-              showNotice('sidebar.deleteFailedDurable')
+              showNotice(result === 'locked' ? 'sidebar.deleteLocked' : 'sidebar.deleteFailedDurable')
             }
             return
           }
@@ -774,6 +777,7 @@ export default function Sidebar() {
           if (!done) rollback()
         } catch {
           rollback()
+          showNotice(target.kind === 'live' ? 'sidebar.deleteFailedDurable' : 'history.deleteFailed')
         }
       }
     })
@@ -783,6 +787,13 @@ export default function Sidebar() {
   const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   const archivedSet = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds])
   const lockedSet = useMemo(() => new Set(lockedSessionIds), [lockedSessionIds])
+  const pendingLockSet = useMemo(() => new Set(pendingSessionLocks), [pendingSessionLocks])
+  const toggleSessionLock = async (uuid: string, locked: boolean) => {
+    if (await setSessionLocked(uuid, !locked) === 'failed') showNotice('sidebar.lockSaveFailed')
+  }
+  const renderLockBadge = (uuid: string | null) => uuid !== null && lockedSet.has(uuid) && (
+    <Lock size={10} className="shrink-0 text-accent" role="img" aria-label={t('sidebar.locked')} />
+  )
 
   // Archive key of a live session: its durable uuid when the registry knows
   // one, else the runtime id. UUID keys survive the live→durable handoff.
@@ -983,12 +994,7 @@ export default function Sidebar() {
             </span>
             {renderOriginBadge(session.origin, importedSourceByRuntime.get(session.id))}
             {renderDraftBadge(sessionComposerDraftKey(session))}
-            {(() => {
-              const sessionUuid = durableUuidOfSession(session.id)
-              return sessionUuid !== null && lockedSet.has(sessionUuid) ? (
-                <Lock size={10} className="shrink-0 text-accent" aria-label={t('sidebar.lock')} />
-              ) : null
-            })()}
+            {renderLockBadge(durableUuidOfSession(session.id))}
             {pinned && <Pin size={10} className="shrink-0 text-accent" aria-hidden="true" />}
           </span>
           <span className="block truncate text-[11px] leading-4 text-cream-faint">
@@ -1055,10 +1061,6 @@ export default function Sidebar() {
       else if (entry.kind === 'history') setPendingDelete({ kind: 'history', id: entry.info.id, title: entry.info.title })
       else setPendingDelete({ kind: 'global', id: entry.row.uuid, title: entry.row.title })
     }
-    const toggleLock = () => {
-      if (archivedUuid === null) return
-      setSessionLocked(archivedUuid, !locked)
-    }
     return (
       <div
         key={entry.key}
@@ -1067,8 +1069,9 @@ export default function Sidebar() {
       >
         <button type="button" data-conversation-select onClick={unarchiveAndOpen} title={entry.title}
           className="min-w-0 flex-1 rounded-md text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-          <span className="block truncate text-[13px] leading-5 text-cream-faint">
-            {displayTitle(entry.title, entry.projectName)}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[13px] leading-5 text-cream-faint">{displayTitle(entry.title, entry.projectName)}</span>
+            {renderLockBadge(archivedUuid)}
           </span>
           <span className="block truncate text-[11px] leading-4 text-cream-faint/70">
             {defaultProjectPaths.has(entry.workspacePath) ? formatRelativeTime(entry.timestamp, language) : `${projectNames.get(entry.workspacePath) || entry.projectName} · ${formatRelativeTime(entry.timestamp, language)}`}
@@ -1088,9 +1091,10 @@ export default function Sidebar() {
         {archivedUuid !== null && (
           <button
             type="button"
+            disabled={pendingLockSet.has(archivedUuid)}
             onClick={(e) => {
               e.stopPropagation()
-              toggleLock()
+              void toggleSessionLock(archivedUuid, locked)
             }}
             title={t(locked ? 'sidebar.unlock' : 'sidebar.lock')}
             className={`${iconBtn} ${locked ? 'text-accent' : 'opacity-0 group-hover:opacity-100'} hover:bg-overlay-strong hover:text-cream-dim`}
@@ -1130,7 +1134,7 @@ export default function Sidebar() {
             </span>
             {renderOriginBadge(info.origin, info.importedFrom)}
             {renderDraftBadge(historyComposerDraftKey(info.uuid))}
-            {lockedSet.has(info.uuid) && <Lock size={10} className="shrink-0 text-accent" aria-label={t('sidebar.lock')} />}
+            {renderLockBadge(info.uuid)}
           </span>
           <span
             className={`block truncate text-[11px] leading-4 ${
@@ -1163,9 +1167,10 @@ export default function Sidebar() {
             </button>
             <button
               type="button"
+              disabled={pendingLockSet.has(info.uuid)}
               onClick={(e) => {
                 e.stopPropagation()
-                setSessionLocked(info.uuid, !lockedSet.has(info.uuid))
+                void toggleSessionLock(info.uuid, lockedSet.has(info.uuid))
               }}
               title={t(lockedSet.has(info.uuid) ? 'sidebar.unlock' : 'sidebar.lock')}
               className={`${iconBtn} ${lockedSet.has(info.uuid) ? 'text-accent' : 'opacity-0 group-hover:opacity-100'} hover:bg-overlay-strong hover:text-cream-dim`}
@@ -1216,6 +1221,7 @@ export default function Sidebar() {
             </span>
             {renderOriginBadge(row.origin, row.importedFrom)}
             {renderDraftBadge(historyComposerDraftKey(row.uuid))}
+            {renderLockBadge(row.uuid)}
           </span>
           <span
             className={`block truncate text-[11px] leading-4 ${
@@ -1227,12 +1233,12 @@ export default function Sidebar() {
               : defaultProjectPaths.has(row.cwd) ? formatRelativeTime(row.timestamp, language) : `${projectNames.get(row.cwd) || basename(row.cwd) || row.cwd} · ${formatRelativeTime(row.timestamp, language)}`}
           </span>
         </button>
-        {lockedSet.has(row.uuid) && <Lock size={11} className="shrink-0 text-accent" aria-label={t('sidebar.lock')} />}
         <button
           type="button"
+          disabled={pendingLockSet.has(row.uuid)}
           onClick={(e) => {
             e.stopPropagation()
-            setSessionLocked(row.uuid, !lockedSet.has(row.uuid))
+            void toggleSessionLock(row.uuid, lockedSet.has(row.uuid))
           }}
           title={t(lockedSet.has(row.uuid) ? 'sidebar.unlock' : 'sidebar.lock')}
           className={`${iconBtn} ${lockedSet.has(row.uuid) ? 'text-accent' : 'opacity-0 group-hover:opacity-100'} hover:bg-overlay-strong hover:text-cream-dim`}
@@ -1596,7 +1602,7 @@ export default function Sidebar() {
             if (menuUuid === null) return null
             const menuLocked = lockedSet.has(menuUuid)
             return (
-              <button type="button" data-session-action="lock" className="project-menu-action" onClick={() => { setSessionLocked(menuUuid, !menuLocked); closeSessionMenu(); sessionMenuTrigger.current?.focus() }}>
+              <button type="button" data-session-action="lock" className="project-menu-action disabled:opacity-50" disabled={pendingLockSet.has(menuUuid)} onClick={() => { void toggleSessionLock(menuUuid, menuLocked); closeSessionMenu(); sessionMenuTrigger.current?.focus() }}>
                 {menuLocked ? <LockOpen size={13} /> : <Lock size={13} />}{t(menuLocked ? 'sidebar.unlock' : 'sidebar.lock')}
               </button>
             )
@@ -1627,6 +1633,7 @@ export default function Sidebar() {
             const menuUuid = durableUuidOfSession(menuSession.id)
             if (menuUuid !== null && lockedSet.has(menuUuid)) {
               closeSessionMenu()
+              sessionMenuTrigger.current?.focus()
               showNotice('sidebar.deleteLocked')
               return
             }

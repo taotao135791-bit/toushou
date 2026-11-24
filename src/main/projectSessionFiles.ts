@@ -4,12 +4,14 @@ import { canonicalExistingPath } from './canonicalPath'
 import { defaultPiAgentDir } from './piSettings'
 import { sessionsRoot, sessionDirCandidatesFor } from './sessionHistory'
 
+export interface ProjectSessionFile { path: string; dev: number; ino: number; uuid: string }
+
 /** Find transcript copies by their own workspace header, never by renderer data. */
-export async function discoverProjectSessionFiles(projectPath: string, agentDir = defaultPiAgentDir()): Promise<Array<{ path: string; dev: number; ino: number }>> {
+export async function discoverProjectSessionFiles(projectPath: string, agentDir = defaultPiAgentDir()): Promise<ProjectSessionFile[]> {
   let root: string
   try { root = canonicalExistingPath(sessionsRoot(agentDir)) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error }
   const expected = new Set(sessionDirCandidatesFor(projectPath, agentDir).map(p => path.join(root, path.relative(sessionsRoot(agentDir), p))))
-  const files: Array<{ path: string; dev: number; ino: number }> = []
+  const files: ProjectSessionFile[] = []
   const pending = [root]
   let visited = 0
   while (pending.length) {
@@ -43,7 +45,7 @@ export async function discoverProjectSessionFiles(projectPath: string, agentDir 
         }
         let cwd: string
         try { cwd = canonicalExistingPath(header.cwd) } catch { continue }
-        if (cwd === projectPath) files.push({ path: file, dev: stat.dev, ino: stat.ino })
+        if (cwd === projectPath) files.push({ path: file, dev: stat.dev, ino: stat.ino, uuid: header.id })
       } catch (error) { if (expected.has(path.resolve(dir))) throw error }
       finally { await handle?.close() }
     }

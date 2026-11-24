@@ -468,6 +468,10 @@ export interface ElectronAPI {
    * Resolves 'locked' when the conversation is locked against deletion.
    */
   deleteSessionByUuid: (grantId: string, uuid: string) => Promise<boolean | 'locked'>
+  /** Resolve and delete a live session under Main's durable-session lock. */
+  deleteLiveSession: (grantId: string, sessionId: string) => Promise<boolean | 'locked'>
+  /** Persist one durable lock change. Resolves false if Main could not apply it. */
+  setSessionLocked: (uuid: string, locked: boolean) => Promise<boolean>
   /** Return the canonical saved display name, or null if naming failed. */
   setSessionName: (sessionId: string, name: string, options?: import('../shared/types').SessionNameOptions) => Promise<import('../shared/types').SessionNamingResult | null>
   /** Live subagent roster (get_subagents); null when unsupported/unavailable. */
@@ -1005,6 +1009,10 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_FILE, grantId, historyId),
   deleteSessionByUuid: (grantId: string, uuid: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_BY_UUID, grantId, uuid),
+  deleteLiveSession: (grantId: string, sessionId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_LIVE_SESSION, grantId, sessionId),
+  setSessionLocked: (uuid: string, locked: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_SESSION_LOCKED, uuid, locked),
   setSessionName: (sessionId: string, name: string, options?: import('../shared/types').SessionNameOptions) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_SESSION_NAME, sessionId, name, options) as Promise<import('../shared/types').SessionNamingResult | null>,
   getSubagents: (sessionId: string) =>

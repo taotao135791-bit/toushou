@@ -157,7 +157,8 @@ import {
   diffCheckpoint
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
-import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions, readSessionUuid } from './sessionHistory'
+import { listSessionHistory, deleteSessionFileEverywhere, isSessionFilePath, isSessionUuid, listAllSessions, readSessionUuid, sessionsRoot } from './sessionHistory'
+import { createSessionDeletionLocks } from './sessionDeletionLocks'
 import { readSessionTranscript, readSessionFileTranscript } from './sessionTranscript'
 import { defaultImportSourceDirectory, importSessionHistory } from './sessionImport'
 import type { SessionImportResult } from '../shared/sessionImport'
@@ -277,7 +278,11 @@ const fsGuard = new FsGuard()
 const grantManager = new WorkspaceGrantManager({ fsGuard })
 const operationGrantManager = getOperationGrantManager()
 const operationGrantOwnerCleanupHooks = new Set<number>()
-const historySessionGrantManager = new HistorySessionGrantManager()
+const sessionDeletionLocks = createSessionDeletionLocks(
+  () => getStore('lockedSessionIds'),
+  ids => setStore('lockedSessionIds', ids)
+)
+const historySessionGrantManager = new HistorySessionGrantManager({ sessionDeletionLocks })
 const historySessionGrantOwnerCleanupHooks = new Set<number>()
 // Durable provenance for externally-spawned sessions (Feishu routes, scheduled
 // tasks): keeps origin badges on history rows across restarts, where the live
@@ -1598,19 +1603,14 @@ export function registerIpc() {
         workspaceRealPath: resolved.realPath,
         ownerWebContentsId: event.sender.id
       }
-      // 锁定对话的删除在 Main 拦死（用户拍板的防误删防线）： capability 能
-      // 解析到哪个 uuid，就查哪个 uuid 的锁——两条删除路径都要过这道闸。
-      const lockedUuids = getStore('lockedSessionIds')
-      const locked = (uuid: unknown): boolean =>
-        typeof uuid === 'string' && lockedUuids.includes(uuid)
-      if (locked(historySessionGrantManager.descriptorUuid(historyId))) return 'locked'
       const deleted = await historySessionGrantManager.withResolved(historyId, context, async (filePath) => {
-        const fileUuid = await readSessionUuid(filePath)
-        if (fileUuid && locked(fileUuid)) return 'locked'
+        const declaredUuid = historySessionGrantManager.descriptorUuid(historyId)
         // Copy-proof: sweep same-uuid copies in every layout, or the scanner
         // resurrects the session from its legacy/sanitized duplicate.
-        const result = await deleteSessionFileEverywhere(filePath)
-        if (result) {
+        const result = await deleteSessionFileEverywhere(filePath, undefined, (fileUuid, remove) =>
+          sessionDeletionLocks.runDeletion([declaredUuid, fileUuid], remove)
+        )
+        if (result === true) {
           historySessionGrantManager.revoke(historyId)
           forgetSessionTitle(filePath)
         }
@@ -1621,7 +1621,6 @@ export function registerIpc() {
       // The inode pin no longer matches (omp resume rewrites the file in
       // place) or the file is gone. Sweep by the descriptor's uuid instead so
       // a rewritten row can always be deleted.
-      if (locked(historySessionGrantManager.descriptorUuid(historyId))) return 'locked'
       return historySessionGrantManager.deleteStale(historyId, context)
     }
   )
@@ -1637,11 +1636,39 @@ export function registerIpc() {
       const resolved = requireGrant(grantId)
       if (!resolved) return false
       bindHistorySessionGrantOwnerCleanup(event)
-      // 锁定对话：跨项目删除通道同样拦死。
-      const lockedUuids = getStore('lockedSessionIds')
-      if (typeof uuid === 'string' && lockedUuids.includes(uuid)) return 'locked'
       return historySessionGrantManager.deleteByUuid(uuid)
     }
+  )
+
+  ipcMain.handle(
+    IPC_CHANNELS.OMP_DELETE_LIVE_SESSION,
+    async (event: IpcMainInvokeEvent, grantId: string, sessionId: unknown) => {
+      if (!requireGrant(grantId) || typeof sessionId !== 'string') return false
+      bindHistorySessionGrantOwnerCleanup(event)
+      const session = getSession(sessionId)
+      if (!session) return false
+      const retainedUuid = session.draftSessionUuid
+      // A resumed runtime may have switched files since the first get_state.
+      const state = !session.sessionFile || session.resumeFrom ? await getSessionState(sessionId) : null
+      const currentFile = state?.sessionFile ?? session.sessionFile
+      const readUuid = async (file: string | undefined) =>
+        file && isSessionFilePath(file) ? readSessionUuid(file) : null
+      const [currentUuid, sourceUuid] = await Promise.all([
+        readUuid(currentFile),
+        session.resumeFrom !== currentFile ? readUuid(session.resumeFrom) : null
+      ])
+      const uuid = [currentUuid, state?.draftSessionUuid, session.draftSessionUuid, sourceUuid].find(isSessionUuid)
+      if (!uuid && (!state || currentFile || session.resumeFrom || state.messageCount !== 0)) return false
+
+      return sessionDeletionLocks.runDeletion([retainedUuid, currentUuid, sourceUuid, uuid], async () => {
+        if (getSession(sessionId) !== session || !killSession(sessionId)) return false
+        return uuid ? historySessionGrantManager.deleteByUuid(uuid) : true
+      })
+    }
+  )
+
+  ipcMain.handle(IPC_CHANNELS.OMP_SET_SESSION_LOCKED, (_event, uuid: unknown, locked: unknown) =>
+    sessionDeletionLocks.setLocked(uuid, locked)
   )
 
   ipcMain.handle(
@@ -2038,6 +2065,7 @@ export function registerIpc() {
     file: path.join(app.getPath('userData'), 'projects.json'),
     defaultPath: workspacePaths.defaultWorkspace,
     protectedPaths: workspacePaths.protectedPaths,
+    sessionStoragePath: sessionsRoot,
     recentPaths: () => getStore('recentProjects') ?? [],
     isBusy: projectPath => hasProjectSessionsInFlight(projectPath) || listTasks().some(task => {
       if (typeof task.cwd !== 'string') return false
@@ -2046,6 +2074,7 @@ export function registerIpc() {
       return pathsOverlap(projectPath, cwd) && Array.isArray(task.runs) && task.runs.some(run => run && run.finishedAt === undefined && ['preparing', 'running', 'waiting_user', 'blocked'].includes(run.status ?? ''))
     }),
     discoverSessions: discoverProjectSessionFiles,
+    sessionDeletionLocks,
     closeIdleSessions: closeIdleProjectSessions,
     confirmDelete: async (projectPath, sessions) => {
       const result = await dialog.showMessageBox({
@@ -2793,7 +2822,7 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.STORE_SET, async (_event, key: keyof AppSettings, value: unknown) => {
     if (typeof key !== 'string') return false
-    if (key === 'recentProjects') return false
+    if (key === 'recentProjects' || key === 'lockedSessionIds') return false
     // The store holds plain settings data only — a renderer must not persist
     // functions, class instances, or oversized blobs through this channel.
     if (!isPlainStorableValue(value)) return false

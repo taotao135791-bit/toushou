@@ -122,6 +122,10 @@ app.whenReady().then(async () => {
     await js('window.chatPerfFixture.startBoardStream()')
     await waitFor(`${streamTurn}?.querySelector('pre')?.textContent.includes('Synthetic board reasoning begins')`)
     await frame()
+    // The earlier history-replacement scenario may leave the viewport at a saved offset.
+    // Start the stream-growth check in bottom-follow mode using the actual chat control.
+    await js(`document.querySelector('button[aria-label="Jump to latest"]')?.click()`)
+    await frame()
     const shortReasoning = await layout()
     await js('window.chatPerfFixture.growBoardThinking()')
     await waitFor(`${streamTurn}?.querySelector('pre')?.textContent.includes('Synthetic board reasoning line 24')`)

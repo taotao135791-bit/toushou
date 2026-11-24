@@ -188,7 +188,7 @@ export interface ProjectRecord {
   createdAt: number
 }
 
-export type ProjectError = 'cancelled' | 'missing' | 'busy' | 'protected' | 'system-paths-unavailable' | 'invalid-name' | 'path-changed' | 'wrong-folder' | 'partial-failure' | 'failed' | 'not-found' | 'archived'
+export type ProjectError = 'cancelled' | 'missing' | 'busy' | 'locked' | 'protected' | 'system-paths-unavailable' | 'invalid-name' | 'path-changed' | 'wrong-folder' | 'partial-failure' | 'failed' | 'not-found' | 'archived'
 export type ProjectResult = { ok: true; project: ProjectRecord; grant?: WorkspaceGrant } | { ok: false; error: ProjectError; message?: string }
 
 /** Target app for the chat top bar "Open with" utility menu (workspace:open-in). */

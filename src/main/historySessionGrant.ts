@@ -11,6 +11,7 @@ import {
   sessionsRoot
 } from './sessionHistory'
 import { defaultPiAgentDir } from './piSettings'
+import type { SessionDeletionGuard } from './sessionDeletionLocks'
 
 /** History capabilities are intentionally short-lived and Main-owned. */
 export const HISTORY_SESSION_GRANT_TTL_MS = 10 * 60 * 1000
@@ -42,6 +43,7 @@ export interface HistorySessionGrantManagerOptions {
   ttlMs?: number
   /** Test seam; production resolves the detected OMP agent directory per use. */
   agentDir?: string
+  sessionDeletionLocks?: SessionDeletionGuard
 }
 
 const CONTROL_RE = /[\x00-\x1f\x7f]/
@@ -100,11 +102,13 @@ export class HistorySessionGrantManager {
   private readonly now: () => number
   private readonly ttlMs: number
   private readonly getAgentDir: () => string
+  private readonly sessionDeletionLocks?: SessionDeletionGuard
 
   constructor(opts: HistorySessionGrantManagerOptions = {}) {
     this.now = opts.now ?? Date.now
     this.ttlMs = opts.ttlMs ?? HISTORY_SESSION_GRANT_TTL_MS
     this.getAgentDir = opts.agentDir ? () => opts.agentDir as string : defaultPiAgentDir
+    this.sessionDeletionLocks = opts.sessionDeletionLocks
   }
 
   /**
@@ -260,7 +264,7 @@ export class HistorySessionGrantManager {
   async deleteStale(
     historyId: unknown,
     context: HistorySessionGrantContext
-  ): Promise<boolean> {
+  ): Promise<boolean | 'locked'> {
     if (!validOpaqueId(historyId)) return false
     const stored = this.grants.get(historyId)
     if (
@@ -274,8 +278,10 @@ export class HistorySessionGrantManager {
     // Age alone does not block the sweep: an expired-but-bound capability
     // still names the same session file, and a user deleting a row must not
     // depend on when the capability was last minted.
-    const deleted = await deleteSessionCopiesByUuid(stored.descriptor.uuid, this.getAgentDir())
-    if (deleted) this.remove(historyId)
+    const uuid = stored.descriptor.uuid
+    const remove = () => deleteSessionCopiesByUuid(uuid, this.getAgentDir())
+    const deleted = await (this.sessionDeletionLocks?.runDeletion([uuid], remove) ?? remove())
+    if (deleted === true) this.remove(historyId)
     return deleted
   }
 
@@ -288,11 +294,12 @@ export class HistorySessionGrantManager {
    * scanner to resurrect. Resolution and guarding happen Main-side inside the
    * runtime's own sessions root; the renderer never supplies a path.
    */
-  async deleteByUuid(uuid: unknown): Promise<boolean> {
+  async deleteByUuid(uuid: unknown): Promise<boolean | 'locked'> {
     this.pruneExpired()
     if (!isSessionUuid(uuid)) return false
-    const deleted = await deleteSessionCopiesByUuid(uuid, this.getAgentDir())
-    if (deleted) this.revokeUuid(uuid)
+    const remove = () => deleteSessionCopiesByUuid(uuid, this.getAgentDir())
+    const deleted = await (this.sessionDeletionLocks?.runDeletion([uuid], remove) ?? remove())
+    if (deleted === true) this.revokeUuid(uuid)
     return deleted
   }
 

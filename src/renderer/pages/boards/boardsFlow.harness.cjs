@@ -25,6 +25,14 @@ const e2ePlace = e2eSecondary ? { x: e2eSecondary.workArea.x + 24, y: e2eSeconda
     wc.on('console-message', (_event, _level, message) => console.log('RENDERER ' + message))
     await win.loadFile(html)
     const wait = () => new Promise(resolve => setTimeout(resolve, 300))
+    const until = async (expression) => {
+      const deadline = Date.now() + 6000
+      while (Date.now() < deadline) {
+        if (await wc.executeJavaScript(expression)) return
+        await new Promise(resolve => setTimeout(resolve, 60))
+      }
+      throw new Error(`Timed out: ${expression}`)
+    }
     await wait()
     const inspect = () => wc.executeJavaScript(`(() => ({today:!![...document.querySelectorAll('h1')].find(e=>e.textContent==="Today's readings"), activeBoard:document.querySelector('[title="Click to open · drag to reorder tabs"].shadow-card span')?.textContent ?? null, toolbar:!!document.querySelector('[title="Add widget"]'), menu:!!document.querySelector('[title="Board menu"]'), ttNotice:document.body.textContent.includes('TikTok Ads is not connected'), noReading:document.body.textContent.includes('No reading modules yet'), connect:[...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='Connect'), route:document.querySelector('#fixture-route').textContent, saved:window.boardFixture.saved.map(b=>({name:b.name,types:b.widgets.map(w=>w.type),masterScope:b.masterScope,verifiedCards:b.widgets.filter(w=>w.config.requireVerifiedTtScope===true).length}))}))()`)
     const initial = await inspect()
@@ -33,7 +41,13 @@ const e2ePlace = e2eSecondary ? { x: e2eSecondary.workArea.x + 24, y: e2eSeconda
     await wc.executeJavaScript(`document.querySelector('.board-canvas').firstElementChild.scrollTop = 150`)
     await wc.executeJavaScript(`document.querySelector('[title="New board"]').click()`)
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='TikTok投放全景').click()`)
-    await wait()
+    phase = 'TikTok board readiness'
+    await until(`(() => {
+      const widget = window.boardFixture.saved[0]?.widgets.find(item => item.type === 'tt-reading');
+      const card = widget && document.querySelector('[data-board-widget-id="'+widget.id+'"]');
+      return card?.textContent.includes('TikTok Ads is not connected') &&
+        [...card.querySelectorAll('button')].some(button => button.textContent.trim() === 'Connect');
+    })()`)
     const created = await inspect()
     const createdScrollTop = await wc.executeJavaScript(`document.querySelector('.board-canvas').firstElementChild.scrollTop`)
     await wc.executeJavaScript(`(async () => {
@@ -186,14 +200,6 @@ const e2ePlace = e2eSecondary ? { x: e2eSecondary.workArea.x + 24, y: e2eSeconda
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Export HTML').click()`)
     await wait()
     const exportedSnapshot = await wc.executeJavaScript(`(() => {const s=window.boardFixture.scenario;const doc=new DOMParser().parseFromString(s.exportedHtml,'text/html');return {anonymized:s.exportInput?.anonymize,table:!!doc.querySelector('table'),svg:!!doc.querySelector('svg'),script:!!doc.querySelector('script'),groups:[...doc.querySelectorAll('.group')].map(e=>({heading:e.querySelector('h3')?.textContent,accounts:[...e.querySelectorAll('li>span:first-child')].map(x=>x.textContent)})),containsPrivate:/PRIVATE_ACCOUNT|730000000000000000/.test(s.exportedHtml)}})()`)
-    const until = async (expression) => {
-      const deadline = Date.now() + 6000
-      while (Date.now() < deadline) {
-        if (await wc.executeJavaScript(expression)) return
-        await new Promise(resolve => setTimeout(resolve, 60))
-      }
-      throw new Error(`Timed out: ${expression}`)
-    }
     phase = 'custom-html-editor'
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Edit board').click()`)
     await until(`!!document.querySelector('[role=dialog] textarea[aria-label="Change description"]')`)

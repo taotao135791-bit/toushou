@@ -5,6 +5,9 @@ import type { ProjectError, ProjectRecord } from '../shared/types'
 import { canonicalExistingPath } from './canonicalPath'
 import { beginProjectDeletion, endProjectDeletion, isProjectDeletionInProgress, pathsOverlap } from './projectDeletionGate'
 import { getProjectVolumeId } from './projectVolumeIdentity'
+import type { ProjectSessionFile } from './projectSessionFiles'
+import type { SessionDeletionGuard } from './sessionDeletionLocks'
+import { readSessionUuid } from './sessionHistory'
 
 export interface ProjectDirectoryIdentity {
   path: string
@@ -33,13 +36,15 @@ export interface ProjectRegistryOptions {
   file: string
   defaultPath: string
   protectedPaths: string[]
+  sessionStoragePath?: () => string
   recentPaths: () => string[]
   isBusy: (projectPath: string) => boolean
   confirmDelete: (projectPath: string, sessions: number) => Promise<boolean>
   trash: (target: string) => Promise<void>
   closeIdleSessions: (projectPath: string) => Promise<boolean>
   /** Session paths supplied by a Main-only scanner; never from renderer. */
-  discoverSessions: (projectPath: string) => Promise<Array<{ path: string; dev: number; ino: number }>>
+  discoverSessions: (projectPath: string) => Promise<ProjectSessionFile[]>
+  sessionDeletionLocks?: SessionDeletionGuard
   /** Main-only identity resolver; injectable to model remounts in tests. */
   identify?: (target: string, forceVolume: boolean) => ProjectDirectoryIdentity
 }
@@ -61,6 +66,9 @@ export function isFilesystemRoot(target: string, pathApi: typeof path = path): b
 function insideOrEqual(root: string, target: string): boolean {
   const relative = path.relative(root, target)
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+}
+function sessionManifest(files: ProjectSessionFile[]): string {
+  return files.map(({ path, dev, ino, uuid }) => JSON.stringify([path, dev, ino, uuid])).sort().join('\n')
 }
 function identify(target: string, forceVolume: boolean): ProjectDirectoryIdentity {
   const canonical = canonicalExistingPath(target)
@@ -240,6 +248,12 @@ export class ProjectRegistry {
       try { protectedPath = canonicalExistingPath(protectedPath) } catch { /* missing protected path */ }
       if (insideOrEqual(item.path, protectedPath)) return 'protected'
     }
+    const sessionStoragePath = this.options.sessionStoragePath?.()
+    if (sessionStoragePath) {
+      let storage = path.resolve(sessionStoragePath)
+      try { storage = canonicalExistingPath(storage) } catch { /* missing session storage */ }
+      if (pathsOverlap(item.path, storage)) return 'protected'
+    }
     if (store.projects.some(p => p.id !== item.id && pathsOverlap(item.path, p.path))) return 'protected'
     if (this.options.isBusy(item.path)) return 'busy'
     return null
@@ -257,29 +271,45 @@ export class ProjectRegistry {
     if (!beginProjectDeletion(lockedPath)) return { ok: false, error: 'busy' }
     try {
       const sessions = await this.options.discoverSessions(item.path)
+      const sessionLocks = this.options.sessionDeletionLocks
+      if (sessions.some(session => sessionLocks?.isLocked(session.uuid))) return { ok: false, error: 'locked' }
       if (!(await this.options.confirmDelete(item.path, sessions.length))) return { ok: false, error: 'cancelled' }
       store = this.init(); item = store.projects.find(p => p.id === id)
       if (!item) return { ok: false, error: 'not-found' }
       reason = this.safeToDelete(item, store, expected)
       if (reason) return { ok: false, error: reason }
-      if (!(await this.options.closeIdleSessions(item.path))) return { ok: false, error: 'busy' }
-      const currentSessions = await this.options.discoverSessions(item.path)
-      const keys = (items: typeof sessions) => items.map(row => `${row.path}\u0000${row.dev}\u0000${row.ino}`).sort().join('\n')
-      if (keys(currentSessions) !== keys(sessions)) return { ok: false, error: 'path-changed' }
-      for (const session of sessions) {
-        reason = this.safeToDelete(item, this.init(), expected)
+      const project = item
+      const manifest = sessionManifest(sessions)
+      const currentSessions = await this.options.discoverSessions(project.path)
+      if (currentSessions.some(session => sessionLocks?.isLocked(session.uuid))) return { ok: false, error: 'locked' }
+      if (sessionManifest(currentSessions) !== manifest) return { ok: false, error: 'path-changed' }
+
+      const trashProject = async (): Promise<RegistryResult> => {
+        let reason = this.safeToDelete(project, this.init(), expected)
         if (reason) return { ok: false, error: reason }
-        const st = fs.lstatSync(session.path)
-        if (!st.isFile() || st.isSymbolicLink() || canonicalExistingPath(session.path) !== session.path || st.dev !== session.dev || st.ino !== session.ino) return { ok: false, error: 'partial-failure', message: '会话记录已变化；项目目录未删除，请检查后重试。' }
-        try { await this.options.trash(session.path) } catch { return { ok: false, error: 'partial-failure', message: '部分会话记录未能移入废纸篓；项目目录保留，可检查后重试。' } }
+        if (!(await this.options.closeIdleSessions(project.path))) return { ok: false, error: 'busy' }
+        const closedSessions = await this.options.discoverSessions(project.path)
+        if (sessionManifest(closedSessions) !== manifest) return { ok: false, error: 'path-changed' }
+        for (const session of sessions) {
+          if (!fs.lstatSync(session.path).isFile() || canonicalExistingPath(session.path) !== session.path) return { ok: false, error: 'path-changed' }
+          const currentUuid = await readSessionUuid(session.path)
+          reason = this.safeToDelete(project, this.init(), expected)
+          if (reason) return { ok: false, error: reason }
+          const st = fs.lstatSync(session.path)
+          if (currentUuid !== session.uuid || !st.isFile() || st.isSymbolicLink() || canonicalExistingPath(session.path) !== session.path || st.dev !== session.dev || st.ino !== session.ino) return { ok: false, error: 'partial-failure', message: '会话记录已变化；项目目录未删除，请检查后重试。' }
+          try { await this.options.trash(session.path) } catch { return { ok: false, error: 'partial-failure', message: '部分会话记录未能移入废纸篓；项目目录保留，可检查后重试。' } }
+        }
+        reason = this.safeToDelete(project, this.init(), expected)
+        if (reason) return { ok: false, error: reason }
+        try { await this.options.trash(project.path) } catch { return { ok: false, error: 'partial-failure', message: '项目目录未能移入废纸篓；已处理的会话可从废纸篓恢复。' } }
+        const latest = this.init()
+        latest.projects = latest.projects.filter(p => p.id !== id)
+        this.write(latest)
+        return { ok: true, project: this.view(project) }
       }
-      reason = this.safeToDelete(item, this.init(), expected)
-      if (reason) return { ok: false, error: reason }
-      try { await this.options.trash(item.path) } catch { return { ok: false, error: 'partial-failure', message: '项目目录未能移入废纸篓；已处理的会话可从废纸篓恢复。' } }
-      const latest = this.init()
-      latest.projects = latest.projects.filter(p => p.id !== id)
-      this.write(latest)
-      return { ok: true, project: this.view(item) }
+      if (!sessionLocks) return await trashProject()
+      const result = await sessionLocks.runDeletion(sessions.map(session => session.uuid), trashProject)
+      return result === 'locked' ? { ok: false, error: 'locked' } : result
     } catch {
       return { ok: false, error: 'partial-failure', message: '无法安全完成删除；项目记录已保留，请检查文件和废纸篓。' }
     } finally { endProjectDeletion(lockedPath) }

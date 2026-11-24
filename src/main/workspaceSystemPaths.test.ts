@@ -8,6 +8,7 @@ vi.mock('electron', () => ({ app: { getPath: (name: string) => {
   if (fake.missing.has(name)) throw new Error(`Failed to get '${name}' path`)
   return fake.paths[name] ?? ''
 } } }))
+vi.mock('./piSettings', () => ({ defaultPiAgentDir: () => '/unused' }))
 import { getWorkspaceSystemPaths, projectSystemPathsError, resetWorkspaceSystemPathsForTest, resolveWorkspaceSystemPaths } from './workspaceSystemPaths'
 import { ProjectRegistry } from './projectRegistry'
 

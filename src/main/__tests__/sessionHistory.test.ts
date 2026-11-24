@@ -306,6 +306,17 @@ describe('isSessionFilePath / deleteSessionFile', () => {
     expect(readFileSync(filePath, 'utf8')).toBe(replacement)
   })
 
+  it('keeps a conversation that replaces the expected UUID without replacing the file', async () => {
+    const file = writeSessionFile('same-inode.jsonl', [sessionHeader('uuid-original', '2025-01-01T00:00:00.000Z')])
+    const replacement = sessionHeader('uuid-replacement', '2025-01-02T00:00:00.000Z')
+    vi.mocked(unlink).mockImplementationOnce(async () => {
+      writeFileSync(file, replacement)
+      throw Object.assign(new Error('locked'), { code: 'EPERM' })
+    })
+    expect(await deleteSessionFile(file, agentDir, 'uuid-original')).toBe(false)
+    expect(readFileSync(file, 'utf8')).toBe(replacement)
+  })
+
   it('refuses paths outside the sessions root', async () => {
     const outside = path.join(projectDir, 'keep.jsonl')
     writeFileSync(outside, '{}')
@@ -450,6 +461,17 @@ describe('uuid resolution and copy-proof delete', () => {
     // The sanitized-label copy must not survive to be resurrected by a rescan.
     expect(existsSync(hashed)).toBe(false)
     expect(await findSessionFilesByUuid(UUID, agentDir)).toEqual([])
+  })
+
+  it('resolves the real header UUID before a guarded delete touches any copy', async () => {
+    const original = writeCopy(expectedDirName(projectDir), 'legacy-name.jsonl', UUID)
+    const copy = writeCopy(runtimeHashedDirName(projectDir), 'new-name.jsonl', UUID)
+    await expect(deleteSessionFileEverywhere(original, agentDir, async uuid => {
+      expect(uuid).toBe(UUID)
+      return 'locked'
+    })).resolves.toBe('locked')
+    expect(existsSync(original)).toBe(true)
+    expect(existsSync(copy)).toBe(true)
   })
 
   it('deleteSessionFileEverywhere reports failure while a copy cannot be removed', async () => {

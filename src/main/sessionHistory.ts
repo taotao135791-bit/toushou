@@ -643,7 +643,7 @@ export async function deleteSessionCopiesByUuid(
     // deleteSessionFile removes a symlinked entry itself, never an outside
     // target, and carries the handle-release retry.
     if (isSessionFilePath(copy, agentDir)) {
-      await deleteSessionFile(copy, agentDir)
+      await deleteSessionFile(copy, agentDir, uuid)
     }
   }
   return (await findSessionFilesByUuid(uuid, agentDir)).length === 0
@@ -656,15 +656,18 @@ export async function deleteSessionCopiesByUuid(
  */
 export async function deleteSessionFileEverywhere(
   filePath: string,
-  agentDir: string = defaultPiAgentDir()
-): Promise<boolean> {
+  agentDir: string = defaultPiAgentDir(),
+  guard?: (uuid: string | null, remove: () => Promise<boolean>) => Promise<boolean | 'locked'>
+): Promise<boolean | 'locked'> {
   if (!isSessionFilePath(filePath, agentDir)) return false
   const uuid = await readSessionUuid(filePath)
-  // Delete the granted copy first so it cannot be missed by a walk race, then
-  // sweep the remaining copies and verify nothing resolves anymore.
-  await deleteSessionFile(filePath, agentDir)
-  if (!uuid) return !(await exists(filePath))
-  return deleteSessionCopiesByUuid(uuid, agentDir)
+  const remove = async () => {
+    // Delete the granted copy first so it cannot be missed by a walk race,
+    // then sweep the other copies and verify nothing resolves anymore.
+    await deleteSessionFile(filePath, agentDir, uuid)
+    return uuid ? deleteSessionCopiesByUuid(uuid, agentDir) : !(await exists(filePath))
+  }
+  return guard ? guard(uuid, remove) : remove()
 }
 
 /** Delete a session file; guarded to .jsonl files inside the sessions root.
@@ -673,7 +676,7 @@ export async function deleteSessionFileEverywhere(
  * process (or the AV scanning the changed file) still holds it. Retry briefly
  * before reporting failure; the rollback that a false return triggers makes
  * the row reappear, which users read as "删除不掉" (2026-11-24 实测复现). */
-export async function deleteSessionFile(filePath: string, agentDir?: string): Promise<boolean> {
+export async function deleteSessionFile(filePath: string, agentDir?: string, expectedUuid?: string | null): Promise<boolean> {
   let original: BigIntStats | undefined
   for (let attempt = 0; ; attempt++) {
     if (!isSessionFilePath(filePath, agentDir)) return false
@@ -684,8 +687,18 @@ export async function deleteSessionFile(filePath: string, agentDir?: string): Pr
       return (error as NodeJS.ErrnoException).code === 'ENOENT'
     }
     if (!current.isFile() && !current.isSymbolicLink()) return false
-    if (original && (current.dev !== original.dev || current.ino !== original.ino || current.birthtimeNs !== original.birthtimeNs)) return false
+    if (original && !sameSessionFileIdentity(current, original)) return false
     original ??= current
+    if (expectedUuid !== undefined) {
+      // A runtime rewrite can put a different conversation at this path,
+      // including a same-inode header replacement between Windows retries.
+      if (await readSessionUuid(filePath) !== expectedUuid) return false
+      try {
+        if (!sameSessionFileIdentity(await lstat(filePath, { bigint: true }), original)) return false
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ENOENT'
+      }
+    }
     // A waiting retry may see a new file or a redirected parent path.
     if (!isSessionFilePath(filePath, agentDir)) return false
     try {
@@ -699,4 +712,8 @@ export async function deleteSessionFile(filePath: string, agentDir?: string): Pr
       await new Promise(resolve => setTimeout(resolve, 400))
     }
   }
+}
+
+function sameSessionFileIdentity(a: BigIntStats, b: BigIntStats): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.birthtimeNs === b.birthtimeNs
 }

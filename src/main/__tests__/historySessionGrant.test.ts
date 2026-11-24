@@ -15,6 +15,7 @@ import {
   HistorySessionGrantManager
 } from '../historySessionGrant'
 import { HistorySessionFile, sessionDirFor } from '../sessionHistory'
+import { createSessionDeletionLocks } from '../sessionDeletionLocks'
 import { expectSamePath } from './pathAssertions'
 
 let agentDir: string
@@ -290,6 +291,26 @@ describe('HistorySessionGrantManager.deleteByUuid', () => {
     expect(fs.existsSync(fileB)).toBe(false)
     // The capability minted for the deleted session must not survive.
     await expect(manager.resolve(descriptor.id, context())).resolves.toBeNull()
+  })
+
+  it('protects all copies through both the stale descriptor and the cross-workspace deletion routes', async () => {
+    let ids: string[] = []
+    const locks = createSessionDeletionLocks(() => ids, next => { ids = next })
+    const guarded = new HistorySessionGrantManager({ agentDir, sessionDeletionLocks: locks })
+    const fileA = writeSessionWithHeader(workspaceA, UUID, 'original.jsonl')
+    const fileB = writeSessionWithHeader(workspaceB, UUID, 'copy.jsonl')
+    const [descriptor] = await guarded.mintForWorkspace([history(fileA, UUID)], context())
+    fs.rmSync(fileA)
+    expect(locks.setLocked(UUID, true)).toBe(true)
+
+    await expect(guarded.deleteStale(descriptor.id, context('workspace-b'))).resolves.toBe(false)
+    await expect(guarded.deleteStale(descriptor.id, context())).resolves.toBe('locked')
+    await expect(guarded.deleteByUuid(UUID)).resolves.toBe('locked')
+    expect(fs.existsSync(fileB)).toBe(true)
+
+    expect(locks.setLocked(UUID, false)).toBe(true)
+    await expect(guarded.deleteStale(descriptor.id, context())).resolves.toBe(true)
+    expect(fs.existsSync(fileB)).toBe(false)
   })
 
   it('reports success for a uuid that no longer resolves anywhere', async () => {

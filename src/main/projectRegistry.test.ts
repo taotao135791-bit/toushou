@@ -4,6 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { ProjectRegistry, isFilesystemRoot, type ProjectRegistryOptions } from './projectRegistry'
 import { isProjectDeletionInProgress } from './projectDeletionGate'
+import { discoverProjectSessionFiles, type ProjectSessionFile } from './projectSessionFiles'
+import { createSessionDeletionLocks } from './sessionDeletionLocks'
+
+vi.mock('./piSettings', () => ({ defaultPiAgentDir: () => '/unused' }))
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
@@ -12,7 +16,7 @@ function fixture(identify?: ProjectRegistryOptions['identify']) {
   const fallback = path.join(root, 'default'); const project = path.join(root, 'project')
   fs.mkdirSync(fallback); fs.mkdirSync(project)
   const confirm = vi.fn(async () => true); const trash = vi.fn(async (_file: string) => {})
-  const close = vi.fn(async () => true); const discover = vi.fn(async (_file: string) => [] as Array<{path: string;dev:number;ino:number}>)
+  const close = vi.fn(async () => true); const discover = vi.fn(async (_file: string): Promise<ProjectSessionFile[]> => [])
   let busy = false
   const options: ProjectRegistryOptions = { file: path.join(root, 'data', 'projects.json'), defaultPath: fallback, protectedPaths: [root], recentPaths: () => [], isBusy: () => busy, confirmDelete: confirm, trash, discoverSessions: discover, closeIdleSessions: close, identify }
   const registry = new ProjectRegistry(options)
@@ -125,6 +129,37 @@ describe('project lifecycle', () => {
     expect(await f.registry.delete(o.project.id)).toMatchObject({ ok: false, error: 'path-changed' })
     expect(f.trash).not.toHaveBeenCalled()
   })
+  it.each(['contains', 'is inside'])('protects a project folder that %s the active transcript storage', async relation => {
+    const f = fixture()
+    const storage = path.join(f.project, 'sessions')
+    const project = relation === 'contains' ? f.project : path.join(storage, 'session-layout')
+    fs.mkdirSync(path.join(storage, 'session-layout'), { recursive: true })
+    f.options.sessionStoragePath = () => storage
+    const registered = f.registry.register(project)
+    if (!registered.ok) throw new Error('fixture')
+
+    expect(await f.registry.delete(registered.project.id)).toEqual({ ok: false, error: 'protected' })
+    expect(f.discover).not.toHaveBeenCalled()
+    expect(f.confirm).not.toHaveBeenCalled()
+    expect(f.trash).not.toHaveBeenCalled()
+  })
+
+  it('rechecks active transcript storage before closing or trashing a confirmed project', async () => {
+    const f = fixture()
+    const registered = f.registry.register(f.project)
+    if (!registered.ok) throw new Error('fixture')
+    let storage = path.join(f.root, 'agent', 'sessions')
+    f.options.sessionStoragePath = () => storage
+    f.confirm.mockImplementationOnce(async () => {
+      storage = path.join(f.project, 'agent', 'sessions')
+      fs.mkdirSync(storage, { recursive: true })
+      return true
+    })
+
+    expect(await f.registry.delete(registered.project.id)).toEqual({ ok: false, error: 'protected' })
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.trash).not.toHaveBeenCalled()
+  })
   it('holds the lock during confirmation and refuses newly busy sessions or a failed exit', async () => {
     const f = fixture(); const p = f.registry.register(f.project); if (!p.ok) throw new Error('fixture')
     let respond!: (v: boolean) => void
@@ -159,14 +194,14 @@ describe('project lifecycle', () => {
   })
   it('refuses changes to the transcript set while the confirmation is open', async () => {
     const f = fixture(); const p = f.registry.register(f.project); if (!p.ok) throw new Error('fixture')
-    f.discover.mockResolvedValueOnce([]).mockResolvedValueOnce([{path:'/synthetic/new', dev:1, ino:1}])
+    f.discover.mockResolvedValueOnce([]).mockResolvedValueOnce([{path:'/synthetic/new', dev:1, ino:1, uuid:'new-session'}])
     expect(await f.registry.delete(p.project.id)).toMatchObject({ok:false,error:'path-changed'})
     expect(f.trash).not.toHaveBeenCalled()
   })
   it('confirms then trashes verified transcripts before the project and removes the record', async () => {
     const f = fixture(); const p = f.registry.register(f.project); if (!p.ok) throw new Error('fixture')
-    const file = path.join(fs.realpathSync.native(f.root), 'session.jsonl'); fs.writeFileSync(file, '{}'); const stat = fs.statSync(file)
-    f.discover.mockResolvedValue([{ path: file, dev: stat.dev, ino: stat.ino }])
+    const file = path.join(fs.realpathSync.native(f.root), 'session.jsonl'); fs.writeFileSync(file, '{"type":"session","id":"session-id"}'); const stat = fs.statSync(file)
+    f.discover.mockResolvedValue([{ path: file, dev: stat.dev, ino: stat.ino, uuid: 'session-id' }])
     f.trash.mockImplementation(async target => { fs.renameSync(target, `${target}.trashed`) })
     const result = await f.registry.delete(p.project.id)
     expect(result.ok).toBe(true)
@@ -180,13 +215,38 @@ describe('project lifecycle', () => {
     expect(f.registry.setArchived(p.project.id, true)).toMatchObject({ok:false,error:'busy'})
     expect(f.registry.get(p.project.id)).toMatchObject({archived:false})
   })
-  it('checks the session manifest twice and keeps the registry after a partial trash failure', async () => {
+  it('keeps the registry after a partial trash failure', async () => {
     const f = fixture(); const p = f.registry.register(f.project); if (!p.ok) throw new Error('fixture')
-    const file = path.join(fs.realpathSync.native(f.root), 'synthetic.jsonl'); fs.writeFileSync(file, '{}'); const stat = fs.statSync(file)
-    f.discover.mockResolvedValue([{ path: file, dev: stat.dev, ino: stat.ino }])
+    const file = path.join(fs.realpathSync.native(f.root), 'synthetic.jsonl'); fs.writeFileSync(file, '{"type":"session","id":"synthetic-id"}'); const stat = fs.statSync(file)
+    f.discover.mockResolvedValue([{ path: file, dev: stat.dev, ino: stat.ino, uuid: 'synthetic-id' }])
     f.trash.mockRejectedValueOnce(new Error('fake trash failure'))
     expect(await f.registry.delete(p.project.id)).toMatchObject({ ok: false, error: 'partial-failure' })
     expect(f.registry.get(p.project.id)).not.toBeNull()
     expect(f.trash).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['before confirmation', 'during confirmation'])('keeps locked transcripts and project %s', async timing => {
+    const f = fixture()
+    const registered = f.registry.register(f.project)
+    if (!registered.ok) throw new Error('fixture')
+    const uuid = 'keep-this-session'
+    const agent = path.join(f.root, 'agent')
+    const directory = path.join(agent, 'sessions', 'alternate-layout')
+    const file = path.join(directory, 'session.jsonl')
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ type: 'session', id: uuid, cwd: f.project }) + '\n')
+    f.discover.mockImplementation(project => discoverProjectSessionFiles(project, agent))
+    let lockedIds: string[] = []
+    const locks = createSessionDeletionLocks(() => lockedIds, ids => { lockedIds = ids })
+    f.options.sessionDeletionLocks = locks
+    if (timing === 'before confirmation') locks.setLocked(uuid, true)
+    else f.confirm.mockImplementationOnce(async () => locks.setLocked(uuid, true))
+
+    expect(await f.registry.delete(registered.project.id)).toEqual({ ok: false, error: 'locked' })
+    expect(f.confirm).toHaveBeenCalledTimes(timing === 'before confirmation' ? 0 : 1)
+    expect(f.close).not.toHaveBeenCalled()
+    expect(f.trash).not.toHaveBeenCalled()
+    expect(fs.existsSync(file)).toBe(true)
+    expect(f.registry.get(registered.project.id)).not.toBeNull()
   })
 })

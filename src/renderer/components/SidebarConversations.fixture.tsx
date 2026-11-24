@@ -24,6 +24,8 @@ const fixture = {
   rows, activateCalls: [] as string[], historyCalls: [] as string[], resumeCalls: [] as Array<{ grantId: string; historyId: string; cwd: string }>,
   deleteCalls: 0,
   allowDelete: false,
+  allowLockWrite: true,
+  locks: new Set<string>(),
   killed: [] as string[],
   forkCalls: [] as Array<{ grantId: string; liveSessionId: string }>,
   finishFork: null as (() => void) | null,
@@ -57,8 +59,14 @@ const fixture = {
 declare global { interface Window { sidebarFixture: typeof fixture; keptConversationNode?: Element | null } }
 window.sidebarFixture = fixture
 window.electronAPI = {
-  getStore: async (key: string) => key === 'sidebarWidth' ? 260 : key === 'sessionSort' ? 'recent' : undefined,
+  getStore: async (key: string) => key === 'sidebarWidth' ? 260 : key === 'sessionSort' ? 'recent' : key === 'lockedSessionIds' ? [...fixture.locks] : undefined,
   setStore: async () => undefined,
+  setSessionLocked: async (id: string, locked: boolean) => {
+    if (!fixture.allowLockWrite) return false
+    if (locked) fixture.locks.add(id)
+    else fixture.locks.delete(id)
+    return true
+  },
   onTasksStateChanged: () => () => undefined,
   listProjects: async () => structuredClone(projects),
   listRecentWorkspaces: async () => projects.map(row => ({ id: row.id, displayPath: row.path })),
@@ -114,6 +122,16 @@ window.electronAPI = {
     fixture.deleteCalls += 1
     if (!fixture.allowDelete) return false
     fixture.rows = fixture.rows.filter(row => row.uuid !== id)
+    return true
+  },
+  deleteLiveSession: async (_grantId: string, id: string) => {
+    const session = live.find(item => item.id === id)
+    if (!session || !fixture.allowDelete) return false
+    const durableUuid = session.sessionFile?.split('/').at(-1)?.replace(/\.jsonl$/, '')
+    if (durableUuid && fixture.locks.has(durableUuid)) return 'locked'
+    fixture.deleteCalls += 1
+    fixture.killed.push(id)
+    fixture.rows = fixture.rows.filter(row => row.uuid !== durableUuid)
     return true
   },
   killSession: async (id: string) => { fixture.killed.push(id); return true }

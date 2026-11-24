@@ -25,6 +25,7 @@ let globalHistoryReadEpoch = 0
 let scopedHistoryReadEpoch = 0
 let scopedHistoryInFlight: { grantId: string; epoch: number; promise: Promise<void> } | null = null
 const deletedHistoryUuids = new Set<string>()
+let sessionLockHydration: Promise<boolean> | null = null
 
 /**
  * Stream-delta appliers, extracted pure so the frame-batched queue (streamQueue)
@@ -266,6 +267,8 @@ interface AppState {
   archivedSessionIds: string[]
   /** Conversations locked against deletion (durable uuids; persisted; Main enforces). */
   lockedSessionIds: string[]
+  sessionLocksLoaded: boolean
+  pendingSessionLocks: string[]
   /** sessionId -> finished a turn while not selected; cleared on select. In-memory only. */
   unreadSessionIds: Record<string, boolean>
   /** One-shot composer prefill (e.g. "build your own plugin" from the packages page). */
@@ -414,9 +417,9 @@ interface AppState {
   /** Archive/unarchive a session by durable key (uuid, else runtime id) and persist the list. */
   setSessionArchived: (sessionId: string, archived: boolean) => void
   /** Replace the locked list (startup load; does not persist). */
-  setLockedSessionIds: (ids: string[]) => void
+  loadSessionLocks: () => Promise<boolean>
   /** Lock/unlock a conversation by durable uuid and persist the list. */
-  setSessionLocked: (uuid: string, locked: boolean) => void
+  setSessionLocked: (uuid: string, locked: boolean) => Promise<'saved' | 'pending' | 'failed'>
   markSessionUnread: (sessionId: string) => void
   setComposerPrefill: (text: string | null) => void
   setComposerAutosend: (composerAutosend: boolean) => void
@@ -616,6 +619,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   sessionRecords: [],
   archivedSessionIds: [],
   lockedSessionIds: [],
+  sessionLocksLoaded: false,
+  pendingSessionLocks: [],
   unreadSessionIds: {},
   composerPrefill: null,
   composerAutosend: false,
@@ -1319,18 +1324,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.electronAPI.setStore('archivedSessionIds', archivedSessionIds)
       return { archivedSessionIds }
     }),
-  setLockedSessionIds: (lockedSessionIds) => set({ lockedSessionIds }),
-  // 锁定只接受 durable uuid：锁必须活得比进程久，runtime id 重启后会变，
-  // 拿它当锁钥匙会锁错对象。锁定列表不做会话存在性裁剪——锁是用户的
-  // 保护意志，即使对话暂时不在列表里（重启/归档）锁也不能丢。
-  setSessionLocked: (uuid, locked) =>
-    set((state) => {
-      const lockedSessionIds = locked
-        ? [...state.lockedSessionIds.filter((id) => id !== uuid), uuid]
-        : state.lockedSessionIds.filter((id) => id !== uuid)
-      window.electronAPI.setStore('lockedSessionIds', lockedSessionIds)
-      return { lockedSessionIds }
-    }),
+  loadSessionLocks: () => {
+    if (get().sessionLocksLoaded) return Promise.resolve(true)
+    if (!sessionLockHydration) {
+      sessionLockHydration = Promise.resolve().then(async () => {
+        const ids = await window.electronAPI.getStore('lockedSessionIds')
+        if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string')) return false
+        set({ lockedSessionIds: ids, sessionLocksLoaded: true })
+        return true
+      }).catch(() => false).finally(() => { sessionLockHydration = null })
+    }
+    return sessionLockHydration
+  },
+  setSessionLocked: async (uuid, locked) => {
+    if (get().pendingSessionLocks.includes(uuid)) return 'pending'
+    set(state => ({ pendingSessionLocks: [...state.pendingSessionLocks, uuid] }))
+    try {
+      // A slow startup snapshot must be adopted before any lock is written.
+      if (!await get().loadSessionLocks()) return 'failed'
+      if (await window.electronAPI.setSessionLocked(uuid, locked) !== true) return 'failed'
+      set(state => {
+        const ids = state.lockedSessionIds.filter(id => id !== uuid)
+        return { lockedSessionIds: locked ? [...ids, uuid] : ids }
+      })
+      return 'saved'
+    } catch {
+      return 'failed'
+    } finally {
+      set(state => ({ pendingSessionLocks: state.pendingSessionLocks.filter(id => id !== uuid) }))
+    }
+  },
   markSessionUnread: (sessionId) =>
     set((state) =>
       state.unreadSessionIds[sessionId] === true

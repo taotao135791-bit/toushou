@@ -155,6 +155,18 @@ app.whenReady().then(async () => {
     await js(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Archived (1)').click()`)
     await waitFor(`!!${row('[data-all-conversations]', 10)}`)
     const archivedSemantics = await js(`({outerRole:${row('[data-all-conversations]', 10)}.getAttribute('role'),primaryHasNested:${row('[data-all-conversations]', 10)}.querySelector('[data-conversation-select]').querySelectorAll('button,input,a,select').length})`)
+    phase = 'archived lock reflects persisted state'
+    const archivedRow = row('[data-all-conversations]', 10)
+    const archivedBadge = `${archivedRow}.querySelector('[data-conversation-select] [aria-label="Locked conversation"]')`
+    const archivedLock = `${archivedRow}.querySelector('[title="Lock conversation"]')`
+    await js(`window.sidebarFixture.allowLockWrite=false;${archivedLock}.click()`)
+    await waitFor('document.querySelector(\'[role="status"]\')?.textContent.includes("Could not save the conversation lock")')
+    const archivedLockRejected = await js(`!${archivedBadge}&&!window.sidebarFixture.locks.has(window.sidebarFixture.uuid(10))`)
+    await js(`window.sidebarFixture.allowLockWrite=true;${archivedLock}.click()`)
+    await waitFor(`!!${archivedBadge}&&window.sidebarFixture.locks.has(window.sidebarFixture.uuid(10))`)
+    const archivedLockVisible = await js(`getComputedStyle(${archivedBadge}).opacity==='1'`)
+    await js(`${archivedRow}.querySelector('[title="Unlock conversation"]').click()`)
+    await waitFor(`!${archivedBadge}&&!window.sidebarFixture.locks.has(window.sidebarFixture.uuid(10))`)
     await mouseSelect('[data-all-conversations]', 10)
     await waitFor(`window.sidebarFixture.snapshot().current==='resumed-'+window.sidebarFixture.uuid(10)`)
     const allRowsSemantic = await js(`[...document.querySelectorAll('[data-conversation-key]')].every(e=>!e.hasAttribute('role')&&!!e.querySelector('[data-conversation-select]')&&!e.querySelector('[data-conversation-select] button'))`)
@@ -237,12 +249,19 @@ app.whenReady().then(async () => {
     const beforeUndoKills = await js('window.sidebarFixture.killed.length')
     await js(`[...document.querySelectorAll('[role="alert"] button')].find(button=>button.textContent==='Undo').click()`)
     await waitFor(`!!${row('[data-all-conversations]', 2)}`)
+    phase = 'live deletion rolls back if the authoritative lock changes during the countdown'
+    await stageLiveDelete()
+    await js(`window.sidebarFixture.locks.add(window.sidebarFixture.uuid(2));document.querySelector('[aria-label="Delete now"]').click()`)
+    await waitFor(`!!${row('[data-all-conversations]', 2)}&&document.querySelector('[role="status"]')?.textContent.includes('Conversation is locked')`)
+    const lockedLiveDelete = await js(`({retained:window.sidebarFixture.liveIds().includes('live-b'),kills:window.sidebarFixture.killed,deleteCalls:window.sidebarFixture.deleteCalls})`)
+    await js('window.sidebarFixture.locks.delete(window.sidebarFixture.uuid(2))')
+    phase = 'unlocked live deletion removes the running session'
     await stageLiveDelete()
     await js(`document.querySelector('[aria-label="Delete now"]').click()`)
     await waitFor('window.sidebarFixture.deleteCalls===1')
     await frame()
     const liveDelete = await js(`({beforeUndoKills:${beforeUndoKills}, kills:window.sidebarFixture.killed, retained:window.sidebarFixture.liveIds().includes('live-b'), visible:!!${row('[data-all-conversations]', 2)}})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, before, after, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks, lateFork, liveDelete }))
+    console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, before, after, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, archivedLockRejected, archivedLockVisible, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks, lateFork, lockedLiveDelete, liveDelete }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { win?.destroy(); app.quit() }
 })
