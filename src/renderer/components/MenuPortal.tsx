@@ -144,7 +144,11 @@ export default function MenuPortal({
         left: anchor?.left ?? 0,
         top: anchor?.top ?? 0,
         zIndex: 50,
-        visibility: anchor ? undefined : 'hidden',
+        // Windows Chromium can retain an inherited visibility:hidden on
+        // descendants after layout, rejecting focus for the next frame too.
+        // Measure invisibly without taking controls out of the focus tree.
+        opacity: anchor ? undefined : 0,
+        pointerEvents: anchor ? undefined : 'none',
         width,
         maxWidth: align === 'end' ? 'calc(100vw - 32px)' : 'calc(100vw - 16px)',
         maxHeight: anchor?.room !== undefined ? Math.min(maxHeight ?? Infinity, anchor.room) : maxHeight === undefined ? 'calc(100dvh - 16px)' : `min(${maxHeight}px, calc(100dvh - 16px))`
