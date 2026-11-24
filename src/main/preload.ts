@@ -293,6 +293,11 @@ export interface ElectronAPI {
   memoryMove: (id: string, from: 'global' | 'project', to: 'global' | 'project', cwd?: string) => Promise<boolean>
   /** Main → renderer：模型刚写入一条记忆（toast 撤回用）。 */
   onMemorySaved: (handler: (event: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean }) => void) => () => void
+  /** 记忆存储位置（默认/自定义 + 迁移）。 */
+  memoryStorageGet: () => Promise<{ path: string; isDefault: boolean }>
+  memoryStoragePick: () => Promise<string | null>
+  memoryStorageSet: (dir: string, migrate: boolean) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+  memoryStorageReset: (migrate: boolean) => Promise<{ ok: true } | { ok: false; error: string }>
   /** Kanban boards (local-only, validated in main on every read/write). */
   listBoards: () => Promise<KanbanBoard[]>
   /** Main resolves every module's dates and refreshes the board as one run. */
@@ -885,6 +890,10 @@ const api: ElectronAPI = {
     ipcRenderer.on(IPC_CHANNELS.MEMORY_SAVED_EVENT, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.MEMORY_SAVED_EVENT, listener)
   },
+  memoryStorageGet: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_GET),
+  memoryStoragePick: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_PICK),
+  memoryStorageSet: (dir: string, migrate: boolean) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_SET, dir, migrate),
+  memoryStorageReset: (migrate: boolean) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_RESET, migrate),
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   boardRefresh: (request: BoardRefreshRequest) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REFRESH, request),
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_SAVE, input),

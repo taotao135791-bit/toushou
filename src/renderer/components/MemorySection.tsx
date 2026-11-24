@@ -20,6 +20,8 @@ export default function MemorySection() {
   const [draftScope, setDraftScope] = useState<MemoryScope>('project')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
+  const [storage, setStorage] = useState<{ path: string; isDefault: boolean } | null>(null)
+  const [storageBusy, setStorageBusy] = useState(false)
 
   const refresh = useCallback(() => {
     void window.electronAPI.memoryList(cwd).then((layers) => {
@@ -29,11 +31,56 @@ export default function MemorySection() {
       setGlobalEntries([])
       setProjectEntries([])
     })
+    void window.electronAPI.memoryStorageGet().then(setStorage).catch(() => setStorage(null))
   }, [cwd])
 
   useEffect(() => {
     refresh()
   }, [refresh])
+
+  /** 迁移询问：换位置时是否把现有记忆带过去（弹窗按钮写动词）。 */
+  const askMigrate = (): boolean => window.confirm(t('settings.memory.storageMigrateAsk'))
+
+  const changeLocation = async () => {
+    if (storageBusy) return
+    setStorageBusy(true)
+    try {
+      const picked = await window.electronAPI.memoryStoragePick()
+      if (!picked) return
+      const migrate = await askMigrate()
+      const result = await window.electronAPI.memoryStorageSet(picked, migrate)
+      if (!result.ok) {
+        showNotice(
+          result.error === 'not-empty' ? 'settings.memory.storageNotEmpty'
+            : result.error === 'same-path' ? 'settings.memory.storageSamePath'
+              : result.error === 'default-target' ? 'settings.memory.storageDefaultTarget'
+                : 'settings.memory.storageNotWritable'
+        )
+        return
+      }
+      showNotice('settings.memory.storageMoved')
+      refresh()
+    } finally {
+      setStorageBusy(false)
+    }
+  }
+
+  const resetLocation = async () => {
+    if (storageBusy) return
+    setStorageBusy(true)
+    try {
+      const migrate = await askMigrate()
+      const result = await window.electronAPI.memoryStorageReset(migrate)
+      if (!result.ok) {
+        showNotice(result.error === 'not-empty' ? 'settings.memory.storageNotEmpty' : 'settings.memory.storageNotWritable')
+        return
+      }
+      showNotice('settings.memory.storageMoved')
+      refresh()
+    } finally {
+      setStorageBusy(false)
+    }
+  }
 
   const add = async () => {
     const text = draft.trim()
@@ -162,6 +209,39 @@ export default function MemorySection() {
     <div role="group" aria-labelledby="settings-memory-heading" className="py-2.5">
       <h3 id="settings-memory-heading" className="mb-1 text-[13px] font-medium text-cream">{t('settings.memory.title')}</h3>
       <p className="mb-2 text-[11.5px] leading-4 text-cream-faint">{t('settings.memory.hint')}</p>
+      <div className="mb-2.5 rounded-xl border border-line p-2.5">
+        <div className="flex items-center gap-2">
+          <h4 className="text-[12px] font-medium text-cream">{t('settings.memory.storageTitle')}</h4>
+          {storage?.isDefault && (
+            <span className="rounded-[4px] bg-overlay-strong px-1 text-[10px] font-medium leading-4 text-cream-faint">
+              {t('settings.memory.storageDefaultBadge')}
+            </span>
+          )}
+        </div>
+        <p className="mb-1.5 break-all px-0.5 font-mono text-[11px] leading-4 text-cream-dim" title={storage?.path}>
+          {storage?.path ?? t('settings.memory.storageLoading')}
+        </p>
+        <div className="flex gap-1.5">
+          <button
+            onClick={() => void changeLocation()}
+            disabled={storageBusy}
+            title={t('settings.memory.storageChange')}
+            className="focus-ring rounded-lg border border-line px-2 py-0.5 text-[11px] text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:opacity-50"
+          >
+            {t('settings.memory.storageChange')}
+          </button>
+          {storage && !storage.isDefault && (
+            <button
+              onClick={() => void resetLocation()}
+              disabled={storageBusy}
+              title={t('settings.memory.storageReset')}
+              className="focus-ring rounded-lg border border-line px-2 py-0.5 text-[11px] text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:opacity-50"
+            >
+              {t('settings.memory.storageReset')}
+            </button>
+          )}
+        </div>
+      </div>
       <div className="mb-2.5 flex items-center gap-1.5">
         <textarea
           value={draft}

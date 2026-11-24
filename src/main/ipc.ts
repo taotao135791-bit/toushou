@@ -111,7 +111,7 @@ import { getModelConfig, setModelConfig, setApiKey, clearApiKey, syncMachineSkil
 import { listAvailableModels, listCatalogModels, invalidateModelCache } from './piModels'
 import { getStore, rememberRecentProject, setStore } from './store'
 import { loadComposerDrafts, saveComposerDrafts } from './composerDraftsFile'
-import { deleteMemoryEntry, moveMemoryEntry, projectMemoryKey, readMemoryLayer, saveMemoryEntry, updateMemoryText } from './memoryStore'
+import { deleteMemoryEntry, moveMemoryEntry, projectMemoryKey, readMemoryLayer, resetMemoryStorageToDefault, saveMemoryEntry, changeMemoryStorage, updateMemoryText } from './memoryStore'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
 import { beginRuntimePreparation } from './runtimePreparationGate'
@@ -2895,6 +2895,28 @@ export function registerIpc() {
     if ((from !== 'global' && from !== 'project') || (to !== 'global' && to !== 'project')) return false
     if (!isPlainStorableValue(cwd) || typeof cwd !== 'string') return false
     return moveMemoryEntry(id, from, to, cwd)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_STORAGE_GET, () => {
+    const custom = getStore('memoryStoragePath')
+    return {
+      path: typeof custom === 'string' && custom.trim() ? custom.trim() : path.join(app.getPath('userData'), 'memory'),
+      isDefault: !(typeof custom === 'string' && custom.trim())
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_STORAGE_PICK, async () => {
+    const selected = await dialog.showOpenDialog({ title: '选择记忆存储位置', properties: ['openDirectory', 'createDirectory'] })
+    return selected.canceled ? null : selected.filePaths[0] ?? null
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_STORAGE_SET, (_event, dir: unknown, migrate: unknown) => {
+    if (typeof dir !== 'string' || dir.trim().length === 0) return { ok: false, error: 'invalid-dir' as const }
+    return changeMemoryStorage(dir, migrate === true)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_STORAGE_RESET, (_event, migrate: unknown) => {
+    return resetMemoryStorageToDefault(migrate === true)
   })
 
   // --- Diagnostics -----------------------------------------------------------

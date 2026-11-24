@@ -4,9 +4,15 @@ import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const userData = mkdtempSync(path.join(tmpdir(), 'memory-store-'))
+const settings = vi.hoisted(() => ({ memoryStoragePath: '' }))
 vi.mock('electron', () => ({ app: { getPath: () => userData } }))
+// 存储位置设置：默认用例走空路径；自定义路径用例直接改 settings 状态。
+vi.mock('../store', () => ({
+  getStore: () => settings.memoryStoragePath,
+  setStore: (_key: string, value: string) => { settings.memoryStoragePath = value }
+}))
 
-const { buildMemoryPrompt, deleteMemoryEntry, moveMemoryEntry, projectMemoryKey, readMemoryLayer, saveMemoryEntry, updateMemoryText } = await import('../memoryStore')
+const { buildMemoryPrompt, changeMemoryStorage, deleteMemoryEntry, moveMemoryEntry, projectMemoryKey, readMemoryLayer, resetMemoryStorageToDefault, saveMemoryEntry, updateMemoryText } = await import('../memoryStore')
 
 const PROJECT_A = 'D:\\工作\\组内协作开发'
 const PROJECT_B = 'D:\\Documents\\投手工作区'
@@ -29,8 +35,37 @@ describe('memory store (global/project layers)', () => {
     expect(readMemoryLayer('global', null).entries.map((e) => e.text)).toEqual(['全局红线：禁用真实数据测试'])
   })
 
-  it('rejects invalid text and dedupes verbatim repeats instead of growing noise', () => {
-    expect(saveMemoryEntry({ text: '   ', scope: 'global' }).ok).toBe(false)
+  it('switches to a custom location with migration, and refuses to overwrite a non-empty target', () => {
+    const custom = mkdtempSync(path.join(tmpdir(), 'memory-custom-'))
+    rmSync(custom, { recursive: true, force: true }) // changeMemoryStorage 要求目标为空，自己建
+
+    saveMemoryEntry({ text: '要跟着搬走的记忆', scope: 'global' })
+    const result = changeMemoryStorage(custom, true)
+    expect(result).toEqual({ ok: true, path: custom })
+    settings.memoryStoragePath = custom
+
+    // 新位置读得到迁移过来的内容；旧位置原样保留（备份不删）。
+    expect(readMemoryLayer('global', null).entries.map((e) => e.text)).toEqual(['要跟着搬走的记忆'])
+    expect(saveMemoryEntry({ text: '写在自定义位置的新记忆', scope: 'global' }).ok).toBe(true)
+    expect(readMemoryLayer('global', null).entries).toHaveLength(2)
+
+    // 目标非空拒绝（绝不覆盖既有数据）。
+    const occupied = mkdtempSync(path.join(tmpdir(), 'memory-occupied-'))
+    writeFileSync(path.join(occupied, 'something.txt'), 'user data', 'utf-8')
+    expect(changeMemoryStorage(occupied, true)).toEqual({ ok: false, error: 'not-empty' })
+
+    // 相同路径 / 指向默认目录拒绝。
+    expect(changeMemoryStorage(custom, true)).toEqual({ ok: false, error: 'same-path' })
+    expect(changeMemoryStorage(path.join(userData, 'memory'), true)).toEqual({ ok: false, error: 'default-target' })
+
+    // 迁移回默认（默认处非空——第一次的备份在），不迁移只切开关。
+    const reset = resetMemoryStorageToDefault(false)
+    expect(reset.ok).toBe(true)
+    settings.memoryStoragePath = ''
+    expect(readMemoryLayer('global', null).entries.map((e) => e.text)).toContain('要跟着搬走的记忆')
+  })
+
+  it('rejects invalid text and dedupes verbatim repeats instead of growing noise', () => {    expect(saveMemoryEntry({ text: '   ', scope: 'global' }).ok).toBe(false)
     const first = saveMemoryEntry({ text: '看板只许手动刷新', scope: 'global' })
     const second = saveMemoryEntry({ text: '看板只许手动刷新', scope: 'global' })
     expect(first.ok && second.ok && second.duplicate).toBe(true)

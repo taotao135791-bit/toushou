@@ -1636,6 +1636,11 @@ export interface AppSettings {
    * state; the enforcement is server-side of the renderer.
    */
   lockedSessionIds: string[]
+  /**
+   * 长期记忆的存储根目录；空串 = 默认（userData/memory）。自定义目录由
+   * 用户在设置页指定，切换时 Main 负责迁移既有记忆文件。
+   */
+  memoryStoragePath: string
   /** Sidebar: session list ordering (durable uuids or live ids for archives). */
   sessionSort: SessionSortOrder
   /** Sidebar: last drag-chosen width in px; the renderer clamps it on read. */
@@ -1807,6 +1812,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pinnedSessionIds: [],
   archivedSessionIds: [],
   lockedSessionIds: [],
+  memoryStoragePath: '',
   sessionSort: 'recent',
   sidebarWidth: 240,
   bundledPackages: {},

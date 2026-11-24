@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import { copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 import { MemoryEntry, MemoryScope } from '../shared/memory'
+import { getStore, setStore } from './store'
 
 /**
  * 长期记忆存储（用户拍板的分层模型）：
@@ -53,6 +54,9 @@ export function projectMemoryKey(cwd: string): string {
 }
 
 function memoryRoot(): string {
+  // 用户自定义存储位置（设置页可改）；空串 = 默认 userData/memory。
+  const custom = getStore('memoryStoragePath')
+  if (typeof custom === 'string' && custom.trim().length > 0) return custom.trim()
   return path.join(app.getPath('userData'), 'memory')
 }
 
@@ -192,6 +196,54 @@ export function moveMemoryEntry(id: string, from: MemoryScope, to: MemoryScope, 
   writeFileFor(to, toKey, [...target.entries, moved])
   if (to === 'project' && cwd && toKey) noteProjectPath(toKey, cwd)
   return true
+}
+
+/**
+ * 切换存储根目录：把现有记忆文件复制到目标目录（旧目录原样保留作备份），
+ * 然后写入新设置。目标目录必须存在且为空（不覆盖用户已有数据）。
+ * 返回错误码让设置页提示具体原因。
+ */
+export function changeMemoryStorage(targetDir: string, migrate: boolean): { ok: true; path: string } | { ok: false; error: 'same-path' | 'default-target' | 'not-empty' | 'not-writable' | 'invalid-dir' } {
+  const target = targetDir.trim()
+  if (!path.isAbsolute(target)) return { ok: false, error: 'invalid-dir' }
+  const current = memoryRoot()
+  if (path.resolve(target) === path.resolve(current)) return { ok: false, error: 'same-path' }
+  const defaultRoot = path.join(app.getPath('userData'), 'memory')
+  if (path.resolve(target) === path.resolve(defaultRoot)) return { ok: false, error: 'default-target' }
+  try {
+    mkdirSync(target, { recursive: true })
+    // 可写试探 + 空目录检查：覆盖别人已有的记忆数据不可接受。
+    const probe = path.join(target, '.memory-write-probe')
+    writeFileSync(probe, 'probe', 'utf-8')
+    rmSync(probe)
+    const existing = readdirSync(target)
+    if (existing.length > 0) return { ok: false, error: 'not-empty' }
+    if (migrate && existsSync(current)) {
+      cpSync(current, target, { recursive: true })
+    }
+    setStore('memoryStoragePath', target)
+    return { ok: true, path: target }
+  } catch {
+    return { ok: false, error: 'not-writable' }
+  }
+}
+
+export function resetMemoryStorageToDefault(migrate: boolean): { ok: true } | { ok: false; error: 'not-empty' | 'not-writable' } {
+  const defaultRoot = path.join(app.getPath('userData'), 'memory')
+  const current = memoryRoot()
+  if (path.resolve(current) === path.resolve(defaultRoot)) return { ok: true }
+  try {
+    mkdirSync(defaultRoot, { recursive: true })
+    const existing = readdirSync(defaultRoot)
+    if (migrate && existing.length > 0) return { ok: false, error: 'not-empty' }
+    if (migrate && existsSync(current)) {
+      cpSync(current, defaultRoot, { recursive: true })
+    }
+    setStore('memoryStoragePath', '')
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'not-writable' }
+  }
 }
 
 /**

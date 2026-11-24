@@ -78,6 +78,11 @@ export const IPC_CHANNELS = {
   MEMORY_MOVE: 'memory:move',
   /** Main → renderer：模型刚写入一条记忆（toast 撤回用）。 */
   MEMORY_SAVED_EVENT: 'memory:saved-event',
+  /** 记忆存储位置（默认/自定义 + 迁移）。 */
+  MEMORY_STORAGE_GET: 'memory:storage-get',
+  MEMORY_STORAGE_PICK: 'memory:storage-pick',
+  MEMORY_STORAGE_SET: 'memory:storage-set',
+  MEMORY_STORAGE_RESET: 'memory:storage-reset',
   COMPOSER_DRAFTS_FLUSH_REQUEST: 'composer-drafts:flush-request',
   COMPOSER_DRAFTS_FLUSHED: 'composer-drafts:flushed',
   BOARDS_LIST: 'boards:list',
