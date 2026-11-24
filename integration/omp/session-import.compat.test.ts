@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import YAML from 'yaml'
+import { canonicalExistingPath } from '../../src/main/canonicalPath'
 import { OmpSession, type OmpProcessLike } from '../../src/main/omp/OmpSession'
 import type { SessionEvent } from '../../src/shared/types'
 import { binaryAvailable, createIsolatedOmpEnvironment, requireBinary } from './isolated-runtime'
@@ -19,10 +20,14 @@ describe('native runtime compatibility for imported history', () => {
       requireBinary(bin)
       return
     }
+    const processPlatform = process.platform
     const iso = createIsolatedOmpEnvironment()
-    const root = realpathSync(iso.root)
-    const workspace = path.join(root, 'workspace')
-    mkdirSync(workspace)
+    const root = canonicalExistingPath(iso.root)
+    const workspaceDirectory = path.join(root, 'workspace')
+    mkdirSync(workspaceDirectory)
+    // Main receives canonical paths from ProjectRegistry. The JS realpathSync
+    // can retain a short Windows CI temp-path spelling that the registry rejects.
+    const workspace = canonicalExistingPath(workspaceDirectory)
     for (const key of ['OMP_PROFILE', 'PI_PROFILE', 'OMP_CODING_AGENT_DIR', 'OMP_CONFIG_PATH']) delete iso.env[key]
     Object.assign(iso.env, {
       XDG_CONFIG_HOME: iso.homeDir, XDG_DATA_HOME: iso.homeDir, XDG_CACHE_HOME: iso.homeDir,
@@ -79,7 +84,13 @@ describe('native runtime compatibility for imported history', () => {
         writeFileSync(sourceFile, original)
         const mtime = statSync(sourceFile).mtimeMs
         const options = { source, sourceDirectory, agentDir: iso.agentDir, defaultWorkspace: workspace, projects: new Set([workspace]) }
-        expect(await importSessionHistory(options)).toMatchObject({ ok: true, imported: 1, failed: 0 })
+        const pathAliases = {
+          fixtureRoot: realpathSync(iso.root) !== root,
+          agentDir: canonicalExistingPath(iso.agentDir) !== iso.agentDir
+        }
+        expect(await importSessionHistory(options), `${source} fixture on ${processPlatform} (path aliases ${JSON.stringify(pathAliases)})`).toMatchObject({
+          ok: true, imported: 1, failed: 0, defaultWorkspace: 0
+        })
         const file = (await listSessionHistory(workspace, iso.agentDir)).find(row => row.importedFrom === source)?.filePath
         expect(file).toBeTruthy()
 
