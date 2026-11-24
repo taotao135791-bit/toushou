@@ -4,13 +4,13 @@
 
 ## 下载与安装
 
-当前公开版本为 **v2.9.3**。安装包、更新清单和校验文件见 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.9.3)。
+当前公开版本为 **v2.9.4**。安装包、更新清单和校验文件见 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.9.4)。
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.3/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.3/TouShou-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.3/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.3/TouShou-x64.zip) |
-| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.3/TouShou-x64.exe) |
+| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.4/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.4/TouShou-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.4/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.4/TouShou-x64.zip) |
+| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.4/TouShou-x64.exe) |
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 
@@ -33,7 +33,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 最新发版
 
-**v2.9.3** 支持将会话拖入项目、按回复开分支，以及发送前后放大图片。长任务可查看当前步骤、进度和预计剩余时间。[更新日志](CHANGELOG.md) · [发布说明](docs/releases/v2.9.3.md)
+**v2.9.4** 支持按当前模型的上下文占用率自动压缩，默认 80%。对话中可查看压缩状态，点击底部 token 数可查看用量或手动压缩。服务商目录中的模型会自动配置图片能力和最大上下文。[更新日志](CHANGELOG.md) · [发布说明](docs/releases/v2.9.4.md)
 
 ## 开发
 
