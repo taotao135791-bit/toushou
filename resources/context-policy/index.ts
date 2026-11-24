@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises'
 
 interface ContextPolicyApi {
-  pi: { settings: { override(key: string, value: number | string | boolean): void } }
+  pi: { settings: {
+    override?(key: string, value: number | string | boolean): void
+    reloadFromDisk?(options: { includeParents: boolean }): Promise<void>
+  } }
   on(event: string, apply: () => Promise<void>): void
   registerCommand(name: string, command: {
     description: string
@@ -21,11 +24,16 @@ export default function contextPolicy(api: ContextPolicyApi): void {
     } catch { return }
     if (!Number.isInteger(threshold) || threshold < 50 || threshold > 95 || threshold === applied) return
     const settings = api.pi?.settings
-    if (typeof settings?.override !== 'function') return
-    settings.override('compaction.enabled', true)
-    settings.override('compaction.strategy', 'context-full')
-    settings.override('compaction.thresholdTokens', -1)
-    settings.override('compaction.thresholdPercent', threshold)
+    if (typeof settings?.override === 'function') {
+      settings.override('compaction.enabled', true)
+      settings.override('compaction.strategy', 'context-full')
+      settings.override('compaction.thresholdTokens', -1)
+      settings.override('compaction.thresholdPercent', threshold)
+    } else if (typeof settings?.reloadFromDisk === 'function') {
+      // Newer OMP reads its --config overlay through the parent settings layer.
+      // Keep the last good policy if another configuration file is unavailable.
+      try { await settings.reloadFromDisk({ includeParents: true }) } catch { return }
+    } else return
     applied = threshold
   }
   // Native RPC 'compact' serializes all later commands, including 'abort'.

@@ -1,4 +1,4 @@
-import { normalizeAutoCompactThreshold } from '../../shared/compaction'
+import { desktopCompactionPolicy } from '../../shared/compaction'
 import { ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -49,7 +49,7 @@ const contextPolicyPath = () => path.join(app.getPath('userData'), 'omp-context-
 
 export function writeContextPolicy(value: unknown): string {
   const file = contextPolicyPath()
-  const content = JSON.stringify({ compaction: { enabled: true, strategy: 'context-full', thresholdTokens: -1, thresholdPercent: normalizeAutoCompactThreshold(value) } })
+  const content = JSON.stringify(desktopCompactionPolicy(value))
   if (existsSync(file) && readFileSync(file, 'utf8') === content) return file
   mkdirSync(path.dirname(file), { recursive: true })
   const temp = file + '.' + process.pid + '.tmp'

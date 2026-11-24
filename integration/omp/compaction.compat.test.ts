@@ -5,6 +5,7 @@ import { parse } from 'yaml'
 import { describe, expect, it, vi } from 'vitest'
 import { createIsolatedOmpEnvironment, binaryAvailable, requireBinary } from './isolated-runtime'
 import { OmpSession, type OmpProcessLike } from '../../src/main/omp/OmpSession'
+import { desktopCompactionPolicy } from '../../src/shared/compaction'
 import type { SessionEvent } from '../../src/shared/types'
 
 describe('OMP compaction in a live RPC session', () => {
@@ -13,16 +14,13 @@ describe('OMP compaction in a live RPC session', () => {
     if (!binaryAvailable(bin)) { requireBinary(bin); return }
     const iso = createIsolatedOmpEnvironment()
     const file = path.join(iso.root, 'policy.json')
-    const policy = (percent: number) => writeFileSync(file, JSON.stringify({ compaction: {
-      enabled: true, strategy: 'context-full', thresholdPercent: percent, thresholdTokens: -1
-    } }))
+    const policy = (percent: number) => writeFileSync(file, JSON.stringify(desktopCompactionPolicy(percent)))
     policy(80)
     Object.assign(iso.env, { TOUSHOU_CONTEXT_POLICY: file, OMP_PROFILE: 'default', USERPROFILE: iso.homeDir,
       XDG_CONFIG_HOME: iso.homeDir, APPDATA: iso.homeDir, LOCALAPPDATA: iso.homeDir })
     let rejectSummaries = false
     let holdSummaries = false
     let heldRequests = 0
-    const triggers: number[] = []
     const requests: string[] = []
     const summaries: string[] = []
     const server = createServer(async (req, res) => {
@@ -42,10 +40,7 @@ describe('OMP compaction in a live RPC session', () => {
         res.end(JSON.stringify({error:{message:'Fixture summary unavailable'}}))
         return
       }
-      if (isSummary) {
-        summaries.push(text)
-        triggers.push(Math.ceil((requests.at(-1)?.length ?? 0) / 4))
-      }
+      if (isSummary) summaries.push(text)
       else requests.push(text)
       const answer = isSummary ? 'Earlier brief: campaign Indigo, target 11.' : 'Noted.'
       // Report input usage for the actual request (including prompt and history).
@@ -67,7 +62,7 @@ describe('OMP compaction in a live RPC session', () => {
       }}}))
       writeFileSync(path.join(iso.agentDir,'config.yml'),JSON.stringify({
         modelRoles:{default:'fixture/medium',smol:'fixture/medium',slow:'fixture/medium'},
-        compaction:{keepRecentTokens:4000, strategy:'off'}
+        compaction:{keepRecentTokens:4000, strategy:'off', modelThresholds:{'fixture/large':'95%'}}
       }))
       const events: SessionEvent[] = []
       const completed = () => events.filter(e => e.type === 'compaction' && e.outcome === 'compacted').length
@@ -99,16 +94,18 @@ describe('OMP compaction in a live RPC session', () => {
       expect(events).toContainEqual(expect.objectContaining({type:'compaction',reason:'too_small'}))
       const payload = ' sample metric'.repeat(1300)
       let pct = 0
-      for (let i=0; i<20 && !summaries.length; i++) {
+      // OMP can request speculative summaries below the threshold. Only a committed
+      // compaction changes the conversation that the next prompt will use.
+      for (let i=0; i<20 && !completed(); i++) {
         await send((i===0?'Original campaign Indigo, target 11. ': '')+'Turn '+i+' '+payload)
         const use = (await stats()).contextUsage
         expect(use?.contextWindow).toBe(48000)
-        if (!summaries.length) pct = use?.percent ?? 0
+        if (!completed()) pct = use?.percent ?? 0
       }
       expect(completed()).toBe(1)
       expect(pct).toBeGreaterThan(60)
       expect(pct).toBeLessThanOrEqual(80)
-      console.info('Before default 80% compaction:', pct.toFixed(2)+'% of 48000. Most recent provider prompt:', triggers[0])
+      console.info('Before default 80% compaction:', pct.toFixed(2)+'% of 48000')
       expect(summaries.some(text=>text.includes('Original campaign Indigo'))).toBe(true)
       await send('After the automatic summary')
       expect(requests.at(-1)).toContain('Earlier brief: campaign Indigo')
@@ -129,14 +126,14 @@ describe('OMP compaction in a live RPC session', () => {
       policy(50)
       await send('Updated threshold in the same conversation')
       expect(completed()).toBe(2)
-      expect(events.filter(e=>e.type==='compaction' && e.outcome==='compacted')).toHaveLength(2)
+      expect((await stats()).contextUsage?.percent).toBeLessThan(50)
       await send('Follow-up after threshold change')
       expect(completed()).toBe(2)
       expect(requests.at(-1)).toContain('Follow-up after threshold change')
       const immediate = session.compact()
       expect(session.abort()).toBe(true)
       expect(await immediate).toBe(true)
-      expect(events.at(-1)).toMatchObject({ type:'compaction',phase:'end',outcome:'aborted' })
+      expect(events.at(-1)).toMatchObject({ type:'compaction',source:'manual',phase:'end',outcome:'aborted' })
 
       // The RPC accepts manual compaction after a normal turn and releases the lock on completion.
       await send('Manual-test context '+payload)
@@ -145,9 +142,12 @@ describe('OMP compaction in a live RPC session', () => {
       await send('Continue after manual compaction')
       expect(requests.at(-1)).toContain('Continue after manual compaction')
       await send('Check provider failure '+payload)
+      const beforeFailure = events.length
       rejectSummaries = true
       expect(await session.compact()).toBe(false)
-      expect(events).toContainEqual(expect.objectContaining({ type:'compaction',phase:'end',outcome:'failed' }))
+      expect(events.slice(beforeFailure)).toContainEqual(expect.objectContaining({
+        type:'compaction',source:'manual',phase:'end',outcome:'failed'
+      }))
       rejectSummaries = false
       await send('Continue after the rejected summary')
       expect(requests.at(-1)).toContain('Continue after the rejected summary')
@@ -159,13 +159,13 @@ describe('OMP compaction in a live RPC session', () => {
       expect(session.abort()).toBe(true)
       expect(await pending).toBe(true)
       expect(events.slice(beforeCancel)).toContainEqual(expect.objectContaining({
-        type:'compaction',phase:'end',outcome:'aborted'
+        type:'compaction',source:'manual',phase:'end',outcome:'aborted'
       }))
       holdSummaries = false
       await send('Continue after manual cancellation')
       expect(requests.at(-1)).toContain('Continue after manual cancellation')
       expect(parse(readFileSync(path.join(iso.agentDir,'config.yml'),'utf8')).compaction)
-        .toEqual({keepRecentTokens:4000, strategy:'off'})
+        .toEqual({keepRecentTokens:4000, strategy:'off', modelThresholds:{'fixture/large':'95%'}})
     } finally {
       await close?.()
       server.closeAllConnections()
