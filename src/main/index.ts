@@ -14,6 +14,7 @@ import { initUpdater } from './updater'
 import { initSessionTopicBridge } from './sessionTopicBridge'
 import { installNavigationGuards } from './navigation'
 import { initFeishuBridge } from './integrations/feishu/feishuBridge'
+import { initDingTalkBridge } from './dingTalkBridge'
 import { initTasksBridge } from './tasksBridge'
 import { initTiktokBridge } from './tiktokBridge'
 import { initBoardsBridge } from './boardsBridge'
@@ -162,6 +163,11 @@ app.whenReady().then(async () => {
     await initFeishuBridge()
   } catch (error) {
     console.warn('[feishu] tool bridge unavailable', error)
+  }
+  try {
+    await initDingTalkBridge()
+  } catch {
+    console.warn('[dingtalk] tool bridge unavailable')
   }
   // Only the local listener is awaited. Slow authorization restoration stays
   // in the background; first-session reads wait for it at the trusted bridge.

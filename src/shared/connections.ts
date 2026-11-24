@@ -123,30 +123,26 @@ export interface FeishuManualCredentials {
   brand: LarkBrand
 }
 
-export type DingTalkConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
+export type DingTalkConnectionState = 'idle' | 'checking' | 'installing' | 'authorizing' | 'connected' | 'error'
 
 export type DingTalkConnectionError =
-  | 'invalid-credentials'
-  | 'storage-unavailable'
+  | 'cli-unavailable'
+  | 'install-failed'
+  | 'authorization-failed'
+  | 'organization-access-required'
   | 'network'
-  | 'configuration'
+  | 'not-authorized'
   | 'connection-failed'
-
-export interface DingTalkCredentials {
-  clientId: string
-  clientSecret: string
-}
 
 export interface DingTalkConnectionSnapshot {
   definition: ConnectionDefinition
   state: DingTalkConnectionState
   status: ConnectionStatus
   configured: boolean
-  paired: boolean
-  pairingCode?: string
-  clientIdMasked?: string
+  cliInstalled: boolean
+  accountName?: string
+  organizationName?: string
   lastConnectedAt?: number
-  lastMessageAt?: number
   lastError?: DingTalkConnectionError
 }
 
@@ -155,6 +151,14 @@ export interface DingTalkConnectionResult {
   snapshot: DingTalkConnectionSnapshot
   error?: DingTalkConnectionError
 }
+
+export type DingTalkReadRequest =
+  | { action: 'search_messages' | 'search_documents'; query: string }
+  | { action: 'read_document'; documentId: string }
+
+export type DingTalkReadError = 'not-connected' | 'invalid-input' | 'cli-unavailable' | 'organization-access-required' | 'not-authorized' | 'permission-denied' | 'network' | 'read-failed'
+
+export type DingTalkReadResult = { ok: true; data: unknown } | { ok: false; error: DingTalkReadError }
 
 export interface FeishuToolRequest {
   action:

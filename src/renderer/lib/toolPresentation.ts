@@ -14,6 +14,9 @@ const LABELS: Record<string, Label> = {
   toushou_tiktok_status: ['检查 TikTok 连接', 'Check TikTok connection'], touhou_tiktok_status: ['检查 TikTok 连接', 'Check TikTok connection'],
   toushou_tiktok_update: ['更新 TikTok 报表', 'Update TikTok report'], touhou_tiktok_update: ['更新 TikTok 报表', 'Update TikTok report'],
   toushou_appsflyer_apps: ['查看 AppsFlyer 应用', 'View AppsFlyer apps'], toushou_appsflyer_query: ['查询 AppsFlyer 归因', 'Query AppsFlyer attribution'],
+  toushou_dingtalk_search_messages: ['搜索钉钉消息', 'Search DingTalk messages'],
+  toushou_dingtalk_search_documents: ['搜索钉钉文档', 'Search DingTalk documents'],
+  toushou_dingtalk_read_document: ['阅读钉钉文档', 'Read DingTalk document'],
   mcp__tiktok_ads_auth_advertiser_get: ['查看 TikTok 授权账户', 'View authorized TikTok accounts'],
   mcp__tiktok_ads_advertiser_info_get: ['查看 TikTok 账户信息', 'View TikTok account information'],
   mcp__tiktok_ads_report_integrated_get: ['读取 TikTok 广告报表', 'Read TikTok ads report'],
@@ -43,6 +46,9 @@ const TYPES: Record<string, Label> = {
   'fb-report-reading': ['Facebook 报表', 'Facebook report'], 'google-report-reading': ['Google 报表', 'Google report']
 }
 const PROXY_TOOLS = new Set(['toushou_boards_list', 'toushou_board_get', 'toushou_board_create', 'toushou_board_customize', 'toushou_board_check', 'toushou_af_dataset_pull', 'toushou_board_add_widget', 'toushou_board_update_widget', 'toushou_board_remove_widget', 'toushou_board_rename', 'toushou_dataset_import', 'toushou_tiktok_status', 'toushou_tiktok_update', 'toushou_appsflyer_apps', 'toushou_appsflyer_query', 'toushou_board_edit_targets', 'toushou_board_build_begin', 'toushou_board_build_status', 'toushou_board_build_preflight', 'toushou_board_build_commit', 'toushou_board_build_abort', 'toushou_board_refresh', 'toushou_board_meta_accounts'])
+PROXY_TOOLS.add('toushou_dingtalk_search_messages')
+PROXY_TOOLS.add('toushou_dingtalk_search_documents')
+PROXY_TOOLS.add('toushou_dingtalk_read_document')
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 function parse(value: unknown): unknown {
   if (typeof value !== 'string') return value

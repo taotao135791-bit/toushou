@@ -15,12 +15,14 @@ describe('board date refresh in Electron', () => {
       let build: { buildSync: (opts: Record<string, unknown>) => unknown }
       try { build = require_('esbuild') } catch { build = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
       build.buildSync({ entryPoints: [path.resolve(__dirname, 'boardRefresh.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.css': 'empty', '.png': 'dataurl', '.svg': 'dataurl' }, alias: { '@shared': path.resolve(__dirname, '../../../shared') } })
-      const env: NodeJS.ProcessEnv = { ...process.env, TZ: 'UTC' }; delete env.ELECTRON_RUN_AS_NODE
+      const env: NodeJS.ProcessEnv = { ...process.env, TZ: process.env.TZ || 'UTC' }; delete env.ELECTRON_RUN_AS_NODE
       const run = spawnSync(electron, [path.resolve(__dirname, 'boardRefresh.harness.cjs'), dir], { encoding: 'utf8', timeout: 45000, env })
       const line = run.stdout?.split('\n').find(text => text.startsWith('E2E_RESULT '))
       expect(line, run.stderr).toBeDefined()
       const result = JSON.parse(line!.slice('E2E_RESULT '.length))
       expect(result, run.stdout).not.toHaveProperty('fatal')
+      // The caption includes the date. Assert the metric line so a date digit cannot satisfy the check.
+      const afMetric = (card: string) => card.trim().split('\n').at(-1)
       // 手动刷新语义：打开看板不自动刷新——初始状态没有模块读取记录。
       expect(result.opened.af).toHaveLength(0)
       expect(result.opened.media).toHaveLength(0)
@@ -36,14 +38,14 @@ describe('board date refresh in Electron', () => {
       expect(result.yesterday.media.map((entry: { range: string }) => entry.range)).toEqual(['yd'])
       expect(result.yesterday.af).toHaveLength(1)
       expect(result.yesterday.af[0].start).toBe(result.yesterday.af[0].end)
-      expect(result.yesterday.card).toContain('2')
+      expect(afMetric(result.yesterday.card)).toBe('1')
       expect(result.todayOnly.media).toHaveLength(result.yesterday.media.length)
       expect(result.todayOnly.af).toHaveLength(result.yesterday.af.length)
       expect(result.todayOnly.text).toContain('Date range changed. Refresh to load data for the new range.')
       expect(result.todayPending.text).toContain('Refreshing 0/1')
       expect(result.today.media.map((entry: { range: string }) => entry.range)).toEqual(['yd', '1'])
       expect(result.today.af).toHaveLength(2)
-      expect(result.today.card).toContain('3')
+      expect(afMetric(result.today.card)).toBe('2')
       expect(result.today.text).toContain('AF today is partial data up to now.')
       expect(result.unbound.text).toContain('AF refresh is not connected')
       expect(result.unbound.text).toContain('Connect refresh')

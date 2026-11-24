@@ -11,6 +11,7 @@ import { EnvMode, resolveSubprocessEnv } from './env'
 import { spawnCommand } from '../command'
 import { browserUseEnv } from '../browserUse'
 import { feishuBridgeEnv } from '../integrations/feishu/feishuBridge'
+import { dingTalkBridgeEnv } from '../dingTalkBridge'
 import { tasksBridgeEnv } from '../tasksBridge'
 import { tiktokBridgeEnv } from '../tiktokBridge'
 import { appsFlyerToolEnv } from '../appsflyerConnection'
@@ -230,6 +231,7 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       // per-session token binds bridge actions to this session.
       ...browserUseEnv(sessionId),
       ...feishuBridgeEnv(sessionId),
+      ...dingTalkBridgeEnv(sessionId),
       ...tasksBridgeEnv(sessionId),
       ...tiktokBridgeEnv(sessionId),
       ...appsFlyerToolEnv(),

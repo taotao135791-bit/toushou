@@ -47,6 +47,10 @@
       "to": "feishu-toolkit"
     },
     {
+      "from": "resources/dingtalk-toolkit",
+      "to": "dingtalk-toolkit"
+    },
+    {
       "from": "resources/tiktok-toolkit",
       "to": "tiktok-toolkit"
     },

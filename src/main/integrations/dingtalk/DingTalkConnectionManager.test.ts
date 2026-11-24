@@ -1,220 +1,152 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('electron', () => ({ app: { getPath: () => '/tmp/toushou-synthetic-dws' } }))
+
+import { DingTalkCliError } from './DingTalkCli'
 import { DingTalkConnectionManager } from './DingTalkConnectionManager'
-import type { DingTalkConfiguration } from './DingTalkCredentialStore'
-import { DingTalkStreamError, type DingTalkIncomingMessage, type DingTalkStream } from './DingTalkStream'
 
-vi.mock('electron', () => ({ app: { getPath: () => '/tmp/toushou-dingtalk-fixture' }, safeStorage: {} }))
-vi.mock('./DingTalkChat', () => ({ DingTalkChat: class {} }))
-
-const credentials = { clientId: 'synthetic-application-1234', clientSecret: 'synthetic-app-secret' }
-const owner = { senderId: 'synthetic-owner', conversationId: 'synthetic-private-chat' }
-const paired = { ...credentials, owner }
-
-function message(text: string, overrides: Partial<DingTalkIncomingMessage> = {}): DingTalkIncomingMessage {
-  return {
-    ...owner,
-    id: 'synthetic-message',
-    conversationType: 'direct',
-    text,
-    replyUrl: 'https://oapi.dingtalk.com/robot/sendBySession?session=synthetic',
-    replyExpiresAt: Date.now() + 60_000,
-    ...overrides
-  }
-}
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  let reject!: (error: Error) => void
-  const promise = new Promise<T>((accept, refuse) => { resolve = accept; reject = refuse })
-  return { promise, resolve, reject }
-}
-
-type ManagerDependencies = NonNullable<ConstructorParameters<typeof DingTalkConnectionManager>[0]>
-type StreamCallbacks = Parameters<NonNullable<ManagerDependencies['createStream']>>[1]
-type SaveConfiguration = NonNullable<ManagerDependencies['storage']>['save']
-
-function fakeStream(configuration: DingTalkConfiguration, callbacks: StreamCallbacks) {
-  return {
-    configuration,
-    callbacks,
-    connect: vi.fn<DingTalkStream['connect']>().mockResolvedValue(undefined),
-    close: vi.fn<DingTalkStream['close']>(),
-    reply: vi.fn<DingTalkStream['reply']>().mockResolvedValue(undefined)
-  }
-}
-
-const managers: DingTalkConnectionManager[] = []
-
-function setup(initial: DingTalkConfiguration | null = null, configureStream?: (stream: ReturnType<typeof fakeStream>) => void) {
-  let persisted = initial
-  const storage = {
-    load: vi.fn(async () => persisted && structuredClone(persisted)),
-    save: vi.fn<SaveConfiguration>(async (configuration, _attempt, canCommit) => {
-      if (canCommit && !canCommit()) return false
-      persisted = structuredClone(configuration)
-      return true
-    }),
-    clear: vi.fn(async () => { persisted = null })
-  }
-  const streams: ReturnType<typeof fakeStream>[] = []
-  const createStream = vi.fn((configuration: DingTalkConfiguration, callbacks: StreamCallbacks) => {
-    const stream = fakeStream(configuration, callbacks)
-    configureStream?.(stream)
-    streams.push(stream)
-    return stream
-  })
-  const chat = {
-    turn: vi.fn<NonNullable<ManagerDependencies['chat']>['turn']>().mockResolvedValue('已知消耗 100，点击 50。'),
-    reset: vi.fn()
-  }
-  const manager = new DingTalkConnectionManager({ storage, createStream, chat })
-  managers.push(manager)
-  return { manager, streams, storage, chat }
-}
-
-afterEach(() => {
-  for (const manager of managers.splice(0)) manager.shutdown()
-  vi.useRealTimers()
+const tool = { path: '/test/dws', version: '1.0.69', source: 'managed' as const }
+const owner = { profile: 'corp-a:alex', organizationName: 'Synthetic agency', accountName: 'Alex' }
+const differentAccount = { profile: 'corp-b:pat', organizationName: 'Other company', accountName: 'Pat' }
+const fixture = () => ({
+  find: vi.fn().mockResolvedValue(tool),
+  install: vi.fn().mockResolvedValue(tool),
+  status: vi.fn().mockResolvedValue(owner),
+  login: vi.fn().mockResolvedValue(owner),
+  currentUser: vi.fn().mockResolvedValue({ userId: 'alex' }),
+  searchMessages: vi.fn().mockResolvedValue({ messages: ['Synthetic message'] }),
+  searchDocuments: vi.fn().mockResolvedValue({ documents: ['Synthetic document'] }),
+  readDocument: vi.fn().mockResolvedValue({ markdown: '# Synthetic' })
 })
 
-describe('DingTalk private connection manager', () => {
-  it('pairs only through a private pairing code and serves only the exact bound user and conversation', async () => {
-    const { manager, streams, storage, chat } = setup()
-    const result = await manager.connect(credentials)
-    expect(result).toMatchObject({ ok: true, snapshot: { state: 'connected', status: 'waiting_for_user', paired: false, clientIdMasked: '••••1234' } })
-    expect(JSON.stringify(result)).not.toContain(credentials.clientSecret)
-    const code = result.snapshot.pairingCode
-    expect(code).toMatch(/^[a-f0-9]{12}$/)
-    const stream = streams[0]
+let directory: string
+let file: string
 
-    stream.callbacks.onMessage(message(`/pair ${code}`, { conversationType: 'group' }))
-    stream.callbacks.onMessage(message('/pair wrong'))
-    stream.callbacks.onMessage(message('查询今天投放表现'))
-    expect(storage.save).toHaveBeenCalledOnce()
-    expect(stream.reply).not.toHaveBeenCalled()
-    expect(chat.turn).not.toHaveBeenCalled()
+beforeEach(async () => {
+  directory = await mkdtemp(path.join(tmpdir(), 'toushou-dws-manager-'))
+  file = path.join(directory, 'link.json')
+})
+afterEach(async () => { await rm(directory, { recursive: true, force: true }) })
 
-    stream.callbacks.onMessage(message(`/pair ${code}`))
-    await vi.waitFor(() => expect(manager.getSnapshot()).toMatchObject({ paired: true, status: 'connected', pairingCode: undefined }))
-    expect(await storage.load()).toEqual(paired)
-    expect(stream.reply).toHaveBeenCalledWith(expect.any(Object), expect.stringContaining('钉钉已绑定投手'), expect.any(AbortSignal))
-
-    stream.reply.mockClear()
-    stream.callbacks.onMessage(message('/ping', { senderId: 'outsider', senderIsAdmin: true }))
-    stream.callbacks.onMessage(message('/ping', { conversationId: 'another-private-chat' }))
-    stream.callbacks.onMessage(message('/ping', { conversationType: 'group' }))
-    expect(stream.reply).not.toHaveBeenCalled()
-
-    stream.callbacks.onMessage(message('/ping'))
-    expect(stream.reply).toHaveBeenCalledWith(expect.objectContaining(owner), '投手连接正常。', expect.any(AbortSignal))
-    expect(chat.turn).not.toHaveBeenCalled()
-
-    const prompt = message('总结今天投放数据', { id: 'live-turn' })
-    stream.callbacks.onMessage(prompt)
-    stream.callbacks.onMessage(prompt)
-    await vi.waitFor(() => expect(stream.reply).toHaveBeenCalledWith(prompt, '已知消耗 100，点击 50。', expect.any(AbortSignal)))
-    expect(chat.turn).toHaveBeenCalledOnce()
-    expect(chat.turn).toHaveBeenCalledWith(prompt.text, expect.any(AbortSignal))
+describe('DingTalk account connection', () => {
+  it('prepares CLI, opens OAuth and verifies the selected account from one action', async () => {
+    const cli = fixture()
+    cli.find.mockResolvedValueOnce(null)
+    cli.status.mockResolvedValueOnce(null)
+    const manager = new DingTalkConnectionManager({ cli, file })
+    const observed: string[] = []
+    manager.setStatusListener(snapshot => observed.push(snapshot.state))
+    expect((await manager.connect()).ok).toBe(true)
+    expect(observed).toEqual(['checking', 'installing', 'authorizing', 'checking', 'connected'])
+    expect(cli.install).toHaveBeenCalledTimes(1)
+    expect(cli.login).toHaveBeenCalledTimes(1)
+    expect(cli.currentUser).toHaveBeenCalledWith(tool, owner.profile, expect.any(AbortSignal))
+    expect(manager.getSnapshot()).toMatchObject({ configured: true, cliInstalled: true, accountName: 'Alex', organizationName: 'Synthetic agency' })
+    expect(manager.getSnapshot()).not.toHaveProperty('profile')
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual({ version: 1, profile: owner.profile })
   })
 
-  it('recovers the saved pairing and opens a fresh stream ticket after a dropped socket', async () => {
-    vi.useFakeTimers()
-    const { manager, streams, storage } = setup(paired)
+  it('reuses an existing CLI authorization and pins tool reads to the chosen worker and organization', async () => {
+    const cli = fixture()
+    const manager = new DingTalkConnectionManager({ cli, file })
     await manager.initialize()
+    expect(cli.login).not.toHaveBeenCalled()
+    expect(await manager.connect()).toMatchObject({ ok: true })
+    expect(cli.install).not.toHaveBeenCalled()
+    expect(cli.login).not.toHaveBeenCalled()
+    cli.status.mockResolvedValue(differentAccount)
+    expect(await manager.read({ action: 'search_messages', query: '上周预算' })).toEqual({ ok: true, data: { messages: ['Synthetic message'] } })
+    expect(cli.searchMessages).toHaveBeenCalledWith(tool, owner.profile, '上周预算', 20, expect.any(AbortSignal))
+    expect(await manager.read({ action: 'read_document', documentId: 'n_1234' })).toMatchObject({ ok: true })
+    expect(cli.readDocument).toHaveBeenCalledWith(tool, owner.profile, 'n_1234', expect.any(AbortSignal))
+    expect(await manager.read({ action: 'read_document', documentId: '../offscope' })).toEqual({ ok: false, error: 'invalid-input' })
+  })
+
+  it('restores the same local link on startup and refuses a changed account', async () => {
+    await writeFile(file, JSON.stringify({ version: 1, profile: owner.profile }))
+    const cli = fixture()
+    const manager = new DingTalkConnectionManager({ cli, file })
     await manager.initialize()
-    expect(storage.load).toHaveBeenCalledOnce()
-    expect(storage.save).not.toHaveBeenCalled()
-    expect(manager.getSnapshot()).toMatchObject({ state: 'connected', paired: true, pairingCode: undefined })
-
-    streams[0].callbacks.onMessage(message('/ping'))
-    expect(streams[0].reply).toHaveBeenCalledOnce()
-    streams[0].callbacks.onDisconnect()
-    expect(manager.getSnapshot()).toMatchObject({ state: 'reconnecting', status: 'degraded', paired: true })
-    await vi.advanceTimersByTimeAsync(2_000)
-
-    expect(streams).toHaveLength(2)
-    expect(streams[1].configuration).toEqual(paired)
-    expect(streams[1].connect).toHaveBeenCalledOnce()
-    expect(manager.getSnapshot()).toMatchObject({ state: 'connected', paired: true })
-    streams[0].callbacks.onMessage(message('/ping', { id: 'stale-event' }))
-    streams[1].callbacks.onMessage(message('/ping'))
-    expect(streams[0].reply).toHaveBeenCalledOnce()
-    expect(streams[1].reply).not.toHaveBeenCalled()
-    streams[1].callbacks.onMessage(message('/ping', { id: 'fresh-event' }))
-    expect(streams[1].reply).toHaveBeenCalledOnce()
+    expect(manager.getSnapshot()).toMatchObject({ state: 'connected', accountName: 'Alex' })
+    expect(cli.status).toHaveBeenCalledWith(tool, owner.profile, expect.any(AbortSignal))
+    cli.status.mockResolvedValue(differentAccount)
+    expect(await manager.reconnect()).toMatchObject({ ok: false, error: 'not-authorized' })
+    expect(manager.getSnapshot()).toMatchObject({ state: 'error', configured: true, accountName: undefined })
+    expect(await manager.read({ action: 'search_messages', query: '预算' })).toEqual({ ok: false, error: 'not-connected' })
+    expect(cli.login).not.toHaveBeenCalled()
+    expect(JSON.parse(await readFile(file, 'utf8')).profile).toBe(owner.profile)
   })
 
-  it('retains a verified connection and saved pairing when replacement credentials are rejected', async () => {
-    const { manager, streams, storage } = setup(paired, stream => {
-      if (stream.configuration.clientId === 'rejected-app') stream.connect.mockRejectedValue(new DingTalkStreamError('credentials'))
-    })
-    await manager.initialize()
-    await expect(manager.connect({ clientId: 'rejected-app', clientSecret: 'a-secret' })).resolves.toMatchObject({
-      ok: false, error: 'invalid-credentials', snapshot: { state: 'connected', paired: true, clientIdMasked: '••••1234' }
-    })
-    expect(storage.save).not.toHaveBeenCalled()
-    expect(await storage.load()).toEqual(paired)
-    expect(streams[0].close).not.toHaveBeenCalled()
-    expect(streams[1].close).toHaveBeenCalledOnce()
-    streams[0].callbacks.onMessage(message('/ping'))
-    expect(streams[0].reply).toHaveBeenCalledOnce()
+  it('opens browser login after an existing OAuth authorization is revoked', async () => {
+    const cli = fixture()
+    cli.currentUser.mockRejectedValueOnce(new DingTalkCliError('not-authorized'))
+    cli.login.mockResolvedValueOnce(differentAccount)
+    const manager = new DingTalkConnectionManager({ cli, file })
+    expect(await manager.connect()).toMatchObject({ ok: true, snapshot: { accountName: 'Pat' } })
+    expect(cli.login).toHaveBeenCalledTimes(1)
+    expect(cli.currentUser).toHaveBeenLastCalledWith(tool, differentAccount.profile, expect.any(AbortSignal))
   })
 
-  it('keeps the old app active and persisted when its replacement drops during credential save', async () => {
-    const { manager, streams, storage } = setup(paired)
-    await manager.initialize()
-    const originalSave = storage.save.getMockImplementation()!
-    const write = deferred<void>()
-    storage.save.mockImplementationOnce(async (...args) => {
-      await write.promise
-      return originalSave(...args)
-    })
-    const replacement = manager.connect({ clientId: 'replacement-app', clientSecret: 'a-secret' })
-    await vi.waitFor(() => expect(storage.save).toHaveBeenCalledOnce())
-    streams[1].callbacks.onDisconnect()
-    write.resolve(undefined)
-
-    await expect(replacement).resolves.toMatchObject({ ok: false, error: 'network', snapshot: { state: 'connected', paired: true } })
-    expect(await storage.load()).toEqual(paired)
-    expect(streams[0].close).not.toHaveBeenCalled()
-    expect(streams[1].close).toHaveBeenCalledOnce()
+  it('uses the official login to recover an inconclusive local credential snapshot', async () => {
+    const cli = fixture()
+    cli.status.mockRejectedValue(new DingTalkCliError('authorization-failed'))
+    const manager = new DingTalkConnectionManager({ cli, file })
+    expect(await manager.connect()).toMatchObject({ ok: true, snapshot: { state: 'connected' } })
+    expect(cli.login).toHaveBeenCalledTimes(1)
   })
 
-  it('cancels an in-progress handshake and removes the stored app on disconnect', async () => {
-    const pending = deferred<void>()
-    const { manager, streams, storage } = setup(null, stream => {
-      stream.connect.mockImplementation(() => pending.promise)
-      stream.close.mockImplementation(() => pending.reject(new DingTalkStreamError('cancelled')))
-    })
-    const connection = manager.connect(credentials)
-    await vi.waitFor(() => expect(streams).toHaveLength(1))
-
-    const disconnect = manager.disconnect()
-    expect(streams[0].close).toHaveBeenCalled()
-    await expect(connection).resolves.toMatchObject({ ok: false })
-    await expect(disconnect).resolves.toMatchObject({ ok: true, snapshot: { state: 'idle', configured: false, paired: false } })
-    expect(storage.save).not.toHaveBeenCalled()
-    expect(storage.clear).toHaveBeenCalledOnce()
+  it('keeps organization authorization errors actionable without persisting a link', async () => {
+    const cli = fixture()
+    cli.currentUser.mockRejectedValue(new DingTalkCliError('organization-access-required'))
+    const manager = new DingTalkConnectionManager({ cli, file })
+    expect(await manager.connect()).toMatchObject({ ok: false, error: 'organization-access-required', snapshot: { configured: false } })
+    await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
-  it('finishes disconnect after a pending pairing write without exposing or replying to the stale binding', async () => {
-    const { manager, streams, storage, chat } = setup()
-    const connection = await manager.connect(credentials)
-    const originalSave = storage.save.getMockImplementation()!
-    const write = deferred<void>()
-    storage.save.mockImplementationOnce(async (...args) => {
-      await write.promise
-      return originalSave(...args)
-    })
-    streams[0].callbacks.onMessage(message(`/pair ${connection.snapshot.pairingCode}`))
-    await vi.waitFor(() => expect(storage.save).toHaveBeenCalledTimes(2))
+  it('keeps the account connected if a document is out of scope for this user', async () => {
+    const cli = fixture()
+    cli.readDocument.mockRejectedValueOnce(new DingTalkCliError('permission-denied'))
+    const manager = new DingTalkConnectionManager({ cli, file })
+    await manager.connect()
+    expect(await manager.read({ action: 'read_document', documentId: 'private_doc' })).toEqual({ ok: false, error: 'permission-denied' })
+    expect(manager.getSnapshot()).toMatchObject({ state: 'connected', accountName: 'Alex' })
+    expect(await manager.read({ action: 'search_documents', query: '日报' })).toMatchObject({ ok: true })
+    expect(cli.searchDocuments).toHaveBeenCalledWith(tool, owner.profile, '日报', 10, expect.any(AbortSignal))
+  })
 
-    const disconnect = manager.disconnect()
-    expect(manager.getSnapshot()).toMatchObject({ state: 'idle', pairingCode: undefined })
-    write.resolve(undefined)
-    await expect(disconnect).resolves.toMatchObject({ ok: true, snapshot: { configured: false, paired: false } })
-    expect(await storage.load()).toBeNull()
-    expect(streams[0].reply).not.toHaveBeenCalled()
-    expect(chat.turn).not.toHaveBeenCalled()
+  it('cancels a pending official login and ignores its late completion', async () => {
+    const cli = fixture()
+    cli.status.mockResolvedValue(null)
+    let authorize!: (value: typeof owner) => void
+    cli.login.mockImplementation(() => new Promise(resolve => { authorize = resolve }))
+    const manager = new DingTalkConnectionManager({ cli, file })
+    const pending = manager.connect()
+    await vi.waitFor(() => expect(manager.getSnapshot().state).toBe('authorizing'))
+    expect(manager.cancel().snapshot.state).toBe('idle')
+    expect(cli.login.mock.calls[0][1].aborted).toBe(true)
+    authorize(owner)
+    await pending
+    expect(manager.getSnapshot()).toMatchObject({ state: 'idle', configured: false })
+    expect(cli.currentUser).not.toHaveBeenCalled()
+    await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('disconnects the app and cancels tool reads without clearing the CLI account', async () => {
+    const cli = fixture()
+    let answer!: (value: unknown) => void
+    cli.searchMessages.mockImplementation(() => new Promise(resolve => { answer = resolve }))
+    const manager = new DingTalkConnectionManager({ cli, file })
+    await manager.connect()
+    const query = manager.read({ action: 'search_messages', query: '粤区日报' })
+    await vi.waitFor(() => expect(cli.searchMessages).toHaveBeenCalledTimes(1))
+    expect(await manager.disconnect()).toMatchObject({ ok: true, snapshot: { state: 'idle', configured: false } })
+    answer({ messages: ['Do not deliver after disconnect'] })
+    expect(await query).toEqual({ ok: false, error: 'not-connected' })
+    await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await manager.connect()).toMatchObject({ ok: true })
+    expect(cli.login).not.toHaveBeenCalled()
   })
 })

@@ -23,7 +23,6 @@ import type { FbAccountBalance } from '../shared/fbBillingParser'
 import {
   DingTalkConnectionResult,
   DingTalkConnectionSnapshot,
-  DingTalkCredentials,
   FeishuConnectionResult,
   FeishuConnectionSnapshot,
   FeishuManualCredentials,
@@ -563,10 +562,10 @@ export interface ElectronAPI {
   // ------------------------------------------------------- connections
   listConnections: () => Promise<(FeishuConnectionSnapshot | DingTalkConnectionSnapshot)[]>
   dingTalkStatus: () => Promise<DingTalkConnectionSnapshot>
-  dingTalkConnect: (credentials: DingTalkCredentials) => Promise<DingTalkConnectionResult>
+  dingTalkConnect: () => Promise<DingTalkConnectionResult>
+  dingTalkCancel: () => Promise<DingTalkConnectionResult>
   dingTalkReconnect: () => Promise<DingTalkConnectionResult>
   dingTalkDisconnect: () => Promise<DingTalkConnectionResult>
-  dingTalkOpenSetup: () => Promise<boolean>
   dingTalkOpenGuide: () => Promise<boolean>
   onDingTalkStatus: (callback: (snapshot: DingTalkConnectionSnapshot) => void) => () => void
   feishuStatus: () => Promise<FeishuConnectionSnapshot>
@@ -1086,10 +1085,10 @@ const api: ElectronAPI = {
   },
   listConnections: () => ipcRenderer.invoke(IPC_CHANNELS.CONNECTIONS_LIST),
   dingTalkStatus: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_STATUS),
-  dingTalkConnect: credentials => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_CONNECT, credentials),
+  dingTalkConnect: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_CONNECT),
+  dingTalkCancel: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_CANCEL),
   dingTalkReconnect: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_RECONNECT),
   dingTalkDisconnect: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_DISCONNECT),
-  dingTalkOpenSetup: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_OPEN_SETUP),
   dingTalkOpenGuide: () => ipcRenderer.invoke(IPC_CHANNELS.DINGTALK_OPEN_GUIDE),
   feishuStatus: () => ipcRenderer.invoke(IPC_CHANNELS.FEISHU_STATUS),
   feishuBeginConnection: (brand?: 'feishu' | 'lark') =>
