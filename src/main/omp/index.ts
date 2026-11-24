@@ -217,6 +217,17 @@ export function createSession(
     // Knowledge file is optional — never block session creation.
   }
 
+  // 长期记忆（全局 + 本项目）：用户让投手"记住"的内容跨对话生效。项目隔离
+  // 在 memoryStore 裁决——只有当前 cwd 的项目层会进入这个 prompt。可失败：
+  // 存储读取问题绝不能挡住会话创建。
+  let memoryPrompt: string | undefined
+  try {
+    const { buildMemoryPrompt } = require('../memoryStore') as { buildMemoryPrompt(cwd: string, language: 'zh' | 'en'): string | null }
+    memoryPrompt = buildMemoryPrompt(cwd, getStore('language') === 'en' ? 'en' : 'zh') ?? undefined
+  } catch {
+    // Memory is optional — never block session creation.
+  }
+
   const permissionMode = opts?.permissionMode ?? getStore('permissionMode')
   const plan = planSpawn(id, cli, {
     permissionMode,
@@ -224,7 +235,7 @@ export function createSession(
     resumeSessionPath: opts?.resumeSessionPath,
     modelSelector: opts?.modelSelector,
     thinkingLevel: opts?.thinkingLevel,
-    skillSystemPrompt: [opts?.skillSystemPrompt, knowledgePrompt].filter(Boolean).join('\n\n') || undefined
+    skillSystemPrompt: [opts?.skillSystemPrompt, knowledgePrompt, memoryPrompt].filter(Boolean).join('\n\n') || undefined
   })
   // A stale recent-project entry (e.g. a cleaned /tmp dir) would otherwise
   // surface as a misleading "spawn omp ENOENT" — say what actually happened.

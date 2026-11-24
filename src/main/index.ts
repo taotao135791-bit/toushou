@@ -10,7 +10,7 @@ import { registerIpc, shutdownSessionsForQuit, tiktokAdsConnectionManager } from
 import { pruneOrphanedHtmlBoards } from './htmlBoards'
 import { cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { syncMachineSkills } from './piSettings'
-import { detectCli } from './omp'
+import { detectCli, getSession } from './omp'
 import { initUpdater } from './updater'
 import { initSessionTopicBridge } from './sessionTopicBridge'
 import { installNavigationGuards } from './navigation'
@@ -19,6 +19,7 @@ import { initDingTalkBridge } from './dingTalkBridge'
 import { initTasksBridge } from './tasksBridge'
 import { initTiktokBridge } from './tiktokBridge'
 import { initBoardsBridge } from './boardsBridge'
+import { initMemoryBridge } from './memoryBridge'
 import { initAdsCopyBridge } from './adsCopyBridge'
 import { ensureKernelSkill } from './kernelSkill'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
@@ -222,6 +223,11 @@ app.whenReady().then(async () => {
     await initTiktokBridge()
     await initBoardsBridge()
     await initAdsCopyBridge()
+    // 记忆桥：会话 identity 由 omp 注册表按 id 提供（cwd 决定项目隔离）。
+    await initMemoryBridge((sessionId) => {
+      const session = getSession(sessionId)
+      return session ? { id: session.id, cwd: session.cwd, title: session.title } : undefined
+    })
   } catch (error) {
     console.warn('[tasks] tool bridge unavailable', error)
   }

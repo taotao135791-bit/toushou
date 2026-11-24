@@ -17,7 +17,8 @@ export const BUNDLED_PACKAGES: readonly { name: string; resourceDir: string }[] 
   { name: 'toushou-appsflyer-toolkit', resourceDir: 'appsflyer-toolkit' },
   { name: 'toushou-feishu-toolkit', resourceDir: 'feishu-toolkit' },
   { name: 'toushou-dingtalk-toolkit', resourceDir: 'dingtalk-toolkit' },
-  { name: 'toushou-tasks-toolkit', resourceDir: 'tasks-toolkit' }
+  { name: 'toushou-tasks-toolkit', resourceDir: 'tasks-toolkit' },
+  { name: 'toushou-memory-toolkit', resourceDir: 'memory-toolkit' }
 ]
 
 export function bundledResourcePath(resourceDir: string): string {

@@ -21,6 +21,7 @@ import SetupWizard from './pages/SetupWizard'
 const PackagesPage = lazy(() => import('./pages/PackagesPage'))
 const PluginAuthorPage = lazy(() => import('./pages/PluginAuthorPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+import MemorySavedToast from './components/MemorySavedToast'
 const BoardsPage = lazy(() => import('./pages/BoardsPage'))
 const BrowserPage = lazy(() => import('./pages/BrowserPage'))
 const OfficePage = lazy(() => import('./pages/OfficePage'))
@@ -523,6 +524,7 @@ function App() {
           </div>
         </Suspense>
       </Layout>
+      <MemorySavedToast />
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}

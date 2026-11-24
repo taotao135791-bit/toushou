@@ -111,6 +111,7 @@ import { getModelConfig, setModelConfig, setApiKey, clearApiKey, syncMachineSkil
 import { listAvailableModels, listCatalogModels, invalidateModelCache } from './piModels'
 import { getStore, rememberRecentProject, setStore } from './store'
 import { loadComposerDrafts, saveComposerDrafts } from './composerDraftsFile'
+import { deleteMemoryEntry, moveMemoryEntry, projectMemoryKey, readMemoryLayer, saveMemoryEntry, updateMemoryText } from './memoryStore'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
 import { beginRuntimePreparation } from './runtimePreparationGate'
@@ -173,6 +174,7 @@ import { AdsCopyModelStore, MAX_PROVIDERS, validateAdsCopyModelInput, type AdsCo
 import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
+import { revokeMemoryBridgeTokens } from './memoryBridge'
 import { revokeDingTalkBridgeTokens } from './dingTalkBridge'
 import { refreshBoard } from './boardRefresh'
 import { parseBoardRefreshRequest } from '../shared/boardRefresh'
@@ -405,6 +407,7 @@ function broadcastSessionEvent(event: SessionEvent): void {
     revokeBrowserUseSession(event.sessionId)
     revokeBoardsBridgeTokens(event.sessionId)
     revokeAdsCopyBridgeTokens(event.sessionId)
+    revokeMemoryBridgeTokens(event.sessionId)
   }
   if (event.type === 'status' && event.status === 'idle') nameSessionDurally.runtimeIdle(event.sessionId)
   maybeNotifyTurnFinished(event)
@@ -2842,6 +2845,56 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.COMPOSER_DRAFTS_SET, async (_event, value: unknown) => {
     return saveComposerDrafts(value)
+  })
+
+  // --- 长期记忆（设置页管理；omp 工具走 memoryBridge，不经这些通道） ---
+  // renderer 是可信侧并持有当前工作区，cwd 由它传入；Main 校验形状。
+
+  const memoryProjectKeyOf = (cwd: unknown): string | null =>
+    typeof cwd === 'string' && cwd.length > 0 ? projectMemoryKey(cwd) : null
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_LIST, (_event, cwd: unknown) => {
+    const key = memoryProjectKeyOf(cwd)
+    return {
+      global: readMemoryLayer('global', null).entries,
+      project: key ? readMemoryLayer('project', key).entries : []
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_SAVE, (_event, input: unknown) => {
+    if (typeof input !== 'object' || input === null) return { ok: false, error: 'invalid-text' as const }
+    const request = input as Record<string, unknown>
+    const scope = request.scope === 'global' ? 'global' as const : 'project' as const
+    const cwd = scope === 'project' && typeof request.cwd === 'string' ? request.cwd : undefined
+    if (scope === 'project' && !cwd) return { ok: false, error: 'invalid-text' as const }
+    const result = saveMemoryEntry({
+      text: typeof request.text === 'string' ? request.text : '',
+      scope,
+      cwd,
+      source: typeof request.sourceTitle === 'string' ? { sessionTitle: request.sourceTitle.slice(0, 120) } : undefined
+    })
+    return result
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_DELETE, (_event, scope: unknown, id: unknown, cwd: unknown) => {
+    if ((scope !== 'global' && scope !== 'project') || typeof id !== 'string') return false
+    const key = scope === 'project' ? memoryProjectKeyOf(cwd) : null
+    if (scope === 'project' && !key) return false
+    return deleteMemoryEntry(scope, id, cwd && typeof cwd === 'string' ? cwd : undefined)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_UPDATE, (_event, scope: unknown, id: unknown, text: unknown, cwd: unknown) => {
+    if ((scope !== 'global' && scope !== 'project') || typeof id !== 'string' || typeof text !== 'string') return false
+    const key = scope === 'project' ? memoryProjectKeyOf(cwd) : null
+    if (scope === 'project' && !key) return false
+    return updateMemoryText(scope, id, text, typeof cwd === 'string' ? cwd : undefined)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_MOVE, (_event, id: unknown, from: unknown, to: unknown, cwd: unknown) => {
+    if (typeof id !== 'string') return false
+    if ((from !== 'global' && from !== 'project') || (to !== 'global' && to !== 'project')) return false
+    if (!isPlainStorableValue(cwd) || typeof cwd !== 'string') return false
+    return moveMemoryEntry(id, from, to, cwd)
   })
 
   // --- Diagnostics -----------------------------------------------------------

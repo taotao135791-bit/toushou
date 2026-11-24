@@ -70,6 +70,14 @@ export const IPC_CHANNELS = {
   /** Composer drafts (image-bearing, so they live in their own file). */
   COMPOSER_DRAFTS_GET: 'composer-drafts:get',
   COMPOSER_DRAFTS_SET: 'composer-drafts:set',
+  /** 长期记忆（全局/项目分层；Main 存储，设置页管理）。 */
+  MEMORY_LIST: 'memory:list',
+  MEMORY_SAVE: 'memory:save',
+  MEMORY_DELETE: 'memory:delete',
+  MEMORY_UPDATE: 'memory:update',
+  MEMORY_MOVE: 'memory:move',
+  /** Main → renderer：模型刚写入一条记忆（toast 撤回用）。 */
+  MEMORY_SAVED_EVENT: 'memory:saved-event',
   COMPOSER_DRAFTS_FLUSH_REQUEST: 'composer-drafts:flush-request',
   COMPOSER_DRAFTS_FLUSHED: 'composer-drafts:flushed',
   BOARDS_LIST: 'boards:list',

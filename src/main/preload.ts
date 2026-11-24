@@ -51,6 +51,7 @@ import type {
 import { TIKTOK_ADVERTISER_LIST_MAX_LENGTH } from '../shared/tiktokReport'
 import type { TikTokTodayProgressItem, TikTokTodayReadingInput, TikTokTodayReadingResult } from '../shared/todayReading'
 import type { FbReportAutoFetchResult, FbReportImportResult, FbReportStoredReading } from '../shared/fbReportCsv'
+import type { MemoryEntry, MemorySaveResult } from '../shared/memory'
 import type { GoogleReportReadingResult, GoogleReportImportResult, GoogleReportStoredReading } from '../shared/googleReport'
 import {
   CliCapabilities,
@@ -284,6 +285,14 @@ export interface ElectronAPI {
   getComposerDrafts: () => Promise<ComposerDrafts>
   setComposerDrafts: (changes: ComposerDraftChanges) => Promise<boolean>
   onComposerDraftsFlush: (flush: () => Promise<void>) => () => void
+  /** 长期记忆（全局/项目分层；cwd 决定项目层）。 */
+  memoryList: (cwd: string | null) => Promise<{ global: MemoryEntry[]; project: MemoryEntry[] }>
+  memorySave: (input: { text: string; scope: 'global' | 'project'; cwd?: string; sourceTitle?: string }) => Promise<MemorySaveResult>
+  memoryDelete: (scope: 'global' | 'project', id: string, cwd?: string) => Promise<boolean>
+  memoryUpdate: (scope: 'global' | 'project', id: string, text: string, cwd?: string) => Promise<boolean>
+  memoryMove: (id: string, from: 'global' | 'project', to: 'global' | 'project', cwd?: string) => Promise<boolean>
+  /** Main → renderer：模型刚写入一条记忆（toast 撤回用）。 */
+  onMemorySaved: (handler: (event: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean }) => void) => () => void
   /** Kanban boards (local-only, validated in main on every read/write). */
   listBoards: () => Promise<KanbanBoard[]>
   /** Main resolves every module's dates and refreshes the board as one run. */
@@ -861,6 +870,20 @@ const api: ElectronAPI = {
     }
     ipcRenderer.on(IPC_CHANNELS.COMPOSER_DRAFTS_FLUSH_REQUEST, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.COMPOSER_DRAFTS_FLUSH_REQUEST, handler)
+  },
+  memoryList: (cwd: string | null) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_LIST, cwd),
+  memorySave: (input: { text: string; scope: 'global' | 'project'; cwd?: string; sourceTitle?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_SAVE, input),
+  memoryDelete: (scope: 'global' | 'project', id: string, cwd?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_DELETE, scope, id, cwd),
+  memoryUpdate: (scope: 'global' | 'project', id: string, text: string, cwd?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_UPDATE, scope, id, text, cwd),
+  memoryMove: (id: string, from: 'global' | 'project', to: 'global' | 'project', cwd?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_MOVE, id, from, to, cwd),
+  onMemorySaved: (handler: (event: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean }) => void) => {
+    const listener = (_event: unknown, payload: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean }) => handler(payload)
+    ipcRenderer.on(IPC_CHANNELS.MEMORY_SAVED_EVENT, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.MEMORY_SAVED_EVENT, listener)
   },
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   boardRefresh: (request: BoardRefreshRequest) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REFRESH, request),

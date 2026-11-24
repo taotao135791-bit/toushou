@@ -18,6 +18,7 @@ import { I18nKey, useT } from '../i18n'
 import { runLanguageTransition, runThemeTransition } from '../lib/themeTransition'
 import CurrentOmpSettings from '../components/CurrentOmpSettings'
 import LegacyPiSettings from '../components/LegacyPiSettings'
+import MemorySection from '../components/MemorySection'
 
 /** RPC protocol versions this GUI can drive (mirrors the main-process handshake). */
 const SUPPORTED_RPC_PROTOCOLS: readonly number[] = [1, 2]
@@ -394,6 +395,8 @@ export default function SettingsPage() {
             </Row>
             <Note>{t(PERMISSION_MODES.find((m) => m.value === permissionMode)?.note ?? 'settings.permissionsNote.ask')}</Note>
           </Section>
+
+          <MemorySection />
 
           <Section title={t('settings.appearance')}>
             <Row label={`${t('settings.language')} / ${language === 'zh' ? 'Language' : '语言'}`}>
