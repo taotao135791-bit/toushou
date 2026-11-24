@@ -315,7 +315,7 @@ export default function Sidebar() {
    * the durable scans only after the delete settles (an earlier rescan could
    * still see the file and re-add the row behind the purge).
    */
-  const deleteByUuidAndRefresh = async (uuid: string | null): Promise<boolean> => {
+  const deleteByUuidAndRefresh = async (uuid: string | null): Promise<boolean | 'locked'> => {
     if (!uuid || !currentWorkspace) return false
     let ok: boolean | 'locked' = false
     try {
@@ -327,7 +327,7 @@ export default function Sidebar() {
     if (ok === true) purgeDeletedSession(uuid)
     void loadHistorySessions(currentWorkspace.id)
     void loadAllHistorySessions()
-    return ok === true
+    return ok
   }
 
 
@@ -604,6 +604,8 @@ export default function Sidebar() {
       void loadHistorySessions(currentWorkspace.id)
       void loadAllHistorySessions()
     } else {
+      // 'locked' 也走红字分支，但给出具体原因（入口守卫漏掉的兜底路径）。
+      showNotice(ok === 'locked' ? 'sidebar.deleteLocked' : 'history.deleteFailed')
       setDeleteFailedHistoryId(info.id)
       setTimeout(() => setDeleteFailedHistoryId((id) => (id === info.id ? null : id)), 3000)
     }
@@ -614,13 +616,15 @@ export default function Sidebar() {
   const handleDeleteGlobal = async (row: HistorySessionRow): Promise<boolean> => {
     if (!currentWorkspace) return false
     const ok = await deleteByUuidAndRefresh(row.uuid)
-    if (ok) {
+    if (ok === true) {
       setDeleteFailedGlobalUuid(null)
     } else {
+      // 'locked' 也走红字分支，但提示具体原因而不是笼统的"删除失败"。
+      showNotice(ok === 'locked' ? 'sidebar.deleteLocked' : 'sidebar.deleteFailedDurable')
       setDeleteFailedGlobalUuid(row.uuid)
       setTimeout(() => setDeleteFailedGlobalUuid((uuid) => (uuid === row.uuid ? null : uuid)), 3000)
     }
-    return ok
+    return ok === true
   }
 
   /**
@@ -731,6 +735,12 @@ export default function Sidebar() {
             // 会话仍在运行：到期时再解 uuid（记录里没有就向运行时要），
             // 然后结束进程并删除所有持久副本。失败则回滚，避免"幽灵删除"。
             let resolvedUuid = uuid
+            try {
+              const freshRecord = store().sessionRecords.find((record) => record.isLive && record.runtimeSessionId === target.id)
+              resolvedUuid = recordDurableUuid(freshRecord) ?? resolvedUuid
+            } catch {
+              // Registry shape shifted between arm and fire — the snapshot uuid still stands.
+            }
             if (!resolvedUuid) {
               try {
                 const st = await window.electronAPI.getSessionState(target.id)
@@ -739,11 +749,22 @@ export default function Sidebar() {
                 // Session already gone — fall through to the kill below.
               }
             }
+            // 锁定检查必须在 killSession 之前：杀进程是不可逆动作，Main 的
+            // 文件拦截救得回数据救不回正在跑的进程。入口守卫用的是渲染期
+            // 快照（可能过期/未水合），这里用最新 store 值再拦一次。
+            if (resolvedUuid && store().lockedSessionIds.includes(resolvedUuid)) {
+              rollback()
+              showNotice('sidebar.deleteLocked')
+              return
+            }
             await window.electronAPI.killSession(target.id)
             store().setSessions(store().sessions.filter((session) => session.id !== target.id))
             store().revealLiveSessionPendingDelete(target.id)
             const ok = await deleteByUuidAndRefresh(resolvedUuid)
-            if (!ok) {
+            if (ok === 'locked') {
+              rollback()
+              showNotice('sidebar.deleteLocked')
+            } else if (!ok) {
               rollback()
               showNotice('sidebar.deleteFailedDurable')
             }
