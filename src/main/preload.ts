@@ -602,7 +602,7 @@ export interface ElectronAPI {
   tiktokOpenUrl: (url: string) => Promise<boolean>
   onTiktokStatus: (callback: (snapshot: TikTokAdsConnectionSnapshot) => void) => () => void
   /** MetaAds Pipeboard connection; only secret-free snapshots cross IPC. */
-  metaAdsReading: (input: { action: 'accounts' } | { action: 'summary'; accountId: string; range: MetaReadingRange }) => Promise<MetaReadingResult<MetaReadingSummary | { accounts: MetaReadingAccount[]; partial: boolean }>>
+  metaAdsReading: (input: { action: 'accounts' } | { action: 'summary'; accountId: string; range: MetaReadingRange; window?: { start: string; end: string } }) => Promise<MetaReadingResult<MetaReadingSummary | { accounts: MetaReadingAccount[]; partial: boolean }>>
   metaAdsStatus: () => Promise<MetaAdsConnectionSnapshot>
   metaAdsBegin: () => Promise<MetaAdsConnectionSnapshot>
   metaAdsCancel: () => Promise<MetaAdsConnectionSnapshot>
