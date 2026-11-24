@@ -32,7 +32,16 @@ app.whenReady().then(async () => {
     wc.focus()
     await Promise.race([readyToShow, new Promise((_, reject) => setTimeout(() => reject(new Error('ready-to-show timeout')), 5000))])
     const js = source => wc.executeJavaScript(source)
-    const waitFor = async expression => { const until=Date.now()+5000; while(!await js(expression)) { if(Date.now()>until) throw new Error(`${phase}: timed out: ${expression}`); await new Promise(resolve=>setTimeout(resolve,15)) } }
+    const waitFor = async expression => {
+      const until = Date.now() + 5000
+      while (!await js(expression)) {
+        if (Date.now() > until) {
+          const active = await js(`(() => {const el=document.activeElement;return {tag:el?.tagName,label:el?.getAttribute('aria-label'),text:el?.tagName==='BUTTON'?el.textContent.trim():undefined}})()`)
+          throw new Error(`${phase}: timed out: ${expression}; active element: ${JSON.stringify(active)}`)
+        }
+        await new Promise(resolve => setTimeout(resolve, 15))
+      }
+    }
     const frame = () => js(`new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('animation-frame timeout; visible='+document.visibilityState+' focused='+document.hasFocus())),3000);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}))})`)
     await waitFor(`document.visibilityState==='visible' && document.hasFocus() && !!window.chatPerfFixture && innerWidth===1024 && innerHeight===700`)
     await frame()
@@ -189,6 +198,8 @@ app.whenReady().then(async () => {
     wc.focus()
     await waitFor('document.hasFocus()')
     const field = `document.querySelector('.chat-composer textarea')`
+    const addTrigger = `document.querySelector('button[aria-label="Add content"]')`
+    const invokeAction = `[...document.querySelectorAll('button')].find(button => button.textContent.trim()==='Use skill / plugin…')`
     const search = `document.querySelector('input[role="combobox"][aria-label="Filter skills, commands and plugins"]')`
     const skillOption = `[...document.querySelectorAll('button[role="option"]')].find(button => button.textContent.trim()==='Synthetic team skill')`
     const key = (keyCode, modifiers = []) => {
@@ -197,13 +208,17 @@ app.whenReady().then(async () => {
     }
     const undo = () => key('Z', [process.platform === 'darwin' ? 'meta' : 'control'])
     const openPicker = async () => {
-      await js(`document.querySelector('button[aria-label="Add content"]').click()`)
-      await waitFor(`[...document.querySelectorAll('button')].some(button => button.textContent.trim()==='Use skill / plugin…')`)
-      await js(`[...document.querySelectorAll('button')].find(button => button.textContent.trim()==='Use skill / plugin…').click()`)
-      await waitFor(`!!${search} && ${search}===document.activeElement && !!(${skillOption})`)
+      await js(`${addTrigger}.click()`)
+      await waitFor(`document.activeElement?.textContent.trim()==='Attach image'`)
+      await js(`(${invokeAction}).click()`)
+      await waitFor(`!!${search}`)
+      await waitFor(`getComputedStyle(${search}).visibility==='visible'`)
+      await waitFor(`${search}===document.activeElement`)
+      await waitFor(`!!(${skillOption})`)
     }
     await js('window.chatPerfFixture.prepareComposer()')
     await waitFor(`${field}?.value==='Review'`)
+    await frame()
     await js(`${field}.focus(); ${field}.setSelectionRange(6,6)`)
     wc.sendInputEvent({ type: 'keyDown', keyCode: 'X' })
     wc.sendInputEvent({ type: 'char', keyCode: 'x' })
@@ -215,6 +230,7 @@ app.whenReady().then(async () => {
     await openPicker()
     await waitFor(`[...document.querySelectorAll('button[role="option"]')].some(button => button.textContent.trim()==='synthetic-ads')`)
     key('Down')
+    await waitFor(`document.getElementById(${search}.getAttribute('aria-activedescendant'))?.textContent.trim()==='synthetic-ads'`)
     key('Return')
     await waitFor(`${field}.value==='Review @mcp:synthetic-ads '`)
     undo()

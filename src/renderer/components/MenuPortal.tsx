@@ -29,6 +29,7 @@ export default function MenuPortal({
   width,
   maxHeight,
   placement = 'top',
+  initialFocusRef,
   children
 }: {
   open: boolean
@@ -38,6 +39,7 @@ export default function MenuPortal({
   maxHeight?: number
   /** 'top' floats above the trigger (default); 'bottom' drops below it. */
   placement?: 'top' | 'bottom'
+  initialFocusRef?: React.RefObject<HTMLElement | null>
   children: ReactNode
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -90,6 +92,11 @@ export default function MenuPortal({
       window.removeEventListener('keydown', onKeyDown)
     }
   }, [open, triggerRef, placement, width, maxHeight])
+
+  const positioned = open && anchor !== null
+  useLayoutEffect(() => {
+    if (positioned) initialFocusRef?.current?.focus({ preventScroll: true })
+  }, [positioned, initialFocusRef])
 
   if (!open) return null
 

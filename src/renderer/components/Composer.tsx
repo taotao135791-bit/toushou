@@ -262,11 +262,6 @@ export default memo(function Composer({
   useEffect(() => {
     if (!invokeOpen) setInvokeTarget(null)
   }, [invokeOpen])
-  useEffect(() => {
-    if (!addMenuOpen) return
-    const frame = requestAnimationFrame(() => firstAddActionRef.current?.focus())
-    return () => cancelAnimationFrame(frame)
-  }, [addMenuOpen])
   // Home tray (选择项目 / 插件) — design.md 5.2: the soft-gray base connected
   // under the white input card carries project scope and plugin entry.
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
@@ -402,7 +397,7 @@ export default memo(function Composer({
     if (!focusKey || disabled) return
     const frame = requestAnimationFrame(() => {
       const el = textareaRef.current
-      if (!el) return
+      if (!el || addButtonRef.current?.getAttribute('aria-expanded') === 'true') return
       el.focus()
       el.setSelectionRange(el.value.length, el.value.length)
     })
@@ -1410,6 +1405,7 @@ export default memo(function Composer({
                   triggerRef={addButtonRef}
                   onClose={() => setAddMenuOpen(false)}
                   width={176}
+                  initialFocusRef={firstAddActionRef}
                 >
                   <button
                     ref={firstAddActionRef}

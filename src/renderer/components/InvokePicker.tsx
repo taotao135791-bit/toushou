@@ -120,11 +120,6 @@ export default function InvokePicker({
 
   useLayoutEffect(() => () => { pendingSkill.current = null }, [])
 
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => inputRef.current?.focus())
-    return () => cancelAnimationFrame(frame)
-  }, [])
-
   const groups = useMemo(() => {
     const rows: InvokeItem[] = []
     const available = new Set(commands.map(({ name }) => `/${name}`))
@@ -220,7 +215,7 @@ export default function InvokePicker({
   }
 
   return (
-    <MenuPortal open triggerRef={triggerRef} onClose={close} width={320} maxHeight={480}>
+    <MenuPortal open triggerRef={triggerRef} onClose={close} width={320} maxHeight={480} initialFocusRef={inputRef}>
       <div className="sticky top-0 z-10 bg-ink-850 p-1.5">
         <input
           ref={inputRef}
