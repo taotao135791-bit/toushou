@@ -7,7 +7,15 @@ app.whenReady().then(async () => {
   let win
   try {
     fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="fixture.css"><div id="root" style="height:100vh"></div><script src="fixture.js"></script>')
-    win = new BrowserWindow({ show: true, focusable: process.env.TOUSHOU_E2E_UNFOCUSED !== '1', width: 1100, height: 1000, webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false } })
+    // 测试窗口一律放副屏（用户要求：绝不占主屏）；没有副屏才回退主屏。
+const e2eScreen = require('electron').screen
+const e2eSecondary = (() => {
+  try {
+    return e2eScreen.getAllDisplays().find(d => d.id !== e2eScreen.getPrimaryDisplay().id) ?? null
+  } catch { return null }
+})()
+const e2ePlace = e2eSecondary ? { x: e2eSecondary.workArea.x + 24, y: e2eSecondary.workArea.y + 24 } : {}
+    win = new BrowserWindow({ ...e2ePlace, show: true, focusable: process.env.TOUSHOU_E2E_UNFOCUSED !== '1', width: 1100, height: 1000, webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false } })
     const wc = win.webContents
     await win.loadFile(path.join(dir, 'index.html'))
     const js = code => wc.executeJavaScript(code)
