@@ -55,7 +55,11 @@ browserWindow.clearInterval = (timer) => {
   clearInterval(timer)
 }
 
+let releasePluginCatalog!: () => void
+const pluginCatalogReady = new Promise<void>(resolve => { releasePluginCatalog = resolve })
+
 const fixture = {
+  releasePluginCatalog,
   commits: 0, renderMs: 0, backgroundUpdates: 0,
   currentModel: deepSeekModel,
   currentThinkingLevel: 'auto',
@@ -208,7 +212,7 @@ window.electronAPI = {
   },
   listCommands: async () => [], getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }), listModels: async () => [],
   listLaunchableTools: (mode?: string) => mode === 'enabled-plugins'
-    ? Promise.resolve([{ id: 'plugin:reports', label: 'Report extension', command: null, origin: 'installed' }])
+    ? pluginCatalogReady.then(() => [{ id: 'plugin:reports', label: 'Report extension', command: null, origin: 'installed' }])
     : new Promise(() => undefined),
   listBundledSkills: () => new Promise(() => undefined),
   listSkills: async () => ({ ok: true, entries: [skill] }),

@@ -37,7 +37,7 @@ app.whenReady().then(async () => {
       const until = Date.now() + 5000
       while (!await js(expression)) {
         if (Date.now() > until) {
-          const state = await js(`(() => {const el=document.activeElement;const trigger=document.querySelector('button[aria-label="Add content"]');const action=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Attach image');return {active:el?.getAttribute('aria-label')||el?.tagName,expanded:trigger?.getAttribute('aria-expanded'),attachment:action?getComputedStyle(action).visibility:'missing',events:window.composerInputEvents?.slice(-15),level:document.querySelector('button[title=Thinking]')?.ariaLabel}})()`)
+          const state = await js(`(() => {const el=document.activeElement;const trigger=document.querySelector('button[aria-label="Add content"]');const action=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Attach image');return {active:el?.getAttribute('aria-label')||el?.textContent?.slice(0,60)||el?.tagName,expanded:trigger?.getAttribute('aria-expanded'),attachment:action?getComputedStyle(action).visibility:'missing',events:window.composerInputEvents?.slice(-15),level:document.querySelector('button[title=Thinking]')?.ariaLabel}})()`)
           throw new Error(`${phase}: timed out: ${expression}; renderer: ${JSON.stringify(state)}`)
         }
         await new Promise(resolve => setTimeout(resolve, 15))
@@ -97,11 +97,13 @@ app.whenReady().then(async () => {
     win.setContentSize(narrowWidth, 700)
     await waitFor(`innerWidth === ${narrowWidth}`)
     await frame()
-    const insetMenu = await js(`(() => {
+    const narrowMenuPosition = `(() => {
       const rect = (${thinkingMenu}).parentElement.getBoundingClientRect()
       const trigger = (${thinkingTrigger}).getBoundingClientRect()
       return rect.left >= 16 && rect.right <= innerWidth - 16 && rect.right <= trigger.right + 1
-    })()`)
+    })()`
+    await waitFor(narrowMenuPosition)
+    const insetMenu = await js(narrowMenuPosition)
     win.setContentSize(1024, 700)
     await waitFor('innerWidth === 1024')
     await frame()
@@ -315,10 +317,8 @@ app.whenReady().then(async () => {
       await waitFor(`!!${search}`)
       await waitFor(`getComputedStyle(${search}).visibility==='visible'`)
       await frame()
-      const focused = await js(`${search}===document.activeElement`)
-      pickerAutoFocus.push(focused)
-      if (!focused) await click(search)
       await waitFor(`${search}===document.activeElement`)
+      pickerAutoFocus.push(true)
       await waitFor(`!!(${skillOption})`)
     }
     phase = 'home menus open below the composer'
@@ -333,10 +333,13 @@ app.whenReady().then(async () => {
       await waitFor(`!${portal}`)
     }
     phase = 'home plugin tray'
-    const trayTrigger = `document.querySelector('.composer-tray button[aria-haspopup="listbox"]')`
+    const trayTrigger = `document.querySelector('.home-hero .composer-tray button[aria-haspopup="listbox"]')`
     const traySearch = `document.querySelector('input[aria-label="Search skills, connections and plugins"]')`
     const trayOption = label => `[...document.querySelectorAll('[role="option"]')].find(el => el.textContent.trim() === ${JSON.stringify(label)})`
     await click(trayTrigger)
+    await waitFor(`${trayTrigger}.getAttribute('aria-expanded')==='true' && !!${traySearch} && document.activeElement===${traySearch}`)
+    await waitFor(`!!(${trayOption('DingTalk')}) && !(${trayOption('Report extension')})`)
+    await js('window.chatPerfFixture.releasePluginCatalog()')
     await waitFor(`!!(${trayOption('DingTalk')}) && !!(${trayOption('synthetic-ads')}) && !!(${trayOption('Synthetic team skill')}) && !!(${trayOption('Report extension')})`)
     const opensBelow = await js(`${traySearch}.closest('body > div').getBoundingClientRect().top >= ${trayTrigger}.getBoundingClientRect().bottom`)
     await waitFor(`document.activeElement===${traySearch}`)

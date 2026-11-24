@@ -114,15 +114,25 @@ export default function MenuPortal({
   const positioned = open && anchor !== null
   useLayoutEffect(() => {
     if (!positioned || !initialFocusRef) return
-    // A menu action can replace its focused portal during a native click.
-    // Let Chromium finish that focus transition before moving into this menu.
-    const timer = window.setTimeout(() => {
-      const menu = menuRef.current
-      const target = initialFocusRef.current
-      if (target?.isConnected && menu?.contains(target) && !menu.contains(document.activeElement)) target.focus()
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [positioned, initialFocusRef])
+    const menu = menuRef.current
+    const target = initialFocusRef.current
+    if (!menu || !target || !menu.contains(target)) return
+
+    // Focus in the visible layout commit so typing immediately enters the
+    // menu, even while its option catalog is still loading.
+    target.focus({ preventScroll: true })
+
+    // Chromium may finish the opening native click by restoring focus to
+    // its button. Retry after that click, without disturbing a menu option
+    // the user focused in the meantime.
+    const frame = requestAnimationFrame(() => {
+      const focused = document.activeElement
+      if (target.isConnected && (focused === document.body || focused === triggerRef.current)) {
+        target.focus({ preventScroll: true })
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [positioned, initialFocusRef, triggerRef])
 
   if (!open) return null
 
