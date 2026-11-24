@@ -136,6 +136,9 @@ function App() {
     window.electronAPI.getStore('archivedSessionIds').then((ids) => {
       useAppStore.getState().setArchivedSessionIds(ids ?? [])
     })
+    window.electronAPI.getStore('lockedSessionIds').then((ids) => {
+      useAppStore.getState().setLockedSessionIds(ids ?? [])
+    })
     // Unsent composer drafts survive restarts (per session + new chat).
     void useAppStore.getState().hydrateComposerDrafts()
     const unsubscribeDraftFlush = window.electronAPI.onComposerDraftsFlush?.(flushComposerDrafts)

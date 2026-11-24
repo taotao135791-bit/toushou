@@ -239,6 +239,17 @@ export class HistorySessionGrantManager {
   }
 
   /**
+   * The durable uuid a minted capability names, or null. Read-only: lets a
+   * caller (e.g. the delete IPC lock check) see WHICH conversation a
+   * capability targets without granting any capability powers.
+   */
+  descriptorUuid(historyId: unknown): string | null {
+    if (!validOpaqueId(historyId)) return null
+    const stored = this.grants.get(historyId)
+    return stored ? stored.descriptor.uuid : null
+  }
+
+  /**
    * Delete fallback for a row whose file no longer matches the minted inode
    * identity (omp resume rewrote it in place) or vanished outright. The
    * owner/workspace/expiry binding is still enforced, and deletion sweeps by

@@ -14,6 +14,8 @@ import {
   X,
   Pin,
   PinOff,
+  Lock,
+  LockOpen,
   Pencil,
   Archive,
   ArchiveRestore,
@@ -135,6 +137,8 @@ export default function Sidebar() {
   const busy = useAppStore((s) => s.busy)
   const pinnedSessionIds = useAppStore((s) => s.pinnedSessionIds)
   const archivedSessionIds = useAppStore((s) => s.archivedSessionIds)
+  const lockedSessionIds = useAppStore((s) => s.lockedSessionIds)
+  const setSessionLocked = useAppStore((s) => s.setSessionLocked)
   const unreadSessionIds = useAppStore((s) => s.unreadSessionIds)
   const uiRequests = useAppStore((s) => s.uiRequests)
   const historyLoading = useAppStore((s) => s.historyLoading)
@@ -313,17 +317,17 @@ export default function Sidebar() {
    */
   const deleteByUuidAndRefresh = async (uuid: string | null): Promise<boolean> => {
     if (!uuid || !currentWorkspace) return false
-    let ok = false
+    let ok: boolean | 'locked' = false
     try {
       ok = await window.electronAPI.deleteSessionByUuid(currentWorkspace.id, uuid)
     } catch {
       // Caller surfaces the failure — never an unhandled rejection.
       ok = false
     }
-    if (ok) purgeDeletedSession(uuid)
+    if (ok === true) purgeDeletedSession(uuid)
     void loadHistorySessions(currentWorkspace.id)
     void loadAllHistorySessions()
-    return ok
+    return ok === true
   }
 
 
@@ -585,11 +589,13 @@ export default function Sidebar() {
     // fall back to the uuid sweep, which is copy-proof and works regardless of
     // which workspace is active. Only a Main-verified "file still present"
     // keeps the row and surfaces the failure state.
-    let ok = await window.electronAPI.deleteSessionFile(currentWorkspace.id, info.id)
+    let ok: boolean | 'locked' = await window.electronAPI.deleteSessionFile(currentWorkspace.id, info.id)
     if (!ok) ok = await window.electronAPI.deleteSessionByUuid(currentWorkspace.id, info.uuid)
-    // Only the history entry goes away on success — a failed delete keeps the
-    // item and surfaces a user-visible error (never silent success).
-    if (ok) {
+    // Only the history entry goes away on success — a failed (or locked)
+    // delete keeps the item and surfaces a user-visible error (never silent
+    // success). Entry-point checks normally catch locks first; this is the
+    // belt-and-suspenders path (e.g. a lock added from another window).
+    if (ok === true) {
       setDeleteFailedHistoryId(null)
       // Purge the durable uuid from every cache (records of every workspace +
       // the cross-project list), then rescan — an earlier rescan could still
@@ -601,7 +607,7 @@ export default function Sidebar() {
       setDeleteFailedHistoryId(info.id)
       setTimeout(() => setDeleteFailedHistoryId((id) => (id === info.id ? null : id)), 3000)
     }
-    return ok
+    return ok === true
   }
 
   /** Cross-project durable row delete: resolved Main-side by uuid. */
@@ -755,6 +761,7 @@ export default function Sidebar() {
 
   const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   const archivedSet = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds])
+  const lockedSet = useMemo(() => new Set(lockedSessionIds), [lockedSessionIds])
 
   // Archive key of a live session: its durable uuid when the registry knows
   // one, else the runtime id. UUID keys survive the live→durable handoff.
@@ -955,6 +962,12 @@ export default function Sidebar() {
             </span>
             {renderOriginBadge(session.origin, importedSourceByRuntime.get(session.id))}
             {renderDraftBadge(sessionComposerDraftKey(session))}
+            {(() => {
+              const sessionUuid = durableUuidOfSession(session.id)
+              return sessionUuid !== null && lockedSet.has(sessionUuid) ? (
+                <Lock size={10} className="shrink-0 text-accent" aria-label={t('sidebar.lock')} />
+              ) : null
+            })()}
             {pinned && <Pin size={10} className="shrink-0 text-accent" aria-hidden="true" />}
           </span>
           <span className="block truncate text-[11px] leading-4 text-cream-faint">
@@ -1009,10 +1022,21 @@ export default function Sidebar() {
       if (entry.kind === 'history') void handleResumeHistory(entry.info)
       else void handleOpenGlobal(entry.row)
     }
+    const archivedUuid = entry.kind === 'history' ? entry.info.uuid : entry.kind === 'global' ? entry.row.uuid : durableUuidOfSession(entry.session.id)
+    const locked = archivedUuid !== null && lockedSet.has(archivedUuid)
     const confirmDelete = () => {
+      // 锁定对话一律拦在入口：不进乐观删除（否则会先藏行/杀进程再回滚）。
+      if (locked) {
+        showNotice('sidebar.deleteLocked')
+        return
+      }
       if (entry.kind === 'live') setPendingDelete({ kind: 'live', id: entry.session.id, title: entry.session.title })
       else if (entry.kind === 'history') setPendingDelete({ kind: 'history', id: entry.info.id, title: entry.info.title })
       else setPendingDelete({ kind: 'global', id: entry.row.uuid, title: entry.row.title })
+    }
+    const toggleLock = () => {
+      if (archivedUuid === null) return
+      setSessionLocked(archivedUuid, !locked)
     }
     return (
       <div
@@ -1040,16 +1064,29 @@ export default function Sidebar() {
         >
           <ArchiveRestore size={12} />
         </button>
+        {archivedUuid !== null && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              toggleLock()
+            }}
+            title={t(locked ? 'sidebar.unlock' : 'sidebar.lock')}
+            className={`${iconBtn} ${locked ? 'text-accent' : 'opacity-0 group-hover:opacity-100'} hover:bg-overlay-strong hover:text-cream-dim`}
+          >
+            {locked ? <Lock size={12} /> : <LockOpen size={12} />}
+          </button>
+        )}
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation()
             confirmDelete()
           }}
-          title={t('history.delete')}
-          className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
+          title={locked ? t('sidebar.deleteLocked') : t('history.delete')}
+          className={`${iconBtn} ${locked ? 'cursor-not-allowed text-cream-faint/50' : 'hover:bg-red-500/15 hover:text-red-500'}`}
         >
-          <Trash2 size={12} />
+          {locked ? <Lock size={12} /> : <Trash2 size={12} />}
         </button>
       </div>
     )
@@ -1072,6 +1109,7 @@ export default function Sidebar() {
             </span>
             {renderOriginBadge(info.origin, info.importedFrom)}
             {renderDraftBadge(historyComposerDraftKey(info.uuid))}
+            {lockedSet.has(info.uuid) && <Lock size={10} className="shrink-0 text-accent" aria-label={t('sidebar.lock')} />}
           </span>
           <span
             className={`block truncate text-[11px] leading-4 ${
@@ -1106,12 +1144,27 @@ export default function Sidebar() {
               type="button"
               onClick={(e) => {
                 e.stopPropagation()
+                setSessionLocked(info.uuid, !lockedSet.has(info.uuid))
+              }}
+              title={t(lockedSet.has(info.uuid) ? 'sidebar.unlock' : 'sidebar.lock')}
+              className={`${iconBtn} ${lockedSet.has(info.uuid) ? 'text-accent' : 'opacity-0 group-hover:opacity-100'} hover:bg-overlay-strong hover:text-cream-dim`}
+            >
+              {lockedSet.has(info.uuid) ? <Lock size={12} /> : <LockOpen size={12} />}
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                if (lockedSet.has(info.uuid)) {
+                  showNotice('sidebar.deleteLocked')
+                  return
+                }
                 setPendingDelete({ kind: 'history', id: info.id, title: info.title })
               }}
-              title={t('history.delete')}
-              className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
+              title={lockedSet.has(info.uuid) ? t('sidebar.deleteLocked') : t('history.delete')}
+              className={`${iconBtn} ${lockedSet.has(info.uuid) ? 'cursor-not-allowed text-cream-faint/50' : 'hover:bg-red-500/15 hover:text-red-500'}`}
             >
-              <Trash2 size={12} />
+              {lockedSet.has(info.uuid) ? <Lock size={12} /> : <Trash2 size={12} />}
             </button>
           </>
         )}
@@ -1153,16 +1206,32 @@ export default function Sidebar() {
               : defaultProjectPaths.has(row.cwd) ? formatRelativeTime(row.timestamp, language) : `${projectNames.get(row.cwd) || basename(row.cwd) || row.cwd} · ${formatRelativeTime(row.timestamp, language)}`}
           </span>
         </button>
+        {lockedSet.has(row.uuid) && <Lock size={11} className="shrink-0 text-accent" aria-label={t('sidebar.lock')} />}
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation()
+            setSessionLocked(row.uuid, !lockedSet.has(row.uuid))
+          }}
+          title={t(lockedSet.has(row.uuid) ? 'sidebar.unlock' : 'sidebar.lock')}
+          className={`${iconBtn} ${lockedSet.has(row.uuid) ? 'text-accent' : 'opacity-0 group-hover:opacity-100'} hover:bg-overlay-strong hover:text-cream-dim`}
+        >
+          {lockedSet.has(row.uuid) ? <Lock size={12} /> : <LockOpen size={12} />}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            if (lockedSet.has(row.uuid)) {
+              showNotice('sidebar.deleteLocked')
+              return
+            }
             setPendingDelete({ kind: 'global', id: row.uuid, title: row.title })
           }}
-          title={t('history.delete')}
-          className={`${iconBtn} hover:bg-red-500/15 hover:text-red-500`}
+          title={lockedSet.has(row.uuid) ? t('sidebar.deleteLocked') : t('history.delete')}
+          className={`${iconBtn} ${lockedSet.has(row.uuid) ? 'cursor-not-allowed text-cream-faint/50' : 'hover:bg-red-500/15 hover:text-red-500'}`}
         >
-          <Trash2 size={12} />
+          {lockedSet.has(row.uuid) ? <Lock size={12} /> : <Trash2 size={12} />}
         </button>
       </div>
     )
@@ -1499,6 +1568,18 @@ export default function Sidebar() {
           <button type="button" data-session-action="pin" className="project-menu-action" onClick={() => { togglePinSession(menuSession.id); closeSessionMenu(); sessionMenuTrigger.current?.focus() }}>
             {pinnedSet.has(menuSession.id) ? <PinOff size={13} /> : <Pin size={13} />}{t(pinnedSet.has(menuSession.id) ? 'sidebar.unpin' : 'sidebar.pin')}
           </button>
+          {(() => {
+            // 锁定只对有持久身份的对话开放：还没发出第一条消息的新会话没有
+            // uuid，没有文件可保护，锁无从谈起。
+            const menuUuid = durableUuidOfSession(menuSession.id)
+            if (menuUuid === null) return null
+            const menuLocked = lockedSet.has(menuUuid)
+            return (
+              <button type="button" data-session-action="lock" className="project-menu-action" onClick={() => { setSessionLocked(menuUuid, !menuLocked); closeSessionMenu(); sessionMenuTrigger.current?.focus() }}>
+                {menuLocked ? <LockOpen size={13} /> : <Lock size={13} />}{t(menuLocked ? 'sidebar.unlock' : 'sidebar.lock')}
+              </button>
+            )
+          })()}
           <button type="button" data-session-action="rename" className="project-menu-action" onClick={() => { closeSessionMenu(); sessionMenuTrigger.current?.focus(); setRenamingId(menuSession.id); setRenameDraft(menuSession.title) }}><Pencil size={13} />{t('sidebar.rename')}</button>
           <button type="button" data-session-action="duplicate" disabled={Boolean(busy[menuSession.id]) || forkingSessionId !== null}
             title={busy[menuSession.id] ? t('sidebar.forkBusyHint') : t('history.duplicate')}
@@ -1518,7 +1599,18 @@ export default function Sidebar() {
             requestArchiveSession(menuSession.id)
             if (!needsConfirm || confirmed) closeSessionMenu()
           }}><Archive size={13} />{t(archiveSessionConfirm.confirmingId === menuSession.id ? 'sidebar.archiveConfirm' : 'sidebar.archive')}</button>
-          <button type="button" data-session-action="delete" className="project-menu-action text-red-500" onClick={() => { closeSessionMenu(); sessionMenuTrigger.current?.focus(); setPendingDelete({ kind: 'live', id: menuSession.id, title: menuSession.title }) }}><Trash2 size={13} />{t('sidebar.deleteSession')}</button>
+          <button type="button" data-session-action="delete" className={`project-menu-action ${(() => {
+            const menuUuid = durableUuidOfSession(menuSession.id)
+            return menuUuid !== null && lockedSet.has(menuUuid) ? 'cursor-not-allowed text-cream-faint/50' : 'text-red-500'
+          })()}`} onClick={() => {
+            const menuUuid = durableUuidOfSession(menuSession.id)
+            if (menuUuid !== null && lockedSet.has(menuUuid)) {
+              closeSessionMenu()
+              showNotice('sidebar.deleteLocked')
+              return
+            }
+            closeSessionMenu(); sessionMenuTrigger.current?.focus(); setPendingDelete({ kind: 'live', id: menuSession.id, title: menuSession.title })
+          }}><Trash2 size={13} />{t('sidebar.deleteSession')}</button>
         </div>}
       </MenuPortal>
 

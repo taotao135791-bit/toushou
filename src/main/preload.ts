@@ -459,13 +459,15 @@ export interface ElectronAPI {
     | { session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] }
     | null
   >
-  /** Delete an opaque history entry under the workspace grant that listed it. */
-  deleteSessionFile: (grantId: string, historyId: string) => Promise<boolean>
+  /** Delete an opaque history entry under the workspace grant that listed it.
+   * Resolves 'locked' when the conversation is locked against deletion. */
+  deleteSessionFile: (grantId: string, historyId: string) => Promise<boolean | 'locked'>
   /**
    * Delete every durable copy of a session uuid, in any project and layout.
    * Works regardless of the active workspace; true when nothing resolves anymore.
+   * Resolves 'locked' when the conversation is locked against deletion.
    */
-  deleteSessionByUuid: (grantId: string, uuid: string) => Promise<boolean>
+  deleteSessionByUuid: (grantId: string, uuid: string) => Promise<boolean | 'locked'>
   /** Return the canonical saved display name, or null if naming failed. */
   setSessionName: (sessionId: string, name: string, options?: import('../shared/types').SessionNameOptions) => Promise<import('../shared/types').SessionNamingResult | null>
   /** Live subagent roster (get_subagents); null when unsupported/unavailable. */

@@ -157,7 +157,7 @@ import {
   diffCheckpoint
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
-import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions } from './sessionHistory'
+import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions, readSessionUuid } from './sessionHistory'
 import { readSessionTranscript, readSessionFileTranscript } from './sessionTranscript'
 import { defaultImportSourceDirectory, importSessionHistory } from './sessionImport'
 import type { SessionImportResult } from '../shared/sessionImport'
@@ -1598,7 +1598,15 @@ export function registerIpc() {
         workspaceRealPath: resolved.realPath,
         ownerWebContentsId: event.sender.id
       }
+      // 锁定对话的删除在 Main 拦死（用户拍板的防误删防线）： capability 能
+      // 解析到哪个 uuid，就查哪个 uuid 的锁——两条删除路径都要过这道闸。
+      const lockedUuids = getStore('lockedSessionIds')
+      const locked = (uuid: unknown): boolean =>
+        typeof uuid === 'string' && lockedUuids.includes(uuid)
+      if (locked(historySessionGrantManager.descriptorUuid(historyId))) return 'locked'
       const deleted = await historySessionGrantManager.withResolved(historyId, context, async (filePath) => {
+        const fileUuid = await readSessionUuid(filePath)
+        if (fileUuid && locked(fileUuid)) return 'locked'
         // Copy-proof: sweep same-uuid copies in every layout, or the scanner
         // resurrects the session from its legacy/sanitized duplicate.
         const result = await deleteSessionFileEverywhere(filePath)
@@ -1608,10 +1616,12 @@ export function registerIpc() {
         }
         return result
       })
+      if (deleted === 'locked') return 'locked'
       if (deleted === true) return true
       // The inode pin no longer matches (omp resume rewrites the file in
       // place) or the file is gone. Sweep by the descriptor's uuid instead so
       // a rewritten row can always be deleted.
+      if (locked(historySessionGrantManager.descriptorUuid(historyId))) return 'locked'
       return historySessionGrantManager.deleteStale(historyId, context)
     }
   )
@@ -1627,6 +1637,9 @@ export function registerIpc() {
       const resolved = requireGrant(grantId)
       if (!resolved) return false
       bindHistorySessionGrantOwnerCleanup(event)
+      // 锁定对话：跨项目删除通道同样拦死。
+      const lockedUuids = getStore('lockedSessionIds')
+      if (typeof uuid === 'string' && lockedUuids.includes(uuid)) return 'locked'
       return historySessionGrantManager.deleteByUuid(uuid)
     }
   )
