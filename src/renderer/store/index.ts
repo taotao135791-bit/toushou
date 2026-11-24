@@ -416,6 +416,8 @@ interface AppState {
   setBoardReadingLaunch: (launch: BoardReadingLaunch | null) => void
   setComposerDraft: (sessionId: string, draft: SessionComposerDraft) => void
   clearComposerDraft: (sessionId: string) => void
+  /** Startup load from Main's composer-drafts.json; merges into memory. */
+  hydrateComposerDrafts: () => Promise<void>
   /** Replace the recent-projects list (startup load; does not persist). */
   setRecentProjects: (paths: string[]) => void
   /** Replace Main-issued recent workspace descriptors (startup load). */
@@ -508,6 +510,27 @@ interface AppState {
   /** Remove a provider credential via the runtime. */
   logoutProvider: (providerId: string) => Promise<{ ok: boolean; error?: string }>
   applySessionEvent: (event: SessionEvent) => void
+}
+
+/**
+ * Debounced disk write for composer drafts: keystroke-rate setComposerDraft
+ * calls coalesce into one IPC round-trip per quiet window. A write that Main
+ * rejects (oversized, malformed) is silently dropped — drafts are best-effort
+ * persistence and must never break typing.
+ */
+const COMPOSER_DRAFTS_PERSIST_DELAY_MS = 600
+let composerDraftsPersistTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleComposerDraftsPersist(drafts: ComposerDrafts): void {
+  if (composerDraftsPersistTimer) clearTimeout(composerDraftsPersistTimer)
+  composerDraftsPersistTimer = setTimeout(() => {
+    composerDraftsPersistTimer = null
+    try {
+      void window.electronAPI.setComposerDrafts(drafts)?.catch(() => undefined)
+    } catch {
+      // Older preload (or a test fixture) without the channel: drafts stay
+      // in memory for this session; typing must never break over persistence.
+    }
+  }, COMPOSER_DRAFTS_PERSIST_DELAY_MS)
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -686,6 +709,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         Object.entries(state.unreadSessionIds).filter(([id]) => ids.has(id))
       )
       const composerDrafts = pruneComposerDrafts(state.composerDrafts, ids)
+      if (composerDrafts !== state.composerDrafts) scheduleComposerDraftsPersist(composerDrafts)
       return {
         sessions,
         sessionRecords: removeLiveSessionRecords(state.sessionRecords, ids),
@@ -1261,11 +1285,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   setComposerAutosend: (composerAutosend) => set({ composerAutosend }),
   setBoardReadingLaunch: (boardReadingLaunch) => set({ boardReadingLaunch }),
   setComposerDraft: (sessionId, draft) =>
-    set((state) => ({
-      composerDrafts: setComposerDraft(state.composerDrafts, sessionId, draft)
-    })),
+    set((state) => {
+      const composerDrafts = setComposerDraft(state.composerDrafts, sessionId, draft)
+      scheduleComposerDraftsPersist(composerDrafts)
+      return { composerDrafts }
+    }),
   clearComposerDraft: (sessionId) =>
-    set((state) => ({ composerDrafts: clearComposerDraft(state.composerDrafts, sessionId) })),
+    set((state) => {
+      const composerDrafts = clearComposerDraft(state.composerDrafts, sessionId)
+      scheduleComposerDraftsPersist(composerDrafts)
+      return { composerDrafts }
+    }),
+  hydrateComposerDrafts: async () => {
+    try {
+      const stored = await window.electronAPI.getComposerDrafts?.()
+      if (!stored || typeof stored !== 'object') return
+      const merged = { ...stored, ...get().composerDrafts }
+      set({ composerDrafts: merged })
+      // Re-arm the debounced persist with the MERGED map: a timer captured
+      // before the merge would otherwise write the stale map and erase the
+      // disk-only drafts this hydration just adopted.
+      scheduleComposerDraftsPersist(merged)
+    } catch {
+      // Persistence is best-effort; the in-memory session drafts still work.
+    }
+  },
   setRecentProjects: (recentProjects) => set({ recentProjects }),
   setRecentWorkspaces: (recentWorkspaces) =>
     set({

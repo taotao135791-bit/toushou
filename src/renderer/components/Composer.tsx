@@ -17,6 +17,7 @@ import {
   MessageCircle,
   Plus,
   Plug,
+  Sparkles,
   ChevronDown,
   Layers
 } from 'lucide-react'
@@ -27,6 +28,7 @@ import {
   ComposerDraftFile,
   ComposerFileKind,
   DroppedAttachment,
+  NEW_CHAT_DRAFT_KEY,
   SessionComposerDraft
 } from '../lib/composerDraft'
 import { dispatchSteer, steerFailureKey } from '../lib/steerDispatch'
@@ -40,6 +42,7 @@ import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
 import UsageMonitor from './UsageMonitor'
 import MenuPortal from './MenuPortal'
+import InvokePicker from './InvokePicker'
 import ProjectPicker from './ProjectPicker'
 import { useProjects } from '../store/projects'
 import './AgentHome.css'
@@ -220,6 +223,13 @@ export default memo(function Composer({
   const [atMenuIndex, setAtMenuIndex] = useState(0)
   const [atDismissed, setAtDismissed] = useState(false)
   const [images, setImages] = useState<PendingImage[]>([])
+  /** Mirrors text/images for the late-draft subscription (no re-subscribe per keystroke). */
+  const textRef = useRef('')
+  const imagesRef = useRef<PendingImage[]>([])
+  textRef.current = text
+  imagesRef.current = images
+  /** The draft object this composer last wrote (self-write filter, see writeDraft). */
+  const lastWrittenDraftRef = useRef<SessionComposerDraft | null>(null)
   /** Non-image drops staged as attachment chips; sent as @path lines. */
   const [pendingFiles, setPendingFiles] = useState<DroppedAttachment[]>([])
   const [steeringQueuedId, setSteeringQueuedId] = useState<string | null>(null)
@@ -252,6 +262,8 @@ export default memo(function Composer({
   /** Workspace-level branch for the header chip; null = not a git repo. */
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addButtonRef = useRef<HTMLButtonElement>(null)
+  /** 技能/插件调用面板 (the "+" menu's explicit-invocation picker). */
+  const [invokeOpen, setInvokeOpen] = useState(false)
   // Home tray (选择项目 / 插件) — design.md 5.2: the soft-gray base connected
   // under the white input card carries project scope and plugin entry.
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
@@ -275,13 +287,19 @@ export default memo(function Composer({
     nextImages: PendingImage[],
     nextFiles: DroppedAttachment[] = pendingFiles
   ) => {
-    if (!sessionId) return
+    // The not-yet-created chat parks its draft under the sentinel key so the
+    // words survive page switches and app restarts like any session's draft.
+    const key = sessionId ?? NEW_CHAT_DRAFT_KEY
     const draft: SessionComposerDraft = {
       text: nextText,
       images: toPromptImages(nextImages),
       files: toDraftFiles(nextFiles)
     }
-    setComposerDraft(sessionId, draft)
+    setComposerDraft(key, draft)
+    // Identity marker: the late-draft subscription must never adopt a draft
+    // the composer itself just wrote (it fires synchronously, before the
+    // text/image refs re-render).
+    lastWrittenDraftRef.current = draft
   }
 
   const commitDraft = (nextText: string, nextImages = images, nextFiles = pendingFiles) => {
@@ -306,7 +324,9 @@ export default memo(function Composer({
   // the editing surface from the newly selected session and reset transient UI.
   useEffect(() => {
     textareaRef.current?.blur()
-    const draft = currentSessionId ? useAppStore.getState().composerDrafts[currentSessionId] : undefined
+    const draftKey = currentSessionId ?? NEW_CHAT_DRAFT_KEY
+    const store = useAppStore.getState()
+    const draft = store.composerDrafts[draftKey]
     setText(draft?.text ?? '')
     setImages(draft ? fromPromptImages(draft.images) : [])
     setPendingFiles(draft?.files ? draft.files.map(fromDraftFile) : [])
@@ -320,6 +340,30 @@ export default memo(function Composer({
     requestAnimationFrame(() => {
       autosize(textareaRef.current)
     })
+    // The startup disk hydration (hydrateComposerDrafts) can land AFTER this
+    // mount read an empty store — currentSessionId never changed, so the
+    // effect above will not re-run on its own. Adopt the late draft only
+    // while the surface is still untouched; once the user types, the store
+    // follows the composer, never the other way around.
+    if (draft) return
+    const untouched = () => textRef.current === '' && imagesRef.current.length === 0
+    const unsubscribe = useAppStore.subscribe((state) => {
+      const late = state.composerDrafts[draftKey]
+      // Skip the composer's own synchronous write (same object) — only a
+      // disk hydration lands here with a fresh object while the surface is
+      // still untouched.
+      if (!late || late === lastWrittenDraftRef.current || !untouched()) return
+      unsubscribe()
+      if (useAppStore.getState().currentSessionId !== currentSessionId) return
+      setText(late.text)
+      setImages(fromPromptImages(late.images))
+      setPendingFiles(late.files ? late.files.map(fromDraftFile) : [])
+      setCaret(late.text.length)
+      requestAnimationFrame(() => {
+        autosize(textareaRef.current)
+      })
+    })
+    return unsubscribe
   }, [currentSessionId])
 
   // One-shot prefill requested by another page (e.g. "build your own plugin")
@@ -802,18 +846,17 @@ export default memo(function Composer({
       const stagedImagesSnapshot = images
       const restore = (ok: void | boolean) => {
         if (ok !== false) return
-        const restoreSessionId = sessionIdAtSend ?? useAppStore.getState().currentSessionId
-        if (restoreSessionId) {
-          setComposerDraft(restoreSessionId, {
-            text: trimmed,
-            images: toPromptImages(stagedImagesSnapshot),
-            files: toDraftFiles(staged)
-          })
-        }
-        if (
-          (sessionIdAtSend && useAppStore.getState().currentSessionId !== sessionIdAtSend) ||
-          (!sessionIdAtSend && restoreSessionId !== useAppStore.getState().currentSessionId)
-        ) {
+        const restoreSessionId = sessionIdAtSend ?? useAppStore.getState().currentSessionId ?? NEW_CHAT_DRAFT_KEY
+        setComposerDraft(restoreSessionId, {
+          text: trimmed,
+          images: toPromptImages(stagedImagesSnapshot),
+          files: toDraftFiles(staged)
+        })
+        // Same-position check: restore the surface only when the user is
+        // still looking at the conversation the send started from — for a
+        // failed FIRST send that is the new-chat surface (sentinel key).
+        const liveKey = useAppStore.getState().currentSessionId ?? NEW_CHAT_DRAFT_KEY
+        if (restoreSessionId !== liveKey) {
           return
         }
         setText((cur) => (cur.trim() ? cur : trimmed))
@@ -821,7 +864,7 @@ export default memo(function Composer({
         setPendingFiles((cur) => (cur.length ? cur : staged))
         setCaret(trimmed.length)
       }
-      if (sessionIdAtSend) clearComposerDraft(sessionIdAtSend)
+      clearComposerDraft(sessionIdAtSend ?? NEW_CHAT_DRAFT_KEY)
       if (!sessionIdAtSend || useAppStore.getState().currentSessionId === sessionIdAtSend) {
         clearLocalDraft()
       }
@@ -837,7 +880,7 @@ export default memo(function Composer({
       } else restore(result)
       return
     }
-    if (sessionIdAtSend) clearComposerDraft(sessionIdAtSend)
+    clearComposerDraft(sessionIdAtSend ?? NEW_CHAT_DRAFT_KEY)
     if (!sessionIdAtSend || useAppStore.getState().currentSessionId === sessionIdAtSend) {
       clearLocalDraft()
     }
@@ -1363,8 +1406,25 @@ export default memo(function Composer({
                     <Paperclip size={13} className="shrink-0 text-cream-faint" />
                     {t('composer.attach')}
                   </button>
+                  <button
+                    onClick={() => {
+                      setAddMenuOpen(false)
+                      setInvokeOpen(true)
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                  >
+                    <Sparkles size={13} className="shrink-0 text-accent" />
+                    {t('composer.invoke.open')}
+                  </button>
                 </MenuPortal>
               </div>
+              <InvokePicker
+                open={invokeOpen}
+                triggerRef={addButtonRef}
+                onClose={() => setInvokeOpen(false)}
+                onPick={(insert) => replaceRange(caret, caret, insert)}
+                commands={commands}
+              />
               <PermissionPicker compact={compact} />
               {feishuSync && (
                 <div

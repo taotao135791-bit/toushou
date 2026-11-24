@@ -110,6 +110,7 @@ import {
 import { getModelConfig, setModelConfig, setApiKey, clearApiKey, syncMachineSkills, listMachineSkillNames } from './piSettings'
 import { listAvailableModels, listCatalogModels, invalidateModelCache } from './piModels'
 import { getStore, rememberRecentProject, setStore } from './store'
+import { loadComposerDrafts, saveComposerDrafts } from './composerDraftsFile'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
 import { beginRuntimePreparation } from './runtimePreparationGate'
@@ -2757,6 +2758,12 @@ export function registerIpc() {
     // theme flip must repaint it too (see applyWindowTheme).
     if (key === 'theme') applyWindowTheme(value)
     return true
+  })
+
+  ipcMain.handle(IPC_CHANNELS.COMPOSER_DRAFTS_GET, () => loadComposerDrafts())
+
+  ipcMain.handle(IPC_CHANNELS.COMPOSER_DRAFTS_SET, async (_event, value: unknown) => {
+    return saveComposerDrafts(value)
   })
 
   // --- Diagnostics -----------------------------------------------------------

@@ -22,6 +22,7 @@ import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { formatRelativeTime } from '../lib/time'
 import { launchSkillSession } from '../lib/launchTool'
+import { invalidateInvokeLists } from '../components/InvokePicker'
 import { formatSkillChatMessage, formatSkillChatReference } from '@shared/skills'
 import Markdown from '../components/Markdown'
 import { useModalBoundary } from '../lib/modalBoundary'
@@ -94,6 +95,8 @@ export default function SkillsPage() {
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const refresh = useCallback(() => {
+    // Skill rows changed → the composer's invoke-picker cache is stale too.
+    invalidateInvokeLists()
     window.electronAPI
       .listSkills()
       .then((result) => {

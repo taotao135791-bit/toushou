@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import { HistorySessionDescriptor, HistorySessionRow, SessionSortOrder } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
+import { NEW_CHAT_DRAFT_KEY } from '../lib/composerDraft'
 import { useT, modShortcut } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
 import { cleanSessionName } from '@shared/promptTitle'
@@ -200,6 +201,12 @@ export default function Sidebar() {
       cancelled = true
     }
   }, [])
+
+  // Draft indicator input: the KEY SET only, as one comparable string. Typing
+  // rewrites the same session's draft every keystroke; a stable key set must
+  // not re-render the whole sidebar per character.
+  const draftKeySet = useAppStore((s) => Object.keys(s.composerDrafts).join('\n'))
+  const draftSessionIds = useMemo(() => new Set(draftKeySet ? draftKeySet.split('\n') : []), [draftKeySet])
 
   // Session list ordering. Persisted through Main's typed settings store like
   // the sidebar width; hydrated once on mount (store default is 'recent').
@@ -933,6 +940,14 @@ export default function Sidebar() {
               {displayTitle(session.title, basename(session.cwd) || session.cwd)}
             </span>
             {renderOriginBadge(session.origin)}
+            {draftSessionIds.has(session.id) && (
+              <span
+                className="shrink-0 rounded-[4px] bg-overlay-strong px-1 text-[10px] font-medium leading-4 text-accent"
+                title={t('sidebar.draftBadge')}
+              >
+                {t('sidebar.draftBadge')}
+              </span>
+            )}
             {pinned && <Pin size={10} className="shrink-0 text-accent" aria-hidden="true" />}
           </span>
           <span className="block truncate text-[11px] leading-4 text-cream-faint">
@@ -1248,6 +1263,14 @@ export default function Sidebar() {
         >
           <SquarePen size={16} className="shrink-0" aria-hidden="true" />
           {t('sidebar.newChat')}
+          {draftSessionIds.has(NEW_CHAT_DRAFT_KEY) && (
+            <span
+              className="shrink-0 rounded-[4px] bg-overlay-strong px-1 text-[10px] font-medium leading-4 text-accent"
+              title={t('sidebar.draftBadge')}
+            >
+              {t('sidebar.draftBadge')}
+            </span>
+          )}
           <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">{modShortcut('N')}</span>
         </button>
         <button
