@@ -4,13 +4,13 @@
 
 ## 下载与安装
 
-当前公开版本为 **v2.8.0**。安装包、更新清单和校验文件见 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.8.0)。
+当前公开版本为 **v2.8.1**。安装包、更新清单和校验文件见 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.8.1)。
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.0/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.0/TouShou-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.0/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.0/TouShou-x64.zip) |
-| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.0/TouShou-x64.exe) |
+| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.1/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.1/TouShou-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.1/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.1/TouShou-x64.zip) |
+| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.8.1/TouShou-x64.exe) |
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 
@@ -33,7 +33,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 最新发版
 
-**v2.8.0** 支持在对话中使用 TikTok + AppsFlyer 模板建板和批量拉数。部分查询不可用时，继续交付已核实的读数，并标明缺项。看板可继续手动刷新。[更新日志](CHANGELOG.md) · [发布说明](docs/releases/v2.8.0.md)
+**v2.8.1** 修复 TikTok 系统线路的连通回归，减少对话连续调用工具时的闪动和滚动跳变，并降低对话、看板及侧栏的重复渲染。[更新日志](CHANGELOG.md) · [发布说明](docs/releases/v2.8.1.md)
 
 ## 开发
 
