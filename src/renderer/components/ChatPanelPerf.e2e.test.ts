@@ -45,6 +45,22 @@ describe('ChatPanel background metadata rendering', () => {
       expect(data.restoredThinking).toEqual({ timers: 0, message: true })
       expect(data.activeThinking).toBe(1)
       expect(data.interruptedThinking).toBe(0)
+      const { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation } = data.boardStream
+      expect(shortReasoning.reasoningHeight).toBeGreaterThan(0)
+      expect(longReasoning.reasoningHeight).toBe(shortReasoning.reasoningHeight)
+      expect(longReasoning.scrollHeight).toBe(shortReasoning.scrollHeight)
+      expect(Math.abs(longReasoning.bottom)).toBeLessThanOrEqual(1)
+      for (const sample of [longReasoning, collapsedReasoning, afterPunctuation]) {
+        expect(sample.composerTop).toBe(shortReasoning.composerTop)
+        expect(sample.composerHeight).toBe(shortReasoning.composerHeight)
+      }
+      expect(processAutoOpened).toBe(false)
+      expect(processManuallyOpened).toBe(true)
+      expect(punctuation).toEqual({ inProcess: true, separate: false, boardAction: false })
+      expect(data.projectionWork.noAgent).toEqual({ activity: 0, messages: 0, empty: true })
+      expect(data.projectionWork.closedAgent).toEqual({ activity: 0, messages: 0, countVisible: true })
+      expect(data.projectionWork.openAgent).toEqual({ activity: 1, messages: 0, workerVisible: true })
+      expect(data.projectionWork.completedElapsed).toBe(true)
       expect(data.defaultRecovery).toEqual({ message: true, path: true, button: 'Reselect folder…', destination: 'Default workspace' })
       expect(data.defaultRecovered).toEqual({ calls: ['default'], workspace: '/synthetic/default-save-folder', source: 'default', missing: false, promptGone: true, draft: 'Unsent default folder brief' })
     } finally { rmSync(dir, { recursive: true, force: true }) }

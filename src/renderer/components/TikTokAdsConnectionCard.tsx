@@ -261,17 +261,22 @@ export default function TikTokAdsConnectionCard() {
           ) : (
             <div role="status" className="mb-3 flex items-center gap-2 text-[13px] font-medium text-emerald-700 dark:text-emerald-400"><CheckCircle2 size={16} className="shrink-0" />{t('connections.tiktokConnected')}</div>
           )}
-          {/* 真实连通检测：授权正常 ≠ 网络可达。探测失败亮黄灯并给原因。 */}
+          {/* Authorization status and probe results describe different checks. */}
           {probe.result && !probe.result.ok && (
             <div role="alert" className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] leading-[18px] text-amber-800 dark:text-amber-200">
-              <span className="font-medium">{t('connections.tiktokProbeUnreachable')}</span>
-              <span className="mt-0.5 block text-cream-faint">
+              <span className="font-medium">
                 {probe.result.kind === 'network'
-                  ? t('connections.tiktokProbeNetworkHint')
+                  ? t('connections.tiktokProbeUnreachable')
                   : probe.result.kind === 'not-authorized'
                     ? t('connections.tiktokProbeNoAuth')
-                    : `${t('connections.tiktokProbeApiFailed')}${probe.result.detail ? `：${probe.result.detail}` : ''}`}
+                    : t('connections.tiktokProbeApiFailed')}
               </span>
+              {probe.result.kind === 'network' && (
+                <span className="mt-0.5 block text-cream-faint">{t('connections.tiktokProbeNetworkHint')}</span>
+              )}
+              {probe.result.kind === 'api' && probe.result.detail && (
+                <span className="mt-0.5 block text-cream-faint">{probe.result.detail}</span>
+              )}
             </div>
           )}
           {probe.result?.ok && (

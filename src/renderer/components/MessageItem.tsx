@@ -38,6 +38,8 @@ interface MessageItemProps {
   onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
   /** Whether this is the latest message of the active turn. */
   streaming?: boolean
+  turnActive?: boolean
+  allowThinkingAutoExpand?: boolean
   /** Intermediate process messages keep their details but do not offer result actions. */
   showBoardAction?: boolean
 }
@@ -83,7 +85,9 @@ function SkillMessageCard({
   )
 }
 
-function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null, onRetry, streaming = false, showBoardAction = true }: MessageItemProps) {
+const THINKING_PREVIEW_DELAY_MS = 1_000
+
+function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null, onRetry, streaming = false, turnActive = streaming, allowThinkingAutoExpand = true, showBoardAction = true }: MessageItemProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
   const copyRequest = useRef(0)
   const copyBusy = useRef(false)
@@ -94,10 +98,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
   const [retrying, setRetrying] = useState(false)
   const retryInFlight = useRef(false)
   const [restoring, setRestoring] = useState(false)
-  const [thinkingOpen, setThinkingOpen] = useState(false)
-  // Auto-vs-manual thinking disclosure state: once the user toggles a run
-  // manually, the display-policy effects stop fighting their choice.
-  const thinkingUserPinned = useRef(false)
+  const [thinkingDisclosure, setThinkingDisclosure] = useState<'closed' | 'preview' | 'manual-open' | 'manual-closed'>('closed')
   const [boardDialogOpen, setBoardDialogOpen] = useState(false)
   const [boardSaved, setBoardSaved] = useState(false)
   const [taskDialogOpen, setTaskDialogOpen] = useState(false)
@@ -126,25 +127,21 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
     message.thinkingStartTs !== undefined && message.thinkingEndTs === undefined
   const thinkingAutoExpand = useAppStore(s => s.thinkingAutoExpand)
   const thinkingCollapseTiming = useAppStore(s => s.thinkingCollapseTiming)
-  // A later user message exists in this session → an open "keep until next
-  // input" disclosure has overstayed and folds. The scan is done ONCE by the
-  // list and passed down: subscribing per item made every stream frame O(N²).
-  const hasLaterUserTurn = typeof lastUserIndex === 'number' && lastUserIndex > index
+  const hasLaterUserTurn = lastUserIndex > index
+  const canPreviewThinking = thinkingAutoExpand && allowThinkingAutoExpand && !hasLaterUserTurn
+  const showThinkingPreview = thinkingDisclosure === 'preview' && canPreviewThinking &&
+    (turnActive || thinkingCollapseTiming === 'until-next-input')
+  const thinkingOpen = showThinkingPreview || thinkingDisclosure === 'manual-open'
   useEffect(() => {
-    if (thinkingUserPinned.current) return
-    // Live policy: expand while streaming (when enabled).
-    if (thinkingStreaming && thinkingAutoExpand) setThinkingOpen(true)
-    // Completion policy: fold immediately, or hold until the next user turn.
-    if (!thinkingStreaming && message.thinking && thinkingCollapseTiming === 'on-complete') setThinkingOpen(false)
-  }, [thinkingStreaming, thinkingAutoExpand, thinkingCollapseTiming, message.thinking])
+    if (!thinkingStreaming || !canPreviewThinking || thinkingDisclosure !== 'closed') return
+    // Brief reasoning between tools can finish before the preview is worth opening.
+    const timer = setTimeout(() => setThinkingDisclosure(value => value === 'closed' ? 'preview' : value), THINKING_PREVIEW_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [thinkingStreaming, canPreviewThinking, thinkingDisclosure])
   useEffect(() => {
-    if (thinkingUserPinned.current) return
-    if (hasLaterUserTurn && thinkingOpen) setThinkingOpen(false)
-  }, [hasLaterUserTurn, thinkingOpen])
-  const toggleThinking = () => {
-    thinkingUserPinned.current = true
-    setThinkingOpen(v => !v)
-  }
+    if (thinkingDisclosure === 'preview' && !showThinkingPreview) setThinkingDisclosure('closed')
+  }, [thinkingDisclosure, showThinkingPreview])
+  const toggleThinking = () => setThinkingDisclosure(thinkingOpen ? 'manual-closed' : 'manual-open')
   const [now, setNow] = useState(0)
   useEffect(() => {
     if (!thinkingStreaming) return
@@ -447,6 +444,8 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
         <div className="mb-1.5">
           <button
             onClick={toggleThinking}
+            type="button"
+            aria-expanded={thinkingOpen}
             className="flex items-center gap-1.5 rounded-md px-1 py-0.5 text-[12px] text-cream-faint transition-colors hover:bg-overlay hover:text-cream-dim"
           >
             <Brain size={12} className={thinkingStreaming ? 'animate-pulse text-accent' : ''} />
@@ -457,7 +456,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
             {thinkingOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
           {thinkingOpen && (
-            <pre className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg bg-overlay px-3 py-2 font-mono text-[12px] leading-5 text-cream-dim">
+            <pre className={`mt-1 overflow-y-auto whitespace-pre-wrap rounded-lg bg-overlay px-3 py-2 font-mono text-[12px] leading-5 text-cream-dim ${showThinkingPreview ? 'h-24 shrink-0' : 'max-h-64'}`}>
               {message.thinking}
             </pre>
           )}

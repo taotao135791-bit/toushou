@@ -28,6 +28,11 @@ describe('shared project controls in Electron', () => {
       expect(data, diagnostics).not.toHaveProperty('fatal')
       expect(result.error, diagnostics).toBeUndefined()
       expect(result.status, diagnostics).toBe(0)
+      expect(data.conversationWork).toEqual({
+        beforeExpand: 0,
+        whileExpanded: { expanded: 'true', rows: 300, renderedPaths: ['/synthetic/alpha'] },
+        afterCollapse: { expanded: 'false', rows: 0 }
+      })
       expect(data.defaultSelected).toBe('/synthetic/default')
       expect(data.defaultPresentation).toEqual({ hiddenInSidebar: true, composerText: 'Default workspace', composerTitle: '/synthetic/default', composerLabel: 'Change chat workspace: Default workspace' })
       expect(data.defaultPicker).toEqual({ present: true, title: 'No project', privatePathVisible: false })

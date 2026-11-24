@@ -244,6 +244,9 @@
   .msg-in {
     animation: msg-in 0.18s ease-out;
   }
+  [data-chat-turn] .msg-in {
+    animation: none;
+  }
   @keyframes msg-in {
     from {
       opacity: 0;

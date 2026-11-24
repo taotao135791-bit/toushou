@@ -6,10 +6,8 @@ export type ProxyAwareFetch = (url: string, init?: RequestInit) => Promise<Respo
 
 /**
  * Per-channel routing policy (用户拍板：媒体数据与 AF 分层路由):
- * - 'proxy-only'  — TikTok ads API is unreachable direct from CN and its
- *   reports must ride the user's proxy. A dead proxy is an honest error with
- *   same-line retries (线路由用户管理，程序绝不静默换线); falling back to a
- *   direct attempt that cannot succeed would only burn a timeout.
+ * - 'single-route' — TikTok uses the configured route or the system's first
+ *   route. A failed request does not switch to another route.
  * - 'direct-only' — AppsFlyer's CloudFront edge breaks TLS handshakes on the
  *   common CN proxy nodes while direct reaches it everywhere (2026-11-04
  *   实测：代理 0/5、直连 5/5). Never touch the proxy — this also removes the
@@ -17,10 +15,10 @@ export type ProxyAwareFetch = (url: string, init?: RequestInit) => Promise<Respo
  * - 'fallback'    — the historic generic behavior: proxy first, one direct
  *   retry on failure (mirrors a browser's PAC fallback chain).
  */
-type ChannelPolicy = 'proxy-only' | 'direct-only' | 'fallback'
+type ChannelPolicy = 'single-route' | 'direct-only' | 'fallback'
 
 const CHANNEL_POLICIES: Record<string, ChannelPolicy> = {
-  'tiktok-api': 'proxy-only',
+  'tiktok-api': 'single-route',
   // AF 的两个分区名：数据集客户端用 appsflyer-api，连接管理器（OAuth/探活）用 appsflyer。
   'appsflyer-api': 'direct-only',
   appsflyer: 'direct-only'
@@ -51,25 +49,29 @@ async function sessionFor(key: string, config: ProxyConfig): Promise<import('ele
 async function tikTokProxyConfig(targetUrl: string): Promise<ProxyConfig> {
   const configured = resolveEnvProxyRules(targetUrl)
   if (configured.mode === 'fixed_servers') return { ...configured, proxyBypassRules: '<-loopback>' }
-  if (configured.mode === 'system') {
+  if (configured.mode === 'direct') return configured
+  let route: string
+  try {
     const system = await sessionFor(JSON.stringify(['tiktok-api', configured]), configured)
-    const route = await system.resolveProxy(targetUrl)
-    // Pin the first effective PAC route. A trailing DIRECT or another proxy
-    // belongs to the OS fallback chain and must not change a TikTok request.
-    const first = route.split(';', 1)[0].trim()
-    const proxy = /^(PROXY|HTTPS|SOCKS4?|SOCKS5)\s+(\[[a-f0-9:.]+\]|[a-z0-9.-]+):(\d{1,5})$/i.exec(first)
-    if (proxy && Number(proxy[3]) > 0 && Number(proxy[3]) <= 65535) {
-      const kind = proxy[1].toLowerCase()
-      const scheme = kind === 'proxy' ? 'http' : kind === 'socks' ? 'socks4' : kind
-      return { mode: 'fixed_servers', proxyRules: `${scheme}://${proxy[2]}:${proxy[3]}`, proxyBypassRules: '<-loopback>' }
-    }
+    route = await system.resolveProxy(targetUrl)
+  } catch (cause) {
+    throw new Error('tiktok-route-unavailable', { cause })
   }
-  throw new Error('tiktok-proxy-required')
+  // DIRECT is a valid primary route. OS-level VPNs can still carry the traffic.
+  const first = route.split(';', 1)[0].trim()
+  if (first.toUpperCase() === 'DIRECT') return { mode: 'direct' }
+  const proxy = /^(PROXY|HTTPS|SOCKS4?|SOCKS5)\s+(\[[a-f0-9:.]+\]|[a-z0-9.-]+):(\d{1,5})$/i.exec(first)
+  if (proxy && Number(proxy[3]) > 0 && Number(proxy[3]) <= 65535) {
+    const kind = proxy[1].toLowerCase()
+    const scheme = kind === 'proxy' ? 'http' : kind === 'socks' ? 'socks4' : kind
+    return { mode: 'fixed_servers', proxyRules: `${scheme}://${proxy[2]}:${proxy[3]}`, proxyBypassRules: '<-loopback>' }
+  }
+  throw new Error('tiktok-route-unavailable')
 }
 
 export async function proxyFetchFor(targetUrl: string, partition: string): Promise<ProxyAwareFetch> {
   const policy = policyFor(partition)
-  if (policy === 'proxy-only') {
+  if (policy === 'single-route') {
     const config = await tikTokProxyConfig(targetUrl)
     const ses = await sessionFor(JSON.stringify([partition, config]), config)
     return async (url, init) => url === targetUrl

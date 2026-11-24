@@ -9,7 +9,9 @@ import ProjectPicker from './ProjectPicker'
 import ProjectRecovery from './ProjectRecovery'
 import { currentNavigationIntent } from '../lib/navigationIntent'
 
-function ProjectRow({ project, conversations }: { project: ProjectRecord; conversations?: ReactNode }) {
+type RenderConversations = (path: string) => ReactNode
+
+function ProjectRow({ project, renderConversations }: { project: ProjectRecord; renderConversations?: RenderConversations }) {
   const t = useT()
   const { activate, archive, restore, remove, pending } = useProjects()
   const current = useAppStore(state => state.currentWorkspace)
@@ -45,12 +47,12 @@ function ProjectRow({ project, conversations }: { project: ProjectRecord; conver
     </div>
     <ProjectRecovery project={project} onRecovered={() => projectButton.current?.focus()} />
     {!project.archived && expanded && <div id={`project-conversations-${project.id}`} className="ml-3 border-l border-line pl-1" data-project-conversations={project.id}>
-      {conversations || <p className="px-2.5 py-2 text-[11.5px] text-cream-faint">{t('projects.noConversations')}</p>}
+      {renderConversations?.(project.path) || <p className="px-2.5 py-2 text-[11.5px] text-cream-faint">{t('projects.noConversations')}</p>}
     </div>}
   </div>
 }
 
-export default function SidebarProjects({ renderConversations }: { renderConversations?: (path: string) => ReactNode } = {}) {
+export default function SidebarProjects({ renderConversations }: { renderConversations?: RenderConversations } = {}) {
   const t = useT()
   const { projects, loaded, loading, error, errorProjectId, refresh, activate, restore, pending, clearError } = useProjects()
   const [expanded, setExpanded] = useState(true)
@@ -86,7 +88,7 @@ export default function SidebarProjects({ renderConversations }: { renderConvers
     <MenuPortal open={createOpen} triggerRef={plusRef} onClose={() => setCreateOpen(false)} width={300} placement="bottom"><ProjectPicker onDone={() => { setCreateOpen(false); setArchived(false); setExpanded(true); plusRef.current?.focus() }} /></MenuPortal>
     {expanded && <div className="min-h-0 max-h-56 space-y-0.5 overflow-y-auto overscroll-contain" data-project-list>
       {loading && !loaded && <p role="status" className="px-2 py-3 text-xs text-cream-faint">{t('app.loading')}</p>}
-      {visible.map(project => <ProjectRow key={project.id} project={project} conversations={renderConversations?.(project.path)} />)}
+      {visible.map(project => <ProjectRow key={project.id} project={project} renderConversations={renderConversations} />)}
       {loaded && !visible.length && <p className="sidebar-empty px-2 py-3 text-xs text-cream-faint">{t(archived ? 'projects.noArchived' : 'projects.empty')}</p>}
     </div>}
     {error && !(expanded && visible.some(project => project.id === errorProjectId)) && !createOpen && <div role="alert" className="px-2 py-2 text-xs leading-5 text-red-500">

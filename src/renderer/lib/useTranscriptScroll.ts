@@ -56,8 +56,11 @@ export function useTranscriptScroll(sessionId: string | null) {
         top = viewport.scrollTop + element.getBoundingClientRect().top - viewport.getBoundingClientRect().top - anchor.offset
       }
     }
-    viewport.scrollTop = Math.max(0, Math.min(top, viewport.scrollHeight - viewport.clientHeight))
-    appliedTopRef.current = viewport.scrollTop
+    const boundedTop = Math.max(0, Math.min(top, viewport.scrollHeight - viewport.clientHeight))
+    if (Math.abs(boundedTop - viewport.scrollTop) >= 1) {
+      viewport.scrollTop = boundedTop
+      appliedTopRef.current = viewport.scrollTop
+    }
     return anchorFound
   }, [])
 
@@ -71,17 +74,25 @@ export function useTranscriptScroll(sessionId: string | null) {
     setShowJump(!saved.pinned)
     if (applyPosition(saved)) restoringRef.current = null
     let frame = 0
+    const adjust = () => {
+      const position = restoringRef.current ?? (pinnedRef.current ? { top: 0, pinned: true } : positions.get(key))
+      if (position && applyPosition(position)) {
+        restoringRef.current = null
+        const current = capture()
+        if (current) remember(key, current)
+      }
+    }
     const follow = () => {
-      if (frame) return
-      frame = requestAnimationFrame(() => {
-        frame = 0
-        const position = restoringRef.current ?? (pinnedRef.current ? { top: 0, pinned: true } : positions.get(key))
-        if (position && applyPosition(position)) {
-          restoringRef.current = null
-          const current = capture()
-          if (current) remember(key, current)
-        }
-      })
+      if (pinnedRef.current && !restoringRef.current) {
+        // A ResizeObserver runs before paint. Keep the newest message in place
+        // as its layout changes instead of displaying one frame at the old top.
+        adjust()
+      } else if (!frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0
+          adjust()
+        })
+      }
     }
     // A user's wheel/touch/key input takes precedence over any deferred
     // history restoration or preview-load adjustment.

@@ -98,6 +98,82 @@ app.whenReady().then(async () => {
     const activeThinking = await js('window.chatPerfFixture.thinkingTimerCount()')
     await js('window.chatPerfFixture.interruptThinking()'); await frame()
     const interruptedThinking = await js('window.chatPerfFixture.thinkingTimerCount()')
+    phase = 'live board reasoning holds its height while streaming'
+    const streamTurn = 'document.querySelector(\'[data-chat-turn="board-stream-question"]\')'
+    const streamProcess = `${streamTurn}?.querySelector('section[aria-label="Turn activity"]')`
+    const layout = () => js(`(() => {
+      const turn = ${streamTurn};
+      const reasoning = turn.querySelector('pre');
+      const composer = document.querySelector('.chat-composer').getBoundingClientRect();
+      let viewport = turn.parentElement;
+      while (getComputedStyle(viewport).overflowY !== 'auto') viewport = viewport.parentElement;
+      return {reasoningHeight:reasoning?.offsetHeight ?? 0, scrollHeight:viewport.scrollHeight,
+        bottom:viewport.scrollHeight-viewport.clientHeight-viewport.scrollTop, composerTop:composer.top, composerHeight:composer.height};
+    })()`)
+    await js('window.chatPerfFixture.startBoardStream()')
+    await waitFor(`${streamTurn}?.querySelector('pre')?.textContent.includes('Synthetic board reasoning begins')`)
+    await frame()
+    const shortReasoning = await layout()
+    await js('window.chatPerfFixture.growBoardThinking()')
+    await waitFor(`${streamTurn}?.querySelector('pre')?.textContent.includes('Synthetic board reasoning line 24')`)
+    await frame()
+    const longReasoning = await layout()
+    phase = 'interleaved board tool and manual reasoning'
+    await js('window.chatPerfFixture.startBoardTool()')
+    await waitFor(`!!(${streamProcess})`)
+    await js(`(${streamProcess}).querySelector('button').click()`)
+    await waitFor(`(${streamProcess}).querySelector('button').getAttribute('aria-expanded')==='true'`)
+    await js('window.chatPerfFixture.continueBoardThinking()')
+    const followUpButton = `[...(${streamProcess}).querySelectorAll('button')].filter(button=>button.textContent.trim().startsWith('Thinking')).at(-1)`
+    await waitFor(`(${streamProcess}).querySelectorAll('[data-message-id]').length===3`)
+    await js('new Promise(resolve=>setTimeout(resolve,1150))')
+    await frame()
+    const processAutoOpened = await js(`[...(${streamProcess}).querySelectorAll('pre')].some(pre=>pre.textContent.includes('Synthetic follow-up reasoning'))`)
+    const collapsedReasoning = await layout()
+    await js(`(${followUpButton}).click()`)
+    await waitFor(`[...(${streamProcess}).querySelectorAll('pre')].some(pre=>pre.textContent.includes('Synthetic follow-up reasoning'))`)
+    const processManuallyOpened = await js(`(${followUpButton}).getAttribute('aria-expanded')==='true'`)
+    phase = 'intermediate punctuation remains in board activity'
+    await js('window.chatPerfFixture.showBoardPunctuation()')
+    await frame()
+    const punctuation = await js(`(() => {
+      const turn = ${streamTurn};
+      const process = ${streamProcess};
+      return {inProcess:[...process.querySelectorAll('p')].some(item=>item.textContent.trim()==='.'),
+        separate:[...turn.querySelectorAll(':scope > [data-message-id] p')].some(item=>item.textContent.trim()==='.'),
+        boardAction: [...turn.querySelectorAll('button')].some(button=>button.title==='Add to board')};
+    })()`)
+    const afterPunctuation = await layout()
+    await js('window.chatPerfFixture.endBoardStream()')
+    await frame()
+    phase = 'execution updates with no worker or closed activity'
+    const probeActivity = "document.querySelector('#projection-probe-activity')"
+    const probeCounters = () => js(`({
+      activity: window.chatPerfFixture.activityCommits, messages: window.chatPerfFixture.messageListCommits
+    })`)
+    const projectionFrames = 10
+    await js('window.chatPerfFixture.startProjectionProbe()')
+    await frame()
+    await js('window.chatPerfFixture.resetProjectionCounters()')
+    await js(`window.chatPerfFixture.streamProbeMessages('Main only', ${projectionFrames})`)
+    await frame()
+    const noAgent = { ...(await probeCounters()), empty: await js(`!${probeActivity}.querySelector('section')`) }
+    await js('window.chatPerfFixture.startProbeAgent()')
+    await waitFor(`${probeActivity}.querySelector('button')?.getAttribute('aria-expanded')==='false'`)
+    await js('window.chatPerfFixture.resetProjectionCounters()')
+    await js(`window.chatPerfFixture.streamProbeMessages('Closed pane', ${projectionFrames})`)
+    await frame()
+    const closedAgent = { ...(await probeCounters()), countVisible: await js(`${probeActivity}.textContent.includes('1 agents')`) }
+    phase = 'open execution activity and elapsed turn remain live'
+    await js(`${probeActivity}.querySelector('button').click()`)
+    await waitFor(`${probeActivity}.textContent.includes('Closed pane ${projectionFrames - 1}')`)
+    await js('window.chatPerfFixture.resetProjectionCounters()')
+    await js("window.chatPerfFixture.streamProbeMessages('Open pane', 1)")
+    await waitFor(`${probeActivity}.textContent.includes('Open pane 0')`)
+    const openAgent = { ...(await probeCounters()), workerVisible: await js(`${probeActivity}.textContent.includes('Probe worker')`) }
+    await js('window.chatPerfFixture.endProjectionProbe()')
+    await waitFor("document.querySelector('#projection-probe-messages').textContent.includes('2.5s')")
+    const completedElapsed = true
     phase = 'default save folder recovery on home'
     await js('window.chatPerfFixture.showUnavailableDefault()')
     await waitFor(`!!document.querySelector('.home-hero [data-project-recovery="default"] button')`)
@@ -108,7 +184,7 @@ app.whenReady().then(async () => {
     await waitFor(`window.chatPerfFixture.recoverySnapshot().workspace==='/synthetic/default-save-folder' && !document.querySelector('.home-hero [data-project-recovery="default"]')`)
     await frame()
     const defaultRecovered = await js(`({ ...window.chatPerfFixture.recoverySnapshot(),promptGone:!document.querySelector('.home-hero').textContent.includes('Confirm the default save folder'),draft:document.querySelector('.home-hero textarea').value })`)
-    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, defaultRecovery, defaultRecovered }))
+    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

@@ -105,17 +105,14 @@ function datasetScopeLabel(
 ): string | null {
   masterWindow = boardDatasetViewWindow(dataset) ?? masterWindow
   if (!masterWindow) return null
-  const dateIndex = dataset.columns.findIndex((column) => column.type === 'date')
-  if (dateIndex < 0 && masterWindow.latestDay) return null
+  const covered = datasetCoverage(dataset)
   const short = (iso: string) => iso.slice(5)
   if (masterWindow.latestDay) {
-    const days = dataset.rows.map(row => row[dateIndex]).filter((value): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)).sort()
-    if (!days.length) return null
-    return days[0] === days[days.length - 1] ? days[0] : `${days[0]} – ${days[days.length - 1]}`
+    if (!covered) return null
+    return covered.start === covered.end ? covered.start : `${covered.start} – ${covered.end}`
   }
   // 数据实际覆盖（对齐口径的第一步）：标签永远说真话——显示过滤后行里
   // 真实存在的日期范围，而不是总控"想要"的范围。缺头缺尾一眼可见。
-  const covered = datasetCoverage(dataset)
   if (covered) return covered.start === covered.end ? short(covered.start) : `${short(covered.start)}~${short(covered.end)}`
   return masterWindow.start === masterWindow.end
     ? short(masterWindow.start)

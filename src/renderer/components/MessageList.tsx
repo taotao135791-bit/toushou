@@ -4,7 +4,7 @@ import MessageItem from './MessageItem'
 import { TurnChangesRow } from './TurnRow'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
-import { turnSummaryFor } from '../lib/execution'
+import { lastTurn, turnElapsedMs } from '../lib/execution'
 import { projectChatTurns, type ChatTurn } from '../lib/chatFlow'
 import { CheckpointInfo } from '@shared/types'
 import BoardChatPreview, { boardPreviewReference, groupBoardPreviews } from './BoardChatPreview'
@@ -23,16 +23,20 @@ function MessageList({ messages, sessionId = null, onRetry, onBranch }: MessageL
   const streaming = useAppStore(state => sessionId ? Boolean(state.busy[sessionId]) : false)
   const canEditSavedBoards = useAppStore(state => !!sessionId && state.currentSessionId === sessionId &&
     !state.sessions.some(session => session.id === sessionId && session.readonly))
-  const projection = useAppStore(state => sessionId ? state.executions[sessionId] : undefined)
-  const summary = useMemo(() => projection ? turnSummaryFor(projection) : undefined, [projection])
+  const lastElapsedMs = useAppStore(state => {
+    if (!sessionId || state.busy[sessionId]) return undefined
+    const projection = state.executions[sessionId]
+    const turn = projection && lastTurn(projection)
+    return turn ? turnElapsedMs(turn) : undefined
+  })
   const project = useMemo(() => {
     let previous: ChatTurn[] = []
-    return (records: MessageLike[]) => {
-      previous = projectChatTurns(records, previous)
+    return (records: MessageLike[], active: boolean) => {
+      previous = projectChatTurns(records, previous, active)
       return previous
     }
   }, [sessionId])
-  const turns = useMemo(() => project(messages), [messages, project])
+  const turns = useMemo(() => project(messages, streaming), [messages, project, streaming])
   // Once per render (not per item): the thinking-disclosure policy needs the
   // index of the last user message.
   const lastUserIndex = useMemo(() => {
@@ -55,7 +59,7 @@ function MessageList({ messages, sessionId = null, onRetry, onBranch }: MessageL
   return <div className="flex min-w-0 flex-col gap-8 px-5 py-6 sm:px-6">
     {turns.map((turn, index) => <ChatTurnView key={`${sessionId}-${turn.id}`} turn={turn} sessionId={sessionId}
       streaming={streaming && index === turns.length - 1}
-      elapsedMs={!streaming && index === turns.length - 1 ? summary?.elapsedMs : undefined}
+      elapsedMs={index === turns.length - 1 ? lastElapsedMs : undefined}
       canEditSavedBoards={canEditSavedBoards}
       checkpoint={turn.ownerIndex === null ? undefined : checkpointByMsgIndex.get(turn.ownerIndex)} onRetry={onRetry}
       branchOrdinal={sessionId && !sessionId.startsWith('preview:') && onBranch && !streaming ? index + 1 : undefined}
@@ -111,7 +115,7 @@ const ChatTurnView = memo(function ChatTurnView({ turn, sessionId, streaming, ca
     {turn.nodes.map((node, index) => node.kind === 'message' ?
       <div key={node.entry.message.id} data-message-id={node.entry.message.id} className="msg-row min-w-0">
         <MessageItem message={node.entry.message} index={node.entry.index} lastUserIndex={lastUserIndex} sessionId={sessionId} onRetry={onRetry}
-          streaming={node.entry.index === streamingMessageIndex} showBoardAction={node.showBoardAction} />
+          streaming={node.entry.index === streamingMessageIndex} turnActive={streaming} showBoardAction={node.showBoardAction} />
       </div> :
       <TurnProcess key={node.entries[0].message.id} entries={node.entries} sessionId={sessionId} lastUserIndex={lastUserIndex}
         active={streaming && index === turn.nodes.length - 1}

@@ -17,6 +17,12 @@ const fixture = {
   deleteRequests: 0,
   finishDelete: null as ((confirm: boolean) => void) | null,
   clipboard: '',
+  conversationRenders: [] as string[],
+  renderConversations(path: string) {
+    fixture.conversationRenders.push(path)
+    if (path !== '/synthetic/alpha') return undefined
+    return Array.from({ length: 300 }, (_, i) => <div key={i}>Synthetic conversation {i + 1}</div>)
+  },
   projectIssue(id: string, patch: Partial<ProjectRecord>, error: ProjectError) {
     const row = fixture.projects.find(item => item.id === id)!
     Object.assign(row, patch)
@@ -82,4 +88,4 @@ window.electronAPI = {
   setStore: async () => undefined
 } as unknown as typeof window.electronAPI
 useAppStore.setState({ language: 'en', currentSessionId: null, currentWorkspace: null, sessions: [] })
-createRoot(document.getElementById('root')!).render(<MemoryRouter><div style={{ display: 'flex', height: '100vh' }}><aside id="sidebar-projects" style={{ width: 260, flexShrink: 0 }}><SidebarProjects /></aside><main id="composer-projects" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}><Composer onSend={() => undefined} /></main></div></MemoryRouter>)
+createRoot(document.getElementById('root')!).render(<MemoryRouter><div style={{ display: 'flex', height: '100vh' }}><aside id="sidebar-projects" style={{ width: 260, flexShrink: 0 }}><SidebarProjects renderConversations={fixture.renderConversations} /></aside><main id="composer-projects" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}><Composer onSend={() => undefined} /></main></div></MemoryRouter>)

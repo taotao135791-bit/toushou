@@ -3,13 +3,21 @@ import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import type { ProjectRecord, RuntimeModelInfo, RuntimeOverview, Session, SessionState, SessionThinkingLevel, WorkspaceGrant } from '@shared/types'
 import ChatPanel from './ChatPanel'
-import { useAppStore } from '../store'
+import ExecutionActivity from './ExecutionActivity'
+import MessageList from './MessageList'
+import { emptyProjection, foldExecutionEvent } from '../lib/execution'
+import { useAppStore, type MessageLike } from '../store'
 import { useProjects } from '../store/projects'
 
 const current: Session = { id: 'current', cwd: '/synthetic/current', title: 'Current conversation', status: 'idle', createdAt: 1 }
 const sessions: Session[] = [current, ...Array.from({ length: 200 }, (_, i) => ({ ...current, id: `background-${i}`, title: `Background ${i}` }))]
 const defaultProject: ProjectRecord = { id: 'default', name: 'TouShou workspace', path: '/synthetic/default-save-folder', isDefault: true, archived: false, missing: true, unavailableReason: 'identity-changed', createdAt: 1 }
 const defaultGrant: WorkspaceGrant = { id: 'grant-default', realPath: defaultProject.path, displayPath: defaultProject.path, source: 'default', createdAt: 1 }
+const probeSessionId = 'projection-probe'
+const probeMessages: MessageLike[] = [
+  { id: 'projection-probe-prompt', role: 'user', content: 'Check the task' },
+  { id: 'projection-probe-tool', role: 'assistant', content: '', toolCall: { tool: 'read', input: {}, output: {} } }
+]
 const deepSeekModel: RuntimeModelInfo = {
   provider: 'deepseek', id: 'deepseek-flash', selector: 'deepseek/deepseek-flash', name: 'DeepSeek-V4.1-Flash',
   reasoning: true, thinking: ['low', 'high', 'max']
@@ -84,6 +92,78 @@ const fixture = {
     state.appendThinking('current', 'Live reasoning')
   },
   interruptThinking() { useAppStore.getState().applySessionEvent({ type: 'closed', sessionId: 'current' }) },
+  startBoardStream() {
+    const state = useAppStore.getState()
+    useAppStore.setState({ thinkingAutoExpand: true, thinkingCollapseTiming: 'on-complete' })
+    state.addMessage('current', { id: 'board-stream-question', role: 'user', content: 'Check this board' })
+    state.setBusy('current', true)
+    state.applySessionEvent({ type: 'thinking', sessionId: 'current', delta: 'Synthetic board reasoning begins' })
+  },
+  growBoardThinking() {
+    const state = useAppStore.getState()
+    for (let line = 1; line <= 24; line++) {
+      state.applySessionEvent({ type: 'thinking', sessionId: 'current', delta: `\nSynthetic board reasoning line ${line}` })
+    }
+  },
+  startBoardTool() {
+    useAppStore.getState().applySessionEvent({ type: 'tool_call', sessionId: 'current', id: 'synthetic-board-check', tool: 'toushou_board_check', input: {} })
+  },
+  continueBoardThinking() {
+    useAppStore.getState().applySessionEvent({ type: 'thinking', sessionId: 'current', delta: 'Synthetic follow-up reasoning' })
+  },
+  showBoardPunctuation() {
+    useAppStore.getState().applySessionEvent({ type: 'message', sessionId: 'current', role: 'assistant', content: '.' })
+  },
+  endBoardStream() {
+    useAppStore.getState().applySessionEvent({ type: 'status', sessionId: 'current', status: 'idle', isTerminal: true })
+  },
+  activityCommits: 0,
+  messageListCommits: 0,
+  resetProjectionCounters() { fixture.activityCommits = 0; fixture.messageListCommits = 0 },
+  startProjectionProbe() {
+    useAppStore.setState(state => ({
+      busy: { ...state.busy, [probeSessionId]: true },
+      executions: {
+        ...state.executions,
+        [probeSessionId]: foldExecutionEvent(emptyProjection(), { type: 'status', sessionId: probeSessionId, status: 'working' }, 1000)
+      }
+    }))
+  },
+  async streamProbeMessages(label: string, count: number) {
+    for (let index = 0; index < count; index++) {
+      useAppStore.setState(state => ({
+        executions: {
+          ...state.executions,
+          [probeSessionId]: foldExecutionEvent(state.executions[probeSessionId], {
+            type: 'message', sessionId: probeSessionId, role: 'assistant', content: `${label} ${index}`
+          })
+        }
+      }))
+      await new Promise(requestAnimationFrame)
+    }
+  },
+  startProbeAgent() {
+    useAppStore.setState(state => ({
+      executions: {
+        ...state.executions,
+        [probeSessionId]: foldExecutionEvent(state.executions[probeSessionId], {
+          type: 'subagent', sessionId: probeSessionId, id: 'probe-agent', agent: 'Probe worker',
+          agentSource: 'bundled', status: 'running', parentToolCallId: 'projection-probe-tool'
+        })
+      }
+    }))
+  },
+  endProjectionProbe() {
+    useAppStore.setState(state => ({
+      busy: { ...state.busy, [probeSessionId]: false },
+      executions: {
+        ...state.executions,
+        [probeSessionId]: foldExecutionEvent(state.executions[probeSessionId], {
+          type: 'status', sessionId: probeSessionId, status: 'idle', isTerminal: true
+        }, 3500)
+      }
+    }))
+  },
   recoveryCalls: [] as string[],
   showUnavailableDefault() {
     useProjects.setState({ projects: [{ ...defaultProject }], loaded: true, loading: false, pending: null, error: null, errorProjectId: null })
@@ -128,3 +208,15 @@ window.electronAPI = {
 } as unknown as typeof window.electronAPI
 useAppStore.setState({ language: 'en', currentWorkspace: { id: 'grant', realPath: current.cwd, displayPath: current.cwd, source: 'dialog', createdAt: 1 }, currentSessionId: 'current', sessions, sessionRecords: [], messages: {}, busy: {}, sessionErrors: {}, uiRequests: {}, cliAvailable: true, runtimeOverview })
 createRoot(document.getElementById('root')!).render(<MemoryRouter><Profiler id="actual-chat-panel" onRender={(_id, _phase, duration) => { fixture.commits += 1; fixture.renderMs += duration }}><ChatPanel /></Profiler></MemoryRouter>)
+const probeRoot = document.createElement('div')
+probeRoot.hidden = true
+probeRoot.id = 'projection-probe'
+document.body.appendChild(probeRoot)
+createRoot(probeRoot).render(<MemoryRouter>
+  <div id="projection-probe-activity"><Profiler id="execution-activity" onRender={() => { fixture.activityCommits += 1 }}>
+    <ExecutionActivity sessionId={probeSessionId} />
+  </Profiler></div>
+  <div id="projection-probe-messages"><Profiler id="message-list" onRender={() => { fixture.messageListCommits += 1 }}>
+    <MessageList sessionId={probeSessionId} messages={probeMessages} />
+  </Profiler></div>
+</MemoryRouter>)

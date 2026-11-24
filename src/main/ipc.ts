@@ -236,6 +236,7 @@ import { officeOpenDialog, officeSaveDialog, readOfficeWorkbook, saveOfficeWorkb
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
 import { dingTalkConnectionManager, DINGTALK_GUIDE_URL } from './integrations/dingtalk/DingTalkConnectionManager'
 import { TikTokAdsConnectionManager } from './integrations/tiktok/TikTokAdsConnectionManager'
+import { classifyTikTokError } from './integrations/tiktok/tiktokClient'
 import { setTikTokCredentials } from './integrations/tiktok/TikTokConnectionStore'
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { buildTikTokReadingSummary, buildTikTokTodayReading, listTikTokMcpReadingAdvertisers } from './integrations/tiktok/tiktokReading'
@@ -970,9 +971,9 @@ export function registerIpc() {
       ])
       return { ok: true, checkedAt }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      const kind = /proxy-fetch|network|fetch failed|timeout|aborted/i.test(message) ? 'network' : 'api'
-      return { ok: false, kind, detail: message.slice(0, 200), checkedAt }
+      const { code, detail } = classifyTikTokError(error)
+      const kind = code === 'auth' ? 'not-authorized' : code === 'network' ? 'network' : 'api'
+      return { ok: false, kind, detail: detail.slice(0, 200), checkedAt }
     }
   })
   ipcMain.handle(IPC_CHANNELS.TIKTOK_BEGIN, async () => tiktokAdsConnectionManager.begin())

@@ -114,7 +114,7 @@ function latestTrajectory(
  * trajectory itself), so unrelated parent renders skip it.
  */
 const ExecutionActivity = memo(function ExecutionActivity({ sessionId }: { sessionId: string | null }) {
-  const projection = useAppStore((s) => (sessionId ? s.executions[sessionId] : undefined))
+  const agentsById = useAppStore((s) => sessionId ? s.executions[sessionId]?.agents : undefined)
   const t = useT()
   const [open, setOpen] = useState(false)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
@@ -126,23 +126,28 @@ const ExecutionActivity = memo(function ExecutionActivity({ sessionId }: { sessi
     setTranscripts({})
   }, [sessionId])
 
+  const agentCount = useMemo(() => Object.keys(agentsById ?? {}).length, [agentsById])
+  const showDetails = open && agentCount > 0
   const agents = useMemo(
-    () =>
-      Object.values(projection?.agents ?? {}).sort(
+    () => showDetails ? Object.values(agentsById ?? {}).sort(
         (a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id)
-      ),
-    [projection]
+      ) : [],
+    [agentsById, showDetails]
   )
+  // Main-thread deltas do not affect a closed pane. Subscribe to its
+  // trajectory only when the user is looking at the details.
+  const turnOrder = useAppStore((s) => showDetails && sessionId ? s.executions[sessionId]?.turnOrder : undefined)
+  const turns = useAppStore((s) => showDetails && sessionId ? s.executions[sessionId]?.turns : undefined)
   const trajectory = useMemo(
-    () => latestTrajectory(projection?.turnOrder ?? [], projection?.turns ?? {}),
-    [projection]
+    () => turnOrder && turns ? latestTrajectory(turnOrder, turns) : [],
+    [turnOrder, turns]
   )
 
   // At least one REAL subagent is required; trajectory-only projections (the
   // main thread's own turn facts) render nothing.
-  if (!projection || agents.length === 0) return null
+  if (!agentsById || agentCount === 0) return null
 
-  const selectedAgent = selectedAgentId ? projection.agents[selectedAgentId] : undefined
+  const selectedAgent = selectedAgentId ? agentsById[selectedAgentId] : undefined
   const selectedTranscript = selectedAgentId ? transcripts[selectedAgentId] : undefined
 
   const openTranscript = async (agent: AgentNode) => {
@@ -174,7 +179,7 @@ const ExecutionActivity = memo(function ExecutionActivity({ sessionId }: { sessi
       >
         <Bot size={13} className="text-accent" />
         <span className="font-medium text-cream">{t('agents.title')}</span>
-        {agents.length > 0 && <span className="text-cream-faint">{t('agents.count', { count: agents.length })}</span>}
+        <span className="text-cream-faint">{t('agents.count', { count: agentCount })}</span>
         <span className="ml-auto text-cream-faint">
           {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         </span>

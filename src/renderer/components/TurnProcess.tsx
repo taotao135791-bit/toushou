@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useRef, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronRight, CircleAlert, Loader2 } from 'lucide-react'
 import type { IndexedChatMessage } from '../lib/chatFlow'
 import { presentToolCall } from '../lib/toolPresentation'
@@ -66,14 +66,20 @@ function TurnProcess({ entries, sessionId, active, elapsedMs, lastUserIndex }: P
   const zh = language === 'zh'
   const [expanded, setExpanded] = useState(false)
   const id = useId()
-  const calls = entries.flatMap(entry => entry.message.toolCall ? [entry.message.toolCall] : [])
-  const failed = calls.filter(call => presentToolCall(call, language).status === 'failed').length
-  const last = calls.at(-1)
-  const action = last && active ? presentToolCall(last, language).label : null
-  const website = last && active ? websiteSourceForCall(last) : null
-  const brands = [...new Set(calls.map(toolBrandForCall).filter(brand => brand !== null))].slice(0, 3)
-  const progress = boardPipelineProgress(entries)
-  const activeElapsed = useActiveElapsed(active, id)
+  const { stepCount, failed, last, action, website, brands, progress } = useMemo(() => {
+    const calls = entries.flatMap(entry => entry.message.toolCall ? [entry.message.toolCall] : [])
+    const last = active ? calls.at(-1) : undefined
+    return {
+      stepCount: calls.length,
+      failed: calls.filter(call => presentToolCall(call, language).status === 'failed').length,
+      last,
+      action: last ? presentToolCall(last, language).label : null,
+      website: last ? websiteSourceForCall(last) : null,
+      brands: last ? [] : [...new Set(calls.map(toolBrandForCall).filter(brand => brand !== null))].slice(0, 3),
+      progress: active ? boardPipelineProgress(entries) : null
+    }
+  }, [entries, language, active])
+  const activeElapsed = useActiveElapsed((progress?.p ?? 0) >= 10, id)
   // Rough ETA: scale elapsed by the remaining fraction. Deliberately symbolic —
   // shown only once there is enough signal (≥10% progress, ≥15s elapsed).
   const etaSeconds = progress && active && progress.p >= 10 && activeElapsed >= 15_000
@@ -87,7 +93,7 @@ function TurnProcess({ entries, sessionId, active, elapsedMs, lastUserIndex }: P
         brands.length > 0 && <span className="inline-flex shrink-0 items-center gap-1.5" aria-hidden="true">{brands.map(brand => <BrandIcon key={brand} brand={brand} size={16} />)}</span>}
       <span className="min-w-0 flex-1 basis-[100px] truncate font-medium">{action ?? (zh ? '执行过程' : 'Activity')}</span>
       {website && <span className="max-w-[180px] truncate text-cream-faint">{website.hostname}</span>}
-      <span className="shrink-0 text-cream-faint">{zh ? `${calls.length} 个步骤` : `${calls.length} steps`}</span>
+      <span className="shrink-0 text-cream-faint">{zh ? `${stepCount} 个步骤` : `${stepCount} steps`}</span>
       {failed > 0 && <span className="shrink-0 text-red-500">{zh ? `${failed} 项失败` : `${failed} failed`}</span>}
       {elapsedMs !== undefined && !active && <span className="ml-auto shrink-0 tabular-nums text-cream-faint">{formatSeconds(elapsedMs)}s</span>}
       <span className="ml-auto shrink-0 text-cream-faint">{expanded ? (zh ? '收起' : 'Hide') : (zh ? '展开' : 'Show')}</span>
@@ -109,7 +115,7 @@ function TurnProcess({ entries, sessionId, active, elapsedMs, lastUserIndex }: P
     <div id={id} hidden={!expanded} className="mt-2 space-y-3 border-l border-line pl-3">
       {expanded && entries.map(({ message, index }, entryIndex) => <div key={message.id} data-message-id={message.id} className="min-w-0">
         {message.toolCall ? <ToolCallCard toolCall={message.toolCall} /> : <MessageItem message={message} index={index} lastUserIndex={lastUserIndex}
-          sessionId={sessionId} streaming={active && entryIndex === entries.length - 1} showBoardAction={false} />}
+          sessionId={sessionId} streaming={active && entryIndex === entries.length - 1} allowThinkingAutoExpand={false} showBoardAction={false} />}
       </div>)}
     </div>
   </section>

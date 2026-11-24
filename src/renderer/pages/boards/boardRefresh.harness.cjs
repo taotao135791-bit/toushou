@@ -28,6 +28,14 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(`window.boardRefreshFixture.pending=false;window.boardRefreshFixture.resolve()`)
     await wait(); await wait()
     const yesterday = await read()
+    const capturedDateReadsBefore = await wc.executeJavaScript('window.boardRefreshFixture.capturedDateReads')
+    await click('Configure widget')
+    await wait()
+    const configOpened = await wc.executeJavaScript('!!document.querySelector(".widget-config")')
+    await wc.executeJavaScript('document.querySelector(\'.widget-config button[title="Cancel"]\').click()')
+    await wait()
+    const capturedDateReadsAfter = await wc.executeJavaScript('window.boardRefreshFixture.capturedDateReads')
+    const yesterdayAfterSettings = await read()
     await click('Today')
     await wait(); await wait()
     const todayOnly = await read()
@@ -120,7 +128,7 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(`window.boardRefreshFixture.resolve()`)
     await wait(); await wait()
     const cachedFailure = await readCached()
-    console.log('E2E_RESULT ' + JSON.stringify({ opened, yesterdayOnly, yesterdayPending, yesterday, todayOnly, todayPending, today, unbound, empty, metaSelection, metaReady, metaFailed, metaDisconnected, fixed, fixedAfterDate, staticAfterDate, legacyInitial, legacyAfterDate, scopeCases, keptSecondRequest, proposalBoards, cachedOpening, cachedPending, cachedFailure }))
+    console.log('E2E_RESULT ' + JSON.stringify({ opened, yesterdayOnly, yesterdayPending, yesterday, capturedDateReadsBefore, capturedDateReadsAfter, configOpened, yesterdayAfterSettings, todayOnly, todayPending, today, unbound, empty, metaSelection, metaReady, metaFailed, metaDisconnected, fixed, fixedAfterDate, staticAfterDate, legacyInitial, legacyAfterDate, scopeCases, keptSecondRequest, proposalBoards, cachedOpening, cachedPending, cachedFailure }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), stack: error.stack })) }
   finally { win?.destroy(); app.quit() }
 })

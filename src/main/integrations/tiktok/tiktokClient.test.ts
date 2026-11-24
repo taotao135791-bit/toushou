@@ -301,6 +301,9 @@ describe('error classification', () => {
 
   it('treats transport failures as network', () => {
     expect(classifyTikTokError(new TypeError('fetch failed')).code).toBe('network')
+    expect(classifyTikTokError(new Error('tiktok-route-unavailable')).code).toBe('network')
+    expect(classifyTikTokError(new Error('net::ERR_PROXY_CONNECTION_FAILED')).code).toBe('network')
+    expect(classifyTikTokError(new Error('probe-timeout')).code).toBe('network')
     expect(classifyTikTokError(Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' })).code).toBe('network')
     expect(classifyTikTokError(new Error('getaddrinfo ENOTFOUND business-api.tiktok.com')).code).toBe('network')
     expect(classifyTikTokError('weird').code).toBe('api')

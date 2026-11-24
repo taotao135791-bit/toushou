@@ -1198,6 +1198,16 @@ export default function BoardsPage() {
   const snapshotFallback = useMemo(() => plannerEnabled ? datasets.map(dataset =>
     isAppsFlyerDataset(dataset) || dataset.name === 'TikTok 报表' || dataset.id.startsWith('meta-reading:') ? { ...dataset, rows: [] } : dataset
   ) : datasets, [datasets, plannerEnabled])
+  const currentWidgets = current?.widgets
+  const capturedWidgetDatasets = useMemo(() => {
+    const projected = new Map<string, BoardDataset[]>()
+    if (!currentPlan || !currentWidgets) return projected
+    const capturedIds = new Set(currentPlan.widgets.map(view => view.widgetId))
+    for (const widget of currentWidgets) {
+      if (capturedIds.has(widget.id)) projected.set(widget.id, boardRefreshWidgetDatasets(currentPlan, widget, snapshotFallback))
+    }
+    return projected
+  }, [currentPlan, currentWidgets, snapshotFallback])
   const scopeCounts = current ? boardScopeCounts(current, datasets, candidatePlan) : { live: 0, fixed: 0, independent: 0, lookback: 0, unbound: 0 }
   // 用户拍板：看板不自动刷新（旧逻辑"点进看板就刷"已移除）——一切刷新都
   // 由用户手动触发（刷新按钮/重试）。这里只负责把陈旧提示状态摆正：
@@ -1656,8 +1666,9 @@ export default function BoardsPage() {
     const afCacheBlocked = pending || currentAfRefresh?.pending === true || currentAfRefresh?.failed === true || currentAfRefresh?.unbound === true
     const cacheBase = managedSource && widgetSources.some(source => source.meta)
       ? datasets.filter(dataset => !dataset.id.startsWith('meta-reading:')) : datasets
+    const capturedDatasets = capturedWidgetDatasets.get(widget.id)
     let widgetDatasets = cacheBase
-    if (view && currentPlan) widgetDatasets = boardRefreshWidgetDatasets(currentPlan, widget, snapshotFallback)
+    if (capturedDatasets) widgetDatasets = capturedDatasets
     else if (cachedAfIds.length) widgetDatasets = datasetsForBoardWindow(cacheBase, cachedAfIds, cachedWindow, afCacheBlocked)
     const customTtWindow = widget.dateScope?.mode === 'absolute' || widget.dateScope?.mode === 'lookback' || widget.config.independent === true
     const verifiedTtWindow = !customTtWindow || currentTtScope?.windows.every(window => window.startDate === widgetWindow?.start && window.endDate === widgetWindow?.end)

@@ -18,9 +18,11 @@ vi.mock('electron', () => ({ session: { fromPartition: (name: string) => {
   return ses
 } } }))
 
-import { proxyFetchFor, proxySessionFetch } from './proxyFetch'
+let proxyFetchFor: typeof import('./proxyFetch').proxyFetchFor
+let proxySessionFetch: typeof import('./proxyFetch').proxySessionFetch
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules()
   fixture.sessions.clear()
   fixture.failNext = false
   fixture.systemRoute = 'DIRECT'
@@ -28,12 +30,14 @@ beforeEach(() => {
   vi.stubEnv('HTTP_PROXY', '')
   vi.stubEnv('http_proxy', '')
   vi.stubEnv('NO_PROXY', 'direct.invalid')
+  const transport = await import('./proxyFetch')
+  proxyFetchFor = transport.proxyFetchFor
+  proxySessionFetch = transport.proxySessionFetch
 })
 afterEach(() => vi.unstubAllEnvs())
 
 describe('proxyFetchFor', () => {
   it('isolates simultaneous direct, system and fixed configurations', async () => {
-    await import('electron') // Vitest must finish loading its mocked module before concurrent dynamic imports.
     const partition = 'test-concurrent'
     const request = async (url: string) => (await proxyFetchFor(url, partition))(url)
     await Promise.all([
@@ -68,10 +72,13 @@ describe('proxyFetchFor', () => {
     expect(ses.fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('requires a TikTok proxy for each actual URL and never sends a NO_PROXY request', async () => {
+  it('honors a TikTok NO_PROXY rule even with an environment proxy configured', async () => {
     const fetch = await proxySessionFetch()
-    await expect(fetch('https://direct.invalid/')).rejects.toThrow('tiktok-proxy-required')
-    expect(fixture.sessions.size).toBe(0)
+    await expect(fetch('https://direct.invalid/')).resolves.toBeInstanceOf(Response)
+    const [direct] = [...fixture.sessions.values()]
+    expect(fixture.sessions.size).toBe(1)
+    expect(direct.setProxy).toHaveBeenCalledWith({ mode: 'direct' })
+    expect(direct.fetch).toHaveBeenCalledTimes(1)
   })
 
   it('pins the system PAC proxy for TikTok without carrying its DIRECT fallback', async () => {
@@ -88,10 +95,23 @@ describe('proxyFetchFor', () => {
     expect(proxy.fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('rejects a DIRECT system route without issuing the TikTok request', async () => {
+  it.each(['DIRECT', 'DIRECT; PROXY backup.invalid:8080'])('uses the first TikTok system route in %s', async (route) => {
     vi.stubEnv('HTTPS_PROXY', '')
+    fixture.systemRoute = route
     const fetch = await proxySessionFetch()
-    await expect(fetch('https://tiktok.invalid/api')).rejects.toThrow('tiktok-proxy-required')
+    await expect(fetch('https://tiktok.invalid/api')).resolves.toBeInstanceOf(Response)
+    const [resolver, direct] = [...fixture.sessions.values()]
+    expect(fixture.sessions.size).toBe(2)
+    expect(resolver.fetch).not.toHaveBeenCalled()
+    expect(direct.setProxy).toHaveBeenCalledWith({ mode: 'direct' })
+    expect(direct.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports unusable system routing before issuing the TikTok request', async () => {
+    vi.stubEnv('HTTPS_PROXY', '')
+    fixture.systemRoute = ''
+    const fetch = await proxySessionFetch()
+    await expect(fetch('https://tiktok.invalid/api')).rejects.toThrow('tiktok-route-unavailable')
     expect([...fixture.sessions.values()].every(ses => ses.fetch.mock.calls.length === 0)).toBe(true)
   })
 
@@ -146,12 +166,11 @@ describe('proxyFetchFor', () => {
     expect(sessions[0].setProxy).toHaveBeenCalledWith({ mode: 'direct' })
   })
 
-  it('keeps the TikTok channel proxy-only: a dead proxy errors instead of trying direct', async () => {
+  it('returns a TikTok proxy failure on the selected route', async () => {
     const fetch = await proxyFetchFor('https://remote.invalid/', 'tiktok-api')
     const proxySession = [...fixture.sessions.values()].find((s) => s.setProxy.mock.calls[0][0].mode === 'fixed_servers')!
     proxySession.fetch.mockImplementation(async () => { throw new Error('socket disconnected before secure TLS connection was established') })
     await expect(fetch('https://remote.invalid/')).rejects.toThrow('socket disconnected')
-    // 不创建直连会话：直连 TikTok 必然不通，静默降级只会白烧超时。
     expect([...fixture.sessions.values()].some((s) => s.setProxy.mock.calls[0][0].mode === 'direct')).toBe(false)
   })
 })

@@ -60,7 +60,17 @@ app.whenReady().then(async () => {
     const submit = async () => { await js(`document.querySelector('#project-name').form.requestSubmit()`); await waitFor('window.projectsFixture.snapshot().pending===null') }
     const actions = name => js(`document.querySelector('[aria-label=${JSON.stringify('Project actions: ' + name)}]').click()`)
     await waitFor(`document.visibilityState==='visible' && document.hasFocus() && innerWidth===1024 && innerHeight===700`)
-    await waitFor(`window.projectsFixture?.snapshot().current==='/synthetic/default' && !!document.querySelector('textarea')`)
+    await waitFor(`window.projectsFixture?.snapshot().current==='/synthetic/default' && window.projectsFixture.snapshot().pending===null && !!document.querySelector('textarea')`)
+    phase = 'expanded project conversations'
+    const alphaToggle = `document.querySelector('[data-project-id="alpha"] [aria-label="Conversations in Alpha"]')`
+    const beforeExpand = await js('window.projectsFixture.conversationRenders.length')
+    await js(`${alphaToggle}.click()`)
+    await waitFor(`${alphaToggle}.getAttribute('aria-expanded')==='true'`)
+    const whileExpanded = await js(`({ expanded:${alphaToggle}.getAttribute('aria-expanded'), rows:document.querySelector('#project-conversations-alpha')?.childElementCount, renderedPaths:[...new Set(window.projectsFixture.conversationRenders)] })`)
+    await js(`${alphaToggle}.click()`)
+    await waitFor(`${alphaToggle}.getAttribute('aria-expanded')==='false'`)
+    const afterCollapse = await js(`({ expanded:${alphaToggle}.getAttribute('aria-expanded'), rows:document.querySelector('#project-conversations-alpha')?.childElementCount ?? 0 })`)
+    const conversationWork = { beforeExpand, whileExpanded, afterCollapse }
     await edit('textarea', 'Unsent optimization brief')
     const defaultSelected = await js('window.projectsFixture.snapshot().current')
     const defaultPresentation = await js(`(() => {const button=${composerPickerButton};return {hiddenInSidebar:!document.querySelector('[data-project-id="default"]'),composerText:button.textContent.trim(),composerTitle:button.title,composerLabel:button.getAttribute('aria-label')}})()`)
@@ -192,7 +202,7 @@ app.whenReady().then(async () => {
     await waitFor('window.projectsFixture.snapshot().pending===null')
     const afterDelete = await js(`window.projectsFixture.snapshot()`)
     const composerDraft = await js(`document.querySelector('textarea').value`)
-    console.log('E2E_RESULT ' + JSON.stringify({ defaultSelected, defaultPresentation, defaultPicker, sidebarBounds, composerBounds, ime, cancelledDraft, failedDraft, formCancelDraft, formEscapeDraft, sharedAfterSidebarCreate, sharedAfterComposerCreate, sharedSidebarImport, sharedComposerImport, archiveHidden, archiveHiddenInComposer, focusAfterEscape, restoredInComposer, missingPathVisible, cancelledRecovery, wrongRecovery, successfulRecovery, collapsedError, shownProject, archivedError, restoredFromError, defaultRecoveryError, defaultRecoveryPicker, defaultRecovered, pathMenu, beforeConfirmation, afterCancelDelete, afterDelete, composerDraft }))
+    console.log('E2E_RESULT ' + JSON.stringify({ conversationWork, defaultSelected, defaultPresentation, defaultPicker, sidebarBounds, composerBounds, ime, cancelledDraft, failedDraft, formCancelDraft, formEscapeDraft, sharedAfterSidebarCreate, sharedAfterComposerCreate, sharedSidebarImport, sharedComposerImport, archiveHidden, archiveHiddenInComposer, focusAfterEscape, restoredInComposer, missingPathVisible, cancelledRecovery, wrongRecovery, successfulRecovery, collapsedError, shownProject, archivedError, restoredFromError, defaultRecoveryError, defaultRecoveryPicker, defaultRecovered, pathMenu, beforeConfirmation, afterCancelDelete, afterDelete, composerDraft }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { win?.destroy(); app.quit() }
 })

@@ -30,6 +30,30 @@ describe('chat turn presentation', () => {
     const final = turns[1].nodes.at(-1)
     expect(final?.kind === 'message' && final.showBoardAction).toBe(true)
   })
+  it.each(['.', '…', '。'])('keeps live punctuation %s inside the process until the turn settles', (content) => {
+    const punctuation = msg('punctuation', 'assistant', content)
+    const records = [msg('u', 'user', 'Synthetic prompt'), tool('a'), punctuation]
+    const live = projectChatTurns(records, [], true)
+    expect(live[0].nodes.map(node => node.kind)).toEqual(['message', 'process'])
+    const process = live[0].nodes[1]
+    expect(process.kind === 'process' && process.entries[1]).toEqual({ message: punctuation, index: 2 })
+
+    const toolStarted = projectChatTurns([...records, tool('b')], live, true)
+    const nextProcess = toolStarted[0].nodes[1]
+    expect(nextProcess.kind === 'process' && nextProcess.entries.map(entry => entry.message.id)).toEqual(['a', 'punctuation', 'b'])
+
+    const settled = projectChatTurns(records, live)
+    expect(settled[0].nodes.at(-1)).toEqual({ kind: 'message', entry: { message: punctuation, index: 2 }, showBoardAction: true })
+  })
+  it('shows a substantive response while it streams and keeps it visible through trailing punctuation', () => {
+    const answer = msg('answer', 'assistant', '看板已保存')
+    const records = [msg('u', 'user', 'Synthetic prompt'), tool('a'), answer, msg('period', 'assistant', '.')]
+    for (const streaming of [true, false]) {
+      const [turn] = projectChatTurns(records, [], streaming)
+      const visible = turn.nodes.find(node => node.kind === 'message' && node.entry.message.role === 'assistant')
+      expect(visible?.kind === 'message' && visible.entry.message).toBe(answer)
+    }
+  })
   it('keeps leading restored records, back-to-back prompts and thinking-only fragments', () => {
     const thinking = { ...msg('thinking', 'assistant'), thinking: 'Synthetic reasoning' }
     const turns = projectChatTurns([tool('restored'), msg('u', 'user'), msg('u2', 'user'), thinking, tool('a')])

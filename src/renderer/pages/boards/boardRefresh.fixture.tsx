@@ -67,7 +67,7 @@ const scopeCases = {
   legacyAfWrongBoard: evaluateScope(legacyWidget, datasets, { ...legacyPlan, boardId: 'other-board' })
 }
 const aiWidgetResolvers = new Map<string, (title: string) => void>()
-const fixture = { board, scopeCases, legacyCalls: 0, cachedCalls: 0, datasetReads: 0, meta: { refreshCalls: 0, summaryCalls: 0, accountsCalls: 0, fail: false }, emitMeta: (connected: boolean) => metaListeners.forEach(listener => listener({ connected })), media: [] as Array<{ range: string }>, af: [] as AppsFlyerDatasetRefreshRequest[], pending: false, unbound: false, empty: false, partial: false, resolve: null as null | (() => void), aiWidgetResolvers }
+const fixture = { board, scopeCases, legacyCalls: 0, cachedCalls: 0, datasetReads: 0, capturedDateReads: 0, meta: { refreshCalls: 0, summaryCalls: 0, accountsCalls: 0, fail: false }, emitMeta: (connected: boolean) => metaListeners.forEach(listener => listener({ connected })), media: [] as Array<{ range: string }>, af: [] as AppsFlyerDatasetRefreshRequest[], pending: false, unbound: false, empty: false, partial: false, resolve: null as null | (() => void), aiWidgetResolvers }
 Object.assign(window, { boardRefreshFixture: fixture, electronAPI: {
   cleanupOrphanedHtmlBoards: async () => ({ ok: true }), listBoards: async () => [board, metaBoard, fixedBoard, staticBoard, legacyAfBoard, cachedBoard], listBoardDatasets: async () => { fixture.datasetReads++; return structuredClone(datasets) },
   listFbReadingAccounts: async () => [], listFbReadings: async () => [], ttReadingAdvertisers: async () => ({ selected: [], granted: [], accounts: [] }),
@@ -107,7 +107,15 @@ Object.assign(window, { boardRefreshFixture: fixture, electronAPI: {
     if (fixture.pending) await new Promise<void>(resolve => { fixture.resolve = resolve })
     const status = fixture.unbound ? 'unbound' as const : fixture.empty ? 'empty' as const : 'updated' as const
     datasets = datasets.map(dataset => dataset.id === 'af-bound' ? { ...dataset, rows: fixture.empty ? [] : [[window.end, fixture.af.length]], appsflyer: { specId: 'query-synthetic', status, window, dataWindow: window, attemptedAt: Date.now() } } : dataset)
-    return { ok: false, boardId: captured.id, runId: `synthetic-${fixture.af.length}`, planKey: boardRefreshPlanKey(captured), reportWindow: window, generatedAt: Date.now(), status: 'partial', sources: [{ key: 'tt', kind: 'tiktok', status: 'failed', window, error: 'no-credentials' }, { key: 'af', kind: 'appsflyer', status, window, ...(fixture.partial ? { partial: true } : {}), dataset: structuredClone(datasets[0]) }], widgets: [{ widgetId: 'tt-reader', window, status: 'failed', bindings: [], nativeSourceKey: 'tt' }, { widgetId: 'af-counter', window, status, bindings: [{ datasetId: 'af-bound', sourceKey: 'af' }] }] }
+    const capturedDataset = structuredClone(datasets[0])
+    if (status === 'updated' && captured.masterScope?.range === 'yesterday') {
+      // Count reads of captured dates outside the displayed window. The visible
+      // card and the settings panel never access these discarded rows.
+      const outside: BoardDataset['rows'][number] = ['2020-01-01', 999]
+      Object.defineProperty(outside, 0, { get: () => { fixture.capturedDateReads++; return '2020-01-01' } })
+      capturedDataset.rows = [...Array.from({ length: 9_999 }, () => outside), ...capturedDataset.rows]
+    }
+    return { ok: false, boardId: captured.id, runId: `synthetic-${fixture.af.length}`, planKey: boardRefreshPlanKey(captured), reportWindow: window, generatedAt: Date.now(), status: 'partial', sources: [{ key: 'tt', kind: 'tiktok', status: 'failed', window, error: 'no-credentials' }, { key: 'af', kind: 'appsflyer', status, window, ...(fixture.partial ? { partial: true } : {}), dataset: capturedDataset }], widgets: [{ widgetId: 'tt-reader', window, status: 'failed', bindings: [], nativeSourceKey: 'tt' }, { widgetId: 'af-counter', window, status, bindings: [{ datasetId: 'af-bound', sourceKey: 'af' }] }] }
   },
   appsflyerDatasetRefresh: async (input: AppsFlyerDatasetRefreshRequest) => {
     fixture.af.push(input)
