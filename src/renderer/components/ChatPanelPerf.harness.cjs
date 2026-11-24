@@ -9,7 +9,7 @@ app.whenReady().then(async () => {
   let phase = 'initial'
   const dimensions = async () => {
     if (!win || win.isDestroyed()) return { unavailable: true }
-    const native = { content: win.getContentBounds(), outer: win.getBounds(), workArea: screen.getDisplayMatching(win.getBounds()).workArea, visible: win.isVisible(), focused: win.isFocused() }
+    const native = { content: win.getContentBounds(), outer: win.getBounds(), workArea: screen.getDisplayMatching(win.getBounds()).workArea, visible: win.isVisible(), focused: win.isFocused(), webContentsFocused: win.webContents.isFocused() }
     let renderer
     try { renderer = await win.webContents.executeJavaScript(`({innerWidth,innerHeight,outerWidth,outerHeight,visibility:document.visibilityState,focused:document.hasFocus()})`) }
     catch { renderer = { unavailable: true } }
@@ -37,7 +37,24 @@ app.whenReady().then(async () => {
       const until = Date.now() + 5000
       while (!await js(expression)) {
         if (Date.now() > until) {
-          const state = await js(`(() => {const el=document.activeElement;const trigger=document.querySelector('button[aria-label="Add content"]');const action=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Attach image');return {active:el?.getAttribute('aria-label')||el?.textContent?.slice(0,60)||el?.tagName,expanded:trigger?.getAttribute('aria-expanded'),attachment:action?getComputedStyle(action).visibility:'missing',events:window.composerInputEvents?.slice(-15),level:document.querySelector('button[title=Thinking]')?.ariaLabel}})()`)
+          const state = await js(`(() => {
+            const describe = el => {
+              if (!el) return null
+              const css = getComputedStyle(el), r = el.getBoundingClientRect()
+              const hit = document.elementFromPoint(r.left + r.width / 2,r.top + r.height / 2)
+              return {html: el.outerHTML.split('>')[0].slice(0,260), text: el.tagName==='BUTTON' ? el.textContent.trim() : undefined,
+                visibility:css.visibility,display:css.display,disabled:el.matches(':disabled'),inert:!!el.closest('[inert]'),
+                offsetParent:el.offsetParent?.tagName, rect:[r.left,r.top,r.width,r.height],hit:hit?.tagName,
+                hitButton:hit?.closest('button')?.textContent.trim(),expanded:el.getAttribute('aria-expanded')}
+            }
+            const tray=document.querySelector('.home-hero .composer-tray button[aria-haspopup=listbox]')
+            return {active:describe(document.activeElement),tray:describe(tray),
+              pluginButtons:[...document.querySelectorAll('button')].filter(button=>button.textContent.trim()==='Plugins').map(describe),
+              input:describe(document.querySelector('input[aria-label="Search skills, connections and plugins"]')),
+              portals:[...document.querySelectorAll('body > .shadow-pop')].map(describe),
+              topLayer:[...document.querySelectorAll('dialog:modal, :popover-open')].map(describe),
+              focusCalls:window.menuFocusCalls?.slice(-10), events:window.composerInputEvents?.slice(-15)}
+          })()`)
           throw new Error(`${phase}: timed out: ${expression}; renderer: ${JSON.stringify(state)}`)
         }
         await new Promise(resolve => setTimeout(resolve, 15))
@@ -288,9 +305,19 @@ app.whenReady().then(async () => {
     const invokeAction = `[...document.querySelectorAll('button')].find(button => button.textContent.trim()==='Use skill / plugin…')`
     const search = `document.querySelector('input[role="combobox"][aria-label="Filter skills, commands and plugins"]')`
     const skillOption = `[...document.querySelectorAll('button[role="option"]')].find(button => button.textContent.trim()==='Synthetic team skill')`
-    await js(`window.composerInputEvents=[];for(const type of ['focusin','pointerdown','click','keyup'])document.addEventListener(type,event=>{
-      const el=event.target;const label=el.getAttribute?.('aria-label')||(el.tagName==='BUTTON'?el.textContent.trim():el.tagName);
-      window.composerInputEvents.push({type,label,key:event.key,trusted:event.isTrusted});
+    await js(`window.composerInputEvents=[];window.menuFocusCalls=[];
+    const nativeFocus=HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus=function(...args){
+      const before=document.activeElement;
+      nativeFocus.apply(this,args);
+      window.menuFocusCalls.push({target:this.getAttribute('aria-label')||this.tagName,
+        before:before?.getAttribute('aria-label')||before?.tagName,ok:this===document.activeElement,
+        visible:getComputedStyle(this).visibility,connected:this.isConnected})
+    };
+    for(const type of ['focusin','pointerdown','click','keyup'])document.addEventListener(type,event=>{
+      const el=event.target;const button=el.closest?.('button');
+      const label=el.getAttribute?.('aria-label')||button?.textContent.trim()||el.tagName;
+      window.composerInputEvents.push({type,label,key:event.key,trusted:event.isTrusted,trigger:button?.getAttribute('aria-haspopup')});
     },true)`)
     const key = (keyCode, modifiers = []) => {
       wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
