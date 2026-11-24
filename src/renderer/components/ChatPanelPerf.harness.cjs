@@ -43,7 +43,7 @@ app.whenReady().then(async () => {
               const css = getComputedStyle(el), r = el.getBoundingClientRect()
               const hit = document.elementFromPoint(r.left + r.width / 2,r.top + r.height / 2)
               return {html: el.outerHTML.split('>')[0].slice(0,260), text: el.tagName==='BUTTON' ? el.textContent.trim() : undefined,
-                visibility:css.visibility,display:css.display,disabled:el.matches(':disabled'),inert:!!el.closest('[inert]'),
+                visibility:css.visibility,display:css.display,position:css.position,disabled:el.matches(':disabled'),inert:!!el.closest('[inert]'),
                 offsetParent:el.offsetParent?.tagName, rect:[r.left,r.top,r.width,r.height],hit:hit?.tagName,
                 hitButton:hit?.closest('button')?.textContent.trim(),expanded:el.getAttribute('aria-expanded')}
             }
@@ -53,6 +53,9 @@ app.whenReady().then(async () => {
               input:describe(document.querySelector('input[aria-label="Search skills, connections and plugins"]')),
               portals:[...document.querySelectorAll('body > .shadow-pop')].map(describe),
               topLayer:[...document.querySelectorAll('dialog:modal, :popover-open')].map(describe),
+              theme:{classes:document.documentElement.className,bodyClasses:document.body.className, heading:document.querySelector('.effort-heading') && getComputedStyle(document.querySelector('.effort-heading')).color,
+                sampledLight:window.testLightEffort, forcedColors:matchMedia('(forced-colors: active)').matches},
+              openButtons:[...document.querySelectorAll('button[aria-expanded=true]')].map(describe),
               focusCalls:window.menuFocusCalls?.slice(-10), events:window.composerInputEvents?.slice(-15)}
           })()`)
           throw new Error(`${phase}: timed out: ${expression}; renderer: ${JSON.stringify(state)}`)
@@ -124,10 +127,13 @@ app.whenReady().then(async () => {
     win.setContentSize(1024, 700)
     await waitFor('innerWidth === 1024')
     await frame()
-    const themeColor = () => js(`getComputedStyle((${thinkingMenu}).querySelector('.effort-heading')).color`)
-    const lightEffort = await themeColor()
+    const themeColor = `getComputedStyle((${thinkingMenu}).querySelector('.effort-heading')).color`
+    await js("document.documentElement.classList.remove('dark')")
+    await frame()
+    const lightEffort = await js(`window.testLightEffort = ${themeColor}`)
     await js("document.documentElement.classList.add('dark')")
-    const darkEffort = await themeColor()
+    await waitFor(`${themeColor} !== ${JSON.stringify(lightEffort)}`)
+    const darkEffort = await js(themeColor)
     await js("document.documentElement.classList.remove('dark')")
     const trackHasStars = await js(`getComputedStyle((${slider}).parentElement, '::before').backgroundImage.includes('radial-gradient')`)
     if (process.platform === 'darwin') app.focus({ steal: true })
@@ -377,7 +383,9 @@ app.whenReady().then(async () => {
       await click(trigger)
       const portal = `document.querySelector('body > div.shadow-pop')`
       await waitFor(`!!${portal} && getComputedStyle(${portal}).visibility==='visible'`)
-      homeMenusBelow.push(await js(`${portal}.getBoundingClientRect().top >= ${trigger}.getBoundingClientRect().bottom`))
+      const below = `${portal}.getBoundingClientRect().top + 1 >= ${trigger}.getBoundingClientRect().bottom`
+      await waitFor(below)
+      homeMenusBelow.push(await js(below))
       key('Escape')
       await waitFor(`!${portal}`)
     }
@@ -390,7 +398,9 @@ app.whenReady().then(async () => {
     await waitFor(`!!(${trayOption('DingTalk')}) && !(${trayOption('Report extension')})`)
     await js('window.chatPerfFixture.releasePluginCatalog()')
     await waitFor(`!!(${trayOption('DingTalk')}) && !!(${trayOption('synthetic-ads')}) && !!(${trayOption('Synthetic team skill')}) && !!(${trayOption('Report extension')})`)
-    const opensBelow = await js(`${traySearch}.closest('body > div').getBoundingClientRect().top >= ${trayTrigger}.getBoundingClientRect().bottom`)
+    const trayBelow = `${traySearch}.closest('body > div').getBoundingClientRect().top + 1 >= ${trayTrigger}.getBoundingClientRect().bottom`
+    await waitFor(trayBelow)
+    const opensBelow = await js(trayBelow)
     await waitFor(`document.activeElement===${traySearch}`)
     await wc.insertText('ding')
     await waitFor(`!!(${trayOption('DingTalk')}) && !(${trayOption('synthetic-ads')})`)
