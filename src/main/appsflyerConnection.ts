@@ -6,7 +6,7 @@ import { IPC_CHANNELS } from '../shared/constants'
 import type { AppsFlyerConnectionSnapshot } from '../shared/connections'
 import { defaultPiAgentDir } from './piSettings'
 import { listMcpConnections, removeMcpConnection, upsertManagedServer, type McpStorePaths } from './integrations/mcp/McpConnectionStore'
-import { AppsFlyerConnectionManager } from './integrations/appsflyer/AppsFlyerConnectionManager'
+import { AppsFlyerConnectionManager, type VerifiedAppsFlyerDatasetAuthorization } from './integrations/appsflyer/AppsFlyerConnectionManager'
 import { AppsFlyerReadFacade } from './integrations/appsflyer/AppsFlyerReadFacade'
 import { APPSFLYER_SKILL, APPSFLYER_SKILL_FILE, APPSFLYER_SKILL_V1 } from './integrations/appsflyer/appsflyerSkill'
 import { openAuthWindow, type AuthWindowHandle } from './integrations/appsflyer/authWindow'
@@ -256,6 +256,20 @@ export async function verifiedAppsFlyerAccessToken(): Promise<string | null> {
   if (closing || !initialized || !projected.connected || !currentManager) return null
   const token = await currentManager.getVerifiedAccessToken()
   return !closing && manager === currentManager && initialized && projected.connected ? token : null
+}
+export async function verifiedAppsFlyerDatasetAuthorization(): Promise<VerifiedAppsFlyerDatasetAuthorization | null> {
+  if (closing) return null
+  await initializeAppsFlyerConnection()
+  const currentManager = manager
+  const isConnected = () => !closing && initialized && projected.connected && manager === currentManager
+  if (!currentManager || !isConnected()) return null
+  const authorization = await currentManager.getVerifiedDatasetAuthorization()
+  if (!authorization?.isCurrent() || !isConnected()) return null
+  return { ...authorization, isCurrent: () => isConnected() && authorization.isCurrent() }
+}
+export function verifiedAppsFlyerDatasetScopeIdentity(): string | null {
+  if (closing || !initialized || !projected.connected) return null
+  return manager?.getVerifiedDatasetScopeIdentity() ?? null
 }
 export async function shutdownAppsFlyerConnection(): Promise<void> {
   closing = true

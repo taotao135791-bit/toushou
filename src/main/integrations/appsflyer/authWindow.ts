@@ -1,7 +1,6 @@
 import { BrowserWindow, session } from 'electron'
 import { createHash } from 'node:crypto'
 import { get, type ClientRequest } from 'node:http'
-import { resolveEnvProxyRules } from '../tiktok/envProxy'
 
 /**
  * Isolated OAuth page. Only the exact registered loopback callback is
@@ -95,7 +94,7 @@ export function openAuthWindow(authorizationUrl: string, redirectUri: string): A
   let readyTimer: ReturnType<typeof setTimeout> | undefined
   const ready = Promise.race([
     (async () => {
-      await ses.setProxy(resolveEnvProxyRules(authorizationUrl))
+      await ses.setProxy({ mode: 'direct' })
       if (closed) throw new Error('Authorization window closed')
       await win.loadURL(authorizationUrl)
       if (closed) throw new Error('Authorization window closed')

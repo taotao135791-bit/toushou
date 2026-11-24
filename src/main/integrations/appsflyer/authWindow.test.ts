@@ -55,6 +55,8 @@ describe('AppsFlyer isolated authorization window', () => {
     try {
       const waiting = await manager.begin()
       const authorization = new URL(waiting.authorizationUrl!)
+      expect(fixture.setProxy).toHaveBeenCalledWith({ mode: 'direct' })
+      expect(fixture.windows[0].loadURL).toHaveBeenCalledWith(authorization.href)
       const target = new URL(authorization.searchParams.get('redirect_uri')!)
       target.searchParams.set('state', authorization.searchParams.get('state')!)
       target.searchParams.set('code', 'synthetic-code')

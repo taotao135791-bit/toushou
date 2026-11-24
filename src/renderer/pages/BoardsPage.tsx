@@ -86,7 +86,7 @@ import { WidgetBody } from './boards/WidgetBody'
 import { managedReadingStatus } from './boards/readingStatus'
 import { widgetCardStyle } from './boards/widgetCardStyle'
 import { reloadLatestDataset, type DatasetReloadState } from '../lib/latestDatasetReload'
-import { afBindingHasRefreshSource, boardAppsFlyerDatasetIds, boardMasterWindow, boardRefreshWindow, boardScopeCounts, boardScopeSummary, boardScopedBoardTitle, boardScopedWidgetTitle, datasetsForBoardWindow } from '../lib/boardRefreshScope'
+import { afBindingHasRefreshSource, boardAppsFlyerDatasetIds, boardMasterWindow, boardRefreshWindow, boardScopeCounts, boardScopeSummary, boardScopedBoardTitle, boardScopedWidgetTitle, datasetsForBoardWindow, isAppsFlyerDataset } from '../lib/boardRefreshScope'
 import { boardWidgetDatasetBindings } from '@shared/boardDataWidgets'
 import { boardRefreshWidgetDatasets, dropBoardRefreshSource, type BoardRefreshResult } from '@shared/boardRefresh'
 import { boardRefreshPlanKey, boardReportWindow, boardWidgetWindow, type BoardWidgetDateScope } from '@shared/boardWindows'
@@ -1192,9 +1192,12 @@ export default function BoardsPage() {
   const master = current?.masterScope ?? null
   const currentAfDatasetIds = current ? boardAppsFlyerDatasetIds(current, datasets) : []
   const afDatasetKey = currentAfDatasetIds.join(',')
-  const currentAfWindow = current ? boardRefreshWindow(current, datasets) : boardMasterWindow('last7')
+  const currentAfWindow = current ? boardRefreshWindow(current, datasets, new Date(boardNow)) : boardMasterWindow('last7', new Date(boardNow))
   const currentAfRefresh = current ? afRefresh[current.id] : undefined
-  const displayedDatasets = datasetsForBoardWindow(datasets, currentAfDatasetIds, currentAfWindow, currentAfRefresh?.pending ?? false)
+  // Only the plan's own captured rows are trusted for its managed bindings.
+  const snapshotFallback = useMemo(() => plannerEnabled ? datasets.map(dataset =>
+    isAppsFlyerDataset(dataset) || dataset.name === 'TikTok 报表' || dataset.id.startsWith('meta-reading:') ? { ...dataset, rows: [] } : dataset
+  ) : datasets, [datasets, plannerEnabled])
   const scopeCounts = current ? boardScopeCounts(current, datasets, candidatePlan) : { live: 0, fixed: 0, independent: 0, lookback: 0, unbound: 0 }
   // 用户拍板：看板不自动刷新（旧逻辑"点进看板就刷"已移除）——一切刷新都
   // 由用户手动触发（刷新按钮/重试）。这里只负责把陈旧提示状态摆正：
@@ -1637,18 +1640,29 @@ export default function BoardsPage() {
     const boardId = current?.id ?? ''
     const widgetTitle = boardScopedWidgetTitle(widget, master, language) || t(widgetNameKey(widget.type))
     const bindings = boardWidgetDatasetBindings(widget)
-    const managedSource = plannerEnabled && (widget.type === 'tt-reading' || widget.type === 'meta-reading' || bindings.some(binding => {
-      const data = datasets.find(item => item.id === binding.datasetId || item.name === binding.datasetId)
-      return binding.datasetId.startsWith('meta-reading:') || data?.name === 'TikTok 报表' || binding.datasetId === 'TikTok 报表' || !!data?.appsflyer || (data?.name ?? binding.datasetId).startsWith('AF-') || (data?.name ?? binding.datasetId) === 'AppsFlyer 报表'
-    }))
+    const widgetSources = bindings.map(({ datasetId }) => {
+      const data = datasets.find(item => item.id === datasetId) ?? datasets.find(item => item.name === datasetId)
+      const name = data?.name ?? datasetId
+      return { id: data?.id ?? datasetId, af: data ? isAppsFlyerDataset(data) : name.startsWith('AF-') || name === 'AppsFlyer 报表', tt: name === 'TikTok 报表', meta: datasetId.startsWith('meta-reading:') }
+    })
+    const tiktokDataset = widgetSources.some(source => source.tt)
+    const managedSource = plannerEnabled && (widget.type === 'tt-reading' || widget.type === 'meta-reading' || widgetSources.some(source => source.af || source.tt || source.meta))
     const view = currentPlan?.widgets.find(item => item.widgetId === widget.id)
-    // 刚建好的板必须开板即有数（用户拍板）：托管数据源（TikTok 报表 / AF）不再
-    // 在无刷新视图时清空存量行——那会让交付后的板打开全是"—"。数据新鲜度由
-    // 头部「数据最后刷新」时间戳和「请刷新以核对」提示表达，手动刷新仍是唯一
-    // 拉数动作（不变）。行窗口与当前口径不符时卡片自然显示缺行，不会假装有数。
-    const widgetDatasets = view && currentPlan ? boardRefreshWidgetDatasets(currentPlan, widget, datasets) : displayedDatasets
-    const truncated = bindings.some(binding => widgetDatasets.some(dataset => dataset.truncated && (dataset.id === binding.datasetId || dataset.name === binding.datasetId)))
     const widgetWindow = view?.window ?? (current ? boardWidgetWindow(current, widget, boardNow) : undefined)
+    const pending = planPending[boardId] === true
+    const usesCardWindow = plannerEnabled || master || widget.dateScope || widget.config.independent === true
+    const cachedWindow = usesCardWindow && widgetWindow ? widgetWindow : currentAfWindow
+    const cachedAfIds = widgetSources.filter(source => source.af).map(source => source.id)
+    const afCacheBlocked = pending || currentAfRefresh?.pending === true || currentAfRefresh?.failed === true || currentAfRefresh?.unbound === true
+    const cacheBase = managedSource && widgetSources.some(source => source.meta)
+      ? datasets.filter(dataset => !dataset.id.startsWith('meta-reading:')) : datasets
+    let widgetDatasets = cacheBase
+    if (view && currentPlan) widgetDatasets = boardRefreshWidgetDatasets(currentPlan, widget, snapshotFallback)
+    else if (cachedAfIds.length) widgetDatasets = datasetsForBoardWindow(cacheBase, cachedAfIds, cachedWindow, afCacheBlocked)
+    const customTtWindow = widget.dateScope?.mode === 'absolute' || widget.dateScope?.mode === 'lookback' || widget.config.independent === true
+    const verifiedTtWindow = !customTtWindow || currentTtScope?.windows.every(window => window.startDate === widgetWindow?.start && window.endDate === widgetWindow?.end)
+    const cachedTtScope = !pending && !ttFailed && verifiedTtWindow ? currentTtScope : null
+    const truncated = bindings.some(binding => widgetDatasets.some(dataset => dataset.truncated && (dataset.id === binding.datasetId || dataset.name === binding.datasetId)))
     const widgetBrand = widget.type === 'tt-reading' ? 'tiktok' : widget.type === 'google-report-reading' ? 'google' : ['meta-reading', 'fb-reading', 'fb-reading-summary', 'fb-report-reading'].includes(widget.type) ? 'facebook' : null
     return (
     <div
@@ -1720,14 +1734,15 @@ export default function BoardsPage() {
           key={widget.id}
           widget={widget}
           datasets={widgetDatasets}
-          datasetsLoading={!datasetsReady || (managedSource && planPending[boardId] === true)}
-          verifiedDatasetSnapshot={managedSource}
+          datasetsLoading={!datasetsReady || (managedSource && pending)}
+          verifiedDatasetSnapshot={managedSource && !!view}
+          allowMetaDatasetFallback={!managedSource}
           managedReading={plannerEnabled && widget.type === 'tt-reading' ? { status: managedReadingStatus({ viewStatus: view?.status, planPending: planPending[boardId] === true, failed: ttFailed }), ...(view?.ttSummary ? { summary: view.ttSummary } : {}) } : undefined}
           managedMetaReading={plannerEnabled && widget.type === 'meta-reading' ? { status: metaDisconnected ? 'failed' : managedReadingStatus({ viewStatus: view?.status, planPending: planPending[boardId] === true, failed: ttFailed }), ...(view?.metaSummary && !metaDisconnected ? { summary: view.metaSummary } : {}), ...(view?.metaAccounts ? { accounts: view.metaAccounts, partial: view.metaAccountsPartial } : {}), error: metaDisconnected ? (language === 'zh' ? 'Meta 已断开，请重新连接。' : 'Meta disconnected. Reconnect in Connections.') : view?.nativeSourceKey ? currentPlan?.sources.find(source => source.key === view.nativeSourceKey)?.error : undefined } : undefined}
           onManagedRefresh={() => { void refreshReadingModules(current) }}
-          ttScope={currentTtScope}
+          ttScope={cachedTtScope}
           ttScopeConflict={ttScopeConflict}
-          ttScopeRequired={ttWidgets.length > 0 || widget.config.requireVerifiedTtScope === true}
+          ttScopeRequired={(plannerEnabled && tiktokDataset) || ttWidgets.length > 0 || widget.config.requireVerifiedTtScope === true}
           boardId={boardId}
           onConfigChange={(config) => updateWidgetConfig(widget.id, config)}
           onSnapshotSaved={(board, openAi, widgetId) => { setBoards(prev => (prev ?? []).some(item => item.id === board.id) ? (prev ?? []).map(item => item.id === board.id ? board : item) : [...(prev ?? []), board]); switchBoard(board.id); if (openAi) setAutoEditWidgetId(widgetId ?? board.widgets.find(item => item.type === 'reading-snapshot')?.id ?? null) }}

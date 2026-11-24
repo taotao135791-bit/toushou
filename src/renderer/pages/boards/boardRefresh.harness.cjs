@@ -110,7 +110,17 @@ app.whenReady().then(async () => {
     await clickExact('Add card')
     await wait()
     const proposalBoards = await wc.executeJavaScript(`window.electronAPI.listBoards().then(boards=>boards.filter(b=>b.widgets.some(w=>w.title==='Second proposal')).map(b=>b.name))`)
-    console.log('E2E_RESULT ' + JSON.stringify({ opened, yesterdayOnly, yesterdayPending, yesterday, todayOnly, todayPending, today, unbound, empty, metaSelection, metaReady, metaFailed, metaDisconnected, fixed, fixedAfterDate, staticAfterDate, legacyInitial, legacyAfterDate, scopeCases, keptSecondRequest, proposalBoards }))
+    await wc.executeJavaScript(`[...document.querySelectorAll('[title="Click to open · drag to reorder tabs"]')].find(e=>e.textContent.includes('Cached source fixture')).click()`)
+    await wait(); await wait()
+    const readCached = () => wc.executeJavaScript(`({ calls:window.boardRefreshFixture.cachedCalls, af:document.querySelector('[data-board-widget-id="cached-af"]').innerText, lookback:document.querySelector('[data-board-widget-id="cached-af-lookback"]').innerText, tt:document.querySelector('[data-board-widget-id="cached-tt"]').innerText })`)
+    const cachedOpening = await readCached()
+    await refresh()
+    await wait()
+    const cachedPending = await readCached()
+    await wc.executeJavaScript(`window.boardRefreshFixture.resolve()`)
+    await wait(); await wait()
+    const cachedFailure = await readCached()
+    console.log('E2E_RESULT ' + JSON.stringify({ opened, yesterdayOnly, yesterdayPending, yesterday, todayOnly, todayPending, today, unbound, empty, metaSelection, metaReady, metaFailed, metaDisconnected, fixed, fixedAfterDate, staticAfterDate, legacyInitial, legacyAfterDate, scopeCases, keptSecondRequest, proposalBoards, cachedOpening, cachedPending, cachedFailure }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), stack: error.stack })) }
   finally { win?.destroy(); app.quit() }
 })

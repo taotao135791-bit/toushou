@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { session } from 'electron'
+import { session, type ProxyConfig } from 'electron'
 import { resolveEnvProxyRules } from './envProxy'
 
 export type ProxyAwareFetch = (url: string, init?: RequestInit) => Promise<Response>
@@ -31,7 +31,7 @@ const policyFor = (partition: string): ChannelPolicy => CHANNEL_POLICIES[partiti
 /** Sessions are in-memory and immutable per resolved proxy config. */
 const sessions = new Map<string, Promise<import('electron').Session>>()
 
-async function sessionFor(key: string, config: import('electron').ProxyConfig): Promise<import('electron').Session> {
+async function sessionFor(key: string, config: ProxyConfig): Promise<import('electron').Session> {
   let pending = sessions.get(key)
   if (!pending) {
     const created = Promise.resolve().then(async () => {
@@ -48,8 +48,34 @@ async function sessionFor(key: string, config: import('electron').ProxyConfig): 
   return pending
 }
 
+async function tikTokProxyConfig(targetUrl: string): Promise<ProxyConfig> {
+  const configured = resolveEnvProxyRules(targetUrl)
+  if (configured.mode === 'fixed_servers') return { ...configured, proxyBypassRules: '<-loopback>' }
+  if (configured.mode === 'system') {
+    const system = await sessionFor(JSON.stringify(['tiktok-api', configured]), configured)
+    const route = await system.resolveProxy(targetUrl)
+    // Pin the first effective PAC route. A trailing DIRECT or another proxy
+    // belongs to the OS fallback chain and must not change a TikTok request.
+    const first = route.split(';', 1)[0].trim()
+    const proxy = /^(PROXY|HTTPS|SOCKS4?|SOCKS5)\s+(\[[a-f0-9:.]+\]|[a-z0-9.-]+):(\d{1,5})$/i.exec(first)
+    if (proxy && Number(proxy[3]) > 0 && Number(proxy[3]) <= 65535) {
+      const kind = proxy[1].toLowerCase()
+      const scheme = kind === 'proxy' ? 'http' : kind === 'socks' ? 'socks4' : kind
+      return { mode: 'fixed_servers', proxyRules: `${scheme}://${proxy[2]}:${proxy[3]}`, proxyBypassRules: '<-loopback>' }
+    }
+  }
+  throw new Error('tiktok-proxy-required')
+}
+
 export async function proxyFetchFor(targetUrl: string, partition: string): Promise<ProxyAwareFetch> {
   const policy = policyFor(partition)
+  if (policy === 'proxy-only') {
+    const config = await tikTokProxyConfig(targetUrl)
+    const ses = await sessionFor(JSON.stringify([partition, config]), config)
+    return async (url, init) => url === targetUrl
+      ? (ses.fetch(url, init) as unknown as Promise<Response>)
+      : (await proxyFetchFor(url, partition))(url, init)
+  }
   // direct-only ignores whatever the environment says for this origin.
   const config = policy === 'direct-only' ? ({ mode: 'direct' } as const) : resolveEnvProxyRules(targetUrl)
   const key = JSON.stringify([partition, config])

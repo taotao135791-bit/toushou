@@ -12,7 +12,7 @@ import type { BoardDataset, KanbanBoard, SessionEvent } from '../shared/types'
 import { boardWidgetWindow } from '../shared/boardWindows'
 import { listBoards, saveBoard } from './boards'
 import { listDatasetsStrict } from './boardDatasets'
-import { listQuerySpecs } from './integrations/appsflyer/appsflyerDataset'
+import { getAppsFlyerQueryHash, listQuerySpecs, type AfQuerySpec } from './integrations/appsflyer/appsflyerDataset'
 import { atomicBoardFile, boardBuildRoot, boardProfileRoot, BOARD_STORE_FILES, publishBoardBuild, readBoardStoreBytes, recoverBoardBuild, withBoardBuildRoot, type BoardStoreFile } from './boardBuildStorage'
 
 export type BoardTargetUiEvent = Extract<SessionEvent, { type: 'ui_request' | 'ui_cancel' }>
@@ -30,10 +30,14 @@ interface BuildTurn {
 interface BuildDraft {
   id: string; root: string; profile: string; intent: BoardBuildIntent; targets: Map<string, BoardBuildIntent>
   before: Record<BoardStoreFile, string | null>; boards: KanbanBoard[]; recipes: ReturnType<typeof listQuerySpecs>
-  committed?: Record<string, unknown>; busy: number; sourceEvidence: Map<string, string>
-  /** tiktok-af 模板的产品前缀：提交时预绑卡按本轮实际拉到的数据集重绑。 */
-  afPrefix?: string
+  committed?: Record<string, unknown>; busy: number; sourceEvidence: Map<string, { digest: string; kind: 'tiktok' | 'appsflyer' | 'refresh' }>
+  afPreset?: { boardId: string; scope: AfPresetScope; bindings: Map<string, AfPresetBinding> }
 }
+
+type AfPresetRole = 'base' | 'retention'
+interface AfPresetBinding { role: AfPresetRole; boundId?: string }
+export interface AfPresetScope { appId: string; filters: Record<string, string[]>; retentionEvent?: string }
+export const afPresetPlaceholder = (boardId: string, role: AfPresetRole): string => `af-preset:${boardId}:${role}`
 const turns = new Map<string, BuildTurn>()
 const TARGET_TIMEOUT_MS = 120_000
 
@@ -188,14 +192,19 @@ export function respondBoardEditTargets(sessionId: string, requestId: string, an
   request.finish({ ok: true, targetBoardIds: ids })
   return true
 }
-const dataDigest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+// A later dataset write can serialize the same record with its keys reordered.
+const dataDigest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value, (_key, child) =>
+  child && typeof child === 'object' && !Array.isArray(child)
+    ? Object.fromEntries(Object.keys(child).sort().map(key => [key, child[key]]))
+    : child
+)).digest('hex')
 /** Main-native pull paths alone call this after a successful actual query. */
 export function recordBoardBuildSourceEvidence(sessionId: string, kind: 'tiktok' | 'appsflyer' | 'refresh', datasetIds?: string[]): void {
   const draft = turns.get(sessionId)?.draft
   if (!draft || draft.root !== boardBuildRoot()) return
   withBoardBuildRoot(draft.root, () => {
     for (const dataset of listDatasetsStrict()) {
-      if (datasetIds ? datasetIds.includes(dataset.id) : kind === 'tiktok' && dataset.name === 'TikTok 报表') draft.sourceEvidence.set(dataset.id, dataDigest(dataset))
+      if (datasetIds ? datasetIds.includes(dataset.id) : kind === 'tiktok' && dataset.name === 'TikTok 报表') draft.sourceEvidence.set(dataset.id, { digest: dataDigest(dataset), kind })
     }
   })
 }
@@ -274,12 +283,80 @@ export function buildStatus(sessionId: string, buildId?: unknown): Record<string
 export function frozenBoardBuildOptions(sessionId: string, buildId: unknown): BoardBuildIntent | null {
   return active(sessionId, buildId)?.draft.intent ?? null
 }
-/** tiktok-af 建板的 afPrefix（board_create 时记录）：提交时驱动预绑卡重绑。 */
-export function setBoardBuildAfPrefix(sessionId: string, buildId: unknown, afPrefix: string): boolean {
+/** Bind only the AF placeholders created on this exact draft board. */
+export function registerBoardBuildAfPreset(sessionId: string, buildId: unknown, boardId: string, scope: AfPresetScope): void {
   const state = active(sessionId, buildId)
-  if (!state) return false
-  state.draft.afPrefix = afPrefix
-  return true
+  if (!state || state.draft.root !== boardBuildRoot() || state.draft.targets.size || state.draft.boards.some(board => board.id === boardId)) return
+  const board = listBoards().find(candidate => candidate.id === boardId)
+  if (!board) return
+  const bindings = new Map<string, AfPresetBinding>()
+  for (const widget of board.widgets) {
+    for (const role of ['base', 'retention'] as const) {
+      if (widget.config.datasetId === afPresetPlaceholder(boardId, role)) bindings.set(widget.id, { role })
+    }
+  }
+  if (bindings.size) state.draft.afPreset = { boardId, scope, bindings }
+}
+
+function sameAfFilters(value: unknown, expected: AfPresetScope['filters']): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const filters = value as Record<string, unknown>
+  return Object.keys(filters).length === Object.keys(expected).length && Object.entries(expected).every(([key, list]) => {
+    const actual = filters[key]
+    return Array.isArray(actual) && isDeepStrictEqual([...actual].sort(), [...list].sort())
+  })
+}
+
+function matchesAfPresetRecipe(query: AfQuerySpec['query'], scope: AfPresetScope, role: AfPresetRole, column: unknown): boolean {
+  if (!isDeepStrictEqual(query.app_ids, [scope.appId]) || !sameAfFilters(query.filters, scope.filters) || !isDeepStrictEqual(query.groupings, ['Date'])) return false
+  const event = role === 'retention' ? scope.retentionEvent : undefined
+  if ((role === 'retention' && !event) || !isDeepStrictEqual(query.in_app_event ?? [], event ? [event] : [])) return false
+  const metrics = Array.isArray(query.metrics) ? query.metrics : []
+  const wanted = role === 'retention' ? ['Count'] : column === '安装量' ? ['Active users', 'Count'] : ['Active users']
+  return metrics.some(candidate => wanted.includes(candidate?.metric_name) && candidate.period === 'activity' && candidate.attribution_source === 'appsflyer')
+}
+
+export function hasBoardBuildAfPreset(sessionId: string, buildId: unknown): boolean {
+  return !!active(sessionId, buildId)?.draft.afPreset
+}
+
+function applyAfPresetBindings(draft: BuildDraft, board: KanbanBoard, datasets: BoardDataset[], recipes: AfQuerySpec[], intent: BoardBuildIntent, now: number, authorizationScope?: string | null): void {
+  const preset = draft.afPreset
+  if (!preset || preset.boardId !== board.id || intent.mode === 'presentation' || intent.mode === 'snapshot') return
+  const boardScope = intent.range && board.masterScope ? { masterScope: { ...board.masterScope, range: intent.range } } : board
+  const proven = datasets.filter(dataset => {
+    const evidence = draft.sourceEvidence.get(dataset.id)
+    return evidence?.kind === 'appsflyer' && evidence.digest === dataDigest(dataset)
+  })
+  let changed = false
+  for (const widget of board.widgets) {
+    const binding = preset.bindings.get(widget.id)
+    if (!binding || widget.config.source !== 'dataset') continue
+    const placeholder = afPresetPlaceholder(board.id, binding.role)
+    if (widget.config.datasetId !== placeholder && widget.config.datasetId !== binding.boundId) continue
+    const window = boardWidgetWindow(boardScope, widget, now)
+    const matches = proven.filter(dataset => {
+      const state = dataset.appsflyer
+      if (!state || state.materialization || dataset.truncated || !['updated', 'empty'].includes(state.status) || !isDeepStrictEqual(state.dataWindow, window)) return false
+      const spec = recipes.find(entry => entry.id === state.specId && entry.datasetId === dataset.id)
+      if (!spec || !matchesAfPresetRecipe(spec.query, preset.scope, binding.role, widget.config.metric)) return false
+      const hash = getAppsFlyerQueryHash(spec.query, window)
+      if (!hash || !authorizationScope || state.provenance?.queryHash !== hash || state.provenance.authorizationScope !== authorizationScope) return false
+      return dataset.columns.some(column => column.name === widget.config.metric && column.type === 'number') &&
+        dataset.columns.some(column => column.name === '日期' && column.type === 'date')
+    })
+    const nextId = matches.length === 1 ? matches[0].id : placeholder
+    binding.boundId = nextId === placeholder ? undefined : nextId
+    if (widget.config.datasetId !== nextId) {
+      widget.config = { ...widget.config, datasetId: nextId }
+      changed = true
+    }
+  }
+  if (changed) {
+    const updatedAt = board.updatedAt
+    board.updatedAt++
+    if (!saveBoard(board, undefined, updatedAt).ok) throw new Error('af-preset-remap-save-failed')
+  }
 }
 
 function changedBoards(draft: BuildDraft, partial = false): KanbanBoard[] | null {
@@ -467,7 +544,7 @@ function inspectBoardBuild(
       const allUnavailable = sources.length > 0 && sources.every(source => source && source.kind !== 'dataset' && !source.dataset)
       const actualRead = sources.some(source => source?.dataset && source.kind !== 'dataset' && (source.status === 'updated' || source.status === 'empty'))
       const stored = canUseSavedData && dataset && savedDatasets.get(dataset.id)
-      if (dataset && !actualRead && !allUnavailable && !(stored && isDeepStrictEqual(stored, dataset)) && draft.sourceEvidence.get(dataset.id) !== dataDigest(dataset)) issues.push({ code: 'source-query-evidence-required', datasetId: dataset.id })
+      if (dataset && !actualRead && !allUnavailable && !(stored && isDeepStrictEqual(stored, dataset)) && draft.sourceEvidence.get(dataset.id)?.digest !== dataDigest(dataset)) issues.push({ code: 'source-query-evidence-required', datasetId: dataset.id })
     }
   }
   const passed = check.status === 'ready' && issues.length === 0
@@ -475,7 +552,7 @@ function inspectBoardBuild(
     ...(feasibility && !passed ? { hint: '当前数据或已接入适配器尚不能证明本次要求；这不代表媒体平台本身不支持。请在草稿补齐真实数据或说明受阻，不能自动降级后发布。' } : {}) }
 }
 
-export function checkFrozenBoardBuild(sessionId: string, buildId: unknown, feasibility = false, boardId?: string): Record<string, unknown> {
+export function checkFrozenBoardBuild(sessionId: string, buildId: unknown, feasibility = false, boardId?: string, authorizationScope?: string | null): Record<string, unknown> {
   const state = active(sessionId, buildId)
   if (!state) return { ok: false, error: 'board-build-conflict' }
   const { draft } = state
@@ -491,7 +568,12 @@ export function checkFrozenBoardBuild(sessionId: string, buildId: unknown, feasi
     if (!boards.length) return { ok: false, error: 'board-not-found' }
     const saved = draft.targets.size ? (JSON.parse(draft.before[BOARD_STORE_FILES[1]] ?? '[]') as BoardDataset[]) : []
     const savedDatasets = new Map(saved.map(dataset => [dataset.id, dataset]))
-    const checks = boards.map(board => inspectBoardBuild(draft, board, draft.targets.get(board.id) ?? draft.intent, data, recipes, savedDatasets, feasibility))
+    const now = Date.now()
+    const checks = boards.map(board => {
+      const intent = draft.targets.get(board.id) ?? draft.intent
+      if (!draft.committed) applyAfPresetBindings(draft, board, data, recipes, intent, now, authorizationScope)
+      return inspectBoardBuild(draft, board, intent, data, recipes, savedDatasets, feasibility)
+    })
     if (checks.length === 1) return checks[0]
     const passed = checks.every(check => check.passed)
     return { ok: passed, passed, status: passed ? 'ready' : checks.some(check => check.status === 'incomplete') ? 'incomplete' : 'needs-attention',
@@ -508,60 +590,27 @@ const coverageGaps = new Set([
   'intent-measure-missing:revenue'
 ])
 
-export function commitBoardBuild(sessionId: string, buildId: unknown, stillAuthorized: () => boolean, allowPartial = false): Record<string, unknown> {
+export function commitBoardBuild(sessionId: string, buildId: unknown, stillAuthorized: () => boolean, allowPartial = false, authorizationScope?: string | null): Record<string, unknown> {
   const state = active(sessionId, buildId)
   if (!state) return { ok: false, error: 'board-build-conflict' }
   const { draft } = state
   if (draft.committed) return draft.committed
   if (draft.busy) return { ok: false, error: 'board-build-busy' }
-  const check = checkFrozenBoardBuild(sessionId, buildId)
+  if (!stillAuthorized()) return { ok: false, error: 'permission-denied' }
+  const check = checkFrozenBoardBuild(sessionId, buildId, false, undefined, authorizationScope)
   const checks = (Array.isArray(check.checks) ? check.checks : [check]) as Array<{
     boardId: string; passed?: boolean; numericCoverage?: boolean; missing?: string[]; issues?: BoardGenerationIssue[]; issuesTruncated?: true
   }>
   const partial = !check.passed && allowPartial && checks.every(item =>
-    item.passed || (item.numericCoverage && !item.issuesTruncated && item.issues?.every(issue => coverageGaps.has(issue.code)) &&
+    item.passed || (item.numericCoverage && !item.issuesTruncated && item.issues?.every(issue =>
+      coverageGaps.has(issue.code) || (draft.afPreset?.boardId === item.boardId && issue.code === 'campaign-scope-unverified')
+    ) &&
       Boolean(item.issues.length || item.missing?.length)))
   if (!check.passed && !partial) return check
   if (!stillAuthorized() || active(sessionId, buildId)?.draft !== draft) return { ok: false, error: 'permission-denied' }
   // Conservative whole-store CAS also catches source-cache changes and other
   // boards changed during generation. No unrelated user write is overwritten.
   if (!isDeepStrictEqual(readBoardStoreBytes(draft.profile), draft.before)) return { ok: false, error: 'conflict', buildId: draft.id }
-  // tiktok-af 契约的确定性收尾：模板预绑卡指向 AF-{afPrefix}…虚拟名，而模型
-  // 拉数用的名字不可靠（实测它会用习惯名）。按本轮已登记证据的数据集重绑——
-  // 绑定靠证据不靠记忆。必须跑在草稿根上下文里：拉数写进的是草稿库，证据里
-  // 的数据集 id 只存在于 draft.root（在正式库上找永远找不到，重绑会静默失效）。
-  // 找不到对应数据集就保留虚拟名（卡片如实显示缺数据集）。
-  if (draft.afPrefix) {
-    withBoardBuildRoot(draft.root, () => {
-      const datasets = listDatasetsStrict()
-      const evidenceIds = [...draft.sourceEvidence.keys()].filter(id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))
-      const resolveRole = (role: '基础' | '次留'): string | undefined => {
-        const hits = evidenceIds
-          .map(id => datasets.find(dataset => dataset.id === id))
-          .filter((dataset): dataset is NonNullable<typeof dataset> => !!dataset && dataset.name.includes(role))
-        return hits[0]?.id
-      }
-      const baseId = resolveRole('基础')
-      const retentionId = resolveRole('次留')
-      if (baseId || retentionId) {
-        const targetIds = new Set([...draft.targets.keys()])
-        for (const board of listBoards()) {
-          if (draft.targets.size && !targetIds.has(board.id)) continue
-          let touched = false
-          const widgets = board.widgets.map(widget => {
-            const bound = widget.config?.datasetId
-            if (bound === `AF-${draft.afPrefix}基础分天` && baseId) { touched = true; return { ...widget, config: { ...widget.config, datasetId: baseId } } }
-            if (bound === `AF-${draft.afPrefix}次留分天` && retentionId) { touched = true; return { ...widget, config: { ...widget.config, datasetId: retentionId } } }
-            return widget
-          })
-          if (!touched) continue
-          const next = { ...board, widgets, updatedAt: board.updatedAt + 1 }
-          const saved = saveBoard(next, undefined, board.updatedAt)
-          if (!saved.ok) throw new Error('af-preset-remap-save-failed')
-        }
-      }
-    })
-  }
   const results = withBoardBuildRoot(draft.root, () => changedBoards(draft)!.map(board => ({ board, refresh: getLatestBoardRefresh(board) })))
   if (draft.targets.size && hasUnrelatedSourceChanges(draft, results.map(({ board }) => board), readBoardStoreBytes(draft.root))) return { ok: false, error: 'board-source-outside-targets', buildId: draft.id, published: false }
   withBoardBuildRoot(draft.root, () => {

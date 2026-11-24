@@ -387,6 +387,7 @@ const RATE_LIMIT_CODES = new Set([40131])
 
 export function classifyTikTokError(error: unknown): { code: ReadingErrorCode; detail: string } {
   const message = error instanceof Error ? error.message : String(error)
+  if (message === 'tiktok-proxy-required') return { code: 'network', detail: 'TikTok 报表需要可用的代理线路，请检查代理配置后重试。' }
   const detail = message.slice(0, READING_ERROR_DETAIL_LIMIT)
   if (error instanceof TikTokApiError) {
     if (AUTH_CODES.has(error.code)) return { code: 'auth', detail }

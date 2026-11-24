@@ -84,11 +84,17 @@ describe('AppsFlyer OAuth', () => {
     const f = fixture(probe, () => clock)
     f.store.load.mockResolvedValueOnce({ clientId: 'synthetic-client', clientSecret: 'synthetic-secret', tokenEndpoint: 'https://mcp.appsflyer.com/token', accessToken: 'synthetic-old', refreshToken: 'synthetic-refresh', expiresAt: 120_000, savedAt: 1 })
     await f.manager.initialize()
+    const before = await f.manager.getVerifiedDatasetAuthorization()
+    expect(before).toMatchObject({ accessToken: 'synthetic-old', scope: expect.stringMatching(/^[a-f0-9]{32}-\d+$/) })
     clock = 130_000
-    expect(await Promise.all([f.manager.getVerifiedAccessToken(), f.manager.getVerifiedAccessToken()])).toEqual(['synthetic-access', 'synthetic-access'])
+    expect(f.manager.getVerifiedDatasetScopeIdentity()).toBeNull()
+    const renewed = await Promise.all([f.manager.getVerifiedDatasetAuthorization(), f.manager.getVerifiedDatasetAuthorization()])
+    expect(renewed).toEqual(Array.from({ length: 2 }, () => expect.objectContaining({ accessToken: 'synthetic-access', scope: before?.scope })))
     expect(f.fetchImpl.mock.calls.filter(([url]) => url.endsWith('/token'))).toHaveLength(1)
     expect(probe).toHaveBeenCalledTimes(2)
     await f.manager.disconnect()
+    expect(before?.isCurrent()).toBe(false)
+    expect(renewed.every(grant => grant?.isCurrent() === false)).toBe(true)
   })
   it('does not return a token when disconnect occurs while renewal is pending', async () => {
     let clock = 1_000, release!: (value: Response) => void

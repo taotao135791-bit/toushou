@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import Papa from 'papaparse'
 import type { BoardDataset, BoardDatasetColumn } from '../../../shared/types'
@@ -6,6 +7,7 @@ import { createOrUpdateDataset, listDatasets, updateDatasetAppsFlyerState } from
 import { isAppsFlyerDatasetWindow, type AppsFlyerDatasetRefreshResult, type AppsFlyerDatasetState } from '../../../shared/appsflyerDataset'
 import { DATASET_LIMITS, isValidDatasetId } from '../../../shared/datasets'
 import { AppsFlyerMcpClient, isAppsFlyerBuiltInEvent } from './AppsFlyerMcpClient'
+import type { VerifiedAppsFlyerDatasetAuthorization } from './AppsFlyerConnectionManager'
 import { proxyFetchFor } from '../tiktok/proxyFetch'
 import { boardStoragePath } from '../../boardBuildStorage'
 
@@ -106,13 +108,27 @@ export function listQuerySpecs(file: string = specsFile(), options: { persistMig
 }
 
 function saveSpecs(specs: AfQuerySpec[], file: string = specsFile()): void {
-  writeFileSync(file, JSON.stringify({ specs }, null, 2), 'utf8')
+  const temp = `${file}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temp, JSON.stringify({ specs }, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    renameSync(temp, file)
+  } catch (error) {
+    try { unlinkSync(temp) } catch { /* No staged file to remove. */ }
+    throw error
+  }
 }
 
 export function saveQuerySpec(spec: AfQuerySpec, file: string = specsFile()): AfQuerySpec[] {
-  const existing = listQuerySpecs(file).filter((entry) => entry.id !== spec.id)
-  if (existing.length >= MAX_SPECS) throw new Error('query-limit')
-  const next = [...existing, spec]
+  return saveQuerySpecs([spec], file)
+}
+
+/** Validate the complete replacement set before changing any saved recipe. */
+export function saveQuerySpecs(updates: AfQuerySpec[], file: string = specsFile()): AfQuerySpec[] {
+  const ids = new Set(updates.map(spec => spec.id))
+  if (ids.size !== updates.length) throw new Error('duplicate-query-id')
+  const existing = listQuerySpecs(file, { persistMigration: false })
+  const next = [...existing.filter(spec => !ids.has(spec.id)), ...updates]
+  if (next.length > MAX_SPECS) throw new Error('query-limit')
   saveSpecs(next, file)
   return next
 }
@@ -126,13 +142,13 @@ export function discardUnboundQuerySpec(spec: AfQuerySpec, file: string = specsF
 }
 
 /** Verified AF access from the connection module; null when not connected. */
-let tokenSource: () => Promise<string | null> = async function defaultTokenSource(): Promise<string | null> {
+let authorizationSource = async (): Promise<VerifiedAppsFlyerDatasetAuthorization | null> => {
   try {
     // Dynamic import survives the esbuild bundle AND keeps the import chain
     // acyclic (a lazy require here compiled to a runtime file lookup that
     // always threw MODULE_NOT_FOUND).
-    const { verifiedAppsFlyerAccessToken } = await import('../../appsflyerConnection')
-    return await verifiedAppsFlyerAccessToken()
+    const { verifiedAppsFlyerDatasetAuthorization } = await import('../../appsflyerConnection')
+    return await verifiedAppsFlyerDatasetAuthorization()
   } catch {
     return null
   }
@@ -140,12 +156,45 @@ let tokenSource: () => Promise<string | null> = async function defaultTokenSourc
 
 /** Test seam: replace the verified-token source (defaults to the live connection). */
 export function setAppsFlyerDatasetTokenSourceForTest(source: () => string | null | Promise<string | null>): void {
-  tokenSource = async () => await source()
+  authorizationSource = async () => {
+    const accessToken = await source()
+    return accessToken ? {
+      accessToken, scope: createHash('sha256').update(accessToken).digest('hex'), isCurrent: () => true, reportReadFailure: () => {}
+    } : null
+  }
 }
 
-async function verifiedToken(): Promise<string | null> {
-  const token = await tokenSource()
-  return typeof token === 'string' && token ? token : null
+export async function getVerifiedAppsFlyerDatasetScope(): Promise<Pick<VerifiedAppsFlyerDatasetAuthorization, 'scope' | 'isCurrent'> | null> {
+  const authorization = await authorizationSource()
+  return authorization?.isCurrent() ? { scope: authorization.scope, isCurrent: authorization.isCurrent } : null
+}
+
+function providerQuery(recipe: Obj, window: PullWindow): Obj | null {
+  const query: Obj = { ...recipe, start_date: window.start, end_date: window.end }
+  // AppsFlyer supplies Installs automatically and rejects it as a requested metric.
+  if (!Array.isArray(query.metrics)) return query
+  const omitInstalls = (metric: unknown) => !/^installs$/i.test(String(obj(metric)?.metric_name ?? ''))
+  const metrics = query.metrics.filter(omitInstalls)
+  if (!metrics.length) return null
+  query.metrics = metrics
+  if (Array.isArray(query.sort_by_metrics)) {
+    const sort = query.sort_by_metrics.filter(omitInstalls)
+    if (sort.length) query.sort_by_metrics = sort
+    else delete query.sort_by_metrics
+  }
+  return query
+}
+
+function canonicalQuery(value: unknown): string {
+  if (Array.isArray(value)) return '[' + value.map(canonicalQuery).join(',') + ']'
+  if (value && typeof value === 'object')
+    return '{' + Object.keys(value as Obj).sort().map(key => JSON.stringify(key) + ':' + canonicalQuery((value as Obj)[key])).join(',') + '}'
+  return JSON.stringify(value ?? null)
+}
+
+export function getAppsFlyerQueryHash(recipe: Obj, window: PullWindow): string | null {
+  const query = providerQuery(recipe, window)
+  return query ? createHash('sha256').update(canonicalQuery(query)).digest('hex') : null
 }
 
 interface QueryClient {
@@ -267,6 +316,8 @@ export interface AppsFlyerPullOptions {
   /** Main planner slots reuse a recipe without redirecting its original dataset. */
   materializations?: Array<{ specId: string; datasetId?: string; datasetName: string; materialization: NonNullable<AppsFlyerDatasetState['materialization']> }>
   canCommit?: () => boolean
+  /** null explicitly pins an operation started without a verified connection. */
+  authorizationScope?: string | null
   /** Deterministic clock for tests and today's partial-window policy. */
   now?: number
   /** Pace between planned queries — the official tool caps at 20 calls/min. */
@@ -371,12 +422,20 @@ export async function planAppsFlyerQuery(options: {
   window: PullWindow
   filters?: Record<string, string[]>
   clientFactory?: (token: string) => QueryClient
+  authorizationScope?: string
 }): Promise<AppsFlyerQueryPlan> {
   if (!isAppsFlyerDatasetWindow(options.window)) throw new Error('invalid-window')
-  const token = await verifiedToken()
-  if (!token) throw new Error('not-connected')
+  const authorization = await authorizationSource()
+  if (!authorization?.isCurrent() || (options.authorizationScope !== undefined && authorization.scope !== options.authorizationScope)) throw new Error('not-connected')
+  const token = authorization.accessToken
   const client = options.clientFactory ? options.clientFactory(token) : new AppsFlyerMcpClient(token, async (url, init) => (await proxyFetchFor(url, 'appsflyer-api'))(url, init))
-  await client.initialize()
+  try {
+    await client.initialize()
+  } catch (error) {
+    authorization.reportReadFailure(error)
+    throw error
+  }
+  if (!authorization.isCurrent()) throw new Error('not-connected')
   // Discovery keeps one bounded page. Its dimensions are evidence for the
   // next query, without summing unique users or installs across groupings.
   const rowLimit = 100
@@ -390,7 +449,14 @@ export async function planAppsFlyerQuery(options: {
     groupings: ['Event name', 'Media source', 'Date', 'Geo'],
     filters: options.filters ?? {}
   }
-  const text = await client.queryRaw({ query })
+  let text: string
+  try {
+    text = await client.queryRaw({ query })
+  } catch (error) {
+    authorization.reportReadFailure(error)
+    throw error
+  }
+  if (!authorization.isCurrent()) throw new Error('not-connected')
   const parsed = parseAfDataset(text, rowLimit, { allowPartial: true, allowSample: true })
   const idx = (name: string) => parsed.columns.findIndex((column) => column.name === name)
   const eventIndex = idx('事件')
@@ -432,7 +498,8 @@ const localToday = (): string => {
 }
 
 /** Pull the requested recipes over an exact window; one source never refreshes another board's AF data. */
-export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Promise<AppsFlyerPullResult> {  const { window, file, specsFile: specsFilePath, clientFactory, interCallDelayMs = 3_500 } = options
+export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Promise<AppsFlyerPullResult> {
+  const { window, file, specsFile: specsFilePath, clientFactory, interCallDelayMs = 3_500 } = options
   if (!isAppsFlyerDatasetWindow(window)) return { ok: false, error: 'invalid-window', results: [] }
   const now = options.now ?? Date.now()
   const localToday = (() => {
@@ -478,54 +545,40 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
     return false
   })
   if (bound.length === 0) return { ok: false, error: results[0]?.error ?? 'missing-query', results }
-  const token = await verifiedToken()
-  if (!token) {
+  const authorization = await authorizationSource()
+  if ((options.authorizationScope != null && authorization?.scope !== options.authorizationScope) ||
+      (options.authorizationScope === null && authorization?.isCurrent())) {
+    bound.forEach(superseded)
+    return { ok: false, error: 'not-connected', results }
+  }
+  if (!authorization?.isCurrent()) {
     bound.forEach(target => fail(target, 'not-connected'))
     return { ok: false, error: 'not-connected', results }
   }
+  const token = authorization.accessToken
   const client = clientFactory ? clientFactory(token) : new AppsFlyerMcpClient(token, async (url, init) => (await proxyFetchFor(url, 'appsflyer-api'))(url, init))
   try {
     await client.initialize()
-  } catch {
-    bound.forEach(target => fail(target, 'not-connected'))
+  } catch (error) {
+    authorization.reportReadFailure(error)
+    if (authorization.isCurrent()) bound.forEach(target => fail(target, 'not-connected'))
+    else bound.forEach(superseded)
+    return { ok: false, error: 'not-connected', results }
+  }
+  if (!authorization.isCurrent()) {
+    bound.forEach(superseded)
     return { ok: false, error: 'not-connected', results }
   }
   // ---- Plan: group bound targets by sanitized query shape — identical
   // recipes share ONE server call and every dataset in the group is written
   // from the same answer. The official tool caps at 20 calls/min.
-  const canonicalQuery = (value: unknown): string => {
-    if (Array.isArray(value)) return '[' + value.map(canonicalQuery).join(',') + ']'
-    if (value && typeof value === 'object')
-      return '{' + Object.keys(value as Obj).sort().map(k => JSON.stringify(k) + ':' + canonicalQuery((value as Obj)[k])).join(',') + '}'
-    return JSON.stringify(value ?? null)
-  }
   interface QueryPlan { key: string; query: Obj; targets: typeof bound }
   const plans: QueryPlan[] = []
   for (const target of bound) {
     const spec = target.spec!
     if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
-    const query: Obj = { ...spec.query, start_date: window.start, end_date: window.end }
-    // An explicit Installs metric is rejected by the official API ("doesn't
-    // support period and aggregation type") — it adds the Installs column to
-    // the answer on its own. Strip it so old recipes heal on refresh; a
-    // recipe made ONLY of Installs fails fast here without burning quota.
-    if (Array.isArray(query.metrics)) {
-      const allMetrics = query.metrics as Array<Record<string, unknown>>
-      const kept = allMetrics.filter((metric) => {
-        const entry = obj(metric)
-        return !entry || !/^installs$/i.test(String(entry.metric_name ?? ''))
-      })
-      if (kept.length > 0) query.metrics = kept
-      else { fail(target, 'Installs 不能单独作为查询指标：用 App Active 等事件查询，Installs 列由官方自动返回'); continue }
-      if (Array.isArray(query.sort_by_metrics)) {
-        const keptSort = (query.sort_by_metrics as Array<Record<string, unknown>>).filter((sort) => {
-          const entry = obj(sort)
-          return !entry || !/^installs$/i.test(String(entry.metric_name ?? ''))
-        })
-        if (keptSort.length > 0) query.sort_by_metrics = keptSort
-        else delete query.sort_by_metrics
-      }
-    }
+    const query = providerQuery(spec.query, window)
+    if (!query) { fail(target, 'Installs 不能单独作为查询指标：用 App Active 等事件查询，Installs 列由官方自动返回'); continue }
     const key = canonicalQuery(query)
     const existingPlan = plans.find((plan) => plan.key === key)
     if (existingPlan) { existingPlan.targets.push(target); continue }
@@ -541,10 +594,19 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
     const failPlan = (message: string) => {
       for (const target of planTargets) fail(target, message)
     }
+    if (!authorization.isCurrent()) {
+      planTargets.forEach(superseded)
+      continue
+    }
     let text: string
     try {
       text = await client.queryRaw({ query })
     } catch (error) {
+      authorization.reportReadFailure(error)
+      if (!authorization.isCurrent()) {
+        planTargets.forEach(superseded)
+        continue
+      }
       // A rate-limited call gets ONE retry after a longer backoff — the
       // per-minute window refills in about a minute. Deterministic tool
       // errors (validation of a bad recipe) must fail fast instead of
@@ -560,9 +622,18 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
         continue
       }
       await pace(65_000)
-        try {
+      if (!authorization.isCurrent()) {
+        planTargets.forEach(superseded)
+        continue
+      }
+      try {
         text = await client.queryRaw({ query })
       } catch (retryError) {
+        authorization.reportReadFailure(retryError)
+        if (!authorization.isCurrent()) {
+          planTargets.forEach(superseded)
+          continue
+        }
         // Through fail() so the dataset's AF state records this failure —
         // a direct result push would leave stale "updated" state behind.
         for (const target of planTargets) {
@@ -570,6 +641,10 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
         }
         continue
       }
+    }
+    if (!authorization.isCurrent()) {
+      planTargets.forEach(superseded)
+      continue
     }
     const rowCount = typeof query.row_count === 'number' && query.row_count > 0 ? query.row_count : 100
     let parsed
@@ -582,6 +657,8 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
       failPlan(`${error instanceof Error ? error.message : String(error)}${reason ? ` — ${reason}` : ''}`)
       continue
     }
+    const partial = allowPartial || parsed.partial
+    const provenance = { queryHash: createHash('sha256').update(plan.key).digest('hex'), authorizationScope: authorization.scope }
     for (const target of planTargets) {
       if (!currentTarget(target) || options.canCommit?.() === false) { superseded(target); continue }
       // The write phase is per-target: a throwing saveQuerySpec (query-limit
@@ -597,7 +674,7 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
           truncated: false
         }, file, {
           ...(target.dataset ? { replaceId: target.dataset.id } : {}),
-          appsflyer: { specId: spec.id, status, window: { ...window }, dataWindow: { ...window }, ...(parsed.partial ? { partial: true } : {}), attemptedAt: Date.now(), ...(target.materialization ? { materialization: target.materialization } : {}) }
+          appsflyer: { specId: spec.id, status, window: { ...window }, dataWindow: { ...window }, provenance, ...(partial ? { partial: true } : {}), attemptedAt: Date.now(), ...(target.materialization ? { materialization: target.materialization } : {}) }
         })
         if (!written.ok) { fail(target, written.error); continue }
         // Bind to identity after the initial pull, including an empty result.
@@ -605,7 +682,7 @@ export async function pullAppsFlyerDatasets(options: AppsFlyerPullOptions): Prom
         if (!target.materialization && (spec.datasetId !== written.dataset.id || spec.datasetName !== written.dataset.name)) {
           saveQuerySpec({ ...spec, datasetId: written.dataset.id, datasetName: written.dataset.name }, specsFilePath)
         }
-        results.push({ ...base(target), datasetId: written.dataset.id, datasetName: written.dataset.name, ok: true, status, rowCount: written.dataset.rows.length })
+        results.push({ ...base(target), datasetId: written.dataset.id, datasetName: written.dataset.name, ok: true, status, rowCount: written.dataset.rows.length, ...(partial ? { partial: true } : {}) })
       } catch (error) {
         fail(target, `${error instanceof Error ? error.message : String(error)} (write phase)`.slice(0, 400))
       }

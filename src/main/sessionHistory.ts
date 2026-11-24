@@ -1,4 +1,5 @@
-import { open, readdir, stat, unlink } from 'node:fs/promises'
+import { lstat, open, readdir, stat, unlink } from 'node:fs/promises'
+import type { BigIntStats } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -666,8 +667,20 @@ export async function deleteSessionFileEverywhere(
  * before reporting failure; the rollback that a false return triggers makes
  * the row reappear, which users read as "删除不掉" (2026-11-24 实测复现). */
 export async function deleteSessionFile(filePath: string, agentDir?: string): Promise<boolean> {
-  if (!isSessionFilePath(filePath, agentDir)) return false
+  let original: BigIntStats | undefined
   for (let attempt = 0; ; attempt++) {
+    if (!isSessionFilePath(filePath, agentDir)) return false
+    let current: BigIntStats
+    try {
+      current = await lstat(filePath, { bigint: true })
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT'
+    }
+    if (!current.isFile() && !current.isSymbolicLink()) return false
+    if (original && (current.dev !== original.dev || current.ino !== original.ino || current.birthtimeNs !== original.birthtimeNs)) return false
+    original ??= current
+    // A waiting retry may see a new file or a redirected parent path.
+    if (!isSessionFilePath(filePath, agentDir)) return false
     try {
       await unlink(filePath)
       return true

@@ -3,20 +3,30 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 let profile: string
+let afAuthorization: string | null
 vi.mock('electron', () => ({ app: { getPath: () => profile } }))
-vi.mock('../appsflyerConnection', () => ({ verifiedAppsFlyerAccessToken: async () => null }))
+vi.mock('../appsflyerConnection', () => ({
+  verifiedAppsFlyerAccessToken: async () => null,
+  verifiedAppsFlyerDatasetScopeIdentity: () => afAuthorization
+}))
 import { authorizeAndDispatch, dispatch } from '../boardsBridge'
 import { createOrUpdateDataset, listDatasets } from '../boardDatasets'
 import { listBoards, saveBoard } from '../boards'
-import { saveQuerySpec, listQuerySpecs } from '../integrations/appsflyer/appsflyerDataset'
-import { recordBoardBuildSourceEvidence, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, setBoardBuildAfPrefix, withCurrentBoardBuild, type BoardTargetUiEvent } from '../boardBuilds'
+import { getAppsFlyerQueryHash, saveQuerySpec, listQuerySpecs } from '../integrations/appsflyer/appsflyerDataset'
+import { afPresetPlaceholder, recordBoardBuildSourceEvidence, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, withCurrentBoardBuild, type BoardTargetUiEvent } from '../boardBuilds'
 import { atomicBoardFile, BOARD_STORE_FILES, boardBuildRoot, boardProfileRoot, readBoardStoreBytes, recoverBoardBuild } from '../boardBuildStorage'
 import { freezeBoardBuildIntent } from '../../shared/boardBuild'
+import { boardReportWindow } from '../../shared/boardWindows'
 
 const session = 'synthetic-build-session'
 const deps = { getAccess: () => ({ cwd: '/synthetic-workspace', mode: 'full' as const, remoteReadonly: false }), confirm: vi.fn(async () => true) }
 const call = (request: Parameters<typeof authorizeAndDispatch>[1]) => authorizeAndDispatch(session, request, deps)
-beforeEach(() => { profile = mkdtempSync(path.join(tmpdir(), 'board-build-test-')); vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 10, 6, 12)) })
+beforeEach(() => {
+  profile = mkdtempSync(path.join(tmpdir(), 'board-build-test-'))
+  afAuthorization = 'verified-test-grant'
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date(2026, 10, 6, 12))
+})
 afterEach(() => { revokeBoardBuildSession(session); vi.unstubAllEnvs(); vi.useRealTimers(); rmSync(profile, { recursive: true, force: true }) })
 
 async function begin(text: string, targetBoardId?: string): Promise<string> {
@@ -54,37 +64,111 @@ async function seedNative(buildId: string, proven = true): Promise<string> {
   }, buildId)
 }
 
-describe('trusted request extraction', () => {
-  it('remaps tiktok-af preset bindings to the datasets actually pulled this build', async () => {
-    const buildId = await begin('做固定快照看板，只有固定数字，产品是 Lemon8 泰国')
-    // board_create 的 authorize 路径会记录 afPrefix；这里直接落到草稿模拟。
-    expect(setBoardBuildAfPrefix(session, buildId, 'Lemon8泰国')).toBe(true)
-    // 模型按习惯名拉数：草稿库里的数据集名与模板虚拟名（AF-{prefix}基础分天）不同。
-    const datasetId = await withCurrentBoardBuild(session, async () => {
-      const win = { start: '2026-10-30', end: '2026-11-05' }
-      const made: string[] = []
-      for (const [name, columns, row] of [
-        ['AF-Lemon8泰国TikTok基础', [{ name: '活跃用户', type: 'number' }, { name: '安装量', type: 'number' }, { name: '日期', type: 'date' }], [1105, 244, '2026-11-04']],
-        ['AF-Lemon8泰国TikTok次留', [{ name: '事件次数', type: 'number' }, { name: '独立用户', type: 'number' }, { name: '日期', type: 'date' }], [74, 74, '2026-11-04']]
-      ] as Array<[string, import('../../shared/types').BoardDatasetColumn[], Array<string | number>]>) {
-        const result = createOrUpdateDataset(name, { columns, rows: [row], truncated: false }, undefined, { appsflyer: { specId: 'spec-' + name.slice(-4), status: 'updated', window: win, dataWindow: win, attemptedAt: Date.now() } })
-        if (!result.ok) throw new Error(result.error)
-        recordBoardBuildSourceEvidence(session, 'appsflyer', [result.dataset.id])
-        made.push(result.dataset.id)
-      }
-      return made.join(',')
-    }, buildId)
-    await call({ action: 'board_create', name: 'AF preset remap', template: 'tiktok-af', afPrefix: 'Lemon8泰国', buildId })
-    const committed = await call({ action: 'board_build_commit', buildId, allowPartial: true })
-    expect(committed).toMatchObject({ ok: true, published: true })
-    const board = listBoards().find((candidate) => candidate.name === 'AF preset remap')!
-    // 预绑的虚拟名在提交时被重绑到本轮实际拉到的数据集——绑定靠证据不靠记忆。
-    const afCards = board.widgets.filter((w) => (w.title ?? '').startsWith('AF ') && w.config.source === 'dataset')
-    expect(afCards.length).toBeGreaterThanOrEqual(5)
-    const pulled = datasetId.split(',')
-    expect(afCards.every((w) => pulled.includes(String(w.config.datasetId)))).toBe(true)
-    expect(new Set(afCards.map((w) => w.config.datasetId)).size).toBe(2)
+const presetApp = 'app.only-this-client'
+const presetEvent = 'return_day_1'
+const presetWindow = () => boardReportWindow({ masterScope: { range: 'last7', metrics: ['spend'] } })
+
+async function createAfPreset(buildId: string) {
+  const created = await call({
+    action: 'board_create', name: 'AF preset draft', template: 'tiktok-af', afPrefix: '电商泰国',
+    masterScope: { range: 'last7', metrics: ['spend'] }, advertiserIds: '7123456789012345678',
+    afScope: { appId: presetApp, countries: ['th'], retentionEvent: presetEvent }, buildId
   })
+  expect(created.ok).toBe(true)
+  return (created.board as { id: string }).id
+}
+
+function seedAfPresetDataset(buildId: string, name: string, options: {
+  appId?: string; country?: string; window?: ReturnType<typeof presetWindow>; event?: string; verified?: boolean; installsOnly?: boolean
+} = {}) {
+  return withCurrentBoardBuild(session, async () => {
+    const window = options.window ?? presetWindow()
+    const query = {
+      app_ids: [options.appId ?? presetApp],
+      filters: { 'Media source': ['tiktokglobal_int'], Geo: [options.country ?? 'TH'] },
+      groupings: ['Date'],
+      in_app_event: options.event ? [options.event] : [],
+      metrics: [{ metric_name: options.event || options.installsOnly ? 'Count' : 'Active users', period: 'activity', attribution_source: 'appsflyer' }]
+    }
+    const specId = `preset-spec-${name}`
+    const columns = options.event ? ['事件次数'] : options.installsOnly ? ['安装量'] : ['安装量', '活跃用户']
+    const result = createOrUpdateDataset(name, {
+      columns: [{ name: '日期', type: 'date' }, ...columns.map(column => ({ name: column, type: 'number' as const }))],
+      rows: [window.start, window.end].map(date => [date, ...columns.map(() => 24)]), truncated: false
+    }, undefined, { appsflyer: {
+      specId, status: 'updated', window, dataWindow: window, attemptedAt: Date.now(),
+      ...(options.verified === false ? {} : { provenance: { queryHash: getAppsFlyerQueryHash(query, window)!, authorizationScope: afAuthorization! } })
+    } })
+    if (!result.ok) throw new Error(result.error)
+    saveQuerySpec({ id: specId, name, datasetName: result.dataset.name, datasetId: result.dataset.id, query })
+    recordBoardBuildSourceEvidence(session, 'appsflyer', [result.dataset.id])
+    return result.dataset.id
+  }, buildId)
+}
+
+const presetCards = (board: ReturnType<typeof listBoards>[number]) => board.widgets.filter(widget => ['安装量', '活跃用户', '事件次数'].includes(String(widget.config.metric)))
+const readDraft = (buildId: string, boardId: string) => withCurrentBoardBuild(session, async () => listBoards().find(board => board.id === boardId)!, buildId)
+
+describe('TikTok and AF template bindings', () => {
+  it('binds native datasets before validation by exact recipe and scope, regardless of their names', async () => {
+    await dispatch({ action: 'board_create', name: 'Older client', template: 'tiktok-af', afPrefix: '电商泰国' })
+    const [oldBoard] = listBoards()
+    const buildId = await begin('新建电商泰国 AF 安装、日活和次留看板，使用最近7天的真实数据')
+    // A previous or ambiguous app cannot win by using the old template name.
+    await seedAfPresetDataset(buildId, 'AF-电商泰国基础分天', { appId: 'another-client' })
+    await seedAfPresetDataset(buildId, 'wrong geo', { country: 'VN' })
+    await seedAfPresetDataset(buildId, 'wrong window', { window: { start: '2026-10-01', end: '2026-10-07' } })
+    await seedAfPresetDataset(buildId, 'unverified', { verified: false })
+    await seedAfPresetDataset(buildId, 'wrong event', { event: 'return_day_7' })
+    const base = await seedAfPresetDataset(buildId, 'new daily rollup')
+    const retention = await seedAfPresetDataset(buildId, 'returns', { event: presetEvent })
+    const boardId = await createAfPreset(buildId)
+    expect(await call({ action: 'board_build_preflight', buildId })).toMatchObject({ boardId, numericCoverage: true })
+    const draft = await readDraft(buildId, boardId)
+    expect(presetCards(draft)).toHaveLength(6)
+    for (const widget of presetCards(draft)) {
+      expect(widget.config.datasetId, String(widget.config.metric)).toBe(widget.config.metric === '事件次数' ? retention : base)
+      expect(widget.config.filterColumn).toBeUndefined()
+    }
+    expect(await readDraft(buildId, oldBoard.id)).toEqual(oldBoard)
+  })
+
+  it('keeps ambiguous or revoked sources unresolved and publishes the independently verified counts', async () => {
+    const buildId = await begin('新建电商泰国 AF 安装、日活和次留看板，使用最近7天的真实数据')
+    const boardId = await createAfPreset(buildId)
+    const base = await seedAfPresetDataset(buildId, 'base A')
+    await call({ action: 'board_build_preflight', buildId })
+    expect(presetCards(await readDraft(buildId, boardId)).filter(widget => widget.config.metric === '安装量').every(widget => widget.config.datasetId === base)).toBe(true)
+    afAuthorization = 'another-verified-grant'
+    await call({ action: 'board_build_preflight', buildId })
+    expect(presetCards(await readDraft(buildId, boardId)).filter(widget => widget.config.metric === '安装量').every(widget => widget.config.datasetId === afPresetPlaceholder(boardId, 'base'))).toBe(true)
+    afAuthorization = 'verified-test-grant'
+    await seedAfPresetDataset(buildId, 'base B')
+    const retention = await seedAfPresetDataset(buildId, 'returns', { event: presetEvent })
+    const validation = await call({ action: 'board_build_commit', buildId })
+    expect(validation).toMatchObject({ ok: false, numericCoverage: true, published: false })
+    expect(await call({ action: 'board_build_commit', buildId, allowPartial: true }), JSON.stringify(validation.issues)).toMatchObject({ ok: true, published: true, status: 'partial' })
+    const saved = listBoards().find(board => board.id === boardId)!
+    expect(saved.partialDelivery?.issues).toContain('dataset-missing')
+    for (const widget of presetCards(saved)) {
+      expect(widget.config.datasetId).toBe(widget.config.metric === '事件次数' ? retention : afPresetPlaceholder(boardId, 'base'))
+    }
+  })
+
+  it('shows verified installations when activity and retention cannot be read', async () => {
+    const buildId = await begin('新建电商泰国 AF 安装、日活和次留看板，使用最近7天的真实数据')
+    const boardId = await createAfPreset(buildId)
+    const installations = await seedAfPresetDataset(buildId, 'just installations', { installsOnly: true })
+    await call({ action: 'board_build_preflight', buildId })
+    for (const widget of presetCards(await readDraft(buildId, boardId))) {
+      if (widget.config.metric === '安装量') expect(widget.config.datasetId).toBe(installations)
+      if (widget.config.metric === '活跃用户') expect(widget.config.datasetId).toBe(afPresetPlaceholder(boardId, 'base'))
+      if (widget.config.metric === '事件次数') expect(widget.config.datasetId).toBe(afPresetPlaceholder(boardId, 'retention'))
+    }
+  })
+})
+
+describe('trusted request extraction', () => {
   it('keeps defaults for unspecified commerce, subscriptions and daily reports', () => {
     for (const text of ['做一个电商投放看板，你安排', '做订阅产品的获客看板', '做昨天的投放日报看板，你安排']) {
       const intent = freezeBoardBuildIntent(text, 'trusted', 1)

@@ -2,7 +2,8 @@ import type { BoardDataset, BoardMasterScope, BoardWidget, KanbanBoard, Language
 import { MASTER_SCOPED_WIDGET_TYPES } from '@shared/boards'
 import { boardReadingRangeDates } from '@shared/fbReading'
 import { boardWidgetDatasetBindings } from '@shared/boardDataWidgets'
-import { boardWidgetWindow, boardWindowLabel } from '@shared/boardWindows'
+import { boardWidgetWindow, boardWindowLabel, isBoardDate } from '@shared/boardWindows'
+import { filterDatasetRowsByWindow } from '@shared/datasets'
 import type { BoardRefreshResult } from '@shared/boardRefresh'
 
 export function boardMasterWindow(range: BoardMasterScope['range'], now = new Date()): { start: string; end: string } {
@@ -134,19 +135,20 @@ export function boardScopedWidgetTitle(widget: BoardWidget, master: BoardMasterS
     .replace(/(^|[（(\s·])(?:昨天|昨日|今天|Today|Yesterday)(?=$|[）)\s·])/gi, (_match, prefix: string) => `${prefix}${label}`)
 }
 
-/** A failed or old AF response must not populate cards under a new date. */
-export function datasetsForBoardWindow(datasets: BoardDataset[], ids: string[], window: { start: string; end: string }, pending: boolean): BoardDataset[] {
+/** Reuse verified AF data only within the requested card window. */
+export function datasetsForBoardWindow(datasets: BoardDataset[], ids: string[], window: { start: string; end: string }, blocked: boolean): BoardDataset[] {
   const selected = new Set(ids)
   return datasets.map(dataset => {
     if (!selected.has(dataset.id)) return dataset
     const state = dataset.appsflyer
-    // 覆盖即放行（2026-11-24 实测修正）：拉取窗口往往比总控窗口宽（近7天
-    // 拉取、总控昨天），只要数据窗口**覆盖**总控窗口就是本次口径的合法数据；
-    // 旧的逐字段全等判定会把刚建好的板的 AF 行全部清空（开板即空）。
-    // 覆盖不住（数据早于总控窗口，典型=隔夜后没刷新）才如实清空待刷新。
-    const covered = typeof state?.dataWindow?.start === 'string' && typeof state.dataWindow.end === 'string'
-      && state.dataWindow.start <= window.start && state.dataWindow.end >= window.end
-    const ready = state && (state.status === 'updated' || state.status === 'empty') && covered
-    return !pending && ready ? dataset : { ...dataset, rows: [] }
+    const coverage = state?.dataWindow
+    const ready = !blocked && !!state?.specId && state.status === 'updated'
+      && !dataset.truncated && isBoardDate(coverage?.start) && isBoardDate(coverage?.end)
+      && coverage.start <= window.start && coverage.end >= window.end
+    if (!ready || !coverage) return { ...dataset, rows: [] }
+    // A total without day rows is only valid for the exact query window.
+    const exact = coverage.start === window.start && coverage.end === window.end
+    if (!exact && !dataset.columns.some(column => column.type === 'date')) return { ...dataset, rows: [] }
+    return filterDatasetRowsByWindow(dataset, window)
   })
 }
