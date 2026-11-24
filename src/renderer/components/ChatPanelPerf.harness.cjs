@@ -35,7 +35,8 @@ app.whenReady().then(async () => {
     const js = source => wc.executeJavaScript(source)
     const waitFor = async expression => {
       const until = Date.now() + 5000
-      while (!await js(expression)) {
+      let result
+      while (!(result = await js(expression))) {
         if (Date.now() > until) {
           const state = await js(`(() => {
             const describe = el => {
@@ -62,6 +63,7 @@ app.whenReady().then(async () => {
         }
         await new Promise(resolve => setTimeout(resolve, 15))
       }
+      return result
     }
     const frame = () => js(`new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('animation-frame timeout; visible='+document.visibilityState+' focused='+document.hasFocus())),3000);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}))})`)
     await waitFor(`document.visibilityState==='visible' && document.hasFocus() && !!window.chatPerfFixture && innerWidth===1024 && innerHeight===700`)
@@ -386,8 +388,21 @@ app.whenReady().then(async () => {
       await frame()
     }
     const click = async (expression) => {
-      await waitFor(`!!(${expression}) && getComputedStyle((${expression})).visibility==='visible'`)
-      const point = await js(`(() => {const r=(${expression}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`)
+      // Async results resize and reposition the portal after its rows mount.
+      // Send native input only when the same button is hit at a stable point.
+      const point = await waitFor(`(async () => {
+        const button = ${expression}
+        if (!button || button.disabled) return false
+        const center = () => {
+          const r = button.getBoundingClientRect()
+          return {x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2)}
+        }
+        const first = center()
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        const last = center()
+        return button.isConnected && first.x === last.x && first.y === last.y &&
+          button.contains(document.elementFromPoint(last.x, last.y)) && last
+      })()`)
       wc.sendInputEvent({ type: 'mouseMove', ...point })
       wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 })
       wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
