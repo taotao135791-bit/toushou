@@ -33,7 +33,8 @@ describe('project conversations in the real Sidebar', () => {
       expect(data.duplicateTitlesKept).toBe(2)
       expect(data.after).toMatchObject({ ...data.before, sameNode: true, animated: false })
       expect(data.pinKeyboard).toEqual({ snapshot: { current: 'live-a', workspace: '/synthetic/client-a/project' }, activations: 0, resumes: 0 })
-      expect(data.actionMenuCount).toBe(6)
+      // 置顶/锁定/重命名/复制/开分支/归档/删除：锁定对话功能加入后的菜单。
+      expect(data.actionMenuCount).toBe(7)
       expect(data.deleteKeyboard).toEqual({ snapshot: { current: 'live-a', workspace: '/synthetic/client-a/project' }, resumes: 0, deletes: 0 })
       expect(data.centerMouse).toMatchObject({ snapshot: { current: 'live-b', workspace: '/synthetic/client-b/project' }, pinned: ['live-b'], deletes: 0, bounds: data.beforeHover })
       expect(data.oneClickHistory).toEqual({ snapshot: { current: 'resumed-00000000-0000-4000-8000-000000000004', workspace: '/synthetic/client-b/project' }, targetReads: 1, resumes: 1 })
