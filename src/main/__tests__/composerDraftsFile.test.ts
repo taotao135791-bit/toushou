@@ -1,78 +1,67 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// app.getPath('userData') is redirected to a scratch dir per test.
-const userData = mkdtempSync(path.join(tmpdir(), 'composer-drafts-'))
-vi.mock('electron', () => ({
-  app: {
-    getPath: () => userData
-  }
-}))
+let userData: string
+vi.mock('electron', () => ({ app: { getPath: () => userData } }))
 
 const { loadComposerDrafts, saveComposerDrafts } = await import('../composerDraftsFile')
-
 const validDraft = {
   text: '写到一半的话',
   images: [{ type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' }],
   files: [{ path: 'D:/x/report.zip', name: 'report.zip', isDirectory: false, kind: 'archive' as const }]
 }
+const textDraft = (text: string) => ({ text, images: [] })
 
-beforeEach(() => {
-  // Keep the scratch dir itself; only reset the drafts file between cases.
-  mkdirSync(userData, { recursive: true })
-  rmSync(path.join(userData, 'composer-drafts.json'), { force: true })
-  rmSync(path.join(userData, 'composer-drafts.json.corrupt'), { force: true })
-  rmSync(path.join(userData, 'composer-drafts.json.tmp'), { force: true })
-})
+beforeEach(() => { userData = mkdtempSync(path.join(tmpdir(), 'composer-drafts-')) })
+afterEach(() => rmSync(userData, { force: true, recursive: true }))
 
 describe('composer-drafts file persistence', () => {
-  it('round-trips drafts through disk', () => {
-    expect(saveComposerDrafts({ sessionA: validDraft, '__new-chat__': { text: '未发送', images: [] } })).toBe(true)
-    expect(loadComposerDrafts()).toEqual({
-      sessionA: validDraft,
-      '__new-chat__': { text: '未发送', images: [] }
-    })
+  it('round-trips images and attachments with per-conversation changes', async () => {
+    expect(await saveComposerDrafts({ sessionA: validDraft, '__new-chat__': textDraft('未发送') })).toBe(true)
+    expect(await saveComposerDrafts({ '__new-chat__': textDraft('second chat') })).toBe(true)
+    expect(await loadComposerDrafts()).toEqual({ sessionA: validDraft, '__new-chat__': textDraft('second chat') })
   })
 
-  it('rejects malformed drafts wholesale instead of writing them', () => {
-    expect(saveComposerDrafts({ bad: { text: 123, images: [] } })).toBe(false)
-    expect(saveComposerDrafts({ bad: { text: 'x', images: [{ type: 'video', data: '', mimeType: '' }] } })).toBe(false)
-    expect(saveComposerDrafts('nope')).toBe(false)
-    expect(loadComposerDrafts()).toEqual({})
+  it('keeps saving valid entries when another entry is oversized or malformed', async () => {
+    expect(await saveComposerDrafts({ a: textDraft('previous') })).toBe(true)
+    expect(await saveComposerDrafts({
+      a: textDraft('x'.repeat(1_000_001)),
+      b: textDraft('new'),
+      bad: { text: 123 },
+      machine: { text: 'x', images: [{ type: 'video', data: '', mimeType: '' }] }
+    })).toBe(false)
+    expect(await loadComposerDrafts()).toEqual({ a: textDraft('previous'), b: textDraft('new') })
   })
 
-  it('caps what a single draft may carry', () => {
-    const huge = { text: 'x'.repeat(200_001), images: [] }
-    expect(saveComposerDrafts({ a: huge })).toBe(false)
-    const manyImages = { text: '', images: Array.from({ length: 5 }, () => ({ type: 'image', data: '', mimeType: 'image/png' })) }
-    expect(saveComposerDrafts({ a: manyImages })).toBe(false)
-    // The renderer's own truncated paste (100_000 + ellipsis) must validate.
-    expect(saveComposerDrafts({ a: { text: 'x'.repeat(100_001), images: [] } })).toBe(true)
+  it('saves cumulative normal pastes and deletes only explicitly cleared keys', async () => {
+    const long = textDraft('x'.repeat(270_000))
+    expect(await saveComposerDrafts({ a: long, b: validDraft })).toBe(true)
+    expect(await saveComposerDrafts({ b: null })).toBe(true)
+    expect(await loadComposerDrafts()).toEqual({ a: long })
   })
 
-  it('degrades a corrupt file to empty drafts and preserves the bytes for recovery', () => {
+  it('recovers legacy drafts without changing the current copy', async () => {
+    const file = path.join(userData, 'composer-drafts.json')
+    writeFileSync(file, JSON.stringify({ good: validDraft, ugly: { nonsense: true }, '': validDraft }))
+    expect(await loadComposerDrafts()).toEqual({ good: validDraft })
+    expect(await saveComposerDrafts({ good: null })).toBe(true)
+    expect(await loadComposerDrafts()).toEqual({})
+  })
+
+  it('keeps a corrupt legacy backup and persists new drafts', async () => {
     const file = path.join(userData, 'composer-drafts.json')
     writeFileSync(file, '{not json', 'utf-8')
-    expect(loadComposerDrafts()).toEqual({})
+    expect(await loadComposerDrafts()).toEqual({})
+    expect(await saveComposerDrafts({ a: validDraft })).toBe(true)
+    expect(await loadComposerDrafts()).toEqual({ a: validDraft })
     expect(readFileSync(`${file}.corrupt`, 'utf-8')).toBe('{not json')
   })
 
-  it('drops only invalid entries when part of the file is stale', () => {
-    const file = path.join(userData, 'composer-drafts.json')
-    writeFileSync(
-      file,
-      JSON.stringify({ good: validDraft, ugly: { nonsense: true }, '': validDraft }),
-      'utf-8'
-    )
-    expect(loadComposerDrafts()).toEqual({ good: validDraft })
-  })
-
-  it('writes atomically: no .tmp litter after a successful save', () => {
-    expect(saveComposerDrafts({ a: validDraft })).toBe(true)
-    const entries = loadComposerDrafts()
-    expect(entries).toEqual({ a: validDraft })
-    expect(() => readFileSync(path.join(userData, 'composer-drafts.json.tmp'))).toThrow()
+  it('serializes overlapping writes and removes temp files', async () => {
+    await Promise.all([saveComposerDrafts({ a: validDraft }), saveComposerDrafts({ a: null })])
+    expect(await loadComposerDrafts()).toEqual({})
+    expect(readdirSync(path.join(userData, 'composer-drafts'))).toEqual([])
   })
 })

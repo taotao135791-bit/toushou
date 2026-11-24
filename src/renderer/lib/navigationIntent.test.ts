@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { beginNavigationIntent, currentNavigationIntent, isCurrentNavigationIntent } from './navigationIntent'
+import { beginNavigationIntent, currentNavigationIntent, historyPreviewRouteState, isCurrentNavigationIntent, recordRouteNavigation } from './navigationIntent'
 import { useAppStore } from '../store'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -21,5 +21,16 @@ describe('shared user navigation intent', () => {
     useAppStore.getState().setCurrentSessionId('restored', intent)
     expect(currentNavigationIntent()).toBe(intent)
     expect(useAppStore.getState().currentSessionId).toBe('restored')
+  })
+
+  it('keeps a pending resume current on its preview route but invalidates on real navigation', () => {
+    const opening = beginNavigationIntent()
+    recordRouteNavigation('PUSH', historyPreviewRouteState)
+    expect(isCurrentNavigationIntent(opening)).toBe(true)
+    recordRouteNavigation('POP', historyPreviewRouteState)
+    expect(isCurrentNavigationIntent(opening)).toBe(false)
+    const next = currentNavigationIntent()
+    recordRouteNavigation('PUSH', null)
+    expect(isCurrentNavigationIntent(next)).toBe(false)
   })
 })

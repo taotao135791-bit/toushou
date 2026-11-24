@@ -12,27 +12,44 @@ export interface ChatTurn {
   streaming: boolean
 }
 
+function startsTurn(message: MessageLike): boolean {
+  return message.role === 'user' && message.kind !== 'steer'
+}
+
 /** A presentation only projection: no transcript records or indices are changed. */
 export function projectChatTurns(messages: MessageLike[], previousTurns: ChatTurn[] = [], streaming = false): ChatTurn[] {
   const turns: ChatTurn[] = []
-  for (let index = 0; index < messages.length; index++) {
-    const message = messages[index]
-    const startsTurn = message.role === 'user' && message.kind !== 'steer'
-    if (!turns.length || startsTurn) {
-      turns.push({ id: message.id, ownerIndex: startsTurn ? index : null, entries: [], nodes: [], streaming: false })
+  let start = 0
+  while (start < messages.length) {
+    const previous = previousTurns[turns.length]
+    if (previous && previous.entries[0].message === messages[start]) {
+      const end = start + previous.entries.length
+      if (end <= messages.length &&
+        (end === messages.length || startsTurn(messages[end])) &&
+        previous.streaming === (streaming && end === messages.length) &&
+        previous.entries.every((entry, offset) => entry.index === start + offset && entry.message === messages[start + offset])) {
+        turns.push(previous)
+        start = end
+        continue
+      }
     }
-    turns[turns.length - 1].entries.push({ message, index })
-  }
-  const previousById = new Map(previousTurns.map(turn => [turn.id, turn]))
-  for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-    const turn = turns[turnIndex]
-    turn.streaming = streaming && turnIndex === turns.length - 1
-    const previous = previousById.get(turn.id)
-    if (previous && previous.ownerIndex === turn.ownerIndex && previous.streaming === turn.streaming && previous.entries.length === turn.entries.length &&
-      previous.entries.every((entry, index) => entry.index === turn.entries[index].index && entry.message === turn.entries[index].message)) {
-      turns[turnIndex] = previous
-      continue
+    const first = messages[start]
+    const entries: IndexedChatMessage[] = [{ message: first, index: start }]
+    let end = start + 1
+    while (end < messages.length && !startsTurn(messages[end])) {
+      entries.push({ message: messages[end], index: end })
+      end++
     }
+    const turn: ChatTurn = {
+      id: first.id,
+      ownerIndex: startsTurn(first) ? start : null,
+      entries,
+      nodes: [],
+      streaming: streaming && end === messages.length
+    }
+    turns.push(turn)
+    start = end
+
     let lastTool = -1
     for (let i = 0; i < turn.entries.length; i++) if (turn.entries[i].message.toolCall) lastTool = i
     // Punctuation-only text between tools stays in the process while the

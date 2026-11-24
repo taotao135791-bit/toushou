@@ -3,6 +3,7 @@ import type { AppsFlyerDatasetRefreshRequest, AppsFlyerDatasetRefreshResult } fr
 import type { BoardRefreshRequest, BoardRefreshResult } from '../shared/boardRefresh'
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
+import type { SessionImportResult, SessionImportSource } from '../shared/sessionImport'
 import type { SaveReadingSnapshotInput } from '../shared/readingSnapshot'
 import type { SaveReadingSnapshotResult } from './readingSnapshots'
 import type { ReadingSnapshotExportResult } from './readingSnapshotExport'
@@ -68,6 +69,7 @@ import {
   PackageManagerCapabilities,
   AppSettings,
   ComposerDrafts,
+  ComposerDraftChanges,
   InstallStatus,
   ReadFileResult,
   SessionUiAnswer,
@@ -280,7 +282,8 @@ export interface ElectronAPI {
   setStore: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => Promise<boolean>
   /** Unsent composer drafts (per session + new-chat sentinel), persisted by Main. */
   getComposerDrafts: () => Promise<ComposerDrafts>
-  setComposerDrafts: (drafts: ComposerDrafts) => Promise<boolean>
+  setComposerDrafts: (changes: ComposerDraftChanges) => Promise<boolean>
+  onComposerDraftsFlush: (flush: () => Promise<void>) => () => void
   /** Kanban boards (local-only, validated in main on every read/write). */
   listBoards: () => Promise<KanbanBoard[]>
   /** Main resolves every module's dates and refreshes the board as one run. */
@@ -416,6 +419,7 @@ export interface ElectronAPI {
   sessionTranscript: (sessionId: string) => Promise<ChatMessage[] | null>
   /** Persisted sessions of a workspace, represented by opaque Main-held ids. */
   listSessionHistory: (grantId: string) => Promise<HistorySessionDescriptor[]>
+  importAgentHistory: (source: SessionImportSource, chooseFolder?: boolean) => Promise<SessionImportResult>
   /**
    * Resume an opaque history entry under the workspace grant that listed it.
    * Fails with `{ error: 'transcript_unavailable' }` when the session opened
@@ -842,8 +846,16 @@ const api: ElectronAPI = {
   setStore: (key: keyof AppSettings, value: unknown) =>
     ipcRenderer.invoke(IPC_CHANNELS.STORE_SET, key, value),
   getComposerDrafts: () => ipcRenderer.invoke(IPC_CHANNELS.COMPOSER_DRAFTS_GET),
-  setComposerDrafts: (drafts: ComposerDrafts) =>
-    ipcRenderer.invoke(IPC_CHANNELS.COMPOSER_DRAFTS_SET, drafts),
+  setComposerDrafts: (changes: ComposerDraftChanges) => ipcRenderer.invoke(IPC_CHANNELS.COMPOSER_DRAFTS_SET, changes),
+  onComposerDraftsFlush: (flush) => {
+    const handler = (_event: unknown, requestId: number) => {
+      void Promise.resolve().then(flush).catch(() => undefined).then(() => {
+        ipcRenderer.send(IPC_CHANNELS.COMPOSER_DRAFTS_FLUSHED, requestId)
+      })
+    }
+    ipcRenderer.on(IPC_CHANNELS.COMPOSER_DRAFTS_FLUSH_REQUEST, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.COMPOSER_DRAFTS_FLUSH_REQUEST, handler)
+  },
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   boardRefresh: (request: BoardRefreshRequest) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REFRESH, request),
   saveReadingSnapshot: (input: SaveReadingSnapshotInput) => ipcRenderer.invoke(IPC_CHANNELS.READING_SNAPSHOT_SAVE, input),
@@ -979,6 +991,8 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_SESSION_TRANSCRIPT, sessionId) as Promise<ChatMessage[] | null>,
   listSessionHistory: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_SESSION_HISTORY, grantId),
+  importAgentHistory: (source: SessionImportSource, chooseFolder = false) =>
+    ipcRenderer.invoke(IPC_CHANNELS.IMPORT_AGENT_HISTORY, source, chooseFolder),
   resumeSession: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_RESUME_SESSION, grantId, historyId),
   peekSession: (grantId: string, historyId: string) =>

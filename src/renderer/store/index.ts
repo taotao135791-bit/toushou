@@ -7,7 +7,8 @@ import { SessionRecord, removeHistoryRecord, removeLiveSessionRecords, purgeHist
 import { summarizePromptTitle } from '@shared/promptTitle'
 import { mergeTranscriptBackfill } from '../lib/transcriptMerge'
 import { createStreamQueue } from './streamQueue'
-import { clearComposerDraft, ComposerDrafts, pruneComposerDrafts, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
+import { clearComposerDraft, ComposerDrafts, draftHasContent, historyComposerDraftKey, NEW_CHAT_DRAFT_KEY, pruneComposerDrafts, sessionComposerDraftKey, SessionComposerDraft, setComposerDraft } from '../lib/composerDraft'
+import type { ComposerDraftChanges } from '@shared/types'
 import type { BoardReadingLaunch } from '../lib/boardReading'
 import { basename } from '../lib/path'
 import type { I18nKey } from '../i18n'
@@ -416,7 +417,9 @@ interface AppState {
   setBoardReadingLaunch: (launch: BoardReadingLaunch | null) => void
   setComposerDraft: (sessionId: string, draft: SessionComposerDraft) => void
   clearComposerDraft: (sessionId: string) => void
-  /** Startup load from Main's composer-drafts.json; merges into memory. */
+  getComposerDraftVersion: (sessionId: string) => number
+  refreshComposerDraftIdentity: (sessionId: string) => Promise<void>
+  /** Startup load from Main. Local edits and deletions win over the snapshot. */
   hydrateComposerDrafts: () => Promise<void>
   /** Replace the recent-projects list (startup load; does not persist). */
   setRecentProjects: (paths: string[]) => void
@@ -448,7 +451,7 @@ interface AppState {
   setSessionTitle: (sessionId: string, title: string) => void
   /** Mark real user activity (a sent message) — bumps sidebar recency. */
   touchSession: (sessionId: string) => void
-  setSessionFile: (sessionId: string, sessionFile: string) => void
+  setSessionFile: (sessionId: string, sessionFile: string, draftSessionUuid?: string) => void
   /**
    * Fill an unnamed session immediately with a safe first-message topic.
    * Same-conversation model updates arrive as Main-owned title events;
@@ -512,25 +515,51 @@ interface AppState {
   applySessionEvent: (event: SessionEvent) => void
 }
 
-/**
- * Debounced disk write for composer drafts: keystroke-rate setComposerDraft
- * calls coalesce into one IPC round-trip per quiet window. A write that Main
- * rejects (oversized, malformed) is silently dropped — drafts are best-effort
- * persistence and must never break typing.
- */
 const COMPOSER_DRAFTS_PERSIST_DELAY_MS = 600
 let composerDraftsPersistTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleComposerDraftsPersist(drafts: ComposerDrafts): void {
+let pendingComposerDraftChanges: ComposerDraftChanges = Object.create(null)
+let draftWrite: Promise<unknown> = Promise.resolve()
+let draftHydration: Promise<void> | undefined
+let draftsHydrated = false
+const draftHydrationEdits = new Set<string>()
+const draftVersions = new Map<string, number>()
+
+function queueComposerDraftChange(key: string, draft: SessionComposerDraft | null): void {
+  if (!draftsHydrated) draftHydrationEdits.add(key)
+  pendingComposerDraftChanges[key] = draft
   if (composerDraftsPersistTimer) clearTimeout(composerDraftsPersistTimer)
   composerDraftsPersistTimer = setTimeout(() => {
-    composerDraftsPersistTimer = null
-    try {
-      void window.electronAPI.setComposerDrafts(drafts)?.catch(() => undefined)
-    } catch {
-      // Older preload (or a test fixture) without the channel: drafts stay
-      // in memory for this session; typing must never break over persistence.
-    }
+    void flushComposerDrafts()
   }, COMPOSER_DRAFTS_PERSIST_DELAY_MS)
+}
+
+export async function flushComposerDrafts(): Promise<void> {
+  do {
+    if (composerDraftsPersistTimer) clearTimeout(composerDraftsPersistTimer)
+    composerDraftsPersistTimer = null
+    const changes = pendingComposerDraftChanges
+    pendingComposerDraftChanges = Object.create(null)
+    if (Object.keys(changes).length) {
+      draftWrite = draftWrite.then(() => window.electronAPI.setComposerDrafts?.(changes)).catch(() => undefined)
+    }
+    await draftWrite
+  } while (Object.keys(pendingComposerDraftChanges).length)
+}
+
+function draftKey(sessions: Session[], sessionId: string): string {
+  if (sessionId === NEW_CHAT_DRAFT_KEY) return sessionId
+  const session = sessions.find((item) => item.id === sessionId)
+  return session ? sessionComposerDraftKey(session) : sessionId
+}
+
+function migrateComposerDraft(drafts: ComposerDrafts, previousKey: string, nextKey: string): ComposerDrafts {
+  if (previousKey === nextKey) return drafts
+  const draft = drafts[previousKey]
+  if (!draft && !draftHydrationEdits.has(previousKey)) return drafts
+  queueComposerDraftChange(nextKey, draft ?? null)
+  queueComposerDraftChange(previousKey, null)
+  const cleared = clearComposerDraft(drafts, previousKey)
+  return draft ? setComposerDraft(cleared, nextKey, draft) : clearComposerDraft(cleared, nextKey)
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -709,7 +738,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         Object.entries(state.unreadSessionIds).filter(([id]) => ids.has(id))
       )
       const composerDrafts = pruneComposerDrafts(state.composerDrafts, ids)
-      if (composerDrafts !== state.composerDrafts) scheduleComposerDraftsPersist(composerDrafts)
+      if (composerDrafts !== state.composerDrafts) {
+        for (const key of Object.keys(state.composerDrafts)) {
+          if (!(key in composerDrafts)) queueComposerDraftChange(key, null)
+        }
+      }
       return {
         sessions,
         sessionRecords: removeLiveSessionRecords(state.sessionRecords, ids),
@@ -754,6 +787,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(previous?.readonly === true ? { readonly: true } : {}),
         nativePermissionMode: merged.nativePermissionMode ?? previous?.nativePermissionMode,
         nativePermissionMutable: merged.nativePermissionMutable ?? previous?.nativePermissionMutable,
+        draftSessionUuid: merged.draftSessionUuid ?? previous?.draftSessionUuid,
         title,
         titleSource: merged.titleSource ?? previous?.titleSource,
         titleRevision: merged.titleRevision ?? previous?.titleRevision,
@@ -775,6 +809,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous.resumeFrom === guarded.resumeFrom &&
         previous.sessionFile === guarded.sessionFile &&
         previous.resumedHistoryId === guarded.resumedHistoryId &&
+        previous.draftSessionUuid === guarded.draftSessionUuid &&
         previous.origin === guarded.origin &&
         previous.remoteReadonly === guarded.remoteReadonly &&
         previous.readonly === guarded.readonly &&
@@ -790,6 +825,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           [guarded, ...state.sessions.filter((item) => item.id !== guarded.id)], nextCurrentSessionId
         ),
         sessionRecords: upsertLiveSessionRecord(state.sessionRecords, guarded),
+        composerDrafts: migrateComposerDraft(
+          state.composerDrafts, previous ? sessionComposerDraftKey(previous) : guarded.id, sessionComposerDraftKey(guarded)
+        ),
         currentSessionId: nextCurrentSessionId
       }
     })
@@ -798,9 +836,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // session carries an opaque history id instead, so Main never has to send
     // its durable transcript path back across preload.
     if (!session.resumeFrom && !session.sessionFile && !session.resumedHistoryId) {
-      window.electronAPI.getSessionState(session.id).then((st) => {
-        if (st?.sessionFile) get().setSessionFile(session.id, st.sessionFile)
-      })
+      void get().refreshComposerDraftIdentity(session.id)
     }
     // Hydrate the (possibly already-running) subagent roster.
     void get().hydrateSubagents(session.id)
@@ -836,7 +872,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         nativePermissionMutable: previous?.nativePermissionMutable,
         ...(previous?.resumeFrom ? { resumeFrom: previous.resumeFrom } : {}),
         ...(previous?.sessionFile ? { sessionFile: previous.sessionFile } : {}),
-        ...(previous?.resumedHistoryId ? { resumedHistoryId: previous.resumedHistoryId } : {})
+        ...(previous?.resumedHistoryId ? { resumedHistoryId: previous.resumedHistoryId } : {}),
+        ...(previous?.draftSessionUuid ? { draftSessionUuid: previous.draftSessionUuid } : {})
       }
       const same =
         previous &&
@@ -861,19 +898,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Same durable-file backfill addSession performs: the archive/delete uuid
     // sweep needs the record linked to the session file.
     if (!get().sessions.find((s) => s.id === descriptor.sessionId)?.sessionFile) {
-      window.electronAPI.getSessionState(descriptor.sessionId).then((st) => {
-        if (st?.sessionFile) get().setSessionFile(descriptor.sessionId, st.sessionFile)
-      })
+      void get().refreshComposerDraftIdentity(descriptor.sessionId)
     }
     void get().hydrateSubagents(descriptor.sessionId)
   },
-  setSessionFile: (sessionId, sessionFile) =>
+  setSessionFile: (sessionId, sessionFile, draftSessionUuid) =>
     set((state) => {
       const current = state.sessions.find((session) => session.id === sessionId)
-      if (!current || current.sessionFile === sessionFile) return state
+      if (!current || (current.sessionFile === sessionFile && (!draftSessionUuid || draftSessionUuid === current.draftSessionUuid))) return state
+      const session = { ...current, sessionFile, draftSessionUuid: draftSessionUuid ?? current.draftSessionUuid }
       return {
-        sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, sessionFile } : s)),
-        sessionRecords: updateSessionRecordFile(state.sessionRecords, sessionId, sessionFile)
+        sessions: state.sessions.map((s) => (s.id === sessionId ? session : s)),
+        sessionRecords: current.sessionFile === sessionFile ? state.sessionRecords : updateSessionRecordFile(state.sessionRecords, sessionId, sessionFile),
+        composerDrafts: migrateComposerDraft(state.composerDrafts, sessionComposerDraftKey(current), sessionComposerDraftKey(session))
       }
     }),
   setCurrentSessionId: (currentSessionId, navigationIntent = beginNavigationIntent()) => {
@@ -1286,30 +1323,45 @@ export const useAppStore = create<AppState>((set, get) => ({
   setBoardReadingLaunch: (boardReadingLaunch) => set({ boardReadingLaunch }),
   setComposerDraft: (sessionId, draft) =>
     set((state) => {
-      const composerDrafts = setComposerDraft(state.composerDrafts, sessionId, draft)
-      scheduleComposerDraftsPersist(composerDrafts)
-      return { composerDrafts }
+      const key = draftKey(state.sessions, sessionId)
+      draftVersions.set(sessionId, (draftVersions.get(sessionId) ?? 0) + 1)
+      queueComposerDraftChange(key, draftHasContent(draft) ? draft : null)
+      return { composerDrafts: setComposerDraft(state.composerDrafts, key, draft) }
     }),
   clearComposerDraft: (sessionId) =>
     set((state) => {
-      const composerDrafts = clearComposerDraft(state.composerDrafts, sessionId)
-      scheduleComposerDraftsPersist(composerDrafts)
-      return { composerDrafts }
+      const key = draftKey(state.sessions, sessionId)
+      draftVersions.set(sessionId, (draftVersions.get(sessionId) ?? 0) + 1)
+      queueComposerDraftChange(key, null)
+      return { composerDrafts: clearComposerDraft(state.composerDrafts, key) }
     }),
-  hydrateComposerDrafts: async () => {
+  getComposerDraftVersion: (sessionId) => draftVersions.get(sessionId) ?? 0,
+  refreshComposerDraftIdentity: async (sessionId) => {
+    const state = await window.electronAPI.getSessionState?.(sessionId)?.catch(() => null)
+    if (state?.sessionFile) get().setSessionFile(sessionId, state.sessionFile, state.draftSessionUuid)
+  },
+  hydrateComposerDrafts: () => draftHydration ??= (async () => {
     try {
       const stored = await window.electronAPI.getComposerDrafts?.()
       if (!stored || typeof stored !== 'object') return
-      const merged = { ...stored, ...get().composerDrafts }
-      set({ composerDrafts: merged })
-      // Re-arm the debounced persist with the MERGED map: a timer captured
-      // before the merge would otherwise write the stale map and erase the
-      // disk-only drafts this hydration just adopted.
-      scheduleComposerDraftsPersist(merged)
+      set((state) => {
+        const original = Object.fromEntries(Object.entries(stored).filter(([key]) => !draftHydrationEdits.has(key)))
+        let merged = { ...original, ...state.composerDrafts }
+        for (const session of state.sessions) {
+          const key = sessionComposerDraftKey(session)
+          if (merged[session.id] && !merged[key] && !draftHydrationEdits.has(key)) {
+            merged = migrateComposerDraft(merged, session.id, key)
+          }
+        }
+        return { composerDrafts: merged }
+      })
     } catch {
-      // Persistence is best-effort; the in-memory session drafts still work.
+      // Local drafts remain available for the current window.
+    } finally {
+      draftsHydrated = true
+      draftHydrationEdits.clear()
     }
-  },
+  })(),
   setRecentProjects: (recentProjects) => set({ recentProjects }),
   setRecentWorkspaces: (recentWorkspaces) =>
     set({
@@ -1395,8 +1447,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   purgeDeletedSession: (uuid) => {
     deletedHistoryUuids.add(uuid)
     globalHistoryReadEpoch += 1
+    const key = historyComposerDraftKey(uuid)
+    queueComposerDraftChange(key, null)
     set((state) => ({
       sessionRecords: purgeHistoryUuid(state.sessionRecords, uuid),
+      composerDrafts: clearComposerDraft(state.composerDrafts, key),
       globalHistory: state.globalHistory.filter((row) => row.uuid !== uuid),
       // A deleted session cannot stay archived: drop its durable key so the
       // list never keeps a hidden entry nothing can restore.

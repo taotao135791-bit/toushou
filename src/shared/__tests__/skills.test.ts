@@ -7,7 +7,7 @@ import {
   skillKindForExtension,
   formatSkillChatReference,
   formatSkillChatMessage,
-  parseSkillChatMessage,
+  splitSkillChatMessage,
   formatSkillSystemPrompt,
   stripSkillFrontMatter,
   firstMarkdownHeading
@@ -161,22 +161,35 @@ describe('formatSkillChatMessage', () => {
   })
 })
 
-describe('parseSkillChatMessage', () => {
+describe('splitSkillChatMessage', () => {
   it('round-trips a formatted skill message', () => {
     const message = formatSkillChatMessage('起量打法', '# 第一步\n先看 CPI', 'zh')
-    const parsed = parseSkillChatMessage(message)
-    expect(parsed).not.toBeNull()
-    expect(parsed?.name).toBe('起量打法')
-    expect(parsed?.instruction).toContain('严格按这份团队打法')
-    expect(parsed?.body).toContain('# 第一步')
-    expect(parsed?.body).toContain('先看 CPI')
+    expect(splitSkillChatMessage(message)).toEqual([{
+      kind: 'skill', name: '起量打法',
+      instruction: expect.stringContaining('严格按这份团队打法'),
+      body: '# 起量打法\n\n# 第一步\n先看 CPI'
+    }])
   })
 
-  it('unescapes entities in the name and rejects plain text', () => {
+  it('unescapes entities in the name and preserves plain text', () => {
     const message = formatSkillChatMessage('打"法"', '步骤', 'zh')
-    expect(parseSkillChatMessage(message)?.name).toBe('打"法"')
-    expect(parseSkillChatMessage('普通消息，没有标签')).toBeNull()
-    expect(parseSkillChatMessage('残留 <team-skill name="x">未闭合')).toBeNull()
+    expect(splitSkillChatMessage(message)[0]).toMatchObject({ kind: 'skill', name: '打"法"' })
+    for (const text of ['普通消息，没有标签', '残留 <team-skill name="x">未闭合']) {
+      expect(splitSkillChatMessage(text)).toEqual([{ kind: 'text', text }])
+    }
+  })
+
+  it('keeps text before, between and after multiple skills in the conversation', () => {
+    const first = formatSkillChatMessage('归因', '校验来源', 'zh')
+    const second = formatSkillChatMessage('Review', 'Check CPI', 'en')
+    const content = ['检查广告', first, '再看 CPI', second, '只查最近7天\n@report.csv'].join('\n')
+    expect(splitSkillChatMessage(content)).toMatchObject([
+      { kind: 'text', text: '检查广告' },
+      { kind: 'skill', name: '归因' },
+      { kind: 'text', text: '再看 CPI' },
+      { kind: 'skill', name: 'Review' },
+      { kind: 'text', text: '只查最近7天\n@report.csv' }
+    ])
   })
 })
 

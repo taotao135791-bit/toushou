@@ -1,4 +1,5 @@
 import { autosendForPrefill } from '../lib/composerAutosend'
+import { ComposerInvocation, planInvocation } from '../lib/composerInvocation'
 import { useState, useRef, useMemo, useEffect, useId, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -22,14 +23,14 @@ import {
   Layers
 } from 'lucide-react'
 import { PromptImage, SlashCommand } from '@shared/types'
-import { isMcpMentionName, MCP_MENTION_PREFIX, mcpMention } from '@shared/mcpMentions'
+import { isMcpMentionName, MCP_MENTION_PREFIX } from '@shared/mcpMentions'
 import { QueuedMessage, useAppStore } from '../store'
 import {
   ComposerDraftFile,
   ComposerFileKind,
   DroppedAttachment,
   NEW_CHAT_DRAFT_KEY,
-  SessionComposerDraft
+  sessionComposerDraftKey
 } from '../lib/composerDraft'
 import { dispatchSteer, steerFailureKey } from '../lib/steerDispatch'
 import { useT } from '../i18n'
@@ -49,7 +50,7 @@ import './AgentHome.css'
 
 interface ComposerProps {
   /** Delivers the composed text; resolves false when delivery failed and the draft is restored. */
-  onSend: (text: string, images?: PromptImage[]) => void | boolean | Promise<void | boolean>
+  onSend: (text: string, images?: PromptImage[], onTarget?: (sessionId: string) => void) => void | boolean | Promise<void | boolean>
   onStop?: () => void
   busy?: boolean
   disabled?: boolean
@@ -223,13 +224,6 @@ export default memo(function Composer({
   const [atMenuIndex, setAtMenuIndex] = useState(0)
   const [atDismissed, setAtDismissed] = useState(false)
   const [images, setImages] = useState<PendingImage[]>([])
-  /** Mirrors text/images for the late-draft subscription (no re-subscribe per keystroke). */
-  const textRef = useRef('')
-  const imagesRef = useRef<PendingImage[]>([])
-  textRef.current = text
-  imagesRef.current = images
-  /** The draft object this composer last wrote (self-write filter, see writeDraft). */
-  const lastWrittenDraftRef = useRef<SessionComposerDraft | null>(null)
   /** Non-image drops staged as attachment chips; sent as @path lines. */
   const [pendingFiles, setPendingFiles] = useState<DroppedAttachment[]>([])
   const [steeringQueuedId, setSteeringQueuedId] = useState<string | null>(null)
@@ -262,8 +256,17 @@ export default memo(function Composer({
   /** Workspace-level branch for the header chip; null = not a git repo. */
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addButtonRef = useRef<HTMLButtonElement>(null)
-  /** 技能/插件调用面板 (the "+" menu's explicit-invocation picker). */
-  const [invokeOpen, setInvokeOpen] = useState(false)
+  const firstAddActionRef = useRef<HTMLButtonElement>(null)
+  const [invokeTarget, setInvokeTarget] = useState<{ sessionId: string | null; workspaceId: string | undefined } | null>(null)
+  const invokeOpen = !disabled && invokeTarget?.sessionId === currentSessionId && invokeTarget.workspaceId === currentWorkspace?.id
+  useEffect(() => {
+    if (!invokeOpen) setInvokeTarget(null)
+  }, [invokeOpen])
+  useEffect(() => {
+    if (!addMenuOpen) return
+    const frame = requestAnimationFrame(() => firstAddActionRef.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [addMenuOpen])
   // Home tray (选择项目 / 插件) — design.md 5.2: the soft-gray base connected
   // under the white input card carries project scope and plugin entry.
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
@@ -287,19 +290,11 @@ export default memo(function Composer({
     nextImages: PendingImage[],
     nextFiles: DroppedAttachment[] = pendingFiles
   ) => {
-    // The not-yet-created chat parks its draft under the sentinel key so the
-    // words survive page switches and app restarts like any session's draft.
-    const key = sessionId ?? NEW_CHAT_DRAFT_KEY
-    const draft: SessionComposerDraft = {
+    setComposerDraft(sessionId ?? NEW_CHAT_DRAFT_KEY, {
       text: nextText,
       images: toPromptImages(nextImages),
       files: toDraftFiles(nextFiles)
-    }
-    setComposerDraft(key, draft)
-    // Identity marker: the late-draft subscription must never adopt a draft
-    // the composer itself just wrote (it fires synchronously, before the
-    // text/image refs re-render).
-    lastWrittenDraftRef.current = draft
+    })
   }
 
   const commitDraft = (nextText: string, nextImages = images, nextFiles = pendingFiles) => {
@@ -324,9 +319,13 @@ export default memo(function Composer({
   // the editing surface from the newly selected session and reset transient UI.
   useEffect(() => {
     textareaRef.current?.blur()
-    const draftKey = currentSessionId ?? NEW_CHAT_DRAFT_KEY
+    const sessionId = currentSessionId ?? NEW_CHAT_DRAFT_KEY
+    const readDraft = (state: ReturnType<typeof useAppStore.getState>) => {
+      const session = state.sessions.find((item) => item.id === currentSessionId)
+      return state.composerDrafts[session ? sessionComposerDraftKey(session) : sessionId]
+    }
     const store = useAppStore.getState()
-    const draft = store.composerDrafts[draftKey]
+    const draft = readDraft(store)
     setText(draft?.text ?? '')
     setImages(draft ? fromPromptImages(draft.images) : [])
     setPendingFiles(draft?.files ? draft.files.map(fromDraftFile) : [])
@@ -346,15 +345,15 @@ export default memo(function Composer({
     // while the surface is still untouched; once the user types, the store
     // follows the composer, never the other way around.
     if (draft) return
-    const untouched = () => textRef.current === '' && imagesRef.current.length === 0
+    const initialVersion = store.getComposerDraftVersion(sessionId)
     const unsubscribe = useAppStore.subscribe((state) => {
-      const late = state.composerDrafts[draftKey]
-      // Skip the composer's own synchronous write (same object) — only a
-      // disk hydration lands here with a fresh object while the surface is
-      // still untouched.
-      if (!late || late === lastWrittenDraftRef.current || !untouched()) return
+      if (state.currentSessionId !== currentSessionId || state.getComposerDraftVersion(sessionId) !== initialVersion) {
+        unsubscribe()
+        return
+      }
+      const late = readDraft(state)
+      if (!late) return
       unsubscribe()
-      if (useAppStore.getState().currentSessionId !== currentSessionId) return
       setText(late.text)
       setImages(fromPromptImages(late.images))
       setPendingFiles(late.files ? late.files.map(fromDraftFile) : [])
@@ -532,17 +531,37 @@ export default memo(function Composer({
 
   /** Replace text[start:end] with insert and place the caret after it. */
   const replaceRange = (start: number, end: number, insert: string) => {
-    const next = text.slice(0, start) + insert + text.slice(end)
-    const pos = start + insert.length
+    const el = textareaRef.current
+    if (!el || el.disabled) return
+    const normalized = insert.replace(/\r\n?/g, '\n')
+    const next = el.value.slice(0, start) + normalized + el.value.slice(end)
+    const pos = start + normalized.length
+    el.focus()
+    el.setSelectionRange(start, end)
+    // Chromium sends a native input event for insertText, so the controlled
+    // textarea's onChange saves the edit and preserves the undo history.
+    if (document.execCommand('insertText', false, normalized) && el.value === next) return
     commitDraft(next)
     setCaret(pos)
     requestAnimationFrame(() => {
-      const el = textareaRef.current
-      if (!el) return
-      el.focus()
+      if (textareaRef.current !== el) return
       el.setSelectionRange(pos, pos)
       autosize(el)
     })
+  }
+
+  const pickInvocation = (invocation: ComposerInvocation) => {
+    const state = useAppStore.getState()
+    const el = textareaRef.current
+    if (!invokeTarget || !el || disabled || state.currentSessionId !== invokeTarget.sessionId ||
+        state.currentWorkspace?.id !== invokeTarget.workspaceId) return
+    const edit = planInvocation(el.value, el.selectionStart, el.selectionEnd, invocation)
+    if (!edit) {
+      showNotice('composer.invoke.commandMcpConflict')
+      el.focus()
+      return
+    }
+    replaceRange(edit.start, edit.end, edit.insert)
   }
 
   const pickCommand = (item: SlashMenuItem) => {
@@ -561,24 +580,22 @@ export default memo(function Composer({
       return
     }
     const next = `/${item.name} `
-    commitDraft(next)
-    setCaret(next.length)
-    setMenuDismissed(false)
-    setMenuIndex(0)
-    requestAnimationFrame(() => {
-      const el = textareaRef.current
-      if (!el) return
-      el.focus()
-      el.setSelectionRange(next.length, next.length)
-    })
+    replaceRange(0, text.length, next)
   }
 
   const pickMention = (index: number) => {
     if (!at) return
-    const mention = index < mcpItems.length
-      ? mcpMention(mcpItems[index])
-      : `@${fileItems[index - mcpItems.length]}`
-    replaceRange(at.start, caret, `${mention} `)
+    if (index >= mcpItems.length) {
+      replaceRange(at.start, caret, `@${fileItems[index - mcpItems.length]} `)
+      return
+    }
+    const edit = planInvocation(text, at.start, caret, { kind: 'mcp', name: mcpItems[index] })
+    if (!edit) {
+      setAtDismissed(true)
+      showNotice('composer.invoke.commandMcpConflict')
+      return
+    }
+    replaceRange(edit.start, edit.end, edit.insert)
   }
 
   const addImage = (data: string, mimeType: string) => {
@@ -636,7 +653,7 @@ export default memo(function Composer({
       const end = el?.selectionEnd ?? text.length
       const clipped = `${pastedText.slice(0, MAX_PASTE_CHARS)}…`
       const next = `${text.slice(0, start)}${clipped}${text.slice(end)}`
-      setText(next)
+      commitDraft(next)
       setCaret(start + clipped.length)
       showNotice('composer.pasteTruncated')
       return
@@ -844,40 +861,37 @@ export default memo(function Composer({
       // The send is async: clear optimistically, but roll the draft back when
       // delivery failed (dead session, invalid grant) so it is never lost.
       const stagedImagesSnapshot = images
+      let target = sessionIdAtSend ?? NEW_CHAT_DRAFT_KEY
+      clearComposerDraft(target)
+      let clearedVersion = useAppStore.getState().getComposerDraftVersion(target)
       const restore = (ok: void | boolean) => {
         if (ok !== false) return
-        const restoreSessionId = sessionIdAtSend ?? useAppStore.getState().currentSessionId ?? NEW_CHAT_DRAFT_KEY
-        setComposerDraft(restoreSessionId, {
-          text: trimmed,
+        const store = useAppStore.getState()
+        if (store.getComposerDraftVersion(target) !== clearedVersion ||
+            (target !== NEW_CHAT_DRAFT_KEY && !store.sessions.some((session) => session.id === target))) return
+        setComposerDraft(target, {
+          text,
           images: toPromptImages(stagedImagesSnapshot),
           files: toDraftFiles(staged)
         })
-        // Same-position check: restore the surface only when the user is
-        // still looking at the conversation the send started from — for a
-        // failed FIRST send that is the new-chat surface (sentinel key).
-        const liveKey = useAppStore.getState().currentSessionId ?? NEW_CHAT_DRAFT_KEY
-        if (restoreSessionId !== liveKey) {
-          return
-        }
-        setText((cur) => (cur.trim() ? cur : trimmed))
-        setImages((cur) => (cur.length ? cur : stagedImagesSnapshot))
-        setPendingFiles((cur) => (cur.length ? cur : staged))
-        setCaret(trimmed.length)
+        if ((store.currentSessionId ?? NEW_CHAT_DRAFT_KEY) !== target) return
+        setText(text)
+        setImages(stagedImagesSnapshot)
+        setPendingFiles(staged)
+        setCaret(text.length)
       }
-      clearComposerDraft(sessionIdAtSend ?? NEW_CHAT_DRAFT_KEY)
       if (!sessionIdAtSend || useAppStore.getState().currentSessionId === sessionIdAtSend) {
         clearLocalDraft()
       }
-      const result = onSend(outgoing, imgs)
-      if (result instanceof Promise) {
-        void result
-          .then(restore)
-          .catch(() => {
-            // A failed send must not eat the user's words: restore the draft
-            // anyway so it can be retried or copied out.
-            restore(false)
-          })
-      } else restore(result)
+      try {
+        void Promise.resolve(onSend(outgoing, imgs, (sessionId) => {
+          if (target === sessionId) return
+          target = sessionId
+          clearedVersion = useAppStore.getState().getComposerDraftVersion(target)
+        })).then(restore, () => restore(false))
+      } catch {
+        restore(false)
+      }
       return
     }
     clearComposerDraft(sessionIdAtSend ?? NEW_CHAT_DRAFT_KEY)
@@ -940,6 +954,7 @@ export default memo(function Composer({
     const outgoing = appendAttachmentRefs(trimmed, stagedFiles)
     const store = useAppStore.getState()
     store.clearComposerDraft(sessionId)
+    const clearedVersion = store.getComposerDraftVersion(sessionId)
     clearLocalDraft()
 
     void dispatchSteer({
@@ -956,12 +971,13 @@ export default memo(function Composer({
       }
 
       if (!latest.sessions.some((session) => session.id === sessionId)) return
+      latest.setSessionError(sessionId, steerFailureKey(result.source))
+      if (latest.getComposerDraftVersion(sessionId) !== clearedVersion) return
       latest.setComposerDraft(sessionId, {
         text: trimmed,
         images: toPromptImages(staged),
         files: toDraftFiles(stagedFiles)
       })
-      latest.setSessionError(sessionId, steerFailureKey(result.source))
       if (latest.currentSessionId !== sessionId) return
       setText(trimmed)
       setImages(staged)
@@ -972,6 +988,11 @@ export default memo(function Composer({
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z' &&
+        document.execCommand(e.shiftKey ? 'redo' : 'undo')) {
+      e.preventDefault()
+      return
+    }
     if (atOpen) {
       if (e.key === 'ArrowDown' && mentionCount > 0) {
         e.preventDefault()
@@ -1336,6 +1357,7 @@ export default memo(function Composer({
           )}
           <textarea
             ref={textareaRef}
+            onFocus={() => { if (invokeOpen) setInvokeTarget(null) }}
             aria-haspopup="listbox"
             aria-controls={atOpen ? mentionMenuId : undefined}
             aria-activedescendant={activeMentionIndex >= 0 ? `${mentionMenuId}-${activeMentionIndex}` : undefined}
@@ -1371,11 +1393,14 @@ export default memo(function Composer({
               <div className="relative">
                 <button
                   ref={addButtonRef}
-                  onClick={() => setAddMenuOpen((v) => !v)}
+                  onClick={() => {
+                    if (invokeOpen) setInvokeTarget(null)
+                    else setAddMenuOpen((open) => !open)
+                  }}
                   title={t('composer.addContent')}
                   aria-label={t('composer.addContent')}
                   aria-haspopup="menu"
-                  aria-expanded={addMenuOpen}
+                  aria-expanded={addMenuOpen || invokeOpen}
                   className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
                 >
                   <Plus size={14} />
@@ -1387,6 +1412,7 @@ export default memo(function Composer({
                   width={176}
                 >
                   <button
+                    ref={firstAddActionRef}
                     onClick={() => {
                       setAddMenuOpen(false)
                       void handlePickImage()
@@ -1409,22 +1435,25 @@ export default memo(function Composer({
                   <button
                     onClick={() => {
                       setAddMenuOpen(false)
-                      setInvokeOpen(true)
+                      setInvokeTarget({ sessionId: currentSessionId, workspaceId })
                     }}
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
+                    disabled={disabled}
+                    className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay disabled:opacity-60"
                   >
                     <Sparkles size={13} className="shrink-0 text-accent" />
                     {t('composer.invoke.open')}
                   </button>
                 </MenuPortal>
               </div>
-              <InvokePicker
-                open={invokeOpen}
-                triggerRef={addButtonRef}
-                onClose={() => setInvokeOpen(false)}
-                onPick={(insert) => replaceRange(caret, caret, insert)}
-                commands={commands}
-              />
+              {invokeOpen && (
+                <InvokePicker
+                  triggerRef={addButtonRef}
+                  onClose={() => setInvokeTarget(null)}
+                  onPick={pickInvocation}
+                  commands={commands}
+                  liveSession={currentSessionId !== null}
+                />
+              )}
               <PermissionPicker compact={compact} />
               {feishuSync && (
                 <div

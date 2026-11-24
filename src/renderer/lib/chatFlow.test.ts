@@ -74,4 +74,16 @@ describe('chat turn presentation', () => {
     expect(third[0]).not.toBe(second[0])
     expect(third[1]).toBe(second[1])
   })
+  it('rebuilds the boundary when streaming completes or a turn merges with the previous turn', () => {
+    const first = [msg('u', 'user'), tool('t'), msg('a', 'assistant', '.')]
+    const second = [msg('u2', 'user'), msg('a2', 'assistant', 'More')]
+    const live = projectChatTurns(first, [], true)
+    const next = projectChatTurns([...first, ...second], live, true)
+    expect(next[0].nodes.at(-1)?.kind).toBe('message')
+    expect(next[1].streaming).toBe(true)
+
+    const merged = [...first, { ...second[0], kind: 'steer' as const }, second[1]]
+    expect(projectChatTurns(merged, next, true)).toEqual(projectChatTurns(merged, [], true))
+    expect(projectChatTurns(merged, next, true)).toHaveLength(1)
+  })
 })

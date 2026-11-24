@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { defaultPiAgentDir } from './piSettings'
 import { canonicalExistingPath } from './canonicalPath'
+import type { SessionImportSource } from '../shared/sessionImport'
 
 /**
  * Main-only record discovered from a durable session file.
@@ -34,6 +35,7 @@ export interface HistorySessionFile {
    * file itself carries no provenance) so minted descriptors can badge rows.
    */
   origin?: 'feishu' | 'task'
+  importedFrom?: SessionImportSource
 }
 
 /**
@@ -207,7 +209,7 @@ export function hashedSessionDirCandidatesFor(
 }
 
 /** OMP 17.2.12 default and its 17.2.5–17.2.8 hashed migration source. */
-function ompSessionDirCandidatesFor(
+export function ompSessionDirCandidatesFor(
   projectDir: string,
   agentDir: string,
   resolveRealPath: (target: string) => string
@@ -443,7 +445,7 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
     return null
   }
   const lines = head.split('\n')
-  let header: { id: string; timestamp?: unknown; cwd?: unknown } | null = null
+  let header: { id: string; timestamp?: unknown; cwd?: unknown; importedFrom?: unknown } | null = null
   let headerIndex = -1
   let recordedTitle = ''
   for (let i = 0; i < Math.min(lines.length, 5); i++) {
@@ -454,6 +456,7 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
       timestamp?: unknown
       cwd?: unknown
       title?: unknown
+      importedFrom?: unknown
     }
     try {
       candidate = JSON.parse(lines[i])
@@ -466,7 +469,10 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
       continue
     }
     if (candidate?.type === 'session' && typeof candidate.id === 'string') {
-      header = { id: candidate.id, timestamp: candidate.timestamp, cwd: candidate.cwd }
+      header = { id: candidate.id, timestamp: candidate.timestamp, cwd: candidate.cwd, importedFrom: candidate.importedFrom }
+      if (!recordedTitle && typeof candidate.title === 'string') {
+        recordedTitle = candidate.title.replace(/\s+/g, ' ').trim().slice(0, 80)
+      }
       headerIndex = i
       break
     }
@@ -512,7 +518,8 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
     filePath,
     title,
     timestamp,
-    cwd: typeof header.cwd === 'string' ? header.cwd : ''
+    cwd: typeof header.cwd === 'string' ? header.cwd : '',
+    ...(header.importedFrom === 'codex' || header.importedFrom === 'claude' ? { importedFrom: header.importedFrom } : {})
   }
 }
 

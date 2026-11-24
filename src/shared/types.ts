@@ -300,6 +300,8 @@ export interface Session {
   sessionFile?: string
   /** Opaque history capability that this renderer session resumed, if any. */
   resumedHistoryId?: string
+  /** Durable conversation identity for locating a draft after a runtime restart. */
+  draftSessionUuid?: string
   /**
    * Set when the session was created OUTSIDE the direct composer flow (Feishu
    * chat route, scheduled task). Display/badge metadata only — routing
@@ -796,6 +798,9 @@ export interface SessionComposerDraft {
 /** Drafts keyed by runtime session id (plus the new-chat sentinel). */
 export type ComposerDrafts = Record<string, SessionComposerDraft>
 
+/** Each changed key replaces its draft. Null removes the persisted draft. */
+export type ComposerDraftChanges = Record<string, SessionComposerDraft | null>
+
 /**
  * Result of the image picker dialog: the image bytes as base64, or a
  * categorized failure. `null` means the user cancelled the dialog.
@@ -856,6 +861,7 @@ export interface HistorySessionRow {
    * route or a scheduled task, so a restart-surviving row keeps its badge.
    */
   origin?: 'feishu' | 'task'
+  importedFrom?: import('./sessionImport').SessionImportSource
 }
 
 export interface HistorySessionDescriptor {
@@ -869,6 +875,7 @@ export interface HistorySessionDescriptor {
   timestamp: number
   /** Same restart-stable origin marker as HistorySessionRow, when known. */
   origin?: 'feishu' | 'task'
+  importedFrom?: import('./sessionImport').SessionImportSource
 }
 
 /**
@@ -1810,6 +1817,7 @@ export interface SessionState {
   isCompacting: boolean
   pendingMessageCount: number
   sessionId: string
+  draftSessionUuid?: string
   sessionName?: string
   /** pi's on-disk session JSONL path. */
   sessionFile?: string

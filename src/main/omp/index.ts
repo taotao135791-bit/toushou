@@ -27,7 +27,7 @@ import { getOperationGrantManager } from '../operationGrant'
 import { validateOfficePath } from '../officeFile'
 import { AgentMessage, mapAgentMessages } from '../messageMapping'
 import { reconstructSessionMetadata, reconstructHistoricalAgents } from '../sessionMetadata'
-import { isSessionFilePath } from '../sessionHistory'
+import { isSessionFilePath, isSessionUuid, readSessionUuid } from '../sessionHistory'
 import { planSpawn, removeApprovalConfig, resolvePermissionMode, spawnProcess, writeApprovalConfig } from './OmpProcess'
 import { OmpSession } from './OmpSession'
 import { sessionModelThinking } from './OmpProtocol'
@@ -162,6 +162,7 @@ export function createSession(
   onEvent: (event: SessionEvent) => void,
   opts?: {
     resumeSessionPath?: string
+    draftSessionUuid?: string
     /** Durable overlay title for resumes — see the title comment below. */
     initialTitle?: string
     initialTitleMetadata?: SessionTitleMetadata
@@ -262,6 +263,7 @@ export function createSession(
     nativePermissionMode: permissionMode,
     nativePermissionMutable: cli.command !== 'omp' && (permissionMode === 'ask' || permissionMode === 'full'),
     ...(opts?.resumeSessionPath ? { resumeFrom: opts.resumeSessionPath } : {}),
+    ...(opts?.draftSessionUuid ? { draftSessionUuid: opts.draftSessionUuid } : {}),
     ...(opts?.origin ? { origin: opts.origin } : {}),
     ...(permissionMode === 'readonly' ? { readonly: true } : {}),
     // Remote-channel sessions stay readonly even when the spawn path is
@@ -621,7 +623,15 @@ export async function getSessionState(sessionId: string): Promise<SessionState |
   const state = res.data as SessionState
   // A live get_state response doubles as the runtime capability probe.
   noteSessionState(state)
-  return { ...state, modelThinking: sessionModelThinking(state.model) }
+  const live = getSession(sessionId)
+  // A fresh runtime already knows the UUID of the file it will create on its
+  // first turn. A resumed runtime keeps its source identity until a new file
+  // exists, so a draft written before a fork is still found in history.
+  if (live && state.sessionFile && isSessionUuid(state.sessionId) &&
+      live.draftSessionUuid !== state.sessionId && (!live.draftSessionUuid || existsSync(state.sessionFile))) {
+    live.draftSessionUuid = state.sessionId
+  }
+  return { ...state, draftSessionUuid: live?.draftSessionUuid, modelThinking: sessionModelThinking(state.model) }
 }
 
 /** Full transcript of a session, mapped to GUI chat messages (get_messages). */
@@ -699,8 +709,10 @@ export async function resumeSession(
   }
 ): Promise<{ session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] } | null> {
   if (!isSessionFilePath(filePath)) return null
+  const uuid = await readSessionUuid(filePath)
   const session = createSession(cwd, onEvent, {
     resumeSessionPath: filePath,
+    ...(isSessionUuid(uuid) ? { draftSessionUuid: uuid } : {}),
     ...(opts?.initialTitle ? { initialTitle: opts.initialTitle } : {}),
     ...(opts?.initialTitleMetadata ? { initialTitleMetadata: opts.initialTitleMetadata } : {}),
     ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {}),

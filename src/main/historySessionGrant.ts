@@ -138,7 +138,8 @@ export class HistorySessionGrantManager {
         uuid: entry.uuid,
         title: entry.title,
         timestamp: entry.timestamp,
-        ...(entry.origin ? { origin: entry.origin } : {})
+        ...(entry.origin ? { origin: entry.origin } : {}),
+        ...(entry.importedFrom ? { importedFrom: entry.importedFrom } : {})
       }
       this.grants.set(descriptor.id, {
         ...identity,

@@ -91,7 +91,8 @@ export default function ChatPanel() {
   const queuePauseReason = useAppStore((s) => currentSessionId ? s.queuePauseReasons[currentSessionId] : undefined)
   const queueDispatching = useAppStore((s) => currentSessionId ? s.queueDispatching[currentSessionId] : undefined)
   const { viewportRef: scrollRef, contentRef, onScroll: handleTranscriptScroll, showJump, jumpToBottom } = useTranscriptScroll(currentSessionId)
-  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
+  const [commandResult, setCommandResult] = useState<{ sessionId: string; commands: SlashCommand[] } | null>(null)
+  const slashCommands = commandResult?.sessionId === currentSessionId ? commandResult.commands : undefined
   const navigate = useNavigate()
   // Built-in slash commands: available in the palette everywhere (home and
   // chat) — app commands must not depend on a live session. Deps are stable
@@ -171,14 +172,11 @@ export default function ChatPanel() {
 
   // Slash commands come from the live session (extensions/prompts/skills)
   useEffect(() => {
-    if (!currentSessionId) {
-      setSlashCommands([])
-      return
-    }
+    if (!currentSessionId) return
     let cancelled = false
     window.electronAPI.listCommands(currentSessionId).then((cmds) => {
-      if (!cancelled) setSlashCommands(cmds)
-    })
+      if (!cancelled) setCommandResult({ sessionId: currentSessionId, commands: cmds })
+    }).catch(() => undefined)
     return () => {
       cancelled = true
     }
@@ -191,7 +189,7 @@ export default function ChatPanel() {
   // useCallback-stabilized: Composer is memoized, so identity-stable handlers
   // are what let the input surface skip streaming re-renders entirely.
   const handleSend = useCallback(
-    async (text: string, images?: PromptImage[]): Promise<boolean> => {
+    async (text: string, images?: PromptImage[], onTarget?: (sessionId: string) => void): Promise<boolean> => {
       const trimmed = text.trim()
       if (!trimmed || cliAvailable === false) return false
       // Preview sessions are read-only; the live swap-in re-enables the composer.
@@ -218,6 +216,7 @@ export default function ChatPanel() {
           return false
         }
       }
+      onTarget?.(sessionId)
       const store = useAppStore.getState()
       const liveSession = store.sessions.find((session) => session.id === sessionId)
       if (store.currentSessionId === sessionId && liveSession && store.currentWorkspace && liveSession.cwd !== store.currentWorkspace.realPath) {
@@ -266,6 +265,9 @@ export default function ChatPanel() {
         return false
       }
       store.touchSession(sessionId)
+      if (!liveSession?.draftSessionUuid || liveSession.resumeFrom || liveSession.resumedHistoryId) {
+        void store.refreshComposerDraftIdentity(sessionId)
+      }
       // Tag the turn with the ACTUAL dispatch-time model/thinking — the
       // historical turn keeps what it ran under, never later session state.
       void snapshot.then((snap) => {

@@ -1,4 +1,4 @@
-import { ComposerDraftFile, ComposerFileKind, ComposerDrafts, SessionComposerDraft } from '@shared/types'
+import type { ComposerDraftFile, ComposerFileKind, ComposerDrafts, Session, SessionComposerDraft } from '@shared/types'
 
 export type { ComposerDraftFile, ComposerFileKind, ComposerDrafts, SessionComposerDraft }
 
@@ -8,6 +8,15 @@ export type { ComposerDraftFile, ComposerFileKind, ComposerDrafts, SessionCompos
  * stays across page switches, app restarts and the first send attempt.
  */
 export const NEW_CHAT_DRAFT_KEY = '__new-chat__'
+const HISTORY_DRAFT_PREFIX = 'history:'
+
+export function historyComposerDraftKey(uuid: string): string {
+  return `${HISTORY_DRAFT_PREFIX}${uuid}`
+}
+
+export function sessionComposerDraftKey(session: Pick<Session, 'id' | 'draftSessionUuid'>): string {
+  return session.draftSessionUuid ? historyComposerDraftKey(session.draftSessionUuid) : session.id
+}
 
 /** A runtime drop staged as an attachment chip (renderer representation). */
 export interface DroppedAttachment {
@@ -42,12 +51,12 @@ export function clearComposerDraft(drafts: ComposerDrafts, sessionId: string): C
 }
 
 /**
- * Drop drafts of sessions that no longer exist. The new-chat sentinel is not
- * a session and is always retained.
+ * Drop only transient drafts. Durable conversations often move out of the
+ * live registry when archived, closed, or restarted.
  */
 export function pruneComposerDrafts(drafts: ComposerDrafts, sessionIds: Set<string>): ComposerDrafts {
   const next = Object.fromEntries(
-    Object.entries(drafts).filter(([sessionId]) => sessionId === NEW_CHAT_DRAFT_KEY || sessionIds.has(sessionId))
+    Object.entries(drafts).filter(([key]) => key === NEW_CHAT_DRAFT_KEY || key.startsWith(HISTORY_DRAFT_PREFIX) || sessionIds.has(key))
   )
   return Object.keys(next).length === Object.keys(drafts).length ? drafts : next
 }

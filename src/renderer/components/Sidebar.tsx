@@ -31,7 +31,7 @@ import {
 } from 'lucide-react'
 import { HistorySessionDescriptor, HistorySessionRow, SessionSortOrder } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
-import { NEW_CHAT_DRAFT_KEY } from '../lib/composerDraft'
+import { historyComposerDraftKey, NEW_CHAT_DRAFT_KEY, sessionComposerDraftKey } from '../lib/composerDraft'
 import { useT, modShortcut } from '../i18n'
 import { useNotice, showNotice } from '../lib/notice'
 import { cleanSessionName } from '@shared/promptTitle'
@@ -56,7 +56,7 @@ import MenuPortal from './MenuPortal'
 import SidebarProjects from './SidebarProjects'
 import { useProjects } from '../store/projects'
 import { sidebarConversations, type SidebarConversation } from '../lib/sidebarConversations'
-import { beginNavigationIntent, isCurrentNavigationIntent } from '../lib/navigationIntent'
+import { beginNavigationIntent, currentNavigationIntent, historyPreviewRouteState, isCurrentNavigationIntent } from '../lib/navigationIntent'
 import './Sidebar.appearance.css'
 
 const EMPTY_MESSAGES: Record<string, MessageLike[]> = {}
@@ -207,6 +207,11 @@ export default function Sidebar() {
   // not re-render the whole sidebar per character.
   const draftKeySet = useAppStore((s) => Object.keys(s.composerDrafts).join('\n'))
   const draftSessionIds = useMemo(() => new Set(draftKeySet ? draftKeySet.split('\n') : []), [draftKeySet])
+  const renderDraftBadge = (key: string) => draftSessionIds.has(key) && (
+    <span className="shrink-0 rounded-[4px] bg-overlay-strong px-1 text-[10px] font-medium leading-4 text-accent" title={t('sidebar.draftBadge')}>
+      {t('sidebar.draftBadge')}
+    </span>
+  )
 
   // Session list ordering. Persisted through Main's typed settings store like
   // the sidebar width; hydrated once on mount (store default is 'recent').
@@ -414,7 +419,7 @@ export default function Sidebar() {
         store.setMessages(previewId, peek.messages)
         store.setSessionPreview(previewId, { title: info.title, failed: false })
         store.setCurrentSessionId(previewId, epoch)
-        navigate('/')
+        navigate('/', { state: historyPreviewRouteState })
         previewShown = true
       }
     } catch {
@@ -465,8 +470,9 @@ export default function Sidebar() {
         },
         currentWorkspace: () => isCurrentNavigationIntent(epoch) ? useAppStore.getState().currentWorkspace : null,
         select: () => {
+          setCurrentSessionId(session.id, epoch)
           if (previewShown) useAppStore.getState().clearSessionPreview(previewId)
-          setCurrentSessionId(session.id, epoch); navigate('/')
+          if (!previewShown) navigate('/')
         }
       })
       if (!selected && isCurrentNavigationIntent(epoch)) showNotice('history.restoredInOtherProject')
@@ -481,7 +487,11 @@ export default function Sidebar() {
       }
       return false
     } finally {
-      if (previewShown && !isCurrentNavigationIntent(epoch)) useAppStore.getState().clearSessionPreview(previewId)
+      if (previewShown && !isCurrentNavigationIntent(epoch)) {
+        const store = useAppStore.getState()
+        if (store.currentSessionId === previewId) store.setCurrentSessionId(null, currentNavigationIntent())
+        store.clearSessionPreview(previewId)
+      }
       resumingHistoryRef.current = false
       setResumingHistoryId(null)
       flushQueuedOpen()
@@ -848,14 +858,15 @@ export default function Sidebar() {
   // Provenance chip shared by live, history and cross-project rows: a session
   // spawned by a Feishu route or a scheduled task keeps its badge even after
   // the in-memory registry is gone (origin rides the durable index).
-  const renderOriginBadge = (origin?: 'feishu' | 'task') => {
-    if (origin !== 'feishu' && origin !== 'task') return null
+  const renderOriginBadge = (origin?: 'feishu' | 'task', importedFrom?: HistorySessionDescriptor['importedFrom']) => {
+    const importedLabel = importedFrom === 'codex' ? 'Codex' : importedFrom === 'claude' ? 'Claude Code' : undefined
+    if (!origin && !importedLabel) return null
     return (
       <span
         className="shrink-0 rounded border border-line px-1 text-[9px] font-medium leading-[14px] text-cream-faint"
-        title={origin === 'feishu' ? t('sidebar.feishuSession') : t('sidebar.taskSession')}
+        title={importedLabel ?? (origin === 'feishu' ? t('sidebar.feishuSession') : t('sidebar.taskSession'))}
       >
-        {origin === 'feishu' ? t('sidebar.badge.feishu') : t('sidebar.badge.task')}
+        {importedLabel ?? (origin === 'feishu' ? t('sidebar.badge.feishu') : t('sidebar.badge.task'))}
       </span>
     )
   }
@@ -886,6 +897,9 @@ export default function Sidebar() {
       .catch(() => showNotice('sidebar.renameFailed'))
   }
 
+  const importedSourceByRuntime = new Map(sessionRecords.flatMap(record =>
+    record.runtimeSessionId && record.history?.importedFrom ? [[record.runtimeSessionId, record.history.importedFrom] as const] : []
+  ))
   const renderSessionRow = (session: (typeof sessions)[number], key: string) => {
     const active = currentSessionId === session.id
     const running = Boolean(busy[session.id])
@@ -939,15 +953,8 @@ export default function Sidebar() {
             <span className="min-w-0 truncate text-[13px] font-medium leading-5">
               {displayTitle(session.title, basename(session.cwd) || session.cwd)}
             </span>
-            {renderOriginBadge(session.origin)}
-            {draftSessionIds.has(session.id) && (
-              <span
-                className="shrink-0 rounded-[4px] bg-overlay-strong px-1 text-[10px] font-medium leading-4 text-accent"
-                title={t('sidebar.draftBadge')}
-              >
-                {t('sidebar.draftBadge')}
-              </span>
-            )}
+            {renderOriginBadge(session.origin, importedSourceByRuntime.get(session.id))}
+            {renderDraftBadge(sessionComposerDraftKey(session))}
             {pinned && <Pin size={10} className="shrink-0 text-accent" aria-hidden="true" />}
           </span>
           <span className="block truncate text-[11px] leading-4 text-cream-faint">
@@ -1063,7 +1070,8 @@ export default function Sidebar() {
             <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
               {displayTitle(info.title, basename(currentWorkspace?.realPath ?? ''))}
             </span>
-            {renderOriginBadge(info.origin)}
+            {renderOriginBadge(info.origin, info.importedFrom)}
+            {renderDraftBadge(historyComposerDraftKey(info.uuid))}
           </span>
           <span
             className={`block truncate text-[11px] leading-4 ${
@@ -1132,7 +1140,8 @@ export default function Sidebar() {
             <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
               {displayTitle(row.title, basename(row.cwd) || row.cwd)}
             </span>
-            {renderOriginBadge(row.origin)}
+            {renderOriginBadge(row.origin, row.importedFrom)}
+            {renderDraftBadge(historyComposerDraftKey(row.uuid))}
           </span>
           <span
             className={`block truncate text-[11px] leading-4 ${
@@ -1263,14 +1272,7 @@ export default function Sidebar() {
         >
           <SquarePen size={16} className="shrink-0" aria-hidden="true" />
           {t('sidebar.newChat')}
-          {draftSessionIds.has(NEW_CHAT_DRAFT_KEY) && (
-            <span
-              className="shrink-0 rounded-[4px] bg-overlay-strong px-1 text-[10px] font-medium leading-4 text-accent"
-              title={t('sidebar.draftBadge')}
-            >
-              {t('sidebar.draftBadge')}
-            </span>
-          )}
+          {renderDraftBadge(NEW_CHAT_DRAFT_KEY)}
           <span className="kbd ml-auto opacity-0 transition-opacity group-hover:opacity-100">{modShortcut('N')}</span>
         </button>
         <button

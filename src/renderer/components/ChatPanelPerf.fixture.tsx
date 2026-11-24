@@ -1,7 +1,7 @@
 import { Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
-import type { ProjectRecord, RuntimeModelInfo, RuntimeOverview, Session, SessionState, SessionThinkingLevel, WorkspaceGrant } from '@shared/types'
+import type { ProjectRecord, RuntimeModelInfo, RuntimeOverview, Session, SessionState, SessionThinkingLevel, SkillEntry, SkillReadResult, WorkspaceGrant } from '@shared/types'
 import ChatPanel from './ChatPanel'
 import ExecutionActivity from './ExecutionActivity'
 import MessageList from './MessageList'
@@ -13,6 +13,9 @@ const current: Session = { id: 'current', cwd: '/synthetic/current', title: 'Cur
 const sessions: Session[] = [current, ...Array.from({ length: 200 }, (_, i) => ({ ...current, id: `background-${i}`, title: `Background ${i}` }))]
 const defaultProject: ProjectRecord = { id: 'default', name: 'TouShou workspace', path: '/synthetic/default-save-folder', isDefault: true, archived: false, missing: true, unavailableReason: 'identity-changed', createdAt: 1 }
 const defaultGrant: WorkspaceGrant = { id: 'grant-default', realPath: defaultProject.path, displayPath: defaultProject.path, source: 'default', createdAt: 1 }
+const skill: SkillEntry = { id: 'synthetic.md', name: 'Synthetic team skill', author: '', description: '', kind: 'markdown', sizeBytes: 12, updatedAtMillis: 1 }
+const reviewSessionId = 'background-0'
+let resolveSkill: ((result: SkillReadResult) => void) | undefined
 const probeSessionId = 'projection-probe'
 const probeMessages: MessageLike[] = [
   { id: 'projection-probe-prompt', role: 'user', content: 'Check the task' },
@@ -169,12 +172,35 @@ const fixture = {
     useProjects.setState({ projects: [{ ...defaultProject }], loaded: true, loading: false, pending: null, error: null, errorProjectId: null })
     useAppStore.getState().setCurrentWorkspace(null)
   },
-  recoverySnapshot() { return { calls: fixture.recoveryCalls, workspace: useAppStore.getState().currentWorkspace?.realPath, source: useAppStore.getState().currentWorkspace?.source, missing: useProjects.getState().projects.find(project => project.id === defaultProject.id)?.missing } }
+  recoverySnapshot() { return { calls: fixture.recoveryCalls, workspace: useAppStore.getState().currentWorkspace?.realPath, source: useAppStore.getState().currentWorkspace?.source, missing: useProjects.getState().projects.find(project => project.id === defaultProject.id)?.missing } },
+  prepareComposer() {
+    const state = useAppStore.getState()
+    state.setComposerDraft(current.id, { text: 'Review', images: [] })
+    state.setComposerDraft(reviewSessionId, { text: 'Second draft', images: [] })
+    useAppStore.setState({ currentSessionId: current.id })
+  },
+  skillRequested: () => Boolean(resolveSkill),
+  finishReadingSkill() {
+    resolveSkill?.({ ok: true, entry: skill, content: 'Check synthetic CPI' })
+    resolveSkill = undefined
+  },
+  switchComposerSession() { useAppStore.setState({ currentSessionId: reviewSessionId }) },
+  composerDrafts() {
+    const { composerDrafts } = useAppStore.getState()
+    return { first: composerDrafts[current.id]?.text, second: composerDrafts[reviewSessionId]?.text }
+  }
 }
 declare global { interface Window { chatPerfFixture: typeof fixture } }
 window.chatPerfFixture = fixture
 window.electronAPI = {
   listCommands: async () => [], getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }), listModels: async () => [],
+  listLaunchableTools: () => new Promise(() => undefined),
+  listBundledSkills: () => new Promise(() => undefined),
+  listSkills: async () => ({ ok: true, entries: [skill] }),
+  readSkill: () => new Promise<SkillReadResult>((resolve) => { resolveSkill = resolve }),
+  mcpList: async () => [{ enabled: true, name: 'synthetic-ads' }],
+  listProjectFiles: async () => [],
+  setComposerDrafts: async () => true,
   runtimeListModels: async () => [{ ...deepSeekModel, reasoning: false, thinking: [] }, mediumOnlyModel, plainModel],
   getSessionState: async (sessionId: string): Promise<SessionState | null> => {
     if (sessionId !== current.id) return null

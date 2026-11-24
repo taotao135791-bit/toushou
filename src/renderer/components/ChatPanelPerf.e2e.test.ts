@@ -63,6 +63,9 @@ describe('ChatPanel background metadata rendering', () => {
       expect(data.projectionWork.completedElapsed).toBe(true)
       expect(data.defaultRecovery).toEqual({ message: true, path: true, button: 'Reselect folder…', destination: 'Default workspace' })
       expect(data.defaultRecovered).toEqual({ calls: ['default'], workspace: '/synthetic/default-save-folder', source: 'default', missing: false, promptGone: true, draft: 'Unsent default folder brief' })
+      expect(data.pickerUndo).toBe('Review')
+      expect(data.mentionUndo).toBe('Review @')
+      expect(data.composerSwitch).toEqual({ drafts: { first: 'Review @', second: 'Second draft' }, text: 'Second draft' })
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

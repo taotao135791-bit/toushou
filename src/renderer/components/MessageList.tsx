@@ -63,7 +63,7 @@ function MessageList({ messages, sessionId = null, onRetry, onBranch }: MessageL
       canEditSavedBoards={canEditSavedBoards}
       checkpoint={turn.ownerIndex === null ? undefined : checkpointByMsgIndex.get(turn.ownerIndex)} onRetry={onRetry}
       branchOrdinal={sessionId && !sessionId.startsWith('preview:') && onBranch && !streaming ? index + 1 : undefined}
-      lastUserIndex={lastUserIndex} onBranch={onBranch} />)}
+      lastUserIndex={Math.min(lastUserIndex, (turn.entries.at(-1)?.index ?? -1) + 1)} onBranch={onBranch} />)}
   </div>
 }
 

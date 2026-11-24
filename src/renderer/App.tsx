@@ -1,14 +1,14 @@
 import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
+import { Routes, Route, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { HistorySessionDescriptor, SessionEvent } from '@shared/types'
-import { useAppStore } from './store'
+import { flushComposerDrafts, useAppStore } from './store'
 import { useProjects } from './store/projects'
 import { translate, useT } from './i18n'
 import { useWindowDropGuard } from './lib/useWindowDropGuard'
 import { basename } from './lib/path'
 import { showNotice } from './lib/notice'
 import { finishHistoryResume, historyResumeGrant, openGlobalHistory } from './lib/historyResume'
-import { beginNavigationIntent, isCurrentNavigationIntent } from './lib/navigationIntent'
+import { beginNavigationIntent, isCurrentNavigationIntent, recordRouteNavigation } from './lib/navigationIntent'
 import Layout from './components/Layout'
 import CommandPalette, { type CommandPaletteHandlers } from './components/CommandPalette'
 import ChatPage from './pages/ChatPage'
@@ -79,7 +79,8 @@ function App() {
   useWindowDropGuard()
   // Route changes swap content with a short fade/rise (see .page-enter) —
   // keying by pathname re-runs the entrance on each real navigation only.
-  const { pathname, search, hash } = useLocation()
+  const { pathname, search, hash, state: routeState } = useLocation()
+  const navigationType = useNavigationType()
   const setupComplete = useAppStore((s) => s.setupComplete)
   const workspacePanel = useAppStore((s) => s.workspacePanel)
   const t = useT()
@@ -93,9 +94,9 @@ function App() {
     if (route !== previousRoute.current) {
       previousRoute.current = route
       // A late history restore or analysis launch belongs to the view it started in.
-      beginNavigationIntent()
+      recordRouteNavigation(navigationType, routeState)
     }
-  }, [navigate, route])
+  }, [navigate, navigationType, route, routeState])
 
   useEffect(() => {
     const {
@@ -137,6 +138,7 @@ function App() {
     })
     // Unsent composer drafts survive restarts (per session + new chat).
     void useAppStore.getState().hydrateComposerDrafts()
+    const unsubscribeDraftFlush = window.electronAPI.onComposerDraftsFlush?.(flushComposerDrafts)
 
     const syncLiveSessions = () => {
       void window.electronAPI.listSessions().then(registerSessions)
@@ -292,6 +294,7 @@ function App() {
 
     return () => {
       disposed = true
+      unsubscribeDraftFlush?.()
       flushDeltas()
       unsubscribeTasks()
       unsubscribe()

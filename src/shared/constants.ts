@@ -70,6 +70,8 @@ export const IPC_CHANNELS = {
   /** Composer drafts (image-bearing, so they live in their own file). */
   COMPOSER_DRAFTS_GET: 'composer-drafts:get',
   COMPOSER_DRAFTS_SET: 'composer-drafts:set',
+  COMPOSER_DRAFTS_FLUSH_REQUEST: 'composer-drafts:flush-request',
+  COMPOSER_DRAFTS_FLUSHED: 'composer-drafts:flushed',
   BOARDS_LIST: 'boards:list',
   BOARDS_REFRESH: 'boards:refresh',
   BOARDS_SAVE: 'boards:save',
@@ -179,6 +181,7 @@ export const IPC_CHANNELS = {
   /** Validated live-session id → its full durable transcript (ChatMessage[] | null). */
   OMP_SESSION_TRANSCRIPT: 'omp:session-transcript',
   OMP_LIST_SESSION_HISTORY: 'omp:list-session-history',
+  IMPORT_AGENT_HISTORY: 'app:import-agent-history',
   /** Cross-project read-only history listing (metadata, no capability). */
   OMP_LIST_ALL_SESSION_HISTORY: 'omp:list-all-session-history',
   // --- Scheduled tasks -------------------------------------------------------

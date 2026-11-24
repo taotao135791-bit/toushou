@@ -32,7 +32,7 @@ app.whenReady().then(async () => {
     wc.focus()
     await Promise.race([readyToShow, new Promise((_, reject) => setTimeout(() => reject(new Error('ready-to-show timeout')), 5000))])
     const js = source => wc.executeJavaScript(source)
-    const waitFor = async expression => { const until=Date.now()+5000; while(!await js(expression)) { if(Date.now()>until) throw new Error(`${phase}: visible/focused renderer not ready`); await new Promise(resolve=>setTimeout(resolve,15)) } }
+    const waitFor = async expression => { const until=Date.now()+5000; while(!await js(expression)) { if(Date.now()>until) throw new Error(`${phase}: timed out: ${expression}`); await new Promise(resolve=>setTimeout(resolve,15)) } }
     const frame = () => js(`new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('animation-frame timeout; visible='+document.visibilityState+' focused='+document.hasFocus())),3000);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}))})`)
     await waitFor(`document.visibilityState==='visible' && document.hasFocus() && !!window.chatPerfFixture && innerWidth===1024 && innerHeight===700`)
     await frame()
@@ -184,7 +184,60 @@ app.whenReady().then(async () => {
     await waitFor(`window.chatPerfFixture.recoverySnapshot().workspace==='/synthetic/default-save-folder' && !document.querySelector('.home-hero [data-project-recovery="default"]')`)
     await frame()
     const defaultRecovered = await js(`({ ...window.chatPerfFixture.recoverySnapshot(),promptGone:!document.querySelector('.home-hero').textContent.includes('Confirm the default save folder'),draft:document.querySelector('.home-hero textarea').value })`)
-    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered }))
+    phase = 'native undo after typing in the composer'
+    win.focus()
+    wc.focus()
+    await waitFor('document.hasFocus()')
+    const field = `document.querySelector('.chat-composer textarea')`
+    const search = `document.querySelector('input[role="combobox"][aria-label="Filter skills, commands and plugins"]')`
+    const skillOption = `[...document.querySelectorAll('button[role="option"]')].find(button => button.textContent.trim()==='Synthetic team skill')`
+    const key = (keyCode, modifiers = []) => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+    }
+    const undo = () => key('Z', [process.platform === 'darwin' ? 'meta' : 'control'])
+    const openPicker = async () => {
+      await js(`document.querySelector('button[aria-label="Add content"]').click()`)
+      await waitFor(`[...document.querySelectorAll('button')].some(button => button.textContent.trim()==='Use skill / plugin…')`)
+      await js(`[...document.querySelectorAll('button')].find(button => button.textContent.trim()==='Use skill / plugin…').click()`)
+      await waitFor(`!!${search} && ${search}===document.activeElement && !!(${skillOption})`)
+    }
+    await js('window.chatPerfFixture.prepareComposer()')
+    await waitFor(`${field}?.value==='Review'`)
+    await js(`${field}.focus(); ${field}.setSelectionRange(6,6)`)
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'X' })
+    wc.sendInputEvent({ type: 'char', keyCode: 'x' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'X' })
+    await waitFor(`${field}.value==='Reviewx'`)
+    undo()
+    await waitFor(`${field}.value==='Review'`)
+    phase = 'native undo after keyboard selection in the invocation picker'
+    await openPicker()
+    await waitFor(`[...document.querySelectorAll('button[role="option"]')].some(button => button.textContent.trim()==='synthetic-ads')`)
+    key('Down')
+    key('Return')
+    await waitFor(`${field}.value==='Review @mcp:synthetic-ads '`)
+    undo()
+    await waitFor(`${field}.value==='Review'`)
+    const pickerUndo = await js('window.chatPerfFixture.composerDrafts().first')
+    phase = 'native undo after keyboard selection in the mention menu'
+    await wc.insertText(' @')
+    await waitFor(`[...document.querySelectorAll('[role="option"]')].some(item => item.textContent.includes('synthetic-ads'))`)
+    key('Return')
+    await waitFor(`${field}.value==='Review @mcp:synthetic-ads '`)
+    undo()
+    await waitFor(`${field}.value==='Review @'`)
+    const mentionUndo = await js('window.chatPerfFixture.composerDrafts().first')
+    phase = 'switch conversation during the asynchronous skill read'
+    await openPicker()
+    await js(`(${skillOption}).click()`)
+    await waitFor('window.chatPerfFixture.skillRequested()')
+    await js('window.chatPerfFixture.switchComposerSession()')
+    await waitFor(`${field}?.value==='Second draft' && !${search}`)
+    await js('window.chatPerfFixture.finishReadingSkill()')
+    await frame()
+    const composerSwitch = await js(`({drafts:window.chatPerfFixture.composerDrafts(),text:${field}.value})`)
+    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, pickerUndo, mentionUndo, composerSwitch }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Command, FileText, Plug, Sparkles, Wrench } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Command, Plug, Sparkles, Wrench } from 'lucide-react'
 import { BundledSkillEntry, LaunchableTool, SkillEntry, SlashCommand } from '@shared/types'
 import { formatSkillChatMessage } from '@shared/skills'
 import { isMcpMentionName } from '@shared/mcpMentions'
@@ -7,26 +7,15 @@ import MenuPortal from './MenuPortal'
 import { useT } from '../i18n'
 import { useAppStore } from '../store'
 import { showNotice } from '../lib/notice'
+import { ComposerInvocation } from '../lib/composerInvocation'
 
-/**
- * 技能 / 插件调用面板 — the composer "+" menu's explicit-invocation picker
- * (学 dsh：加号直接打开命令选择). Lists every capability the user can name
- * inside a prompt: package tool commands, live-session slash commands and
- * skills, the SKILL library, and MCP plugin connections. Picking one hands
- * the insertion text back to the composer, which drops it at the caret.
- */
-
-/** One selectable row. `insert` is the exact text the composer inserts. */
-export interface InvokeItem {
+interface InvokeItem {
   id: string
   label: string
   description?: string
   group: 'tool' | 'command' | 'skill' | 'plugin'
-  insert: string
+  choice: ComposerInvocation | { kind: 'personalSkill'; id: string }
 }
-
-/** What one picker pick means: text to insert at the caret. */
-export type InvokePick = (insert: string) => void
 
 interface InvokeLists {
   tools: LaunchableTool[]
@@ -36,198 +25,262 @@ interface InvokeLists {
 }
 
 const EMPTY_LISTS: InvokeLists = { tools: [], personalSkills: [], bundledSkills: [], mcpServers: [] }
-/** Cached window for the session-independent catalogs (same TTL idea as files). */
-const LIST_TTL_MS = 30_000
-let cache: { lists: InvokeLists; at: number } | null = null
+const GROUPS: InvokeItem['group'][] = ['tool', 'command', 'skill', 'plugin']
+const GROUP_ICONS = { tool: Wrench, command: Command, skill: Sparkles, plugin: Plug }
 
-async function loadInvokeLists(): Promise<InvokeLists> {
-  if (cache && Date.now() - cache.at < LIST_TTL_MS) return cache.lists
-  const api = window.electronAPI
-  const [tools, skills, bundled, connections] = await Promise.all([
-    api.listLaunchableTools?.().catch(() => []) ?? [],
-    api.listSkills?.().then((result) => (result.ok ? result.entries : [])).catch(() => []) ?? [],
-    api.listBundledSkills?.().then((result) => (result.ok ? result.entries : [])).catch(() => []) ?? [],
-    // Same grammar filter as the @-mention menu: a name the mention parser
-    // cannot recognize would insert a dead reference.
-    api.mcpList?.().then((all) => all.filter(({ enabled, name }) => enabled && isMcpMentionName(name)).map(({ name: server }) => server)).catch(() => []) ?? []
-  ])
-  const lists: InvokeLists = { tools, personalSkills: skills, bundledSkills: bundled, mcpServers: connections }
-  cache = { lists, at: Date.now() }
-  return lists
+const LIST_TTL_MS = 30_000
+
+function cachedCatalog<T>(read: () => Promise<T>) {
+  let cache: { value: T; expires: number } | undefined
+  let pending: Promise<T> | undefined
+  return {
+    load(): Promise<T> {
+      if (cache && Date.now() < cache.expires) return Promise.resolve(cache.value)
+      if (pending) return pending
+      const request = Promise.resolve().then(read).then((value) => {
+        if (pending === request) cache = { value, expires: Date.now() + LIST_TTL_MS }
+        return value
+      }).finally(() => {
+        if (pending === request) pending = undefined
+      })
+      pending = request
+      return request
+    },
+    invalidate() {
+      cache = undefined
+      pending = undefined
+    }
+  }
 }
 
+const toolsCatalog = cachedCatalog(async () => await window.electronAPI.listLaunchableTools?.() ?? [])
+const personalCatalog = cachedCatalog(async () => {
+  const result = await window.electronAPI.listSkills?.()
+  if (result && !result.ok) throw new Error(result.error)
+  return result?.entries ?? []
+})
+const bundledCatalog = cachedCatalog(async () => {
+  const result = await window.electronAPI.listBundledSkills?.()
+  if (result && !result.ok) throw new Error(result.error)
+  return result?.entries ?? []
+})
+
 export function invalidateInvokeLists(): void {
-  cache = null
+  toolsCatalog.invalidate()
+  personalCatalog.invalidate()
+  bundledCatalog.invalidate()
 }
 
 export default function InvokePicker({
-  open,
   triggerRef,
   onClose,
   onPick,
-  commands
+  commands,
+  liveSession
 }: {
-  open: boolean
   triggerRef: React.RefObject<HTMLElement | null>
   onClose: () => void
-  onPick: InvokePick
-  /** Live-session slash commands (empty for the not-yet-created chat). */
-  commands?: SlashCommand[]
+  onPick: (invocation: ComposerInvocation) => void
+  commands: SlashCommand[]
+  liveSession: boolean
 }) {
   const t = useT()
   const language = useAppStore((s) => s.language)
   const [lists, setLists] = useState<InvokeLists>(EMPTY_LISTS)
-  const [loaded, setLoaded] = useState(false)
+  const [loading, setLoading] = useState(4)
   const [query, setQuery] = useState('')
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const pendingSkill = useRef<symbol | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const listId = useId()
+  const onPickRef = useRef(onPick)
+  onPickRef.current = onPick
 
   useEffect(() => {
-    if (!open) return
-    setQuery('')
     let cancelled = false
-    void loadInvokeLists().then((next) => {
-      if (!cancelled) {
-        setLists(next)
-        setLoaded(true)
-      }
-    })
-    return () => {
-      cancelled = true
+    const load = <K extends keyof InvokeLists>(key: K, read: () => Promise<InvokeLists[K]>) => {
+      void Promise.resolve().then(read).then((result) => {
+        if (!cancelled) setLists((current) => ({ ...current, [key]: result }))
+      }).catch(() => undefined).finally(() => {
+        if (!cancelled) setLoading((current) => current - 1)
+      })
     }
-  }, [open])
+    // Start MCP immediately and resolve it independently of the native package probes.
+    load('mcpServers', async () =>
+      (await window.electronAPI.mcpList?.() ?? [])
+        .filter(({ enabled, name }) => enabled && isMcpMentionName(name))
+        .map(({ name }) => name)
+    )
+    load('personalSkills', personalCatalog.load)
+    load('tools', toolsCatalog.load)
+    load('bundledSkills', bundledCatalog.load)
+    return () => { cancelled = true }
+  }, [])
+
+  useLayoutEffect(() => () => { pendingSkill.current = null }, [])
 
   useEffect(() => {
-    if (!open) return
     const frame = requestAnimationFrame(() => inputRef.current?.focus())
     return () => cancelAnimationFrame(frame)
-  }, [open])
+  }, [])
 
-  const items = useMemo<InvokeItem[]>(() => {
+  const groups = useMemo(() => {
     const rows: InvokeItem[] = []
+    const available = new Set(commands.map(({ name }) => `/${name}`))
+    const displayed = new Set<string>()
     for (const tool of lists.tools) {
-      if (!tool.command) continue
-      rows.push({ id: tool.id, label: tool.label, description: tool.description, group: 'tool', insert: `${tool.command} ` })
+      if (!tool.command || (liveSession && !available.has(tool.command))) continue
+      displayed.add(tool.command)
+      rows.push({ id: tool.id, label: tool.label, description: tool.description, group: 'tool', choice: { kind: 'slash', command: tool.command } })
     }
-    for (const command of commands ?? []) {
-      // Launchable tools already cover package prompts; dedupe by command name.
-      if (rows.some((row) => row.insert === `/${command.name} `)) continue
+    for (const command of commands) {
+      const token = `/${command.name}`
+      if (displayed.has(token)) continue
       rows.push({
         id: `cmd:${command.name}`,
-        label: `/${command.name}`,
+        label: token,
         description: command.description,
         group: command.source === 'skill' ? 'skill' : 'command',
-        insert: `/${command.name} `
+        choice: { kind: 'slash', command: token }
       })
     }
     for (const skill of lists.personalSkills) {
       if (skill.kind !== 'markdown') continue
-      rows.push({ id: `skill:${skill.id}`, label: skill.name, description: skill.description, group: 'skill', insert: `skill:${skill.id}` })
+      rows.push({ id: `skill:${skill.id}`, label: skill.name, description: skill.description, group: 'skill', choice: { kind: 'personalSkill', id: skill.id } })
     }
     for (const skill of lists.bundledSkills) {
-      rows.push({ id: `bundled:${skill.id}`, label: skill.name, description: skill.description, group: 'skill', insert: `bundled:${skill.id}` })
+      rows.push({ id: `bundled:${skill.id}`, label: skill.name, description: skill.description, group: 'skill', choice: { kind: 'skill', text: skill.prompt.trim() } })
     }
     for (const name of lists.mcpServers) {
-      rows.push({ id: `mcp:${name}`, label: name, group: 'plugin', insert: `@mcp:${name} ` })
+      rows.push({ id: `mcp:${name}`, label: name, group: 'plugin', choice: { kind: 'mcp', name } })
     }
-    return rows
-  }, [lists, commands])
-
-  const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    if (!needle) return items
-    return items.filter(
-      (item) => item.label.toLowerCase().includes(needle) || item.description?.toLowerCase().includes(needle)
-    )
-  }, [items, query])
+    const filtered = needle ? rows.filter(({ label, description, choice }) =>
+      label.toLowerCase().includes(needle) ||
+      description?.toLowerCase().includes(needle) ||
+      (choice.kind === 'slash' && choice.command.toLowerCase().includes(needle))
+    ) : rows
+    return GROUPS.map((group) => ({ group, rows: filtered.filter((item) => item.group === group) }))
+      .filter(({ rows }) => rows.length > 0)
+  }, [commands, lists, liveSession, query])
 
-  const groups = useMemo(() => {
-    const order: InvokeItem['group'][] = ['tool', 'command', 'skill', 'plugin']
-    return order
-      .map((group) => ({ group, rows: filtered.filter((item) => item.group === group) }))
-      .filter((entry) => entry.rows.length > 0)
-  }, [filtered])
-
-  /**
-   * Personal and bundled skills expand into their full invocation text (SOP
-   * block / designed prompt) at pick time — the body can be large and the
-   * catalogs are already cached, so resolving on demand keeps the row list
-   * cheap. Slash tokens and MCP mentions insert verbatim.
-   */
-  const pick = async (item: InvokeItem) => {
-    if (item.insert.startsWith('skill:')) {
-      const entry = lists.personalSkills.find((skill) => `skill:${skill.id}` === item.insert)
-      if (!entry) return
-      const result = await window.electronAPI.readSkill?.(entry.id).catch(() => null)
-      if (!result?.ok) {
-        // A closed picker with nothing inserted reads as a dead click — say so.
-        showNotice('composer.invoke.pickFailed')
-        onClose()
-        return
-      }
-      onPick(`\n${formatSkillChatMessage(entry.name, result.content, language)}\n`)
-    } else if (item.insert.startsWith('bundled:')) {
-      const entry = lists.bundledSkills.find((skill) => `bundled:${skill.id}` === item.insert)
-      if (!entry) return
-      onPick(`\n${entry.prompt.trim()}\n`)
-    } else {
-      onPick(item.insert)
-    }
+  const options = groups.flatMap(({ rows }) => rows)
+  const activeIndex = Math.max(0, options.findIndex(({ id }) => id === activeId))
+  const active = options[activeIndex]
+  const optionId = (id: string) => `${listId}-${id}`
+  const close = () => {
+    pendingSkill.current = null
     onClose()
   }
 
-  const groupTitle = (group: InvokeItem['group']): string =>
-    ({ tool: t('composer.invoke.groupTool'), command: t('composer.invoke.groupCommand'), skill: t('composer.invoke.groupSkill'), plugin: t('composer.invoke.groupPlugin') })[group]
+  const pick = async ({ choice }: InvokeItem) => {
+    if (pendingSkill.current) return
+    if (choice.kind === 'personalSkill') {
+      const request = Symbol()
+      pendingSkill.current = request
+      setBusy(true)
+      const result = await window.electronAPI.readSkill?.(choice.id).catch(() => null)
+      if (pendingSkill.current !== request) return
+      if (!result?.ok) {
+        pendingSkill.current = null
+        setBusy(false)
+        showNotice('composer.invoke.pickFailed')
+        return
+      }
+      onPickRef.current({
+        kind: 'skill',
+        text: formatSkillChatMessage(result.entry.name, result.content, language)
+      })
+    } else {
+      onPickRef.current(choice)
+    }
+    close()
+  }
 
-  const GroupIcon = (group: InvokeItem['group']) =>
-    group === 'tool' ? <Wrench size={12} className="shrink-0 text-cream-faint" />
-      : group === 'command' ? <Command size={12} className="shrink-0 text-cream-faint" />
-        : group === 'skill' ? <Sparkles size={12} className="shrink-0 text-accent" />
-          : <Plug size={12} className="shrink-0 text-cream-faint" />
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229 || !active) return
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      void pick(active)
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      const item = options[(activeIndex + step + options.length) % options.length]
+      setActiveId(item.id)
+      document.getElementById(optionId(item.id))?.scrollIntoView({ block: 'nearest' })
+    }
+  }
+
+  const title = {
+    tool: t('composer.invoke.groupTool'),
+    command: t('composer.invoke.groupCommand'),
+    skill: t('composer.invoke.groupSkill'),
+    plugin: t('composer.invoke.groupPlugin')
+  }
 
   return (
-    <MenuPortal open={open} triggerRef={triggerRef} onClose={onClose} width={320} maxHeight={480}>
+    <MenuPortal open triggerRef={triggerRef} onClose={close} width={320} maxHeight={480}>
       <div className="sticky top-0 z-10 bg-ink-850 p-1.5">
         <input
           ref={inputRef}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setActiveId(null)
+          }}
+          onKeyDown={handleKeyDown}
           placeholder={t('composer.invoke.filter')}
           aria-label={t('composer.invoke.filter')}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded
+          aria-controls={listId}
+          aria-activedescendant={active ? optionId(active.id) : undefined}
           className="w-full rounded-lg border border-line bg-ink-900 px-2.5 py-1.5 text-[12.5px] text-cream placeholder-cream-faint outline-none focus:border-accent/40"
         />
       </div>
-      {!loaded && (
-        <p className="px-2.5 py-2 text-[12px] text-cream-faint">{t('composer.invoke.loading')}</p>
+      <div id={listId} role="listbox" aria-label={t('composer.invoke.filter')} aria-busy={busy}>
+        {groups.map(({ group, rows }) => {
+          const Icon = GROUP_ICONS[group]
+          return (
+            <div key={group} role="group" aria-label={title[group]} className="mb-1">
+              <p className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wide text-cream-faint">
+                {title[group]}
+              </p>
+              {rows.map((item) => (
+                <button
+                  key={item.id}
+                  id={optionId(item.id)}
+                  type="button"
+                  role="option"
+                  aria-selected={active?.id === item.id}
+                  disabled={busy}
+                  onClick={() => void pick(item)}
+                  className="focus-ring flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition hover:bg-overlay aria-selected:bg-overlay disabled:opacity-60"
+                >
+                  <Icon size={12} className={group === 'skill' ? 'shrink-0 text-accent' : 'shrink-0 text-cream-faint'} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12.5px] text-cream">{item.label}</span>
+                    {item.description && (
+                      <span className="block truncate text-[11px] text-cream-faint">{item.description}</span>
+                    )}
+                  </span>
+                  {group === 'tool' && item.choice.kind === 'slash' && (
+                    <code className="max-w-[45%] truncate text-[10.5px] text-cream-faint">{item.choice.command}</code>
+                  )}
+                </button>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+      {(loading > 0 || busy) && (
+        <p role="status" className="px-2.5 py-2 text-[12px] text-cream-faint">{t('composer.invoke.loading')}</p>
       )}
-      {loaded && groups.length === 0 && (
-        <p className="px-2.5 py-2 text-[12px] text-cream-faint">{t('composer.invoke.empty')}</p>
+      {!loading && !busy && options.length === 0 && (
+        <p role="status" className="px-2.5 py-2 text-[12px] text-cream-faint">{t('composer.invoke.empty')}</p>
       )}
-      {groups.map(({ group, rows }) => (
-        <div key={group} className="mb-1">
-          <p className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wide text-cream-faint">
-            {groupTitle(group)}
-          </p>
-          {rows.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => void pick(item)}
-              className="flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition hover:bg-overlay"
-            >
-              {GroupIcon(group)}
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px] text-cream">{item.label}</span>
-                {item.description && (
-                  <span className="block truncate text-[11px] text-cream-faint">{item.description}</span>
-                )}
-              </span>
-            </button>
-          ))}
-        </div>
-      ))}
-      <p className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10.5px] text-cream-faint">
-        <FileText size={10} className="shrink-0" />
-        {t('composer.invoke.hint')}
-      </p>
     </MenuPortal>
   )
 }

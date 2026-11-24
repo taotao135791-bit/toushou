@@ -10,6 +10,7 @@ import {
   Trash2
 } from 'lucide-react'
 import { CliCapabilities, CliInfo, PermissionMode, UpdaterStatus } from '@shared/types'
+import type { SessionImportResult, SessionImportSource } from '@shared/sessionImport'
 import { subscribeUpdaterStatus } from '../lib/updaterStatus'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
@@ -47,6 +48,89 @@ function Note({ children }: { children: React.ReactNode }) {
 
 const buttonCls =
   'focus-ring flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition-colors hover:border-ink-600 hover:text-cream disabled:opacity-40'
+
+const SESSION_IMPORT_SOURCES = [
+  { source: 'codex', label: 'Codex' },
+  { source: 'claude', label: 'Claude Code' }
+] as const
+
+function SessionImportRows() {
+  const t = useT()
+  const [running, setRunning] = useState<SessionImportSource | null>(null)
+  const [results, setResults] = useState<Partial<Record<SessionImportSource, SessionImportResult>>>({})
+
+  async function runImport(source: SessionImportSource, chooseFolder = false) {
+    setRunning(source)
+    try {
+      const result = await window.electronAPI.importAgentHistory(source, chooseFolder)
+      if (!result.ok && result.error === 'cancelled') return
+      setResults(previous => ({ ...previous, [source]: result }))
+      if (result.ok && result.imported > 0) {
+        const state = useAppStore.getState()
+        void state.loadAllHistorySessions()
+        void state.loadHistorySessions(state.currentWorkspace?.id ?? null)
+      }
+    } catch {
+      setResults(previous => ({ ...previous, [source]: { ok: false, error: 'import-failed' } }))
+    } finally {
+      setRunning(null)
+    }
+  }
+
+  return <div role="group" aria-labelledby="settings-history-import-heading" className="py-2.5">
+    <h3 id="settings-history-import-heading" className="text-[13px] font-medium text-cream">
+      {t('settings.importHistory.heading')}
+    </h3>
+    <p className="mt-1 text-[11px] leading-relaxed text-cream-faint">{t('settings.importHistory.note')}</p>
+    {SESSION_IMPORT_SOURCES.map(({ source, label }) => {
+      const result = results[source]
+      const empty = result?.ok && !(result.imported || result.duplicates || result.skipped || result.failed)
+      const summary = running === source ? t('settings.importHistory.running') : empty
+        ? t('settings.importHistory.empty')
+        : result?.ok ? t('settings.importHistory.result', {
+          imported: result.imported, duplicates: result.duplicates, skipped: result.skipped, failed: result.failed
+        })
+        : result?.error === 'source-unavailable' ? t('settings.importHistory.sourceUnavailable')
+        : result ? t('settings.importHistory.error') : ''
+      return (
+        <div key={source}>
+          <Row label={label}>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                className={buttonCls}
+                disabled={running !== null}
+                aria-label={t('settings.importHistory.runSource', { source: label })}
+                onClick={() => void runImport(source)}
+              >
+                <Download size={11} />
+                {t('settings.importHistory.run')}
+              </button>
+              <button
+                type="button"
+                className={buttonCls}
+                disabled={running !== null}
+                aria-label={t('settings.importHistory.chooseSource', { source: label })}
+                onClick={() => void runImport(source, true)}
+              >
+                {t('settings.importHistory.choose')}
+              </button>
+            </div>
+          </Row>
+          <div role="status" aria-live="polite">
+            {summary && <p className="pb-2 text-[11px] text-cream-dim">{summary}</p>}
+            {running !== source && result?.ok && result.compressed > 0 && (
+              <p className="pb-2 text-[11px] text-cream-faint">{t('settings.importHistory.compressed', { count: result.compressed })}</p>
+            )}
+            {running !== source && result?.ok && result.defaultWorkspace > 0 && (
+              <p className="pb-2 text-[11px] text-cream-faint">{t('settings.importHistory.defaultWorkspace', { count: result.defaultWorkspace })}</p>
+            )}
+          </div>
+        </div>
+      )
+    })}
+  </div>
+}
 
 const PERMISSION_MODES: { value: PermissionMode; label: I18nKey; note: I18nKey }[] = [
   { value: 'ask', label: 'settings.permissions.ask', note: 'settings.permissionsNote.ask' },
@@ -458,6 +542,7 @@ export default function SettingsPage() {
           </Section>
 
           <Section title={t('settings.data')}>
+            <SessionImportRows />
             <Row label={t('settings.clearRecent')}>
               <button
                 onClick={clearRecent}

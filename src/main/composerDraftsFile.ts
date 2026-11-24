@@ -1,124 +1,148 @@
-import { copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
-import { ComposerDrafts, SessionComposerDraft } from '../shared/types'
-
-/**
- * Composer-draft disk persistence. Drafts ride outside electron-store on
- * purpose: a draft with a few pasted images is megabytes of base64, far past
- * the settings channel's 256KB plain-value cap, and settings are not worth
- * bloating for text the user has not sent yet. This file is the single
- * durable copy, validated on both read and write.
- */
+import type { ComposerDraftFile, ComposerDrafts, SessionComposerDraft } from '../shared/types'
 
 const MAX_DRAFTS = 500
-/** The renderer's own paste truncation lands at 100_001 chars; leave headroom
- * so a truncated paste never fails draft validation. */
-const MAX_DRAFT_TEXT_CHARS = 200_000
-/** 4 images × 10MB (the composer's cap) ≈ 53M base64 chars each side. */
+const MAX_DRAFT_TEXT_CHARS = 1_000_000
 const MAX_DRAFT_IMAGES = 4
 const MAX_DRAFT_IMAGE_CHARS = 14 * 1024 * 1024
 const MAX_DRAFT_FILES = 32
-/** Whole-file budget sized to hold the renderer's documented per-draft maxima. */
 const MAX_FILE_BYTES = 64 * 1024 * 1024
+const DRAFT_KEY = /^[a-zA-Z0-9_:-]{1,256}$/
+const DRAFT_FILENAME = /^[a-f0-9]{64}\.json$/
 
-function draftsFile(): string {
-  return path.join(app.getPath('userData'), 'composer-drafts.json')
+function draftFolder(): string {
+  return path.join(app.getPath('userData'), 'composer-drafts')
 }
 
-function isDraftFile(value: unknown): value is Exclude<SessionComposerDraft['files'], undefined>[number] {
-  if (typeof value !== 'object' || value === null) return false
-  const file = value as Record<string, unknown>
-  return (
-    typeof file.path === 'string' && typeof file.name === 'string' &&
-    typeof file.isDirectory === 'boolean' &&
-    (file.kind === 'folder' || file.kind === 'archive' || file.kind === 'file')
-  )
+function draftFilename(key: string): string {
+  return `${createHash('sha256').update(key).digest('hex')}.json`
 }
 
-/** Validate one draft entry; invalid entries are dropped, never throw. */
-function isSessionDraft(value: unknown): value is SessionComposerDraft {
-  if (typeof value !== 'object' || value === null) return false
-  const draft = value as Record<string, unknown>
-  if (typeof draft.text !== 'string' || draft.text.length > MAX_DRAFT_TEXT_CHARS) return false
-  if (!Array.isArray(draft.images) || draft.images.length > MAX_DRAFT_IMAGES) return false
-  for (const image of draft.images) {
-    if (typeof image !== 'object' || image === null) return false
-    const entry = image as Record<string, unknown>
-    if (entry.type !== 'image' || typeof entry.data !== 'string' || typeof entry.mimeType !== 'string') return false
-    if (entry.data.length > MAX_DRAFT_IMAGE_CHARS) return false
-  }
-  if (draft.files !== undefined) {
-    if (!Array.isArray(draft.files) || draft.files.length > MAX_DRAFT_FILES) return false
-    for (const file of draft.files) if (!isDraftFile(file)) return false
-  }
-  return true
+function cleanFile(value: unknown): ComposerDraftFile | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { path, name, isDirectory, kind } = value as Partial<ComposerDraftFile>
+  if (typeof path !== 'string' || path.length > 8192 || typeof name !== 'string' || name.length > 4096 ||
+      typeof isDirectory !== 'boolean' || (kind !== 'folder' && kind !== 'archive' && kind !== 'file')) return null
+  return { path, name, isDirectory, kind }
 }
 
-/**
- * Read the persisted drafts. A missing, corrupt, or partially invalid file
- * degrades to whatever valid entries survive (empty when none) — an unsent
- * draft must never block startup.
- */
-export function loadComposerDrafts(): ComposerDrafts {
-  let raw: string
-  try {
-    raw = readFileSync(draftsFile(), 'utf-8')
-  } catch {
-    return {}
+function cleanDraft(value: unknown): SessionComposerDraft | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { text, images, files } = value as Partial<SessionComposerDraft>
+  if (typeof text !== 'string' || text.length > MAX_DRAFT_TEXT_CHARS ||
+      !Array.isArray(images) || images.length > MAX_DRAFT_IMAGES) return null
+  const cleanImages: SessionComposerDraft['images'] = []
+  for (const image of images) {
+    if (!image || image.type !== 'image' || typeof image.data !== 'string' || image.data.length > MAX_DRAFT_IMAGE_CHARS ||
+        typeof image.mimeType !== 'string' || image.mimeType.length > 128) return null
+    cleanImages.push({ type: 'image', data: image.data, mimeType: image.mimeType })
   }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    // Keep the corrupt bytes for manual recovery, same policy as settings.
-    try {
-      copyFileSync(draftsFile(), `${draftsFile()}.corrupt`)
-    } catch {
-      // A read-only volume has nothing better to offer; empty drafts it is.
+  const cleanFiles: ComposerDraftFile[] = []
+  if (files !== undefined) {
+    if (!Array.isArray(files) || files.length > MAX_DRAFT_FILES) return null
+    for (const file of files) {
+      const clean = cleanFile(file)
+      if (!clean) return null
+      cleanFiles.push(clean)
     }
-    return {}
   }
-  if (typeof parsed !== 'object' || parsed === null) return {}
-  const drafts: ComposerDrafts = {}
-  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-    if (key.length === 0 || key.length > 256 || !isSessionDraft(value)) continue
-    drafts[key] = value
+  return { text, images: cleanImages, ...(files === undefined ? {} : { files: cleanFiles }) }
+}
+
+async function readDraftJson(file: string): Promise<unknown> {
+  if ((await stat(file)).size > MAX_FILE_BYTES) return null
+  return JSON.parse(await readFile(file, 'utf-8')) as unknown
+}
+
+async function writeDraft(folder: string, key: string, draft: SessionComposerDraft): Promise<boolean> {
+  const file = path.join(folder, draftFilename(key))
+  const temp = `${file}.tmp`
+  const json = JSON.stringify({ key, draft })
+  if (Buffer.byteLength(json, 'utf-8') > MAX_FILE_BYTES) return false
+  try {
+    await writeFile(temp, json, { encoding: 'utf-8', mode: 0o600 })
+    await rename(temp, file)
+    return true
+  } catch {
+    await rm(temp, { force: true }).catch(() => undefined)
+    return false
+  }
+}
+
+let migratingFolder: string | undefined
+let migration: Promise<void> | undefined
+
+function migrateLegacyDrafts(folder: string): Promise<void> {
+  if (migratingFolder === folder && migration) return migration
+  migratingFolder = folder
+  const legacy = path.join(path.dirname(folder), 'composer-drafts.json')
+  migration = (async () => {
+    let parsed: unknown
+    try { parsed = await readDraftJson(legacy) } catch (error) {
+      if (error instanceof SyntaxError) await copyFile(legacy, `${legacy}.corrupt`).catch(() => undefined)
+      return
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return
+    await mkdir(folder, { recursive: true, mode: 0o700 })
+    let migrated = true
+    for (const [key, value] of Object.entries(parsed).slice(0, MAX_DRAFTS)) {
+      const draft = DRAFT_KEY.test(key) ? cleanDraft(value) : null
+      if (!draft) continue
+      const current = path.join(folder, draftFilename(key))
+      const exists = await stat(current).then(() => true, () => false)
+      if (!exists && !(await writeDraft(folder, key, draft))) migrated = false
+    }
+    if (migrated) await rm(legacy)
+  })().catch(() => undefined)
+  return migration
+}
+
+let pendingWrite: Promise<boolean> = Promise.resolve(true)
+
+export async function loadComposerDrafts(): Promise<ComposerDrafts> {
+  const folder = draftFolder()
+  await pendingWrite
+  await migrateLegacyDrafts(folder)
+  const files = await readdir(folder).catch(() => [])
+  const drafts: ComposerDrafts = Object.create(null)
+  for (const filename of files.filter((name) => DRAFT_FILENAME.test(name))) {
+    const file = path.join(folder, filename)
+    try {
+      const entry = await readDraftJson(file) as { key?: unknown; draft?: unknown } | null
+      if (typeof entry?.key !== 'string' || !DRAFT_KEY.test(entry.key) || draftFilename(entry.key) !== filename) continue
+      const draft = cleanDraft(entry.draft)
+      if (draft) drafts[entry.key] = draft
+    } catch (error) {
+      if (error instanceof SyntaxError) await copyFile(file, `${file}.corrupt`).catch(() => undefined)
+    }
   }
   return drafts
 }
 
-/**
- * Persist drafts atomically (tmp + rename) so a crash mid-write can never
- * truncate the previous copy. Structurally invalid input (wrong shapes, too
- * many entries) rejects the write outright — that is a programming error and
- * the last good file must stand. A draft that merely exceeds the FILE budget
- * is dropped from the write while the rest persist: one huge draft must never
- * disable persistence for every other conversation (the in-memory copy keeps
- * serving the oversized session until it shrinks).
- */
-export function saveComposerDrafts(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false
-  const entries = Object.entries(value as Record<string, unknown>)
-  if (entries.length > MAX_DRAFTS) return false
-  const drafts: ComposerDrafts = {}
-  let bytes = 0
-  for (const [key, draft] of entries) {
-    if (key.length === 0 || key.length > 256 || !isSessionDraft(draft)) return false
-    let size = key.length + draft.text.length
-    for (const image of draft.images) size += image.data.length
-    if (bytes + size > MAX_FILE_BYTES) continue
-    drafts[key] = draft
-    bytes += size
-  }
-  const file = draftsFile()
-  const tmp = `${file}.tmp`
-  try {
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(tmp, JSON.stringify(drafts), 'utf-8')
-    renameSync(tmp, file)
-    return true
-  } catch {
-    return false
-  }
+/** Write changed drafts independently. A failed entry leaves its previous copy intact. */
+export function saveComposerDrafts(value: unknown): Promise<boolean> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return Promise.resolve(false)
+  const changes = Object.entries(value)
+  if (changes.length > MAX_DRAFTS) return Promise.resolve(false)
+  const folder = draftFolder()
+  pendingWrite = pendingWrite.then(async () => {
+    await migrateLegacyDrafts(folder)
+    await mkdir(folder, { recursive: true, mode: 0o700 })
+    let saved = true
+    for (const [key, value] of changes) {
+      if (!DRAFT_KEY.test(key)) {
+        saved = false
+      } else if (value === null) {
+        await rm(path.join(folder, draftFilename(key)), { force: true }).catch(() => { saved = false })
+      } else {
+        const draft = cleanDraft(value)
+        if (!draft || !(await writeDraft(folder, key, draft))) saved = false
+      }
+    }
+    return saved
+  }).catch(() => false)
+  return pendingWrite
 }

@@ -1,4 +1,5 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell, type IpcMainEvent } from 'electron'
+import { IPC_CHANNELS } from '../shared/constants'
 import path from 'node:path'
 import { readdirSync, unlinkSync } from 'node:fs'
 import { getStore, setStore, applyFirstRunDefaults } from './store'
@@ -83,6 +84,39 @@ function cleanStaleApprovalConfigs() {
   }
 }
 
+const draftCloseReady = new WeakSet<BrowserWindow>()
+const draftAwareWindows = new WeakSet<BrowserWindow>()
+const draftFlushRequests = new WeakMap<BrowserWindow, Promise<void>>()
+let draftFlushRequestId = 0
+let quitDraftFlushPending = false
+let quitDraftFlushReady = false
+
+function flushWindowComposerDrafts(win: BrowserWindow): Promise<void> {
+  const pending = draftFlushRequests.get(win)
+  if (pending) return pending
+  const contents = win.webContents
+  if (contents.isDestroyed() || contents.isLoadingMainFrame()) return Promise.resolve()
+  const ipc = contents.ipc
+  const requestId = ++draftFlushRequestId
+  const result = new Promise<void>((resolve) => {
+    const finish = () => {
+      clearTimeout(deadline)
+      ipc.removeListener(IPC_CHANNELS.COMPOSER_DRAFTS_FLUSHED, onFlushed)
+      contents.removeListener('destroyed', finish)
+      resolve()
+    }
+    const onFlushed = (event: IpcMainEvent, id: unknown) => {
+      if (event.senderFrame === contents.mainFrame && id === requestId) finish()
+    }
+    const deadline = setTimeout(finish, 1500)
+    ipc.on(IPC_CHANNELS.COMPOSER_DRAFTS_FLUSHED, onFlushed)
+    contents.once('destroyed', finish)
+    try { contents.send(IPC_CHANNELS.COMPOSER_DRAFTS_FLUSH_REQUEST, requestId) } catch { finish() }
+  }).finally(() => draftFlushRequests.delete(win))
+  draftFlushRequests.set(win, result)
+  return result
+}
+
 function createWindow() {
   // Clamp persisted sizes in case the store holds corrupt values
   const width = Math.max(900, Math.min(getStore('windowWidth') || 1280, 5120))
@@ -107,12 +141,23 @@ function createWindow() {
       sandbox: true
     }
   })
+  draftAwareWindows.add(win)
 
   installNavigationGuards(
     win.webContents,
     { rendererEntryPath, devServerUrl },
     (url) => shell.openExternal(url)
   )
+
+  win.on('close', (event) => {
+    if (draftCloseReady.delete(win)) return
+    event.preventDefault()
+    void flushWindowComposerDrafts(win).then(() => {
+      if (win.isDestroyed() || quitDraftFlushPending) return
+      draftCloseReady.add(win)
+      win.close()
+    })
+  })
 
   // 'resize' fires on all platforms; 'resized' is Windows-only
   win.on('resize', () => {
@@ -224,9 +269,24 @@ app.whenReady().then(async () => {
 
 // No OMP child should outlive the GUI — a remote or task turn running on
 // after quit keeps consuming provider quota with nobody watching.
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  const windows = BrowserWindow.getAllWindows()
+  const draftWindows = windows.filter((win) => draftAwareWindows.has(win))
+  if (!quitDraftFlushReady && draftWindows.length) {
+    event.preventDefault()
+    if (quitDraftFlushPending) return
+    quitDraftFlushPending = true
+    void Promise.all(draftWindows.map(flushWindowComposerDrafts)).then(() => {
+      quitDraftFlushPending = false
+      quitDraftFlushReady = true
+      for (const win of draftWindows) draftCloseReady.add(win)
+      app.quit()
+    })
+    return
+  }
+  quitDraftFlushReady = false
   dingTalkConnectionManager.shutdown()
-  for (const window of BrowserWindow.getAllWindows()) cancelOwnerHtmlBoardAiEdits(window.webContents.id)
+  for (const window of windows) cancelOwnerHtmlBoardAiEdits(window.webContents.id)
   shutdownSessionsForQuit()
 })
 

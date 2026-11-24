@@ -24,7 +24,7 @@ import { splitConnectionMarkers } from '../lib/connectionMarkers'
 import { copyMessageText, messageActionText } from '../lib/messageActions'
 import ConnectionGuideCard from './ConnectionGuideCard'
 import Markdown from './Markdown'
-import { parseSkillChatMessage } from '@shared/skills'
+import { splitSkillChatMessage } from '@shared/skills'
 import { SaveMessageToBoardDialog } from './SaveMessageToBoardDialog'
 import { SaveMessageToTaskDialog } from './SaveMessageToTaskDialog'
 
@@ -256,7 +256,8 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
 
   if (isUser) {
     const isSteer = message.kind === 'steer'
-    const skillCard = parseSkillChatMessage(message.content)
+    const parts = splitSkillChatMessage(message.content)
+    const hasSkill = parts.some(({ kind }) => kind === 'skill')
     return (
       <div
         className="msg-in group flex justify-end"
@@ -273,7 +274,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
           )}
           <div
             className={`user-message-bubble rounded-[18px] rounded-br-[6px] border px-4 py-3 text-[14px] leading-[1.75] text-cream ${
-              skillCard ? '' : 'whitespace-pre-wrap'
+              hasSkill ? '' : 'whitespace-pre-wrap'
             } ${
               isSteer
                 ? 'user-message-bubble-steer border-accent/35 bg-accent/[0.12] shadow-[inset_3px_0_0_var(--accent)]'
@@ -292,12 +293,14 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
                 ))}
               </div>
             )}
-            {skillCard ? (
-              <SkillMessageCard
-                name={skillCard.name}
-                instruction={skillCard.instruction}
-                body={skillCard.body}
-              />
+            {hasSkill ? (
+              <div className="space-y-2">
+                {parts.map((part, index) => part.kind === 'skill' ? (
+                  <SkillMessageCard key={index} name={part.name} instruction={part.instruction} body={part.body} />
+                ) : (
+                  <div key={index} className="whitespace-pre-wrap">{part.text}</div>
+                ))}
+              </div>
             ) : (
               message.content
             )}

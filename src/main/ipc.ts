@@ -159,6 +159,8 @@ import {
 import { getGitInfo, getFileDiff } from './gitinfo'
 import { listSessionHistory, deleteSessionFileEverywhere, listAllSessions } from './sessionHistory'
 import { readSessionTranscript, readSessionFileTranscript } from './sessionTranscript'
+import { defaultImportSourceDirectory, importSessionHistory } from './sessionImport'
+import type { SessionImportResult } from '../shared/sessionImport'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { forkSessionFile } from './sessionFork'
 import { applyWindowTheme } from './windowTheme'
@@ -1384,6 +1386,7 @@ export function registerIpc() {
         title: overlays.get(normalizeSessionTitleFile(entry.filePath))?.title ?? entry.title,
         timestamp: entry.timestamp,
         cwd: entry.cwd,
+        ...(entry.importedFrom ? { importedFrom: entry.importedFrom } : {}),
         // Same provenance annotation as the per-workspace listing: cross-project
         // rows keep their 飞书/任务 badge instead of silently losing it.
         ...(origin ? { origin } : {})
@@ -2045,6 +2048,39 @@ export function registerIpc() {
       if (isFile) forgetSessionTitle(target)
     }
   })
+  let importingHistory = false
+  ipcMain.handle(IPC_CHANNELS.IMPORT_AGENT_HISTORY, async (event, source: unknown, chooseFolder: unknown): Promise<SessionImportResult> => {
+    if ((source !== 'codex' && source !== 'claude') || typeof chooseFolder !== 'boolean') {
+      return { ok: false, error: 'invalid-request' }
+    }
+    if (importingHistory) return { ok: false, error: 'busy' }
+    importingHistory = true
+    try {
+      let sourceDirectory = defaultImportSourceDirectory(source)
+      if (chooseFolder) {
+        const parent = BrowserWindow.fromWebContents(event.sender)
+        const options = { properties: ['openDirectory' as const] }
+        const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+        if (result.canceled || !result.filePaths[0]) return { ok: false, error: 'cancelled' }
+        sourceDirectory = result.filePaths[0]
+      }
+      if (!workspacePaths.defaultWorkspace) return { ok: false, error: 'destination-unavailable' }
+      const workspaces = projectRegistry.list().filter(project => !project.missing && !project.archived)
+      return await importSessionHistory({
+        source,
+        sourceDirectory,
+        agentDir: defaultPiAgentDir(),
+        defaultWorkspace: workspaces.find(project => project.isDefault)?.path,
+        projects: new Set(workspaces.map(project => project.path)),
+        isWorkspaceBusy: isProjectDeletionInProgress
+      })
+    } catch {
+      return { ok: false, error: 'import-failed' }
+    } finally {
+      importingHistory = false
+    }
+  })
+
   ipcMain.handle(IPC_CHANNELS.PROJECT_LIST, () => {
     if (!workspacePaths.defaultWorkspace) throw new Error('system-paths-unavailable')
     return projectRegistry.list()
