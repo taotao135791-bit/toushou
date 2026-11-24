@@ -36,8 +36,8 @@ app.whenReady().then(async () => {
       const until = Date.now() + 5000
       while (!await js(expression)) {
         if (Date.now() > until) {
-          const active = await js(`(() => {const el=document.activeElement;return {tag:el?.tagName,label:el?.getAttribute('aria-label'),text:el?.tagName==='BUTTON'?el.textContent.trim():undefined}})()`)
-          throw new Error(`${phase}: timed out: ${expression}; active element: ${JSON.stringify(active)}`)
+          const state = await js(`(() => {const el=document.activeElement;const trigger=document.querySelector('button[aria-label="Add content"]');const action=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Attach image');return {active:el?.getAttribute('aria-label')||el?.tagName,expanded:trigger?.getAttribute('aria-expanded'),attachment:action?getComputedStyle(action).visibility:'missing',events:window.composerInputEvents?.slice(-15)}})()`)
+          throw new Error(`${phase}: timed out: ${expression}; renderer: ${JSON.stringify(state)}`)
         }
         await new Promise(resolve => setTimeout(resolve, 15))
       }
@@ -202,15 +202,31 @@ app.whenReady().then(async () => {
     const invokeAction = `[...document.querySelectorAll('button')].find(button => button.textContent.trim()==='Use skill / plugin…')`
     const search = `document.querySelector('input[role="combobox"][aria-label="Filter skills, commands and plugins"]')`
     const skillOption = `[...document.querySelectorAll('button[role="option"]')].find(button => button.textContent.trim()==='Synthetic team skill')`
+    await js(`window.composerInputEvents=[];for(const type of ['focusin','pointerdown','click','keyup'])document.addEventListener(type,event=>{
+      const el=event.target;const label=el.getAttribute?.('aria-label')||(el.tagName==='BUTTON'?el.textContent.trim():el.tagName);
+      window.composerInputEvents.push({type,label,key:event.key,trusted:event.isTrusted});
+    },true)`)
     const key = (keyCode, modifiers = []) => {
       wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
       wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
     }
-    const undo = () => key('Z', [process.platform === 'darwin' ? 'meta' : 'control'])
+    const undo = async () => {
+      const before = await js('window.composerInputEvents.length')
+      key('Z', [process.platform === 'darwin' ? 'meta' : 'control'])
+      await waitFor(`window.composerInputEvents.slice(${before}).some(({type,key,trusted})=>type==='keyup'&&key?.toLowerCase()==='z'&&trusted)`)
+      await frame()
+    }
+    const click = async (expression) => {
+      await waitFor(`!!(${expression}) && getComputedStyle((${expression})).visibility==='visible'`)
+      const point = await js(`(() => {const r=(${expression}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`)
+      wc.sendInputEvent({ type: 'mouseMove', ...point })
+      wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 })
+      wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
+    }
     const openPicker = async () => {
-      await js(`${addTrigger}.click()`)
-      await waitFor(`document.activeElement?.textContent.trim()==='Attach image'`)
-      await js(`(${invokeAction}).click()`)
+      await click(addTrigger)
+      await waitFor(`${addTrigger}.getAttribute('aria-expanded')==='true'`)
+      await click(invokeAction)
       await waitFor(`!!${search}`)
       await waitFor(`getComputedStyle(${search}).visibility==='visible'`)
       await waitFor(`${search}===document.activeElement`)
@@ -224,7 +240,7 @@ app.whenReady().then(async () => {
     wc.sendInputEvent({ type: 'char', keyCode: 'x' })
     wc.sendInputEvent({ type: 'keyUp', keyCode: 'X' })
     await waitFor(`${field}.value==='Reviewx'`)
-    undo()
+    await undo()
     await waitFor(`${field}.value==='Review'`)
     phase = 'native undo after keyboard selection in the invocation picker'
     await openPicker()
@@ -233,7 +249,7 @@ app.whenReady().then(async () => {
     await waitFor(`document.getElementById(${search}.getAttribute('aria-activedescendant'))?.textContent.trim()==='synthetic-ads'`)
     key('Return')
     await waitFor(`${field}.value==='Review @mcp:synthetic-ads '`)
-    undo()
+    await undo()
     await waitFor(`${field}.value==='Review'`)
     const pickerUndo = await js('window.chatPerfFixture.composerDrafts().first')
     phase = 'native undo after keyboard selection in the mention menu'
@@ -241,12 +257,12 @@ app.whenReady().then(async () => {
     await waitFor(`[...document.querySelectorAll('[role="option"]')].some(item => item.textContent.includes('synthetic-ads'))`)
     key('Return')
     await waitFor(`${field}.value==='Review @mcp:synthetic-ads '`)
-    undo()
+    await undo()
     await waitFor(`${field}.value==='Review @'`)
     const mentionUndo = await js('window.chatPerfFixture.composerDrafts().first')
     phase = 'switch conversation during the asynchronous skill read'
     await openPicker()
-    await js(`(${skillOption}).click()`)
+    await click(skillOption)
     await waitFor('window.chatPerfFixture.skillRequested()')
     await js('window.chatPerfFixture.switchComposerSession()')
     await waitFor(`${field}?.value==='Second draft' && !${search}`)
