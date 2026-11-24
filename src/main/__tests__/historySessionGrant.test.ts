@@ -111,6 +111,17 @@ describe('HistorySessionGrantManager', () => {
     expectSamePath(await manager.resolve(refreshed.id, context()), fs.realpathSync(filePath))
   })
 
+  it('exposes the descriptor uuid read-only for the delete lock check', async () => {
+    const filePath = writeSession(workspaceA)
+    const [descriptor] = await manager.mintForWorkspace([history(filePath)], context())
+
+    expect(manager.descriptorUuid(descriptor.id)).toBe('session-uuid')
+    expect(manager.descriptorUuid('history-session-nonexistent')).toBeNull()
+    expect(manager.descriptorUuid(42)).toBeNull()
+    // The descriptor uuid is only a label; it grants nothing by itself.
+    expect(manager.descriptorUuid(descriptor.id)).not.toHaveProperty('resolve')
+  })
+
   it('rejects a session-directory symlink that escapes the canonical agent sessions root', async () => {
     const expectedDirectory = sessionDirFor(workspaceA, agentDir)
     const outsideDirectory = path.join(agentDir, 'outside')

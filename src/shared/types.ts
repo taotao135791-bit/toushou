@@ -1630,6 +1630,12 @@ export interface AppSettings {
   pinnedSessionIds: string[]
   /** Sidebar: sessions folded away into the archived group. */
   archivedSessionIds: string[]
+  /**
+   * Conversations locked against deletion (durable uuids). Main refuses
+   * every delete path for a locked uuid — the sidebar row only mirrors the
+   * state; the enforcement is server-side of the renderer.
+   */
+  lockedSessionIds: string[]
   /** Sidebar: session list ordering (durable uuids or live ids for archives). */
   sessionSort: SessionSortOrder
   /** Sidebar: last drag-chosen width in px; the renderer clamps it on read. */
@@ -1800,6 +1806,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   thinkingCollapseTiming: 'on-complete',
   pinnedSessionIds: [],
   archivedSessionIds: [],
+  lockedSessionIds: [],
   sessionSort: 'recent',
   sidebarWidth: 240,
   bundledPackages: {},

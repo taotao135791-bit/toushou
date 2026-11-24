@@ -264,6 +264,8 @@ interface AppState {
   sessionRecords: SessionRecord[]
   /** Sidebar: archived sessions, folded into the archive group (persisted). */
   archivedSessionIds: string[]
+  /** Conversations locked against deletion (durable uuids; persisted; Main enforces). */
+  lockedSessionIds: string[]
   /** sessionId -> finished a turn while not selected; cleared on select. In-memory only. */
   unreadSessionIds: Record<string, boolean>
   /** One-shot composer prefill (e.g. "build your own plugin" from the packages page). */
@@ -411,6 +413,10 @@ interface AppState {
   setArchivedSessionIds: (ids: string[]) => void
   /** Archive/unarchive a session by durable key (uuid, else runtime id) and persist the list. */
   setSessionArchived: (sessionId: string, archived: boolean) => void
+  /** Replace the locked list (startup load; does not persist). */
+  setLockedSessionIds: (ids: string[]) => void
+  /** Lock/unlock a conversation by durable uuid and persist the list. */
+  setSessionLocked: (uuid: string, locked: boolean) => void
   markSessionUnread: (sessionId: string) => void
   setComposerPrefill: (text: string | null) => void
   setComposerAutosend: (composerAutosend: boolean) => void
@@ -609,6 +615,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pinnedSessionIds: [],
   sessionRecords: [],
   archivedSessionIds: [],
+  lockedSessionIds: [],
   unreadSessionIds: {},
   composerPrefill: null,
   composerAutosend: false,
@@ -1311,6 +1318,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         : state.archivedSessionIds.filter((id) => id !== sessionId)
       window.electronAPI.setStore('archivedSessionIds', archivedSessionIds)
       return { archivedSessionIds }
+    }),
+  setLockedSessionIds: (lockedSessionIds) => set({ lockedSessionIds }),
+  // 锁定只接受 durable uuid：锁必须活得比进程久，runtime id 重启后会变，
+  // 拿它当锁钥匙会锁错对象。锁定列表不做会话存在性裁剪——锁是用户的
+  // 保护意志，即使对话暂时不在列表里（重启/归档）锁也不能丢。
+  setSessionLocked: (uuid, locked) =>
+    set((state) => {
+      const lockedSessionIds = locked
+        ? [...state.lockedSessionIds.filter((id) => id !== uuid), uuid]
+        : state.lockedSessionIds.filter((id) => id !== uuid)
+      window.electronAPI.setStore('lockedSessionIds', lockedSessionIds)
+      return { lockedSessionIds }
     }),
   markSessionUnread: (sessionId) =>
     set((state) =>
