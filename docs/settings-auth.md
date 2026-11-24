@@ -83,20 +83,32 @@ Key entry is exactly the same direct paste-key form Oh My Pi itself uses.
 - `model_changed` / `thinking_level_changed` events keep pickers in sync
   with the runtime-resolved state.
 
-### Image input for an existing custom model
+### Selecting a catalog or custom model
 
-Older versions saved manually listed models with `input: [text]`. For a
-model whose endpoint accepts images, open **Settings → Custom providers**
-(设置 → 自定义服务商), click the provider’s pencil **Edit** (编辑), and change
-the target model’s selector from **Text only** (仅文字) to **Text and
-images** (文字和图片). Click **Save provider** (保存服务商). An empty API key
-field retains the saved key. Start a new session or reopen the saved
-conversation to load the updated model declaration.
+In **Settings → Models**, choose the provider to see its catalog and runtime
+models. Selecting a model shows its known input types and context window.
+Choose **Custom model IDs…** in this menu to open that provider’s editor
+when a model is missing. If the native protocol only supports catalog and
+discovered models (for example, OpenRouter), **Add provider…** opens a
+separate compatible endpoint configuration. Use a distinct provider ID.
+On a supported native endpoint such as Gemini, the editor fills in the
+address and API dialect. Manually defining models requires a provider API
+key or an existing models.yml key.
 
-The input selector appears for each manually listed model. **Use model
-catalog** (使用模型目录) uses the exact provider, model ID, API dialect and
-endpoint match. Unknown endpoints default to text. With **Auto-discover
-models** (自动发现模型) enabled, OMP supplies the discovered model list.
+In **Custom providers**, **Add a catalog model** fills in the model’s known
+capabilities. Catalog information uses the provider ID, full wire model ID,
+API dialect and endpoint. A gateway with a different URL can therefore
+declare its own capabilities even when it reuses an official model name.
+
+A new manually entered model with unknown limits requires a context window
+of **200k, 256k, 300k, 500k or 1M**. Previously configured models retain
+their saved context, including a blank runtime default or a size outside
+these presets. If the gateway supports
+images, select **Text and images** (文字和图片) under **Input types**.
+Click **Save provider** (保存服务商). Leaving the key field empty retains the
+saved key. Reopen the conversation or start a new session to load the
+updated model declaration. With **Auto-discover models** enabled,
+OMP supplies the discovered model list.
 
 ## Thinking levels
 
@@ -130,6 +142,24 @@ The runtime can clamp a fixed selection to a model's supported effort. The
 picker displays the confirmed effort for fixed selections and `Auto` when OMP
 reports `configured: "auto"`. A turn's historical metadata retains the
 concrete effort as recorded by the runtime.
+
+## Context usage and compaction
+
+In **Settings → Conversation**, set the automatic compaction threshold to
+a whole percentage from 50 to 95. The default is 80. Current Oh My Pi
+checks the active model’s context window at safe turn boundaries. Changing
+the setting takes effect in an open conversation at its next check.
+The threshold applies to sessions launched by the desktop app.
+
+The token count under the composer is cumulative. Click it to see how many
+tokens currently occupy the window and its capacity. The same panel
+supports manual compaction, also available as `/compact`. A small
+positive fill displays as `<1%`. A runtime that has not reported usage
+displays a pending or unavailable state. Legacy Pi uses its own automatic
+compaction policy.
+
+Automatic and manual compaction each show one status message in the conversation.
+The message updates in place when compaction finishes, is skipped, fails, or is cancelled.
 
 ## Machine skills
 

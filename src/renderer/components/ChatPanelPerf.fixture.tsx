@@ -57,10 +57,22 @@ browserWindow.clearInterval = (timer) => {
 
 let releasePluginCatalog!: () => void
 const pluginCatalogReady = new Promise<void>(resolve => { releasePluginCatalog = resolve })
+let resolveManualCompact: (() => void) | undefined
 
 const fixture = {
   releasePluginCatalog,
   commits: 0, renderMs: 0, backgroundUpdates: 0,
+  compactCalls: 0,
+  finishManualCompact() { resolveManualCompact?.() },
+  startAutoCompact() {
+    useAppStore.getState().setBusy(current.id, true)
+    useAppStore.getState().applySessionEvent({ type: 'compaction', sessionId: current.id, source: 'auto', phase: 'start' })
+  },
+  finishAutoCompact() {
+    useAppStore.getState().applySessionEvent({ type: 'compaction', sessionId: current.id, source: 'auto', phase: 'end', outcome: 'compacted' })
+    useAppStore.getState().setBusy(current.id, false)
+  },
+  finishTurn() { useAppStore.getState().setBusy(current.id, false) },
   currentModel: deepSeekModel,
   currentThinkingLevel: 'auto',
   sentImages: [] as Array<{ data: string; mimeType: string }>,
@@ -247,7 +259,22 @@ window.electronAPI = {
     useAppStore.getState().applySessionEvent({ type: 'thinking_level_changed', sessionId, level })
     return true
   },
-  gitInfo: async () => null, getSessionStats: async () => null, setStore: async () => undefined,
+  gitInfo: async () => null,
+  compactSession: async () => {
+    fixture.compactCalls++
+    const event = { type: 'compaction', sessionId: current.id, source: 'manual' } as const
+    useAppStore.getState().applySessionEvent({ ...event, phase: 'start' })
+    await new Promise<void>(resolve => { resolveManualCompact = resolve })
+    resolveManualCompact = undefined
+    useAppStore.getState().applySessionEvent({ ...event, phase: 'end', outcome: 'compacted' })
+    return true
+  },
+  getSessionStats: async () => ({
+    userMessages: 1, assistantMessages: 1, toolCalls: 0, cost: 0,
+    tokens: { input: 352000, output: 6500, cacheRead: 0, cacheWrite: 0, total: 358500 },
+    contextUsage: { tokens: fixture.compactCalls ? 350 : 120000, contextWindow: 200000, percent: null }
+  }),
+  setStore: async () => undefined,
   checkpointList: async () => [],
   listProjects: async () => [{ ...defaultProject }], listRecentWorkspaces: async () => [],
   recoverProject: async (id: string) => { fixture.recoveryCalls.push(id); defaultProject.missing = false; delete defaultProject.unavailableReason; return { ok: true, project: { ...defaultProject }, grant: defaultGrant } }

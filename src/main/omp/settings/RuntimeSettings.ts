@@ -26,7 +26,8 @@ import { ProviderRegistry } from './ProviderRegistry'
 import { isValidModelSelector, PROVIDER_ID_PATTERN, splitModelSelector } from './modelSelector'
 import { switchModelSelector } from '../../../shared/modelSelector'
 import { modelThinkingEfforts, NativeModelThinking } from '../modelThinking'
-import { listOmpModelThinking } from './OmpModelCatalog'
+import { listOmpModelThinking, listOmpModelCapabilities } from './OmpModelCatalog'
+import { modelTokenLimit } from '../../../shared/modelCatalog'
 
 /**
  * Unified runtime-settings facade for the IPC layer: one API, two adapters.
@@ -67,6 +68,7 @@ export interface RuntimeSettingsDeps {
   /** Custom runners must opt in explicitly to corrections on an isolated profile. */
   modelsFile?: string
   thinkingCatalog?: () => ReadonlyMap<string, NativeModelThinking>
+  capabilityCatalog?: () => ReadonlyMap<string, RuntimeModelInfo>
 }
 
 const OVERVIEW_TTL_MS = 15_000
@@ -111,9 +113,10 @@ export class RuntimeSettings {
   private overviewCache: { at: number; overview: RuntimeOverview } | null = null
   private modelsCache: { at: number; models: RuntimeModelInfo[] } | null = null
   private loadingModels: Promise<RuntimeModelInfo[]> | null = null
-  private readonly repairThinking: boolean
+  private readonly repairModels: boolean
   private readonly modelsFile?: string
   private readonly thinkingCatalog: () => ReadonlyMap<string, NativeModelThinking>
+  private readonly capabilityCatalog: () => ReadonlyMap<string, RuntimeModelInfo>
   private readonly cli: CliInfo
   private readonly run: CliRunner
   private readonly spawnProbe: typeof RuntimeRpcClient.spawnWithBootstrap
@@ -122,9 +125,10 @@ export class RuntimeSettings {
   constructor(deps: RuntimeSettingsDeps = {}) {
     this.cli = deps.cli ?? detectCli()
     this.run = deps.runner ?? makeExecRunner(this.cli.path ?? this.cli.command, { env: deps.env })
-    this.repairThinking = (!deps.runner && !deps.env) || !!deps.modelsFile
+    this.repairModels = (!deps.runner && !deps.env) || !!deps.modelsFile
     this.modelsFile = deps.modelsFile
     this.thinkingCatalog = deps.thinkingCatalog ?? listOmpModelThinking
+    this.capabilityCatalog = deps.capabilityCatalog ?? listOmpModelCapabilities
     this.spawnProbe = deps.spawnProbe ?? RuntimeRpcClient.spawnWithBootstrap
     this.registry = deps.registry ?? new ProviderRegistry()
     if (deps.env && !deps.spawnProbe) {
@@ -320,16 +324,27 @@ export class RuntimeSettings {
       }))
     }
     const models = await this.readCurrentModels()
-    if (!this.repairThinking || models.every((model) => model.thinking.length > 0)) return models
+    if (!this.repairModels || models.length === 0) return models
+    const { catalogCorrection, repairCatalogModelCapabilities, repairDiscoveredModelThinking } = await import('../../customProviders')
+    const capabilities = this.capabilityCatalog()
+    const capabilityChanges = models.flatMap(model => {
+      const native = capabilities.get(`${model.provider}/${model.id}`)
+      if (!native) return []
+      const changes = catalogCorrection(model, native)
+      // Other fields are already correct in the runtime and need no persisted override.
+      return Object.keys(changes).length ? [{ ...native, discovered: model, input: changes.input,
+        contextWindow: changes.contextWindow, maxTokens: changes.maxTokens }] : []
+    })
     const thinking = this.thinkingCatalog()
     const candidates = models.filter((model) => !model.thinking.length && thinking.has(`${model.provider}/${model.id}`))
-    if (!candidates.length) return models
+    if (!candidates.length && !capabilityChanges.length) return models
     // The runtime owns profile selection and reports the matching agent directory.
     const dir = this.modelsFile ? undefined : await configPath(this.run)
     const file = this.modelsFile ?? (dir ? join(dir, 'models.yml') : undefined)
     if (!file) return models
-    const { repairDiscoveredModelThinking } = await import('../../customProviders')
-    if (!await repairDiscoveredModelThinking(candidates, thinking, file)) return models
+    const repairedCapabilities = await repairCatalogModelCapabilities(capabilityChanges, file)
+    const repairedThinking = await repairDiscoveredModelThinking(candidates, thinking, file)
+    if (!repairedCapabilities && !repairedThinking) return models
     const verified = await this.readCurrentModels()
     return verified.length > 0 ? verified : models
   }
@@ -353,8 +368,8 @@ export class RuntimeSettings {
               selector:
                 typeof o.selector === 'string' ? o.selector : provider && id ? `${provider}/${id}` : '',
               name: typeof o.name === 'string' ? o.name : id,
-              contextWindow: typeof o.contextWindow === 'number' ? o.contextWindow : undefined,
-              maxTokens: typeof o.maxTokens === 'number' ? o.maxTokens : undefined,
+              contextWindow: modelTokenLimit(o.contextWindow),
+              maxTokens: modelTokenLimit(o.maxTokens),
               input: modelInputs(o.input),
               reasoning: typeof o.reasoning === 'boolean' ? o.reasoning : thinking.length > 0,
               thinking

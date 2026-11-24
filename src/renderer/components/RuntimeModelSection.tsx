@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, KeyRound, RefreshCw, RotateCcw, Save, Search, Trash2 } from 'lucide-react'
+import { isCustomProviderApi, matchesCatalogEndpoint } from '@shared/modelCatalog'
+import type { CustomProviderInfo } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { defaultThinkingOptionsFor } from '../lib/thinking'
@@ -25,7 +27,10 @@ import NativeLoginSection from './NativeLoginSection'
  * the catalog (synthetic "unavailable"/"unsupported" option). An empty
  * provider list renders an explicit error + retry — never a dead dropdown.
  */
-export default function RuntimeModelSection() {
+export default function RuntimeModelSection({ customProviders, onAddCustomModel }: {
+  customProviders: CustomProviderInfo[]
+  onAddCustomModel: (provider?: string) => void
+}) {
   const overview = useAppStore((s) => s.runtimeOverview)
   const runtimeModels = useAppStore((s) => s.runtimeModels)
   const runtimeModelCatalog = useAppStore((s) => s.runtimeModelCatalog)
@@ -41,7 +46,16 @@ export default function RuntimeModelSection() {
 
   const defaultModel = overview?.modelState.defaultModel ?? ''
   const defaultThinking = overview?.modelState.defaultThinkingLevel ?? ''
-  const providers = overview?.providers ?? []
+  const providers = useMemo(() => {
+    const listed = new Map(overview?.providers.map(entry => [entry.id, entry]))
+    for (const { provider: id } of runtimeModels) {
+      if (!listed.has(id)) listed.set(id, { id, name: id, available: true, authenticated: false })
+    }
+    for (const { id } of customProviders) {
+      if (!listed.has(id)) listed.set(id, { id, name: id, available: false, authenticated: false })
+    }
+    return [...listed.values()]
+  }, [overview?.providers, runtimeModels, customProviders])
 
   const [provider, setProvider] = useState('')
   // Keep unsaved choices separate from runtime truth. A delayed overview is
@@ -113,9 +127,29 @@ export default function RuntimeModelSection() {
 
   // Include discovered model IDs even when an older static catalog lists the provider.
   const catalogByProvider = runtimeModelCatalog.filter((m) => m.provider === provider)
-  const catalogSelectors = new Set(catalogByProvider.map((m) => m.selector))
   const liveByProvider = runtimeModels.filter((m) => m.provider === provider)
-  const modelOptions = [...catalogByProvider, ...liveByProvider.filter((m) => !catalogSelectors.has(m.selector))]
+  const configured = customProviders.find(p => p.id === provider)
+  const trustedCatalog = configured?.baseUrl
+    ? catalogByProvider.filter(m => matchesCatalogEndpoint(m, configured) && !configured.models.some(row => row.id === m.id && row.hasCustomTransport))
+    : catalogByProvider
+  const canExtend = configured?.api ? isCustomProviderApi(configured.api) &&
+    (configured.api !== 'google-generative-ai' || catalogByProvider.some(m => matchesCatalogEndpoint(m, configured)))
+    : !catalogByProvider.length || catalogByProvider.some(m => !!m.baseUrl && isCustomProviderApi(m.api))
+  const entries = new Map(trustedCatalog.map(m => [m.selector, m]))
+  for (const row of configured?.models ?? []) {
+    const selector = provider + '/' + row.id
+    if (!entries.has(selector)) entries.set(selector, {
+      id: row.id, provider, selector, name: row.name || row.id, input: row.input ?? undefined,
+      contextWindow: row.contextWindow, reasoning: false, thinking: []
+    })
+  }
+  for (const entry of liveByProvider) entries.set(entry.selector, entry)
+  const modelOptions = [...entries.values()]
+  const selectedEntry = entries.get(model)
+  const selectedCapabilities = [
+    selectedEntry?.input?.length ? t(selectedEntry.input.includes('image') ? 'settings.modelInputImage' : 'settings.modelInputText') : '',
+    selectedEntry?.contextWindow ? t('settings.modelContextValue', { size: selectedEntry.contextWindow.toLocaleString() }) : ''
+  ].filter(Boolean).join(' · ')
   const modelSelectors = modelOptions.map((m) => m.selector)
   const modelState = currentValueState(model, modelSelectors)
 
@@ -320,22 +354,30 @@ export default function RuntimeModelSection() {
         {/* Model */}
         <div className="flex items-center justify-between gap-3 py-3">
           <span className="text-[13px] text-cream">{t('settings.defaultModel')}</span>
-          <select value={modelState.value} onChange={(e) => setModelDraft(e.target.value)} className={selectCls}>
-            <option value="">{t('settings.modelRuntimeDefault')}</option>
-            {modelState.unavailable && (
-              <option value={modelState.value}>
-                {modelState.value} · {t('settings.modelUnavailable')}
-              </option>
-            )}
-            {/* Keep a valid selected model in the DOM. Removing it makes a
-                controlled native <select> fall back to its first option,
-                visually (and interactively) reverting to “Auto”. */}
-            {modelOptions.map((m) => (
-              <option key={m.selector} value={m.selector}>
-                {m.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex min-w-0 flex-col items-end gap-1">
+            <select aria-label={t('settings.defaultModel')} value={modelState.value} onChange={e => {
+              if (e.target.value === '__custom__') onAddCustomModel(canExtend ? provider : undefined)
+              else setModelDraft(e.target.value)
+            }} className={selectCls}>
+              <option value="">{t('settings.modelRuntimeDefault')}</option>
+              {modelState.unavailable && (
+                <option value={modelState.value}>
+                  {modelState.value} · {t('settings.modelUnavailable')}
+                </option>
+              )}
+              {/* Keep a valid selected model in the DOM. Removing it makes a
+                  controlled native <select> fall back to its first option,
+                  visually (and interactively) reverting to “Auto”. */}
+              {modelOptions.map((m) => (
+                <option key={m.selector} value={m.selector}>
+                  {m.name}
+                </option>
+              ))}
+              {provider && <option value="__custom__">{t(canExtend ? 'settings.customModelIds' : 'settings.customProviderAdd')}…</option>}
+            </select>
+            {selectedCapabilities && <span className="text-[11px] text-cream-faint">{selectedCapabilities}</span>}
+            {provider && !canExtend && <span className="text-[11px] text-cream-faint">{t('settings.providerCatalogOnly')}</span>}
+          </div>
         </div>
         {modelState.unavailable && (
           <p className="px-4 pb-2 text-[11px] leading-relaxed text-cream-faint">

@@ -42,7 +42,7 @@ import { showNotice } from '../lib/notice'
 import ModelPicker from './ModelPicker'
 import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
-import UsageMonitor from './UsageMonitor'
+import UsageMonitor, { ContextReadout } from './UsageMonitor'
 import MenuPortal, { ComposerMenuPlacement } from './MenuPortal'
 import InvokePicker from './InvokePicker'
 import ProjectPicker from './ProjectPicker'
@@ -250,6 +250,8 @@ export default memo(function Composer({
   /** Text armed by a one-click tool launch, sent once committed (see below). */
   const autosendRef = useRef<string | null>(null)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
+  const compacting = useAppStore(s => Boolean(currentSessionId && s.compacting[currentSessionId]))
+  const compactUnavailable = busy || disabled || stopping || compacting
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
   // Primitive selector: re-renders only when the Feishu-origin flag flips.
   const feishuSync = useAppStore(
@@ -438,7 +440,7 @@ export default memo(function Composer({
       ...(onCompact
         ? [{ name: 'compact', description: t('composer.slashCompact'), source: 'prompt' as const, builtin: true }]
         : []),
-      ...commands.map((c) => ({ name: c.name, description: c.description ?? '', source: c.source }))
+      ...commands.filter(c => !onCompact || c.name !== 'compact').map((c) => ({ name: c.name, description: c.description ?? '', source: c.source }))
     ]
     return filterSlashItems(all, slashQuery)
   }, [slashQuery, commands, onCompact, t, appCommands])
@@ -575,6 +577,7 @@ export default memo(function Composer({
       return
     }
     if (item.builtin) {
+      if (compactUnavailable) return
       commitDraft('')
       setCaret(0)
       onCompact?.()
@@ -865,6 +868,13 @@ export default memo(function Composer({
   const handleSend = () => {
     const trimmed = outgoingText()
     if (!trimmed || disabled || activeReaders.current.size) return
+    if (trimmed === '/compact' && onCompact && !images.length && !pendingFiles.length) {
+      if (compactUnavailable) return
+      commitDraft('')
+      setCaret(0)
+      onCompact()
+      return
+    }
     const sessionIdAtSend = currentSessionId
     const imgs = stagedImages()
     // Attachment chips ride along as one @path token per line; they are
@@ -1112,7 +1122,7 @@ export default memo(function Composer({
 
   return (
     <ComposerMenuPlacement.Provider value={currentSessionId ? 'top' : 'below'}>
-    <div className={currentSessionId ? 'px-4 pb-4 pt-2' : 'agent-home-composer'}>
+    <div className={currentSessionId ? 'shrink-0 px-4 pb-1 pt-1' : 'agent-home-composer'}>
       <div ref={panelAnchorRef} className={`relative mx-auto w-full ${currentSessionId ? 'max-w-[760px]' : 'max-w-[776px]'}`}>
         {slashQuery !== null && (
           <div
@@ -1139,6 +1149,7 @@ export default memo(function Composer({
                       <button
                         key={`${item.source}-${item.name}`}
                         onMouseEnter={() => setMenuIndex(i)}
+                        disabled={item.builtin && compactUnavailable}
                         onClick={() => pickCommand(item)}
                         className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
                           i === menuIndex ? 'bg-overlay-strong' : ''
@@ -1157,7 +1168,8 @@ export default memo(function Composer({
                         </span>
                         {item.description && (
                           <span className="min-w-0 truncate text-[11px] text-cream-faint">
-                            {item.description}
+                            {item.builtin && compactUnavailable ? t(compacting ? 'usage.compacting' : 'usage.waitForTurn') : item.description}
+                            {item.builtin && currentSessionId && <> · <ContextReadout sessionId={currentSessionId} /></>}
                           </span>
                         )}
                         <span className="ml-auto shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-cream-faint">
@@ -1602,33 +1614,8 @@ export default memo(function Composer({
             </div>
           )}
         </div>
-        {currentSessionId ? (
-          <>
-            <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-cream-faint">
-              <div className="min-w-0 truncate">
-                <UsageMonitor sessionId={currentSessionId} />
-              </div>
-              {/* Shortcuts hint needs ~1100px of window AND a non-squeezed chat
-                  column (browser panel open): compact covers the panel case the
-                  window media query cannot see. Home never sees this row — its
-                  single hint line below the card replaces it. */}
-              <span
-                className={`hidden shrink-0 whitespace-nowrap min-[1100px]:inline ${
-                  compact ? '!hidden' : ''
-                }`}
-              >
-                {t('composer.shortcuts')}
-              </span>
-            </div>
-            <div className="mt-1 truncate whitespace-nowrap text-center text-[10.5px] text-cream-faint">
-              {t('composer.disclaimer')}
-            </div>
-          </>
-        ) : (
-          // Home: the hint line and workspace strip render in ChatPanel below
-          // and above the card — the composer itself adds nothing here.
-          null
-        )}
+        {currentSessionId && <UsageMonitor key={currentSessionId} sessionId={currentSessionId}
+          onCompact={onCompact} disabled={disabled || stopping} />}
       </div>
     </div>
     </ComposerMenuPlacement.Provider>

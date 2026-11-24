@@ -6,6 +6,7 @@ import {
   bundledCatalogFile,
   catalogOrigin,
   listOmpModelCatalog,
+  listOmpModelCapabilities,
   refreshModelCatalog,
   refreshedCatalogFile
 } from '../omp/settings/OmpModelCatalog'
@@ -55,7 +56,7 @@ describe('layered catalog loading', () => {
       JSON.stringify({ 'refreshed-prov': { m: { id: 'm', name: 'M' } } })
     )
     const models = await listOmpModelCatalog(undefined, { appPath, userDataDir })
-    expect(models.map((m) => m.provider)).toEqual(['refreshed-prov'])
+    expect(models.map((m) => m.provider)).toEqual(['refreshed-prov', 'test-prov', 'test-prov'])
     expect(catalogOrigin({ appPath, userDataDir })).toBe('refreshed')
   })
 
@@ -64,6 +65,31 @@ describe('layered catalog loading', () => {
     const models = await listOmpModelCatalog('test-prov', { appPath, userDataDir })
     expect(models.map((m) => m.selector)).toEqual(['test-prov/model-a', 'test-prov/model-b'])
     expect(models[0].reasoning).toBe(true)
+  })
+
+  it('retains exact nested wire IDs and positive token limits without guessing unsupported values', async () => {
+    writeBundled({ gateway: {
+      a: { provider: 'gateway', id: 'vendor-a/pro', input: ['text', 'image'], contextWindow: 1048576, maxTokens: 98304 },
+      b: { provider: 'gateway', id: 'vendor-b/pro', contextWindow: 0, maxTokens: 1.5 },
+      auto: { provider: 'gateway', id: 'gateway/auto' }
+    } })
+    const rows = new Map((await listOmpModelCatalog('gateway', { appPath, userDataDir })).map(m => [m.id, m]))
+    expect(rows.get('vendor-a/pro')).toMatchObject({ selector: 'gateway/vendor-a/pro', input: ['text', 'image'], contextWindow: 1048576, maxTokens: 98304 })
+    expect(rows.get('vendor-b/pro')).toMatchObject({ selector: 'gateway/vendor-b/pro', input: undefined, contextWindow: undefined, maxTokens: undefined })
+    expect(rows.get('gateway/auto')?.selector).toBe('gateway/gateway/auto')
+  })
+
+  it('fills a discovered model from a lower catalog only for the identical transport', () => {
+    const base = { provider: 'vendor', api: 'openai-responses', baseUrl: 'https://vendor.example/v1', input: ['text', 'image'], maxTokens: 1000 }
+    writeBundled({ vendor: { one: { ...base, id: 'one', contextWindow: 9000 }, two: { ...base, id: 'two' }, three: { ...base, id: 'three' } } })
+    writeFileSync(refreshedCatalogFile(userDataDir)!, JSON.stringify({ vendor: {
+      one: { id: 'one', api: base.api, baseUrl: base.baseUrl, contextWindow: 10000 },
+      two: { id: 'two', api: base.api, baseUrl: 'https://other.example/v1' }
+    } }))
+    const catalog = listOmpModelCapabilities({ appPath, userDataDir })
+    expect(catalog.get('vendor/one')).toMatchObject({ input: base.input, contextWindow: 10000, maxTokens: 1000 })
+    expect(catalog.get('vendor/two')?.input).toBeUndefined()
+    expect(catalog.get('vendor/three')?.input).toEqual(base.input)
   })
 
   it('returns empty with honest origin when nothing exists', async () => {

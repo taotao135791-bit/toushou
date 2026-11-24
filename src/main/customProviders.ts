@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import YAML from 'yaml'
 import {
-  CustomProviderApi,
   CustomProviderError,
   CustomProviderDeleteResult,
   CustomProviderInfo,
@@ -19,6 +18,7 @@ import { detectCli } from './omp'
 import { CliRunner, makeExecRunner } from './omp/settings/OmpConfigCli'
 import { PROVIDER_ID_PATTERN } from './omp/settings/modelSelector'
 import { listOmpModelCatalog } from './omp/settings/OmpModelCatalog'
+import { findCustomCatalogModel, GENERIC_CUSTOM_PROVIDER_APIS, isCustomProviderApi, matchesCatalogEndpoint, modelTokenLimit } from '../shared/modelCatalog'
 import { modelThinkingEfforts, NativeModelThinking } from './omp/modelThinking'
 
 /**
@@ -55,12 +55,6 @@ export interface CustomProvidersDeps {
   /** fetch implementation for the live key check (tests inject a stub). */
   fetchImpl?: typeof fetch
 }
-
-export const CUSTOM_PROVIDER_APIS: readonly CustomProviderApi[] = [
-  'openai-completions',
-  'openai-responses',
-  'anthropic-messages'
-]
 
 const MAX_BASE_URL_LENGTH = 500
 const MAX_API_KEY_LENGTH = 1000
@@ -171,7 +165,7 @@ export function sanitizeCustomProviderSpec(raw: unknown): CustomProviderSpec | n
   if (!raw || typeof raw !== 'object') return null
   const s = raw as Record<string, unknown>
   if (typeof s.id !== 'string' || typeof s.baseUrl !== 'string') return null
-  if (!CUSTOM_PROVIDER_APIS.includes(s.api as CustomProviderApi)) return null
+  if (!isCustomProviderApi(s.api)) return null
   const models: CustomProviderModelSpec[] = []
   if (Array.isArray(s.models)) {
     for (const m of s.models.slice(0, MAX_MODELS)) {
@@ -206,7 +200,7 @@ export function sanitizeCustomProviderSpec(raw: unknown): CustomProviderSpec | n
   return {
     id: s.id,
     baseUrl: s.baseUrl,
-    api: s.api as CustomProviderApi,
+    api: s.api,
     apiKey: typeof s.apiKey === 'string' ? s.apiKey : undefined,
     authNone: s.authNone === true,
     discovery: s.discovery === true,
@@ -218,7 +212,9 @@ export function sanitizeCustomProviderSpec(raw: unknown): CustomProviderSpec | n
 function validateSpec(spec: CustomProviderSpec, hasExistingKey: boolean): CustomProviderError | null {
   if (!PROVIDER_ID_PATTERN.test(spec.id)) return 'invalid-id'
   if (!isValidBaseUrl(spec.baseUrl)) return 'invalid-base-url'
-  if (!CUSTOM_PROVIDER_APIS.includes(spec.api)) return 'invalid-api'
+  if (!isCustomProviderApi(spec.api)) return 'invalid-api'
+  if (spec.api === 'google-generative-ai' && spec.authNone) return 'invalid-api-key'
+  if (spec.api === 'google-generative-ai' && spec.discovery) return 'invalid-models'
   if (spec.apiKey !== undefined) {
     const key = spec.apiKey.trim()
     if (!key || key.length > MAX_API_KEY_LENGTH || CONTROL_RE.test(key)) return 'invalid-api-key'
@@ -231,10 +227,10 @@ function validateSpec(spec: CustomProviderSpec, hasExistingKey: boolean): Custom
       if (!m.id.trim() || m.id.length > MAX_MODEL_FIELD || CONTROL_RE.test(m.id)) return 'invalid-models'
       if (m.input != null && !modelInputs(m.input)) return 'invalid-models'
       if (m.name.length > MAX_MODEL_FIELD) return 'invalid-models'
-      if (m.contextWindow !== undefined && (!Number.isInteger(m.contextWindow) || m.contextWindow <= 0)) {
+      if (m.contextWindow !== undefined && !modelTokenLimit(m.contextWindow)) {
         return 'invalid-models'
       }
-      if (m.maxTokens !== undefined && (!Number.isInteger(m.maxTokens) || m.maxTokens <= 0)) {
+      if (m.maxTokens !== undefined && !modelTokenLimit(m.maxTokens)) {
         return 'invalid-models'
       }
     }
@@ -242,44 +238,79 @@ function validateSpec(spec: CustomProviderSpec, hasExistingKey: boolean): Custom
   return null
 }
 
-/** Keep native reasoning declarations when editing the same models on the same endpoint. */
+type CapabilityFields = Pick<RuntimeModelInfo, 'input' | 'contextWindow' | 'maxTokens'>
+
+export function catalogCorrection(stored: { input?: unknown; contextWindow?: unknown; maxTokens?: unknown }, native: CapabilityFields): CapabilityFields {
+  const changes: CapabilityFields = {}
+  if (native.input && (!Array.isArray(stored.input) || native.input.length !== stored.input.length ||
+    native.input.some(input => !(stored.input as unknown[]).includes(input)))) changes.input = native.input
+  if (native.contextWindow !== undefined && native.contextWindow !== stored.contextWindow) changes.contextWindow = native.contextWindow
+  if (native.maxTokens !== undefined && native.maxTokens !== stored.maxTokens) changes.maxTokens = native.maxTokens
+  return changes
+}
+
+/** Model-level transport overrides take precedence over the provider endpoint in OMP. */
+function modelEndpoint(provider: { id: string; baseUrl: string; api: string }, model?: Record<string, unknown>) {
+  return { id: provider.id,
+    baseUrl: typeof model?.baseUrl === 'string' ? model.baseUrl : provider.baseUrl,
+    api: typeof model?.api === 'string' ? model.api : provider.api }
+}
+
+/** Keep fields managed outside the GUI when editing the same endpoint. */
 function buildEntry(spec: CustomProviderSpec, catalog: RuntimeModelInfo[], existingKey?: string, previous?: Record<string, unknown>): Record<string, unknown> {
   const endpoint = spec.baseUrl.trim().replace(/\/+$/, '')
-  const sameEndpoint = typeof previous?.baseUrl === 'string' && previous.baseUrl.replace(/\/+$/, '') === endpoint && previous.api === spec.api
+  const nativeProvider = catalog.some(model => matchesCatalogEndpoint(model, spec))
+  const sameEndpoint = previous !== undefined &&
+    (previous.baseUrl === undefined ? nativeProvider : typeof previous.baseUrl === 'string' && previous.baseUrl.replace(/\/+$/, '') === endpoint) &&
+    (previous.api === undefined ? nativeProvider : previous.api === spec.api)
   const entry: Record<string, unknown> = {
+    ...(sameEndpoint ? previous : undefined),
     baseUrl: spec.baseUrl.trim(),
     api: spec.api
   }
   if (spec.authNone) {
+    delete entry.apiKey
     entry.auth = 'none'
   } else {
+    delete entry.auth
     entry.apiKey = spec.apiKey !== undefined ? spec.apiKey.trim() : existingKey
   }
   if (spec.discovery) {
-    entry.discovery = { type: 'openai-models-list' }
+    delete entry.models
+    entry.discovery ??= { type: 'openai-models-list' }
   } else {
+    delete entry.discovery
     const previousModels = sameEndpoint && Array.isArray(previous?.models) ? previous.models : []
+    const overrides = mapping(entry.modelOverrides)
+    if (overrides) entry.modelOverrides = { ...overrides }
     entry.models = spec.models.map((m) => {
       const id = m.id.trim()
       const previousModel = mapping(previousModels.find((model) => mapping(model)?.id === id))
-      const nativeInput = catalog.find(candidate =>
-        candidate.provider === spec.id && (candidate.selector === `${spec.id}/${id}` || candidate.selector === id) &&
-        candidate.api === spec.api && candidate.baseUrl?.replace(/\/+$/, '') === endpoint
-      )?.input
+      const native = findCustomCatalogModel(catalog, modelEndpoint(spec, previousModel), id)
       const preserved = m.input === undefined ? modelInputs(previousModel?.input) : undefined
       const out: Record<string, unknown> = {
+        ...previousModel,
         id,
         name: m.name.trim() || id,
-        reasoning: typeof previousModel?.reasoning === 'boolean' ? previousModel.reasoning : false,
-        input: m.input ?? preserved ?? nativeInput ?? ['text']
+        reasoning: typeof previousModel?.reasoning === 'boolean' ? previousModel.reasoning : native?.reasoning ?? false,
+        input: native?.input ?? m.input ?? preserved ?? ['text']
       }
-      if (previousModel?.thinking !== undefined) out.thinking = previousModel.thinking
-      if (m.contextWindow !== undefined) out.contextWindow = m.contextWindow
+      if (m.contextWindow === undefined) delete out.contextWindow
+      else out.contextWindow = m.contextWindow
       if (m.maxTokens !== undefined) out.maxTokens = m.maxTokens
+      if (native) {
+        Object.assign(out, catalogCorrection(out, native))
+        const override = overrides && Object.hasOwn(overrides, id) ? mapping(overrides[id]) : undefined
+        if (override) {
+          const correction = catalogCorrection(override, native)
+          // An override with only unrelated fields already inherits the model declaration.
+          const fields = Object.entries(correction).filter(([key]) => Object.hasOwn(override, key))
+          if (fields.length) (entry.modelOverrides as Record<string, unknown>)[id] = { ...override, ...Object.fromEntries(fields) }
+        }
+      }
       return out
     })
   }
-  if (sameEndpoint && previous?.modelOverrides !== undefined) entry.modelOverrides = previous.modelOverrides
   return entry
 }
 
@@ -350,6 +381,78 @@ function mapping(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
+/** Editing an anchored model must not silently change a different provider that reused it. */
+function editableModelsDocument(raw: string | null) {
+  const yaml = YAML.parseDocument(raw ?? 'providers: {}\n')
+  YAML.visit(yaml, { Alias(_key, alias, ancestors) {
+    const source = alias.resolve(yaml)
+    if (!source || ancestors.includes(source)) throw new Error('Invalid models.yml alias')
+    const copy = source.clone()
+    if (!YAML.isNode(copy)) throw new Error('Unsupported models.yml alias')
+    YAML.visit(copy, { Value(_key, value) { delete value.anchor } })
+    return copy
+  } })
+  return yaml
+}
+
+/** The CLI has already read these limits. Only persist corrections for matching transports. */
+export function repairCatalogModelCapabilities(candidates: readonly (RuntimeModelInfo & { discovered?: CapabilityFields })[], file: string): Promise<boolean> {
+  if (candidates.length === 0) return Promise.resolve(false)
+  return enqueue(async () => {
+    try {
+      if (lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) return false
+      const current = readModelsFile(file)
+      if (!current.ok) return false
+      const yaml = editableModelsDocument(current.raw)
+      let changed = false
+      for (const model of candidates) {
+        if (!PROVIDER_ID_PATTERN.test(model.provider) || !model.api || !model.baseUrl) continue
+        const config = mapping(current.doc.providers[model.provider])
+        const rows = Array.isArray(config?.models) ? config.models : []
+        const index = rows.findIndex(row => mapping(row)?.id === model.id)
+        const row = mapping(rows[index])
+        const provider = { id: model.provider,
+          baseUrl: typeof config?.baseUrl === 'string' ? config.baseUrl : model.baseUrl,
+          api: typeof config?.api === 'string' ? config.api : model.api }
+        if (!matchesCatalogEndpoint(model, modelEndpoint(provider, row))) continue
+        // An exact native endpoint can be declared explicitly in models[], or be
+        // a stock provider with a per-model override (including a key-only provider).
+        const overrides = mapping(config?.modelOverrides)
+        if (config?.modelOverrides !== undefined && !overrides) continue
+        const rawOverride = overrides && Object.hasOwn(overrides, model.id) ? overrides[model.id] : undefined
+        const override = mapping(rawOverride)
+        if (rawOverride !== undefined && !override) continue
+        const target = ['providers', model.provider]
+        if (row) {
+          for (const [key, value] of Object.entries(catalogCorrection(row, model))) {
+            yaml.setIn([...target, 'models', index, key], value)
+            changed = true
+          }
+        }
+        for (const [key, value] of Object.entries(catalogCorrection(override ?? {}, model))) {
+          if (!Object.hasOwn(override ?? {}, key)) {
+            if (row) continue // The corrected model declaration already supplies this value.
+            const discovered = model.discovered?.[key as keyof CapabilityFields]
+            // Preserve newer live capabilities on native models. A stale manual setting
+            // on a declared model or override is still reconciled to the exact catalog limit.
+            if (typeof value === 'number' && typeof discovered === 'number' && discovered >= value) continue
+            if (Array.isArray(value) && Array.isArray(discovered) && discovered.some(input => !value.includes(input))) continue
+          }
+          yaml.setIn([...target, 'modelOverrides', model.id, key], value)
+          changed = true
+        }
+      }
+      if (!changed) return false
+      const latest = readModelsFile(file)
+      if (!latest.ok || latest.raw !== current.raw) return false
+      writeModelsFile(file, yaml.toString())
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 /** Backfill native reasoning metadata only for an exact same-provider catalog match. */
 export function repairDiscoveredModelThinking(
   models: readonly RuntimeModelInfo[],
@@ -367,7 +470,7 @@ export function repairDiscoveredModelThinking(
       if (lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) return false
       const current = readModelsFile(file)
       if (!current.ok) return false
-      const yaml = YAML.parseDocument(current.raw ?? 'providers: {}\n')
+      const yaml = editableModelsDocument(current.raw)
       let changed = false
       for (const { provider, id, thinking } of candidates) {
         const entry = current.doc.providers[provider]
@@ -418,6 +521,8 @@ export function listCustomProviders(deps: CustomProvidersDeps = {}): CustomProvi
         .map((m) => ({
           id: typeof m.id === 'string' ? m.id : '',
           name: typeof m.name === 'string' ? m.name : '',
+          ...((typeof m.baseUrl === 'string' && m.baseUrl.replace(/\/+$/, '') !== String(e.baseUrl ?? '').replace(/\/+$/, '')) ||
+              (typeof m.api === 'string' && m.api !== e.api) ? { hasCustomTransport: true } : {}),
           input: modelInputs(m.input),
           ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
           ...(typeof m.maxTokens === 'number' ? { maxTokens: m.maxTokens } : {})
@@ -455,7 +560,9 @@ export function saveCustomProvider(
     const invalid = validateSpec(rawSpec, existingKey !== undefined)
     if (invalid) return { ok: false, error: invalid }
 
-    const catalog = rawSpec.discovery ? [] : deps.modelCatalog ?? await listOmpModelCatalog(rawSpec.id)
+    const catalog = deps.modelCatalog ?? await listOmpModelCatalog(rawSpec.id)
+    if (!GENERIC_CUSTOM_PROVIDER_APIS.some(api => api === rawSpec.api) &&
+        !catalog.some(model => matchesCatalogEndpoint(model, rawSpec))) return { ok: false, error: 'invalid-api' }
     const next: ModelsDoc = {
       providers: { ...read.doc.providers, [rawSpec.id]: buildEntry(rawSpec, catalog, existingKey, mapping(existing)) }
     }

@@ -413,13 +413,17 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
     return (
       <div className="msg-in flex justify-center">
         <div
+          role={message.compactionStatus ? 'status' : undefined}
+          data-compaction-status={message.compactionStatus}
           className={`flex max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-[12px] leading-5 ${
             isInfo
               ? 'bg-overlay text-cream-dim'
               : 'bg-red-500/[0.08] text-red-600 dark:text-red-300'
           }`}
         >
-          {isInfo ? (
+          {message.compactionStatus === 'running' ? (
+            <Loader2 size={12} aria-hidden="true" className="shrink-0 motion-safe:animate-spin" />
+          ) : isInfo ? (
             <Info size={11} className="shrink-0" />
           ) : (
             <AlertTriangle size={11} className="shrink-0" />

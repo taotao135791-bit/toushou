@@ -121,7 +121,7 @@ export default function ChatPanel() {
   const preparingPrompts = useRef(new Map<string, string>())
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const stoppingBusy = useAppStore((s) =>
-    stoppingSessionId ? Boolean(s.busy[stoppingSessionId]) : false
+    stoppingSessionId ? Boolean(s.busy[stoppingSessionId] || s.compacting[stoppingSessionId]) : false
   )
   // Session-less send failure (create threw — e.g. a stale workspace grant)
   const [sendError, setSendError] = useState<I18nKey | null>(null)
@@ -313,7 +313,7 @@ export default function ChatPanel() {
       if (!accepted) throw new Error('abortSession rejected')
       stopTimerRef.current = setTimeout(() => {
         const current = useAppStore.getState()
-        if (current.busy[sid]) {
+        if (current.busy[sid] || current.compacting[sid]) {
           setStoppingSessionId(null)
           current.setSessionError(sid, 'chat.stopFailed')
         }
@@ -351,6 +351,8 @@ export default function ChatPanel() {
     const sid = currentSessionId
     if (!sid) return
     const store = useAppStore.getState()
+    if (store.busy[sid] || store.compacting[sid] || sid.startsWith('preview:')) return
+    store.setSessionError(sid, null)
     store.setCompacting(sid, true)
     try {
       const ok = await window.electronAPI.compactSession(sid)
@@ -363,8 +365,6 @@ export default function ChatPanel() {
     } finally {
       useAppStore.getState().setCompacting(sid, false)
     }
-    const stats = await window.electronAPI.getSessionStats(sid)
-    if (stats) useAppStore.getState().setStats(sid, stats)
   }, [currentSessionId])
 
   const handleSelectProject = async () => {
@@ -465,6 +465,8 @@ export default function ChatPanel() {
             <span className="flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
               <span className="font-medium text-accent">{t('chat.compacting')}</span>
+              {!isBusy && <button type="button" onClick={handleStop} disabled={isStopping}
+                className="app-no-drag focus-ring rounded px-1 hover:text-cream disabled:opacity-50">{t('common.cancel')}</button>}
             </span>
           )}
           {isStopping ? (
@@ -508,7 +510,7 @@ export default function ChatPanel() {
                   busy={isBusy}
                   stopping={isStopping}
                   focusKey={currentSessionId}
-                  disabled={cliAvailable === false || previewActive}
+                  disabled={cliAvailable === false || previewActive || isCompacting}
                   commands={slashCommands}
                   appCommands={appCommands}
                   onCompact={currentSessionId ? handleCompact : undefined}
@@ -617,7 +619,7 @@ export default function ChatPanel() {
             busy={isBusy}
             stopping={isStopping}
             focusKey={currentSessionId}
-            disabled={cliAvailable === false || previewActive}
+            disabled={cliAvailable === false || previewActive || isCompacting}
             commands={slashCommands}
             appCommands={appCommands}
             onCompact={currentSessionId ? handleCompact : undefined}

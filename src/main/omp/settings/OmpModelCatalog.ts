@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
 import { modelInputs, RuntimeModelInfo } from '../../../shared/types'
+import { modelTokenLimit } from '../../../shared/modelCatalog'
 import { detectCli } from '../OmpCapabilities'
 import { NativeModelThinking, nativeModelThinking, modelThinkingEfforts } from '../modelThinking'
 
@@ -24,8 +25,12 @@ import { NativeModelThinking, nativeModelThinking, modelThinkingEfforts } from '
 export const CATALOG_URL =
   'https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/catalog/src/models.json'
 
-let catalogCache: RuntimeModelInfo[] | null = null
-let thinkingCache: { source: string; entries: ReadonlyMap<string, NativeModelThinking> } | undefined
+let metadataCache: {
+  source: string
+  thinking: ReadonlyMap<string, NativeModelThinking>
+  models: ReadonlyMap<string, RuntimeModelInfo>
+  sorted: RuntimeModelInfo[]
+} | undefined
 
 export interface CatalogOrigin {
   origin: 'install' | 'refreshed' | 'bundled'
@@ -40,6 +45,8 @@ interface CatalogEntry {
   baseUrl?: unknown
   api?: unknown
   input?: unknown
+  contextWindow?: unknown
+  maxTokens?: unknown
   thinking?: unknown
 }
 
@@ -75,7 +82,7 @@ export function findCatalogFile(): string | null {
   return null
 }
 
-/** Layered candidates, first hit wins. */
+/** Higher layers take precedence when multiple sources declare the same model. */
 function catalogLayers(extra: { userDataDir?: string; appPath?: string } = {}): CatalogOrigin[] {
   const layers: CatalogOrigin[] = []
   const installed = findCatalogFile()
@@ -91,15 +98,11 @@ export async function listOmpModelCatalog(
   providerId?: string,
   extra: { userDataDir?: string; appPath?: string } = {}
 ): Promise<RuntimeModelInfo[]> {
-  // Cache only the production path; injected paths (tests) always reload.
-  const models =
-    Object.keys(extra).length === 0
-      ? (catalogCache ??= loadCatalog(catalogLayers()))
-      : loadCatalog(catalogLayers(extra))
+  const models = nativeMetadata(extra).sorted
   return providerId ? models.filter((m) => m.provider === providerId) : models
 }
 
-/** Which layer the cached catalog came from ('none' when empty). */
+/** Highest-priority catalog source available ('none' when empty). */
 export function catalogOrigin(extra: { userDataDir?: string; appPath?: string } = {}): CatalogOrigin['origin'] | 'none' {
   const layers = catalogLayers(extra)
   for (const layer of layers) {
@@ -108,28 +111,44 @@ export function catalogOrigin(extra: { userDataDir?: string; appPath?: string } 
   return 'none'
 }
 
-function loadCatalog(layers: CatalogOrigin[]): RuntimeModelInfo[] {
-  for (const layer of layers) {
-    const models = parseCatalogFile(layer.path)
-    if (models) return models
-  }
-  return []
-}
-
 /** A newer catalog can add capabilities missing from the installed catalog. */
 export function listOmpModelThinking(
   extra: { userDataDir?: string; appPath?: string } = {}
 ): ReadonlyMap<string, NativeModelThinking> {
+  return nativeMetadata(extra).thinking
+}
+
+/** Supplemental catalog facts for IDs the runtime actually discovered, e.g. a newer provider model. */
+export function listOmpModelCapabilities(
+  extra: { userDataDir?: string; appPath?: string } = {}
+): ReadonlyMap<string, RuntimeModelInfo> {
+  return nativeMetadata(extra).models
+}
+
+function nativeMetadata(extra: { userDataDir?: string; appPath?: string }) {
   const layers = catalogLayers(extra)
   const source = layers.map(({ path }) => path).join('\0')
   const useCache = Object.keys(extra).length === 0
-  if (useCache && thinkingCache?.source === source) return thinkingCache.entries
+  if (useCache && metadataCache?.source === source) return metadataCache
   const thinking = new Map<string, NativeModelThinking>()
+  const models = new Map<string, RuntimeModelInfo>()
   // Older discovery entries use false for models they don't recognize. A later
   // layer can supply the concrete capability for the exact provider and ID.
-  for (const { path } of layers) parseCatalogFile(path, thinking)
-  if (useCache) thinkingCache = { source, entries: thinking }
-  return thinking
+  for (const { path } of layers) {
+    for (const model of parseCatalogFile(path, thinking) ?? []) {
+      const preferred = models.get(model.selector)
+      if (!preferred) models.set(model.selector, model)
+      else if (preferred.api === model.api && preferred.baseUrl === model.baseUrl) {
+        preferred.input ??= model.input
+        preferred.contextWindow ??= model.contextWindow
+        preferred.maxTokens ??= model.maxTokens
+      }
+    }
+  }
+  const sorted = Array.from(models.values()).sort((a, b) => a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name))
+  const result = { source, thinking, models, sorted }
+  if (useCache) metadataCache = result
+  return result
 }
 
 /** Parse a catalog file; null when missing or not the expected shape. */
@@ -149,18 +168,23 @@ function parseCatalogFile(file: string, modelThinking?: Map<string, NativeModelT
       const e = entry as CatalogEntry | undefined
       if (!e || typeof e.id !== 'string') continue
       const provider = typeof e.provider === 'string' ? e.provider : providerId
-      const selector = e.id.includes('/') ? e.id : `${provider}/${e.id}`
+      // Older, provider-less snapshots used a fully qualified ID here.
+      const id = e.provider === undefined && e.id.startsWith(`${provider}/`) ? e.id.slice(provider.length + 1) : e.id
+      // OMP's models --json format prefixes the entire raw model ID, including
+      // its own namespaces (e.g. openrouter/openrouter/auto).
+      const selector = `${provider}/${id}`
       if (modelThinking && e.reasoning === true) {
-        const key = e.id.startsWith(`${provider}/`) ? e.id : `${provider}/${e.id}`
         const config = nativeModelThinking(e.thinking)
-        if (config && !modelThinking.has(key)) modelThinking.set(key, config)
+        if (config && !modelThinking.has(selector)) modelThinking.set(selector, config)
       }
       models.push({
         provider,
-        id: e.id.slice(e.id.lastIndexOf('/') + 1),
+        id,
         selector,
         name: typeof e.name === 'string' ? e.name : e.id,
         input: modelInputs(e.input),
+        contextWindow: modelTokenLimit(e.contextWindow),
+        maxTokens: modelTokenLimit(e.maxTokens),
         reasoning: e.reasoning === true,
         thinking: modelThinkingEfforts(e.thinking),
         baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl : undefined,
@@ -169,9 +193,7 @@ function parseCatalogFile(file: string, modelThinking?: Map<string, NativeModelT
     }
   }
   if (models.length === 0) return null
-  return models.sort(
-    (a, b) => a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name)
-  )
+  return models
 }
 
 /**
@@ -218,7 +240,6 @@ export async function refreshModelCatalog(
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
-  catalogCache = null
-  thinkingCache = undefined
+  metadataCache = undefined
   return { ok: true, providers: Object.keys(parsed).length }
 }

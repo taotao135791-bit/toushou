@@ -8,7 +8,9 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createIsolatedOmpEnvironment, binaryAvailable, requireBinary } from './isolated-runtime'
 import { OmpSession, type OmpProcessLike } from '../../src/main/omp/OmpSession'
-import type { SessionEvent } from '../../src/shared/types'
+import { RuntimeSettings } from '../../src/main/omp/settings/RuntimeSettings'
+import { makeExecRunner } from '../../src/main/omp/settings/OmpConfigCli'
+import type { RuntimeModelInfo, SessionEvent } from '../../src/shared/types'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' } }))
 vi.mock('../../src/main/omp', () => ({ detectCli: () => ({ available: false }) }))
@@ -39,7 +41,7 @@ function syntheticPng(): Buffer {
 }
 
 describe('custom model image input', () => {
-  it('upgrades a text-only model and transmits its PNG through pinned OMP', async () => {
+  it('automatically restores a catalog model’s actual limits and transmits its PNG through pinned OMP', async () => {
     const bin = process.env.OMP_BIN || 'omp'
     if (!binaryAvailable(bin)) { requireBinary(bin); return }
     const iso = createIsolatedOmpEnvironment()
@@ -68,8 +70,15 @@ describe('custom model image input', () => {
       const model = { id: 'image-probe', name: 'Image probe' }
       const spec = { id: 'test-vision', baseUrl: `http://127.0.0.1:${address.port}/v1`, api: 'openai-completions' as const,
         apiKey: 'synthetic-key', authNone: false, discovery: false, models: [model] }
-      expect((await saveCustomProvider(spec, deps)).ok).toBe(true)
-      expect((await saveCustomProvider({ ...spec, models: [{ ...model, input: ['text', 'image'] }] }, deps)).ok).toBe(true)
+      expect((await saveCustomProvider({ ...spec, models: [{ ...model, input: ['text'], contextWindow: 200000, maxTokens: 4096 }] }, deps)).ok).toBe(true)
+      const native: RuntimeModelInfo = { ...model, provider: spec.id, api: spec.api, baseUrl: spec.baseUrl,
+        selector: spec.id + '/' + model.id, input: ['text', 'image'], reasoning: false, thinking: [], contextWindow: 640000, maxTokens: 12000 }
+      const settings = new RuntimeSettings({ cli: { command: 'omp', path: bin, available: true }, modelsFile: deps.modelsFile,
+        runner: makeExecRunner(bin, { env: iso.env, timeoutMs: 15000 }), thinkingCatalog: () => new Map(),
+        capabilityCatalog: () => new Map([[native.selector, native]]) })
+      expect((await settings.listModels()).find(item => item.selector === native.selector)).toMatchObject({
+        input: native.input, contextWindow: native.contextWindow, maxTokens: native.maxTokens
+      })
       const runtimeArgs = ['--model', 'test-vision/image-probe', '--no-tools', '--no-extensions', '--no-skills', '--no-rules', '--no-title']
       const events: SessionEvent[] = []
       let stderr = ''
@@ -89,7 +98,9 @@ describe('custom model image input', () => {
       }
       const session = openSession()
       await vi.waitFor(() => expect(session.handshakeOutcome?.profile, stderr).toBe('current'), { timeout: 15_000 })
-      expect(await session.query({ type: 'get_state' })).toMatchObject({ data: { model: { provider: spec.id, id: model.id, input: ['text', 'image'] } } })
+      expect(await session.query({ type: 'get_state' })).toMatchObject({ data: { model: {
+        provider: spec.id, id: model.id, input: native.input, contextWindow: native.contextWindow, maxTokens: native.maxTokens
+      } } })
       expect(session.sendPrompt('Describe the supplied pixel.', [{ type: 'image', mimeType: 'image/png', data }])).toBe(true)
       await vi.waitFor(() => expect(requests.length, stderr).toBe(1), { timeout: 10_000 })
       const user = requests[0].messages.find(message => message.role === 'user')
@@ -127,13 +138,15 @@ describe('custom model image input', () => {
       const restored = await imagesInRuntime(resumed)
       expect(restored).toEqual(liveImages)
       if (process.platform === 'darwin') {
-        // Verify the real desktop decoder can open the restored payload. sips
-        // must fully decode it to encode a new PNG with the original dimensions.
-        const input = path.join(iso.root, 'restored-image'), output = path.join(iso.root, 'decoded.png')
-        writeFileSync(input, Buffer.from(restored![0].data, 'base64'))
-        execFileSync('/usr/bin/sips', ['-s', 'format', 'png', input, '--out', output], { stdio: 'pipe' })
-        const decoded = readFileSync(output)
-        expect([decoded.readUInt32BE(16), decoded.readUInt32BE(20)]).toEqual([side, side])
+        // Verify both the exact HTTP payload and the reopened transcript can be
+        // fully decoded, even when OMP stores and sends different containers.
+        for (const [name, payload] of [['sent', bytes], ['restored', Buffer.from(restored![0].data, 'base64')]] as const) {
+          const input = path.join(iso.root, name), output = path.join(iso.root, name + '.png')
+          writeFileSync(input, payload)
+          execFileSync('/usr/bin/sips', ['-s', 'format', 'png', input, '--out', output], { stdio: 'pipe' })
+          const decoded = readFileSync(output)
+          expect([decoded.readUInt32BE(16), decoded.readUInt32BE(20)]).toEqual([side, side])
+        }
       }
     } finally {
       await cleanup?.()

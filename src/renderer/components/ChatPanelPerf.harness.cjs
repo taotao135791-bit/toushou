@@ -87,6 +87,34 @@ app.whenReady().then(async () => {
     if (stagedImage !== deliveredImage || !await js('window.chatPerfFixture.sentImages[0].data === ' + JSON.stringify(stagedImage.split(',')[1]))) {
       throw new Error('The preview and dispatched image bytes differ')
     }
+    phase = 'chat footer and context compaction'
+    await js('window.chatPerfFixture.finishTurn()')
+    const usageButton = `document.querySelector('button[aria-label="Context usage and compaction"]')`
+    const usageDialog = `document.querySelector('[role="dialog"][aria-label="Context usage and compaction"]')`
+    await waitFor(`${usageButton}?.textContent.trim() === '358.5k tokens'`)
+    const bottomGap = await js(`innerHeight - ${usageButton}.getBoundingClientRect().bottom`)
+    if (bottomGap < 0 || bottomGap > 10) throw new Error('Chat footer did not use bottom space: ' + bottomGap)
+    await js(`${usageButton}.click()`)
+    await waitFor(`${usageDialog}?.textContent.includes('60% · 120k / 200k tokens')`)
+    const progress = `document.querySelector('[data-chat-turn] [role=status][data-compaction-status="running"]')`
+    async function checkCompactionInTranscript(finish) {
+      await waitFor(`${progress}?.textContent.includes('Compacting') && ${progress}.getBoundingClientRect().height > 0`)
+      await js(`window.testCompactionRow = ${progress}; window.chatPerfFixture.${finish}()`)
+      await waitFor(`window.testCompactionRow.isConnected && window.testCompactionRow.dataset.compactionStatus === 'compacted' && window.testCompactionRow.textContent.includes('context compacted') && !${progress}`)
+    }
+    await js(`${usageDialog}.querySelector('button').click()`)
+    await checkCompactionInTranscript('finishManualCompact')
+    await waitFor(`window.chatPerfFixture.compactCalls === 1 && ${usageDialog}?.textContent.includes('<1%')`)
+    await js(`${usageButton}.click()`)
+    await js("document.querySelector('textarea').focus()")
+    await wc.insertText('/compact')
+    await waitFor("[...document.querySelectorAll('button')].some(b => b.textContent.includes('/compact') && b.textContent.includes('<1%'))")
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+    await checkCompactionInTranscript('finishManualCompact')
+    await waitFor("window.chatPerfFixture.compactCalls === 2 && document.querySelector('textarea').value === ''")
+    await js('window.chatPerfFixture.startAutoCompact()')
+    await checkCompactionInTranscript('finishAutoCompact')
     await js('window.chatPerfFixture.finishImageTest()')
     await frame()
     phase = 'DeepSeek session thinking selector'

@@ -1,3 +1,5 @@
+import { isAutoCompactThreshold } from '../shared/compaction'
+import { writeContextPolicy } from './omp/OmpProcess'
 import { fileSidebarConversation } from './sessionProjectFiling'
 import { handleChatAttachment, transcriptReferencesFile } from './chatAttachment'
 import type { ReplyForkTarget } from '../shared/types'
@@ -2882,6 +2884,10 @@ export function registerIpc() {
     // The store holds plain settings data only — a renderer must not persist
     // functions, class instances, or oversized blobs through this channel.
     if (!isPlainStorableValue(value)) return false
+    if (key === 'autoCompactThresholdPercent') {
+      if (!isAutoCompactThreshold(value)) return false
+      writeContextPolicy(value)
+    }
     setStore(key, value as never)
     // Transitional: the settings UI still writes the legacy toolAccess tier;
     // mirror it into permissionMode until the renderer exposes 'ask' itself.

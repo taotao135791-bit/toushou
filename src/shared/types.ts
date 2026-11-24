@@ -1,3 +1,4 @@
+import { AUTO_COMPACT_THRESHOLD_DEFAULT } from './compaction'
 export interface CliInfo {
   command: string
   /** Resolved absolute path to the executable, when found. */
@@ -374,7 +375,8 @@ export type SessionEvent =
    * upstream may send explicit `false` for non-terminal ends.
    */
   | { type: 'status'; sessionId: string; status: SessionRuntimeState; isTerminal?: boolean }
-  | { type: 'compaction'; sessionId: string; phase: 'start' | 'end' }
+  | { type: 'compaction'; sessionId: string; phase: 'start' | 'end'; source?: 'manual' | 'auto';
+      outcome?: 'compacted' | 'skipped' | 'aborted' | 'failed'; reason?: 'too_small' | 'already_compacted' }
   /** `recoverable` is false when the session process died (crash/exit). */
   | { type: 'error'; sessionId: string; message: string; recoverable?: boolean }
   | {
@@ -506,8 +508,8 @@ export interface ModelConfig {
 // Custom providers (~/.omp/agent/models.yml — current Oh My Pi profile only)
 // ---------------------------------------------------------------------------
 
-/** Provider API dialects the GUI exposes (omp supports more; these cover the common cases). */
-export type CustomProviderApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages'
+/** Generic dialects plus the native API-key transport supported by OMP's custom-model schema. */
+export type CustomProviderApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages' | 'google-generative-ai'
 
 export type ModelInput = 'text' | 'image'
 
@@ -518,6 +520,8 @@ export function modelInputs(value: unknown): ModelInput[] | undefined {
 
 /** One manually-declared model of a custom provider. */
 export interface CustomProviderModelSpec {
+  /** List-only: the stored model uses a different endpoint or API from its provider. */
+  hasCustomTransport?: boolean
   /** Omitted retains a native declaration, null requests the catalog default. */
   input?: ModelInput[] | null
   id: string
@@ -1627,6 +1631,7 @@ export type Language = 'zh' | 'en'
 export type SessionSortOrder = 'recent' | 'name' | 'manual'
 
 export interface AppSettings {
+  autoCompactThresholdPercent: number
   /** Settings-file schema version; bumped only when a migration is required. */
   schemaVersion: number
   theme: 'dark' | 'light'
@@ -1817,6 +1822,7 @@ export type ReadFileResult =
   | { ok: false; error: string }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  autoCompactThresholdPercent: AUTO_COMPACT_THRESHOLD_DEFAULT,
   schemaVersion: 1,
   theme: 'light',
   language: 'en',

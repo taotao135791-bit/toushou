@@ -11,7 +11,7 @@ import { clearComposerDraft, ComposerDrafts, draftHasContent, historyComposerDra
 import type { ComposerDraftChanges } from '@shared/types'
 import type { BoardReadingLaunch } from '../lib/boardReading'
 import { basename } from '../lib/path'
-import type { I18nKey } from '../i18n'
+import { translate, type I18nKey } from '../i18n'
 import type { OfficeWorkbookSnapshot } from '@shared/officeWorkbook'
 import { beginNavigationIntent, isCurrentNavigationIntent } from '../lib/navigationIntent'
 
@@ -76,6 +76,9 @@ export interface MessageLike {
    * this unset.
    */
   kind?: 'prompt' | 'steer'
+  /** A single system row spans the entire compaction, even if more messages arrive. */
+  compactionStatus?: 'running' | 'compacted' | 'skipped' | 'aborted' | 'failed'
+  compactionSource?: 'manual' | 'auto'
   /** system messages only: 'info' renders neutral instead of the error style. */
   variant?: 'info'
   /** Assistant thinking text, streamed via thinking deltas (collapsible block). */
@@ -103,6 +106,38 @@ export interface MessageLike {
 
 /** Verb buckets / turn-progress shapes now live in `../lib/execution` (single source). */
 
+
+type CompactionEvent = Extract<SessionEvent, { type: 'compaction' }>
+
+function updateCompactionRow(list: MessageLike[], event: CompactionEvent, language: 'zh' | 'en', pendingOnly = false): MessageLike[] {
+  const index = list.findLastIndex(row => row.compactionStatus !== undefined)
+  const previous = list[index]
+  const running = previous?.compactionStatus === 'running'
+  const start = event.phase === 'start'
+  if (pendingOnly && !running) return list
+  if (start && running) return list
+  if (!start && previous && !running) return list
+
+  const status = start ? 'running' : event.outcome ?? 'compacted'
+  const key: I18nKey = status === 'running' ? (event.source === 'manual' ? 'chat.compacting' : 'chat.autoCompacting')
+    : status === 'failed' ? 'chat.compactFailed'
+    : status === 'aborted' ? 'chat.compactAborted'
+    : event.reason === 'already_compacted' ? 'chat.compactAlready'
+    : event.reason === 'too_small' ? 'chat.compactSmall'
+    : status === 'skipped' ? 'chat.compactSkipped' : 'chat.compactDone'
+  const row: MessageLike = {
+    id: running ? previous.id : crypto.randomUUID(),
+    role: 'system',
+    variant: 'info',
+    content: translate(language, key),
+    compactionStatus: status,
+    compactionSource: event.source ?? (running ? previous.compactionSource : undefined) ?? 'auto'
+  }
+  if (!running) return [...list, row]
+  const next = list.slice()
+  next[index] = row
+  return next
+}
 
 /**
  * Session status → busy mapping. 'waiting_for_user'/'aborting' keep the turn
@@ -1802,17 +1837,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => ({
         compacting: { ...state.compacting, [event.sessionId]: event.phase === 'start' }
       }))
-      // 学 deepseek-harness 的 CompactionCommandCard：压缩不是"静默失忆"，
-      // 对话流里留下一条可见记录，用户知道上下文被摘要过。
-      if (event.phase === 'end') {
-        const zh = get().language === 'zh'
-        streamQueue.pushBarrier(event.sessionId, () => get().addMessage(event.sessionId, {
-          id: crypto.randomUUID(),
-          role: 'system',
-          variant: 'info',
-          content: zh ? '已压缩对话上下文：较早的细节被摘要保留，最新内容原样保留。' : 'Conversation context compacted: earlier details summarized, recent content kept verbatim.'
-        }))
-      }
+      queueCompactionRow(event)
     } else if (event.type === 'ui_request') {
       set((state) => {
         const requests = state.uiRequests[event.sessionId] || []
@@ -1853,6 +1878,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }))
     } else if (event.type === 'error') {
+      if (event.recoverable === false && get().compacting[event.sessionId]) {
+        get().setCompacting(event.sessionId, false)
+        queueCompactionRow({ type: 'compaction', sessionId: event.sessionId, phase: 'end', outcome: 'failed' }, true)
+      }
       if (event.recoverable !== true) get().pauseQueuedMessages(event.sessionId, event.recoverable === false ? 'closed' : 'failed')
       streamQueue.pushBarrier(event.sessionId, () => {
         if (event.recoverable !== true) get().finalizeThinking(event.sessionId)
@@ -1891,6 +1920,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
     } else if (event.type === 'closed') {
+      queueCompactionRow({ type: 'compaction', sessionId: event.sessionId, phase: 'end', outcome: 'aborted' }, true)
       set((state) => ({
         busy: { ...state.busy, [event.sessionId]: false },
         compacting: { ...state.compacting, [event.sessionId]: false },
@@ -1907,6 +1937,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   }
 }))
+
+// Keep lifecycle rows ordered with token deltas, tool results and queued user turns.
+function queueCompactionRow(event: CompactionEvent, pendingOnly = false): void {
+  streamQueue.pushBarrier(event.sessionId, () => useAppStore.setState(state => {
+    const previous = state.messages[event.sessionId] ?? []
+    const rows = updateCompactionRow(previous, event, state.language, pendingOnly)
+    return rows === previous ? state : { messages: { ...state.messages, [event.sessionId]: rows } }
+  }))
+}
 
 /**
  * Frame-batched stream queue (rafBatch pattern): one animation frame of model

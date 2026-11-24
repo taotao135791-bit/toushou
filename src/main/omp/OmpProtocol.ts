@@ -419,11 +419,15 @@ export function normalizeRpcFrame(
       }
 
     case 'compaction_end':
-    case 'auto_compaction_end':
+    case 'auto_compaction_end': {
+      const outcome = payload.aborted === true ? 'aborted' : payload.errorMessage ? 'failed'
+        : payload.skipped === true ? 'skipped' : payload.result ? 'compacted'
+        : payload.type === 'auto_compaction_end' ? 'skipped' : undefined
       return {
         kind: 'event',
-        event: { type: 'compaction', sessionId, phase: 'end' }
+        event: { type: 'compaction', sessionId, phase: 'end', ...(outcome && { outcome }) }
       }
+    }
 
     // Provider auto-retry: one informational line per attempt, not a stream
     // of raw errors. A final failure ends the turn via message_end (above),

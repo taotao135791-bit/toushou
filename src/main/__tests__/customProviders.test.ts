@@ -17,6 +17,7 @@ import {
   clearProviderKey,
   deleteCustomProvider,
   listCustomProviders,
+  repairCatalogModelCapabilities,
   repairDiscoveredModelThinking,
   sanitizeCustomProviderSpec,
   saveCustomProvider,
@@ -93,6 +94,88 @@ describe('save → list round-trip', () => {
     expect(readDoc()[provider.id].models).toMatchObject([{ input: ['text', 'image'] }])
     await saveCustomProvider({ ...provider, baseUrl: 'https://other.example/v1', models: [{ ...model, input: null }] }, deps)
     expect(readDoc()[provider.id].models).toMatchObject([{ input: ['text'] }])
+  })
+
+  it('keeps a catalog-native API for a new Google model only on the verified provider endpoint', async () => {
+    const specGoogle = spec({ id: 'google', api: 'google-generative-ai', baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      models: [{ id: 'new-id', name: 'New', contextWindow: 500000 }] })
+    const catalog: RuntimeModelInfo[] = [{ id: 'published-id', name: 'Published', selector: 'google/published-id', provider: 'google',
+      api: specGoogle.api, baseUrl: specGoogle.baseUrl, input: ['text', 'image'], reasoning: false, thinking: [], contextWindow: 1048576 }]
+    const deps = { modelsFile, runner: null, modelCatalog: catalog }
+    writeFileSync(modelsFile, YAML.stringify({ providers: { google: { apiKey: 'old', headers: { 'X-Header': 'keep' },
+      modelOverrides: { 'another-id': { name: 'keep' } } } } }))
+    expect(sanitizeCustomProviderSpec(specGoogle)?.api).toBe('google-generative-ai')
+    expect(await saveCustomProvider(specGoogle, deps)).toMatchObject({ ok: true })
+    expect(readDoc().google).toMatchObject({ api: specGoogle.api, headers: { 'X-Header': 'keep' }, modelOverrides: { 'another-id': { name: 'keep' } },
+      models: [{ id: 'new-id', input: ['text'], contextWindow: 500000 }] })
+    expect(await saveCustomProvider({ ...specGoogle, baseUrl: 'https://other.example/v1beta' }, deps)).toMatchObject({ ok: false, error: 'invalid-api' })
+    expect(await saveCustomProvider({ ...specGoogle, id: 'relay' }, deps)).toMatchObject({ ok: false, error: 'invalid-api' })
+    expect(await saveCustomProvider({ ...specGoogle, authNone: true }, deps)).toMatchObject({ ok: false, error: 'invalid-api-key' })
+    expect(await saveCustomProvider({ ...specGoogle, discovery: true, models: [] }, deps)).toMatchObject({ ok: false, error: 'invalid-models' })
+    expect(sanitizeCustomProviderSpec({ ...specGoogle, api: 'openrouter' })).toBeNull()
+  })
+
+  it('replaces stale manual limits and preserves native transport, siblings and custom metadata', async () => {
+    const provider = spec()
+    const model = { id: 'team/pro', name: 'My label', contextWindow: 200000, maxTokens: 1000, input: ['text'] as ['text'] }
+    const native: RuntimeModelInfo = { id: model.id, name: 'Official', selector: provider.id + '/' + model.id,
+      provider: provider.id, api: provider.api, baseUrl: provider.baseUrl, reasoning: false, thinking: [],
+      contextWindow: 1050000, maxTokens: 96000, input: ['text', 'image'] }
+    const headers = { 'X-Fixture': 'preserved' }
+    writeFileSync(modelsFile, YAML.stringify({ providers: { [provider.id]: {
+      apiKey: 'fixture', baseUrl: provider.baseUrl, api: provider.api, headers,
+      models: [{ ...model, supportsTools: false }],
+      modelOverrides: { [model.id]: { contextWindow: 8000, input: ['text'], name: 'Custom override' } }
+    }, sibling: { auth: 'none' } } }))
+    const deps = { modelsFile, runner: null, modelCatalog: [native] }
+    expect(await saveCustomProvider({ ...provider, models: [model], apiKey: undefined }, deps)).toMatchObject({ ok: true })
+    expect(readDoc()).toMatchObject({ [provider.id]: { headers, apiKey: 'fixture',
+      models: [{ ...model, input: native.input, contextWindow: native.contextWindow, maxTokens: native.maxTokens, supportsTools: false }],
+      modelOverrides: { [model.id]: { contextWindow: native.contextWindow, input: native.input, name: 'Custom override' } }
+    }, sibling: { auth: 'none' } })
+
+    const custom = { ...model, baseUrl: 'https://relay.example/v1', maxTokens: 2000 }
+    writeFileSync(modelsFile, YAML.stringify({ providers: { [provider.id]: { ...readDoc()[provider.id], models: [custom] } } }))
+    expect(listCustomProviders(deps)).toMatchObject({ providers: [{ models: [{ hasCustomTransport: true }] }] })
+    await saveCustomProvider({ ...provider, models: [model] }, deps)
+    expect(readDoc()[provider.id].models).toMatchObject([{ ...model, baseUrl: custom.baseUrl }])
+  })
+
+  it('repairs existing model declarations and overrides idempotently, scoped to the full native ID and endpoint', async () => {
+    const provider = spec()
+    const native = { provider: provider.id, baseUrl: provider.baseUrl, api: provider.api, id: 'family/pro', name: 'Pro',
+      selector: provider.id + '/family/pro', reasoning: false, thinking: [], input: ['text', 'image'] as ['text', 'image'],
+      contextWindow: 640000, maxTokens: 12000 }
+    const unrelated = { id: 'other/pro', input: ['text'], contextWindow: 200000 }
+    const original = { api: provider.api, baseUrl: provider.baseUrl, models: [
+      { id: native.id, contextWindow: 256000, input: ['text'], headers: { 'X-Preserve': 'ok' } }, unrelated
+    ], modelOverrides: { [native.id]: { contextWindow: 128000, reasoning: false } } }
+    const wrongEndpoint = { ...original, baseUrl: 'https://relay.example/v1' }
+    const wrongApi = { ...original, api: 'openai-responses' }
+    writeFileSync(modelsFile, '# Keep this comment\n' + YAML.stringify({ providers: { [provider.id]: original, relay: wrongEndpoint, dialect: wrongApi } }))
+    const candidates = [native, { ...native, provider: 'relay' }, { ...native, provider: 'dialect' }]
+    expect(await repairCatalogModelCapabilities(candidates, modelsFile)).toBe(true)
+    expect(await repairCatalogModelCapabilities(candidates, modelsFile)).toBe(false)
+    expect(readFileSync(modelsFile, 'utf8')).toContain('# Keep this comment')
+    expect(readDoc()).toMatchObject({
+      [provider.id]: { models: [{ id: native.id, input: native.input, contextWindow: native.contextWindow, maxTokens: native.maxTokens,
+        headers: { 'X-Preserve': 'ok' } }, unrelated], modelOverrides: { [native.id]: { contextWindow: native.contextWindow, reasoning: false } } },
+      relay: wrongEndpoint, dialect: wrongApi
+    })
+  })
+
+  it('keeps richer live capabilities on a stock provider while correcting its explicit stale overrides', async () => {
+    const native = { provider: 'sample', id: 'v2', name: 'V2', selector: 'sample/v2', api: 'openai-responses',
+      baseUrl: 'https://sample.example/v1', input: ['text'] as ['text'], contextWindow: 500000, maxTokens: 10000,
+      reasoning: false, thinking: [], discovered: { input: ['text', 'image'] as ['text','image'], contextWindow: 640000, maxTokens: 12000 } }
+    const original = '# Credential-only provider\nproviders:\n  sample:\n    apiKey: fixture\n'
+    writeFileSync(modelsFile, original)
+    expect(await repairCatalogModelCapabilities([native], modelsFile)).toBe(false)
+    expect(readFileSync(modelsFile, 'utf8')).toBe(original)
+    writeFileSync(modelsFile, YAML.stringify({ providers: { sample: { apiKey: 'fixture', modelOverrides: {
+      v2: { maxTokens: 12000 } } } } }))
+    expect(await repairCatalogModelCapabilities([native], modelsFile)).toBe(true)
+    expect(readDoc().sample.modelOverrides).toEqual({ v2: { maxTokens: 10000 } })
   })
 
   it('retains native capability declarations when editing the same custom model', async () => {

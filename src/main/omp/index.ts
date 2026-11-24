@@ -407,8 +407,9 @@ export function killSession(sessionId: string): boolean {
 }
 
 export function abortSession(sessionId: string): boolean {
-  const aborted = sessions.get(sessionId)?.abort() ?? false
-  if (aborted) {
+  const session = sessions.get(sessionId)
+  const aborted = session?.abort() ?? false
+  if (aborted && !session?.isManuallyCompacting) {
     revokeBoardBuildSession(sessionId)
     boardThinking.finish(sessionId)
   }
@@ -502,10 +503,8 @@ function querySession(
 }
 
 /** Token/context usage for the usage monitor. */
-export async function getSessionStats(sessionId: string): Promise<SessionStats | null> {
-  const res = await querySession(sessionId, { type: 'get_session_stats' })
-  if (!res || res.success !== true || !res.data) return null
-  return res.data as SessionStats
+export function getSessionStats(sessionId: string): Promise<SessionStats | null> {
+  return sessions.get(sessionId)?.getSessionStats() ?? Promise.resolve(null)
 }
 
 /** Slash commands available in this session (extensions, prompts, skills). */
@@ -523,7 +522,7 @@ export async function listSessionCommands(sessionId: string): Promise<SlashComma
   const out: SlashCommand[] = []
   for (const c of raw) {
     const cmd = c as { name?: unknown; description?: unknown; source?: unknown }
-    if (typeof cmd?.name !== 'string') continue
+    if (typeof cmd?.name !== 'string' || cmd.name === 'toushou-compact-context') continue
     out.push({
       name: cmd.name,
       description: typeof cmd.description === 'string' ? cmd.description : undefined,
@@ -535,8 +534,9 @@ export async function listSessionCommands(sessionId: string): Promise<SlashComma
 
 /** Trigger context compaction; the summarization LLM call can take a while. */
 export async function compactSession(sessionId: string): Promise<boolean> {
-  const res = await querySession(sessionId, { type: 'compact' }, 120_000)
-  return Boolean(res && res.success === true)
+  const entry = sessions.get(sessionId)
+  if (!entry || isProjectDeletionInProgress(entry.session.cwd)) return false
+  return entry.compact()
 }
 
 /** Inject a steering message into a running turn. */
