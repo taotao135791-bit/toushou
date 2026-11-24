@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Command, FileText, Plug, Sparkles, Wrench } from 'lucide-react'
 import { BundledSkillEntry, LaunchableTool, SkillEntry, SlashCommand } from '@shared/types'
 import { formatSkillChatMessage } from '@shared/skills'
+import { isMcpMentionName } from '@shared/mcpMentions'
 import MenuPortal from './MenuPortal'
 import { useT } from '../i18n'
 import { useAppStore } from '../store'
+import { showNotice } from '../lib/notice'
 
 /**
  * 技能 / 插件调用面板 — the composer "+" menu's explicit-invocation picker
@@ -45,7 +47,9 @@ async function loadInvokeLists(): Promise<InvokeLists> {
     api.listLaunchableTools?.().catch(() => []) ?? [],
     api.listSkills?.().then((result) => (result.ok ? result.entries : [])).catch(() => []) ?? [],
     api.listBundledSkills?.().then((result) => (result.ok ? result.entries : [])).catch(() => []) ?? [],
-    api.mcpList?.().then((all) => all.filter(({ enabled }) => enabled).map(({ name: server }) => server)).catch(() => []) ?? []
+    // Same grammar filter as the @-mention menu: a name the mention parser
+    // cannot recognize would insert a dead reference.
+    api.mcpList?.().then((all) => all.filter(({ enabled, name }) => enabled && isMcpMentionName(name)).map(({ name: server }) => server)).catch(() => []) ?? []
   ])
   const lists: InvokeLists = { tools, personalSkills: skills, bundledSkills: bundled, mcpServers: connections }
   cache = { lists, at: Date.now() }
@@ -154,7 +158,12 @@ export default function InvokePicker({
       const entry = lists.personalSkills.find((skill) => `skill:${skill.id}` === item.insert)
       if (!entry) return
       const result = await window.electronAPI.readSkill?.(entry.id).catch(() => null)
-      if (!result?.ok) return
+      if (!result?.ok) {
+        // A closed picker with nothing inserted reads as a dead click — say so.
+        showNotice('composer.invoke.pickFailed')
+        onClose()
+        return
+      }
       onPick(`\n${formatSkillChatMessage(entry.name, result.content, language)}\n`)
     } else if (item.insert.startsWith('bundled:')) {
       const entry = lists.bundledSkills.find((skill) => `bundled:${skill.id}` === item.insert)

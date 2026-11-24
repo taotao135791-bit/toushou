@@ -228,6 +228,8 @@ export default memo(function Composer({
   const imagesRef = useRef<PendingImage[]>([])
   textRef.current = text
   imagesRef.current = images
+  /** The draft object this composer last wrote (self-write filter, see writeDraft). */
+  const lastWrittenDraftRef = useRef<SessionComposerDraft | null>(null)
   /** Non-image drops staged as attachment chips; sent as @path lines. */
   const [pendingFiles, setPendingFiles] = useState<DroppedAttachment[]>([])
   const [steeringQueuedId, setSteeringQueuedId] = useState<string | null>(null)
@@ -294,6 +296,10 @@ export default memo(function Composer({
       files: toDraftFiles(nextFiles)
     }
     setComposerDraft(key, draft)
+    // Identity marker: the late-draft subscription must never adopt a draft
+    // the composer itself just wrote (it fires synchronously, before the
+    // text/image refs re-render).
+    lastWrittenDraftRef.current = draft
   }
 
   const commitDraft = (nextText: string, nextImages = images, nextFiles = pendingFiles) => {
@@ -343,7 +349,10 @@ export default memo(function Composer({
     const untouched = () => textRef.current === '' && imagesRef.current.length === 0
     const unsubscribe = useAppStore.subscribe((state) => {
       const late = state.composerDrafts[draftKey]
-      if (!late || !untouched()) return
+      // Skip the composer's own synchronous write (same object) — only a
+      // disk hydration lands here with a fresh object while the surface is
+      // still untouched.
+      if (!late || late === lastWrittenDraftRef.current || !untouched()) return
       unsubscribe()
       if (useAppStore.getState().currentSessionId !== currentSessionId) return
       setText(late.text)
@@ -843,10 +852,11 @@ export default memo(function Composer({
           images: toPromptImages(stagedImagesSnapshot),
           files: toDraftFiles(staged)
         })
-        if (
-          (sessionIdAtSend && useAppStore.getState().currentSessionId !== sessionIdAtSend) ||
-          (!sessionIdAtSend && restoreSessionId !== useAppStore.getState().currentSessionId)
-        ) {
+        // Same-position check: restore the surface only when the user is
+        // still looking at the conversation the send started from — for a
+        // failed FIRST send that is the new-chat surface (sentinel key).
+        const liveKey = useAppStore.getState().currentSessionId ?? NEW_CHAT_DRAFT_KEY
+        if (restoreSessionId !== liveKey) {
           return
         }
         setText((cur) => (cur.trim() ? cur : trimmed))

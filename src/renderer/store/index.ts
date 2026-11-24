@@ -1300,7 +1300,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const stored = await window.electronAPI.getComposerDrafts?.()
       if (!stored || typeof stored !== 'object') return
-      set((state) => ({ composerDrafts: { ...stored, ...state.composerDrafts } }))
+      const merged = { ...stored, ...get().composerDrafts }
+      set({ composerDrafts: merged })
+      // Re-arm the debounced persist with the MERGED map: a timer captured
+      // before the merge would otherwise write the stale map and erase the
+      // disk-only drafts this hydration just adopted.
+      scheduleComposerDraftsPersist(merged)
     } catch {
       // Persistence is best-effort; the in-memory session drafts still work.
     }

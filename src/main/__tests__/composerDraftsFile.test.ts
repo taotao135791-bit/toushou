@@ -44,10 +44,12 @@ describe('composer-drafts file persistence', () => {
   })
 
   it('caps what a single draft may carry', () => {
-    const huge = { text: 'x'.repeat(100_001), images: [] }
+    const huge = { text: 'x'.repeat(200_001), images: [] }
     expect(saveComposerDrafts({ a: huge })).toBe(false)
     const manyImages = { text: '', images: Array.from({ length: 5 }, () => ({ type: 'image', data: '', mimeType: 'image/png' })) }
     expect(saveComposerDrafts({ a: manyImages })).toBe(false)
+    // The renderer's own truncated paste (100_000 + ellipsis) must validate.
+    expect(saveComposerDrafts({ a: { text: 'x'.repeat(100_001), images: [] } })).toBe(true)
   })
 
   it('degrades a corrupt file to empty drafts and preserves the bytes for recovery', () => {

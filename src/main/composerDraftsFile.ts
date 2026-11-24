@@ -12,11 +12,15 @@ import { ComposerDrafts, SessionComposerDraft } from '../shared/types'
  */
 
 const MAX_DRAFTS = 500
-const MAX_DRAFT_TEXT_CHARS = 100_000
+/** The renderer's own paste truncation lands at 100_001 chars; leave headroom
+ * so a truncated paste never fails draft validation. */
+const MAX_DRAFT_TEXT_CHARS = 200_000
+/** 4 images × 10MB (the composer's cap) ≈ 53M base64 chars each side. */
 const MAX_DRAFT_IMAGES = 4
 const MAX_DRAFT_IMAGE_CHARS = 14 * 1024 * 1024
 const MAX_DRAFT_FILES = 32
-const MAX_FILE_BYTES = 16 * 1024 * 1024
+/** Whole-file budget sized to hold the renderer's documented per-draft maxima. */
+const MAX_FILE_BYTES = 64 * 1024 * 1024
 
 function draftsFile(): string {
   return path.join(app.getPath('userData'), 'composer-drafts.json')
@@ -86,8 +90,12 @@ export function loadComposerDrafts(): ComposerDrafts {
 
 /**
  * Persist drafts atomically (tmp + rename) so a crash mid-write can never
- * truncate the previous copy. Returns false when the payload is not valid
- * plain draft data or exceeds the size budget.
+ * truncate the previous copy. Structurally invalid input (wrong shapes, too
+ * many entries) rejects the write outright — that is a programming error and
+ * the last good file must stand. A draft that merely exceeds the FILE budget
+ * is dropped from the write while the rest persist: one huge draft must never
+ * disable persistence for every other conversation (the in-memory copy keeps
+ * serving the oversized session until it shrinks).
  */
 export function saveComposerDrafts(value: unknown): boolean {
   if (typeof value !== 'object' || value === null) return false
@@ -97,11 +105,12 @@ export function saveComposerDrafts(value: unknown): boolean {
   let bytes = 0
   for (const [key, draft] of entries) {
     if (key.length === 0 || key.length > 256 || !isSessionDraft(draft)) return false
+    let size = key.length + draft.text.length
+    for (const image of draft.images) size += image.data.length
+    if (bytes + size > MAX_FILE_BYTES) continue
     drafts[key] = draft
-    bytes += key.length + draft.text.length
-    for (const image of draft.images) bytes += image.data.length
+    bytes += size
   }
-  if (bytes > MAX_FILE_BYTES) return false
   const file = draftsFile()
   const tmp = `${file}.tmp`
   try {
