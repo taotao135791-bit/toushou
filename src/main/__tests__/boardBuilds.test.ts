@@ -66,7 +66,7 @@ describe('trusted request extraction', () => {
       for (const [name, columns, row] of [
         ['AF-Lemon8泰国TikTok基础', [{ name: '活跃用户', type: 'number' }, { name: '安装量', type: 'number' }, { name: '日期', type: 'date' }], [1105, 244, '2026-11-04']],
         ['AF-Lemon8泰国TikTok次留', [{ name: '事件次数', type: 'number' }, { name: '独立用户', type: 'number' }, { name: '日期', type: 'date' }], [74, 74, '2026-11-04']]
-      ] as const) {
+      ] as Array<[string, import('../../shared/types').BoardDatasetColumn[], Array<string | number>]>) {
         const result = createOrUpdateDataset(name, { columns, rows: [row], truncated: false }, undefined, { appsflyer: { specId: 'spec-' + name.slice(-4), status: 'updated', window: win, dataWindow: win, attemptedAt: Date.now() } })
         if (!result.ok) throw new Error(result.error)
         recordBoardBuildSourceEvidence(session, 'appsflyer', [result.dataset.id])
