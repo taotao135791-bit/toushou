@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { abortBoardBuild, beginBoardBuild, buildStatus, checkFrozenBoardBuild, commitBoardBuild, getBoardBuildSession, getBoardBuildTurnId, hasBoardBuildTurn, recordBoardBuildSourceEvidence, requestBoardEditTargets, withCurrentBoardBuild, type BoardTargetUiEvent } from './boardBuilds'
+import { abortBoardBuild, afPresetPlaceholder, beginBoardBuild, buildStatus, checkFrozenBoardBuild, commitBoardBuild, getBoardBuildSession, getBoardBuildTurnId, hasBoardBuildAfPreset, hasBoardBuildTurn, recordBoardBuildSourceEvidence, registerBoardBuildAfPreset, requestBoardEditTargets, withCurrentBoardBuild, type AfPresetScope, type BoardTargetUiEvent } from './boardBuilds'
 import { validateWidgetDateScope } from '../shared/boardWindows'
 import { readBoardMetaAccounts, refreshBoard } from './boardRefresh'
 import { boardBuildRoot } from './boardBuildStorage'
@@ -18,8 +18,9 @@ import { getBoardHighlightEvidence } from './boardHighlights'
 import { checkBoardGeneration, parseBoardGenerationOptions } from '../shared/boardGeneration'
 import { listBoards, peekBoardsForConfirmation, saveBoard } from './boards'
 import { pruneHtmlBoardsForBoard } from './htmlBoards'
-import { listDatasets } from './boardDatasets'
+import { listDatasets, listDatasetsStrict } from './boardDatasets'
 import { isAppsFlyerBuiltInEvent } from './integrations/appsflyer/AppsFlyerMcpClient'
+import type { AfQuerySpec } from './integrations/appsflyer/appsflyerDataset'
 import {
   BOARD_LIMITS,
   WIDGET_DEFAULT_SIZES,
@@ -29,10 +30,12 @@ import {
   applyMasterScope,
   detectPreset,
   findFreeSlot,
+  tiktokAfPreset,
   validateBoard,
   validateBoardStyle,
   validateBoardWidgetStyle,
   validateMasterScope,
+  MASTER_SCOPED_WIDGET_TYPES,
   type BoardPresetId,
   type BoardText
 } from '../shared/boards'
@@ -74,6 +77,15 @@ const BOARD_TEXT: Record<string, string> = {
   'boards.widget.tt-reading': 'TT 读数',
   'boards.widget.meta-reading': 'Meta 读数',
   'boards.reading.ttModuleName': 'TT 读数',
+  'boards.preset.tiktokAf': 'TikTok+AF 投放看板',
+  'boards.preset.tiktokAf.installs': 'AF 安装·近7日',
+  'boards.preset.tiktokAf.activeDaily': 'AF 日均活跃·近7日',
+  'boards.preset.tiktokAf.retention': 'AF 次留回访·近7日',
+  'boards.preset.tiktokAf.installTrend': 'AF 安装趋势（按日）',
+  'boards.preset.tiktokAf.activeTrend': 'AF 活跃趋势（按日）',
+  'boards.preset.tiktokAf.retentionTrend': 'AF 次留趋势（按日）',
+  'boards.preset.tiktokAf.note': 'AF 归因口径',
+  'boards.preset.tiktokAf.noteBody': 'AppsFlyer 按应用、TikTok 归因、地区和看板日期取数。安装量为每日安装合计，日活为每日活跃用户均值，次留为已确认的回访事件计数。',
   'boards.preset.ads': '海外广告投放',
   'boards.preset.ads.kpiSpend': '今日消耗 ($)',
   'boards.preset.ads.kpiImpressions': '展示次数',
@@ -111,6 +123,7 @@ const boardText: BoardText = (key) => BOARD_TEXT[key] ?? key
 
 export const BOARD_TEMPLATES: readonly BoardPresetId[] = [
   'tiktok',
+  'tiktok-af',
   'meta',
   'fb-daily-v2',
   'ads',
@@ -157,6 +170,8 @@ export type BoardsBridgeRequest = (
       action: 'board_create'
       name?: unknown
       template?: unknown
+      afPrefix?: unknown
+      afScope?: unknown
       description?: unknown
       advertiserIds?: unknown
       advertiserName?: unknown
@@ -170,7 +185,7 @@ export type BoardsBridgeRequest = (
   | { action: 'board_customize'; version?: unknown; boardId?: unknown; name?: unknown; expectedUpdatedAt?: unknown; preview?: unknown; style?: unknown; masterScope?: unknown; widgets?: unknown }
   | { action: 'board_rename'; boardId?: unknown; name?: unknown; newName?: unknown }
   | { action: 'dataset_import'; filePath?: unknown; name?: unknown }
-  | { action: 'af_dataset_pull'; name?: unknown; appId?: unknown; eventName?: unknown; days?: unknown; startDate?: unknown; endDate?: unknown; basis?: unknown; metrics?: unknown; groupings?: unknown; geo?: unknown; countries?: unknown; mediaSources?: unknown }
+  | { action: 'af_dataset_pull'; name?: unknown; appId?: unknown; eventName?: unknown; days?: unknown; startDate?: unknown; endDate?: unknown; basis?: unknown; metrics?: unknown; groupings?: unknown; geo?: unknown; countries?: unknown; mediaSources?: unknown; pulls?: unknown }
   | { action: 'af_query_plan'; appId?: unknown; days?: unknown; mediaSources?: unknown; countries?: unknown }
 ) & { buildId?: unknown }
 
@@ -197,6 +212,19 @@ function appsFlyerFilters(mediaSources: unknown, countries: unknown, legacyTikTo
     } else filters.Geo = geo
   }
   return { filters }
+}
+
+function parseAfPresetScope(raw: unknown): AfPresetScope | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const value = raw as Record<string, unknown>
+  if (Object.keys(value).some(key => !['appId', 'countries', 'retentionEvent'].includes(key))) return null
+  const appId = boundedString(value.appId, 200)
+  if (!appId || /[\x00-\x1f\x7f]/.test(appId)) return null
+  const retentionEvent = boundedString(value.retentionEvent, 200)
+  if (value.retentionEvent !== undefined && (!retentionEvent || /[\x00-\x1f\x7f]/.test(retentionEvent) || isAppsFlyerBuiltInEvent(retentionEvent))) return null
+  const filtered = appsFlyerFilters(undefined, value.countries, true)
+  if ('error' in filtered) return null
+  return { appId, filters: filtered.filters, ...(retentionEvent ? { retentionEvent } : {}) }
 }
 
 const CANVAS_STYLE_KEYS = ['background', 'grid'] as const
@@ -264,6 +292,8 @@ function parseBoardsBridgeAction(raw: unknown): BoardsBridgeRequest | null {
         action: 'board_create',
         name: value.name,
         template: value.template,
+        afPrefix: value.afPrefix,
+        afScope: value.afScope,
         description: value.description,
         advertiserIds: value.advertiserIds,
         advertiserName: value.advertiserName,
@@ -305,7 +335,7 @@ function parseBoardsBridgeAction(raw: unknown): BoardsBridgeRequest | null {
     case 'dataset_import':
       return { action: 'dataset_import', filePath: value.filePath, name: value.name }
     case 'af_dataset_pull':
-      return { action: 'af_dataset_pull', name: value.name, appId: value.appId, eventName: value.eventName, days: value.days, startDate: value.startDate, endDate: value.endDate, basis: value.basis, metrics: value.metrics, groupings: value.groupings, geo: value.geo, countries: value.countries, mediaSources: value.mediaSources }
+      return { action: 'af_dataset_pull', name: value.name, appId: value.appId, eventName: value.eventName, days: value.days, startDate: value.startDate, endDate: value.endDate, basis: value.basis, metrics: value.metrics, groupings: value.groupings, geo: value.geo, countries: value.countries, mediaSources: value.mediaSources, pulls: value.pulls }
     case 'af_query_plan':
       return { action: 'af_query_plan', appId: value.appId, days: value.days, mediaSources: value.mediaSources, countries: value.countries }
     default:
@@ -550,23 +580,38 @@ export async function authorizeAndDispatch(
   if (write && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
   const state = getBoardBuildSession(sessionId)
   if (state?.buildId && state.cwd !== access.cwd) return { ok: false, error: 'board-build-conflict' }
+  const afPresetAuthorization = () => hasBoardBuildAfPreset(sessionId, tool.buildId)
+    ? import('./appsflyerConnection').then(connection => connection.verifiedAppsFlyerDatasetScopeIdentity())
+    : null
   if (tool.action === 'board_edit_targets') {
     const emit = deps?.requestBoardTargets ?? ((event: BoardTargetUiEvent) => omp?.emitBoardTargetUi(event))
     return requestBoardEditTargets(sessionId, access.cwd, tool.candidateBoardIds, emit, stillAuthorized, signal)
   }
-  if (tool.action === 'board_build_begin') return beginBoardBuild(sessionId, access.cwd, tool.targetBoardId, tool.targetBoardIds)
+  if (tool.action === 'board_build_begin') {
+    const status = beginBoardBuild(sessionId, access.cwd, tool.targetBoardId, tool.targetBoardIds)
+    if (status.ok === true && status.draft === true && typeof status.buildId === 'string') {
+      omp?.startBoardBuildThinking(sessionId, status.buildId)
+      return { ...status, hint: '支持中档思考的模型可在建板期间临时降档。多张 AF 数据集可用 af_dataset_pull 的 pulls 一次提交。TikTok 账户信息可用 toushou_tiktok_status 查询。' }
+    }
+    return status
+  }
   if (tool.action === 'board_build_status') return buildStatus(sessionId, tool.buildId)
-  if (tool.action === 'board_build_preflight') return checkFrozenBoardBuild(sessionId, tool.buildId, true)
+  if (tool.action === 'board_build_preflight') return checkFrozenBoardBuild(sessionId, tool.buildId, true, undefined, await afPresetAuthorization())
   if (tool.action === 'board_build_commit') {
     if (tool.allowPartial !== undefined && typeof tool.allowPartial !== 'boolean') return { ok: false, error: 'invalid-partial-option' }
-    const result = commitBoardBuild(sessionId, tool.buildId, stillAuthorized, tool.allowPartial === true)
+    const result = commitBoardBuild(sessionId, tool.buildId, stillAuthorized, tool.allowPartial === true, await afPresetAuthorization())
     if (!Array.isArray(result.boards)) return result
     // Each saved board must survive the tool-output budget, even for a large
     // selection. The agent can read the complete saved board with board_get.
     const boards = (result.boards as KanbanBoard[]).map(({ id, name, updatedAt, widgets, partialDelivery }) => ({ id, name, updatedAt, widgetCount: widgets.length, ...(partialDelivery ? { partialDelivery } : {}) }))
+    if (result.ok === true && typeof tool.buildId === 'string') omp?.finishBoardBuildThinking(sessionId, tool.buildId)
     return { ...result, boards, ...(result.board ? { board: boardSummary(result.board as KanbanBoard) } : {}) }
   }
-  if (tool.action === 'board_build_abort') return abortBoardBuild(sessionId, tool.buildId)
+  if (tool.action === 'board_build_abort') {
+    const result = abortBoardBuild(sessionId, tool.buildId)
+    if (result.ok === true && typeof tool.buildId === 'string') omp?.finishBoardBuildThinking(sessionId, tool.buildId)
+    return result
+  }
   if (tool.action === 'board_meta_accounts') return { ...(await readBoardMetaAccounts()) }
   const boardRead = tool.action === 'boards_list' || tool.action === 'board_get' || tool.action === 'board_check'
   if (boardRead && tool.buildId === undefined) return dispatch(tool, access.cwd)
@@ -575,7 +620,7 @@ export async function authorizeAndDispatch(
   // deps without a trusted turn are a legacy unit-test seam. Production never
   // receives requirements or authority from this seam or from model arguments.
   if (boardWrite && (!deps || hasBoardBuildTurn(sessionId)) && !state?.buildId) return { ok: false, error: 'board-build-required' }
-  if (state?.buildId && tool.action === 'board_check') return checkFrozenBoardBuild(sessionId, tool.buildId, false, typeof tool.boardId === 'string' ? tool.boardId : undefined)
+  if (state?.buildId && tool.action === 'board_check') return checkFrozenBoardBuild(sessionId, tool.buildId, false, typeof tool.boardId === 'string' ? tool.boardId : undefined, await afPresetAuthorization())
   if (state?.published && (tool.action === 'board_get' || tool.action === 'boards_list')) {
     if (tool.buildId !== undefined && tool.buildId !== state.buildId) return { ok: false, error: 'board-build-conflict' }
     return dispatch(tool, access.cwd)
@@ -598,9 +643,14 @@ export async function authorizeAndDispatch(
         return slimRefreshResult(refreshed)
       }
       const result = await dispatch(tool, access.cwd, write ? stillAuthorized : undefined)
-      if (tool.action === 'af_dataset_pull' && result.ok === true && result.dataset && typeof result.dataset === 'object') {
-        const id = (result.dataset as { id?: unknown }).id
-        if (typeof id === 'string') recordBoardBuildSourceEvidence(sessionId, 'appsflyer', [id])
+      if (tool.action === 'board_create' && result.ok === true && tool.template === 'tiktok-af' && state?.buildId) {
+        const scope = parseAfPresetScope(tool.afScope)
+        const boardId = (result.board as { id?: unknown } | undefined)?.id
+        if (scope && typeof boardId === 'string') registerBoardBuildAfPreset(sessionId, state.buildId, boardId, scope)
+      }
+      if (tool.action === 'af_dataset_pull' && result.ok === true) {
+        const ids = afPullResultDatasetIds(result)
+        if (ids.length) recordBoardBuildSourceEvidence(sessionId, 'appsflyer', ids)
       }
       return result
     }, tool.buildId)
@@ -639,6 +689,121 @@ export function readWorkspaceDataset(raw: unknown, cwd: string): { name: string;
     if (after.dev !== opened.dev || after.ino !== opened.ino || finalHandle.dev !== opened.dev || finalHandle.ino !== opened.ino || finalHandle.size !== opened.size || finalHandle.mtimeMs !== opened.mtimeMs || finalHandle.ctimeMs !== opened.ctimeMs || used !== opened.size) return null
     return { name: path.basename(real), bytes: buffer.subarray(0, used) }
   } catch { return null } finally { if (fd !== undefined) closeSync(fd) }
+}
+
+/** 共享窗口推导（days 或显式日期段），单张与批量拉数同源；非法返回 null。 */
+function afPullWindow(days: unknown, startDate: unknown, endDate: unknown): { start: string; end: string } | null {
+  const d = days === undefined ? 7 : Number(days)
+  if (!Number.isInteger(d) || d < 1 || d > 366) return null
+  const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value
+  const end = new Date()
+  end.setDate(end.getDate() - 1)
+  const start = new Date(end)
+  start.setDate(start.getDate() - (d - 1))
+  let window = { start: iso(start), end: iso(end) }
+  if (startDate !== undefined || endDate !== undefined) {
+    if (!validDate(startDate) || !validDate(endDate) || (startDate as string) > (endDate as string) || Date.parse(endDate as string) - Date.parse(startDate as string) > 365 * 86_400_000) return null
+    window = { start: startDate as string, end: endDate as string }
+  }
+  return window
+}
+
+/** 当前授权下相同应用、窗口和过滤条件的发现清单可复用 24 小时。 */
+const AF_PLAN_CACHE_TTL_MS = 24 * 60 * 60_000
+const afPlanCache = new Map<string, { plan: Record<string, unknown>; coverage: string; at: number }>()
+const AF_NOT_CONNECTED = { ok: false, error: 'not-connected', hint: 'AppsFlyer 未连接或授权未验证，请先在连接页完成授权。' } as const
+
+/** AF 新鲜度复用窗口：同一配方 + 同一数据窗口 + 10 分钟内成功拉过 → 跳过
+ * 重拉（建板提速）。任何条件不满足照旧重拉——宁慢不错（用户红线：不能乱
+ * 混数据）。TikTok 报表是跨产品共享数据集，不适用此复用。 */
+const AF_FRESH_TTL_MS = 10 * 60_000
+function afFreshReuseResult(
+  previousSpec: AfQuerySpec,
+  previousDataset: ReturnType<typeof listDatasets>[number],
+  authorizationScope: string,
+  queryHash: string | null,
+  previousQueryHash: string | null,
+  win: { start: string; end: string },
+  name: string
+) {
+  const state = previousDataset.appsflyer
+  if (previousSpec.datasetId !== previousDataset.id || previousDataset.truncated ||
+      !state || state.materialization || state.specId !== previousSpec.id) return null
+  if ((state.status !== 'updated' || previousDataset.rows.length === 0) && (state.status !== 'empty' || previousDataset.rows.length !== 0)) return null
+  if (state.provenance?.authorizationScope !== authorizationScope || !queryHash ||
+      state.provenance.queryHash !== queryHash || queryHash !== previousQueryHash) return null
+  const now = Date.now()
+  const age = now - (state.attemptedAt ?? 0)
+  if (age < 0 || age >= AF_FRESH_TTL_MS) return null
+  const covered = state.dataWindow
+  if (covered?.start !== win.start || covered.end !== win.end || state.window.start !== win.start || state.window.end !== win.end) return null
+  const date = new Date(now)
+  const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  if (win.end > today || Boolean(state.partial) !== (win.end === today)) return null
+  const columns = previousDataset.columns.map((c) => c.name)
+  const partial = state.partial ? { partial: true as const } : {}
+  return {
+    ok: true,
+    reused: true,
+    spec: { id: previousSpec.id },
+    ...partial,
+    window: win,
+    dataset: { id: previousDataset.id, name: previousDataset.name, rowCount: previousDataset.rows.length, columns },
+    binding: {
+      hint: `把数字卡/图表绑定本数据集：source="dataset"，datasetId="${previousDataset.id}"，metric 用 columns 的列名；事件次数可求和，独立用户使用按完整日期范围查询的专用总量，不跨日相加。可加 filterColumn/filterValue。标题用简短业务名，来源信息放详情。`,
+      columns
+    },
+    results: [{ name, datasetName: previousDataset.name, datasetId: previousDataset.id, window: win, ok: true, status: state.status, rowCount: previousDataset.rows.length, reused: true, ...partial }]
+  }
+}
+
+/** 把一张 AF 拉数条目的形状参数（口径/指标/维度/过滤）编译成官方查询体。
+ * 单张与批量拉数共用；错误码与提示与原单张路径逐字一致。 */
+function afEntryQuery(entry: Record<string, unknown>): { ok: true; query: Record<string, unknown> } | { ok: false; error: string; hint?: string } {
+  const basis = entry.basis === 'ltv' ? 'ltv' : 'activity'
+  const eventName = typeof entry.eventName === 'string' && entry.eventName.trim() ? entry.eventName.trim().slice(0, 200) : undefined
+  const appId = boundedString(entry.appId, 200)
+  const metrics = Array.isArray(entry.metrics) && entry.metrics.length > 0 && entry.metrics.length <= 10 && entry.metrics.every((m) => typeof m === 'string' && m.length > 0 && m.length <= 100)
+    ? (entry.metrics as string[]) : ['Count', 'Unique users']
+  if (entry.groupings !== undefined && (!Array.isArray(entry.groupings) || entry.groupings.length > 4 || entry.groupings.some(g => typeof g !== 'string' || !g.trim() || g.length > 100))) return { ok: false, error: 'invalid-groupings' }
+  const isCustom = !!eventName && !isAppsFlyerBuiltInEvent(eventName)
+  const groupings = entry.groupings === undefined
+    ? (isCustom ? (entry.geo === true ? ['Campaign ID', 'Media source', 'Date'] : ['Campaign ID', 'Campaign', 'Media source', 'Date']) : (entry.geo === true ? ['Event name', 'Media source', 'Date'] : ['Event name', 'Media source', 'Date', 'Campaign ID']))
+    : [...entry.groupings as string[]]
+  if (entry.geo === true && !groupings.includes('Geo')) {
+    if (groupings.length >= 4) return { ok: false, error: 'invalid-groupings', hint: 'Geo 也是一个维度；groupings 最多四项，请为它留一个位置。' }
+    groupings.push('Geo')
+  }
+  const selection = appsFlyerFilters(entry.mediaSources, entry.countries, entry.mediaSources === undefined)
+  if ('error' in selection) return { ok: false, error: selection.error }
+  const filters = selection.filters
+  const query: Record<string, unknown> = {
+    app_ids: [appId],
+    row_count: 300,
+    metrics: metrics.map((metricName) => ({ metric_name: metricName, attribution_source: 'appsflyer', period: basis })),
+    sort_by_metrics: [{ metric_name: metrics[0], order: 'desc' }],
+    groupings,
+    filters,
+    in_app_event: isCustom ? [eventName!] : []
+  }
+  return { ok: true, query }
+}
+
+/** 单张（dataset.id）与批量（datasets[].datasetId）统一收集需要登记来源证据
+ * 的 AF 数据集 id。批量若漏登记，commit 会以 source-query-evidence-required
+ * 拒绝发布整块板——批量功能的生死路径。 */
+export function afPullResultDatasetIds(result: Record<string, unknown>): string[] {
+  const ids = new Set<string>()
+  if (result.dataset && typeof result.dataset === 'object') {
+    const id = (result.dataset as { id?: unknown }).id
+    if (typeof id === 'string') ids.add(id)
+  }
+  if (Array.isArray(result.datasets)) for (const entry of result.datasets) {
+    const datasetId = entry && typeof entry === 'object' && (entry as { ok?: unknown }).ok === true ? (entry as { datasetId?: unknown }).datasetId : undefined
+    if (typeof datasetId === 'string') ids.add(datasetId)
+  }
+  return [...ids]
 }
 
 export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string, stillAuthorized?: () => boolean): Promise<Record<string, unknown>> {
@@ -687,6 +852,13 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       return { ok: false, error: 'invalid-platform-scope', message: 'advertiserIds / advertiserName / advertiserNames 仅用于 TikTok；Meta 账户范围请记录在来源模块及本次查询参数中。' }
     }
     const composed = composeBoard('', boardText, template)
+    let afPrefix = ''
+    if (template === 'tiktok-af') {
+      afPrefix = typeof tool.afPrefix === 'string' ? tool.afPrefix.trim().replace(/[\x00-\x1f\x7f]/g, '').slice(0, 40) : ''
+      if (!afPrefix) return { ok: false, error: 'af-prefix-required', message: 'tiktok-af 模板需要 afPrefix（产品/市场短名，如 Lemon8泰国）。已核实应用时可提供 afScope，以便自动绑定本轮同口径 AF 数据。' }
+      if (tool.afScope !== undefined && !parseAfPresetScope(tool.afScope)) return { ok: false, error: 'invalid-af-template-scope', message: 'afScope 需要已核实的 appId，可同时提供 countries 和已确认的自定义 retentionEvent。' }
+      composed.widgets = tiktokAfPreset(boardText, afPrefix)
+    }
     const name = boundedString(tool.name, BOARD_LIMITS.maxNameLength) ?? composed.name
     if (boards.some((board) => board.name.toLowerCase() === name.toLowerCase())) {
       return { ok: false, error: 'name-exists', existingBoards: boards.map(modelBoardName).slice(0, 50) }
@@ -700,6 +872,12 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       updatedAt: Date.now(),
       ...(description ? { description } : {})
     }
+    if (template === 'tiktok-af' && boardBuildRoot()) {
+      for (const widget of board.widgets) {
+        if (widget.config.datasetId === `AF-${afPrefix}基础分天`) widget.config.datasetId = afPresetPlaceholder(board.id, 'base')
+        if (widget.config.datasetId === `AF-${afPrefix}次留分天`) widget.config.datasetId = afPresetPlaceholder(board.id, 'retention')
+      }
+    }
     if (tool.style !== undefined) {
       const styled = mergeStyle(tool.style, board.style, CANVAS_STYLE_KEYS, validateBoardStyle)
       if (!styled.ok) return { ok: false, error: 'invalid-style' }
@@ -711,6 +889,11 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       const scope = validateMasterScope(tool.masterScope)
       if (!scope) return { ok: false, error: 'invalid-master-scope' }
       board.masterScope = scope
+    }
+    // 模板出生即对齐总控：读数类预设模块（TT/Meta 等）跟随 masterScope，
+    // 否则模块带着默认口径出生、总控一切换就永远"日期已切换"（实测）。
+    if (board.masterScope) {
+      board.widgets = board.widgets.map(widget => MASTER_SCOPED_WIDGET_TYPES.includes(widget.type) ? applyMasterScope(widget, board.masterScope!) : widget)
     }
     // A TikTok advertiser request binds a reading module to those advertisers
     // (empty string = every advertiser the connected grant covers) AND scopes
@@ -744,7 +927,7 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
         ? { filterColumn, filterValue: filterValues[0] }
         : { filterColumn, filterValues }
       board.widgets = board.widgets.map((widget) =>
-        widget.config && widget.config.source === 'dataset'
+        widget.config && widget.config.source === 'dataset' && (template !== 'tiktok-af' || widget.config.datasetId === 'TikTok 报表')
           ? { ...widget, config: { ...widget.config, ...scope } }
           : widget
       )
@@ -809,58 +992,160 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     }
   }
 
+  // 批量拉数（建板提速）：一次调用登记并拉取 2–8 张 AF-{name} 数据集，共享
+  // 顶层时间窗。省掉模型侧 N−1 个思考回合（每回合 25–60 秒）；相同查询形状
+  // 在数据集管线里仍共享同一次服务器调用。单张（不带 pulls）走下面原路径。
+  if (tool.action === 'af_dataset_pull' && tool.pulls !== undefined) {
+    if (!Array.isArray(tool.pulls) || tool.pulls.length < 2 || tool.pulls.length > 8) {
+      return { ok: false, error: 'invalid-pulls', hint: 'pulls 必须是 2–8 个条目的数组；单张数据集用顶层参数，不要带 pulls。' }
+    }
+    const win = afPullWindow(tool.days, tool.startDate, tool.endDate)
+    if (!win) return { ok: false, error: 'invalid-window', hint: '批量拉取的窗口在顶层传（days 或 startDate/endDate），对本批所有数据集生效。' }
+    const seen = new Set<string>()
+    const entries: Array<{ name: string; appId: string; built: Record<string, unknown> }> = []
+    for (const [index, raw] of tool.pulls.entries()) {
+      const entry = (raw ?? {}) as Record<string, unknown>
+      const name = boundedString(entry.name, 60)
+      const appId = boundedString(entry.appId, 200)
+      if (!name || !appId) return { ok: false, error: 'invalid-pulls', hint: `第 ${index + 1} 个条目缺少 name 或 appId。` }
+      // 批量内 name 必须唯一（不限 appId）：数据集统一叫 AF-{name}，同名会
+      // 让结果回填按名匹配时串台，selectTargets 的未绑定 targetKey 也会折叠。
+      if (seen.has(name)) return { ok: false, error: 'invalid-pulls', hint: `条目名「${name}」在批量里重复（不同应用也不能同名）；请区分命名。` }
+      seen.add(name)
+      const built = afEntryQuery(entry)
+      if (!built.ok) return { ok: false, error: built.error, hint: `第 ${index + 1} 个条目（${name}）：${built.hint ?? built.error}` }
+      entries.push({ name, appId, built: built.query })
+    }
+    const { pullAppsFlyerDatasets, saveQuerySpecs, listQuerySpecs, discardUnboundQuerySpec, getAppsFlyerQueryHash, getVerifiedAppsFlyerDatasetScope } = await import('./integrations/appsflyer/appsflyerDataset')
+    const authorization = await getVerifiedAppsFlyerDatasetScope()
+    if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    if (authorization && !authorization.isCurrent()) return AF_NOT_CONNECTED
+    const savedSpecs: Array<{ previous: boolean; spec: AfQuerySpec }> = []
+    const reusedDatasets = new Map<string, NonNullable<ReturnType<typeof afFreshReuseResult>>>()
+    const specs = listQuerySpecs(undefined, { persistMigration: false })
+    const existingDatasets = listDatasets()
+    for (const item of entries) {
+      // 与单张路径同一身份规则：appId+name 定 spec，改名保留绑定。
+      const previousSpec = specs.find(spec => Array.isArray(spec.query.app_ids) && spec.query.app_ids[0] === item.appId && spec.name === item.name)
+      const specId = previousSpec?.id ?? `afq-${createHash('sha256').update(JSON.stringify([item.appId, item.name])).digest('hex')}`
+      const previousDataset = previousSpec?.datasetId ? existingDatasets.find(dataset => dataset.id === previousSpec.datasetId) : undefined
+      const datasetName = previousDataset?.name ?? previousSpec?.datasetName ?? `AF-${item.name}`
+      const reusedResult = authorization && previousSpec && previousDataset
+        ? afFreshReuseResult(previousSpec, previousDataset, authorization.scope, getAppsFlyerQueryHash(item.built, win), getAppsFlyerQueryHash(previousSpec.query, win), win, item.name)
+        : null
+      if (reusedResult) {
+        reusedDatasets.set(item.name, reusedResult)
+        continue
+      }
+      savedSpecs.push({ previous: !!previousSpec, spec: { ...previousSpec, id: specId, name: item.name, datasetName, query: item.built } })
+    }
+    const reusedEntry = (result: NonNullable<ReturnType<typeof afFreshReuseResult>>) => ({
+      ...result.results[0],
+      columns: result.dataset.columns,
+      binding: result.binding
+    })
+    if (savedSpecs.length === 0) {
+      return { ok: true, reused: true, window: win, datasets: [...reusedDatasets.values()].map(reusedEntry) }
+    }
+    try {
+      saveQuerySpecs(savedSpecs.map(item => item.spec))
+    } catch (error) {
+      if (error instanceof Error && error.message === 'query-limit') {
+        const hint = 'AppsFlyer 已有 20 组可刷新查询。请复用或清理不再使用的查询后重试。'
+        return {
+          ok: reusedDatasets.size > 0,
+          error: 'query-limit',
+          hint,
+          window: win,
+          datasets: entries.map(({ name }) => {
+            const reused = reusedDatasets.get(name)
+            return reused ? reusedEntry(reused) : { name, ok: false, error: 'query-limit' }
+          })
+        }
+      }
+      throw error
+    }
+    let result: Awaited<ReturnType<typeof pullAppsFlyerDatasets>>
+    try {
+      result = await pullAppsFlyerDatasets({
+        window: win,
+        specIds: savedSpecs.map(item => item.spec.id),
+        canCommit: stillAuthorized,
+        authorizationScope: authorization?.scope ?? null
+      })
+    } catch {
+      result = { ok: false, error: 'pull-failed', results: [] }
+    }
+    if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    if (boardBuildRoot()) {
+      // 无法绑定的新配方不占用草稿配额。
+      for (const item of savedSpecs) {
+        if (!item.previous && !result.results.some(entry => entry.name === item.spec.name && entry.ok)) discardUnboundQuerySpec(item.spec)
+      }
+    }
+    if (authorization && !authorization.isCurrent()) return AF_NOT_CONNECTED
+    const currentSpecs = reusedDatasets.size ? listQuerySpecs(undefined, { persistMigration: false }) : []
+    const datasetsStrict = reusedDatasets.size || result.results.some(entry => entry.ok) ? listDatasetsStrict() : []
+    const datasets = entries.map(({ name, built }) => {
+      const reused = reusedDatasets.get(name)
+      if (reused && authorization) {
+        const currentSpec = currentSpecs.find(spec => spec.id === reused.spec.id)
+        const currentDataset = datasetsStrict.find(dataset => dataset.id === reused.dataset.id)
+        const current = currentSpec && currentDataset
+          ? afFreshReuseResult(currentSpec, currentDataset, authorization.scope, getAppsFlyerQueryHash(built, win), getAppsFlyerQueryHash(currentSpec.query, win), win, name)
+          : null
+        return current ? reusedEntry(current) : { name, ok: false, error: 'dataset-superseded' }
+      }
+      const entry = result.results.find(candidate => candidate.name === name)
+      if (!entry?.ok || !entry.datasetId) return { name, ok: false, error: entry?.error ?? result.error ?? 'pull-failed' }
+      const dataset = datasetsStrict.find(candidate => candidate.id === entry.datasetId)
+      if (!dataset) return { name, ok: false, error: 'dataset-not-ready' }
+      const columns = dataset.columns.map((c) => c.name)
+      return {
+        ...entry,
+        name,
+        datasetId: dataset.id,
+        datasetName: dataset.name,
+        rowCount: dataset.rows.length,
+        columns,
+        binding: {
+          hint: `把数字卡/图表绑定本数据集：source="dataset"，datasetId="${dataset.id}"，metric 用 columns 的列名；事件次数可求和，独立用户使用按完整日期范围查询的专用总量，不跨日相加。可加 filterColumn/filterValue。标题用简短业务名，来源信息放详情。`,
+          columns
+        }
+      }
+    })
+    const ok = datasets.some(dataset => dataset.ok)
+    const failed = datasets.find(dataset => !dataset.ok)
+    return { ok, window: win, datasets, ...(!ok ? { error: failed && 'error' in failed ? failed.error : result.error ?? 'pull-failed' } : {}) }
+  }
+
   if (tool.action === 'af_dataset_pull') {
     const appId = boundedString(tool.appId, 200)
     const name = boundedString(tool.name, 60)
-    const eventName = typeof tool.eventName === 'string' && tool.eventName.trim() ? tool.eventName.trim().slice(0, 200) : undefined
     if (!appId || !name) {
       return { ok: false, error: 'invalid-input', hint: 'appId 和 name 都是必填。name 是这组数据的短名（数据集叫 AF-{name}，卡片标题建议写「AF-{name}」）。' }
     }
-    const basis = tool.basis === 'ltv' ? 'ltv' : 'activity'
-    const days = tool.days === undefined ? 7 : Number(tool.days)
-    if (!Number.isInteger(days) || days < 1 || days > 366) return { ok: false, error: 'invalid-window' }
-    const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value
-    const end = new Date()
-    end.setDate(end.getDate() - 1)
-    const start = new Date(end)
-    start.setDate(start.getDate() - (days - 1))
-    let window = { start: iso(start), end: iso(end) }
-    if (tool.startDate !== undefined || tool.endDate !== undefined) {
-      if (!validDate(tool.startDate) || !validDate(tool.endDate) || tool.startDate > tool.endDate || Date.parse(tool.endDate) - Date.parse(tool.startDate) > 365 * 86_400_000) return { ok: false, error: 'invalid-window' }
-      window = { start: tool.startDate, end: tool.endDate }
-    }
-    const metrics = Array.isArray(tool.metrics) && tool.metrics.length > 0 && tool.metrics.length <= 10 && tool.metrics.every((m) => typeof m === 'string' && m.length > 0 && m.length <= 100)
-      ? (tool.metrics as string[]) : ['Count', 'Unique users']
-    if (tool.groupings !== undefined && (!Array.isArray(tool.groupings) || tool.groupings.length > 4 || tool.groupings.some(g => typeof g !== 'string' || !g.trim() || g.length > 100))) return { ok: false, error: 'invalid-groupings' }
-    const isCustom = !!eventName && !isAppsFlyerBuiltInEvent(eventName)
-    const groupings = tool.groupings === undefined
-      ? (isCustom ? (tool.geo === true ? ['Campaign ID', 'Media source', 'Date'] : ['Campaign ID', 'Campaign', 'Media source', 'Date']) : (tool.geo === true ? ['Event name', 'Media source', 'Date'] : ['Event name', 'Media source', 'Date', 'Campaign ID']))
-      : [...tool.groupings as string[]]
-    if (tool.geo === true && !groupings.includes('Geo')) {
-      if (groupings.length >= 4) return { ok: false, error: 'invalid-groupings', hint: 'Geo 也是一个维度；groupings 最多四项，请为它留一个位置。' }
-      groupings.push('Geo')
-    }
-    const selection = appsFlyerFilters(tool.mediaSources, tool.countries, true)
-    if ('error' in selection) return { ok: false, error: selection.error }
-    const query: Record<string, unknown> = {
-      app_ids: [appId],
-      row_count: 300,
-      metrics: metrics.map((metricName) => ({ metric_name: metricName, attribution_source: 'appsflyer', period: basis })),
-      sort_by_metrics: [{ metric_name: metrics[0], order: 'desc' }],
-      groupings,
-      filters: selection.filters,
-      in_app_event: isCustom ? [eventName!] : []
-    }
-    const { pullAppsFlyerDatasets, saveQuerySpec, listQuerySpecs, discardUnboundQuerySpec } = await import('./integrations/appsflyer/appsflyerDataset')
+    const win = afPullWindow(tool.days, tool.startDate, tool.endDate)
+    if (!win) return { ok: false, error: 'invalid-window' }
+    const built = afEntryQuery(tool)
+    if (!built.ok) return { ok: false, error: built.error, ...(built.hint ? { hint: built.hint } : {}) }
+    const query = built.query
+    const { pullAppsFlyerDatasets, saveQuerySpec, listQuerySpecs, discardUnboundQuerySpec, getAppsFlyerQueryHash, getVerifiedAppsFlyerDatasetScope } = await import('./integrations/appsflyer/appsflyerDataset')
+    const authorization = await getVerifiedAppsFlyerDatasetScope()
     if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    if (authorization && !authorization.isCurrent()) return AF_NOT_CONNECTED
     // Legacy IDs were truncated and could alias different applications/names.
     // Match the complete recipe identity before preserving an existing binding;
     // new IDs hash a structured tuple so long names and separators stay distinct.
-    const previousSpec = listQuerySpecs().find(spec => Array.isArray(spec.query.app_ids) && spec.query.app_ids[0] === appId && spec.name === name)
+    const previousSpec = listQuerySpecs(undefined, { persistMigration: false }).find(spec => Array.isArray(spec.query.app_ids) && spec.query.app_ids[0] === appId && spec.name === name)
     const specId = previousSpec?.id ?? `afq-${createHash('sha256').update(JSON.stringify([appId, name])).digest('hex')}`
     const previousDataset = previousSpec?.datasetId ? listDatasets().find(dataset => dataset.id === previousSpec.datasetId) : undefined
     const datasetName = previousDataset?.name ?? previousSpec?.datasetName ?? `AF-${name}`
+    // 新鲜度复用（宁慢不错，见 afFreshReuseResult）：命中则不烧调用不重写。
+    const reusedResult = authorization && previousSpec && previousDataset
+      ? afFreshReuseResult(previousSpec, previousDataset, authorization.scope, getAppsFlyerQueryHash(query, win), getAppsFlyerQueryHash(previousSpec.query, win), win, name)
+      : null
+    if (reusedResult) return reusedResult
     // Record the spec BEFORE the pull (minus dates): even a transient failure
     // arms the master refresh. Replacing its query must preserve the bound
     // dataset identity, including a name changed since the previous pull.
@@ -875,11 +1160,13 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       }
       throw error
     }
-    const result = await pullAppsFlyerDatasets({ window, specIds: [specId], canCommit: stillAuthorized })
+    const result = await pullAppsFlyerDatasets({ window: win, specIds: [specId], canCommit: stillAuthorized, authorizationScope: authorization?.scope ?? null })
+    if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    const completed = result.results.find(entry => entry.ok && entry.datasetId)
+    // An unbound recipe from a failed first pull can block publishing other sources.
+    if (!completed && boardBuildRoot() && !previousSpec) discardUnboundQuerySpec(nextSpec)
+    if (authorization && !authorization.isCurrent()) return AF_NOT_CONNECTED
     if (!result.ok && !result.results.some((entry) => entry.ok)) {
-      // A new unbound recipe has no widget that can refresh it. Leaving it in
-      // an edit draft would block saving unrelated, verified data.
-      if (boardBuildRoot() && !previousSpec) discardUnboundQuerySpec(nextSpec)
       const failedEntry = result.results[0]
       const hints: Record<string, string> = {
         'not-connected': 'AppsFlyer 未连接或授权未验证，请先在连接页完成 AppsFlyer 授权。',
@@ -893,15 +1180,14 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     }
     // The written dataset's real column names (localized, metadata columns
     // included) — the agent binds cards by these exact names.
-    const { listDatasetsStrict } = await import('./boardDatasets')
-    const completed = result.results.find(entry => entry.ok && entry.datasetId)
     const dataset = completed ? listDatasetsStrict().find(candidate => candidate.id === completed.datasetId) : undefined
     if (!dataset) return { ok: false, error: 'dataset-not-ready', results: result.results }
     const columns = dataset.columns.map((c) => c.name)
     return {
       ok: true,
+      ...(completed?.partial ? { partial: true } : {}),
       spec: { id: specId },
-      window,
+      window: win,
       dataset: { id: dataset.id, name: dataset.name, rowCount: dataset.rows.length, columns },
       binding: {
         hint: `把数字卡/图表绑定本数据集：source="dataset"，datasetId="${dataset.id}"，metric 用 dataset.columns 的列名；事件次数可求和，独立用户使用按完整日期范围查询的专用总量，不跨日相加。可加 filterColumn/filterValue。标题用简短业务名，来源信息放详情。`,
@@ -926,12 +1212,29 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
     const start = new Date(end)
     start.setDate(start.getDate() - (days - 1))
     const planWindow = { start: iso(start), end: iso(end) }
+    const { getVerifiedAppsFlyerDatasetScope, planAppsFlyerQuery } = await import('./integrations/appsflyer/appsflyerDataset')
+    const authorization = await getVerifiedAppsFlyerDatasetScope()
     if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
-    const { planAppsFlyerQuery } = await import('./integrations/appsflyer/appsflyerDataset')
+    if (!authorization?.isCurrent()) return AF_NOT_CONNECTED
+    // 发现结果缓存（24h，产品拍板保留）：同一应用+同一窗口+同一过滤的发现
+    // 清单一天内不会变，重复建板不再为预审烧调用。命中返回 cached:true，
+    // 与维护者"每次调用=一次查询"的旧契约不同——这是有意的产品决策，见 PR。
+    const planKey = JSON.stringify([authorization.scope, appId, planWindow.start, planWindow.end, selection.filters])
+    const cachedPlan = afPlanCache.get(planKey)
+    if (cachedPlan && Date.now() - cachedPlan.at < AF_PLAN_CACHE_TTL_MS) {
+      return {
+        ok: true,
+        cached: true,
+        plan: { ...structuredClone(cachedPlan.plan), appId, window: planWindow },
+        ...(cachedPlan.coverage ? { hint: cachedPlan.coverage } : {})
+      }
+    }
     let plan
     try {
-      plan = await planAppsFlyerQuery({ appId, window: planWindow, filters: selection.filters })
+      plan = await planAppsFlyerQuery({ appId, window: planWindow, filters: selection.filters, authorizationScope: authorization.scope })
     } catch (error) {
+      if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+      if (!authorization.isCurrent()) return AF_NOT_CONNECTED
       const message = error instanceof Error ? error.message : String(error)
       const hints: Record<string, string> = {
         'not-connected': 'AppsFlyer 未连接或授权未验证，请先在连接页完成授权。',
@@ -940,11 +1243,19 @@ export async function dispatch(tool: BoardsBridgeRequest, workspaceRoot?: string
       }
       return { ok: false, error: message.slice(0, 200), ...(hints[message] ? { hint: hints[message] } : {}) }
     }
+    if (stillAuthorized && !stillAuthorized()) return { ok: false, error: 'permission-denied' }
+    if (!authorization.isCurrent()) return AF_NOT_CONNECTED
     const coverage = plan.sampled || plan.partial ? '这是部分样本，不能当作完整覆盖或汇总。建议先缩小日期或筛选范围。' : ''
+    const planPayload = { ...plan, filters: selection.filters }
+    afPlanCache.set(planKey, { plan: structuredClone(planPayload), coverage, at: Date.now() })
+    if (afPlanCache.size > 50) {
+      const oldest = afPlanCache.keys().next().value
+      if (oldest !== undefined) afPlanCache.delete(oldest)
+    }
     return {
       ok: true,
-      plan: { ...plan, filters: selection.filters },
-      hint: `预审返回 ${plan.totalRows} 行，观察到 ${plan.events.length} 种事件。${coverage}请用户确认事件、渠道和地区后，再按组合调用 toushou_af_dataset_pull 保存数据。`
+      plan: { ...planPayload, appId, window: planWindow },
+      hint: `预审完成（消耗 1 次调用）：窗口内共 ${plan.totalRows} 行、${plan.events.length} 种事件。${coverage}把清单给用户勾选（全部/按事件/按渠道/按地区），确认后用 toushou_af_dataset_pull 的 pulls 批量一次提交全部组（2–8 条、同一时间窗），只有单组时才单独调用；落成 AF-{name} 活数据集。若某组合行数接近上限请进一步收窄维度。`
     }
   }
 

@@ -207,7 +207,7 @@ export function createWidget(
 /** Translator shape the presets need; the renderer passes its i18n `t`. */
 export type BoardText = (key: string) => string
 
-export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'fb-daily-v2' | 'tiktok' | 'meta'
+export type BoardPresetId = 'ads' | 'finance' | 'daily' | 'blank' | 'fb-daily' | 'fb-daily-v2' | 'tiktok' | 'tiktok-af' | 'meta'
 
 export interface ComposedBoard {
   name: string
@@ -466,6 +466,30 @@ export function tiktokAdsPreset(t: BoardText): BoardWidget[] {
   ]
 }
 
+/**
+ * TikTok + AppsFlyer 标配模板（建板提速）：在 TikTok 模板之上预置 AF 卡片。
+ * afPrefix（产品/市场前缀，如 Lemon8泰国）参与数据集名——不同产品的板绝不
+ * 共用数据集名，杜绝替换式写入跨产品串台。拉数侧产出同名数据集后卡片即
+ * 点亮，模型不再逐张手搭 AF 卡。活跃用户跨日不可加，数字卡用均值。
+ */
+export function tiktokAfPreset(t: BoardText, afPrefix: string): BoardWidget[] {
+  const base = `AF-${afPrefix}基础分天`
+  const retention = `AF-${afPrefix}次留分天`
+  const af = (datasetName: string, op: DatasetOp = 'sum') => ({ source: 'dataset', datasetId: datasetName, op })
+  // TikTok 块实际占到 y21（转化趋势与说明卡位于 y15–21），AF 块必须从
+  // y21 起，否则 AF 卡全部叠进 TikTok 卡（2026-11-24 实测布局事故）。
+  const afCards: BoardWidget[] = [
+    presetWidget('counter', t('boards.preset.tiktokAf.installs'), { x: 0, y: 21, w: 4, h: 3 }, { ...af(base), metric: '安装量' }),
+    presetWidget('counter', t('boards.preset.tiktokAf.activeDaily'), { x: 4, y: 21, w: 4, h: 3 }, { ...af(base, 'avg'), metric: '活跃用户' }),
+    presetWidget('counter', t('boards.preset.tiktokAf.retention'), { x: 8, y: 21, w: 4, h: 3 }, { ...af(retention), metric: '事件次数' }),
+    presetWidget('chart-line', t('boards.preset.tiktokAf.installTrend'), { x: 0, y: 24, w: 4, h: 6 }, { ...af(base), metric: '安装量', dimension: '日期' }),
+    presetWidget('chart-line', t('boards.preset.tiktokAf.activeTrend'), { x: 4, y: 24, w: 4, h: 6 }, { ...af(base, 'avg'), metric: '活跃用户', dimension: '日期' }),
+    presetWidget('chart-line', t('boards.preset.tiktokAf.retentionTrend'), { x: 8, y: 24, w: 4, h: 6 }, { ...af(retention), metric: '事件次数', dimension: '日期' }),
+    presetWidget('note', t('boards.preset.tiktokAf.note'), { x: 0, y: 30, w: 12, h: 3 }, { text: t('boards.preset.tiktokAf.noteBody') })
+  ]
+  return [...tiktokAdsPreset(t), ...afCards]
+}
+
 /** Only an untouched empty legacy starter can be explicitly replaced by the user. */
 export function isEmptyMetaStarter(widgets: readonly BoardWidget[]): boolean {
   return widgets.length === 6 && widgets.filter(w => w.type === 'counter').length === 3 &&
@@ -514,6 +538,8 @@ export function composeBoard(
       return { name: t('boards.preset.fbDaily2'), widgets: fbDailyV2Preset(t) }
     case 'tiktok':
       return { name: t('boards.preset.tiktok'), widgets: tiktokAdsPreset(t), masterScope: { range: 'last7', metrics: ['spend', 'cpi'] } }
+    case 'tiktok-af':
+      return { name: t('boards.preset.tiktokAf'), widgets: [], masterScope: { range: 'yesterday', metrics: ['spend', 'cpi'] } }
     case 'meta':
       return { name: t('boards.preset.meta'), widgets: metaAdsPreset(t), masterScope: { range: 'last7', metrics: ['spend'] } }
     case 'blank':

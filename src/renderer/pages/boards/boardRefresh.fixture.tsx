@@ -31,8 +31,20 @@ const staticBoard: KanbanBoard = { id: 'static-refresh-fixture', name: 'Static f
 const legacyAfBoard: KanbanBoard = { id: 'legacy-af-fixture', name: 'Legacy AF fixture', createdAt: 1, updatedAt: 1, masterScope: { range: 'last7', metrics: ['spend'] }, widgets: [
   { id: 'legacy-af-counter', type: 'counter', title: 'Legacy AF', config: { source: 'dataset', datasetId: 'legacy-af', metric: 'Count', op: 'sum' }, layout: { x: 0, y: 0, w: 3, h: 3 } }
 ] }
+const cachedBoard: KanbanBoard = { id: 'cached-fixture', name: 'Cached source fixture', createdAt: 1, updatedAt: 1, masterScope: { range: 'yesterday', metrics: ['spend'] }, widgets: [
+  { id: 'cached-reader', type: 'tt-reading', title: 'Scoped TikTok reader', config: { advertiserIds: '7300000000000000001', range: 'yd' }, layout: { x: 0, y: 0, w: 6, h: 5 } },
+  { id: 'cached-tt', type: 'counter', title: 'Cached TikTok count', config: { source: 'dataset', datasetId: 'tt-cache', metric: 'Count', op: 'sum' }, layout: { x: 6, y: 0, w: 3, h: 3 } },
+  { id: 'cached-af', type: 'counter', title: 'Cached AF count', config: { source: 'dataset', datasetId: 'af-cache', metric: 'Count', op: 'sum' }, layout: { x: 9, y: 0, w: 3, h: 3 } },
+  { id: 'cached-af-lookback', type: 'counter', title: 'AF two-day count', config: { source: 'dataset', datasetId: 'af-cache', metric: 'Count', op: 'sum' }, dateScope: { mode: 'lookback', days: 2, anchor: 'reportEnd' }, layout: { x: 9, y: 3, w: 3, h: 3 } }
+] }
 const metaListeners = new Set<(status: { connected: boolean }) => void>()
 let datasets: BoardDataset[] = [{ id: 'af-bound', name: 'AF-Synthetic', createdAt: 1, columns: [{ name: 'Date', type: 'date' }, { name: 'Count', type: 'number' }], rows: [['2020-01-01', 999]] }, { id: 'af-other', name: 'AF-Other board', createdAt: 1, columns: [{ name: 'Count', type: 'number' }], rows: [[888]] }, { id: 'local-csv', name: 'Local CSV', createdAt: 1, columns: [{ name: 'Date', type: 'date' }, { name: 'Count', type: 'number' }], rows: [['2026-01-01', 4]] }, { id: 'legacy-af', name: 'AppsFlyer 报表', createdAt: 1, columns: [{ name: 'Date', type: 'date' }, { name: 'Count', type: 'number' }], rows: [['2026-01-01', 4]] }]
+const cachedEnd = boardReportWindow(cachedBoard).end
+const cachedWindow = { start: new Date(Date.parse(cachedEnd) - 86_400_000).toISOString().slice(0, 10), end: cachedEnd }
+datasets.push(
+  { id: 'tt-cache', name: 'TikTok 报表', createdAt: 1, columns: [{ name: '日期', type: 'date' }, { name: '广告主ID', type: 'text' }, { name: 'Count', type: 'number' }], rows: [[cachedEnd, '7300000000000000002', 90]] },
+  { id: 'af-cache', name: 'AF-Cached', createdAt: 1, columns: [{ name: 'Date', type: 'date' }, { name: 'Count', type: 'number' }], rows: [[cachedWindow.start, 9], [cachedEnd, 2]], appsflyer: { specId: 'af-cache-query', status: 'updated', window: cachedWindow, dataWindow: cachedWindow, attemptedAt: 1 } }
+)
 const syntheticAf = { ...datasets[0], appsflyer: { specId: 'synthetic-spec', status: 'updated' as const, window: { start: '2026-01-01', end: '2026-01-02' }, attemptedAt: 1 } }
 const evaluateScope = (widget: KanbanBoard['widgets'][number], sourceDatasets: BoardDataset[] = [], plan?: BoardRefreshResult) => {
   const previous: KanbanBoard = { ...staticBoard, widgets: [widget] }, masterScope = { range: 'today' as const, metrics: ['spend'] }
@@ -55,12 +67,12 @@ const scopeCases = {
   legacyAfWrongBoard: evaluateScope(legacyWidget, datasets, { ...legacyPlan, boardId: 'other-board' })
 }
 const aiWidgetResolvers = new Map<string, (title: string) => void>()
-const fixture = { board, scopeCases, legacyCalls: 0, datasetReads: 0, meta: { refreshCalls: 0, summaryCalls: 0, accountsCalls: 0, fail: false }, emitMeta: (connected: boolean) => metaListeners.forEach(listener => listener({ connected })), media: [] as Array<{ range: string }>, af: [] as AppsFlyerDatasetRefreshRequest[], pending: false, unbound: false, empty: false, partial: false, resolve: null as null | (() => void), aiWidgetResolvers }
+const fixture = { board, scopeCases, legacyCalls: 0, cachedCalls: 0, datasetReads: 0, meta: { refreshCalls: 0, summaryCalls: 0, accountsCalls: 0, fail: false }, emitMeta: (connected: boolean) => metaListeners.forEach(listener => listener({ connected })), media: [] as Array<{ range: string }>, af: [] as AppsFlyerDatasetRefreshRequest[], pending: false, unbound: false, empty: false, partial: false, resolve: null as null | (() => void), aiWidgetResolvers }
 Object.assign(window, { boardRefreshFixture: fixture, electronAPI: {
-  cleanupOrphanedHtmlBoards: async () => ({ ok: true }), listBoards: async () => [board, metaBoard, fixedBoard, staticBoard, legacyAfBoard], listBoardDatasets: async () => { fixture.datasetReads++; return structuredClone(datasets) },
+  cleanupOrphanedHtmlBoards: async () => ({ ok: true }), listBoards: async () => [board, metaBoard, fixedBoard, staticBoard, legacyAfBoard, cachedBoard], listBoardDatasets: async () => { fixture.datasetReads++; return structuredClone(datasets) },
   listFbReadingAccounts: async () => [], listFbReadings: async () => [], ttReadingAdvertisers: async () => ({ selected: [], granted: [], accounts: [] }),
   getBoardDesign: async () => ({ spec: null }), onBoardDesignChanged: () => () => {}, onTtReadingProgress: () => () => {}, fxRatesGet: async () => null,
-  saveBoard: async (next: KanbanBoard) => { const target = [board, metaBoard, fixedBoard, staticBoard, legacyAfBoard].find(item => item.id === next.id); if (target) Object.assign(target, structuredClone(next)); return { ok: true } },
+  saveBoard: async (next: KanbanBoard) => { const target = [board, metaBoard, fixedBoard, staticBoard, legacyAfBoard, cachedBoard].find(item => item.id === next.id); if (target) Object.assign(target, structuredClone(next)); return { ok: true } },
   boardAiWidget: async ({ instruction }: { instruction: string }) => new Promise(resolve => {
     aiWidgetResolvers.set(instruction, (title) => {
       aiWidgetResolvers.delete(instruction)
@@ -71,6 +83,11 @@ Object.assign(window, { boardRefreshFixture: fixture, electronAPI: {
   metaAdsReading: async (input: { action: string }) => { if (input.action === 'accounts') { fixture.meta.accountsCalls++; return { ok: true, data: { accounts: [{ id: 'act_123', name: 'Synthetic Meta', currency: 'USD', timezone: 'UTC' }], partial: false } } } fixture.meta.summaryCalls++; return { ok: false, error: 'Unexpected direct summary' } },
   ttReadingSummary: async (input: { range: string }) => { fixture.media.push(input); return { ok: false, error: 'no-credentials' } }, ttReadingCancel: async () => true,
   boardRefresh: async (input: { boardId: string }): Promise<BoardRefreshResult> => {
+    if (input.boardId === cachedBoard.id) {
+      fixture.cachedCalls++
+      await new Promise<void>(resolve => { fixture.resolve = resolve })
+      throw new Error('Synthetic refresh failure')
+    }
     if (input.boardId === legacyAfBoard.id) {
       fixture.legacyCalls++
       const captured = structuredClone(legacyAfBoard), window = boardReportWindow(captured)

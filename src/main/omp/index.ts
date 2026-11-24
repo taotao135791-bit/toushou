@@ -36,7 +36,8 @@ import { ProjectChildTracker } from '../projectChildTracker'
 import { canonicalExistingPath } from '../canonicalPath'
 import { SessionBridgePermissionRegistry } from './bridgePermissions'
 import { extensionExternalLinkMessage } from './extensionLinks'
-import { cancelBoardEditTargets, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, type BoardTargetUiEvent } from '../boardBuilds'
+import { cancelBoardEditTargets, getBoardBuildSession, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, type BoardTargetUiEvent } from '../boardBuilds'
+import { BoardBuildThinking } from './boardBuildThinking'
 import { isUiAnswer } from '../uiAnswer'
 import { isRuntimePreparing } from '../runtimePreparationGate'
 import { listMcpConnections } from '../integrations/mcp/McpConnectionStore'
@@ -72,6 +73,14 @@ export function setSessionGoneHook(hook: (sessionId: string) => void): void { on
 export function setSessionUserTurnHook(hook: (sessionId: string) => void): void { onUserTurn = hook }
 // Main-owned spawn-time authority, never supplied by the renderer or bridge.
 const sessionBridgePermissions = new SessionBridgePermissionRegistry()
+const boardThinking = new BoardBuildThinking({
+  read: getSessionState,
+  write: writeThinkingLevel,
+  isActive: (id, buildId) => {
+    const build = getBoardBuildSession(id)
+    return sessions.has(id) && build?.buildId === buildId && !build.published
+  }
+})
 
 export function getSessionBridgeAccess(sessionId: string): { cwd: string; mode: PermissionMode; remoteReadonly: boolean } | null {
   const live = sessions.get(sessionId)?.session
@@ -271,10 +280,13 @@ export function createSession(
     new OmpSession(session, proc, {
       label: cli.command,
       onEvent: event => {
-        if (event.type === 'status' && event.status === 'idle' && event.isTerminal === true) cancelBoardEditTargets(id)
+        if (event.type === 'status' && event.status === 'idle' && event.isTerminal !== false) {
+          if (event.isTerminal === true) cancelBoardEditTargets(id)
+          stopThinkingForCurrentDraft(id)
+        }
         onEvent(event)
       },
-      onGone: () => { retireProjectChild(); sessions.delete(id); sessionBridgePermissions.remove(id); revokeBoardBuildSession(id); onSessionGone?.(id) },
+      onGone: () => { retireProjectChild(); sessions.delete(id); sessionBridgePermissions.remove(id); boardThinking.close(id); revokeBoardBuildSession(id); onSessionGone?.(id) },
       onHandshake: (outcome) => {
         noteHandshake(outcome)
         // Current Oh My Pi: enable subagent progress subscription + roster
@@ -319,8 +331,10 @@ export function sendMessage(
   streamingBehavior?: StreamingBehavior
 ): boolean {
   const entry = sessions.get(sessionId)
-  if (entry && isProjectDeletionInProgress(entry.session.cwd)) return false
-  if (!entry || !entry.sendPrompt(mcpTurnPrompt(text, listMcpConnections), images, streamingBehavior)) return false
+  if (!entry || isProjectDeletionInProgress(entry.session.cwd)) return false
+  // Put the restore on the RPC stream before the next prompt.
+  boardThinking.finish(sessionId)
+  if (!entry.sendPrompt(mcpTurnPrompt(text, listMcpConnections), images, streamingBehavior)) return false
   // Capture accepted user input in Main before yielding to runtime tool calls.
   // Generation constraints cannot be replaced by model-supplied check options.
   registerBoardBuildTurn(sessionId, entry.session.cwd, text)
@@ -390,8 +404,23 @@ export function killSession(sessionId: string): boolean {
 
 export function abortSession(sessionId: string): boolean {
   const aborted = sessions.get(sessionId)?.abort() ?? false
-  if (aborted) revokeBoardBuildSession(sessionId)
+  if (aborted) {
+    revokeBoardBuildSession(sessionId)
+    boardThinking.finish(sessionId)
+  }
   return aborted
+}
+
+export function startBoardBuildThinking(sessionId: string, buildId: string): void {
+  void boardThinking.start(sessionId, buildId)
+}
+
+export function finishBoardBuildThinking(sessionId: string, buildId: string): void {
+  boardThinking.finish(sessionId, buildId)
+}
+
+function stopThinkingForCurrentDraft(sessionId: string): void {
+  boardThinking.stopForDraft(sessionId, getBoardBuildSession(sessionId)?.buildId)
 }
 
 export function emitBoardTargetUi(event: BoardTargetUiEvent): void {
@@ -411,6 +440,7 @@ export function respondExtensionUi(
 
 /** Hot-switch the model of a live session via the RPC set_model command. */
 export function setSessionModel(sessionId: string, provider: string, modelId: string): boolean {
+  stopThinkingForCurrentDraft(sessionId)
   return sessions.get(sessionId)?.setModel(provider, modelId) ?? false
 }
 
@@ -513,6 +543,7 @@ export async function steer(
 ): Promise<boolean> {
   const session = getSession(sessionId)
   if (session && isProjectDeletionInProgress(session.cwd)) return false
+  stopThinkingForCurrentDraft(sessionId)
   if (session) onUserTurn?.(sessionId)
   const res = await querySession(sessionId, {
     type: 'steer',
@@ -530,6 +561,7 @@ export async function followUp(
 ): Promise<boolean> {
   const session = getSession(sessionId)
   if (session && isProjectDeletionInProgress(session.cwd)) return false
+  stopThinkingForCurrentDraft(sessionId)
   if (session) onUserTurn?.(sessionId)
   const res = await querySession(sessionId, {
     type: 'follow_up',
@@ -541,6 +573,12 @@ export async function followUp(
 
 /** Change the thinking level of a live session. */
 export async function setThinkingLevel(sessionId: string, level: SessionThinkingLevel): Promise<boolean> {
+  // A user's explicit choice must be written after any automatic restore.
+  stopThinkingForCurrentDraft(sessionId)
+  return writeThinkingLevel(sessionId, level)
+}
+
+async function writeThinkingLevel(sessionId: string, level: SessionThinkingLevel): Promise<boolean> {
   const res = await querySession(sessionId, { type: 'set_thinking_level', level })
   return Boolean(res && res.success === true)
 }

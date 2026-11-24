@@ -2,7 +2,8 @@ import type { BoardDataset, BoardMasterScope, BoardWidget, KanbanBoard, Language
 import { MASTER_SCOPED_WIDGET_TYPES } from '@shared/boards'
 import { boardReadingRangeDates } from '@shared/fbReading'
 import { boardWidgetDatasetBindings } from '@shared/boardDataWidgets'
-import { boardWidgetWindow, boardWindowLabel } from '@shared/boardWindows'
+import { boardWidgetWindow, boardWindowLabel, isBoardDate } from '@shared/boardWindows'
+import { filterDatasetRowsByWindow } from '@shared/datasets'
 import type { BoardRefreshResult } from '@shared/boardRefresh'
 
 export function boardMasterWindow(range: BoardMasterScope['range'], now = new Date()): { start: string; end: string } {
@@ -134,13 +135,20 @@ export function boardScopedWidgetTitle(widget: BoardWidget, master: BoardMasterS
     .replace(/(^|[（(\s·])(?:昨天|昨日|今天|Today|Yesterday)(?=$|[）)\s·])/gi, (_match, prefix: string) => `${prefix}${label}`)
 }
 
-/** A failed or old AF response must not populate cards under a new date. */
-export function datasetsForBoardWindow(datasets: BoardDataset[], ids: string[], window: { start: string; end: string }, pending: boolean): BoardDataset[] {
+/** Reuse verified AF data only within the requested card window. */
+export function datasetsForBoardWindow(datasets: BoardDataset[], ids: string[], window: { start: string; end: string }, blocked: boolean): BoardDataset[] {
   const selected = new Set(ids)
   return datasets.map(dataset => {
     if (!selected.has(dataset.id)) return dataset
     const state = dataset.appsflyer
-    const ready = state && (state.status === 'updated' || state.status === 'empty') && state.window.start === window.start && state.window.end === window.end && state.dataWindow?.start === window.start && state.dataWindow.end === window.end
-    return !pending && ready ? dataset : { ...dataset, rows: [] }
+    const coverage = state?.dataWindow
+    const ready = !blocked && !!state?.specId && state.status === 'updated'
+      && !dataset.truncated && isBoardDate(coverage?.start) && isBoardDate(coverage?.end)
+      && coverage.start <= window.start && coverage.end >= window.end
+    if (!ready || !coverage) return { ...dataset, rows: [] }
+    // A total without day rows is only valid for the exact query window.
+    const exact = coverage.start === window.start && coverage.end === window.end
+    if (!exact && !dataset.columns.some(column => column.type === 'date')) return { ...dataset, rows: [] }
+    return filterDatasetRowsByWindow(dataset, window)
   })
 }

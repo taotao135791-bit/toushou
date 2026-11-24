@@ -15,6 +15,12 @@ const BASE = 'https://mcp.appsflyer.com'
 const KEEPALIVE_MARGIN_MS = 10 * 60 * 1000
 const DEFINITION: ConnectionDefinition = { id: 'appsflyer', kind: 'oauth', label: 'AppsFlyer', description: '连接 AppsFlyer 官方 MCP，读取已有聚合数据。', capabilities: ['mcp'] }
 export interface AppsFlyerConnectionSnapshot { definition: ConnectionDefinition; status: ConnectionStatus; connected: boolean; lastError?: string; lastConnectedAt?: number; tokenExpiresAt?: number; authorizationUrl?: string }
+export interface VerifiedAppsFlyerDatasetAuthorization {
+  accessToken: string
+  scope: string
+  isCurrent(): boolean
+  reportReadFailure(error: unknown): void
+}
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>
 type Credentials = TikTokStoredCredentials
 type ToolDescription = Record<string, unknown>
@@ -45,6 +51,7 @@ export class AppsFlyerConnectionManager {
   private url?: string
   private flow: Flow | null = null
   private generation = 0
+  private readonly datasetScope = randomBytes(16).toString('hex')
   private pendingSave: Promise<void> | null = null
   private pendingRefresh: Promise<boolean> | null = null
   private pendingDisconnect: Promise<AppsFlyerConnectionSnapshot> | null = null
@@ -167,6 +174,26 @@ export class AppsFlyerConnectionManager {
     if (generation !== this.generation || !credentials || !this.hasVerifiedTools() || this.verifiedToken !== credentials.accessToken) return null
     return credentials.accessToken
   }
+  /** A fresh grant check with an opaque scope that survives routine token renewal. */
+  async getVerifiedDatasetAuthorization(): Promise<VerifiedAppsFlyerDatasetAuthorization | null> {
+    const scope = this.datasetScopeAtCurrentGeneration()
+    const accessToken = await this.getVerifiedAccessToken()
+    const isCurrent = () => this.getVerifiedDatasetScopeIdentity() === scope
+    return accessToken && isCurrent() ? {
+      accessToken,
+      scope,
+      isCurrent,
+      reportReadFailure: (error) => {
+        if (isCurrent()) this.markReadFailure(error, accessToken)
+      }
+    } : null
+  }
+  getVerifiedDatasetScopeIdentity(): string | null {
+    if (!this.hasVerifiedTools()) return null
+    if (this.credentials?.expiresAt && this.credentials.expiresAt <= this.now()) return null
+    return this.datasetScopeAtCurrentGeneration()
+  }
+  private datasetScopeAtCurrentGeneration(): string { return `${this.datasetScope}-${this.generation}` }
   async getVerifiedToolDescriptions(): Promise<ToolDescription[] | null> {
     const credentials = await this.loadFreshCredentials()
     if (!credentials || !this.hasVerifiedTools() || this.verifiedToken !== credentials.accessToken) return null

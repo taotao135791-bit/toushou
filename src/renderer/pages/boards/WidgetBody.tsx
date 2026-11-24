@@ -76,6 +76,8 @@ export interface WidgetBodyProps {
   ttScopeConflict?: boolean
   /** Main has verified and captured these rows for this refresh run. */
   verifiedDatasetSnapshot?: boolean
+  /** Legacy Meta readers have their own store when not managed by the refresh plan. */
+  allowMetaDatasetFallback?: boolean
   managedReading?: ManagedTikTokReading
   managedMetaReading?: ManagedMetaReading
   onManagedRefresh?: () => void
@@ -764,13 +766,13 @@ function FileBody({ widget, boardId }: { widget: BoardWidget; boardId: string })
   return <HtmlFilePreview html={state.html} title={widget.title} language={language === 'en' ? 'en' : 'zh'} />
 }
 
-export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, showReadingSource, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict, verifiedDatasetSnapshot, managedReading, managedMetaReading, onManagedRefresh }: WidgetBodyProps) {
+export function WidgetBody({ widget, datasets, boardId, onConfigChange, onSnapshotSaved, autoOpenAi, onAiOpened, showReadingSource, masterWindow, datasetsLoading, ttScope, ttScopeRequired, ttScopeConflict, verifiedDatasetSnapshot, allowMetaDatasetFallback = true, managedReading, managedMetaReading, onManagedRefresh }: WidgetBodyProps) {
   if (verifiedDatasetSnapshot) {
     widget = { ...widget, config: { ...widget.config, __resolvedSnapshot: true, requireVerifiedTtScope: false, ...(widget.type === 'funnel' && Array.isArray(widget.config.stages) ? { stages: widget.config.stages.map(stage => ({ ...stage, __resolvedSnapshot: true, requireVerifiedTtScope: false })) } : {}) } }
     ttScopeRequired = false
   }
   const metaDatasets = useMetaDatasets()
-  datasets = [...datasets, ...(!verifiedDatasetSnapshot ? metaDatasets : [])]
+  datasets = [...datasets, ...(!verifiedDatasetSnapshot && allowMetaDatasetFallback ? metaDatasets : [])]
   switch (widget.type) {
     case 'clock':
       return <ClockBody widget={widget} />

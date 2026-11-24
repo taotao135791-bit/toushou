@@ -1,20 +1,41 @@
 import { createHash } from 'node:crypto'
-import { session } from 'electron'
+import { session, type ProxyConfig } from 'electron'
 import { resolveEnvProxyRules } from './envProxy'
 
 export type ProxyAwareFetch = (url: string, init?: RequestInit) => Promise<Response>
 
+/**
+ * Per-channel routing policy (用户拍板：媒体数据与 AF 分层路由):
+ * - 'proxy-only'  — TikTok ads API is unreachable direct from CN and its
+ *   reports must ride the user's proxy. A dead proxy is an honest error with
+ *   same-line retries (线路由用户管理，程序绝不静默换线); falling back to a
+ *   direct attempt that cannot succeed would only burn a timeout.
+ * - 'direct-only' — AppsFlyer's CloudFront edge breaks TLS handshakes on the
+ *   common CN proxy nodes while direct reaches it everywhere (2026-11-04
+ *   实测：代理 0/5、直连 5/5). Never touch the proxy — this also removes the
+ *   per-call dead-handshake tax the generic fallback used to pay.
+ * - 'fallback'    — the historic generic behavior: proxy first, one direct
+ *   retry on failure (mirrors a browser's PAC fallback chain).
+ */
+type ChannelPolicy = 'proxy-only' | 'direct-only' | 'fallback'
+
+const CHANNEL_POLICIES: Record<string, ChannelPolicy> = {
+  'tiktok-api': 'proxy-only',
+  // AF 的两个分区名：数据集客户端用 appsflyer-api，连接管理器（OAuth/探活）用 appsflyer。
+  'appsflyer-api': 'direct-only',
+  appsflyer: 'direct-only'
+}
+
+const policyFor = (partition: string): ChannelPolicy => CHANNEL_POLICIES[partition] ?? 'fallback'
+
 /** Sessions are in-memory and immutable per resolved proxy config. */
 const sessions = new Map<string, Promise<import('electron').Session>>()
 
-export async function proxyFetchFor(targetUrl: string, partition: string): Promise<ProxyAwareFetch> {
-  const config = resolveEnvProxyRules(targetUrl)
-  const key = JSON.stringify([partition, config])
+async function sessionFor(key: string, config: ProxyConfig): Promise<import('electron').Session> {
   let pending = sessions.get(key)
   if (!pending) {
-    const hash = createHash('sha256').update(key).digest('hex')
     const created = Promise.resolve().then(async () => {
-      const ses = session.fromPartition(`proxy-${hash}`)
+      const ses = session.fromPartition(`proxy-${createHash('sha256').update(key).digest('hex')}`)
       await ses.setProxy(config)
       return ses
     })
@@ -24,15 +45,52 @@ export async function proxyFetchFor(targetUrl: string, partition: string): Promi
     })
     sessions.set(key, pending)
   }
-  const ses = await pending
+  return pending
+}
+
+async function tikTokProxyConfig(targetUrl: string): Promise<ProxyConfig> {
+  const configured = resolveEnvProxyRules(targetUrl)
+  if (configured.mode === 'fixed_servers') return { ...configured, proxyBypassRules: '<-loopback>' }
+  if (configured.mode === 'system') {
+    const system = await sessionFor(JSON.stringify(['tiktok-api', configured]), configured)
+    const route = await system.resolveProxy(targetUrl)
+    // Pin the first effective PAC route. A trailing DIRECT or another proxy
+    // belongs to the OS fallback chain and must not change a TikTok request.
+    const first = route.split(';', 1)[0].trim()
+    const proxy = /^(PROXY|HTTPS|SOCKS4?|SOCKS5)\s+(\[[a-f0-9:.]+\]|[a-z0-9.-]+):(\d{1,5})$/i.exec(first)
+    if (proxy && Number(proxy[3]) > 0 && Number(proxy[3]) <= 65535) {
+      const kind = proxy[1].toLowerCase()
+      const scheme = kind === 'proxy' ? 'http' : kind === 'socks' ? 'socks4' : kind
+      return { mode: 'fixed_servers', proxyRules: `${scheme}://${proxy[2]}:${proxy[3]}`, proxyBypassRules: '<-loopback>' }
+    }
+  }
+  throw new Error('tiktok-proxy-required')
+}
+
+export async function proxyFetchFor(targetUrl: string, partition: string): Promise<ProxyAwareFetch> {
+  const policy = policyFor(partition)
+  if (policy === 'proxy-only') {
+    const config = await tikTokProxyConfig(targetUrl)
+    const ses = await sessionFor(JSON.stringify([partition, config]), config)
+    return async (url, init) => url === targetUrl
+      ? (ses.fetch(url, init) as unknown as Promise<Response>)
+      : (await proxyFetchFor(url, partition))(url, init)
+  }
+  // direct-only ignores whatever the environment says for this origin.
+  const config = policy === 'direct-only' ? ({ mode: 'direct' } as const) : resolveEnvProxyRules(targetUrl)
+  const key = JSON.stringify([partition, config])
+  const ses = await sessionFor(key, config)
   return async (url, init) => {
     // Never let a caller accidentally use the configuration for another URL.
-    if (JSON.stringify([partition, resolveEnvProxyRules(url)]) !== key) {
+    const urlPolicy = policyFor(partition)
+    const urlConfig = urlPolicy === 'direct-only' ? ({ mode: 'direct' } as const) : resolveEnvProxyRules(url)
+    if (JSON.stringify([partition, urlConfig]) !== key) {
       return (await proxyFetchFor(url, partition))(url, init)
     }
     try {
       return await (ses.fetch(url, init) as unknown as Promise<Response>)
     } catch (error) {
+      if (policy !== 'fallback') throw error
       // A fixed_servers session lacks the fallback chain a browser gets from
       // a PAC ("PROXY …; SOCKS5 …; DIRECT"): when the configured proxy cannot
       // complete the TLS handshake to one origin, a browser silently falls
@@ -42,22 +100,10 @@ export async function proxyFetchFor(targetUrl: string, partition: string): Promi
       if (config.mode !== 'fixed_servers') throw error
       const retry = new Error('proxy-fetch-failed')
       ;(retry as NodeJS.ErrnoException & { cause?: unknown }).cause = error
-      const directSession = await (async () => {
-        const directKey = JSON.stringify([partition, { mode: 'direct' }])
-        let directPending = sessions.get(directKey)
-        if (!directPending) {
-          directPending = Promise.resolve().then(async () => {
-            const s = session.fromPartition(`proxy-${createHash('sha256').update(directKey).digest('hex')}`)
-            await s.setProxy({ mode: 'direct' })
-            return s
-          })
-          sessions.set(directKey, directPending)
-        }
-        return directPending
-      })()
       try {
+        const directSession = await sessionFor(JSON.stringify([partition, { mode: 'direct' }]), { mode: 'direct' })
         return await (directSession.fetch(url, init) as unknown as Promise<Response>)
-      } catch (directError) {
+      } catch {
         // Direct also failed: the original proxy error is the honest one.
         throw retry
       }

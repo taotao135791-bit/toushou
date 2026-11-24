@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { existsSync, chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -11,6 +12,10 @@ vi.mock('../omp', () => ({
   detectCli: () => ({ command: 'pi', path: '/usr/local/bin/pi', available: true }),
   executableSearchDirs: () => []
 }))
+vi.mock('node:fs/promises', async importOriginal => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...fs, unlink: vi.fn(fs.unlink) }
+})
 
 import {
   sessionDirFor,
@@ -277,6 +282,30 @@ describe('isSessionFilePath / deleteSessionFile', () => {
     expect(existsSync(filePath)).toBe(false)
   })
 
+  it('treats an already-gone file as deleted (idempotent)', async () => {
+    const filePath = path.join(sessionDirFor(projectDir, agentDir), 'del_uuid-missing.jsonl')
+    expect(await deleteSessionFile(filePath, agentDir)).toBe(true)
+  })
+
+  it('retries the same transcript after a transient file lock', async () => {
+    const filePath = writeSessionFile('locked.jsonl', [sessionHeader('uuid-locked', '2025-01-01T00:00:00.000Z')])
+    vi.mocked(unlink).mockRejectedValueOnce(Object.assign(new Error('locked'), { code: 'EBUSY' }))
+    expect(await deleteSessionFile(filePath, agentDir)).toBe(true)
+    expect(existsSync(filePath)).toBe(false)
+  })
+
+  it('does not delete a replacement conversation during the retry', async () => {
+    const filePath = writeSessionFile('replaced.jsonl', [sessionHeader('uuid-original', '2025-01-01T00:00:00.000Z')])
+    const replacement = JSON.stringify(sessionHeader('uuid-replacement', '2025-01-02T00:00:00.000Z'))
+    vi.mocked(unlink).mockImplementationOnce(async () => {
+      renameSync(filePath, filePath + '.moved')
+      writeFileSync(filePath, replacement)
+      throw Object.assign(new Error('locked'), { code: 'EPERM' })
+    })
+    expect(await deleteSessionFile(filePath, agentDir)).toBe(false)
+    expect(readFileSync(filePath, 'utf8')).toBe(replacement)
+  })
+
   it('refuses paths outside the sessions root', async () => {
     const outside = path.join(projectDir, 'keep.jsonl')
     writeFileSync(outside, '{}')
@@ -303,10 +332,12 @@ describe('isSessionFilePath / deleteSessionFile', () => {
     expect(existsSync(path.join(agentDir, 'escape.jsonl'))).toBe(true)
   })
 
-  it('returns false for a missing file inside the root', async () => {
+  it('treats a missing file inside the root as already deleted', async () => {
+    // 用户意图是"这行消失"——文件已不在就是目标已达成，如实报 false 会让
+    // 回滚把行复活，看起来像"删不掉"（2026-11-24 实测的复现路径之一）。
     const ghost = path.join(agentDir, 'sessions', expectedDirName(projectDir), 'ghost.jsonl')
     expect(isSessionFilePath(ghost, agentDir)).toBe(true)
-    expect(await deleteSessionFile(ghost, agentDir)).toBe(false)
+    expect(await deleteSessionFile(ghost, agentDir)).toBe(true)
   })
 
   it('refuses a session symlink whose target escapes the sessions root', () => {

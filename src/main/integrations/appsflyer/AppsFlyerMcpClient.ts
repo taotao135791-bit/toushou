@@ -115,9 +115,16 @@ export class AppsFlyerMcpClient {
     if (typeof value !== 'string' || value.length > 5_000_000) throw new Error('appsflyer-invalid-data')
     // Some provider validation failures arrive as ordinary text with
     // isError=false. They must not become a successful read/refresh upstream.
+    // The validation text names the exact rejected metrics/dimensions — carry
+    // it as detail so one model round-trip fixes the recipe instead of
+    // blind-guessing against a bare code (each guess costs a thinking turn).
     if (name === 'analytics_fetch_aggregated_data' && !/^\s*## Data:/m.test(value)) {
-      throw new Error(/^\s*The following (?:metrics|dimensions|filters) have validation errors:/i.test(value)
-        ? 'appsflyer-query-validation-error' : 'appsflyer-invalid-data')
+      if (/^\s*The following (?:metrics|dimensions|filters) have validation errors:/i.test(value)) {
+        const error = new Error('appsflyer-query-validation-error') as Error & { detail?: string }
+        error.detail = value.replace(/\s+/g, ' ').trim().slice(0, 400)
+        throw error
+      }
+      throw new Error('appsflyer-invalid-data')
     }
     return value
   }
@@ -184,7 +191,7 @@ export function parseEvents(text: string, q: AppsFlyerEventQuery): MmpEventAggre
   try { metadata = obj(JSON.parse(section[3])) } catch { throw new Error('appsflyer-invalid-metadata') }
   if (!metadata) throw new Error('appsflyer-invalid-metadata')
   const csv = Papa.parse<Record<string, string>>(`${section[1]}\n${section[2]}`, { header: true, skipEmptyLines: true, dynamicTyping: false })
-  if (csv.errors.length || csv.data.length >= 300) throw new Error('appsflyer-incomplete-data')
+  if (csv.errors.length || csv.data.length >= 300) throw new Error(`appsflyer-incomplete-data (${csv.errors.length ? `CSV 解析有 ${csv.errors.length} 处错误` : `${csv.data.length} 行达到 300 行上限`}；请收窄维度或分批拉取)`)
   const metricEntries = (pattern: RegExp) => Object.entries(metadata).filter(([k]) => pattern.test(k)).map(([, v]) => obj(v))
   const countMeta = metricEntries(/^count(?:_|\s).*activity/i)
   const usersMeta = metricEntries(/^unique(?:_|\s)+users(?:_|\s).*activity/i)

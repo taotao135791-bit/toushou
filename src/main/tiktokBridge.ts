@@ -113,7 +113,7 @@ type BridgeDeps = {
 }
 
 function safeRefreshError(error: unknown): string {
-  const allowed = new Set(['not-configured', 'refresh-in-progress', 'invalid-window', 'invalid-advertiser', 'advertiser-not-authorized', 'permission-denied', 'token-expired', 'no-advertiser', 'advertiser-limit', 'account-timezone-unavailable', 'dataset-row-limit', 'dataset-legacy-dataset', 'dataset-invalid-scope', 'dataset-ambiguous-dataset'])
+  const allowed = new Set(['not-configured', 'refresh-in-progress', 'invalid-window', 'invalid-advertiser', 'advertiser-not-authorized', 'permission-denied', 'token-expired', 'no-advertiser', 'advertiser-limit', 'account-timezone-unavailable', 'dataset-row-limit', 'dataset-legacy-dataset', 'dataset-invalid-scope', 'dataset-ambiguous-dataset', 'tiktok-proxy-required'])
   return typeof error === 'string' && allowed.has(error) ? error : 'refresh-failed'
 }
 
@@ -203,6 +203,7 @@ export async function authorizeTikTokRequest(sessionId: string, tool: TikTokBrid
   }
   if (!outcome.ok) {
     if (outcome.error === 'permission-denied') return { ...permissionDenied('session-permission-changed'), dataset: 'TikTok 报表' }
+    if (outcome.error === 'tiktok-proxy-required') return { ok: false, error: 'tiktok-proxy-required', dataset: 'TikTok 报表', hint: 'TikTok 报表需要可用的代理线路，请检查代理配置后重试。' }
     return { ok: false, error: safeRefreshError(outcome.error), dataset: 'TikTok 报表' }
   }
   return {

@@ -1,4 +1,5 @@
-import { open, readdir, stat, unlink } from 'node:fs/promises'
+import { lstat, open, readdir, stat, unlink } from 'node:fs/promises'
+import type { BigIntStats } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -632,13 +633,10 @@ export async function deleteSessionCopiesByUuid(
   if (!isSessionUuid(uuid)) return false
   for (const copy of await findSessionFilesByUuid(uuid, agentDir)) {
     // findSessionFilesByUuid only lists .jsonl files inside the sessions root;
-    // unlink removes a symlinked entry itself, never an outside target.
+    // deleteSessionFile removes a symlinked entry itself, never an outside
+    // target, and carries the handle-release retry.
     if (isSessionFilePath(copy, agentDir)) {
-      try {
-        await unlink(copy)
-      } catch {
-        // Re-verified by the final resolution below.
-      }
+      await deleteSessionFile(copy, agentDir)
     }
   }
   return (await findSessionFilesByUuid(uuid, agentDir)).length === 0
@@ -662,13 +660,36 @@ export async function deleteSessionFileEverywhere(
   return deleteSessionCopiesByUuid(uuid, agentDir)
 }
 
-/** Delete a session file; guarded to .jsonl files inside the sessions root. */
+/** Delete a session file; guarded to .jsonl files inside the sessions root.
+ * A live-session delete kills the runtime first, but Windows releases the
+ * file handle asynchronously — the first unlink can land while the dying
+ * process (or the AV scanning the changed file) still holds it. Retry briefly
+ * before reporting failure; the rollback that a false return triggers makes
+ * the row reappear, which users read as "删除不掉" (2026-11-24 实测复现). */
 export async function deleteSessionFile(filePath: string, agentDir?: string): Promise<boolean> {
-  if (!isSessionFilePath(filePath, agentDir)) return false
-  try {
-    await unlink(filePath)
-    return true
-  } catch {
-    return false
+  let original: BigIntStats | undefined
+  for (let attempt = 0; ; attempt++) {
+    if (!isSessionFilePath(filePath, agentDir)) return false
+    let current: BigIntStats
+    try {
+      current = await lstat(filePath, { bigint: true })
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT'
+    }
+    if (!current.isFile() && !current.isSymbolicLink()) return false
+    if (original && (current.dev !== original.dev || current.ino !== original.ino || current.birthtimeNs !== original.birthtimeNs)) return false
+    original ??= current
+    // A waiting retry may see a new file or a redirected parent path.
+    if (!isSessionFilePath(filePath, agentDir)) return false
+    try {
+      await unlink(filePath)
+      return true
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return true
+      // Only lock-style failures benefit from waiting; a real denial stays honest.
+      if (attempt >= 4 || (code !== 'EBUSY' && code !== 'EPERM' && code !== 'EACCES')) return false
+      await new Promise(resolve => setTimeout(resolve, 400))
+    }
   }
 }

@@ -8,7 +8,7 @@ let userDataDir: string
 vi.mock('electron', () => ({ app: { getPath: () => userDataDir } }))
 vi.mock('../tiktok/proxyFetch', () => ({ proxyFetchFor: vi.fn() }))
 
-import { listQuerySpecs, saveQuerySpec, parseAfDataset, planAppsFlyerQuery, pullAppsFlyerDatasets, setAppsFlyerDatasetTokenSourceForTest } from './appsflyerDataset'
+import { getAppsFlyerQueryHash, getVerifiedAppsFlyerDatasetScope, listQuerySpecs, saveQuerySpec, parseAfDataset, planAppsFlyerQuery, pullAppsFlyerDatasets, setAppsFlyerDatasetTokenSourceForTest } from './appsflyerDataset'
 import { createOrUpdateDataset, listDatasets, renameDataset } from '../../boardDatasets'
 
 let dir: string
@@ -183,6 +183,10 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
     expect(q.app_ids).toEqual(['app.synthetic.install-a'])
     const dataset = listDatasets(datasetsFile).find((d) => d.name === 'AF-安装量')!
     expect(dataset.rows).toHaveLength(2)
+    expect(dataset.appsflyer?.provenance).toEqual({
+      queryHash: getAppsFlyerQueryHash(spec.query, { start: '2026-10-29', end: '2026-11-04' }),
+      authorizationScope: (await getVerifiedAppsFlyerDatasetScope())?.scope
+    })
   })
 
   it('clears previous rows on an empty answer and records the exact empty window', async () => {
@@ -216,6 +220,7 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
       clientFactory: () => ({ initialize: async () => {}, queryRaw: async () => partial })
     })
     expect(today.ok).toBe(true)
+    expect(today.results[0]).toMatchObject({ ok: true, partial: true })
     expect(listDatasets(datasetsFile).find(dataset => dataset.name === 'AF-安装量')?.appsflyer).toMatchObject({
       status: 'updated', window: { start: '2026-11-08', end: '2026-11-08' }, dataWindow: { start: '2026-11-08', end: '2026-11-08' }, partial: true
     })
@@ -224,9 +229,9 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
       clientFactory: () => ({ initialize: async () => {}, queryRaw: async () => partial })
     })
     expect(historical.ok).toBe(false)
-    expect(listDatasets(datasetsFile).find(dataset => dataset.name === 'AF-安装量')?.appsflyer).toMatchObject({
-      status: 'failed', error: 'appsflyer-incomplete-data'
-    })
+    // The stored error keeps the bare code as prefix plus a fix hint (诊断
+    // 上下文必须随错误落盘，不然每轮都要重新盲猜——见 2026-11-10 复盘)。
+    expect(String(listDatasets(datasetsFile).find(dataset => dataset.name === 'AF-安装量')?.appsflyer?.error)).toContain('appsflyer-incomplete-data')
   })
 
   it('one failing spec does not block the others', async () => {
@@ -423,5 +428,19 @@ describe('pullAppsFlyerDatasets (general queries)', () => {
       clientFactory: () => ({ initialize: async () => {}, queryRaw: async () => DISCOVERY_TEXT })
     })
     expect(result).toMatchObject({ ok: false, error: 'not-connected' })
+  })
+
+  it('does not start a pending pull using a different verified connection', async () => {
+    saveQuerySpec(spec, specsFile)
+    const first = await getVerifiedAppsFlyerDatasetScope()
+    setAppsFlyerDatasetTokenSourceForTest(() => 'independent-synthetic-access-token')
+    const clientFactory = vi.fn()
+    for (const authorizationScope of [first?.scope, null]) {
+      expect(await pullAppsFlyerDatasets({
+        window: { start: '2026-10-29', end: '2026-11-04' }, file: datasetsFile, specsFile, clientFactory, authorizationScope
+      })).toMatchObject({ ok: false, error: 'not-connected' })
+    }
+    expect(clientFactory).not.toHaveBeenCalled()
+    expect(listDatasets(datasetsFile)).toEqual([])
   })
 })

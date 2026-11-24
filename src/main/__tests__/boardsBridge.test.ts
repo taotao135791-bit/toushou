@@ -19,6 +19,9 @@ import type { ReadingSnapshot } from '../../shared/readingSnapshot'
 import { createWidget } from '../../shared/boards'
 import { createOrUpdateDataset, listDatasets, renameDataset } from '../boardDatasets'
 
+const afTestScope = { scope: 'synthetic-verified-grant', isCurrent: () => true }
+const getVerifiedAppsFlyerDatasetScope = async () => afTestScope
+
 let dir: string
 
 beforeEach(() => {
@@ -44,6 +47,7 @@ describe('parseBoardsBridgeRequest', () => {
 describe('boards bridge dispatch', () => {
   it('runs filtered AppsFlyer planning as a read in both ask and read-only modes', async () => {
     const af = await import('../integrations/appsflyer/appsflyerDataset')
+    const authorization = vi.spyOn(af, 'getVerifiedAppsFlyerDatasetScope').mockResolvedValue(afTestScope)
     const window = { start: '2026-11-05', end: '2026-11-05' }
     const plan = vi.spyOn(af, 'planAppsFlyerQuery').mockResolvedValue({ appId: 'synthetic', window, events: [], mediaSources: [], countries: [], dateSpan: null, totalRows: 0, partial: false, sampled: false, suggestedCalls: 0 })
     const confirm = vi.fn(async () => false)
@@ -54,11 +58,15 @@ describe('boards bridge dispatch', () => {
         expect(result).toMatchObject({ ok: true, plan: { filters } })
       }
       expect(confirm).not.toHaveBeenCalled()
-      expect(plan).toHaveBeenCalledTimes(2)
+      // 第二次命中 24h 预审缓存（产品拍板）：同一应用+窗口+过滤不重查。
+      expect(plan).toHaveBeenCalledTimes(1)
       expect(plan).toHaveBeenCalledWith(expect.objectContaining({ appId: 'synthetic', filters }))
       expect(await dispatch({ action: 'af_query_plan', appId: 'synthetic', countries: ['all', 'US'] })).toMatchObject({ ok: false, error: 'invalid-countries' })
-      expect(plan).toHaveBeenCalledTimes(2)
-    } finally { plan.mockRestore() }
+      expect(plan).toHaveBeenCalledTimes(1)
+    } finally {
+      plan.mockRestore()
+      authorization.mockRestore()
+    }
   })
 
   it('keeps conversational date scope authoritative while visual-only edits preserve it', async () => {
@@ -356,6 +364,8 @@ describe('boards bridge dispatch', () => {
     const saveQuerySpecMock = vi.fn()
     const discardUnboundQuerySpec = vi.fn()
     vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      getVerifiedAppsFlyerDatasetScope,
+      getAppsFlyerQueryHash: () => null,
       saveQuerySpec: saveQuerySpecMock,
       discardUnboundQuerySpec,
       listQuerySpecs: () => [],
@@ -408,6 +418,364 @@ describe('boards bridge dispatch', () => {
     }
   })
 
+  it('af_dataset_pull batch mode registers and pulls multiple specs in one call', async () => {
+    const pullCalls: unknown[] = []
+    const saveQuerySpecs = vi.fn()
+    const discardUnboundQuerySpec = vi.fn()
+    const pull = vi.fn(async (input?: unknown) => {
+      pullCalls.push(input)
+      const arg = (input ?? {}) as { specIds: string[]; window: { start: string; end: string } }
+      const names = ['基础', '安装']
+      const results = arg.specIds.map((_specId, index) => {
+        const name = names[index]
+        if (index === 1) return { name, ok: false, error: 'appsflyer-query-validation-error' }
+        const created = createOrUpdateDataset(`AF-${name}`, { columns: [{ name: '事件次数', type: 'number' }], rows: [[index + 1]], truncated: false })
+        if (!created.ok) throw new Error(created.error)
+        return { name, datasetName: `AF-${name}`, datasetId: created.dataset.id, ok: true, rowCount: 1 }
+      })
+      return { ok: results.every(entry => entry.ok), results }
+    })
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      getVerifiedAppsFlyerDatasetScope,
+      getAppsFlyerQueryHash: () => null,
+      saveQuerySpecs,
+      discardUnboundQuerySpec,
+      listQuerySpecs: () => [],
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      // 形状与数量校验不触碰拉取。
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }], days: 7 })).toMatchObject({ ok: false, error: 'invalid-pulls' })
+      // 批量内 name 必须唯一——同应用或跨应用同名都拒绝（数据集统一叫 AF-{name}）。
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'a', appId: 'app-1' }], days: 7 })).toMatchObject({ ok: false, error: 'invalid-pulls' })
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'a', appId: 'app-2' }], days: 7 })).toMatchObject({ ok: false, error: 'invalid-pulls' })
+      const badEntry = await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'b', appId: 'app-1', groupings: 'nope' }], days: 7 })
+      expect(badEntry).toMatchObject({ ok: false, error: 'invalid-groupings' })
+      expect(badEntry.hint).toContain('第 2 个条目')
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: 'a', appId: 'app-1' }, { name: 'b', appId: 'app-1' }], days: 0 })).toMatchObject({ ok: false, error: 'invalid-window' })
+      expect(pull).not.toHaveBeenCalled()
+
+      // 部分成功：一次调用登记 2 个 spec、发 1 次拉取，逐条返回绑定信息。
+      const { withBoardBuildRoot } = await import('../boardBuildStorage')
+      const ok = await withBoardBuildRoot(dir, () => freshDispatch({
+        action: 'af_dataset_pull',
+        pulls: [{ name: '基础', appId: 'app-1', eventName: 'App Active' }, { name: '安装', appId: 'app-1', metrics: ['Count'] }],
+        startDate: '2026-10-01',
+        endDate: '2026-10-07'
+      }))
+      expect(pull).toHaveBeenCalledTimes(1)
+      const arg = (pullCalls[0] ?? {}) as { specIds: string[]; window: { start: string; end: string } }
+      expect(arg.specIds).toHaveLength(2)
+      expect(arg.window).toEqual({ start: '2026-10-01', end: '2026-10-07' })
+      expect(saveQuerySpecs).toHaveBeenCalledTimes(1)
+      expect(saveQuerySpecs).toHaveBeenCalledWith([
+        expect.objectContaining({ id: arg.specIds[0], name: '基础' }),
+        expect.objectContaining({ id: arg.specIds[1], name: '安装' })
+      ])
+      expect(ok.ok).toBe(true)
+      const datasets = ok.datasets as Array<{ name: string; ok: boolean; datasetId?: string; columns?: string[]; error?: string }>
+      expect(datasets).toHaveLength(2)
+      expect(datasets[0]).toMatchObject({ name: '基础', ok: true })
+      expect(datasets[0].columns).toContain('事件次数')
+      expect((datasets[0].datasetId as string).length).toBeGreaterThan(0)
+      expect(datasets[1]).toMatchObject({ name: '安装', ok: false, error: 'appsflyer-query-validation-error' })
+      expect(discardUnboundQuerySpec).toHaveBeenCalledTimes(1)
+      expect(discardUnboundQuerySpec).toHaveBeenCalledWith(expect.objectContaining({ name: '安装' }))
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('af_dataset_pull reuses a fresh same-recipe dataset without another call', async () => {
+    let authorization = afTestScope
+    const { getAppsFlyerQueryHash } = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+    const specs: Array<{ id: string; name: string; datasetName: string; query: Record<string, unknown>; datasetId?: string }> = []
+    const saveQuerySpecMock = vi.fn((spec: { id: string; name: string; datasetName: string; query: Record<string, unknown> }) => {
+      const at = specs.findIndex((s) => s.id === spec.id)
+      if (at >= 0) specs[at] = { ...spec }
+      else specs.push({ ...spec })
+    })
+    const discardUnboundQuerySpec = vi.fn()
+    const pull = vi.fn(async (input?: unknown) => {
+      const arg = (input ?? {}) as { specIds: string[]; window: { start: string; end: string } }
+      const spec = specs.find((s) => s.id === arg.specIds[0])!
+      const created = createOrUpdateDataset('AF-基础', { columns: [{ name: '事件次数', type: 'number' }], rows: [[3]], truncated: false }, undefined, {
+        appsflyer: {
+          specId: spec.id, status: 'updated', window: arg.window, dataWindow: arg.window, attemptedAt: Date.now(),
+          provenance: { authorizationScope: authorization.scope, queryHash: getAppsFlyerQueryHash(spec.query, arg.window)! }
+        }
+      })
+      if (!created.ok) throw new Error(created.error)
+      // 真实管线会在首次拉取后把数据集身份写回 spec（改名不断绑）。
+      spec.datasetId = created.dataset.id
+      return { ok: true, results: [{ name: '基础', datasetName: 'AF-基础', datasetId: created.dataset.id, window: arg.window, ok: true, status: 'updated', rowCount: 1 }] }
+    })
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      getVerifiedAppsFlyerDatasetScope: async () => authorization,
+      getAppsFlyerQueryHash,
+      saveQuerySpec: saveQuerySpecMock,
+      discardUnboundQuerySpec,
+      listQuerySpecs: () => specs,
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const first = await freshDispatch({ action: 'af_dataset_pull', name: '基础', appId: 'app-9', days: 7 })
+      expect(first.ok).toBe(true)
+      expect(pull).toHaveBeenCalledTimes(1)
+      // 同配方+同窗口+10 分钟内拉过：直接复用，不烧第二次调用。
+      const second = await freshDispatch({ action: 'af_dataset_pull', name: '基础', appId: 'app-9', days: 7 })
+      expect(second.ok).toBe(true)
+      expect(second.reused).toBe(true)
+      expect(second.spec).toEqual(first.spec)
+      expect(pull).toHaveBeenCalledTimes(1)
+      // 配方变了：复用失效，照旧重拉（宁慢不错）。
+      const changed = await freshDispatch({ action: 'af_dataset_pull', name: '基础', appId: 'app-9', days: 7, metrics: ['Count'] })
+      expect(changed.ok).toBe(true)
+      expect(changed.reused).toBeUndefined()
+      expect(pull).toHaveBeenCalledTimes(2)
+      // Editing a stored recipe cannot relabel the rows it previously produced.
+      specs[0].query.metrics = [{ attribution_source: 'appsflyer', metric_name: 'Unique users', period: 'activity' }]
+      specs[0].query.sort_by_metrics = [{ metric_name: 'Unique users', order: 'desc' }]
+      const newRecipe = { action: 'af_dataset_pull' as const, name: '基础', appId: 'app-9', days: 7, metrics: ['Unique users'] }
+      expect((await freshDispatch(newRecipe)).reused).toBeUndefined()
+      expect(pull).toHaveBeenCalledTimes(3)
+      authorization = { ...afTestScope, scope: 'switched-verified-grant' }
+      expect((await freshDispatch(newRecipe)).reused).toBeUndefined()
+      expect(pull).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('af_dataset_pull batch mixes reused and pulled entries', async () => {
+    const { getAppsFlyerQueryHash } = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+    const specs: Array<{ id: string; name: string; datasetName: string; query: Record<string, unknown>; datasetId?: string }> = []
+    const saveQuerySpecMock = vi.fn((spec: { id: string; name: string; datasetName: string; query: Record<string, unknown> }) => {
+      const at = specs.findIndex((s) => s.id === spec.id)
+      if (at >= 0) specs[at] = { ...spec }
+      else specs.push({ ...spec })
+    })
+    const discardUnboundQuerySpec = vi.fn()
+    const pull = vi.fn(async (input?: unknown) => {
+      const arg = (input ?? {}) as { specIds: string[]; window: { start: string; end: string } }
+      if (arg.specIds.some((id) => specs.find((spec) => spec.id === id)?.name === '新指标')) {
+        return { ok: false, results: [{ name: '新指标', ok: false, error: 'upstream-failed' }] }
+      }
+      if (arg.specIds.some((id) => specs.find((spec) => spec.id === id)?.name === '并发修改')) {
+        specs[0].query.row_count = 200
+        return { ok: false, results: [{ name: '并发修改', ok: false, error: 'upstream-failed' }] }
+      }
+      const results = arg.specIds.map((specId, index) => {
+        const spec = specs.find((s) => s.id === specId)!
+        const created = createOrUpdateDataset(spec.datasetName, { columns: [{ name: '事件次数', type: 'number' }], rows: [[index + 9]], truncated: false }, undefined, {
+          appsflyer: {
+            specId, status: 'updated', window: arg.window, dataWindow: arg.window, attemptedAt: Date.now(),
+            provenance: { authorizationScope: afTestScope.scope, queryHash: getAppsFlyerQueryHash(spec.query, arg.window)! }
+          }
+        })
+        if (!created.ok) throw new Error(created.error)
+        spec.datasetId = created.dataset.id
+        return { name: spec.name, datasetName: created.dataset.name, datasetId: created.dataset.id, window: arg.window, ok: true, status: 'updated', rowCount: 1 }
+      })
+      return { ok: true, results }
+    })
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      getVerifiedAppsFlyerDatasetScope,
+      getAppsFlyerQueryHash,
+      saveQuerySpec: saveQuerySpecMock,
+      saveQuerySpecs: (next: typeof specs) => next.forEach(saveQuerySpecMock),
+      discardUnboundQuerySpec,
+      listQuerySpecs: () => specs,
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const { afPullResultDatasetIds } = await import('../boardsBridge')
+      // 先单拉「基础」一次，让它进入新鲜窗口。
+      await freshDispatch({ action: 'af_dataset_pull', name: '基础', appId: 'app-7', days: 7 })
+      expect(pull).toHaveBeenCalledTimes(1)
+      const mixed = await freshDispatch({
+        action: 'af_dataset_pull',
+        pulls: [{ name: '基础', appId: 'app-7' }, { name: '安装', appId: 'app-7' }],
+        days: 7
+      })
+      expect(mixed.ok).toBe(true)
+      // 只有「安装」真正发起拉取；「基础」走复用。
+      expect(pull).toHaveBeenCalledTimes(2)
+      const arg = (pull.mock.calls[1][0] ?? {}) as { specIds: string[] }
+      expect(arg.specIds).toHaveLength(1)
+      const datasets = mixed.datasets as Array<{ name: string; ok: boolean; reused?: boolean }>
+      expect(datasets).toHaveLength(2)
+      expect(datasets.find((entry) => entry.name === '基础')).toMatchObject({ ok: true, reused: true })
+      expect(datasets.find((entry) => entry.name === '安装')).toMatchObject({ ok: true })
+      expect(datasets.find((entry) => entry.name === '安装')?.reused).toBeUndefined()
+      const failedLive = await freshDispatch({
+        action: 'af_dataset_pull',
+        pulls: [{ name: '新指标', appId: 'app-7' }, { name: '基础', appId: 'app-7' }],
+        days: 7
+      })
+      expect(failedLive).toMatchObject({ ok: true, datasets: [
+        { name: '新指标', ok: false, error: 'upstream-failed' },
+        { name: '基础', ok: true, reused: true }
+      ] })
+      expect(afPullResultDatasetIds(failedLive)).toEqual([specs[0].datasetId])
+      const concurrent = await freshDispatch({
+        action: 'af_dataset_pull',
+        pulls: [{ name: '基础', appId: 'app-7' }, { name: '并发修改', appId: 'app-7' }],
+        days: 7
+      })
+      expect(concurrent).toMatchObject({ ok: false, datasets: [
+        { name: '基础', ok: false, error: 'dataset-superseded' },
+        { name: '并发修改', ok: false, error: 'upstream-failed' }
+      ] })
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('af_query_plan reuses discovery only within the active verified grant', async () => {
+    let authorization: typeof afTestScope | null = afTestScope
+    const plan = vi.fn(async () => ({ events: [{ event: 'App Active', count: 5 }], mediaSources: [], countries: [], dateSpan: { start: '2026-01-01', end: '2026-01-07' }, totalRows: 5, partial: false, sampled: true, suggestedCalls: 1 }))
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      getVerifiedAppsFlyerDatasetScope: async () => authorization,
+      planAppsFlyerQuery: plan
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const first = await freshDispatch({ action: 'af_query_plan', appId: 'app-cache' })
+      const second = await freshDispatch({ action: 'af_query_plan', appId: 'app-cache' })
+      expect(first.ok).toBe(true)
+      expect(second.ok).toBe(true)
+      expect(second.cached).toBe(true)
+      // 产品拍板：预审命中缓存不烧第二次调用（与旧"每次=一次查询"契约不同）。
+      expect(plan).toHaveBeenCalledTimes(1)
+      expect((second.plan as { events: unknown }).events).toEqual((first.plan as { events: unknown }).events)
+      expect(second.hint).toContain('部分样本')
+      authorization = null
+      expect(await freshDispatch({ action: 'af_query_plan', appId: 'app-cache' })).toMatchObject({ ok: false, error: 'not-connected' })
+      expect(plan).toHaveBeenCalledTimes(1)
+      authorization = { ...afTestScope, scope: 'a-different-verified-grant' }
+      const switched = await freshDispatch({ action: 'af_query_plan', appId: 'app-cache' })
+      expect(switched).toMatchObject({ ok: true })
+      expect(switched.cached).toBeUndefined()
+      expect(plan).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('preserves partial coverage in a mixed batch and refreshes it after midnight', async () => {
+    const raw = vi.fn(async () => '## Data: Count days activity appsflyer,Date\n2,2026-11-24\n## Metadata: {"timezone":"UTC","currency":"USD"}')
+    const time = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 10, 24, 23, 58).getTime())
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', async () => {
+      const actual = await vi.importActual<typeof import('../integrations/appsflyer/appsflyerDataset')>('../integrations/appsflyer/appsflyerDataset')
+      actual.setAppsFlyerDatasetTokenSourceForTest(() => 'synthetic-token')
+      return { ...actual, pullAppsFlyerDatasets: (options: Parameters<typeof actual.pullAppsFlyerDatasets>[0]) => actual.pullAppsFlyerDatasets({ ...options, clientFactory: () => ({ initialize: async () => {}, queryRaw: raw }) }) }
+    })
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const scope = { appId: 'app.synthetic', metrics: ['Count'] }
+      const request = { action: 'af_dataset_pull' as const, startDate: '2026-11-24', endDate: '2026-11-24' }
+      expect(await freshDispatch({ ...request, ...scope, name: '基础' })).toMatchObject({ ok: true, partial: true })
+      expect(await freshDispatch({ ...request, pulls: [{ ...scope, name: '基础' }, { ...scope, name: '新指标' }] })).toMatchObject({
+        ok: true,
+        datasets: [
+          { name: '基础', ok: true, partial: true, reused: true },
+          { name: '新指标', ok: true, partial: true }
+        ]
+      })
+      expect(raw).toHaveBeenCalledTimes(2)
+      time.mockReturnValue(new Date(2026, 10, 25, 0, 1).getTime())
+      const nextDay = await freshDispatch({ ...request, ...scope, name: '基础' })
+      expect(nextDay.ok).toBe(true)
+      expect(nextDay.partial).toBeUndefined()
+      expect(nextDay.reused).toBeUndefined()
+      expect(raw).toHaveBeenCalledTimes(3)
+    } finally {
+      time.mockRestore()
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  // 预审不做无缓存的重复查询：维护者契约是"每次调用=一次真实查询"的旧语义，
+  // 已按产品决策改为 24h 缓存（上面的用例）；重复建板的提速靠批量拉数与
+  // 新鲜度复用共同承担。
+
+  it('af_dataset_pull batch query-limit submits a single write without contacting the provider', async () => {
+    const discardUnboundQuerySpec = vi.fn()
+    const saveQuerySpecs = vi.fn(() => { throw new Error('query-limit') })
+    const pull = vi.fn()
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      getVerifiedAppsFlyerDatasetScope,
+      getAppsFlyerQueryHash: () => null,
+      saveQuerySpecs,
+      discardUnboundQuerySpec,
+      listQuerySpecs: () => [],
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const limited = await freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: '基础', appId: 'app-1' }, { name: '安装', appId: 'app-1' }], days: 7 })
+      expect(limited).toMatchObject({ ok: false, error: 'query-limit' })
+      expect(saveQuerySpecs).toHaveBeenCalledTimes(1)
+      expect(discardUnboundQuerySpec).not.toHaveBeenCalled()
+      expect(pull).not.toHaveBeenCalled()
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
+  it('collects source-evidence dataset ids from both single and batch pull results', async () => {
+    const { afPullResultDatasetIds } = await import('../boardsBridge')
+    expect(afPullResultDatasetIds({ ok: true, dataset: { id: 'single-1' } })).toEqual(['single-1'])
+    expect(afPullResultDatasetIds({
+      ok: true,
+      datasets: [
+        { name: 'a', ok: true, datasetId: 'batch-1' },
+        { name: 'b', ok: false, error: 'validation' },
+        { name: 'c', ok: true },
+        'garbage'
+      ]
+    })).toEqual(['batch-1'])
+    expect(afPullResultDatasetIds({ ok: true })).toEqual([])
+  })
+
+  it('af_dataset_pull batch mode discards only new specs when the whole batch fails', async () => {
+    const saveQuerySpecs = vi.fn()
+    const discardUnboundQuerySpec = vi.fn()
+    const pull = vi.fn(async () => ({ ok: false, error: 'not-connected', results: [{ name: '基础', ok: false, error: 'not-connected' }, { name: '安装', ok: false, error: 'not-connected' }] }))
+    vi.doMock('../integrations/appsflyer/appsflyerDataset', () => ({
+      getVerifiedAppsFlyerDatasetScope,
+      getAppsFlyerQueryHash: () => null,
+      saveQuerySpecs,
+      discardUnboundQuerySpec,
+      listQuerySpecs: () => [],
+      pullAppsFlyerDatasets: pull
+    }))
+    try {
+      const { dispatch: freshDispatch } = await import('../boardsBridge')
+      const { withBoardBuildRoot } = await import('../boardBuildStorage')
+      // 撤回登记只发生在建板草稿上下文内。
+      const failed = await withBoardBuildRoot('/synthetic/build-root', () => freshDispatch({ action: 'af_dataset_pull', pulls: [{ name: '基础', appId: 'app-1' }, { name: '安装', appId: 'app-1' }], days: 7 }))
+      expect(failed).toMatchObject({ ok: false, error: 'not-connected' })
+      const datasets = failed.datasets as Array<{ name: string; ok: boolean }>
+      expect(datasets.every(entry => entry.ok === false)).toBe(true)
+      // 两个都是新配方（无既有绑定）：整批失败 → 全部撤回登记。
+      expect(discardUnboundQuerySpec).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
+      vi.resetModules()
+    }
+  })
+
   it('keeps an AF recipe and card bound after dataset rename and a repeated pull', async () => {
     const raw = vi.fn(async () => '## Data: Count days activity appsflyer,Date\n2,2026-10-01\n## Metadata: {"timezone":"UTC","currency":"USD","Count_days_activity_appsflyer":{"partial-data?":false}}')
     vi.doMock('../integrations/appsflyer/appsflyerDataset', async () => {
@@ -434,6 +802,19 @@ describe('boards bridge dispatch', () => {
       expect(actual.listQuerySpecs()).toMatchObject([{ datasetId: dataset.id, datasetName: '重命名后的注册', query: { metrics: [{ metric_name: 'Count' }, { metric_name: 'Unique users' }] } }])
       expect(listDatasets()[0].appsflyer).toMatchObject({ status: 'updated', specId: (first.spec as { id: string }).id })
       expect(listBoards().find(board => board.name === 'live')?.widgets[0].config.datasetId).toBe(dataset.id)
+
+      const replacement = { ...request, metrics: ['Unique users'] }
+      const beforeFailure = listDatasets()[0]
+      raw.mockRejectedValueOnce(new Error('synthetic-provider-failure'))
+      expect(await freshDispatch(replacement)).toMatchObject({ ok: false, error: 'synthetic-provider-failure' })
+      expect(listDatasets()[0]).toMatchObject({ id: dataset.id, rows: beforeFailure.rows, appsflyer: {
+        status: 'failed', dataWindow: beforeFailure.appsflyer?.dataWindow
+      } })
+      expect(actual.listQuerySpecs()).toMatchObject([{ datasetId: dataset.id, query: { metrics: [{ metric_name: 'Unique users' }] } }])
+      const recovered = await freshDispatch(replacement)
+      expect(recovered).toMatchObject({ ok: true, dataset: { id: dataset.id } })
+      expect(recovered.reused).toBeUndefined()
+      expect(raw).toHaveBeenCalledTimes(4)
     } finally {
       vi.doUnmock('../integrations/appsflyer/appsflyerDataset')
       vi.resetModules()
@@ -510,6 +891,10 @@ describe('boards bridge dispatch', () => {
       const specsFile = path.join(dir, 'appsflyer-dataset-specs.json')
       const specsBefore = readFileSync(specsFile, 'utf8')
       expect(await freshDispatch({ action: 'af_dataset_pull', appId: 'app.new', name: 'New metric' })).toMatchObject({ ok: false, error: 'query-limit' })
+      expect(await freshDispatch({ action: 'af_dataset_pull', pulls: [
+        { appId: 'app.synthetic-0', name: 'Synthetic 0', eventName: 'replacement', metrics: ['Count'] },
+        { appId: 'app.new', name: 'New metric' }
+      ] })).toMatchObject({ ok: false, error: 'query-limit' })
       expect(raw).not.toHaveBeenCalled()
       expect(readFileSync(specsFile, 'utf8')).toBe(specsBefore)
       expect(listDatasets()).toEqual(dataBefore)

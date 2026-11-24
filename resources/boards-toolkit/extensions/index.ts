@@ -40,7 +40,7 @@ const WIDGET_TYPES = [
   'google-report-reading', 'tt-reading', 'meta-reading', 'reading-module', 'gauge', 'chart-line', 'chart-bar', 'table', 'funnel', 'analysis', 'todo', 'link', 'file'
 ]
 
-const TEMPLATES = ['meta', 'tiktok', 'fb-daily-v2', 'ads', 'daily', 'blank']
+const TEMPLATES = ['meta', 'tiktok', 'tiktok-af', 'fb-daily-v2', 'ads', 'daily', 'blank']
 const GRANULARITIES = ['account', 'campaign', 'adgroup', 'ad', 'creative']
 const BOARD_ID = { type: 'string', minLength: 1, maxLength: 100 }
 const BOARD_IDS = { type: 'array', minItems: 1, maxItems: 50, uniqueItems: true, items: BOARD_ID }
@@ -77,6 +77,7 @@ const DATE_SCOPE = {
 const TEMPLATE_HELP = {
   meta: 'Meta Ads 原生读数：meta-reading 经 Main 调用只读 MCP，选择已授权账户、随总控切换日期、刷新并联动指标及每日趋势。',
   tiktok: 'TikTok 常用起点：媒体指标、按日趋势、分活动对比和 TT 读数模块；指标和图表绑定「TikTok 报表」。可按任务调整组合与顺序，日期沿用总控。',
+  'tiktok-af': 'TikTok+AF 标配：TT 读数、TikTok 趋势与 AF 安装、日活、次留。提供 afPrefix（产品/市场短名）与已核实的 afScope；本轮同应用、TikTok 归因、地区和日期口径的数据会在验收前自动绑定。应用或次留事件无法确认时保留已核实的数据，明确哪些指标缺失。',
   'fb-daily-v2': 'FB 投放日报：按产品关联已保存报表，自动获取并核验报表读数。',
   ads: '海外广告投放（占位演示数据）：KPI 行 + 趋势 + 渠道对比 + 预算 + 清单。',
   daily: '日常通用：时钟 + 便签 + 待办。',
@@ -190,6 +191,18 @@ export default function boardsTools(api: ToolHostApi): void {
         buildId: BUILD_ID,
         name: { type: 'string', description: '看板名称；缺省用所选起点名称' },
         template: { type: 'string', enum: TEMPLATES, description: '无具体方向时选合适起点；显式用途、风格、结构或参考优先，可用 blank 自由组合数据模块。模板不是平台限制。' },
+        afPrefix: { type: 'string', description: '仅 template=tiktok-af 必填：产品/市场短名（1–40 字符，如 Lemon8泰国）。' },
+        afScope: {
+          type: 'object',
+          description: '仅 template=tiktok-af 使用。先从已授权 AppsFlyer 应用或查询计划核实 appId 与用户需要的地区，次留填写已确认的自定义事件。',
+          required: ['appId'],
+          additionalProperties: false,
+          properties: {
+            appId: { type: 'string', description: '已核实的 AppsFlyer 应用 ID' },
+            countries: { type: 'array', items: { type: 'string' }, description: '地区代码。全部地区时省略。' },
+            retentionEvent: { type: 'string', description: '已确认的自定义次留事件名。未知时省略。' }
+          }
+        },
         description: { type: 'string', description: '可选看板说明' },
         masterScope: { ...MASTER_SCOPE, description: '本次用户要求的日期范围与媒体指标；先统一总控，再让媒体和三方查询使用具体起止日期，保存scope不等于已经重查数据' },
         style: { ...CANVAS_STYLE, description: '可选画布样式：background为六位十六进制色，grid为none/dots/lines；按用户要求配置，不影响数据刷新' },
@@ -342,11 +355,21 @@ export default function boardsTools(api: ToolHostApi): void {
       '3. 仅沿用当前客户、项目已确认的 appId 和事件映射。用户使用业务名称时，先发现实际事件，按当前映射、名称和业务含义选择唯一最匹配的候选，再将准确 eventName 保存；自定义事件不限 af_ 前缀。只有同样合理的候选不止一个时才简短询问，不要求用户提供字段。禁止从其他客户复制事件名、阶段命名或漏斗定义。Install/App Active/Session 是内置事件。安装量来自官方附带的 Installs 列，查询使用 Count 等受支持的指标。\n' +
       '4. 首次拉取用 startDate/endDate 与看板总控具体日期对齐，后续沿用此查询条件重查；days 备用默认近7个完整日（截至昨天）。geo=true 仅增加 Geo 维度；countries 过滤地区，全部地区应省略过滤，绝不传 Geo=["all"]。最多4个维度。\n' +
       '5. 新业务方案显式传 mediaSources，使用当前App真实发现并已确认的媒体名称；[]为该App全部授权来源，省略仅兼容旧TikTok调用。不要根据媒体品牌猜接口别名，非TikTok方案不得省略后错标来源。\n' +
-      '6. 返回的 dataset.columns 是可绑定的列名。事件次数等可加指标可用 op="sum"；独立用户用完整日期范围的专用总量查询，不把多日或多分组去重数相加。首屏只保留关键数字/highlight，不创建大段口径、防御词或原始查询参数说明卡。',
+      '6. 返回的 dataset.columns 是可绑定的列名。事件次数等可加指标可用 op="sum"；独立用户用完整日期范围的专用总量查询，不把多日或多分组去重数相加。首屏只保留关键数字/highlight，不创建大段口径、防御词或原始查询参数说明卡。\n' +
+      '7. 同一时间窗要拉多张数据集时，用 pulls 一次提交 2–8 条（每条含 name/appId 及形状参数；days/startDate/endDate 传顶层），返回的 datasets 数组逐条绑定——比逐张调用快得多（省多轮模型往返）。失败的条目看各自 ok/error，成功的照常绑定。\n' +
+      '8. 同一数据集 10 分钟内已按同一配方+同一窗口成功拉过时，调用会直接返回复用（reused:true），不消耗调用额度；数据集的真实拉取时间以返回的 dataset 信息为准，不要向用户重复报告为"刚拉取"。\n' +
+      '9. tiktok-af 模板使用 afScope 的 appId 和 countries，以总控日期查询，mediaSources=["tiktokglobal_int"]、groupings=["Date"]、basis="activity"。基础读数用 metrics=["Active users"]，AppsFlyer 自动返回安装量。日活不可用时可以用 metrics=["Count"] 查可用的安装量。已确认的次留事件另用 eventName 和 metrics=["Count"]。基础和次留可同批拉，name 可读即可。',
     parameters: {
       type: 'object',
       properties: {
         buildId: BUILD_ID,
+        pulls: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 8,
+          description: '批量模式：2–8 个条目数组，每个条目 {name, appId, eventName?, basis?, metrics?, groupings?, geo?, countries?, mediaSources?}；窗口参数传顶层。返回 {datasets:[{name, ok, datasetId, columns, binding?, error?}]}',
+          items: { type: 'object', properties: { name: { type: 'string' }, appId: { type: 'string' } }, required: ['name', 'appId'] }
+        },
         name: { type: 'string', description: '短名（1-60 字符），包含必要的应用/范围以避免重名；数据集叫 AF-{name}' },
         appId: { type: 'string', description: 'AppsFlyer App ID' },
         eventName: { type: 'string', description: '发现并匹配后的准确自定义事件名，不限前缀；业务词由助手匹配，不要求用户报字段' },
@@ -360,7 +383,9 @@ export default function boardsTools(api: ToolHostApi): void {
         countries: { type: 'array', items: { type: 'string' }, description: '可选地区筛选；全部地区时省略，不传字面值 all' },
         mediaSources: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 200 }, description: '当前App真实媒体名称；[]为全部授权来源，省略仅兼容旧TikTok调用；新业务方案显式传入并保留到刷新配方' }
       },
-      required: ['name', 'appId']
+      // 顶层 name/appId 不设 required：pulls 批量模式下它们本来就不该传。
+      // 单张缺参时主进程返回带修复提示的 invalid-input（比 schema 拒单更能
+      // 引导模型改对——实测 schema 硬拒会让模型整体退回逐张拉，慢 3 倍）。
     },
     approval: 'write',
     execute: async (_id, params, signal) => ({ content: [{ type: 'text', text: await call({ action: 'af_dataset_pull', ...params }, signal) }] })
