@@ -1,9 +1,10 @@
-import { app } from 'electron'
+import { app, net } from 'electron'
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, chmod, mkdir, mkdtemp, open, rename, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 import { spawnCommand } from '../../command'
 import { executableSearchDirs } from '../../omp/OmpCapabilities'
 
@@ -213,6 +214,39 @@ function parseResult(result: ProcessResult, fallback: DingTalkCliErrorCode): unk
   return parsed
 }
 
+/** Use the desktop's configured proxies and keep redirects under Main's allowlist. */
+const requestWithSystemProxy: typeof fetch = (location, options) => new Promise((resolve, reject) => {
+  const signal = options?.signal
+  const request = net.request({ url: String(location), redirect: 'manual', credentials: 'omit' })
+  let stream: Readable | undefined
+  const abort = () => {
+    const error = new DingTalkCliError('network')
+    stream?.destroy(error)
+    request.abort()
+    reject(error)
+  }
+  request.once('close', () => signal?.removeEventListener('abort', abort))
+  request.once('error', () => reject(new DingTalkCliError('network')))
+  request.once('redirect', (status, _method, location) => {
+    request.abort()
+    resolve(new Response(null, { status, headers: { Location: location } }))
+  })
+  request.once('response', response => {
+    const status = response.statusCode
+    if (status !== 200) {
+      request.abort()
+      resolve(new Response(null, { status }))
+      return
+    }
+    // Electron's IncomingMessage implements a Node Readable at runtime.
+    stream = response as unknown as Readable
+    resolve(new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, { status }))
+  })
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) abort()
+  else request.end()
+})
+
 async function requestArchive(request: typeof fetch, location: string, signal: AbortSignal): Promise<Response> {
   let url = new URL(location)
   for (let hop = 0; hop < 5; hop++) {
@@ -287,7 +321,7 @@ export class DingTalkCli {
 
   constructor(private readonly options: DingTalkCliOptions = {}) {
     this.run = options.run ?? runProcess
-    this.request = options.request ?? fetch
+    this.request = options.request ?? requestWithSystemProxy
   }
 
   private get directory(): string {
