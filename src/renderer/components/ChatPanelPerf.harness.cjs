@@ -223,12 +223,17 @@ app.whenReady().then(async () => {
       wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 })
       wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
     }
+    const pickerAutoFocus = []
     const openPicker = async () => {
       await click(addTrigger)
       await waitFor(`${addTrigger}.getAttribute('aria-expanded')==='true'`)
       await click(invokeAction)
       await waitFor(`!!${search}`)
       await waitFor(`getComputedStyle(${search}).visibility==='visible'`)
+      await frame()
+      const focused = await js(`${search}===document.activeElement`)
+      pickerAutoFocus.push(focused)
+      if (!focused) await click(search)
       await waitFor(`${search}===document.activeElement`)
       await waitFor(`!!(${skillOption})`)
     }
@@ -269,7 +274,7 @@ app.whenReady().then(async () => {
     await js('window.chatPerfFixture.finishReadingSkill()')
     await frame()
     const composerSwitch = await js(`({drafts:window.chatPerfFixture.composerDrafts(),text:${field}.value})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, pickerUndo, mentionUndo, composerSwitch }))
+    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })
