@@ -95,7 +95,15 @@ export default function MenuPortal({
 
   const positioned = open && anchor !== null
   useLayoutEffect(() => {
-    if (positioned) initialFocusRef?.current?.focus({ preventScroll: true })
+    if (!positioned || !initialFocusRef) return
+    // A menu action can replace its focused portal during a native click.
+    // Let Chromium finish that focus transition before moving into this menu.
+    const frame = requestAnimationFrame(() => {
+      const menu = menuRef.current
+      const target = initialFocusRef.current
+      if (menu && target && !menu.contains(document.activeElement)) target.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
   }, [positioned, initialFocusRef])
 
   if (!open) return null
