@@ -1,0 +1,89 @@
+import { Fragment, memo, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { Download, X } from 'lucide-react'
+import type { PromptImage } from '@shared/types'
+import { chatAttachment, type AttachmentKind } from '@shared/chatAttachment'
+import { useAppStore } from '../store'
+import audio from '../assets/file-types/audio.svg'
+import docx from '../assets/file-types/docx.svg'
+import pdf from '../assets/file-types/pdf.svg'
+import photo from '../assets/file-types/photo.svg'
+import pptx from '../assets/file-types/pptx.svg'
+import txt from '../assets/file-types/txt.svg'
+import video from '../assets/file-types/video.svg'
+import xlsx from '../assets/file-types/xlsx.svg'
+import zip from '../assets/file-types/zip.svg'
+
+const icons: Record<AttachmentKind, string> = { audio, docx, pdf, photo, pptx, txt, video, xlsx, zip }
+
+export function AttachmentCard({ target, label }: { target: string; label?: string }) {
+  const file = chatAttachment(target)
+  const zh = useAppStore(s => s.language === 'zh')
+  const [error, setError] = useState(false)
+  const [pending, setPending] = useState(false)
+  const inFlight = useRef(false)
+  if (!file) return <>{label ?? target}</>
+  const activate = async (action: 'open' | 'save') => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setPending(true)
+    setError(false)
+    try {
+      if (file.remote) {
+        const result = await window.electronAPI.openExternalUrl(file.target)
+        setError(!result.ok)
+      } else {
+        const { currentWorkspace: workspace, currentSessionId } = useAppStore.getState()
+        setError(!workspace || await window.electronAPI.chatAttachment(workspace.id, target, action, currentSessionId) === 'unavailable')
+      }
+    } catch { setError(true) }
+    finally { inFlight.current = false; setPending(false) }
+  }
+  const open = file.sandbox ? (zh ? '选择本地副本' : 'Locate local copy') : (zh ? '打开附件' : 'Open attachment')
+  const save = zh ? '另存为' : 'Save a copy'
+  return <span className="my-1 inline-flex max-w-full items-center gap-1 rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
+    <button type="button" disabled={pending} onClick={() => void activate('open')} aria-label={open + ' · ' + file.name}
+      title={target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">
+      <img src={icons[file.kind]} alt="" width={30} height={30} className="m-0 h-8 w-8 shrink-0" />
+      <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{label || file.name}</span>
+        <span className="block truncate text-[11px] text-cream-faint">{file.ext.toUpperCase()}{file.sandbox && ' · ' + open}{label && label !== file.name ? ' · ' + file.name : ''}</span>
+      </span>
+    </button>
+    {!file.remote && <button type="button" disabled={pending} aria-label={save + ' · ' + file.name} title={save}
+      className="focus-ring shrink-0 rounded-lg p-2 text-cream-dim hover:bg-overlay" onClick={() => void activate('save')}><Download size={14} /></button>}
+    {error && <span role="status" className="px-1 text-xs text-amber-700">{zh ? '文件不可用' : 'File unavailable'}</span>}
+  </span>
+}
+
+export function PromptAttachments({ text }: { text: string }) {
+  if (!text.includes('@')) return <>{text}</>
+  return <>{text.split('\n').map((line, index) => <Fragment key={index}>{index > 0 && '\n'}{line.startsWith('@') && chatAttachment(line.slice(1))
+    ? <AttachmentCard target={line.slice(1)} /> : line}</Fragment>)}</>
+}
+
+export const AttachedImage = memo(function AttachedImage({ image, previewUrl }: {
+  image: Pick<PromptImage, 'data' | 'mimeType'>
+  previewUrl?: string
+}) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const zh = useAppStore(s => s.language === 'zh')
+  const [open, setOpen] = useState(false)
+  const url = previewUrl ?? ('data:' + image.mimeType + ';base64,' + image.data)
+  const title = zh ? '查看图片' : 'View image'
+  useEffect(() => {
+    if (open) dialog.current?.showModal()
+  }, [open])
+  return <>
+    <button type="button" aria-label={title} title={title} className="focus-ring block cursor-zoom-in rounded-lg" onClick={() => setOpen(true)}>
+      <img src={url} loading="lazy" decoding="async" alt="" className="h-14 w-14 rounded-lg border border-line object-cover" />
+    </button>
+    {open && createPortal(<dialog ref={dialog} aria-label={title} onClose={() => setOpen(false)}
+      onClick={event => { if (event.target === dialog.current) dialog.current?.close() }}
+      className="m-auto max-h-[94vh] max-w-[94vw] rounded-2xl border border-line bg-ink-850 p-0 backdrop:bg-black/60">
+      <div className="p-3"><div className="mb-2 flex justify-end gap-2"><a href={url} download={'image.' + image.mimeType.split('/')[1]} aria-label={zh ? '下载图片' : 'Download image'} className="rounded p-2"><Download size={16} /></a>
+        <button type="button" autoFocus className="rounded p-2" onClick={() => dialog.current?.close()} aria-label={zh ? '关闭' : 'Close'}><X size={16} /></button></div>
+        <img src={url} alt={zh ? '附件图片' : 'Attached image'} className="mx-auto max-h-[80vh] max-w-[88vw] object-contain" />
+      </div>
+    </dialog>, document.body)}
+  </>
+})

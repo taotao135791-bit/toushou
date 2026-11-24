@@ -14,7 +14,7 @@ import {
   SessionStats,
   SlashCommand,
   StreamingBehavior,
-  SessionThinkingLevel,
+  SessionThinkingSelection,
   SessionTitleMetadata,
   SubagentMessagesResult,
   SubagentSnapshot,
@@ -167,7 +167,7 @@ export function createSession(
     initialTitle?: string
     initialTitleMetadata?: SessionTitleMetadata
     modelSelector?: string
-    thinkingLevel?: SessionThinkingLevel
+    thinkingLevel?: SessionThinkingSelection
     skillSystemPrompt?: string
     /** Main-owned remote channel sessions can explicitly downgrade access. */
     permissionMode?: PermissionMode
@@ -260,6 +260,7 @@ export function createSession(
     ...(opts?.initialTitleMetadata ? { titleSource: opts.initialTitleMetadata.source, titleRevision: opts.initialTitleMetadata.revision } : {}),
     createdAt: Date.now(),
     status: 'idle',
+    ...(opts?.thinkingLevel ? { autoThinking: opts.thinkingLevel === 'auto' && cli.command === 'omp' } : {}),
     nativePermissionMode: permissionMode,
     nativePermissionMutable: cli.command !== 'omp' && (permissionMode === 'ask' || permissionMode === 'full'),
     ...(opts?.resumeSessionPath ? { resumeFrom: opts.resumeSessionPath } : {}),
@@ -282,6 +283,7 @@ export function createSession(
     new OmpSession(session, proc, {
       label: cli.command,
       onEvent: event => {
+        if (event.type === 'thinking_level_changed') session.autoThinking = event.level === 'auto'
         if (event.type === 'status' && event.status === 'idle' && event.isTerminal !== false) {
           if (event.isTerminal === true) cancelBoardEditTargets(id)
           stopThinkingForCurrentDraft(id)
@@ -574,13 +576,17 @@ export async function followUp(
 }
 
 /** Change the thinking level of a live session. */
-export async function setThinkingLevel(sessionId: string, level: SessionThinkingLevel): Promise<boolean> {
+export async function setThinkingLevel(sessionId: string, level: SessionThinkingSelection): Promise<boolean> {
   // A user's explicit choice must be written after any automatic restore.
+  const runner = sessions.get(sessionId)
+  if (!runner || (level === 'auto' && runner.handshakeOutcome?.profile !== 'current')) return false
   stopThinkingForCurrentDraft(sessionId)
-  return writeThinkingLevel(sessionId, level)
+  const ok = await writeThinkingLevel(sessionId, level)
+  if (ok) runner.session.autoThinking = level === 'auto'
+  return ok
 }
 
-async function writeThinkingLevel(sessionId: string, level: SessionThinkingLevel): Promise<boolean> {
+async function writeThinkingLevel(sessionId: string, level: SessionThinkingSelection): Promise<boolean> {
   const res = await querySession(sessionId, { type: 'set_thinking_level', level })
   return Boolean(res && res.success === true)
 }
@@ -631,7 +637,7 @@ export async function getSessionState(sessionId: string): Promise<SessionState |
       live.draftSessionUuid !== state.sessionId && (!live.draftSessionUuid || existsSync(state.sessionFile))) {
     live.draftSessionUuid = state.sessionId
   }
-  return { ...state, draftSessionUuid: live?.draftSessionUuid, modelThinking: sessionModelThinking(state.model) }
+  return { ...state, autoThinking: live?.autoThinking, draftSessionUuid: live?.draftSessionUuid, modelThinking: sessionModelThinking(state.model) }
 }
 
 /** Full transcript of a session, mapped to GUI chat messages (get_messages). */
@@ -723,7 +729,8 @@ export async function resumeSession(
   // Reconstruct per-turn model/thinking from the durable session JSONL and tag
   // each user message. Steer kind is already set by mapAgentMessages from the
   // `steering` flag. Unknown (unrecorded) metadata stays unknown — never guessed.
-  const metadata = await reconstructSessionMetadata(filePath)
+  const { turns: metadata, autoThinking } = await reconstructSessionMetadata(filePath)
+  session.autoThinking ??= autoThinking
   if (messages.length === 0 && metadata.length > 0) {
     // A cold runtime (or a very large transcript) can miss the get_messages
     // round-trip. Give it one more chance before declaring the transcript

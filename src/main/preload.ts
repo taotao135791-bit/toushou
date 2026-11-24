@@ -1,3 +1,4 @@
+import type { ReplyForkTarget } from '../shared/types'
 import type { MetaReadingResult, MetaReadingSummary, MetaReadingAccount, MetaReadingRange } from '../shared/metaReading'
 import type { AppsFlyerDatasetRefreshRequest, AppsFlyerDatasetRefreshResult } from '../shared/appsflyerDataset'
 import type { BoardRefreshRequest, BoardRefreshResult } from '../shared/boardRefresh'
@@ -83,7 +84,7 @@ import {
   PromptImage,
   SessionState,
   StreamingBehavior,
-  SessionThinkingLevel,
+  SessionThinkingSelection,
   PermissionMode,
   SelectImageResult,
   UpdaterStatus,
@@ -167,7 +168,7 @@ export interface ElectronAPI {
   /** Create a session under a Main-owned workspace grant. */
   createSession: (
     grantId: string,
-    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string; permissionMode?: 'readonly' }
+    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingSelection; skillId?: string; permissionMode?: 'readonly' }
   ) => Promise<Session>
   sendMessage: (
     sessionId: string,
@@ -191,6 +192,7 @@ export interface ElectronAPI {
   readFile: (grantId: string, relativePath: string) => Promise<ReadFileResult>
   /** Flat relative-path file list of a project under a workspace grant. */
   listProjectFiles: (grantId: string) => Promise<string[]>
+  fileSidebarConversation: (key: string, projectId: string | null, previousKey?: string, migrateOnly?: boolean) => Promise<boolean>
   listProjects: () => Promise<ProjectRecord[]>
   createProject: (name: string) => Promise<ProjectResult>
   importProject: () => Promise<ProjectResult>
@@ -220,7 +222,7 @@ export interface ElectronAPI {
   /** List active workspace grants. */
   listWorkspaceGrants: () => Promise<WorkspaceGrant[]>
   /** One-click tools from bundled and installed packages (new session + auto-sent command). */
-  listLaunchableTools: () => Promise<LaunchableTool[]>
+  listLaunchableTools: (mode?: 'enabled-plugins') => Promise<LaunchableTool[]>
   /** Path-free, opaque package rows; ids authorize row mutations. */
   listPackages: () => Promise<PackageDescriptor[]>
   getPackageCapabilities: () => Promise<PackageManagerCapabilities>
@@ -390,6 +392,7 @@ export interface ElectronAPI {
   selectFolder: () => Promise<string | null>
   selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
   /** Pick an image file; resolves its base64 bytes (null when cancelled). */
+  selectComposerAttachment: () => Promise<string | SelectImageResult>
   selectImage: () => Promise<SelectImageResult>
   showCliSettings: () => Promise<boolean>
   respondUi: (sessionId: string, requestId: string, answer: SessionUiAnswer) => Promise<boolean>
@@ -405,7 +408,7 @@ export interface ElectronAPI {
   /** Queue a message delivered after the current turn finishes. */
   followUp: (sessionId: string, message: string, images?: PromptImage[]) => Promise<boolean>
   /** Change the thinking level of a live session. */
-  setThinkingLevel: (sessionId: string, level: SessionThinkingLevel) => Promise<boolean>
+  setThinkingLevel: (sessionId: string, level: SessionThinkingSelection) => Promise<boolean>
   /** Rewrite a live session's approval-extension config (permission mode hot-swap). */
   updateApprovalConfig: (sessionId: string, mode: PermissionMode) => Promise<boolean>
   /** Export the session transcript as HTML to the host's Downloads dir; resolves the path. */
@@ -453,7 +456,7 @@ export interface ElectronAPI {
    */
   forkSession: (
     grantId: string,
-    payload: { historyId?: string; liveSessionId?: string; keepUserTurns?: number; completeTurnsOnly?: boolean }
+    payload: { historyId?: string; liveSessionId?: string; reply?: ReplyForkTarget; keepUserTurns?: number; completeTurnsOnly?: boolean }
   ) => Promise<
     | { error: 'invalid-request' | 'session-not-found' | 'fork-failed' | 'transcript_unavailable' }
     | { session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] }
@@ -505,7 +508,11 @@ export interface ElectronAPI {
   gitInfo: (grantId: string) => Promise<GitInfo | null>
   /** Unified diff of one file (synthetic new-file diff for untracked files). */
   gitFileDiff: (grantId: string, filePath: string) => Promise<string | null>
-  /** Open a granted workspace in Finder/Terminal/VS Code (chat top bar menu). */
+  /** Open a conversation attachment or save a local copy. */
+  chatAttachment: (workspaceId: string, target: string, action: 'open' | 'save', sessionId?: string | null) => Promise<'ok' | 'unavailable' | 'cancelled'>
+  platform: NodeJS.Platform
+  workspaceAppIcons: () => Promise<{ finder?: string; terminal?: string }>
+  /** Open the granted workspace in its platform file manager, terminal or VS Code. */
   openWorkspaceIn: (workspaceId: string, target: OpenWorkspaceTarget) => Promise<OpenWorkspaceResult>
   /** Toggle loading of machine-local ~/.agents/skills; returns what changed. */
   setMachineSkills: (enabled: boolean) => Promise<{ enabled: boolean; excluded: string[]; available: string[] }>
@@ -717,7 +724,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY) as Promise<HistorySessionRow[]>,
   createSession: (
     grantId: string,
-    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingLevel; skillId?: string; permissionMode?: 'readonly' }
+    overrides?: { modelSelector?: string; thinkingLevel?: SessionThinkingSelection; skillId?: string; permissionMode?: 'readonly' }
   ) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_CREATE_SESSION, grantId, overrides),
   sendMessage: (
@@ -758,6 +765,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.FS_READ_FILE, grantId, relativePath),
   listProjectFiles: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FS_LIST_PROJECT_FILES, grantId),
+  fileSidebarConversation: (key: string, projectId: string | null, previousKey?: string, migrateOnly?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_FILE_CONVERSATION, key, projectId, previousKey, migrateOnly),
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_LIST),
   createProject: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, name),
   importProject: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_IMPORT),
@@ -781,7 +789,7 @@ const api: ElectronAPI = {
   revokeWorkspaceGrant: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_REVOKE, grantId),
   listWorkspaceGrants: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_LIST),
-  listLaunchableTools: () => ipcRenderer.invoke(IPC_CHANNELS.TOOLS_LIST),
+  listLaunchableTools: (mode?: 'enabled-plugins') => ipcRenderer.invoke(IPC_CHANNELS.TOOLS_LIST, mode),
   listPackages: () => ipcRenderer.invoke(IPC_CHANNELS.PACKAGES_LIST),
   getPackageCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.PACKAGES_CAPABILITIES),
   searchPackages: (query: string, curatedOnly?: boolean) =>
@@ -969,6 +977,7 @@ const api: ElectronAPI = {
   selectFolder: () => ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_FOLDER),
   selectFile: (filters?: { name: string; extensions: string[] }[]) =>
     ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_FILE, filters),
+  selectComposerAttachment: () => ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_FILE, undefined, true),
   selectImage: () => ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_IMAGE),
   showCliSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SHELL_SHOW_CLI_SETTINGS),
   respondUi: (sessionId: string, requestId: string, answer: SessionUiAnswer) =>
@@ -985,7 +994,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_STEER, sessionId, message, images),
   followUp: (sessionId: string, message: string, images?: PromptImage[]) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_FOLLOW_UP, sessionId, message, images),
-  setThinkingLevel: (sessionId: string, level: SessionThinkingLevel) =>
+  setThinkingLevel: (sessionId: string, level: SessionThinkingSelection) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_SET_THINKING, sessionId, level),
   updateApprovalConfig: (sessionId: string, mode: PermissionMode) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_UPDATE_APPROVAL_CONFIG, sessionId, mode),
@@ -1003,7 +1012,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.OMP_RESUME_SESSION, grantId, historyId),
   peekSession: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_PEEK_SESSION, grantId, historyId),
-  forkSession: (grantId: string, payload: { historyId?: string; liveSessionId?: string; keepUserTurns?: number; completeTurnsOnly?: boolean }) =>
+  forkSession: (grantId: string, payload: { historyId?: string; liveSessionId?: string; reply?: ReplyForkTarget; keepUserTurns?: number; completeTurnsOnly?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_FORK_SESSION, grantId, payload),
   deleteSessionFile: (grantId: string, historyId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OMP_DELETE_SESSION_FILE, grantId, historyId),
@@ -1028,6 +1037,10 @@ const api: ElectronAPI = {
   gitInfo: (grantId: string) => ipcRenderer.invoke(IPC_CHANNELS.GIT_INFO, grantId),
   gitFileDiff: (grantId: string, filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GIT_FILE_DIFF, grantId, filePath),
+  chatAttachment: (workspaceId, target, action, sessionId) => ipcRenderer.invoke(IPC_CHANNELS.CHAT_ATTACHMENT, workspaceId, target, action, sessionId),
+  platform: process.platform,
+  workspaceAppIcons: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_APP_ICONS),
+  /** Open the granted workspace in its platform file manager, terminal or VS Code. */
   openWorkspaceIn: (workspaceId: string, target: OpenWorkspaceTarget) =>
     ipcRenderer.invoke(IPC_CHANNELS.OPEN_WORKSPACE_IN, workspaceId, target),
   setMachineSkills: (enabled: boolean) =>

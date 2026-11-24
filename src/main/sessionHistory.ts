@@ -1,4 +1,4 @@
-import { lstat, open, readdir, stat, unlink } from 'node:fs/promises'
+import { lstat, open, readdir, stat, unlink, type FileHandle } from 'node:fs/promises'
 import type { BigIntStats } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { realpathSync } from 'node:fs'
@@ -36,6 +36,7 @@ export interface HistorySessionFile {
    */
   origin?: 'feishu' | 'task'
   importedFrom?: SessionImportSource
+  branchName?: { base: string; title: string }
 }
 
 /**
@@ -243,6 +244,15 @@ export function ompSessionDirCandidatesFor(
   return [path.join(sessionsRoot(agentDir), encoded), path.join(sessionsRoot(agentDir), `${scope}-${label}-${hash}`)]
 }
 
+interface CachedHistory { version: string; info: HistorySessionFile }
+// Only the last global listing is retained. Vanished files disappear on the
+// next scan; this cache contains display metadata and never mints a grant.
+let lastGlobalScan = new Map<string, CachedHistory>()
+
+function historyVersion(s: BigIntStats) {
+  return [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs, s.birthtimeNs].join(':')
+}
+
 /**
  * List EVERY session file across all projects and layout generations,
  * newest first, capped to the newest `limit` entries. Layout-agnostic by
@@ -262,6 +272,8 @@ export async function listAllSessions(
     return []
   }
   const out: HistorySessionFile[] = []
+  const previous = lastGlobalScan
+  const nextScan = new Map<string, CachedHistory>()
   for (const dir of dirs) {
     let names: string[]
     try {
@@ -271,10 +283,11 @@ export async function listAllSessions(
     }
     for (const name of names) {
       if (!name.endsWith('.jsonl')) continue
-      const info = await parseSessionFile(path.join(root, dir, name))
+      const info = await readSessionMetadata(path.join(root, dir, name), previous, nextScan)
       if (info) out.push(info)
     }
   }
+  lastGlobalScan = nextScan
   out.sort((a, b) => b.timestamp - a.timestamp)
   // Runtime headers may use an alias (/tmp versus /private/tmp, or a project
   // symlink), while recent workspaces use Main's canonical path. Normalize
@@ -346,21 +359,10 @@ async function readHead(filePath: string, bytes: number): Promise<string> {
   }
 }
 
-/**
- * Read at most `bytes` from the END of a file (the first line may be partial;
- * callers tolerating that skip it). Used to find the last message timestamp.
- */
-async function readTail(filePath: string, bytes: number): Promise<string> {
-  const fh = await open(filePath, 'r')
-  try {
-    const size = (await fh.stat()).size
-    const start = Math.max(0, size - bytes)
-    const buf = Buffer.alloc(size - start)
-    const { bytesRead } = await fh.read(buf, 0, buf.length, start)
-    return buf.toString('utf-8', 0, bytesRead)
-  } finally {
-    await fh.close()
-  }
+async function readWindow(fh: FileHandle, start: number, length: number): Promise<string> {
+  const buf = Buffer.allocUnsafe(length)
+  const { bytesRead } = await fh.read(buf, 0, length, start)
+  return buf.toString('utf8', 0, bytesRead)
 }
 
 /** Bytes of the file tail scanned for the last message timestamp. */
@@ -374,14 +376,7 @@ const LAST_MESSAGE_SCAN_BYTES = 256 * 1024
  * list ("一点进去就被激活"). Null when the tail holds no message timestamp;
  * callers fall back to mtime.
  */
-async function lastMessageTimestamp(filePath: string): Promise<number | null> {
-  let tail: string
-  try {
-    tail = await readTail(filePath, LAST_MESSAGE_SCAN_BYTES)
-  } catch {
-    return null
-  }
-  const lines = tail.split('\n')
+function lastMessageTimestamp(lines: string[]): number | null {
   // A resumed/forked file can exceed the scan window on huge conversations:
   // walk backward and take the first parseable message entry.
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -437,15 +432,40 @@ async function exists(filePath: string): Promise<boolean> {
  * CURRENT title — honoring it keeps task names and user renames visible after
  * a restart instead of degrading every row to its first prompt text.
  */
-async function parseSessionFile(filePath: string): Promise<HistorySessionFile | null> {
-  let head: string
+async function readSessionMetadata(filePath: string, previous = lastGlobalScan, nextScan?: Map<string, CachedHistory>): Promise<HistorySessionFile | null> {
   try {
-    head = await readHead(filePath, TITLE_SCAN_BYTES)
+    const cached = previous.get(filePath)
+    if (cached && cached.version === historyVersion(await stat(filePath, { bigint: true }))) {
+      nextScan?.set(filePath, cached)
+      return cached.info
+    }
+    const fh = await open(filePath, 'r')
+    try {
+      const stats = await fh.stat({ bigint: true })
+      if (!stats.isFile()) return null
+      const size = Number(stats.size)
+      const head = await readWindow(fh, 0, Math.min(size, TITLE_SCAN_BYTES))
+      const lines = head.split('\n')
+      const tailStart = Math.max(0, size - LAST_MESSAGE_SCAN_BYTES)
+      const tail = tailStart === 0 && size <= TITLE_SCAN_BYTES ? lines : (await readWindow(fh, tailStart, size - tailStart)).split('\n')
+      const info = parseSessionMetadata(filePath, lines, tail, Number(stats.mtimeNs) / 1e6)
+      if (info) nextScan?.set(filePath, { version: historyVersion(stats), info })
+      return info
+    } finally {
+      await fh.close()
+    }
   } catch {
     return null
   }
-  const lines = head.split('\n')
+}
+
+export function readSessionHistoryMetadata(filePath: string): Promise<HistorySessionFile | null> {
+  return readSessionMetadata(filePath)
+}
+
+function parseSessionMetadata(filePath: string, lines: string[], tail: string[], mtime: number): HistorySessionFile | null {
   let header: { id: string; timestamp?: unknown; cwd?: unknown; importedFrom?: unknown } | null = null
+  let branchName: HistorySessionFile['branchName']
   let headerIndex = -1
   let recordedTitle = ''
   for (let i = 0; i < Math.min(lines.length, 5); i++) {
@@ -457,6 +477,7 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
       cwd?: unknown
       title?: unknown
       importedFrom?: unknown
+      toushouBranch?: { base?: unknown; title?: unknown }
     }
     try {
       candidate = JSON.parse(lines[i])
@@ -473,6 +494,10 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
       if (!recordedTitle && typeof candidate.title === 'string') {
         recordedTitle = candidate.title.replace(/\s+/g, ' ').trim().slice(0, 80)
       }
+      const branch = candidate.toushouBranch
+      if (branch && typeof branch.base === 'string' && typeof branch.title === 'string') {
+        branchName = { base: branch.base, title: branch.title }
+      }
       headerIndex = i
       break
     }
@@ -487,11 +512,9 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
   // resume machinery (title lines, metadata records, file touches) must not
   // reorder the list — that read as "一点进去就被激活". Start time stays the
   // floor; mtime is the last resort for files whose tail has no timestamps.
-  const lastMessage = await lastMessageTimestamp(filePath)
+  const lastMessage = lastMessageTimestamp(tail)
   if (lastMessage !== null && lastMessage > timestamp) timestamp = lastMessage
-  if (timestamp === 0) {
-    timestamp = await stat(filePath).then((s) => s.mtimeMs, () => 0)
-  }
+  if (timestamp === 0) timestamp = mtime
 
   let title = recordedTitle || UNTITLED
   if (!recordedTitle) {
@@ -515,6 +538,7 @@ async function parseSessionFile(filePath: string): Promise<HistorySessionFile | 
 
   return {
     uuid: header.id,
+    ...(branchName ? { branchName } : {}),
     filePath,
     title,
     timestamp,
@@ -545,7 +569,7 @@ export async function listSessionHistory(
       const filePath = path.join(dir, name)
       if (seenFiles.has(filePath)) continue
       seenFiles.add(filePath)
-      const info = await parseSessionFile(filePath)
+      const info = await readSessionMetadata(filePath)
       if (info) out.push(info)
     }
   }

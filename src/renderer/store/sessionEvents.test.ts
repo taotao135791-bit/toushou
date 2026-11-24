@@ -14,6 +14,19 @@ afterEach(() => {
 })
 
 describe('session message events', () => {
+  it('seals each completed assistant reply before the next streamed answer', () => {
+    const store = useAppStore.getState()
+    const sessionId = 'branch-replies'
+    store.applySessionEvent({ type: 'message', sessionId, role: 'assistant', content: 'First' })
+    store.applySessionEvent({ type: 'reply_completed', sessionId, replyKey: 'first' })
+    store.applySessionEvent({ type: 'message', sessionId, role: 'assistant', content: 'Second' })
+    store.applySessionEvent({ type: 'reply_completed', sessionId, replyKey: 'second' })
+    flushStreamQueueForTest()
+    expect(useAppStore.getState().messages[sessionId].map(row => [row.content, row.replyKey])).toEqual([
+      ['First', 'first'], ['Second', 'second']
+    ])
+  })
+
   it('keeps system notices as quiet system messages', () => {
     useAppStore.getState().applySessionEvent({
       type: 'message',

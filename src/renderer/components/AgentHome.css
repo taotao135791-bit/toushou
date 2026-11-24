@@ -119,7 +119,7 @@
   margin-inline: 16px;
   border-radius: 0 0 22px 22px;
   padding-inline: 14px;
-  background: rgb(var(--bg-sunken));
+  background: linear-gradient(to bottom, rgb(var(--text) / 0.045), transparent 12px), rgb(var(--bg-sunken));
 }
 
 .agent-home-composer .composer-tray button {
@@ -154,3 +154,71 @@
     padding-inline: 12px;
   }
 }
+
+.composer-model-control {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  border-radius: 999px;
+  background: rgb(var(--bg-sunken) / 0.65);
+}
+
+.composer-model-control .composer-picker {
+  min-height: 28px;
+  border-radius: 999px;
+}
+
+.effort-heading, .effort-bolt { color: #7150ce; }
+.dark .effort-heading, .dark .effort-bolt { color: #ba9bff; }
+
+.effort-track {
+  position: relative;
+  height: 24px;
+  border-radius: 999px;
+  background-color: rgb(var(--text) / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(var(--text) / 0.09);
+}
+.effort-track::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  clip-path: inset(0 calc(100% - var(--effort-fill)) 0 0);
+  background:
+    radial-gradient(circle at 8% 64%, #ffffffc2 0 1.3px, transparent 1.8px),
+    radial-gradient(circle at 21% 23%, #ffffff84 0 0.7px, transparent 1.3px),
+    radial-gradient(circle at 36% 71%, #ffffffa3 0 1.8px, transparent 2.3px),
+    radial-gradient(circle at 48% 35%, #ffffffad 0 0.8px, transparent 1.4px),
+    radial-gradient(circle at 62% 60%, #ffffffcf 0 1.2px, transparent 1.9px),
+    radial-gradient(circle at 76% 22%, #ffffff9e 0 0.9px, transparent 1.5px),
+    radial-gradient(circle at 90% 69%, #ffffffc2 0 1.6px, transparent 2.3px),
+    linear-gradient(100deg, #2364eb, #6654ed 55%, #a25af5);
+}
+.effort-slider {
+  position: relative;
+  display: block;
+  appearance: none;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+.effort-slider::-webkit-slider-runnable-track {
+  height: 24px;
+  background: transparent;
+}
+.effort-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -1px;
+  border: 1px solid #dedce6;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px #241d4429;
+}
+.effort-slider:disabled { cursor: default; }

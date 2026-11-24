@@ -5,7 +5,11 @@ import path from 'node:path'
 
 const state = vi.hoisted(() => ({ agentRoot: '' }))
 vi.mock('electron', () => ({ app: { getPath: () => state.agentRoot } }))
-import { forkSessionFile } from '../sessionFork'
+import { assistantReplyKey } from '../assistantReplyKey'
+import { mapAgentMessages } from '../messageMapping'
+import { forkNumberedSessionFile, forkSessionFile } from '../sessionFork'
+import { readSessionHistoryMetadata } from '../sessionHistory'
+import { normalizeSessionTitleFile } from '../sessionNaming'
 
 /** The sessions root layout is simulated under a temp agent dir; every call
  * passes it explicitly like the existing sessionHistory tests. */
@@ -44,6 +48,48 @@ function sessionFile(turns: number, title = 'WF 文案'): string {
   return writeSource(`2026-11-01T00-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000001.jsonl`, lines)
 }
 
+describe('numbered reply titles', () => {
+  it('reserves sibling numbers on disk across concurrent forks, nested forks and a restarted module', async () => {
+    const file = sessionFile(1, '日报')
+    const options = { agentDir: root, completeTurnsOnly: true }
+    const original = readFileSync(file)
+    const branches = await Promise.all([forkNumberedSessionFile(file, options), forkNumberedSessionFile(file, options)])
+    expect(branches.map(branch => branch.title)).toEqual(['日报（1）', '日报（2）'])
+    expect(readFileSync(file)).toEqual(original)
+    vi.resetModules()
+    const restarted = await import('../sessionFork')
+    const nested = await restarted.forkNumberedSessionFile(branches[0].filePath, options)
+    expect(nested.title).toBe('日报（3）')
+    expect(await readSessionHistoryMetadata(nested.filePath)).toMatchObject({ title: '日报（3）', branchName: { base: '日报', title: '日报（3）' } })
+    const rename = () => ({ live: [], overlays: new Map([[normalizeSessionTitleFile(nested.filePath), { title: '客户周报' }]]) })
+    expect((await restarted.forkNumberedSessionFile(nested.filePath, options, { titles: rename })).title).toBe('客户周报（1）')
+  })
+
+  it('uses the visible renamed or restored source and avoids other live and persisted titles', async () => {
+    const oldFile = sessionFile(1, '原本的日报')
+    const current = writeSource('2026-11-02T00-00-00-000Z_bbbbbbbb-0000-0000-0000-000000000002.jsonl', [
+      { type: 'session', id: 'b', cwd: 'D:\\work' }, msg('user', '第一条消息'), msg('assistant', '回答')
+    ])
+    const options = { agentDir: root }
+    const titles = () => ({ overlays: new Map([[normalizeSessionTitleFile(oldFile), { title: '已重命名' }]]), live: ['已重命名（1）'] })
+    expect((await forkNumberedSessionFile(current, options, { resumeFrom: oldFile, titles })).title).toBe('已重命名（2）')
+    expect((await forkNumberedSessionFile(current, options, { liveTitle: '热会话' })).title).toBe('热会话（1）')
+    expect((await forkNumberedSessionFile(current, options, { resumeFrom: oldFile })).title).toBe('原本的日报（1）')
+    expect((await forkNumberedSessionFile(current, options)).title).toBe('第一条消息（1）')
+  })
+
+  it('treats a hand-authored numeric suffix as title text and preserves the ordinal on long Unicode names', async () => {
+    const file = sessionFile(1, '季度（2）')
+    expect((await forkNumberedSessionFile(file, { agentDir: root })).title).toBe('季度（2）（1）')
+    const branch = await forkNumberedSessionFile(file, { agentDir: root }, { liveTitle: '📈投放'.repeat(25) })
+    const bytes = readFileSync(branch.filePath)
+    expect(bytes.indexOf(10) + 1).toBe(256)
+    expect(branch.title).toMatch(/（1）$/)
+    expect(branch.title).not.toContain('�')
+    expect((await readSessionHistoryMetadata(branch.filePath))?.title).toBe(branch.title)
+  })
+})
+
 describe('forkSessionFile', () => {
   it('duplicates the whole conversation with a fresh uuid and a suffixed title', async () => {
     const source = sessionFile(3)
@@ -58,6 +104,27 @@ describe('forkSessionFile', () => {
     // The source keeps every turn untouched.
     const sourceLines = readFileSync(source, 'utf8').split('\n').filter(Boolean)
     expect(sourceLines).toHaveLength(2 + 3 * 3)
+  })
+
+  it('branches through the exact clicked assistant response, including repeated legacy replies in one turn', async () => {
+    const repeated = msg('assistant', 'Same answer')
+    const other = msg('assistant', 'Second answer')
+    const key = assistantReplyKey(repeated.message)!
+    const source = sessionFile(1)
+    const tail = [repeated, other, repeated, msg('user', 'Later prompt')]
+    writeFileSync(source, readFileSync(source, 'utf8') + tail.map(row => JSON.stringify(row)).join('\n') + '\n')
+    const original = readFileSync(source, 'utf8')
+    const visible = mapAgentMessages(tail.map(row => row.message))
+    expect(visible.map(row => row.replyKey)).toEqual([key, assistantReplyKey(other.message), key, undefined])
+    for (const occurrence of [1, 2]) {
+      const fork = await forkSessionFile(source, { agentDir: root, reply: { key, occurrence, total: 2 } })
+      const text = readFileSync(fork.filePath, 'utf8')
+      expect(JSON.parse(text.trimEnd().split('\n').at(-1)!)).toEqual(repeated)
+      expect(text.includes('Second answer')).toBe(occurrence === 2)
+      expect(text).not.toContain('Later prompt')
+      expect(readFileSync(source, 'utf8')).toBe(original)
+    }
+    await expect(forkSessionFile(source, { agentDir: root, reply: { key, occurrence: 1, total: 1 } })).rejects.toThrow('reply-not-found')
   })
 
   it('truncates at a complete turn boundary and drops the dangling next-turn records', async () => {

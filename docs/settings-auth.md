@@ -83,16 +83,33 @@ Key entry is exactly the same direct paste-key form Oh My Pi itself uses.
 - `model_changed` / `thinking_level_changed` events keep pickers in sync
   with the runtime-resolved state.
 
-## Thinking levels — two DIFFERENT domains
+### Image input for an existing custom model
 
-**Session thinking** (`set_thinking_level` / `--thinking`) uses the session
-enum: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `off` is
-legal here — it is a session runtime state, never the global default.
+Older versions saved manually listed models with `input: [text]`. For a
+model whose endpoint accepts images, open **Settings → Custom providers**
+(设置 → 自定义服务商), click the provider’s pencil **Edit** (编辑), and change
+the target model’s selector from **Text only** (仅文字) to **Text and
+images** (文字和图片). Click **Save provider** (保存服务商). An empty API key
+field retains the saved key. Start a new session or reopen the saved
+conversation to load the updated model declaration.
+
+The input selector appears for each manually listed model. **Use model
+catalog** (使用模型目录) uses the exact provider, model ID, API dialect and
+endpoint match. Unknown endpoints default to text. With **Auto-discover
+models** (自动发现模型) enabled, OMP supplies the discovered model list.
+
+## Thinking levels
+
+**Session thinking** uses the concrete efforts `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max`. Current Oh My Pi also accepts `auto` through
+`set_thinking_level` and `--thinking`. The button inside the effort menu selects
+this native mode, which resolves effort per turn. A saved session records its
+automatic selection in the active branch's `thinking_level_change` entries.
 
 **Default thinking** (`omp config defaultThinkingLevel`) uses the config
 enum: `auto`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (verified
 against 17.2.12). `auto` is legal; `off` is NOT. The GUI keeps these as
-separate TypeScript types (`SessionThinkingLevel` vs `DefaultThinkingLevel`)
+separate TypeScript types (`SessionThinkingSelection` and `DefaultThinkingLevel`)
 so a session enum value can never be written to global config.
 
 Per-model subsets are available from the live session model and from
@@ -109,12 +126,10 @@ the repaired levels. Explicit model declarations and custom endpoints keep
 their configured behavior. Open a new session or reopen a saved one to pick
 up config changes from an already running session.
 
-`set_thinking_level` never errors — unsupported levels are **clamped**
-(e.g. xhigh → high) or resolve to "auto" (unknown values). The GUI
-therefore displays the runtime-resolved level (`thinking_level_changed` /
-`get_state.thinkingLevel`), not the requested one. Scope mirrors models:
-session picks are session-only; the Settings default applies to future
-sessions only.
+The runtime can clamp a fixed selection to a model's supported effort. The
+picker displays the confirmed effort for fixed selections and `Auto` when OMP
+reports `configured: "auto"`. A turn's historical metadata retains the
+concrete effort as recorded by the runtime.
 
 ## Machine skills
 

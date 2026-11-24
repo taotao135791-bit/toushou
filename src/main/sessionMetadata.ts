@@ -83,17 +83,18 @@ export function resolveActivePath(entries: SessionEntry[]): SessionEntry[] {
 }
 
 /** Reconstruct per-turn model/thinking from the active path only. */
-export async function reconstructSessionMetadata(sessionFile: string): Promise<TurnExecutionMetadata[]> {
+export async function reconstructSessionMetadata(sessionFile: string): Promise<{ turns: TurnExecutionMetadata[]; autoThinking?: boolean }> {
   let text: string
   try {
     text = await readFile(sessionFile, 'utf8')
   } catch {
-    return []
+    return { turns: [] }
   }
 
   const activePath = resolveActivePath(parseSessionEntries(text))
   const out: TurnExecutionMetadata[] = []
   let currentModel: string | undefined
+  let autoThinking: boolean | undefined
   let currentThinking: string | undefined
 
   for (const entry of activePath) {
@@ -107,6 +108,7 @@ export async function reconstructSessionMetadata(sessionFile: string): Promise<T
     } else if (entry.type === 'thinking_level_change') {
       // OMP 17.2.12 persists thinking level as a session-wide setting; there is
       // no role field on ThinkingLevelChangeEntry in the pinned upstream schema.
+      autoThinking = entry.configured === 'auto'
       currentThinking = typeof entry.thinkingLevel === 'string' ? entry.thinkingLevel : undefined
     } else if (entry.type === 'message') {
       if (entry.message?.role === 'user') {
@@ -115,7 +117,7 @@ export async function reconstructSessionMetadata(sessionFile: string): Promise<T
     }
   }
 
-  return out
+  return { turns: out, autoThinking }
 }
 
 function asFiniteNumber(value: unknown): number | undefined {

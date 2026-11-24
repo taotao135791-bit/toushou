@@ -1,9 +1,7 @@
 import { memo, useEffect, useMemo } from 'react'
-import { GitBranch } from 'lucide-react'
 import MessageItem from './MessageItem'
 import { TurnChangesRow } from './TurnRow'
 import { MessageLike, useAppStore } from '../store'
-import { useT } from '../i18n'
 import { lastTurn, turnElapsedMs } from '../lib/execution'
 import { projectChatTurns, type ChatTurn } from '../lib/chatFlow'
 import { CheckpointInfo } from '@shared/types'
@@ -16,7 +14,7 @@ interface MessageListProps {
   sessionId?: string | null
   onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
   /** 开分支: fork the conversation up to the chosen turn into a new session. */
-  onBranch?: (sessionId: string, keepUserTurns: number) => void
+  onBranch?: (sessionId: string, reply: MessageLike) => Promise<void>
 }
 
 function MessageList({ messages, sessionId = null, onRetry, onBranch }: MessageListProps) {
@@ -62,7 +60,6 @@ function MessageList({ messages, sessionId = null, onRetry, onBranch }: MessageL
       elapsedMs={index === turns.length - 1 ? lastElapsedMs : undefined}
       canEditSavedBoards={canEditSavedBoards}
       checkpoint={turn.ownerIndex === null ? undefined : checkpointByMsgIndex.get(turn.ownerIndex)} onRetry={onRetry}
-      branchOrdinal={sessionId && !sessionId.startsWith('preview:') && onBranch && !streaming ? index + 1 : undefined}
       lastUserIndex={Math.min(lastUserIndex, (turn.entries.at(-1)?.index ?? -1) + 1)} onBranch={onBranch} />)}
   </div>
 }
@@ -75,47 +72,29 @@ interface ChatTurnViewProps {
   elapsedMs?: number
   checkpoint?: CheckpointInfo
   onRetry?: MessageListProps['onRetry']
-  /** 1-based user-turn ordinal when branching from this turn is offered. */
-  branchOrdinal?: number
   /** Index of the last user message (thinking-disclosure policy input). */
   lastUserIndex?: number
   onBranch?: MessageListProps['onBranch']
 }
 
-const ChatTurnView = memo(function ChatTurnView({ turn, sessionId, streaming, canEditSavedBoards, elapsedMs, checkpoint, onRetry, branchOrdinal, lastUserIndex, onBranch }: ChatTurnViewProps) {
-  const references = useMemo(() => groupBoardPreviews(turn.entries.flatMap(({ message }) => {
-    const reference = message.toolCall && boardPreviewReference(message.toolCall)
-    return reference ? [reference] : []
-  })), [turn])
-  const savedBoards = useMemo(() => {
-    const previews = new Set(references.map(reference => reference.boardId))
-    return groupSavedBoards(turn.entries.flatMap(({ message }) => {
-      return message.toolCall
-        ? savedBoardReferences(message.toolCall).filter(reference => !previews.has(reference.boardId))
-        : []
+const ChatTurnView = memo(function ChatTurnView({ turn, sessionId, streaming, canEditSavedBoards, elapsedMs, checkpoint, onRetry, lastUserIndex, onBranch }: ChatTurnViewProps) {
+  const savedBoards = useMemo(() => groupSavedBoards(turn.entries.flatMap(({ message }) =>
+    message.toolCall ? savedBoardReferences(message.toolCall) : []
+  )), [turn])
+  const references = useMemo(() => {
+    const savedIds = new Set(savedBoards.map(reference => reference.boardId))
+    return groupBoardPreviews(turn.entries.flatMap(({ message }) => {
+      const reference = message.toolCall && boardPreviewReference(message.toolCall)
+      return reference && !savedIds.has(reference.boardId) ? [reference] : []
     }))
-  }, [turn, references])
+  }, [turn, savedBoards])
   const lastProcess = turn.nodes.findLastIndex(node => node.kind === 'process')
   const streamingMessageIndex = streaming ? turn.entries.at(-1)?.index : undefined
-  const t = useT()
   return <section className="group/turn min-w-0 space-y-4" data-chat-turn={turn.id}>
-    {branchOrdinal !== undefined && sessionId && onBranch && (
-      <div className="flex justify-end opacity-0 transition-opacity duration-150 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100">
-        <button
-          type="button"
-          onClick={() => onBranch(sessionId, branchOrdinal)}
-          title={t('history.branchFromHere')}
-          className="focus-ring flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 text-[10.5px] text-cream-faint hover:border-accent/40 hover:text-cream-dim"
-        >
-          <GitBranch size={10} />
-          {t('history.branchFromHere')}
-        </button>
-      </div>
-    )}
     {turn.nodes.map((node, index) => node.kind === 'message' ?
       <div key={node.entry.message.id} data-message-id={node.entry.message.id} className="msg-row min-w-0">
         <MessageItem message={node.entry.message} index={node.entry.index} lastUserIndex={lastUserIndex} sessionId={sessionId} onRetry={onRetry}
-          streaming={node.entry.index === streamingMessageIndex} turnActive={streaming} showBoardAction={node.showBoardAction} />
+          streaming={node.entry.index === streamingMessageIndex} turnActive={streaming} showBoardAction={node.showBoardAction} onBranch={onBranch} />
       </div> :
       <TurnProcess key={node.entries[0].message.id} entries={node.entries} sessionId={sessionId} lastUserIndex={lastUserIndex}
         active={streaming && index === turn.nodes.length - 1}

@@ -11,6 +11,9 @@ describe('saved board preview references', () => {
   })
   it('ignores failures, other tools, bad JSON and missing IDs', () => {
     expect(boardPreviewReference({ tool: 'toushou_board_add_widget', input: {}, output: JSON.stringify(result), isError: true })).toBeNull()
+    for (const draft of [{ draft: true }, { published: false }, { preview: true }]) {
+      expect(boardPreviewReference({ tool: 'toushou_board_add_widget', input: {}, output: { ...result, ...draft } })).toBeNull()
+    }
     expect(boardPreviewReference({ tool: 'write', input: {}, output: JSON.stringify(result) })).toBeNull()
     expect(boardPreviewReference({ tool: 'toushou_board_add_widget', input: {}, output: '{' })).toBeNull()
     expect(boardPreviewReference({ tool: 'toushou_board_add_widget', input: {}, output: { ok: false, board: { id: 'x' }, createdWidgetId: 'y' } })).toBeNull()

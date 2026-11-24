@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
-import { LaunchableTool, SkillEntry } from '../shared/types'
+import { LaunchableTool, PackageInfo, SkillEntry } from '../shared/types'
 import { listPackages } from './packages'
 
 /**
@@ -148,4 +148,26 @@ export async function listLaunchableTools(): Promise<LaunchableTool[]> {
   return [...byCommand.values()].sort(
     (a, b) => a.label.localeCompare(b.label) || (a.command ?? '').localeCompare(b.command ?? '')
   )
+}
+
+/** The composer offers capabilities registered and enabled in this runtime. */
+export function availablePluginChoices(packages: PackageInfo[]): LaunchableTool[] {
+  const choices = new Map<string, LaunchableTool>()
+  for (const pkg of packages) {
+    if (!pkg.enabled) continue
+    const prompts = pkg.path ? toolsFromPackageRoot(pkg.path, 'installed') : []
+    if (prompts.length) {
+      for (const prompt of prompts) choices.set(prompt.command!, prompt)
+      continue
+    }
+    // Extensions without slash commands expose their tools directly to the agent.
+    const manifest = pkg.path ? readToolManifest(pkg.path) : null
+    const name = manifest?.name ?? pkg.name
+    const id = `plugin:${name}`
+    choices.set(id, {
+      id, packageName: name, label: manifest?.label ?? pkg.name, command: null,
+      description: manifest?.description ?? pkg.description, origin: 'installed'
+    })
+  }
+  return [...choices.values()].sort((a, b) => a.label.localeCompare(b.label))
 }

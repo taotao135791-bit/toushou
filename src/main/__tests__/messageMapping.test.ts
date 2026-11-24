@@ -79,8 +79,7 @@ describe('mapAgentMessages', () => {
 
   it('merges consecutive assistant text blocks into one message', () => {
     const out = mapAgentMessages([
-      assistant(textBlock('part one')),
-      assistant({ type: 'thinking', thinking: '...' }, textBlock('part two'))
+      assistant(textBlock('part one'), { type: 'thinking', thinking: '...' }, textBlock('part two'))
     ])
     expect(out).toHaveLength(1)
     expect(out[0].content).toBe('part one\n\npart two')
@@ -181,4 +180,12 @@ describe('mapAgentMessages', () => {
     const out = mapAgentMessages([user('hello')])
     expect(out[0].kind).toBe('prompt')
   })
+})
+
+
+it('restores prompt images alongside text and preserves image-only turns', () => {
+  const image = { type: 'image', mimeType: 'image/png', data: 'UE5H' }
+  const expected = [{ mimeType: image.mimeType, data: image.data }]
+  const mapped = mapAgentMessages([{ role: 'user', content: [image] }, { role: 'user', content: [textBlock('Inspect'), image] }])
+  expect(mapped).toMatchObject([{ content: '', images: expected }, { content: 'Inspect', images: expected }])
 })

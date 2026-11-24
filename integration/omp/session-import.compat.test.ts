@@ -11,6 +11,8 @@ import { binaryAvailable, createIsolatedOmpEnvironment, requireBinary } from './
 vi.mock('../../src/main/omp', () => ({ detectCli: () => ({ command: 'omp' }) }))
 
 import { listSessionHistory } from '../../src/main/sessionHistory'
+import { forkNumberedSessionFile } from '../../src/main/sessionFork'
+import { readSessionFileTranscript } from '../../src/main/sessionTranscript'
 import { importSessionHistory } from '../../src/main/sessionImport'
 
 describe('native runtime compatibility for imported history', () => {
@@ -122,6 +124,46 @@ describe('native runtime compatibility for imported history', () => {
           expect(requests.at(-1)).toContain(answer)
           expect(requests.at(-1)).toContain(continuation)
           expect(JSON.stringify((await session.query({ type: 'get_messages' }))?.data)).toContain('Synthetic continuation reply.')
+          const persisted = await readSessionFileTranscript(file!)
+          const firstReply = persisted?.find(row => row.content === answer)
+          const streamed = events.find(event => event.type === 'reply_completed')
+          expect(streamed).toMatchObject({ replyKey: persisted?.at(-1)?.replyKey })
+          expect(firstReply?.replyKey).toBeTruthy()
+          const fork = await forkNumberedSessionFile(file!, {
+            agentDir: iso.agentDir, reply: { key: firstReply!.replyKey!, occurrence: 1, total: 1 }
+          })
+          const expectedTitle = source === 'codex' ? 'Codex import fixture（1）' : question + '（1）'
+          expect(fork.title).toBe(expectedTitle)
+          expect((await readSessionFileTranscript(fork.filePath))?.map(row => row.content)).toEqual([question, answer])
+          const sourceAfterContinuation = readFileSync(file!, 'utf8')
+          const branchProcess = iso.spawnRpc(bin, [
+            '--session', fork.filePath, '--model', 'localtest/fake', '--no-tools',
+            '--no-extensions', '--no-skills', '--no-rules', '--no-title'
+          ])
+          const branchClosed = new Promise<void>(resolve => branchProcess.once('close', () => resolve()))
+          const branchEvents: SessionEvent[] = []
+          const branch = new OmpSession(
+            { id: 'branch', cwd: workspace, title: 'Branch', createdAt: Date.now(), status: 'idle' },
+            branchProcess as unknown as OmpProcessLike, { label: bin, onEvent: event => branchEvents.push(event) }
+          )
+          try {
+            await vi.waitFor(() => expect(branch.handshakeOutcome?.profile).toBe('current'), { timeout: 15_000 })
+            expect((await branch.query({ type: 'get_state' }))?.data).toMatchObject({ sessionName: expectedTitle })
+            const branchPrompt = 'Continue from the selected reply.'
+            expect(branch.sendPrompt(branchPrompt)).toBe(true)
+            await vi.waitFor(() => expect(branchEvents).toContainEqual(expect.objectContaining({ type: 'reply_completed' })), { timeout: 12_000 })
+            const branchContext = requests.at(-1)!
+            expect(branchContext).toContain(question)
+            expect(branchContext).toContain(answer)
+            expect(branchContext).toContain(branchPrompt)
+            expect(branchContext).not.toContain(continuation)
+            expect(branchContext).not.toContain('Synthetic continuation reply.')
+            expect((await listSessionHistory(workspace, iso.agentDir)).find(row => row.filePath === fork.filePath)).toMatchObject({ title: expectedTitle })
+            expect(readFileSync(file!, 'utf8')).toBe(sourceAfterContinuation)
+          } finally {
+            branch.kill()
+            await branchClosed
+          }
         } finally {
           session.kill()
           await closed
@@ -131,7 +173,7 @@ describe('native runtime compatibility for imported history', () => {
         expect(statSync(sourceFile).mtimeMs).toBe(mtime)
         expect(readFileSync(file as string, 'utf8')).toContain('Synthetic continuation reply.')
       }
-      expect(requests).toHaveLength(2)
+      expect(requests).toHaveLength(4)
     } finally {
       await new Promise<void>(resolve => provider.close(() => resolve()))
       iso.cleanup()

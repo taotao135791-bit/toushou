@@ -35,7 +35,7 @@ export function sidebarConversations(input: {
   }
   for (const session of input.sessions) {
     const record = recordByRuntimeId.get(session.id)
-    const uuid = recordDurableUuid(record) ?? sessionFileUuid(session.resumeFrom ?? session.sessionFile)
+    const uuid = recordDurableUuid(record) ?? sessionFileUuid(session.resumeFrom ?? session.sessionFile) ?? session.draftSessionUuid
     add({ kind: 'live', key: identity(session.cwd, uuid ?? `runtime:${session.id}`), workspacePath: session.cwd,
       timestamp: session.lastActivityAt ?? session.createdAt, title: session.title, pinned: input.pinned.has(session.id), projectName: basename(session.cwd) || session.cwd, session })
   }

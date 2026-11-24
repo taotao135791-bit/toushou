@@ -1,7 +1,7 @@
 import { Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
-import type { ProjectRecord, RuntimeModelInfo, RuntimeOverview, Session, SessionState, SessionThinkingLevel, SkillEntry, SkillReadResult, WorkspaceGrant } from '@shared/types'
+import type { ProjectRecord, RuntimeModelInfo, RuntimeOverview, Session, SessionState, SessionThinkingSelection, SkillEntry, SkillReadResult, WorkspaceGrant } from '@shared/types'
 import ChatPanel from './ChatPanel'
 import ExecutionActivity from './ExecutionActivity'
 import MessageList from './MessageList'
@@ -59,7 +59,14 @@ const fixture = {
   commits: 0, renderMs: 0, backgroundUpdates: 0,
   currentModel: deepSeekModel,
   currentThinkingLevel: 'auto',
-  thinkingSelections: [] as Array<{ sessionId: string; level: SessionThinkingLevel }>,
+  sentImages: [] as Array<{ data: string; mimeType: string }>,
+  finishImageTest() {
+    const state = useAppStore.getState()
+    state.setBusy(current.id, false)
+    state.setMessages(current.id, [])
+    state.setSessionError(current.id, null)
+  },
+  thinkingSelections: [] as Array<{ sessionId: string; level: SessionThinkingSelection }>,
   reset() { fixture.commits = 0; fixture.renderMs = 0; fixture.backgroundUpdates = 0 },
   async updateBackground() {
     for (let i = 0; i < 200; i++) {
@@ -193,12 +200,21 @@ const fixture = {
 declare global { interface Window { chatPerfFixture: typeof fixture } }
 window.chatPerfFixture = fixture
 window.electronAPI = {
+  selectComposerAttachment: async () => ({ ok: true, name: 'pixel.png', mimeType: 'image/png',
+    data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9+v6kAAAAASUVORK5CYII=' }),
+  sendMessage: async (_id: string, _text: string, images: Array<{ data: string; mimeType: string }>) => {
+    fixture.sentImages = images
+    return true
+  },
   listCommands: async () => [], getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }), listModels: async () => [],
-  listLaunchableTools: () => new Promise(() => undefined),
+  listLaunchableTools: (mode?: string) => mode === 'enabled-plugins'
+    ? Promise.resolve([{ id: 'plugin:reports', label: 'Report extension', command: null, origin: 'installed' }])
+    : new Promise(() => undefined),
   listBundledSkills: () => new Promise(() => undefined),
   listSkills: async () => ({ ok: true, entries: [skill] }),
   readSkill: () => new Promise<SkillReadResult>((resolve) => { resolveSkill = resolve }),
   mcpList: async () => [{ enabled: true, name: 'synthetic-ads' }],
+  dingTalkStatus: async () => ({ status: 'connected' }),
   listProjectFiles: async () => [],
   setComposerDrafts: async () => true,
   runtimeListModels: async () => [{ ...deepSeekModel, reasoning: false, thinking: [] }, mediumOnlyModel, plainModel],
@@ -220,7 +236,7 @@ window.electronAPI = {
     state.applySessionEvent({ type: 'model_changed', sessionId })
     return true
   },
-  setThinkingLevel: async (sessionId: string, level: SessionThinkingLevel) => {
+  setThinkingLevel: async (sessionId: string, level: SessionThinkingSelection) => {
     if (sessionId !== current.id) return false
     fixture.thinkingSelections.push({ sessionId, level })
     fixture.currentThinkingLevel = level

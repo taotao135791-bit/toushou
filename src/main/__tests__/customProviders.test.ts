@@ -68,6 +68,33 @@ function readDoc(): Record<string, Record<string, unknown>> {
 }
 
 describe('save → list round-trip', () => {
+  it('preserves native inputs and can explicitly upgrade a saved text model', async () => {
+    const provider = spec()
+    const model = provider.models[0]
+    const deps = { modelsFile, runner: null, modelCatalog: [] }
+    await saveCustomProvider(provider, deps)
+    const stored = listCustomProviders(deps)
+    expect(stored).toMatchObject({ providers: [{ models: [{ input: ['text'] }] }] })
+    await saveCustomProvider({ ...provider, models: [{ ...model, input: ['text', 'image'] }] }, deps)
+    await saveCustomProvider(provider, deps)
+    expect(readDoc()[provider.id].models).toMatchObject([{ input: ['text', 'image'] }])
+    await saveCustomProvider({ ...provider, models: [{ ...model, input: ['text'] }] }, deps)
+    expect(readDoc()[provider.id].models).toMatchObject([{ input: ['text'] }])
+    expect(sanitizeCustomProviderSpec({ ...provider, models: [{ ...model, input: ['audio'] }] })).toBeNull()
+  })
+
+  it('takes inputs from an exact native endpoint + model, never from a similarly named gateway', async () => {
+    const provider = spec()
+    const model = provider.models[0]
+    const catalog: RuntimeModelInfo[] = [{ ...model, provider: provider.id, selector: provider.id + '/' + model.id,
+      api: provider.api, baseUrl: provider.baseUrl, reasoning: false, thinking: [], input: ['text', 'image'] }]
+    const deps = { modelsFile, runner: null, modelCatalog: catalog }
+    await saveCustomProvider(provider, deps)
+    expect(readDoc()[provider.id].models).toMatchObject([{ input: ['text', 'image'] }])
+    await saveCustomProvider({ ...provider, baseUrl: 'https://other.example/v1', models: [{ ...model, input: null }] }, deps)
+    expect(readDoc()[provider.id].models).toMatchObject([{ input: ['text'] }])
+  })
+
   it('retains native capability declarations when editing the same custom model', async () => {
     const thinking = { mode: 'effort', efforts: ['low', 'high'] }
     const provider = spec()

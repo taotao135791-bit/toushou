@@ -1,6 +1,7 @@
+import BoardsIcon from './BoardsIcon'
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, LayoutDashboard, Loader2, X } from 'lucide-react'
+import { Check, Loader2, X } from 'lucide-react'
 import { KanbanBoard } from '@shared/types'
 import { BOARD_LIMITS } from '@shared/boards'
 import { useT } from '../i18n'
@@ -125,7 +126,7 @@ export function SaveMessageToBoardDialog({
       >
         <header className="flex shrink-0 items-start gap-2.5 border-b border-line px-5 py-4">
           <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
-            <LayoutDashboard size={14} />
+            <BoardsIcon size={14} />
           </span>
           <div className="min-w-0 flex-1">
             <h2 id={titleId} className="text-[14px] font-semibold text-cream">{t('boards.chat.dialogTitle')}</h2>

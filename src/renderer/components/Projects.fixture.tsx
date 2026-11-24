@@ -41,6 +41,7 @@ const fixture = {
 declare global { interface Window { projectsFixture: typeof fixture } }
 window.projectsFixture = fixture
 Object.defineProperty(navigator.clipboard, 'writeText', { value: async (text: string) => { fixture.clipboard = text } })
+const preferences = new Map<string, unknown>()
 window.electronAPI = {
   listProjects: async () => structuredClone(fixture.projects),
   listRecentWorkspaces: async () => fixture.projects.filter(row => !row.archived).map(row => ({ id: row.id, displayPath: row.path, lastUsedAt: 1 })),
@@ -85,7 +86,8 @@ window.electronAPI = {
   gitInfo: async () => null,
   getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }),
   listModels: async () => [],
-  setStore: async () => undefined
+  getStore: async (key: string) => preferences.get(key),
+  setStore: async (key: string, value: unknown) => { preferences.set(key, value) }
 } as unknown as typeof window.electronAPI
 useAppStore.setState({ language: 'en', currentSessionId: null, currentWorkspace: null, sessions: [] })
 createRoot(document.getElementById('root')!).render(<MemoryRouter><div style={{ display: 'flex', height: '100vh' }}><aside id="sidebar-projects" style={{ width: 260, flexShrink: 0 }}><SidebarProjects renderConversations={fixture.renderConversations} /></aside><main id="composer-projects" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}><Composer onSend={() => undefined} /></main></div></MemoryRouter>)

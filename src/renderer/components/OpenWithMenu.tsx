@@ -1,4 +1,8 @@
-import { useRef, useState } from 'react'
+import finderIcon from '../assets/brands/finder.png'
+import terminalIcon from '../assets/brands/terminal.png'
+import editorIcon from '../assets/brands/vscode.png'
+import { useAppStore } from '../store'
+import { useEffect, useRef, useState } from 'react'
 import { Code, ExternalLink, FolderSymlink, Terminal } from 'lucide-react'
 import { OpenWorkspaceTarget } from '@shared/types'
 import { useT } from '../i18n'
@@ -32,9 +36,22 @@ export default function OpenWithMenu({
     }
   }
 
+  const platform = window.electronAPI.platform
+  const [nativeIcons, setNativeIcons] = useState<{ finder?: string; terminal?: string }>({})
+  const zh = useAppStore(s => s.language === 'zh')
+  useEffect(() => {
+    if (!open || platform !== 'win32') return
+    let current = true
+    void window.electronAPI.workspaceAppIcons().then(icons => { if (current) setNativeIcons(icons) }).catch(() => {})
+    return () => { current = false }
+  }, [open, platform])
+  const images = { editor: editorIcon, finder: platform === 'darwin' ? finderIcon : nativeIcons.finder,
+    terminal: platform === 'darwin' ? terminalIcon : nativeIcons.terminal }
+  const fileManager = platform === 'win32' ? (zh ? '在文件资源管理器中显示' : 'Show in File Explorer')
+    : platform === 'linux' ? (zh ? '在文件管理器中显示' : 'Show in file manager') : t('chat.openInFinder')
   const items: Array<{ target: OpenWorkspaceTarget; icon: typeof Code; label: string }> = [
-    { target: 'finder', icon: FolderSymlink, label: t('chat.openInFinder') },
-    { target: 'terminal', icon: Terminal, label: t('chat.openInTerminal') },
+    { target: 'finder', icon: FolderSymlink, label: fileManager },
+    { target: 'terminal', icon: Terminal, label: platform === 'win32' ? (zh ? '在命令提示符中打开' : 'Open in Command Prompt') : t('chat.openInTerminal') },
     { target: 'editor', icon: Code, label: t('chat.openInEditor') }
   ]
 
@@ -65,7 +82,7 @@ export default function OpenWithMenu({
             onClick={() => void openIn(target)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
           >
-            <Icon size={13} className="shrink-0 text-cream-faint" />
+            {images[target] ? <img src={images[target]} alt="" className="h-4 w-4 shrink-0 object-contain" /> : <Icon size={16} className="shrink-0 text-cream-faint" />}
             {label}
           </button>
         ))}

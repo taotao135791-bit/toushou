@@ -4,6 +4,7 @@ import {
   CustomProviderApi,
   CustomProviderError,
   CustomProviderInfo,
+  CustomProviderModelSpec,
   CustomProviderSpec
 } from '@shared/types'
 import { useAppStore } from '../store'
@@ -33,6 +34,7 @@ interface FormState {
    * endpoints have a fixed model set, so plain text beats per-row editors.
    */
   modelsText: string
+  modelDetails: Map<string, CustomProviderModelSpec>
 }
 
 const emptyForm = (): FormState => ({
@@ -44,6 +46,7 @@ const emptyForm = (): FormState => ({
   apiKey: '',
   hasStoredKey: false,
   discovery: false,
+  modelDetails: new Map(),
   modelsText: ''
 })
 
@@ -60,6 +63,7 @@ const formFromProvider = (p: CustomProviderInfo): FormState => ({
   apiKey: '',
   hasStoredKey: p.hasKey,
   discovery: p.discovery,
+  modelDetails: new Map(p.models.map(m => [m.id, m])),
   modelsText: p.models.map((m) => (m.name && m.name !== m.id ? `${m.id} ${m.name}` : m.id)).join('\n')
 })
 
@@ -139,7 +143,7 @@ export default function CustomProvidersSection() {
     apiKey: f.apiKey.trim() ? f.apiKey.trim() : undefined,
     authNone: f.authNone,
     discovery: f.discovery,
-    models: f.discovery ? [] : parseModelsText(f.modelsText)
+    models: f.discovery ? [] : parseModelsText(f.modelsText).map(row => ({ ...f.modelDetails.get(row.id), ...row }))
   })
 
   const save = async () => {
@@ -345,6 +349,24 @@ export default function CustomProvidersSection() {
                 <p className="mt-1 text-[11px] text-cream-faint">
                   {t('settings.customProviderModelsHint')}
                 </p>
+                {parseModelsText(form.modelsText).map(model => {
+                  const input = form.modelDetails.get(model.id)?.input
+                  return <label key={model.id} className="mt-2 flex items-center justify-between gap-2 text-xs text-cream-dim">
+                    <span className="min-w-0 truncate" title={model.id}>{model.name || model.id}</span>
+                    <select disabled={saving} className={selectCls} aria-label={t('settings.modelInput', { name: model.id })}
+                      value={input ? (input.includes('image') ? 'image' : 'text') : 'catalog'}
+                      onChange={event => {
+                        const mode = event.currentTarget.value
+                        const details = new Map(form.modelDetails)
+                        details.set(model.id, { ...details.get(model.id), ...model, input: mode === 'catalog' ? null : mode === 'image' ? ['text', 'image'] : ['text'] })
+                        patchForm({ modelDetails: details })
+                      }}>
+                      <option value="catalog">{t('settings.modelInputCatalog')}</option>
+                      <option value="text">{t('settings.modelInputText')}</option>
+                      <option value="image">{t('settings.modelInputImage')}</option>
+                    </select>
+                  </label>
+                })}
               </div>
             )}
 

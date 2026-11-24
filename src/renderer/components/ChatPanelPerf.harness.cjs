@@ -28,6 +28,7 @@ app.whenReady().then(async () => {
     win.show()
     // CI displays can have a smaller work area; preserve the viewport under test.
     win.setContentSize(1024, 700)
+    if (process.platform === 'darwin') app.focus({ steal: true })
     win.focus()
     wc.focus()
     await Promise.race([readyToShow, new Promise((_, reject) => setTimeout(() => reject(new Error('ready-to-show timeout')), 5000))])
@@ -36,7 +37,7 @@ app.whenReady().then(async () => {
       const until = Date.now() + 5000
       while (!await js(expression)) {
         if (Date.now() > until) {
-          const state = await js(`(() => {const el=document.activeElement;const trigger=document.querySelector('button[aria-label="Add content"]');const action=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Attach image');return {active:el?.getAttribute('aria-label')||el?.tagName,expanded:trigger?.getAttribute('aria-expanded'),attachment:action?getComputedStyle(action).visibility:'missing',events:window.composerInputEvents?.slice(-15)}})()`)
+          const state = await js(`(() => {const el=document.activeElement;const trigger=document.querySelector('button[aria-label="Add content"]');const action=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Attach image');return {active:el?.getAttribute('aria-label')||el?.tagName,expanded:trigger?.getAttribute('aria-expanded'),attachment:action?getComputedStyle(action).visibility:'missing',events:window.composerInputEvents?.slice(-15),level:document.querySelector('button[title=Thinking]')?.ariaLabel}})()`)
           throw new Error(`${phase}: timed out: ${expression}; renderer: ${JSON.stringify(state)}`)
         }
         await new Promise(resolve => setTimeout(resolve, 15))
@@ -45,26 +46,98 @@ app.whenReady().then(async () => {
     const frame = () => js(`new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('animation-frame timeout; visible='+document.visibilityState+' focused='+document.hasFocus())),3000);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}))})`)
     await waitFor(`document.visibilityState==='visible' && document.hasFocus() && !!window.chatPerfFixture && innerWidth===1024 && innerHeight===700`)
     await frame()
+    phase = 'open a picked image before and after an image-only send'
+    const imageButton = `document.querySelector('button[aria-label="View image"]')`
+    const lightboxImage = `document.querySelector('dialog[open] img')`
+    const viewImage = async () => {
+      await waitFor(imageButton)
+      await js(imageButton + '.click()')
+      await waitFor(lightboxImage + '?.naturalWidth === 1')
+      const src = await js(lightboxImage + '.src')
+      await js(`document.querySelector('dialog[open] button[aria-label="Close"]').click()`)
+      await waitFor('!document.querySelector("dialog[open]")')
+      return src
+    }
+    await js(`document.querySelector('button[aria-label="Add content"]').click()`)
+    await js("[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Attach file').click()")
+    const stagedImage = await viewImage()
+    await js(`document.querySelector('button[aria-label="Send"]').click()`)
+    await waitFor('window.chatPerfFixture.sentImages.length === 1')
+    const deliveredImage = await viewImage()
+    if (stagedImage !== deliveredImage || !await js('window.chatPerfFixture.sentImages[0].data === ' + JSON.stringify(stagedImage.split(',')[1]))) {
+      throw new Error('The preview and dispatched image bytes differ')
+    }
+    await js('window.chatPerfFixture.finishImageTest()')
+    await frame()
     phase = 'DeepSeek session thinking selector'
     const modelTrigger = `document.querySelector('button[title="Model"]')`
     const thinkingTrigger = `document.querySelector('button[title="Thinking"]')`
-    const thinkingMenu = `[...document.querySelectorAll('body > div')].find(element => element.firstElementChild?.tagName === 'BUTTON' && element.firstElementChild.textContent.trim() === 'Auto')`
+    const thinkingMenu = `document.querySelector('[data-thinking-menu]')`
     await waitFor(`${modelTrigger}?.ariaLabel === 'Model: DeepSeek-V4.1-Flash' && ${thinkingTrigger}?.ariaLabel === 'Thinking: Auto'`)
     const showThinkingMenu = async () => {
       await js(`${thinkingTrigger}.click()`)
       await waitFor(`!!(${thinkingMenu})`)
     }
-    const thinkingLabels = () => js(`[...(${thinkingMenu}).children].map(button => button.textContent.trim())`)
+    const thinkingLabels = () => js(`[...(${thinkingMenu}).querySelectorAll('[data-thinking-choice]')].map(button => button.textContent.trim())`)
     const chooseThinking = async label => {
-      await js(`[...(${thinkingMenu}).children].find(button => button.textContent.trim() === ${JSON.stringify(label)})?.click()`)
+      await js(`[...(${thinkingMenu}).querySelectorAll('[data-thinking-choice]')].find(button => button.textContent.trim() === ${JSON.stringify(label)})?.click()`)
       await waitFor(`${thinkingTrigger}.ariaLabel === ${JSON.stringify(`Thinking: ${label}`)}`)
     }
     await showThinkingMenu()
     const deepSeekThinking = await thinkingLabels()
-    for (const [index, label] of ['Low', 'High', 'Max', 'Off'].entries()) {
-      if (index > 0) await showThinkingMenu()
-      await chooseThinking(label)
+    const chatMenuAbove = await js(`(${thinkingMenu}).closest('body > div').getBoundingClientRect().bottom <= ${thinkingTrigger}.getBoundingClientRect().top`)
+    const slider = `(${thinkingMenu}).querySelector('input[type="range"]')`
+    const checkMenu = () => waitFor(`!!(${thinkingMenu}) && ${thinkingTrigger}.getAttribute('aria-expanded') === 'true'`)
+    const dismissWithKey = async () => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+      await waitFor(`!(${thinkingMenu})`)
     }
+    const narrowWidth = 540
+    win.setContentSize(narrowWidth, 700)
+    await waitFor(`innerWidth === ${narrowWidth}`)
+    await frame()
+    const insetMenu = await js(`(() => {
+      const rect = (${thinkingMenu}).parentElement.getBoundingClientRect()
+      const trigger = (${thinkingTrigger}).getBoundingClientRect()
+      return rect.left >= 16 && rect.right <= innerWidth - 16 && rect.right <= trigger.right + 1
+    })()`)
+    win.setContentSize(1024, 700)
+    await waitFor('innerWidth === 1024')
+    await frame()
+    const themeColor = () => js(`getComputedStyle((${thinkingMenu}).querySelector('.effort-heading')).color`)
+    const lightEffort = await themeColor()
+    await js("document.documentElement.classList.add('dark')")
+    const darkEffort = await themeColor()
+    await js("document.documentElement.classList.remove('dark')")
+    const trackHasStars = await js(`getComputedStyle((${slider}).parentElement, '::before').backgroundImage.includes('radial-gradient')`)
+    if (process.platform === 'darwin') app.focus({ steal: true })
+    win.focus()
+    wc.focus()
+    wc.debugger.attach('1.3')
+    const drag = async (start, end, label) => {
+      const rect = await js(`(${slider}).getBoundingClientRect().toJSON()`)
+      const x = fraction => Math.round(rect.left + 13 + (rect.width - 26) * fraction)
+      const y = Math.round(rect.top + rect.height / 2)
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: x(start), y, button: 'left', buttons: 1, clickCount: 1 })
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x(end), y, button: 'left', buttons: 1 })
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x(end), y, button: 'left', buttons: 0, clickCount: 1 })
+      await waitFor(`${thinkingTrigger}.ariaLabel === ${JSON.stringify('Thinking: ' + label)}`)
+      await checkMenu()
+    }
+    await drag(0, 1 / 3, 'Low')
+    await drag(1 / 3, 2 / 3, 'High')
+    wc.debugger.detach()
+    await js(`(${slider}).focus()`)
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'End' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'End' })
+    await waitFor(`${thinkingTrigger}.ariaLabel === 'Thinking: Max'`)
+    await checkMenu()
+    await chooseThinking('Off')
+    await checkMenu()
+    await dismissWithKey()
+    const hiddenAuto = await js(`!document.querySelector('button[aria-label="Set thinking level automatically"]')`)
+    const effortInteraction = { insetMenu, themed: lightEffort !== darkEffort, trackHasStars, hiddenAuto }
     phase = 'switch model thinking capabilities'
     const chooseModel = async name => {
       await js(`${modelTrigger}.click()`)
@@ -78,6 +151,12 @@ app.whenReady().then(async () => {
     await showThinkingMenu()
     const mediumOnlyThinking = await thinkingLabels()
     await chooseThinking('Medium')
+    await js(`document.querySelector('button[aria-label="Set thinking level automatically"]').click()`)
+    await waitFor(`${thinkingTrigger}.ariaLabel === 'Thinking: Auto'`)
+    await checkMenu()
+    wc.sendInputEvent({ type: 'mouseDown', x: 4, y: 4, button: 'left', clickCount: 1 })
+    wc.sendInputEvent({ type: 'mouseUp', x: 4, y: 4, button: 'left', clickCount: 1 })
+    await waitFor(`!(${thinkingMenu})`)
     await chooseModel('Synthetic plain model')
     await showThinkingMenu()
     const plainThinking = await thinkingLabels()
@@ -198,6 +277,7 @@ app.whenReady().then(async () => {
     await frame()
     const defaultRecovered = await js(`({ ...window.chatPerfFixture.recoverySnapshot(),promptGone:!document.querySelector('.home-hero').textContent.includes('Confirm the default save folder'),draft:document.querySelector('.home-hero textarea').value })`)
     phase = 'native undo after typing in the composer'
+    if (process.platform === 'darwin') app.focus({ steal: true })
     win.focus()
     wc.focus()
     await waitFor('document.hasFocus()')
@@ -241,6 +321,31 @@ app.whenReady().then(async () => {
       await waitFor(`${search}===document.activeElement`)
       await waitFor(`!!(${skillOption})`)
     }
+    phase = 'home menus open below the composer'
+    const homeMenusBelow = []
+    for (const selector of ['button[aria-label="Add content"]', 'button[aria-label="Permissions"]', '.composer-model-control button:first-child[title]', 'button[title="Thinking"]', '.composer-tray button[aria-haspopup="menu"]']) {
+      const trigger = `document.querySelector(${JSON.stringify('.home-hero ' + selector)})`
+      await click(trigger)
+      const portal = `document.querySelector('body > div.shadow-pop')`
+      await waitFor(`!!${portal} && getComputedStyle(${portal}).visibility==='visible'`)
+      homeMenusBelow.push(await js(`${portal}.getBoundingClientRect().top >= ${trigger}.getBoundingClientRect().bottom`))
+      key('Escape')
+      await waitFor(`!${portal}`)
+    }
+    phase = 'home plugin tray'
+    const trayTrigger = `document.querySelector('.composer-tray button[aria-haspopup="listbox"]')`
+    const traySearch = `document.querySelector('input[aria-label="Search skills, connections and plugins"]')`
+    const trayOption = label => `[...document.querySelectorAll('[role="option"]')].find(el => el.textContent.trim() === ${JSON.stringify(label)})`
+    await click(trayTrigger)
+    await waitFor(`!!(${trayOption('DingTalk')}) && !!(${trayOption('synthetic-ads')}) && !!(${trayOption('Synthetic team skill')}) && !!(${trayOption('Report extension')})`)
+    const opensBelow = await js(`${traySearch}.closest('body > div').getBoundingClientRect().top >= ${trayTrigger}.getBoundingClientRect().bottom`)
+    await waitFor(`document.activeElement===${traySearch}`)
+    await wc.insertText('ding')
+    await waitFor(`!!(${trayOption('DingTalk')}) && !(${trayOption('synthetic-ads')})`)
+    key('Return')
+    await waitFor(`document.querySelector('.home-hero textarea').value.includes('Use the DingTalk connection to')`)
+    const homeTray = await js(`({opensBelow:${opensBelow},draft:document.querySelector('.home-hero textarea').value})`)
+    phase = 'native undo after typing in the composer'
     await js('window.chatPerfFixture.prepareComposer()')
     await waitFor(`${field}?.value==='Review'`)
     await frame()
@@ -278,7 +383,7 @@ app.whenReady().then(async () => {
     await js('window.chatPerfFixture.finishReadingSkill()')
     await frame()
     const composerSwitch = await js(`({drafts:window.chatPerfFixture.composerDrafts(),text:${field}.value})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
+    console.log('E2E_RESULT ' + JSON.stringify({ chatMenuAbove, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

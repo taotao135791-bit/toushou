@@ -23,6 +23,7 @@ const rows: HistorySessionRow[] = [
 const fixture = {
   rows, activateCalls: [] as string[], historyCalls: [] as string[], resumeCalls: [] as Array<{ grantId: string; historyId: string; cwd: string }>,
   deleteCalls: 0,
+  settings: {} as Record<string, unknown>,
   allowDelete: false,
   allowLockWrite: true,
   locks: new Set<string>(),
@@ -35,6 +36,12 @@ const fixture = {
   creates: [] as string[], sent: [] as Array<{ id: string; text: string }>,
   globalNewChat() { useAppStore.getState().setCurrentSessionId(null) },
   async addBetaHistory() { fixture.rows.push({ uuid: uuid(30), cwd: pathB, title: 'Fresh Beta history', timestamp: 900 }); await useAppStore.getState().loadAllHistorySessions() },
+  async addLongHistory() {
+    fixture.rows.push(...Array.from({ length: 384 }, (_, i) => ({
+      uuid: uuid(1000 + i), cwd: defaultPath, title: `Large history ${i}`, timestamp: 2000 + i
+    })))
+    await useAppStore.getState().loadAllHistorySessions()
+  },
   slowResume: false, finishResume: null as (() => void) | null,
   slowHistory: new Set<string>(),
   pendingHistory: new Map<string, () => void>(),
@@ -60,7 +67,7 @@ declare global { interface Window { sidebarFixture: typeof fixture; keptConversa
 window.sidebarFixture = fixture
 window.electronAPI = {
   getStore: async (key: string) => key === 'sidebarWidth' ? 260 : key === 'sessionSort' ? 'recent' : key === 'lockedSessionIds' ? [...fixture.locks] : undefined,
-  setStore: async () => undefined,
+  setStore: async (key: string, value: unknown) => { fixture.settings[key] = value; return true },
   setSessionLocked: async (id: string, locked: boolean) => {
     if (!fixture.allowLockWrite) return false
     if (locked) fixture.locks.add(id)

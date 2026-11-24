@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingLevel, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingSelection, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
@@ -35,7 +35,7 @@ let sessionLockHydration: Promise<boolean> | null = null
 function applyContentDelta(list: MessageLike[], content: string): MessageLike[] {
   if (list.length === 0) return [{ id: crypto.randomUUID(), role: 'assistant', content }]
   const last = list[list.length - 1]!
-  if (last.role !== 'assistant' || last.toolCall) {
+  if (last.role !== 'assistant' || last.toolCall || last.replyKey) {
     return [...list, { id: crypto.randomUUID(), role: 'assistant', content }]
   }
   const updated = [...list]
@@ -68,6 +68,7 @@ export interface MessageLike {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  replyKey?: string
   /**
    * Interaction kind of a user-originated message. `steer` marks a message
    * steered into the CURRENT active turn (not a new prompt turn); `prompt`
@@ -302,7 +303,7 @@ interface AppState {
   runtimeModels: RuntimeModelInfo[]
   /** Full static model catalog (credential-independent) for the Settings picker. */
   runtimeModelCatalog: RuntimeModelInfo[]
-  /** sessionId -> runtime-resolved thinking level (thinking_level_changed events). */
+  /** sessionId -> runtime-confirmed selection (auto or resolved fixed effort). */
   sessionThinking: Record<string, string | undefined>
   /** sessionId -> bumped on model_changed; pickers refetch get_state. */
   sessionModelVersion: Record<string, number>
@@ -477,17 +478,17 @@ interface AppState {
    */
   setCurrentSessionModel: (provider: string, modelId: string) => Promise<boolean>
   /** Hot-switch the CURRENT session's thinking level — session scope only. */
-  setCurrentSessionThinking: (level: SessionThinkingLevel) => Promise<boolean>
+  setCurrentSessionThinking: (level: SessionThinkingSelection) => Promise<boolean>
   /** Model selector for the NEXT session's spawn args (''/null = runtime default). */
   pendingModel: string | null
   /** Thinking level for the NEXT session's spawn args (null = runtime default). */
-  pendingThinking: SessionThinkingLevel | null
+  pendingThinking: SessionThinkingSelection | null
   /** Set the next-session model override (composer pickers without a session). */
   setPendingModel: (selector: string | null) => void
   /** Set the next-session thinking override. */
-  setPendingThinking: (level: SessionThinkingLevel | null) => void
+  setPendingThinking: (level: SessionThinkingSelection | null) => void
   /** Snapshot next-session spawn overrides without consuming the user's choice. */
-  getSessionOverrides: () => { modelSelector?: string; thinkingLevel?: SessionThinkingLevel }
+  getSessionOverrides: () => { modelSelector?: string; thinkingLevel?: SessionThinkingSelection }
   /**
    * Clear only overrides that still match a successful session's snapshot.
    * A picker change made while creation is in flight belongs to the next
@@ -495,7 +496,7 @@ interface AppState {
    */
   clearSessionOverrides: (overrides: {
     modelSelector?: string
-    thinkingLevel?: SessionThinkingLevel
+    thinkingLevel?: SessionThinkingSelection
   }) => void
   /** Refresh the runtime settings overview (profile/capabilities/providers). */
   loadRuntimeOverview: (force?: boolean) => Promise<void>
@@ -1719,6 +1720,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       } else {
         streamQueue.push({ kind: 'content', sessionId: event.sessionId, delta: event.content })
       }
+    } else if (event.type === 'reply_completed') {
+      streamQueue.pushBarrier(event.sessionId, () => set(state => {
+        const list = state.messages[event.sessionId]
+        const last = list?.at(-1)
+        if (!last || last.role !== 'assistant' || last.toolCall || !last.content || last.replyKey) return state
+        return { messages: { ...state.messages, [event.sessionId]: [...list.slice(0, -1), { ...last, replyKey: event.replyKey }] } }
+      }))
     } else if (event.type === 'thinking') {
       streamQueue.push({ kind: 'thinking', sessionId: event.sessionId, delta: event.delta })
     } else if (event.type === 'tool_call') {
@@ -1832,8 +1840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       })
     } else if (event.type === 'thinking_level_changed') {
-      // Runtime-resolved level (may be clamped from the requested one);
-      // pickers display exactly this, never the optimistic request.
+      // Adaptive mode reports auto. A fixed effort can be clamped by the model.
       set((state) => ({
         sessionThinking: { ...state.sessionThinking, [event.sessionId]: event.level }
       }))

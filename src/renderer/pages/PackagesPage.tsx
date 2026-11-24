@@ -1,7 +1,8 @@
+import { invalidateInvokeLists } from '../components/InvokePicker'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Puzzle,
+  Layers,
   Plus,
   RotateCcw,
   FolderOpen,
@@ -169,6 +170,7 @@ export default function PackagesPage() {
         PLUGINS_LOAD_TIMEOUT_MS
       )
       if (generation !== refreshGeneration.current) return
+      invalidateInvokeLists()
       setPackages(nextPackages)
       setPackageCapabilities(capabilities)
       const commands: Record<string, string> = {}
@@ -460,7 +462,7 @@ export default function PackagesPage() {
     <div className="relative flex h-full flex-col overflow-hidden">
       <header className="app-drag flex h-12 shrink-0 items-center justify-between border-b border-line px-4">
         <div className="flex items-center gap-2.5">
-          <Puzzle size={15} className="text-accent" />
+          <Layers size={15} className="text-accent" />
           <span className="text-[13px] font-medium text-cream">{t('plugins.pageTitle')}</span>
         </div>
         <button
@@ -1326,7 +1328,7 @@ function CommunityPackageCard({
   return (
     <div className="flex gap-3 rounded-[14px] border border-line bg-ink-850 p-3.5 transition-all duration-150 ease-standard hover:border-ink-600 hover:shadow-card">
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-accent-soft">
-        <Puzzle size={15} strokeWidth={1.8} className="text-accent" />
+        <Layers size={15} strokeWidth={1.8} className="text-accent" />
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">

@@ -143,6 +143,11 @@ describe('DeepSeek Flash runtime thinking', () => {
           expect(body.reasoning_effort).toBe(level)
         }
       }
+      const beforeAuto = events.length
+      expect(await session.query({ type: 'set_thinking_level', level: 'auto' }), stderr()).toMatchObject({ success: true })
+      await vi.waitFor(() => expect(events.slice(beforeAuto)).toContainEqual(
+        expect.objectContaining({ type: 'thinking_level_changed', level: 'auto' })
+      ))
     } finally {
       await lifecycle.closeSession?.()
       provider.closeAllConnections()

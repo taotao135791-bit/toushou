@@ -1,5 +1,7 @@
-import { ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, memo, useEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { createContext, useContext, ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, memo, useEffect, useRef, useState } from 'react'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
+import { chatAttachment } from '@shared/chatAttachment'
+import { AttachmentCard } from './ChatAttachment'
 import remarkGfm from 'remark-gfm'
 import { Check, Copy } from 'lucide-react'
 import { useT } from '../i18n'
@@ -43,26 +45,60 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   )
 }
 
-/**
- * Markdown is runtime-provided content. Keep every link inside the explicit,
- * Main-validated external-browser path rather than allowing renderer anchors
- * to navigate the Electron application window.
- */
-function ExternalLink({ href, onClick, ...props }: ComponentPropsWithoutRef<'a'>) {
-  const openInBrowser: ComponentPropsWithoutRef<'a'>['onClick'] = (event) => {
-    onClick?.(event)
-    if (event.defaultPrevented) return
+const InMarkdownLink = createContext(false)
 
-    event.preventDefault()
-    if (href) {
-      // Main validates the scheme/host before delegating to the system browser.
-      // Deliberately ignore invalid URLs here: they must not turn into an app
-      // navigation fallback.
-      void window.electronAPI.openExternalUrl(href)
-    }
+function linkLabel(children: ReactNode): string {
+  if (typeof children === 'string' || typeof children === 'number') return String(children)
+  if (Array.isArray(children)) return children.map(linkLabel).join('')
+  if (isValidElement<{ children?: ReactNode; alt?: string }>(children)) {
+    return children.props.alt || linkLabel(children.props.children)
   }
+  return ''
+}
 
-  return <a {...props} href={href} target="_blank" rel="noopener noreferrer" onClick={openInBrowser} />
+function BrowserLink({ href, children, title }: ComponentPropsWithoutRef<'a'>) {
+  return <a href={href} title={title} target="_blank" rel="noopener noreferrer" onClick={event => {
+    event.preventDefault()
+    if (href) void window.electronAPI.openExternalUrl(href)
+  }}><InMarkdownLink.Provider value>{children}</InMarkdownLink.Provider></a>
+}
+
+function ExternalLink({ href, children, title }: ComponentPropsWithoutRef<'a'>) {
+  if (href && chatAttachment(href)) return <AttachmentCard target={href} label={linkLabel(children) || undefined} />
+  return <BrowserLink href={href} title={title}>{children}</BrowserLink>
+}
+
+function MarkdownImage({ src, alt = '', title }: ComponentPropsWithoutRef<'img'>) {
+  const inLink = useContext(InMarkdownLink)
+  const [failed, setFailed] = useState<string>()
+  const t = useT()
+  if (!src) return <span>{alt}</span>
+  const file = chatAttachment(src)
+  // Local files use the host opener. A Markdown image pointing to an MP4
+  // (common in imported transcripts) can also be opened through its card.
+  if (file && (!file.remote || file.kind !== 'photo' || failed === src)) {
+    return inLink ? <span>{alt || file.name}</span> : <AttachmentCard target={src} label={alt} />
+  }
+  if (!file && !/^https?:\/\//i.test(src)) return <span>{alt}</span>
+  if (failed === src) {
+    return !inLink && /^https?:\/\//i.test(src)
+      ? <ExternalLink href={src}>{alt || t('browser.openExternal')}</ExternalLink>
+      : <span>{alt}</span>
+  }
+  const preview = <img src={src} alt={alt} title={title} loading="lazy" onError={() => setFailed(src)} />
+  return inLink ? preview : <BrowserLink href={src} title={title || alt || t('browser.openExternal')}>{preview}</BrowserLink>
+}
+
+function InlineCode({ children, className }: ComponentPropsWithoutRef<'code'>) {
+  const inLink = useContext(InMarkdownLink)
+  const path = typeof children === 'string' ? children.trim() : ''
+  // Absolute/explicit references can contain spaces; bare relative references
+  // need a filename shape so shell commands and code snippets stay copyable.
+  const explicit = /^(?:[./~][\\/]|\/|[a-z]:[\\/]|sandbox:|file:)/i.test(path)
+  const filename = /^[\p{L}\p{N}_.()%-]+(?:[\\/][\p{L}\p{N}_.()%-]+)*$/u.test(path)
+  const relative = /^[\p{L}\p{N}_.()%-]+[\\/][\p{L}\p{N}_.()% \\/-]+$/u.test(path)
+  if (!inLink && (explicit || filename || relative) && chatAttachment(path)) return <AttachmentCard target={path} />
+  return <code className={className}>{children}</code>
 }
 
 /** Lang and raw text of a fenced code block, from the <code> child of a <pre>. */
@@ -79,6 +115,8 @@ const remarkPlugins = [remarkGfm]
 
 const components = {
   a: ExternalLink,
+  img: MarkdownImage,
+  code: InlineCode,
   pre: ({ children }: { children?: ReactNode }) => {
     const { lang, raw } = extractCode(children)
     // Rich blocks (mermaid, …) by fence language; unknown → CodeBlock
@@ -141,7 +179,7 @@ const Markdown = memo(function Markdown({ content }: { content: string }) {
 
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components} urlTransform={url => chatAttachment(url) ? url : defaultUrlTransform(url)}>
         {rendered}
       </ReactMarkdown>
     </div>

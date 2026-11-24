@@ -7,22 +7,10 @@ import { PromptImage } from '../shared/types'
  * they are unit-testable.
  */
 
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
-export const MAX_IMAGE_COUNT = 4
-export const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024
+export { base64DecodedBytes, MAX_IMAGE_COUNT, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES } from '../shared/promptImages'
+import { base64DecodedBytes, isPromptImageMime, MAX_IMAGE_COUNT, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES } from '../shared/promptImages'
 
-/** MIME types the runtime actually supports for prompt images. */
-const ALLOWED_IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
-
-// eslint-disable-next-line no-control-regex
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/
-
-/** Approximate decoded byte size of a base64 payload (strips a data: URL prefix). */
-export function base64DecodedBytes(data: string): number {
-  const clean = data.includes(',') ? data.slice(data.indexOf(',') + 1) : data
-  const pad = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0
-  return Math.floor((clean.length * 3) / 4) - pad
-}
 
 /**
  * Accept only well-formed prompt images: bounded count, allowlisted MIME, valid
@@ -36,14 +24,25 @@ export function sanitizeImages(images: unknown): PromptImage[] | undefined {
   for (const img of images as Partial<PromptImage>[]) {
     if (!img || typeof img.data !== 'string' || typeof img.mimeType !== 'string') continue
     if (out.length >= MAX_IMAGE_COUNT) break
-    if (!ALLOWED_IMAGE_MIME.has(img.mimeType)) continue
-    const clean = img.data.includes(',') ? img.data.slice(img.data.indexOf(',') + 1) : img.data
-    if (!BASE64_RE.test(clean) || clean.length % 4 !== 0) continue
-    const bytes = base64DecodedBytes(img.data)
-    if (bytes <= 0 || bytes > MAX_IMAGE_BYTES) continue
+    if (!isPromptImageMime(img.mimeType)) continue
+    const prefix = 'data:' + img.mimeType + ';base64,'
+    const clean = img.data.startsWith(prefix) ? img.data.slice(prefix.length) : img.data
+    if (!clean.length || clean.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4 || clean.length % 4 !== 0) continue
+    const bytes = base64DecodedBytes(clean)
+    if (bytes <= 0 || bytes > MAX_IMAGE_BYTES || !BASE64_RE.test(clean)) continue
     if (total + bytes > MAX_TOTAL_IMAGE_BYTES) break
     total += bytes
-    out.push({ type: 'image', data: img.data, mimeType: img.mimeType })
+    out.push({ type: 'image', data: clean, mimeType: img.mimeType })
   }
   return out.length ? out : undefined
+}
+
+/** A multimodal send must reach the runtime with every selected image. */
+export function validatePromptImages(images: unknown): PromptImage[] | undefined | false {
+  if (images === undefined || images === null || (Array.isArray(images) && !images.length)) return undefined
+  const validated = sanitizeImages(images)
+  if (!Array.isArray(images) || !validated || images.length !== validated.length) {
+    return false
+  }
+  return validated
 }

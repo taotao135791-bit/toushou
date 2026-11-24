@@ -9,7 +9,7 @@ app.whenReady().then(async () => {
     win = new BrowserWindow({ show: true, focusable: process.env.TOUSHOU_E2E_UNFOCUSED !== '1', width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true, backgroundThrottling: false } })
     await win.loadFile(path.join(dir, 'index.html'))
     const wc = win.webContents, wait = () => new Promise(resolve => setTimeout(resolve, 150))
-    const read = () => wc.executeJavaScript(`({count:document.querySelectorAll('section[aria-label="Board result"]').length,text:document.querySelector('section[aria-label="Board result"]')?.innerText,iframes:document.querySelectorAll('iframe').length,listCalls:window.deliveryFixture.listCalls,checks:window.deliveryFixture.checks})`)
+    const read = () => wc.executeJavaScript(`({count:document.querySelectorAll('section[aria-label="Board result"]').length,text:document.querySelector('section[aria-label="Board result"]')?.innerText,iframes:document.querySelectorAll('iframe').length,listCalls:window.deliveryFixture.listCalls,layout:Array.from(document.querySelector('[aria-label="Saved board layout"]')?.firstElementChild?.children ?? [], card=>card.style.gridColumn),checks:window.deliveryFixture.checks})`)
     await wait()
     const unavailable = await read()
     await wc.executeJavaScript(`document.getElementById('restore').click()`); await wait()
@@ -18,6 +18,14 @@ app.whenReady().then(async () => {
     const route = await wc.executeJavaScript(`document.getElementById('route').innerText`)
     await wc.executeJavaScript(`document.getElementById('edit').click()`); await wait()
     const multi = await wc.executeJavaScript(`Array.from(document.querySelectorAll('section[aria-label="Board result"]'), area => area.innerText)`)
+    const inspectRich = () => wc.executeJavaScript(`(() => {
+      const frame = document.querySelector('iframe')
+      return { body: frame?.srcdoc, sandbox: frame?.getAttribute('sandbox'), count: document.querySelectorAll('iframe').length }
+    })()`)
+    const rich = await inspectRich()
+    await wc.executeJavaScript(`document.querySelector('[aria-label="Choose component preview"] button:last-child').click()`); await wait()
+    const selected = await inspectRich()
+    const queries = await wc.executeJavaScript('window.deliveryFixture.checks')
     await wc.executeJavaScript(`Array.from(document.querySelectorAll('section[aria-label="Board result"]')).at(-1).querySelectorAll('button')[1].click()`)
     const draft = await wc.executeJavaScript(`({text:window.deliveryFixture.state.getState().composerPrefill, autosend:window.deliveryFixture.state.getState().composerAutosend})`)
     await wc.executeJavaScript(`Array.from(document.querySelectorAll('section[aria-label="Board result"]')).at(-1).querySelector('button').click()`); await wait()
@@ -43,7 +51,7 @@ app.whenReady().then(async () => {
     const reopened = await inspectPicker()
     await wc.executeJavaScript(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`); await wait()
     const answers = await wc.executeJavaScript(`({answers: window.deliveryFixture.answers, open: !!document.querySelector('[role=dialog]'), focus: document.activeElement.id})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ unavailable, ready, route, multi, draft, emptyRoute, picker, checked, reopened, answers }))
+    console.log('E2E_RESULT ' + JSON.stringify({ unavailable, ready, route, multi, rich, selected, queries, draft, emptyRoute, picker, checked, reopened, answers }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), stack: error.stack })) }
   finally { win?.destroy(); app.quit() }
 })

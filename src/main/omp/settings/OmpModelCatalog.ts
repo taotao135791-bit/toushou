@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
-import { RuntimeModelInfo } from '../../../shared/types'
+import { modelInputs, RuntimeModelInfo } from '../../../shared/types'
 import { detectCli } from '../OmpCapabilities'
 import { NativeModelThinking, nativeModelThinking, modelThinkingEfforts } from '../modelThinking'
 
@@ -39,6 +39,7 @@ interface CatalogEntry {
   reasoning?: unknown
   baseUrl?: unknown
   api?: unknown
+  input?: unknown
   thinking?: unknown
 }
 
@@ -159,6 +160,7 @@ function parseCatalogFile(file: string, modelThinking?: Map<string, NativeModelT
         id: e.id.slice(e.id.lastIndexOf('/') + 1),
         selector,
         name: typeof e.name === 'string' ? e.name : e.id,
+        input: modelInputs(e.input),
         reasoning: e.reasoning === true,
         thinking: modelThinkingEfforts(e.thinking),
         baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl : undefined,

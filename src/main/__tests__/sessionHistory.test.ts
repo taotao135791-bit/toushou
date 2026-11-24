@@ -82,6 +82,26 @@ function writeSessionFile(name: string, lines: string[]): string {
 }
 
 describe('cross-project history paths', () => {
+  it('returns every sidebar row beyond the default cap and refreshes a rewritten transcript', async () => {
+    const count = 332
+    for (let i = 0; i < count; i++) {
+      writeSessionFile(`history-${i}.jsonl`, [sessionHeader(`history-${i}`, i + 1)])
+    }
+    const original = await listAllSessions(agentDir, Infinity)
+    expect(original).toHaveLength(count)
+    expect(original.at(-1)?.uuid).toBe('history-0')
+    expect(await listAllSessions(agentDir)).toHaveLength(300)
+    const overwritten = writeSessionFile('history-0.jsonl', [sessionHeader('history-0', count + 1), userMessage('A changed title')])
+    const renamed = path.join(path.dirname(overwritten), 'new-history.jsonl')
+    renameSync(overwritten, renamed)
+    const rows = await listAllSessions(agentDir, Infinity)
+    expect(rows).toHaveLength(count)
+    expect(rows[0]).toMatchObject({ uuid: 'history-0', filePath: renamed, title: 'A changed title' })
+    writeSessionFile('new-history.jsonl', [sessionHeader('rewritten', count + 2), userMessage('Another new title')])
+    expect((await listSessionHistory(projectDir, agentDir))[0]).toMatchObject({ uuid: 'rewritten', title: 'Another new title' })
+    expect((await listAllSessions(agentDir, Infinity))[0]).toMatchObject({ uuid: 'rewritten', title: 'Another new title' })
+  })
+
   it('matches runtime project aliases to Main canonical recent-workspace paths', async () => {
     const alias = path.join(agentDir, 'project-alias')
     symlinkSync(projectDir, alias, process.platform === 'win32' ? 'junction' : 'dir')

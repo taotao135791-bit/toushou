@@ -1,3 +1,5 @@
+import { sanitizeImages } from './imageValidation'
+import { assistantReplyKey } from './assistantReplyKey'
 import { ChatMessage } from '../shared/types'
 import { normalizeToolCall } from '../shared/toolNames'
 import { displayMcpTurnPrompt } from './omp/mcpMentions'
@@ -63,7 +65,7 @@ function joinText(content: AgentMessage['content'], separator: string): string {
 /** The last message if it is an assistant text run that deltas can append to. */
 function appendableAssistantText(out: ChatMessage[]): ChatMessage | null {
   const last = out[out.length - 1]
-  return last && last.role === 'assistant' && !last.toolCall ? last : null
+  return last && last.role === 'assistant' && !last.toolCall && !last.replyKey ? last : null
 }
 
 export function mapAgentMessages(messages: AgentMessage[]): ChatMessage[] {
@@ -76,10 +78,12 @@ export function mapAgentMessages(messages: AgentMessage[]): ChatMessage[] {
 
     if (msg.role === 'user') {
       const text = displayMcpTurnPrompt(joinText(msg.content, '\n').trim())
-      if (!text) continue
+      const images = Array.isArray(msg.content) ? sanitizeImages(msg.content.filter(block => block?.type === 'image')) : undefined
+      if (!text && !images) continue
       out.push({
         id: crypto.randomUUID(),
         role: 'user',
+        ...(images && { images: images.map(({ data, mimeType }) => ({ data, mimeType })) }),
         content: text,
         // OMP records steered messages with `steering: true` on the user message.
         kind: msg.steering === true ? 'steer' : 'prompt'
@@ -88,8 +92,9 @@ export function mapAgentMessages(messages: AgentMessage[]): ChatMessage[] {
     }
 
     if (msg.role === 'assistant') {
-      if (!Array.isArray(msg.content)) continue
-      for (const block of msg.content) {
+      const blocks = typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : msg.content
+      if (!Array.isArray(blocks)) continue
+      for (const block of blocks) {
         if (block?.type === 'text' && typeof (block as AgentTextBlock).text === 'string') {
           const text = (block as AgentTextBlock).text
           if (!text.trim()) continue
@@ -125,6 +130,9 @@ export function mapAgentMessages(messages: AgentMessage[]): ChatMessage[] {
         }
         // unknown blocks are skipped
       }
+      const key = assistantReplyKey(msg)
+      const reply = out.at(-1)
+      if (key && reply?.role === 'assistant' && !reply.toolCall) reply.replyKey = key
       continue
     }
 

@@ -11,7 +11,8 @@ import {
   CustomProviderSaveResult,
   CustomProviderSpec,
   CustomProvidersListResult,
-  RuntimeModelInfo
+  RuntimeModelInfo,
+  modelInputs
 } from '../shared/types'
 import { defaultPiAgentDir } from './piSettings'
 import { detectCli } from './omp'
@@ -49,6 +50,8 @@ export interface CustomProvidersDeps {
    * `null` to explicitly skip verification (degraded mode).
    */
   runner?: CliRunner | null
+  /** Native model metadata for this provider (loaded from OMP by default). */
+  modelCatalog?: RuntimeModelInfo[]
   /** fetch implementation for the live key check (tests inject a stub). */
   fetchImpl?: typeof fetch
 }
@@ -181,6 +184,14 @@ export function sanitizeCustomProviderSpec(raw: unknown): CustomProviderSpec | n
         id: o.id,
         name: typeof o.name === 'string' ? o.name : ''
       }
+      if (o.input !== undefined) {
+        if (o.input === null) entry.input = null
+        else {
+          const input = modelInputs(o.input)
+          if (!input) return null
+          entry.input = input
+        }
+      }
       if (o.contextWindow !== undefined) {
         if (typeof o.contextWindow !== 'number' || !Number.isFinite(o.contextWindow)) return null
         entry.contextWindow = o.contextWindow
@@ -218,6 +229,7 @@ function validateSpec(spec: CustomProviderSpec, hasExistingKey: boolean): Custom
     if (spec.models.length === 0) return 'invalid-models'
     for (const m of spec.models) {
       if (!m.id.trim() || m.id.length > MAX_MODEL_FIELD || CONTROL_RE.test(m.id)) return 'invalid-models'
+      if (m.input != null && !modelInputs(m.input)) return 'invalid-models'
       if (m.name.length > MAX_MODEL_FIELD) return 'invalid-models'
       if (m.contextWindow !== undefined && (!Number.isInteger(m.contextWindow) || m.contextWindow <= 0)) {
         return 'invalid-models'
@@ -231,8 +243,9 @@ function validateSpec(spec: CustomProviderSpec, hasExistingKey: boolean): Custom
 }
 
 /** Keep native reasoning declarations when editing the same models on the same endpoint. */
-function buildEntry(spec: CustomProviderSpec, existingKey?: string, previous?: Record<string, unknown>): Record<string, unknown> {
-  const sameEndpoint = previous?.baseUrl === spec.baseUrl.trim() && previous?.api === spec.api
+function buildEntry(spec: CustomProviderSpec, catalog: RuntimeModelInfo[], existingKey?: string, previous?: Record<string, unknown>): Record<string, unknown> {
+  const endpoint = spec.baseUrl.trim().replace(/\/+$/, '')
+  const sameEndpoint = typeof previous?.baseUrl === 'string' && previous.baseUrl.replace(/\/+$/, '') === endpoint && previous.api === spec.api
   const entry: Record<string, unknown> = {
     baseUrl: spec.baseUrl.trim(),
     api: spec.api
@@ -249,11 +262,16 @@ function buildEntry(spec: CustomProviderSpec, existingKey?: string, previous?: R
     entry.models = spec.models.map((m) => {
       const id = m.id.trim()
       const previousModel = mapping(previousModels.find((model) => mapping(model)?.id === id))
+      const nativeInput = catalog.find(candidate =>
+        candidate.provider === spec.id && (candidate.selector === `${spec.id}/${id}` || candidate.selector === id) &&
+        candidate.api === spec.api && candidate.baseUrl?.replace(/\/+$/, '') === endpoint
+      )?.input
+      const preserved = m.input === undefined ? modelInputs(previousModel?.input) : undefined
       const out: Record<string, unknown> = {
         id,
         name: m.name.trim() || id,
         reasoning: typeof previousModel?.reasoning === 'boolean' ? previousModel.reasoning : false,
-        input: ['text']
+        input: m.input ?? preserved ?? nativeInput ?? ['text']
       }
       if (previousModel?.thinking !== undefined) out.thinking = previousModel.thinking
       if (m.contextWindow !== undefined) out.contextWindow = m.contextWindow
@@ -400,6 +418,7 @@ export function listCustomProviders(deps: CustomProvidersDeps = {}): CustomProvi
         .map((m) => ({
           id: typeof m.id === 'string' ? m.id : '',
           name: typeof m.name === 'string' ? m.name : '',
+          input: modelInputs(m.input),
           ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
           ...(typeof m.maxTokens === 'number' ? { maxTokens: m.maxTokens } : {})
         }))
@@ -436,8 +455,9 @@ export function saveCustomProvider(
     const invalid = validateSpec(rawSpec, existingKey !== undefined)
     if (invalid) return { ok: false, error: invalid }
 
+    const catalog = rawSpec.discovery ? [] : deps.modelCatalog ?? await listOmpModelCatalog(rawSpec.id)
     const next: ModelsDoc = {
-      providers: { ...read.doc.providers, [rawSpec.id]: buildEntry(rawSpec, existingKey, mapping(existing)) }
+      providers: { ...read.doc.providers, [rawSpec.id]: buildEntry(rawSpec, catalog, existingKey, mapping(existing)) }
     }
     let content: string
     try {

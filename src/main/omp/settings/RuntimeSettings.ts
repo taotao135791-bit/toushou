@@ -1,4 +1,5 @@
 import {
+  modelInputs,
   CliInfo,
   DefaultThinkingLevel,
   MachineSkillsState,
@@ -354,6 +355,7 @@ export class RuntimeSettings {
               name: typeof o.name === 'string' ? o.name : id,
               contextWindow: typeof o.contextWindow === 'number' ? o.contextWindow : undefined,
               maxTokens: typeof o.maxTokens === 'number' ? o.maxTokens : undefined,
+              input: modelInputs(o.input),
               reasoning: typeof o.reasoning === 'boolean' ? o.reasoning : thinking.length > 0,
               thinking
             }

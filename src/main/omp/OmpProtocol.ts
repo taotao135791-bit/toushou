@@ -1,5 +1,6 @@
 import { ExtensionUiAnswer, PanelOpenRequest, SessionEvent, SessionState } from '../../shared/types'
 import { normalizeToolCall } from '../../shared/toolNames'
+import { assistantReplyKey } from '../assistantReplyKey'
 import { safeBrowserPanelUrl } from '../navigation'
 import { safeExtensionExternalUrl } from './extensionLinks'
 import { modelThinkingEfforts } from './modelThinking'
@@ -284,6 +285,8 @@ export function normalizeRpcFrame(
           }
         }
       }
+      const replyKey = assistantReplyKey(msg)
+      if (replyKey) return { kind: 'event', event: { type: 'reply_completed', sessionId, replyKey } }
       return { kind: 'none' }
     }
 
@@ -455,7 +458,7 @@ export function normalizeRpcFrame(
         event: {
           type: 'thinking_level_changed',
           sessionId,
-          level: typeof payload.thinkingLevel === 'string' ? payload.thinkingLevel : undefined
+          level: payload.configured === 'auto' ? 'auto' : typeof payload.thinkingLevel === 'string' ? payload.thinkingLevel : undefined
         }
       }
 

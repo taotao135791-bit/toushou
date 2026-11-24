@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ProjectRecord } from '@shared/types'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   MessageCircle,
@@ -27,7 +28,6 @@ import {
   Link2,
   Clock,
   CopyPlus,
-  GitBranch,
   BriefcaseBusiness,
   MoreHorizontal
 } from 'lucide-react'
@@ -49,13 +49,16 @@ import {
   sortSessionRows
 } from '../lib/sessionRegistry'
 import { formatRelativeTime } from '../lib/time'
-import { getSessionStatus } from '../lib/sessionStatus'
+import { getSessionStatus, type SessionStatusKind } from '../lib/sessionStatus'
 import { basename } from '../lib/path'
 import { useConfirmId } from '../lib/confirmClick'
 import Logo from './Logo'
 import BoardsIcon from './BoardsIcon'
 import MenuPortal from './MenuPortal'
 import SidebarProjects from './SidebarProjects'
+import SidebarList from './SidebarList'
+import { runtimeFilingKey, useFiledProjects } from './useFiledProjects'
+import { moveSidebarRow, useSidebarDrag, useSidebarOrder } from './sidebarOrder'
 import { useProjects } from '../store/projects'
 import { sidebarConversations, type SidebarConversation } from '../lib/sidebarConversations'
 import { beginNavigationIntent, currentNavigationIntent, historyPreviewRouteState, isCurrentNavigationIntent } from '../lib/navigationIntent'
@@ -105,6 +108,29 @@ async function resolveLiveWorkspace(cwd: string, intent: number) {
   if (workspace?.realPath === cwd) return workspace
   showNotice('sidebar.projectNotAdded')
   return null
+}
+
+const rowStatusColors: Record<SessionStatusKind, [string, string]> = {
+  idle: ['bg-cream-faint', 'text-cream-faint/70'],
+  error: ['bg-red-500', 'text-red-500'],
+  attention: ['animate-pulse bg-red-400', 'text-red-400'],
+  running: ['animate-pulse bg-amber-400', 'text-amber-400'],
+  unread: ['bg-accent', 'text-accent']
+}
+
+function SessionMoreButton({ id, label, trigger, loading, toggle }: {
+  id: string; label: string; trigger: HTMLButtonElement | null; loading?: boolean
+  toggle: (element: HTMLButtonElement) => void
+}) {
+  const ref = useRef<HTMLButtonElement>(null)
+  return (
+    <button ref={ref} type="button" data-session-actions={id} aria-label={label} title={label}
+      disabled={loading} aria-busy={loading || undefined} aria-haspopup="menu" aria-expanded={!!trigger && trigger === ref.current}
+      onClick={event => toggle(event.currentTarget)}
+      className="shrink-0 rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay-strong hover:text-cream focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait">
+      {loading ? <Loader2 size={14} className="animate-spin" /> : <MoreHorizontal size={14} />}
+    </button>
+  )
 }
 
 export default function Sidebar() {
@@ -165,7 +191,7 @@ export default function Sidebar() {
 
   const [sessionMenuId, setSessionMenuId] = useState<string | null>(null)
   const sessionMenuTrigger = useRef<HTMLButtonElement | null>(null)
-  // One menu fork in flight at a time (复制对话/开分支 double-click guard).
+  // Avoid starting duplicate copies from repeated clicks.
   const [forkingSessionId, setForkingSessionId] = useState<string | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -220,6 +246,10 @@ export default function Sidebar() {
 
   // Session list ordering. Persisted through Main's typed settings store like
   // the sidebar width; hydrated once on mount (store default is 'recent').
+  const { assignments, file } = useFiledProjects()
+  const draggedSession = useRef<string | null>(null)
+  const [manualOrder, saveManualOrder] = useSidebarOrder('sidebarSessionOrder')
+  const sortChanged = useRef(false)
   const [sessionSort, setSessionSort] = useState<SessionSortOrder>('recent')
   const [sortMenuOpen, setSortMenuOpen] = useState(false)
   const sortButtonRef = useRef<HTMLButtonElement>(null)
@@ -229,8 +259,8 @@ export default function Sidebar() {
   useEffect(() => {
     let cancelled = false
     void window.electronAPI.getStore('sessionSort').then((sort) => {
-      if (cancelled) return
-      if (sort === 'recent' || sort === 'name') setSessionSort(sort)
+      if (cancelled || sortChanged.current) return
+      if (sort === 'recent' || sort === 'name' || sort === 'manual') setSessionSort(sort)
     })
     return () => {
       cancelled = true
@@ -238,6 +268,7 @@ export default function Sidebar() {
   }, [])
 
   const commitSessionSort = (sort: SessionSortOrder) => {
+    sortChanged.current = true
     setSessionSort(sort)
     void window.electronAPI.setStore('sessionSort', sort)
   }
@@ -544,14 +575,7 @@ export default function Sidebar() {
     }
   }
 
-  /**
-   * Live-row fork from the conversation menu (三个点). duplicate = the whole
-   * durable file (（副本）); branch = every COMPLETE turn (（分支）), so a
-   * session that is mid-stream branches at its last finished exchange instead
-   * of a half-written tail. Either way the original stays untouched and the
-   * app lands in the new conversation.
-   */
-  const handleForkLive = async (session: (typeof sessions)[number], mode: 'duplicate' | 'branch') => {
+  const handleDuplicateLive = async (session: (typeof sessions)[number]) => {
     if (forkingSessionId) return
     const intent = beginNavigationIntent()
     setForkingSessionId(session.id)
@@ -559,8 +583,7 @@ export default function Sidebar() {
       const workspace = await resolveLiveWorkspace(session.cwd, intent)
       if (!workspace || !isCurrentNavigationIntent(intent)) return
       const result = await window.electronAPI.forkSession(workspace.id, {
-        liveSessionId: session.id,
-        ...(mode === 'branch' ? { completeTurnsOnly: true } : {})
+        liveSessionId: session.id
       })
       if (!result || 'error' in result) {
         if (isCurrentNavigationIntent(intent)) showNotice('history.forkFailed')
@@ -687,7 +710,6 @@ export default function Sidebar() {
   // said WHAT gets removed — deleting takes every durable copy of the uuid.
   // Sidebar rows glide to their new slot when order changes (session floats
   // to top on switch-away) instead of jump-cutting.
-  const listRef = useRef<HTMLDivElement | null>(null)
   const [pendingDelete, setPendingDelete] = useState<
     { kind: 'live' | 'history' | 'global'; id: string; title: string } | null
   >(null)
@@ -850,6 +872,46 @@ export default function Sidebar() {
     archivedProjects: archivedProjectPaths, pinned: pinnedSet
   }), [visibleSessions, sessionRecords, globalHistory, currentWorkspace?.realPath, archivedProjectPaths, pinnedSet])
 
+  const projectsById = useMemo(() => new Map(projectRecords.map(project => [project.id, project])), [projectRecords])
+  const filing = useMemo(() => {
+    const paths = new Map<string, string>()
+    const entries = new Map<string, RecentEntry>()
+    const handoffs: Array<{ key: string; previousKey: string; id: string }> = []
+    for (const entry of allEntries) {
+      const previousKey = runtimeFilingKey(entry)
+      const id = assignments[entry.key] ?? (previousKey && assignments[previousKey])
+      const project = id ? projectsById.get(id) : undefined
+      paths.set(entry.key, project?.path ?? entry.workspacePath)
+      entries.set(entry.key, entry)
+      if (project && !project.archived && !project.missing && previousKey && previousKey !== entry.key && !assignments[entry.key] && assignments[previousKey]) {
+        handoffs.push({ key: entry.key, previousKey, id: project.id })
+      }
+    }
+    return { paths, entries, handoffs }
+  }, [allEntries, assignments, projectsById])
+  const migrating = useRef(new Set<string>())
+  useEffect(() => {
+    for (const { key, previousKey, id } of filing.handoffs) {
+      if (migrating.current.has(previousKey)) continue
+      migrating.current.add(previousKey)
+      void file(key, id, previousKey, true).finally(() => migrating.current.delete(previousKey))
+    }
+  }, [filing, file])
+
+  const fileInProject = async (key: string, project: ProjectRecord) => {
+    const entry = filing.entries.get(key)
+    if (!entry || project.isDefault || project.archived || project.missing) return false
+    const previousKey = runtimeFilingKey(entry)
+    const moved = await file(key, project.path === entry.workspacePath ? null : project.id,
+      previousKey && previousKey !== key && assignments[previousKey] ? previousKey : undefined)
+    showNotice(moved ? 'sidebar.filedInProject' : 'sidebar.fileInProjectFailed')
+    // A new runtime may be dragged before the first snapshot supplies its
+    // transcript identity. The handoff above persists its placement under
+    // the durable key as soon as the runtime publishes one.
+    if (moved && entry.kind === 'live' && previousKey === key) void useAppStore.getState().refreshComposerDraftIdentity(entry.session.id)
+    return moved
+  }
+
   // Archived test per entry kind. Live rows consult their durable uuid too, so
   // a killed-and-resurfaced session stays archived across the handoff.
   const isEntryArchived = useCallback(
@@ -860,15 +922,24 @@ export default function Sidebar() {
     [archivedSet, isSessionArchived]
   )
 
-  // Pinned rows float first under both orders (see sortSessionRows).
+  const manualRanks = useMemo(() => new Map(manualOrder.map((key, index) => [key, index])), [manualOrder])
   const recentEntries = useMemo(
-    () => sortSessionRows(allEntries.filter((entry) => !isEntryArchived(entry)), sessionSort),
-    [allEntries, isEntryArchived, sessionSort]
+    () => sortSessionRows(allEntries.filter((entry) => !isEntryArchived(entry) && !archivedProjectPaths.has(filing.paths.get(entry.key) ?? entry.workspacePath)), sessionSort, manualRanks),
+    [allEntries, isEntryArchived, sessionSort, manualRanks, archivedProjectPaths, filing]
   )
   const archivedEntries = useMemo(
-    () => sortSessionRows(allEntries.filter(isEntryArchived), sessionSort),
-    [allEntries, isEntryArchived, sessionSort]
+    () => sortSessionRows(allEntries.filter(isEntryArchived), sessionSort, manualRanks),
+    [allEntries, isEntryArchived, sessionSort, manualRanks]
   )
+
+  const dragSession = useSidebarDrag((source, target, after) => {
+    const entries = recentEntries.some(entry => entry.key === target) ? recentEntries : archivedEntries
+    const order = moveSidebarRow(entries.map(entry => entry.key), manualOrder, source, target, after)
+    if (order) {
+      saveManualOrder(order)
+      commitSessionSort('manual')
+    }
+  }, draggedSession)
 
   const filteredRecentEntries = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -939,6 +1010,36 @@ export default function Sidebar() {
   const importedSourceByRuntime = new Map(sessionRecords.flatMap(record =>
     record.runtimeSessionId && record.history?.importedFrom ? [[record.runtimeSessionId, record.history.importedFrom] as const] : []
   ))
+  function rowTime(timestamp: number, cwd?: string) {
+    const time = formatRelativeTime(timestamp, language)
+    return cwd && cwd !== currentWorkspace?.realPath && !defaultProjectPaths.has(cwd)
+      ? `${projectNames.get(cwd) || basename(cwd) || cwd} · ${time}` : time
+  }
+  function rowBody(title: string, timestamp: string, status: SessionStatusKind, badges: ReactNode, error?: string) {
+    const [dotColor, statusColor] = rowStatusColors[status]
+    return <>
+      <span data-session-dot aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
+      <span className="min-w-0 flex-1">
+        <span className={`flex min-w-0 items-center gap-1.5 ${status === 'error' ? 'text-cream-faint line-through' : 'text-cream'}`}>
+          <span data-session-title className="min-w-0 truncate text-[13px] font-medium leading-5">{title}</span>
+          {badges}
+        </span>
+        <span data-session-subtitle className={`block truncate text-[11px] leading-4 ${error ? 'text-red-500' : 'text-cream-faint'}`}>
+          {error ?? timestamp}
+          {!error && <span className={`ml-1 text-[10px] font-medium ${statusColor}`}>{t(`sidebar.status.${status}`)}</span>}
+        </span>
+      </span>
+    </>
+  }
+  function rowMore(key: string, id: string, title: string, loading = false) {
+    return <SessionMoreButton id={id} loading={loading} label={t('sidebar.sessionActions', { title })}
+      trigger={sessionMenuId === key ? sessionMenuTrigger.current : null} toggle={element => {
+        const same = sessionMenuId === key && sessionMenuTrigger.current === element
+        sessionMenuTrigger.current = element
+        archiveSessionConfirm.reset()
+        setSessionMenuId(same ? null : key)
+      }} />
+  }
   const renderSessionRow = (session: (typeof sessions)[number], key: string) => {
     const active = currentSessionId === session.id
     const running = Boolean(busy[session.id])
@@ -954,80 +1055,27 @@ export default function Sidebar() {
     // Externally created (Feishu channel) rows keep a brand badge so users can
     // tell where the conversation lives; foreign-workspace rows carry the
     // project suffix like the cross-project history rows do.
-    const foreignWorkspace = session.cwd !== currentWorkspace?.realPath && !defaultProjectPaths.has(session.cwd)
+    const title = displayTitle(session.title, basename(session.cwd) || session.cwd)
     return (
       <div
         key={key}
         data-conversation-key={key}
+        {...dragSession(key, pinned ? 'pinned' : 'recent')}
         className={`group flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 transition-colors duration-150 ${
           active ? 'bg-selected' : 'hover:bg-overlay'
         }`}
       >
         <button type="button" data-conversation-select onClick={() => void handleOpenLive(session)}
-          title={displayTitle(session.title, basename(session.cwd) || session.cwd)}
-          aria-label={`${displayTitle(session.title, basename(session.cwd) || session.cwd)}, ${statusLabel}`} aria-current={active ? 'true' : undefined}
+          title={title} aria-label={`${title}, ${statusLabel}`} aria-current={active ? 'true' : undefined}
           className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-        <span
-          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-            dead
-              ? 'bg-red-500'
-              : waiting
-                ? 'animate-pulse bg-red-400'
-                : running
-                  ? 'animate-pulse bg-amber-400'
-                  : unread
-                    ? 'bg-accent'
-                    : active
-                      ? 'bg-cream-faint'
-                      : 'bg-line-strong'
-          }`}
-        />
-        <span className="min-w-0 flex-1">
-          <span
-            className={`flex min-w-0 items-center gap-1.5 ${
-              dead ? 'text-cream-faint line-through' : 'text-cream'
-            }`}
-          >
-            {/* Untitled new chats show the placeholder — see displayTitle. */}
-            <span className="min-w-0 truncate text-[13px] font-medium leading-5">
-              {displayTitle(session.title, basename(session.cwd) || session.cwd)}
-            </span>
+          {rowBody(title, rowTime(session.lastActivityAt ?? session.createdAt, session.cwd), status, <>
             {renderOriginBadge(session.origin, importedSourceByRuntime.get(session.id))}
             {renderDraftBadge(sessionComposerDraftKey(session))}
             {renderLockBadge(durableUuidOfSession(session.id))}
             {pinned && <Pin size={10} className="shrink-0 text-accent" aria-hidden="true" />}
-          </span>
-          <span className="block truncate text-[11px] leading-4 text-cream-faint">
-            {foreignWorkspace
-              ? `${projectNames.get(session.cwd) || basename(session.cwd) || session.cwd} · ${formatRelativeTime(session.lastActivityAt ?? session.createdAt, language)}`
-              : formatRelativeTime(session.lastActivityAt ?? session.createdAt, language)}
-            <span className={`ml-1 text-[10px] font-medium ${
-            status === 'error'
-              ? 'text-red-500'
-              : status === 'attention'
-                ? 'text-red-400'
-                : status === 'running'
-                  ? 'text-amber-400'
-                  : status === 'unread'
-                    ? 'text-accent'
-                    : 'text-cream-faint/70'
-            }`}>{statusLabel}</span>
-          </span>
-        </span>
+          </>)}
         </button>
-        <button type="button" data-session-actions={session.id}
-          aria-label={t('sidebar.sessionActions', { title: displayTitle(session.title, basename(session.cwd) || session.cwd) })}
-          title={t('sidebar.sessionActions', { title: displayTitle(session.title, basename(session.cwd) || session.cwd) })}
-          aria-haspopup="menu" aria-expanded={sessionMenuId === session.id && sessionMenuTrigger.current?.dataset.sessionActions === session.id}
-          onClick={event => {
-            const same = sessionMenuId === session.id && sessionMenuTrigger.current === event.currentTarget
-            sessionMenuTrigger.current = event.currentTarget
-            archiveSessionConfirm.reset()
-            setSessionMenuId(same ? null : session.id)
-          }}
-          className="shrink-0 rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay-strong hover:text-cream focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-          <MoreHorizontal size={14} />
-        </button>
+        {rowMore(key, session.id, title)}
       </div>
     )
   }
@@ -1065,16 +1113,20 @@ export default function Sidebar() {
       <div
         key={entry.key}
         data-conversation-key={entry.key}
-        className="group flex items-center gap-2 rounded-lg px-2.5 py-[6px] transition-colors duration-150 hover:bg-overlay"
+        {...dragSession(entry.key, entry.pinned ? 'archived-pinned' : 'archived')}
+        className="group flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 transition-colors duration-150 hover:bg-overlay"
       >
         <button type="button" data-conversation-select onClick={unarchiveAndOpen} title={entry.title}
-          className="min-w-0 flex-1 rounded-md text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-[13px] leading-5 text-cream-faint">{displayTitle(entry.title, entry.projectName)}</span>
-            {renderLockBadge(archivedUuid)}
-          </span>
-          <span className="block truncate text-[11px] leading-4 text-cream-faint/70">
-            {defaultProjectPaths.has(entry.workspacePath) ? formatRelativeTime(entry.timestamp, language) : `${projectNames.get(entry.workspacePath) || entry.projectName} · ${formatRelativeTime(entry.timestamp, language)}`}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+          <span data-session-dot aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-cream-faint" />
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-[13px] leading-5 text-cream-faint">{displayTitle(entry.title, entry.projectName)}</span>
+              {renderLockBadge(archivedUuid)}
+            </span>
+            <span className="block truncate text-[11px] leading-4 text-cream-faint/70">
+              {defaultProjectPaths.has(entry.workspacePath) ? formatRelativeTime(entry.timestamp, language) : `${projectNames.get(entry.workspacePath) || entry.projectName} · ${formatRelativeTime(entry.timestamp, language)}`}
+            </span>
           </span>
         </button>
         <button
@@ -1119,81 +1171,26 @@ export default function Sidebar() {
 
   const renderHistoryRow = (info: HistorySessionDescriptor, key: string) => {
     const resuming = resumingHistoryId === info.id
-    const failed = restoreFailedHistoryId === info.id
+    const title = displayTitle(info.title, basename(currentWorkspace?.realPath ?? ''))
+    const error = restoreFailedHistoryId === info.id ? t('history.restoreFailed')
+      : deleteFailedHistoryId === info.id ? t('history.deleteFailed') : undefined
     return (
       <div
         key={key}
         data-conversation-key={key}
-        className={`group flex items-center gap-2 rounded-lg px-2.5 py-[6px] transition-colors duration-150 hover:bg-overlay ${resuming ? 'opacity-60' : ''}`}
+        {...dragSession(key, 'recent')}
+        className={`group flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 transition-colors duration-150 hover:bg-overlay ${resuming ? 'opacity-60' : ''}`}
       >
-        <button type="button" data-conversation-select disabled={resuming} onClick={() => void handleResumeHistory(info)} title={info.title}
-          className="min-w-0 flex-1 rounded-md text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
-              {displayTitle(info.title, basename(currentWorkspace?.realPath ?? ''))}
-            </span>
+        <button type="button" data-conversation-select disabled={resuming} onClick={() => void handleResumeHistory(info)} title={title}
+          aria-label={`${title}, ${error ?? t('sidebar.status.idle')}`}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait">
+          {rowBody(title, rowTime(info.timestamp), 'idle', <>
             {renderOriginBadge(info.origin, info.importedFrom)}
             {renderDraftBadge(historyComposerDraftKey(info.uuid))}
             {renderLockBadge(info.uuid)}
-          </span>
-          <span
-            className={`block truncate text-[11px] leading-4 ${
-              failed || deleteFailedHistoryId === info.id
-                ? 'text-red-500'
-                : 'text-cream-faint/70'
-            }`}
-          >
-            {failed
-              ? t('history.restoreFailed')
-              : deleteFailedHistoryId === info.id
-                ? t('history.deleteFailed')
-                : formatRelativeTime(info.timestamp, language)}
-          </span>
+          </>, error)}
         </button>
-        {resuming ? (
-          <Loader2 size={12} className="shrink-0 animate-spin text-cream-faint" />
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                void handleForkHistory(info)
-              }}
-              title={t('history.duplicate')}
-              className={`${iconBtn} hover:bg-overlay-strong hover:text-cream-dim`}
-            >
-              <CopyPlus size={12} />
-            </button>
-            <button
-              type="button"
-              disabled={pendingLockSet.has(info.uuid)}
-              onClick={(e) => {
-                e.stopPropagation()
-                void toggleSessionLock(info.uuid, lockedSet.has(info.uuid))
-              }}
-              title={t(lockedSet.has(info.uuid) ? 'sidebar.unlock' : 'sidebar.lock')}
-              className={`${iconBtn} ${lockedSet.has(info.uuid) ? 'text-accent' : 'opacity-0 group-hover:opacity-100'} hover:bg-overlay-strong hover:text-cream-dim`}
-            >
-              {lockedSet.has(info.uuid) ? <Lock size={12} /> : <LockOpen size={12} />}
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                if (lockedSet.has(info.uuid)) {
-                  showNotice('sidebar.deleteLocked')
-                  return
-                }
-                setPendingDelete({ kind: 'history', id: info.id, title: info.title })
-              }}
-              title={lockedSet.has(info.uuid) ? t('sidebar.deleteLocked') : t('history.delete')}
-              className={`${iconBtn} ${lockedSet.has(info.uuid) ? 'cursor-not-allowed text-cream-faint/50' : 'hover:bg-red-500/15 hover:text-red-500'}`}
-            >
-              {lockedSet.has(info.uuid) ? <Lock size={12} /> : <Trash2 size={12} />}
-            </button>
-          </>
-        )}
+        {rowMore(key, info.uuid, title, resuming)}
       </div>
     )
   }
@@ -1207,59 +1204,25 @@ export default function Sidebar() {
     // Only the row being resumed greys and locks — one pending resume must
     // not freeze every cross-project row in the list.
     const resuming = resumingGlobalUuid === row.uuid
+    const title = displayTitle(row.title, basename(row.cwd) || row.cwd)
+    const error = deleteFailedGlobalUuid === row.uuid ? t('history.deleteFailed') : undefined
     return (
       <div
         key={key}
         data-conversation-key={key}
-        className={`group flex items-center gap-2 rounded-lg px-2.5 py-[6px] transition-colors duration-150 hover:bg-overlay ${resuming ? 'opacity-60' : ''}`}
+        {...dragSession(key, 'recent')}
+        className={`group flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 transition-colors duration-150 hover:bg-overlay ${resuming ? 'opacity-60' : ''}`}
       >
-        <button type="button" data-conversation-select disabled={resuming} onClick={() => void handleOpenGlobal(row)} title={defaultProjectPaths.has(row.cwd) ? row.title : row.cwd}
-          className="min-w-0 flex-1 rounded-md text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 truncate text-[13px] leading-5 text-cream-dim">
-              {displayTitle(row.title, basename(row.cwd) || row.cwd)}
-            </span>
+        <button type="button" data-conversation-select disabled={resuming} onClick={() => void handleOpenGlobal(row)} title={title}
+          aria-label={`${title}, ${error ?? t('sidebar.status.idle')}`}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait">
+          {rowBody(title, rowTime(row.timestamp, row.cwd), 'idle', <>
             {renderOriginBadge(row.origin, row.importedFrom)}
             {renderDraftBadge(historyComposerDraftKey(row.uuid))}
             {renderLockBadge(row.uuid)}
-          </span>
-          <span
-            className={`block truncate text-[11px] leading-4 ${
-              deleteFailedGlobalUuid === row.uuid ? 'text-red-500' : 'text-cream-faint/70'
-            }`}
-          >
-            {deleteFailedGlobalUuid === row.uuid
-              ? t('history.deleteFailed')
-              : defaultProjectPaths.has(row.cwd) ? formatRelativeTime(row.timestamp, language) : `${projectNames.get(row.cwd) || basename(row.cwd) || row.cwd} · ${formatRelativeTime(row.timestamp, language)}`}
-          </span>
+          </>, error)}
         </button>
-        <button
-          type="button"
-          disabled={pendingLockSet.has(row.uuid)}
-          onClick={(e) => {
-            e.stopPropagation()
-            void toggleSessionLock(row.uuid, lockedSet.has(row.uuid))
-          }}
-          title={t(lockedSet.has(row.uuid) ? 'sidebar.unlock' : 'sidebar.lock')}
-          className={`${iconBtn} ${lockedSet.has(row.uuid) ? 'text-accent' : 'opacity-0 group-hover:opacity-100'} hover:bg-overlay-strong hover:text-cream-dim`}
-        >
-          {lockedSet.has(row.uuid) ? <Lock size={12} /> : <LockOpen size={12} />}
-        </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            if (lockedSet.has(row.uuid)) {
-              showNotice('sidebar.deleteLocked')
-              return
-            }
-            setPendingDelete({ kind: 'global', id: row.uuid, title: row.title })
-          }}
-          title={lockedSet.has(row.uuid) ? t('sidebar.deleteLocked') : t('history.delete')}
-          className={`${iconBtn} ${lockedSet.has(row.uuid) ? 'cursor-not-allowed text-cream-faint/50' : 'hover:bg-red-500/15 hover:text-red-500'}`}
-        >
-          {lockedSet.has(row.uuid) ? <Lock size={12} /> : <Trash2 size={12} />}
-        </button>
+        {rowMore(key, row.uuid, title, resuming)}
       </div>
     )
   }
@@ -1277,7 +1240,11 @@ export default function Sidebar() {
     return renderGlobalRow(entry.row, entry.key)
   }
 
-  const menuSession = sessions.find(session => session.id === sessionMenuId)
+  const menuEntry = sessionMenuId ? recentEntries.find(entry => entry.key === sessionMenuId) : undefined
+  const menuSession = menuEntry?.kind === 'live' ? menuEntry.session : undefined
+  const menuUuid = menuEntry?.kind === 'history' ? menuEntry.info.uuid : menuEntry?.kind === 'global' ? menuEntry.row.uuid
+    : menuSession ? durableUuidOfSession(menuSession.id) : null
+  const menuLocked = !!menuUuid && lockedSet.has(menuUuid)
   const closeSessionMenu = () => {
     setSessionMenuId(null)
     archiveSessionConfirm.reset()
@@ -1286,12 +1253,13 @@ export default function Sidebar() {
   const projectConversations = useMemo(() => {
     const grouped = new Map<string, RecentEntry[]>()
     for (const entry of recentEntries) {
-      const rows = grouped.get(entry.workspacePath) ?? []
+      const path = filing.paths.get(entry.key) ?? entry.workspacePath
+      const rows = grouped.get(path) ?? []
       rows.push(entry)
-      grouped.set(entry.workspacePath, rows)
+      grouped.set(path, rows)
     }
     return grouped
-  }, [recentEntries])
+  }, [recentEntries, filing])
 
   return (
     <aside
@@ -1428,7 +1396,11 @@ export default function Sidebar() {
         </div>
       )}
 
-      <SidebarProjects renderConversations={path => projectConversations.get(path)?.map(renderRecentEntry)} />
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-sidebar-scroll>
+      <SidebarProjects draggedSession={draggedSession} filingPaths={filing.paths} onFileSession={fileInProject} renderConversations={path => {
+        const items = projectConversations.get(path)
+        return items?.length ? <SidebarList items={items} render={renderRecentEntry} /> : null
+      }} />
 
       {/* Running task count */}
       {runningCount > 0 && (
@@ -1438,7 +1410,7 @@ export default function Sidebar() {
         </div>
       )}
 
-      <div className="sidebar-conversations mt-5 min-h-[128px] flex-1 overflow-y-auto px-2.5 pb-4" ref={listRef} data-all-conversations>
+      <div className="sidebar-conversations mt-5 px-2.5 pb-4" data-all-conversations>
         <div className="sidebar-section-header flex items-center justify-between px-2 pb-1.5">
           <span className="sidebar-section-title text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
             {t('sidebar.sessions')}
@@ -1472,7 +1444,7 @@ export default function Sidebar() {
           onClose={() => setSortMenuOpen(false)}
           width={196}
         >
-          {(['recent', 'name'] as const).map((sort) => (
+          {(['recent', 'name', 'manual'] as const).map((sort) => (
             <button
               key={sort}
               onClick={() => {
@@ -1481,7 +1453,7 @@ export default function Sidebar() {
               }}
               className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
             >
-              <span>{sort === 'recent' ? t('sidebar.sortRecent') : t('sidebar.sortName')}</span>
+              <span>{t(({ recent: 'sidebar.sortRecent', name: 'sidebar.sortName', manual: 'sidebar.sortManual' } as const)[sort])}</span>
               {sessionSort === sort && <Check size={12} className="text-accent" />}
             </button>
           ))}
@@ -1533,14 +1505,14 @@ export default function Sidebar() {
           filteredRecentEntries.length === 0 ? (
             <div className="px-2 py-1.5 text-xs leading-5 text-cream-faint">{t('sidebar.noMatch')}</div>
           ) : (
-            <div className="space-y-0.5">{filteredRecentEntries.map(renderRecentEntry)}</div>
+            <div className="space-y-0.5"><SidebarList items={filteredRecentEntries} render={renderRecentEntry} /></div>
           )
         ) : filteredRecentEntries.length === 0 ? (
           <div className="sidebar-empty px-2 py-1.5 text-xs leading-5 text-cream-faint">
             {t('sidebar.noSessions')}
           </div>
         ) : (
-          <div className="space-y-0.5">{filteredRecentEntries.map(renderRecentEntry)}</div>
+          <div className="space-y-0.5"><SidebarList items={filteredRecentEntries} render={renderRecentEntry} /></div>
         )}
 
         {!searching && showArchived && archivedEntries.length > 0 && (
@@ -1558,10 +1530,12 @@ export default function Sidebar() {
               {t('sidebar.archived', { count: archivedEntries.length })}
             </button>
             {archiveOpen && (
-              <div className="space-y-0.5">{archivedEntries.map(renderArchivedRow)}</div>
+              <div className="space-y-0.5"><SidebarList items={archivedEntries} render={renderArchivedRow} /></div>
             )}
           </div>
         )}
+      </div>
+
       </div>
 
       <div className="sidebar-footer flex items-center gap-1 border-t border-line px-2.5 py-2">
@@ -1589,55 +1563,40 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <MenuPortal open={Boolean(menuSession)} triggerRef={sessionMenuTrigger} onClose={closeSessionMenu} width={208} placement="bottom">
-        {menuSession && <div data-session-action-menu={menuSession.id}>
-          <div className="truncate px-2.5 py-2 text-xs font-medium text-cream" title={menuSession.title}>{displayTitle(menuSession.title, basename(menuSession.cwd) || menuSession.cwd)}</div>
-          <button type="button" data-session-action="pin" className="project-menu-action" onClick={() => { togglePinSession(menuSession.id); closeSessionMenu(); sessionMenuTrigger.current?.focus() }}>
+      <MenuPortal open={Boolean(menuEntry)} triggerRef={sessionMenuTrigger} onClose={closeSessionMenu} width={208} placement="bottom">
+        {menuEntry && <div data-session-action-menu={menuSession?.id ?? menuUuid}>
+          <div className="truncate px-2.5 py-2 text-xs font-medium text-cream" title={menuEntry.title}>{displayTitle(menuEntry.title, menuEntry.projectName)}</div>
+          {menuSession && <button type="button" data-session-action="pin" className="project-menu-action" onClick={() => { togglePinSession(menuSession.id); closeSessionMenu(); sessionMenuTrigger.current?.focus() }}>
             {pinnedSet.has(menuSession.id) ? <PinOff size={13} /> : <Pin size={13} />}{t(pinnedSet.has(menuSession.id) ? 'sidebar.unpin' : 'sidebar.pin')}
-          </button>
-          {(() => {
-            // 锁定只对有持久身份的对话开放：还没发出第一条消息的新会话没有
-            // uuid，没有文件可保护，锁无从谈起。
-            const menuUuid = durableUuidOfSession(menuSession.id)
-            if (menuUuid === null) return null
-            const menuLocked = lockedSet.has(menuUuid)
-            return (
-              <button type="button" data-session-action="lock" className="project-menu-action disabled:opacity-50" disabled={pendingLockSet.has(menuUuid)} onClick={() => { void toggleSessionLock(menuUuid, menuLocked); closeSessionMenu(); sessionMenuTrigger.current?.focus() }}>
-                {menuLocked ? <LockOpen size={13} /> : <Lock size={13} />}{t(menuLocked ? 'sidebar.unlock' : 'sidebar.lock')}
-              </button>
-            )
-          })()}
-          <button type="button" data-session-action="rename" className="project-menu-action" onClick={() => { closeSessionMenu(); sessionMenuTrigger.current?.focus(); setRenamingId(menuSession.id); setRenameDraft(menuSession.title) }}><Pencil size={13} />{t('sidebar.rename')}</button>
-          <button type="button" data-session-action="duplicate" disabled={Boolean(busy[menuSession.id]) || forkingSessionId !== null}
-            title={busy[menuSession.id] ? t('sidebar.forkBusyHint') : t('history.duplicate')}
+          </button>}
+          {menuUuid && <button type="button" data-session-action="lock" className="project-menu-action disabled:opacity-50" disabled={pendingLockSet.has(menuUuid)} onClick={() => {
+            void toggleSessionLock(menuUuid, menuLocked); closeSessionMenu(); sessionMenuTrigger.current?.focus()
+          }}>
+            {menuLocked ? <LockOpen size={13} /> : <Lock size={13} />}{t(menuLocked ? 'sidebar.unlock' : 'sidebar.lock')}
+          </button>}
+          {menuSession && <button type="button" data-session-action="rename" className="project-menu-action" onClick={() => { closeSessionMenu(); sessionMenuTrigger.current?.focus(); setRenamingId(menuSession.id); setRenameDraft(menuSession.title) }}><Pencil size={13} />{t('sidebar.rename')}</button>}
+          {(menuSession || menuEntry.kind === 'history') && <button type="button" data-session-action="duplicate" disabled={Boolean(menuSession && busy[menuSession.id]) || forkingSessionId !== null}
+            title={menuSession && busy[menuSession.id] ? t('sidebar.forkBusyHint') : t('history.duplicate')}
             className="project-menu-action disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={() => { closeSessionMenu(); void handleForkLive(menuSession, 'duplicate') }}>
-            {forkingSessionId === menuSession.id ? <Loader2 size={13} className="animate-spin" /> : <CopyPlus size={13} />}{t('sidebar.duplicateSession')}
-          </button>
-          <button type="button" data-session-action="branch" disabled={forkingSessionId !== null}
-            title={t('sidebar.branchSessionHint')}
-            className="project-menu-action disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={() => { closeSessionMenu(); void handleForkLive(menuSession, 'branch') }}>
-            {forkingSessionId === menuSession.id ? <Loader2 size={13} className="animate-spin" /> : <GitBranch size={13} />}{t('sidebar.branchSession')}
-          </button>
-          <button type="button" data-session-action="archive" className={`project-menu-action ${archiveSessionConfirm.confirmingId === menuSession.id ? 'text-red-500' : ''}`} onClick={() => {
+            onClick={() => {
+              closeSessionMenu()
+              if (menuSession) void handleDuplicateLive(menuSession)
+              else if (menuEntry.kind === 'history') void handleForkHistory(menuEntry.info)
+            }}>
+            <CopyPlus size={13} />{t('sidebar.duplicateSession')}
+          </button>}
+          {menuSession && <button type="button" data-session-action="archive" className={`project-menu-action ${archiveSessionConfirm.confirmingId === menuSession.id ? 'text-red-500' : ''}`} onClick={() => {
             const needsConfirm = Boolean(busy[menuSession.id]) || (useAppStore.getState().queuedMessages[menuSession.id]?.length ?? 0) > 0
             const confirmed = archiveSessionConfirm.confirmingId === menuSession.id
             requestArchiveSession(menuSession.id)
             if (!needsConfirm || confirmed) closeSessionMenu()
-          }}><Archive size={13} />{t(archiveSessionConfirm.confirmingId === menuSession.id ? 'sidebar.archiveConfirm' : 'sidebar.archive')}</button>
-          <button type="button" data-session-action="delete" className={`project-menu-action ${(() => {
-            const menuUuid = durableUuidOfSession(menuSession.id)
-            return menuUuid !== null && lockedSet.has(menuUuid) ? 'cursor-not-allowed text-cream-faint/50' : 'text-red-500'
-          })()}`} onClick={() => {
-            const menuUuid = durableUuidOfSession(menuSession.id)
-            if (menuUuid !== null && lockedSet.has(menuUuid)) {
-              closeSessionMenu()
-              sessionMenuTrigger.current?.focus()
-              showNotice('sidebar.deleteLocked')
-              return
-            }
-            closeSessionMenu(); sessionMenuTrigger.current?.focus(); setPendingDelete({ kind: 'live', id: menuSession.id, title: menuSession.title })
+          }}><Archive size={13} />{t(archiveSessionConfirm.confirmingId === menuSession.id ? 'sidebar.archiveConfirm' : 'sidebar.archive')}</button>}
+          <button type="button" data-session-action="delete" className={`project-menu-action ${menuLocked ? 'cursor-not-allowed text-cream-faint/50' : 'text-red-500'}`} onClick={() => {
+            closeSessionMenu()
+            sessionMenuTrigger.current?.focus()
+            if (menuLocked) { showNotice('sidebar.deleteLocked'); return }
+            const id = menuEntry.kind === 'history' ? menuEntry.info.id : menuEntry.kind === 'global' ? menuEntry.row.uuid : menuEntry.session.id
+            setPendingDelete({ kind: menuEntry.kind, id, title: menuEntry.title })
           }}><Trash2 size={13} />{t('sidebar.deleteSession')}</button>
         </div>}
       </MenuPortal>

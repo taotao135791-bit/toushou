@@ -1,5 +1,8 @@
+import BoardsIcon from './BoardsIcon'
+import BoardChatPreview from './BoardChatPreview'
+import SavedBoardLayout from './SavedBoardLayout'
 import { useEffect, useState } from 'react'
-import { ArrowUpRight, Check, LayoutDashboard, MessageSquarePlus } from 'lucide-react'
+import { ArrowUpRight, Check, MessageSquarePlus } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { buildBoardEditPrompt } from '@shared/boardChat'
 import { BOARD_LIMITS } from '@shared/boards'
@@ -56,7 +59,8 @@ export function savedBoardReferences(call: ToolCallRecord): SavedBoardReference[
   let target: unknown = result.createdWidgetId
   const rawArgs = parse(typeof path === 'string' && object(input) ? input.content : input)
   if (action === 'toushou_board_update_widget' && object(rawArgs)) target = rawArgs.widgetId
-  const reference = referenceFor(result.board, target)
+  const boardAction = action === 'toushou_board_create' || action === 'toushou_board_customize'
+  const reference = referenceFor(result.board, target, boardAction && object(result.board) && Array.isArray(result.board.widgets))
   return reference ? [reference] : []
 }
 
@@ -70,26 +74,21 @@ export default function SavedBoardDelivery({ sessionId, reference, canEdit }: { 
   const navigate = useNavigate()
   const zh = useAppStore(state => state.language) === 'zh'
   const t = useT()
-  const [board, setBoard] = useState<Pick<KanbanBoard, 'id' | 'name' | 'widgets' | 'locked' | 'partialDelivery'> | null>(null)
+  const [board, setBoard] = useState<KanbanBoard | null>(null)
   const [pending, setPending] = useState(true)
   useEffect(() => {
+    if (sessionId.startsWith('preview:')) {
+      setBoard(null)
+      setPending(false)
+      return
+    }
     let alive = true
     setPending(true); setBoard(null)
     void (async () => {
       try {
-        // Main authorizes existing saved boards before any metadata is shown.
-        const identity = { sessionId, boardId: reference.boardId }
-        const query = reference.widgetId ? { ...identity, widgetId: reference.widgetId } : identity
-        let checked = await window.electronAPI.getChatBoardPreview(query)
-        if (!checked.ok && checked.error === 'not-found' && reference.widgetId) {
-          // A subsequent edit can remove the original component.
-          checked = await window.electronAPI.getChatBoardPreview(identity)
-        }
-        if (checked.ok || checked.error !== 'unsupported') return
-        const saved = (await window.electronAPI.listBoards()).find(item => item.id === reference.boardId)
-        if (alive && saved && (reference.revision === undefined || saved.updatedAt >= reference.revision)) {
-          setBoard({ id: saved.id, name: saved.name, widgets: saved.widgets, locked: saved.locked, partialDelivery: saved.partialDelivery })
-        }
+        const checked = await window.electronAPI.getChatBoardPreview({ sessionId, boardId: reference.boardId })
+        if (alive && checked.ok && checked.source === 'board' && checked.board.id === reference.boardId
+          && (reference.revision === undefined || checked.board.updatedAt >= reference.revision)) setBoard(checked.board)
       } catch { /* The existing board route remains a user-directed recovery. */ }
       finally { if (alive) setPending(false) }
     })()
@@ -111,12 +110,29 @@ export default function SavedBoardDelivery({ sessionId, reference, canEdit }: { 
     state.setComposerAutosend(false)
     state.setComposerPrefill(draft.startsWith(prompt) ? draft : prompt + draft)
   }
-  return <section aria-label={zh ? '看板成果' : 'Board result'} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-ink-850 px-4 py-3">
-    <div className="flex min-w-0 flex-1 items-center gap-3"><LayoutDashboard size={18} className="shrink-0 text-cream-dim" aria-hidden="true" /><div className="min-w-0"><p className="truncate text-[13px] font-semibold text-cream" title={board?.name}>{board?.name ?? (zh ? '看板' : 'Board')}</p><p role="status" className="mt-0.5 flex items-center gap-1 text-[12px] text-cream-faint">{board ? <><Check size={12} aria-hidden="true" />{zh ? `已保存 · ${board.widgets.length} 个模块` : `Saved · ${board.widgets.length} ${board.widgets.length === 1 ? 'module' : 'modules'}`}</> : pending ? (zh ? '正在核对已保存内容…' : 'Checking saved content…') : (zh ? '打开看板查看' : 'Open the board to view it')}</p></div></div>
-    {board?.partialDelivery && <span className="text-[12px] text-amber-700 dark:text-amber-300">{zh ? '部分数据 · 打开查看缺项' : 'Partial data · view missing items'}</span>}
-    <div className="flex flex-wrap gap-2">
-      <button type="button" onClick={jumpToBoard} className="focus-ring flex min-h-8 shrink-0 items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-cream transition-colors hover:bg-overlay">{zh ? '打开看板' : 'Open board'}<ArrowUpRight size={13} aria-hidden="true" /></button>
-      {board && !board.locked && canEdit && <button type="button" onClick={editBoard} className="focus-ring flex min-h-8 shrink-0 items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-cream transition-colors hover:bg-overlay"><MessageSquarePlus size={13} aria-hidden="true" />{t('boards.chat.edit')}</button>}
+  const richWidgets = board?.widgets.filter(widget => widget.type === 'reading-snapshot' || widget.type === 'reading-module'
+    || (widget.type === 'file' && typeof widget.config.filePath === 'string' && widget.config.filePath.toLowerCase().endsWith('.html'))) ?? []
+  return <section aria-label={zh ? '看板成果' : 'Board result'} className="min-w-0 overflow-hidden rounded-2xl border border-line bg-ink-850">
+    <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <BoardsIcon size={18} className="shrink-0 text-cream-dim" aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="truncate text-[13px] font-semibold text-cream" title={board?.name}>{board?.name ?? (zh ? '看板' : 'Board')}</p>
+          <p role="status" className="mt-0.5 flex items-center gap-1 text-[12px] text-cream-faint">
+            {board ? <><Check size={12} aria-hidden="true" />{zh ? `已保存 · ${board.widgets.length} 个模块` : `Saved · ${board.widgets.length} ${board.widgets.length === 1 ? 'module' : 'modules'}`}</>
+              : pending ? (zh ? '正在核对已保存内容…' : 'Checking saved content…') : (zh ? '打开看板查看' : 'Open the board to view it')}
+          </p>
+        </div>
+      </div>
+      {board?.partialDelivery && <span className="text-[12px] text-amber-700 dark:text-amber-300">{zh ? '部分数据 · 打开查看缺项' : 'Partial data · view missing items'}</span>}
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={jumpToBoard} className="focus-ring flex min-h-8 shrink-0 items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-cream transition-colors hover:bg-overlay">{zh ? '打开看板' : 'Open board'}<ArrowUpRight size={13} aria-hidden="true" /></button>
+        {board && !board.locked && canEdit && <button type="button" onClick={editBoard} className="focus-ring flex min-h-8 shrink-0 items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-cream transition-colors hover:bg-overlay"><MessageSquarePlus size={13} aria-hidden="true" />{t('boards.chat.edit')}</button>}
+      </div>
     </div>
+    {board && (!board.widgets.length || richWidgets.length < board.widgets.length) && <SavedBoardLayout board={board} zh={zh} />}
+    {board && richWidgets.length > 0 && <BoardChatPreview embedded sessionId={sessionId} boardId={board.id}
+      widgetId={richWidgets.find(widget => widget.id === reference.widgetId)?.id ?? richWidgets[0].id}
+      widgetIds={richWidgets.map(widget => widget.id)} widgetTitles={Object.fromEntries(richWidgets.map(widget => [widget.id, widget.title]))} revision={board.updatedAt} />}
   </section>
 }
