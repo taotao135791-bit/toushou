@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
 const require_ = createRequire(import.meta.url)
 describe('Facebook today account workflow', () => {
-  it('hides legacy browser controls and sends no web reads', { timeout: 40000 }, () => {
+  it('reads Facebook through MCP with the TikTok picker and isolates scope, failures and disconnects', { timeout: 40000 }, () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'facebook-today-'))
     try {
       const root = path.dirname(require_.resolve('electron/package.json'))
@@ -24,8 +24,15 @@ describe('Facebook today account workflow', () => {
       expect(result, run.stderr).not.toHaveProperty('fatal')
       expect(result.initial).toEqual({ calls: [], articles: 0 })
       expect(result.after).toEqual([])
-      expect(result.text).toContain('旧网页读数已暂停')
-      expect(result.text).toContain('前往连接页设置 Meta Ads')
+      expect(result.text).toContain('选择 Facebook 读取范围')
+      expect(result.text).not.toContain('旧网页读数已暂停')
+      expect(result.single).toEqual(['act_123456'])
+      expect(result.clearedOnDate).toBe(true)
+      expect(result.windows).toHaveLength(3)
+      expect(result.windows.every((window: { start: string; end: string }) => (Date.parse(window.end) - Date.parse(window.start)) / 86400000 === 27)).toBe(true)
+      expect(result.stoppedOnFailure).toBe(true)
+      expect(result.partialDisabled).toBe(true)
+      expect(result.lateIgnored).toBe(true)
       expect(result.text).toContain('选好日期后，点「读取此账户」或「巡检全部已选账户」。')
       expect(result.text).not.toContain('打开浏览器')
       expect(result.text).not.toContain('巡检全部已添加账户')

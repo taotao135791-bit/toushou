@@ -22,6 +22,7 @@ export interface TikTokAccountPickerLabels {
 export interface TikTokAccountPickerProps {
   labels: TikTokAccountPickerLabels
   busy?: boolean
+  readAllDisabled?: boolean
   onReadOne: (advertiserId: string) => void
   onReadAll: () => void
   /** Optional so older embedded fixtures remain compatible. */
@@ -80,7 +81,7 @@ export function TikTokAccountOptions({ accounts, selectedId, busy, onSelect, act
   </div>
 }
 
-export function TikTokAccountPicker({ labels, busy = false, onReadOne, onReadAll, onConnect, discover }: TikTokAccountPickerProps) {
+export function TikTokAccountPicker({ labels, busy = false, readAllDisabled = false, onReadOne, onReadAll, onConnect, discover }: TikTokAccountPickerProps) {
   const listId = useId()
   const [accounts, setAccounts] = useState<PickerAccount[]>([])
   const [namesIncomplete, setNamesIncomplete] = useState(false)
@@ -148,10 +149,10 @@ export function TikTokAccountPicker({ labels, busy = false, onReadOne, onReadAll
         {status === 'ready' && namesIncomplete && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{labels.namesIncomplete}</p>}
         {status === 'error' && <p role="alert" className="text-[12px] text-red-500">{labels.discoveryError}</p>}
         {(status === 'error' || (status === 'ready' && accounts.length === 0)) && onConnect && labels.connect && <button type="button" onClick={onConnect} className="focus-ring rounded-full border border-line px-3 py-1 text-[12px] text-cream-dim">{labels.connect}</button>}
-        {status !== 'loading' && <button type="button" onClick={() => void load()} className="focus-ring rounded-full border border-line px-3 py-1 text-[12px] text-cream-dim">{labels.retry}</button>}
+        {status !== 'loading' && <button type="button" disabled={busy} onClick={() => void load()} className="focus-ring rounded-full border border-line px-3 py-1 text-[12px] text-cream-dim disabled:opacity-40">{labels.retry}</button>}
         <div className="flex flex-wrap gap-2 pt-1">
           <button type="submit" disabled={busy || !accountId} className="focus-ring rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-ink-950 disabled:opacity-40">{labels.readOne}</button>
-          <button type="button" onClick={() => { if (!busy) onReadAll() }} disabled={busy} className="focus-ring rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim disabled:opacity-40">{labels.readAll}</button>
+          <button type="button" onClick={() => { if (!busy && !readAllDisabled) onReadAll() }} disabled={busy || readAllDisabled} className="focus-ring rounded-lg border border-line px-3 py-1.5 text-[12px] text-cream-dim disabled:opacity-40">{labels.readAll}</button>
         </div>
         <p className="text-[12px] leading-5 text-cream-faint">{labels.readAllHint}</p>
       </form>

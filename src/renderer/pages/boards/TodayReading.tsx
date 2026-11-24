@@ -35,6 +35,7 @@ import { beginNavigationIntent, isCurrentNavigationIntent } from '../../lib/navi
 import { isTikTokAccountCurrent } from './readingFreshness'
 import { TTReadingProgress, type TTProgress } from './TTReadingProgress'
 import { TikTokAccountPicker } from './TikTokAccountPicker'
+import { FacebookMcpToday } from './FacebookMcpToday'
 import { buildTikTokAccountDraft } from './tiktokAccountDraft'
 import { mergeSingleTikTokReading } from './tiktokAccountRefresh'
 import { buildTikTokPageRead, matchesTikTokPageRead, scopeTikTokPageData, type TikTokPageScope } from './tiktokTodayScope'
@@ -489,8 +490,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
           onStep={step => row.readError ? void loadFacebook() : facebookStep(step, row)} t={t}
         />)}
         </> : <>
-        <p className="text-[12px] text-cream-dim">{zh ? '旧网页读数已暂停，已保存的报表仍可查看。' : 'Browser readings are paused. Saved reports remain available.'}</p>
-        <button type="button" onClick={() => navigate('/connections')} className="focus-ring self-start rounded-full border border-line px-4 py-2 text-[13px] text-cream">{zh ? '前往连接页设置 Meta Ads' : 'Set up Meta Ads in Connections'}</button>
+        <FacebookMcpToday key={facebookKey} window={dateWindow} zh={zh} onConnect={() => navigate('/connections')} />
         </>}
       </section>
 
