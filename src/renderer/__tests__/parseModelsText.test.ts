@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseModelsText } from '../components/CustomProvidersSection'
+import { parseModelsText } from '../components/CustomProviderModelPicker'
 
 describe('parseModelsText', () => {
   it('parses one model per line, id only', () => {

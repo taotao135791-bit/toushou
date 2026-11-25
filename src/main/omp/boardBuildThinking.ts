@@ -6,7 +6,7 @@ interface PendingThinkingChange {
 }
 
 interface BoardBuildThinkingRuntime {
-  read(sessionId: string): Promise<Pick<SessionState, 'thinkingLevel' | 'modelThinking'> | null>
+  read(sessionId: string): Promise<Pick<SessionState, 'thinkingLevel' | 'modelThinking' | 'autoThinking'> | null>
   write(sessionId: string, level: SessionThinkingLevel): Promise<boolean>
   isActive(sessionId: string, buildId: string): boolean
 }
@@ -26,6 +26,7 @@ export class BoardBuildThinking {
     try {
       const state = await this.runtime.read(sessionId)
       if (this.pending.get(sessionId) !== request || !this.runtime.isActive(sessionId, buildId)) return
+      if (state?.autoThinking) return
       const previous = SESSION_THINKING_LEVELS.find(level => level === state?.thinkingLevel)
       if (!previous || SESSION_THINKING_LEVELS.indexOf(previous) <= SESSION_THINKING_LEVELS.indexOf('medium')) return
       const capability = state?.modelThinking

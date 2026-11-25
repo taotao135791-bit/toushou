@@ -35,6 +35,7 @@ function parseItem(raw: unknown): TodoItem | null {
     (typeof obj.text === 'string' && obj.text) ||
     (typeof obj.title === 'string' && obj.title) ||
     (typeof obj.subject === 'string' && obj.subject) ||
+    (typeof obj.step === 'string' && obj.step) ||
     (typeof obj.label === 'string' && obj.label) ||
     (typeof obj.task === 'string' && obj.task) ||
     ''

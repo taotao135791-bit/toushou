@@ -19,6 +19,10 @@
   ],
   "extraResources": [
     {
+      "from": "resources/context-policy",
+      "to": "context-policy"
+    },
+    {
       "from": "resources/omp-approval",
       "to": "omp-approval"
     },

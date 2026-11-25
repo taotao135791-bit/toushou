@@ -4,13 +4,7 @@
 
 ## 下载与安装
 
-当前公开版本为 **v2.9.2**。安装包、更新清单和校验文件见 [GitHub Release](https://github.com/taotao135791-bit/toushou/releases/tag/v2.9.2)。
-
-| 平台 | 下载 |
-| --- | --- |
-| macOS Apple Silicon | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.2/TouShou-arm64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.2/TouShou-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.2/TouShou-x64.dmg) · [ZIP](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.2/TouShou-x64.zip) |
-| Windows x64 | [安装程序](https://github.com/taotao135791-bit/toushou/releases/download/v2.9.2/TouShou-x64.exe) |
+**[按平台下载最新正式版](https://github.com/taotao135791-bit/toushou/blob/release-channels/README.md)**。下载页分别列出 macOS Apple Silicon、macOS Intel 和 Windows x64 的版本号、安装包和校验文件。
 
 macOS：打开 DMG，将投手拖入「应用程序」。应用尚未公证，首次打开若被拦截，可右键点击应用并选择「打开」。Windows：运行安装程序；若 SmartScreen 拦截，可选择「更多信息」后继续安装。
 
@@ -33,7 +27,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 最新发版
 
-**v2.9.2** 新增会话锁定和 Facebook 账户范围选择，支持导入 Codex 与 Claude Code 会话、恢复草稿，并修复跨页面打开历史会话的问题。[更新日志](CHANGELOG.md) · [发布说明](docs/releases/v2.9.2.md)
+**v2.9.8** 是 macOS 和 Windows 的双端过渡版。旧版可通过应用内更新升级，之后两端各自获取适合本平台的正式版。[发布说明](docs/releases/v2.9.8.md) · [开发者提交指南](docs/commit-and-release.md)
 
 ## 开发
 

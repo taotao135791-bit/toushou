@@ -70,13 +70,13 @@ export function projectChatTurns(messages: MessageLike[], previousTurns: ChatTur
     }
     turn.entries.forEach((entry, i) => {
       const { message } = entry
-      if (lastTool >= 0 && message.role === 'assistant' && i !== answer) {
+      if (lastTool >= 0 && message.role === 'assistant' && !message.replyKey && i !== answer) {
         process.push(entry)
       } else {
         // System errors and user steering stay visible in their original
         // position, never inside a collapsed activity section.
         flush()
-        turn.nodes.push({ kind: 'message', entry, showBoardAction: lastTool < 0 || i === answer })
+        turn.nodes.push({ kind: 'message', entry, showBoardAction: Boolean(message.replyKey) || lastTool < 0 || i === answer })
       }
     })
     flush()

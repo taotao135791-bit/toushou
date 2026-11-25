@@ -1,3 +1,5 @@
+import { AttachedImage, PromptAttachments } from './ChatAttachment'
+import BoardsIcon from './BoardsIcon'
 import { memo, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
@@ -11,14 +13,15 @@ import {
   Copy,
   FileText,
   History,
+  GitBranch,
   Info,
-  LayoutDashboard,
   Loader2,
   Pencil
 } from 'lucide-react'
 import { MessageLike, useAppStore } from '../store'
 import { useT } from '../i18n'
 import { formatSeconds } from '../lib/time'
+import { useActivityClock } from '../lib/useActivityClock'
 import { ConfirmDialog } from './ConfirmDialog'
 import { splitConnectionMarkers } from '../lib/connectionMarkers'
 import { copyMessageText, messageActionText } from '../lib/messageActions'
@@ -35,6 +38,7 @@ interface MessageItemProps {
   /** Index of the LAST user message (computed once per list). -1 = none. */
   lastUserIndex?: number
   sessionId?: string | null
+  onBranch?: (sessionId: string, reply: MessageLike) => Promise<void>
   onRetry?: (sessionId: string, message: MessageLike) => Promise<boolean>
   /** Whether this is the latest message of the active turn. */
   streaming?: boolean
@@ -87,7 +91,7 @@ function SkillMessageCard({
 
 const THINKING_PREVIEW_DELAY_MS = 1_000
 
-function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null, onRetry, streaming = false, turnActive = streaming, allowThinkingAutoExpand = true, showBoardAction = true }: MessageItemProps) {
+function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null, onRetry, onBranch, streaming = false, turnActive = streaming, allowThinkingAutoExpand = true, showBoardAction = true }: MessageItemProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
   const copyRequest = useRef(0)
   const copyBusy = useRef(false)
@@ -100,6 +104,8 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
   const [restoring, setRestoring] = useState(false)
   const [thinkingDisclosure, setThinkingDisclosure] = useState<'closed' | 'preview' | 'manual-open' | 'manual-closed'>('closed')
   const [boardDialogOpen, setBoardDialogOpen] = useState(false)
+  const [branching, setBranching] = useState(false)
+  const branchInFlight = useRef(false)
   const [boardSaved, setBoardSaved] = useState(false)
   const [taskDialogOpen, setTaskDialogOpen] = useState(false)
   const t = useT()
@@ -142,13 +148,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
     if (thinkingDisclosure === 'preview' && !showThinkingPreview) setThinkingDisclosure('closed')
   }, [thinkingDisclosure, showThinkingPreview])
   const toggleThinking = () => setThinkingDisclosure(thinkingOpen ? 'manual-closed' : 'manual-open')
-  const [now, setNow] = useState(0)
-  useEffect(() => {
-    if (!thinkingStreaming) return
-    setNow(Date.now())
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [thinkingStreaming])
+  const now = useActivityClock(thinkingStreaming)
   const thinkingEnd = message.thinkingEndTs ?? (thinkingStreaming ? now : 0)
   const thinkingElapsed =
     message.thinking && message.thinkingStartTs && thinkingEnd
@@ -284,12 +284,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
             {message.images && message.images.length > 0 && (
               <div className="mb-1.5 flex flex-wrap gap-1.5">
                 {message.images.map((img, i) => (
-                  <img
-                    key={i}
-                    src={`data:${img.mimeType};base64,${img.data}`}
-                    alt=""
-                    className="h-14 w-14 rounded-lg border border-line object-cover"
-                  />
+                  <AttachedImage key={i} image={img} />
                 ))}
               </div>
             )}
@@ -298,11 +293,11 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
                 {parts.map((part, index) => part.kind === 'skill' ? (
                   <SkillMessageCard key={index} name={part.name} instruction={part.instruction} body={part.body} />
                 ) : (
-                  <div key={index} className="whitespace-pre-wrap">{part.text}</div>
+                  <div key={index} className="whitespace-pre-wrap"><PromptAttachments text={part.text} /></div>
                 ))}
               </div>
             ) : (
-              message.content
+              <PromptAttachments text={message.content} />
             )}
           </div>
           {message.deliveryUnknown && (
@@ -418,13 +413,17 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
     return (
       <div className="msg-in flex justify-center">
         <div
+          role={message.compactionStatus ? 'status' : undefined}
+          data-compaction-status={message.compactionStatus}
           className={`flex max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-[12px] leading-5 ${
             isInfo
               ? 'bg-overlay text-cream-dim'
               : 'bg-red-500/[0.08] text-red-600 dark:text-red-300'
           }`}
         >
-          {isInfo ? (
+          {message.compactionStatus === 'running' ? (
+            <Loader2 size={12} aria-hidden="true" className="shrink-0 motion-safe:animate-spin" />
+          ) : isInfo ? (
             <Info size={11} className="shrink-0" />
           ) : (
             <AlertTriangle size={11} className="shrink-0" />
@@ -442,7 +441,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
 
   // Assistant text spans the column edge to edge — no avatar, no bubble.
   return (
-    <div className="msg-in group">
+    <div className="msg-in group assistant-reply">
       {message.thinking && (
         <div className="mb-1.5">
           <button
@@ -465,7 +464,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
           )}
         </div>
       )}
-      <Markdown content={guideSplit.clean} />
+      <Markdown content={guideSplit.clean} replyAttachments />
       <ConnectionGuideCard kinds={guideSplit.guides} />
       {hasActionText && (
         <div className="mt-2 flex flex-wrap items-center gap-1">
@@ -485,8 +484,28 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
             title={t('boards.chat.saveToBoard')}
             className="focus-ring flex min-h-8 items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
           >
-            <LayoutDashboard size={12} />
+            <BoardsIcon size={12} />
             {t('boards.chat.saveToBoard')}
+          </button>}
+          {sessionId && message.replyKey && onBranch && <button
+            type="button"
+            disabled={branching}
+            onClick={async () => {
+              if (branchInFlight.current) return
+              branchInFlight.current = true
+              setBranching(true)
+              try {
+                await onBranch(sessionId, message)
+              } finally {
+                branchInFlight.current = false
+                setBranching(false)
+              }
+            }}
+            title={t('history.branchFromHere')}
+            className="focus-ring flex min-h-8 items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint transition-colors hover:bg-overlay hover:text-cream disabled:cursor-wait"
+          >
+            {branching ? <Loader2 size={12} className="animate-spin" /> : <GitBranch size={12} />}
+            {t('history.branchFromHere')}
           </button>}
           {boardSaved && <span role="status" className="text-[12px] text-emerald-500">{t('boards.chat.saved')}</span>}
         </div>

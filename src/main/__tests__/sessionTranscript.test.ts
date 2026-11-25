@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Session } from '@shared/types'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 
 // omp/index.ts pulls in electron; the transcript reader only needs its two
 // session lookups, so the module is stubbed wholesale.
@@ -67,6 +71,54 @@ describe('readSessionFileTranscript (instant history preview)', () => {
     expect(messages!.some((m) => m.toolCall?.tool === 'toushou_tiktok_status')).toBe(true)
     expect(flat).toContain('结论。')
     rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('hydrates verified profile blobs and keeps text when an image is unavailable', async () => {
+    const profile = mkdtempSync(path.join(tmpdir(), 'peek-blobs-'))
+    try {
+      const sessions = path.join(profile, 'sessions', 'project'), blobs = path.join(profile, 'blobs')
+      mkdirSync(sessions, { recursive: true }); mkdirSync(blobs)
+      const file = path.join(sessions, 'session.jsonl')
+      const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+kvxkAAAAASUVORK5CYII='
+      const png = Buffer.from(data, 'base64')
+      const hash = createHash('sha256').update(png).digest('hex')
+      const blob = path.join(blobs, hash)
+      writeFileSync(blob, png)
+      const user = (image: string, mimeType = 'image/png') => JSON.stringify({ type: 'message', message: { role: 'user', content: [
+        { type: 'text', text: 'photo' }, { type: 'image', data: image, mimeType }
+      ] } })
+      writeFileSync(file, [user('blob:sha256:' + hash), user('blob:sha256:missing'), user('blob:sha256:' + hash, 'image/jpeg'), user(data)].join('\n'))
+      const read = (target = file, hydrateImages = true) => readSessionFileTranscript(target, { agentDir: profile, hydrateImages })
+      const messages = await read()
+      expect(messages?.map(row => row.content)).toEqual(Array(4).fill('photo'))
+      expect(messages?.map(row => row.images?.[0]?.data)).toEqual([data, undefined, undefined, data])
+      expect((await read(file, false))?.[0].images).toBeUndefined()
+
+      const untrusted = path.join(profile, 'outside-sessions.jsonl')
+      writeFileSync(untrusted, user('blob:sha256:' + hash))
+      expect((await read(untrusted))?.[0].images).toBeUndefined()
+      writeFileSync(blob, Buffer.from('changed'))
+      expect((await read())?.[0].images).toBeUndefined()
+    } finally { rmSync(profile, { recursive: true, force: true }) }
+  })
+
+  it('ignores an aliased blob directory outside the profile', async () => {
+    const temp = mkdtempSync(path.join(tmpdir(), 'peek-alias-'))
+    try {
+      const profile = path.join(temp, 'profile'), sessions = path.join(profile, 'sessions', 'project'), outside = path.join(temp, 'outside')
+      mkdirSync(sessions, { recursive: true }); mkdirSync(outside)
+      const image = Buffer.from('89504e470d0a1a0a', 'hex')
+      const hash = createHash('sha256').update(image).digest('hex')
+      writeFileSync(path.join(outside, hash), image)
+      symlinkSync(outside, path.join(profile, 'blobs'), process.platform === 'win32' ? 'junction' : 'dir')
+      const file = path.join(sessions, 'session.jsonl')
+      writeFileSync(file, JSON.stringify({ type: 'message', message: { role: 'user', content: [
+        { type: 'text', text: 'kept' }, { type: 'image', mimeType: 'image/png', data: 'blob:sha256:' + hash }
+      ] } }))
+      const [row] = (await readSessionFileTranscript(file, { agentDir: profile }))!
+      expect(row.content).toBe('kept')
+      expect(row.images).toBeUndefined()
+    } finally { rmSync(temp, { recursive: true, force: true }) }
   })
 
   it('returns null for unreadable or message-less files', async () => {

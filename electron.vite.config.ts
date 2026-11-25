@@ -4,7 +4,8 @@ import path from 'node:path'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // Ship the lazy transcript parser as an app chunk on both desktop platforms.
+    plugins: [externalizeDepsPlugin({ exclude: ['mdast-util-from-markdown'] })],
     build: {
       outDir: 'dist-electron/main',
       rollupOptions: {

@@ -1,5 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Command, Plug, Sparkles, Wrench } from 'lucide-react'
+import { BookOpen, ChevronRight, Command, Layers, Link2, Wrench } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import BrandIcon from './BrandIcon'
 import { BundledSkillEntry, LaunchableTool, SkillEntry, SlashCommand } from '@shared/types'
 import { formatSkillChatMessage } from '@shared/skills'
 import { isMcpMentionName } from '@shared/mcpMentions'
@@ -13,7 +15,8 @@ interface InvokeItem {
   id: string
   label: string
   description?: string
-  group: 'tool' | 'command' | 'skill' | 'plugin'
+  group: 'tool' | 'command' | 'skill' | 'plugin' | 'connection'
+  brand?: ConnectionBrand
   choice: ComposerInvocation | { kind: 'personalSkill'; id: string }
 }
 
@@ -24,9 +27,16 @@ interface InvokeLists {
   mcpServers: string[]
 }
 
+type ConnectionBrand = 'feishu' | 'dingtalk' | 'facebook' | 'tiktok' | 'appsflyer' | 'figma'
+interface ConnectionOption {
+  brand: ConnectionBrand
+  label: string
+  mcpName?: string
+}
+
 const EMPTY_LISTS: InvokeLists = { tools: [], personalSkills: [], bundledSkills: [], mcpServers: [] }
-const GROUPS: InvokeItem['group'][] = ['tool', 'command', 'skill', 'plugin']
-const GROUP_ICONS = { tool: Wrench, command: Command, skill: Sparkles, plugin: Plug }
+const GROUPS: InvokeItem['group'][] = ['tool', 'command', 'skill', 'connection', 'plugin']
+const GROUP_ICONS = { tool: Wrench, command: Command, skill: BookOpen, plugin: Layers, connection: Link2 }
 
 const LIST_TTL_MS = 30_000
 
@@ -54,6 +64,7 @@ function cachedCatalog<T>(read: () => Promise<T>) {
 }
 
 const toolsCatalog = cachedCatalog(async () => await window.electronAPI.listLaunchableTools?.() ?? [])
+const pluginsCatalog = cachedCatalog(async () => await window.electronAPI.listLaunchableTools?.('enabled-plugins') ?? [])
 const personalCatalog = cachedCatalog(async () => {
   const result = await window.electronAPI.listSkills?.()
   if (result && !result.ok) throw new Error(result.error)
@@ -67,6 +78,7 @@ const bundledCatalog = cachedCatalog(async () => {
 
 export function invalidateInvokeLists(): void {
   toolsCatalog.invalidate()
+  pluginsCatalog.invalidate()
   personalCatalog.invalidate()
   bundledCatalog.invalidate()
 }
@@ -76,18 +88,23 @@ export default function InvokePicker({
   onClose,
   onPick,
   commands,
-  liveSession
+  liveSession,
+  tray = false
 }: {
   triggerRef: React.RefObject<HTMLElement | null>
   onClose: () => void
   onPick: (invocation: ComposerInvocation) => void
   commands: SlashCommand[]
   liveSession: boolean
+  tray?: boolean
 }) {
   const t = useT()
+  const navigate = useNavigate()
+  const filterLabel = t(tray ? 'composer.pluginsSearch' : 'composer.invoke.filter')
   const language = useAppStore((s) => s.language)
   const [lists, setLists] = useState<InvokeLists>(EMPTY_LISTS)
   const [loading, setLoading] = useState(4)
+  const [connections, setConnections] = useState<ConnectionOption[]>([])
   const [query, setQuery] = useState('')
   const [activeId, setActiveId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -113,10 +130,34 @@ export default function InvokePicker({
         .map(({ name }) => name)
     )
     load('personalSkills', personalCatalog.load)
-    load('tools', toolsCatalog.load)
+    load('tools', tray ? pluginsCatalog.load : toolsCatalog.load)
     load('bundledSkills', bundledCatalog.load)
     return () => { cancelled = true }
-  }, [])
+  }, [tray])
+
+  useEffect(() => {
+    if (!tray) return
+    let cancelled = false
+    const api = window.electronAPI
+    const choices: Array<ConnectionOption & { read: () => Promise<{ status: string; connected?: boolean }> }> = [
+      { brand: 'feishu', label: t('connections.feishu'), read: api.feishuStatus },
+      { brand: 'dingtalk', label: t('connections.dingTalk'), read: api.dingTalkStatus },
+      { brand: 'facebook', label: 'Meta Ads', mcpName: 'meta-ads', read: api.metaAdsStatus },
+      { brand: 'tiktok', label: 'TikTok Ads', mcpName: 'tiktok-ads', read: api.tiktokStatus },
+      { brand: 'appsflyer', label: 'AppsFlyer', mcpName: 'appsflyer', read: api.appsflyerStatus },
+      { brand: 'figma', label: 'Figma', mcpName: 'figma', read: api.figmaStatus }
+    ]
+    setConnections([])
+    for (const { read, ...option } of choices) {
+      if (!read) continue
+      void Promise.resolve().then(read).then(state => {
+        if (!cancelled && (state.connected || state.status === 'connected')) {
+          setConnections(current => [...current, option])
+        }
+      }).catch(() => undefined)
+    }
+    return () => { cancelled = true }
+  }, [tray, t])
 
   useLayoutEffect(() => () => { pendingSkill.current = null }, [])
 
@@ -125,13 +166,17 @@ export default function InvokePicker({
     const available = new Set(commands.map(({ name }) => `/${name}`))
     const displayed = new Set<string>()
     for (const tool of lists.tools) {
-      if (!tool.command || (liveSession && !available.has(tool.command))) continue
-      displayed.add(tool.command)
-      rows.push({ id: tool.id, label: tool.label, description: tool.description, group: 'tool', choice: { kind: 'slash', command: tool.command } })
+      if (tool.command) {
+        if (liveSession && !available.has(tool.command)) continue
+        displayed.add(tool.command)
+        rows.push({ id: tool.id, label: tool.label, description: tool.description, group: tray ? 'plugin' : 'tool', choice: { kind: 'slash', command: tool.command } })
+      } else if (tray) {
+        rows.push({ id: tool.id, label: tool.label, description: tool.description, group: 'plugin', choice: { kind: 'insert', text: t('composer.usePlugin', { name: tool.label }) } })
+      }
     }
     for (const command of commands) {
       const token = `/${command.name}`
-      if (displayed.has(token)) continue
+      if (displayed.has(token) || (tray && command.source !== 'skill')) continue
       rows.push({
         id: `cmd:${command.name}`,
         label: token,
@@ -147,18 +192,30 @@ export default function InvokePicker({
     for (const skill of lists.bundledSkills) {
       rows.push({ id: `bundled:${skill.id}`, label: skill.name, description: skill.description, group: 'skill', choice: { kind: 'skill', text: skill.prompt.trim() } })
     }
+    const managed = new Set<string>()
+    for (const { brand, label, mcpName } of connections) {
+      // Managed MCP connections use the same explicit invocation as typing @.
+      // The workspace connectors without an MCP name are invoked by their CLI instructions.
+      if (mcpName && !lists.mcpServers.includes(mcpName)) continue
+      if (mcpName) managed.add(mcpName)
+      rows.push({
+        id: `connection:${brand}`, label, brand, group: 'connection',
+        choice: mcpName ? { kind: 'mcp', name: mcpName } : { kind: 'insert', text: t('composer.useConnection', { name: label }) }
+      })
+    }
     for (const name of lists.mcpServers) {
+      if (managed.has(name)) continue
       rows.push({ id: `mcp:${name}`, label: name, group: 'plugin', choice: { kind: 'mcp', name } })
     }
     const needle = query.trim().toLowerCase()
-    const filtered = needle ? rows.filter(({ label, description, choice }) =>
-      label.toLowerCase().includes(needle) ||
+    const filtered = needle ? rows.filter(({ label, description, choice, brand }) =>
+      label.toLowerCase().includes(needle) || brand?.includes(needle) ||
       description?.toLowerCase().includes(needle) ||
       (choice.kind === 'slash' && choice.command.toLowerCase().includes(needle))
     ) : rows
     return GROUPS.map((group) => ({ group, rows: filtered.filter((item) => item.group === group) }))
       .filter(({ rows }) => rows.length > 0)
-  }, [commands, lists, liveSession, query])
+  }, [commands, connections, lists, liveSession, query, t, tray])
 
   const options = groups.flatMap(({ rows }) => rows)
   const activeIndex = Math.max(0, options.findIndex(({ id }) => id === activeId))
@@ -211,6 +268,7 @@ export default function InvokePicker({
     tool: t('composer.invoke.groupTool'),
     command: t('composer.invoke.groupCommand'),
     skill: t('composer.invoke.groupSkill'),
+    connection: t('connections.title'),
     plugin: t('composer.invoke.groupPlugin')
   }
 
@@ -225,8 +283,8 @@ export default function InvokePicker({
             setActiveId(null)
           }}
           onKeyDown={handleKeyDown}
-          placeholder={t('composer.invoke.filter')}
-          aria-label={t('composer.invoke.filter')}
+          placeholder={filterLabel}
+          aria-label={filterLabel}
           role="combobox"
           aria-autocomplete="list"
           aria-expanded
@@ -235,7 +293,7 @@ export default function InvokePicker({
           className="w-full rounded-lg border border-line bg-ink-900 px-2.5 py-1.5 text-[12.5px] text-cream placeholder-cream-faint outline-none focus:border-accent/40"
         />
       </div>
-      <div id={listId} role="listbox" aria-label={t('composer.invoke.filter')} aria-busy={busy}>
+      <div id={listId} role="listbox" aria-label={filterLabel} aria-busy={busy}>
         {groups.map(({ group, rows }) => {
           const Icon = GROUP_ICONS[group]
           return (
@@ -254,7 +312,8 @@ export default function InvokePicker({
                   onClick={() => void pick(item)}
                   className="focus-ring flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition hover:bg-overlay aria-selected:bg-overlay disabled:opacity-60"
                 >
-                  <Icon size={12} className={group === 'skill' ? 'shrink-0 text-accent' : 'shrink-0 text-cream-faint'} />
+                  {item.brand ? <BrandIcon brand={item.brand} size={16} /> :
+                    <Icon size={15} className="shrink-0 text-cream-dim" />}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[12.5px] text-cream">{item.label}</span>
                     {item.description && (
@@ -276,6 +335,10 @@ export default function InvokePicker({
       {!loading && !busy && options.length === 0 && (
         <p role="status" className="px-2.5 py-2 text-[12px] text-cream-faint">{t('composer.invoke.empty')}</p>
       )}
+      {tray && <button type="button" onClick={() => { close(); navigate('/connections') }}
+        className="focus-ring sticky -bottom-1 flex w-full items-center gap-2 border-t border-line bg-ink-850 px-2.5 py-2 text-left text-xs text-cream-dim hover:text-cream">
+        <Link2 size={15} />{t('composer.manageConnections')}<ChevronRight size={12} className="ml-auto" />
+      </button>}
     </MenuPortal>
   )
 }

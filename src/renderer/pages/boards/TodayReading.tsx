@@ -1,3 +1,4 @@
+import { UpcomingGoogleAds } from '../../components/UpcomingConnections'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronDown, RefreshCw } from 'lucide-react'
@@ -561,6 +562,7 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
         ) : null}
       </section>
 
+      <UpcomingGoogleAds />
       <div className="space-y-3 border-t border-line pb-4 pt-5">
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => { if (!readingBusy) { setSaveWithAi(false); setSaveSnapshot(currentSnapshot()) } }} disabled={readingBusy || !hasReadingResults} className="focus-ring min-h-9 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-not-allowed disabled:opacity-40">{zh ? '保存为新看板' : 'Save as new board'}</button>

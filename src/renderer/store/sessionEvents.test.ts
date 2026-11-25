@@ -9,11 +9,24 @@ beforeEach(() => {
 
 afterEach(() => {
   flushStreamQueueForTest()
-  useAppStore.setState({ messages: {}, executions: {}, sessions: [], resumeRecencySeeds: {} })
+  useAppStore.setState({ messages: {}, executions: {}, sessions: [], resumeRecencySeeds: {}, compacting: {} })
   vi.unstubAllGlobals()
 })
 
 describe('session message events', () => {
+  it('seals each completed assistant reply before the next streamed answer', () => {
+    const store = useAppStore.getState()
+    const sessionId = 'branch-replies'
+    store.applySessionEvent({ type: 'message', sessionId, role: 'assistant', content: 'First' })
+    store.applySessionEvent({ type: 'reply_completed', sessionId, replyKey: 'first' })
+    store.applySessionEvent({ type: 'message', sessionId, role: 'assistant', content: 'Second' })
+    store.applySessionEvent({ type: 'reply_completed', sessionId, replyKey: 'second' })
+    flushStreamQueueForTest()
+    expect(useAppStore.getState().messages[sessionId].map(row => [row.content, row.replyKey])).toEqual([
+      ['First', 'first'], ['Second', 'second']
+    ])
+  })
+
   it('keeps system notices as quiet system messages', () => {
     useAppStore.getState().applySessionEvent({
       type: 'message',
@@ -43,6 +56,63 @@ describe('session message events', () => {
       { role: 'assistant', content: 'Partial reply' },
       { role: 'system', content: 'Error: Connection failed' }
     ])
+  })
+})
+
+describe('compaction rows in the conversation', () => {
+  const current = () => useAppStore.getState().messages[sessionId] ?? []
+
+  it.each(['compacted', 'skipped', 'aborted', 'failed'] as const)(
+    'updates the original row on %s without disturbing adjacent streamed replies',
+    outcome => {
+      const { applySessionEvent: dispatch } = useAppStore.getState()
+      dispatch({ type: 'message', sessionId, role: 'assistant', content: 'Earlier' })
+      dispatch({ type: 'compaction', sessionId, phase: 'start', source: 'manual' })
+      dispatch({ type: 'compaction', sessionId, phase: 'start', source: 'manual' })
+      flushStreamQueueForTest()
+      expect(current()).toHaveLength(2)
+      const running = current()[1]
+      expect(running).toMatchObject({ role: 'system', variant: 'info', compactionStatus: 'running', compactionSource: 'manual' })
+      expect(useAppStore.getState().compacting[sessionId]).toBe(true)
+
+      dispatch({ type: 'message', sessionId, role: 'assistant', content: 'Later' })
+      dispatch({ type: 'compaction', sessionId, phase: 'end', outcome })
+      dispatch({ type: 'compaction', sessionId, phase: 'end', outcome })
+      flushStreamQueueForTest()
+      expect(current()).toMatchObject([
+        { content: 'Earlier' }, { id: running.id, compactionStatus: outcome, compactionSource: 'manual' }, { content: 'Later' }
+      ])
+      expect(current()[1].content).not.toEqual(running.content)
+      expect(useAppStore.getState().compacting[sessionId]).toBe(false)
+    }
+  )
+
+  it('settles a fatal interruption or a closed process, and handles separate auto runs independently', () => {
+    const { applySessionEvent: dispatch } = useAppStore.getState()
+    dispatch({ type: 'compaction', sessionId, phase: 'start' })
+    dispatch({ type: 'compaction', sessionId, phase: 'end', outcome: 'compacted' })
+    dispatch({ type: 'compaction', sessionId, phase: 'start' })
+    dispatch({ type: 'error', sessionId, message: 'Child exited', recoverable: false })
+    dispatch({ type: 'closed', sessionId })
+    const other = 'another-process'
+    dispatch({ type: 'compaction', sessionId: other, phase: 'start' })
+    dispatch({ type: 'closed', sessionId: other })
+    flushStreamQueueForTest()
+    const rows = current().filter(row => row.compactionStatus)
+    expect(rows.map(row => row.compactionStatus)).toEqual(['compacted','failed'])
+    expect(rows.every(row => row.compactionSource === 'auto')).toBe(true)
+    expect(rows[0].id).not.toBe(rows[1].id)
+    expect(useAppStore.getState().messages[other]).toMatchObject([{ compactionStatus: 'aborted' }])
+    expect(useAppStore.getState().compacting).toMatchObject({ [sessionId]: false, [other]: false })
+  })
+
+  it('reconciles a legacy completion without a start and ignores duplicate terminal notifications', () => {
+    const { applySessionEvent: dispatch } = useAppStore.getState()
+    dispatch({ type: 'compaction', sessionId, phase: 'end' })
+    dispatch({ type: 'compaction', sessionId, phase: 'end' })
+    dispatch({ type: 'closed', sessionId })
+    flushStreamQueueForTest()
+    expect(current()).toMatchObject([{ compactionSource: 'auto', compactionStatus: 'compacted' }])
   })
 })
 

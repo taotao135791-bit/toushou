@@ -1,7 +1,6 @@
 import { autosendForPrefill } from '../lib/composerAutosend'
 import { ComposerInvocation, planInvocation } from '../lib/composerInvocation'
 import { useState, useRef, useMemo, useEffect, useId, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
-import { useNavigate } from 'react-router-dom'
 import {
   ArrowUp,
   Square,
@@ -22,6 +21,8 @@ import {
   ChevronDown,
   Layers
 } from 'lucide-react'
+import { AttachedImage } from './ChatAttachment'
+import { base64DecodedBytes, IMAGE_MIME_BY_EXT, isPromptImageMime, MAX_IMAGE_BYTES, MAX_IMAGE_COUNT as MAX_IMAGES, MAX_TOTAL_IMAGE_BYTES } from '@shared/promptImages'
 import { PromptImage, SlashCommand } from '@shared/types'
 import { isMcpMentionName, MCP_MENTION_PREFIX } from '@shared/mcpMentions'
 import { QueuedMessage, useAppStore } from '../store'
@@ -41,8 +42,8 @@ import { showNotice } from '../lib/notice'
 import ModelPicker from './ModelPicker'
 import ThinkingPicker from './ThinkingPicker'
 import PermissionPicker from './PermissionPicker'
-import UsageMonitor from './UsageMonitor'
-import MenuPortal from './MenuPortal'
+import UsageMonitor, { ContextReadout } from './UsageMonitor'
+import MenuPortal, { ComposerMenuPlacement } from './MenuPortal'
 import InvokePicker from './InvokePicker'
 import ProjectPicker from './ProjectPicker'
 import { useProjects } from '../store/projects'
@@ -90,8 +91,6 @@ interface PendingImage {
   previewUrl: string
 }
 
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024
-const MAX_IMAGES = 4
 const MAX_FILE_ITEMS = 20
 const MAX_MCP_ITEMS = 20
 /** Hard cap for one paste; anything larger freezes the composer pipeline. */
@@ -147,6 +146,7 @@ const EMPTY_QUEUE: QueuedMessage[] = []
 
 const IMAGE_ERROR_KEYS = {
   tooLarge: 'composer.imageTooLarge',
+  total: 'composer.imagesTotalTooLarge',
   max: 'composer.maxImages',
   notImage: 'composer.imageNotImage',
   readFailed: 'composer.imageReadFailed'
@@ -224,6 +224,8 @@ export default memo(function Composer({
   const [atMenuIndex, setAtMenuIndex] = useState(0)
   const [atDismissed, setAtDismissed] = useState(false)
   const [images, setImages] = useState<PendingImage[]>([])
+  const [readingImages, setReadingImages] = useState(false)
+  const activeReaders = useRef(new Set<FileReader>())
   /** Non-image drops staged as attachment chips; sent as @path lines. */
   const [pendingFiles, setPendingFiles] = useState<DroppedAttachment[]>([])
   const [steeringQueuedId, setSteeringQueuedId] = useState<string | null>(null)
@@ -248,6 +250,8 @@ export default memo(function Composer({
   /** Text armed by a one-click tool launch, sent once committed (see below). */
   const autosendRef = useRef<string | null>(null)
   const currentSessionId = useAppStore((s) => s.currentSessionId)
+  const compacting = useAppStore(s => Boolean(currentSessionId && s.compacting[currentSessionId]))
+  const compactUnavailable = busy || disabled || stopping || compacting
   const currentWorkspace = useAppStore((s) => s.currentWorkspace)
   // Primitive selector: re-renders only when the Feishu-origin flag flips.
   const feishuSync = useAppStore(
@@ -257,7 +261,7 @@ export default memo(function Composer({
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addButtonRef = useRef<HTMLButtonElement>(null)
   const firstAddActionRef = useRef<HTMLButtonElement>(null)
-  const [invokeTarget, setInvokeTarget] = useState<{ sessionId: string | null; workspaceId: string | undefined } | null>(null)
+  const [invokeTarget, setInvokeTarget] = useState<{ sessionId: string | null; workspaceId: string | undefined; anchor: 'plus' | 'tray' } | null>(null)
   const invokeOpen = !disabled && invokeTarget?.sessionId === currentSessionId && invokeTarget.workspaceId === currentWorkspace?.id
   useEffect(() => {
     if (!invokeOpen) setInvokeTarget(null)
@@ -267,7 +271,7 @@ export default memo(function Composer({
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const projects = useProjects(state => state.projects)
   const projectButtonRef = useRef<HTMLButtonElement>(null)
-  const navigate = useNavigate()
+  const pluginButtonRef = useRef<HTMLButtonElement>(null)
   const setComposerDraft = useAppStore((s) => s.setComposerDraft)
   const clearComposerDraft = useAppStore((s) => s.clearComposerDraft)
   const queue = useAppStore((s) =>
@@ -314,6 +318,10 @@ export default memo(function Composer({
   // the editing surface from the newly selected session and reset transient UI.
   useEffect(() => {
     textareaRef.current?.blur()
+    // Pending reads belong to the old draft. Their callbacks must never attach to the new one.
+    for (const reader of Array.from(activeReaders.current)) reader.abort()
+    activeReaders.current.clear()
+    setReadingImages(false)
     const sessionId = currentSessionId ?? NEW_CHAT_DRAFT_KEY
     const readDraft = (state: ReturnType<typeof useAppStore.getState>) => {
       const session = state.sessions.find((item) => item.id === currentSessionId)
@@ -432,7 +440,7 @@ export default memo(function Composer({
       ...(onCompact
         ? [{ name: 'compact', description: t('composer.slashCompact'), source: 'prompt' as const, builtin: true }]
         : []),
-      ...commands.map((c) => ({ name: c.name, description: c.description ?? '', source: c.source }))
+      ...commands.filter(c => !onCompact || c.name !== 'compact').map((c) => ({ name: c.name, description: c.description ?? '', source: c.source }))
     ]
     return filterSlashItems(all, slashQuery)
   }, [slashQuery, commands, onCompact, t, appCommands])
@@ -569,6 +577,7 @@ export default memo(function Composer({
       return
     }
     if (item.builtin) {
+      if (compactUnavailable) return
       commitDraft('')
       setCaret(0)
       onCompact?.()
@@ -594,21 +603,24 @@ export default memo(function Composer({
   }
 
   const addImage = (data: string, mimeType: string) => {
-    const sessionIdAtAction = currentSessionId
-    setImages((prev) => {
-      if (prev.length >= MAX_IMAGES) return prev
-      const next = [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          data,
-          mimeType,
-          previewUrl: `data:${mimeType};base64,${data}`
-        }
-      ]
-      writeDraft(sessionIdAtAction, text, next)
-      return useAppStore.getState().currentSessionId === sessionIdAtAction ? next : prev
+    const state = useAppStore.getState()
+    if (state.currentSessionId !== currentSessionId) return
+    const session = state.sessions.find(item => item.id === currentSessionId)
+    const draft = state.composerDrafts[session ? sessionComposerDraftKey(session) : NEW_CHAT_DRAFT_KEY]
+    const previous = draft?.images ?? []
+    if (previous.length >= MAX_IMAGES) { setImageError('max'); return }
+    const bytes = base64DecodedBytes(data)
+    if (!bytes) { setImageError('readFailed'); return }
+    if (previous.reduce((sum, image) => sum + base64DecodedBytes(image.data), bytes) > MAX_TOTAL_IMAGE_BYTES) {
+      setImageError('total')
+      return
+    }
+    const image = { id: crypto.randomUUID(), data, mimeType, previewUrl: 'data:' + mimeType + ';base64,' + data }
+    state.setComposerDraft(currentSessionId ?? NEW_CHAT_DRAFT_KEY, {
+      text: draft?.text ?? textareaRef.current?.value ?? '', files: draft?.files,
+      images: [...previous, { type: 'image', data, mimeType }]
     })
+    setImages(prev => [...prev, image])
   }
 
   /** Shared image staging pipeline for pasted and dropped files. */
@@ -624,14 +636,27 @@ export default memo(function Composer({
         setImageError('max')
         continue
       }
+      const mimeType = file.type || IMAGE_MIME_BY_EXT[extensionOf(file.name)]
+      if (!mimeType || !isPromptImageMime(mimeType)) {
+        setImageError('notImage')
+        continue
+      }
       claimed += 1
-      const mimeType = file.type || 'image/png'
       const reader = new FileReader()
+      activeReaders.current.add(reader)
+      setReadingImages(true)
+      reader.onloadend = () => {
+        activeReaders.current.delete(reader)
+        if (!activeReaders.current.size) setReadingImages(false)
+      }
       reader.onload = () => {
         const result = typeof reader.result === 'string' ? reader.result : ''
         const comma = result.indexOf(',')
         if (comma === -1) return
         addImage(result.slice(comma + 1), mimeType)
+      }
+      reader.onerror = () => {
+        if (useAppStore.getState().currentSessionId === currentSessionId) setImageError('readFailed')
       }
       reader.readAsDataURL(file)
     }
@@ -800,12 +825,16 @@ export default memo(function Composer({
     addImage(res.data, res.mimeType)
   }
 
-  // 📎: pick any file and reference it as @path at the caret
+  // Images selected in the general picker use the same multimodal input as a paste.
   const handleAttachFile = async () => {
     const sessionIdAtAction = currentSessionId
-    const filePath = await window.electronAPI.selectFile([{ name: 'All Files', extensions: ['*'] }])
-    if (!filePath) return
-    if (useAppStore.getState().currentSessionId !== sessionIdAtAction) return
+    const filePath = await window.electronAPI.selectComposerAttachment()
+    if (!filePath || useAppStore.getState().currentSessionId !== sessionIdAtAction) return
+    if (typeof filePath !== 'string') {
+      if (filePath.ok) addImage(filePath.data, filePath.mimeType)
+      else setImageError(filePath.error)
+      return
+    }
     const rel =
       currentWorkspace && filePath.startsWith(`${currentWorkspace.realPath}/`)
         ? filePath.slice(currentWorkspace.realPath.length + 1)
@@ -835,9 +864,17 @@ export default memo(function Composer({
     return true
   }
 
+  const outgoingText = () => text.trim() || (images.length ? t('composer.imageOnlyPrompt') : '')
   const handleSend = () => {
-    const trimmed = text.trim()
-    if (!trimmed || disabled) return
+    const trimmed = outgoingText()
+    if (!trimmed || disabled || activeReaders.current.size) return
+    if (trimmed === '/compact' && onCompact && !images.length && !pendingFiles.length) {
+      if (compactUnavailable) return
+      commitDraft('')
+      setCaret(0)
+      onCompact()
+      return
+    }
     const sessionIdAtSend = currentSessionId
     const imgs = stagedImages()
     // Attachment chips ride along as one @path token per line; they are
@@ -941,8 +978,8 @@ export default memo(function Composer({
   // Queue so the user never has to discover the queued-chip Zap action first.
   const handleSteerCurrent = () => {
     const sessionId = currentSessionId
-    const trimmed = text.trim()
-    if (!sessionId || !trimmed || disabled || !busy) return
+    const trimmed = outgoingText()
+    if (!sessionId || !trimmed || disabled || activeReaders.current.size || !busy) return
     const staged = images
     const stagedFiles = pendingFiles
     const imgs = stagedImages()
@@ -969,15 +1006,15 @@ export default memo(function Composer({
       latest.setSessionError(sessionId, steerFailureKey(result.source))
       if (latest.getComposerDraftVersion(sessionId) !== clearedVersion) return
       latest.setComposerDraft(sessionId, {
-        text: trimmed,
+        text,
         images: toPromptImages(staged),
         files: toDraftFiles(stagedFiles)
       })
       if (latest.currentSessionId !== sessionId) return
-      setText(trimmed)
+      setText(text)
       setImages(staged)
       setPendingFiles(stagedFiles)
-      setCaret(trimmed.length)
+      setCaret(text.length)
     })
   }
 
@@ -1046,7 +1083,7 @@ export default memo(function Composer({
     autosize(textareaRef.current)
   }
 
-  const canSend = !disabled && Boolean(text.trim())
+  const canSend = !disabled && !readingImages && Boolean(text.trim() || images.length)
   const destination = currentWorkspace && currentWorkspace.source !== 'default'
     ? t('composer.destinationProject', {
         name: projects.find(project => project.path === currentWorkspace.realPath)?.name
@@ -1057,33 +1094,40 @@ export default memo(function Composer({
     ? t('chat.stopping')
     : queue.length > 0 ? t('composer.stopWithQueue', { count: queue.length }) : t('composer.stop')
 
-  // Panels open ABOVE the composer (bottom-full). On the home screen the card
-  // sits mid-window, so a tall panel would run past the window's top edge and
-  // get clipped. Measure the room above and cap every panel to it.
+  const panelPosition = currentSessionId ? 'bottom-full mb-2' : 'top-full mt-2'
   const panelAnchorRef = useRef<HTMLDivElement>(null)
-  const [aboveMax, setAboveMax] = useState<number | null>(null)
+  const [panelMax, setPanelMax] = useState<number | null>(null)
   const panelsOpen = slashQuery !== null || atOpen
   useEffect(() => {
     if (!panelsOpen) return
     const measure = () => {
       const el = panelAnchorRef.current
       if (!el) return
-      const top = el.getBoundingClientRect().top
-      setAboveMax(Math.max(140, Math.round(top - 12)))
+      const rect = el.getBoundingClientRect()
+      const room = currentSessionId ? rect.top : window.innerHeight - rect.bottom
+      setPanelMax(Math.max(64, Math.round(room - 12)))
     }
     measure()
+    const observer = new ResizeObserver(measure)
+    if (panelAnchorRef.current) observer.observe(panelAnchorRef.current)
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [panelsOpen])
+    window.addEventListener('scroll', measure, true)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+      window.removeEventListener('scroll', measure, true)
+    }
+  }, [panelsOpen, currentSessionId])
 
 
   return (
-    <div className={currentSessionId ? 'px-4 pb-4 pt-2' : 'agent-home-composer'}>
+    <ComposerMenuPlacement.Provider value={currentSessionId ? 'top' : 'below'}>
+    <div className={currentSessionId ? 'shrink-0 px-4 pb-1 pt-1' : 'agent-home-composer'}>
       <div ref={panelAnchorRef} className={`relative mx-auto w-full ${currentSessionId ? 'max-w-[760px]' : 'max-w-[776px]'}`}>
         {slashQuery !== null && (
           <div
-            className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-y-auto overflow-x-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
-            style={aboveMax !== null ? { maxHeight: aboveMax } : undefined}
+            className={`absolute ${panelPosition} left-0 right-0 z-20 overflow-y-auto overflow-x-hidden rounded-xl border border-line bg-ink-850 p-1 shadow-pop`}
+            style={panelMax !== null ? { maxHeight: panelMax } : undefined}
           >
             <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
               {t('composer.slashTitle')}
@@ -1105,6 +1149,7 @@ export default memo(function Composer({
                       <button
                         key={`${item.source}-${item.name}`}
                         onMouseEnter={() => setMenuIndex(i)}
+                        disabled={item.builtin && compactUnavailable}
                         onClick={() => pickCommand(item)}
                         className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
                           i === menuIndex ? 'bg-overlay-strong' : ''
@@ -1123,7 +1168,8 @@ export default memo(function Composer({
                         </span>
                         {item.description && (
                           <span className="min-w-0 truncate text-[11px] text-cream-faint">
-                            {item.description}
+                            {item.builtin && compactUnavailable ? t(compacting ? 'usage.compacting' : 'usage.waitForTurn') : item.description}
+                            {item.builtin && currentSessionId && <> · <ContextReadout sessionId={currentSessionId} /></>}
                           </span>
                         )}
                         <span className="ml-auto shrink-0 font-mono text-[9.5px] uppercase tracking-wider text-cream-faint">
@@ -1146,8 +1192,8 @@ export default memo(function Composer({
             id={mentionMenuId}
             role="listbox"
             aria-label={t('composer.atMenu')}
-            className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-72 overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
-            style={aboveMax !== null ? { maxHeight: Math.min(aboveMax, 288) } : undefined}
+            className={`absolute ${panelPosition} left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop`}
+            style={panelMax !== null ? { maxHeight: Math.min(panelMax, 288) } : undefined}
           >
             <div role="group" aria-label={t('composer.atMcpTitle')}>
               <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-cream-faint">
@@ -1294,15 +1340,9 @@ export default memo(function Composer({
                   key={img.id}
                   className="relative h-14 w-14 overflow-hidden rounded-[10px] border border-line bg-ink-900"
                 >
-                  <img src={img.previewUrl} alt="" className="h-full w-full object-cover" />
+                  <AttachedImage image={img} previewUrl={img.previewUrl} />
                   <button
-                    onClick={() =>
-                      setImages((prev) => {
-                        const next = prev.filter((p) => p.id !== img.id)
-                        writeDraft(currentSessionId, text, next)
-                        return next
-                      })
-                    }
+                    onClick={() => commitDraft(text, images.filter(item => item.id !== img.id))}
                     title={t('composer.removeImage')}
                     aria-label={t('composer.removeImage')}
                     className="focus-ring absolute right-0.5 top-0.5 rounded-full bg-ink-950/85 p-0.5 text-cream-faint transition-colors hover:text-cream"
@@ -1395,7 +1435,7 @@ export default memo(function Composer({
                   title={t('composer.addContent')}
                   aria-label={t('composer.addContent')}
                   aria-haspopup="menu"
-                  aria-expanded={addMenuOpen || invokeOpen}
+                  aria-expanded={addMenuOpen || (invokeOpen && invokeTarget?.anchor === 'plus')}
                   className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
                 >
                   <Plus size={14} />
@@ -1431,7 +1471,7 @@ export default memo(function Composer({
                   <button
                     onClick={() => {
                       setAddMenuOpen(false)
-                      setInvokeTarget({ sessionId: currentSessionId, workspaceId })
+                      setInvokeTarget({ sessionId: currentSessionId, workspaceId, anchor: 'plus' })
                     }}
                     disabled={disabled}
                     className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay disabled:opacity-60"
@@ -1443,7 +1483,8 @@ export default memo(function Composer({
               </div>
               {invokeOpen && (
                 <InvokePicker
-                  triggerRef={addButtonRef}
+                  triggerRef={invokeTarget?.anchor === 'tray' ? pluginButtonRef : addButtonRef}
+                  tray={invokeTarget?.anchor === 'tray'}
                   onClose={() => setInvokeTarget(null)}
                   onPick={pickInvocation}
                   commands={commands}
@@ -1462,8 +1503,10 @@ export default memo(function Composer({
               )}
             </div>
             <div className="flex items-center gap-1.5">
-              <ModelPicker sessionId={currentSessionId} compact={compact} />
-              <ThinkingPicker sessionId={currentSessionId} compact={compact} />
+              <div className="composer-model-control">
+                <ModelPicker sessionId={currentSessionId} compact={compact} />
+                <ThinkingPicker sessionId={currentSessionId} compact={compact} />
+              </div>
               {busy ? (
                 <div className="flex items-center gap-1.5">
                   {canSend && (
@@ -1558,8 +1601,12 @@ export default memo(function Composer({
               )}
               <button
                 type="button"
-                onClick={() => navigate('/plugins')}
-                className="focus-ring ml-auto"
+                ref={pluginButtonRef}
+                aria-haspopup="listbox"
+                aria-expanded={invokeOpen && invokeTarget?.anchor === 'tray'}
+                disabled={disabled}
+                onClick={() => setInvokeTarget(invokeOpen && invokeTarget?.anchor === 'tray' ? null : { sessionId: currentSessionId, workspaceId, anchor: 'tray' })}
+                className="focus-ring"
               >
                 <Layers size={14} className="shrink-0" aria-hidden="true" />
                 <span>{t('composer.trayPlugins')}</span>
@@ -1567,35 +1614,11 @@ export default memo(function Composer({
             </div>
           )}
         </div>
-        {currentSessionId ? (
-          <>
-            <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-cream-faint">
-              <div className="min-w-0 truncate">
-                <UsageMonitor sessionId={currentSessionId} />
-              </div>
-              {/* Shortcuts hint needs ~1100px of window AND a non-squeezed chat
-                  column (browser panel open): compact covers the panel case the
-                  window media query cannot see. Home never sees this row — its
-                  single hint line below the card replaces it. */}
-              <span
-                className={`hidden shrink-0 whitespace-nowrap min-[1100px]:inline ${
-                  compact ? '!hidden' : ''
-                }`}
-              >
-                {t('composer.shortcuts')}
-              </span>
-            </div>
-            <div className="mt-1 truncate whitespace-nowrap text-center text-[10.5px] text-cream-faint">
-              {t('composer.disclaimer')}
-            </div>
-          </>
-        ) : (
-          // Home: the hint line and workspace strip render in ChatPanel below
-          // and above the card — the composer itself adds nothing here.
-          null
-        )}
+        {currentSessionId && <UsageMonitor key={currentSessionId} sessionId={currentSessionId}
+          onCompact={onCompact} disabled={disabled || stopping} />}
       </div>
     </div>
+    </ComposerMenuPlacement.Provider>
   )
 })
 

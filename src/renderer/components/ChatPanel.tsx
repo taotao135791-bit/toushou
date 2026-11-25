@@ -1,21 +1,17 @@
+import BoardsIcon from './BoardsIcon'
 import { useCallback, useRef, useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   FolderOpen,
-  MessageSquare,
-  Download,
+  SquarePen,
   Loader2,
   ChevronDown,
-  CopyPlus,
   PanelRight,
-  LayoutDashboard,
-  CalendarClock,
   Clock3,
   Layers,
-  Plug,
+  Link2,
   BookOpen,
-  Puzzle,
-  Settings2,
+  SlidersHorizontal,
   BarChart3,
   Globe2,
   Table2,
@@ -28,7 +24,6 @@ import { I18nKey, useT } from '../i18n'
 import { showNotice } from '../lib/notice'
 import { createSessionForCurrentProject } from '../lib/session'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
-import { exportFilename } from '../lib/exportFilename'
 import { basename } from '../lib/path'
 import MessageList from './MessageList'
 import ExecutionActivity from './ExecutionActivity'
@@ -40,6 +35,7 @@ import OpenWithMenu from './OpenWithMenu'
 import useElementWidth from '../lib/useElementWidth'
 import { retryFailedMessage } from '../lib/retryMessage'
 import { useTranscriptScroll } from '../lib/useTranscriptScroll'
+import RunningTurnProgress from './RunningTurnProgress'
 import { finishHistoryResume } from '../lib/historyResume'
 import { beginNavigationIntent, isCurrentNavigationIntent } from '../lib/navigationIntent'
 
@@ -102,34 +98,30 @@ export default function ChatPanel() {
       {
         name: 'new',
         description: t('slash.new'),
-        icon: MessageSquare,
+        icon: SquarePen,
         run: () => useAppStore.getState().setCurrentSessionId(null)
       },
-      { name: 'mcp', description: t('slash.mcp'), icon: Plug, run: () => navigate('/connections') },
+      { name: 'mcp', description: t('slash.mcp'), icon: Link2, run: () => navigate('/connections') },
       {
         name: 'tiktok',
         description: t('slash.tiktok'),
         icon: BarChart3,
         run: () => useAppStore.getState().setComposerPrefill(t('slash.tiktokPrompt'))
       },
-      { name: 'tasks', description: t('slash.tasks'), icon: CalendarClock, run: () => navigate('/tasks') },
-      { name: 'boards', description: t('slash.boards'), icon: LayoutDashboard, run: () => navigate('/boards') },
+      { name: 'tasks', description: t('slash.tasks'), icon: Clock3, run: () => navigate('/tasks') },
+      { name: 'boards', description: t('slash.boards'), icon: BoardsIcon, run: () => navigate('/boards') },
       { name: 'skills', description: t('slash.skills'), icon: BookOpen, run: () => navigate('/skills') },
-      { name: 'plugins', description: t('slash.plugins'), icon: Puzzle, run: () => navigate('/plugins') },
-      { name: 'settings', description: t('slash.settings'), icon: Settings2, run: () => navigate('/settings') }
+      { name: 'plugins', description: t('slash.plugins'), icon: Layers, run: () => navigate('/plugins') },
+      { name: 'settings', description: t('slash.settings'), icon: SlidersHorizontal, run: () => navigate('/settings') }
     ],
     [t, navigate]
   )
-  const [exporting, setExporting] = useState(false)
-  const [exportFailed, setExportFailed] = useState(false)
-  const [duplicating, setDuplicating] = useState(false)
-  const [exportSuccessPath, setExportSuccessPath] = useState<string | null>(null)
   const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(null)
   const [recoveringQueue, setRecoveringQueue] = useState(false)
   const preparingPrompts = useRef(new Map<string, string>())
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const stoppingBusy = useAppStore((s) =>
-    stoppingSessionId ? Boolean(s.busy[stoppingSessionId]) : false
+    stoppingSessionId ? Boolean(s.busy[stoppingSessionId] || s.compacting[stoppingSessionId]) : false
   )
   // Session-less send failure (create threw — e.g. a stale workspace grant)
   const [sendError, setSendError] = useState<I18nKey | null>(null)
@@ -294,25 +286,6 @@ export default function ChatPanel() {
     })
   }, [handleSend])
 
-  const handleExport = async () => {
-    if (!currentSessionId || exporting) return
-    setExporting(true)
-    setExportFailed(false)
-    setExportSuccessPath(null)
-    try {
-      const saved = await window.electronAPI.exportHtml(currentSessionId)
-      if (!saved) throw new Error('exportHtml returned null')
-      setExportSuccessPath(saved)
-      setTimeout(() => setExportSuccessPath((current) => (current === saved ? null : current)), 3500)
-    } catch (err) {
-      console.error('Session export failed:', err)
-      setExportFailed(true)
-      setTimeout(() => setExportFailed(false), 2000)
-    } finally {
-      setExporting(false)
-    }
-  }
-
   const handleStop = useCallback(async () => {
     const sid = currentSessionId
     if (!sid || stoppingSessionId === sid) return
@@ -340,7 +313,7 @@ export default function ChatPanel() {
       if (!accepted) throw new Error('abortSession rejected')
       stopTimerRef.current = setTimeout(() => {
         const current = useAppStore.getState()
-        if (current.busy[sid]) {
+        if (current.busy[sid] || current.compacting[sid]) {
           setStoppingSessionId(null)
           current.setSessionError(sid, 'chat.stopFailed')
         }
@@ -378,6 +351,8 @@ export default function ChatPanel() {
     const sid = currentSessionId
     if (!sid) return
     const store = useAppStore.getState()
+    if (store.busy[sid] || store.compacting[sid] || sid.startsWith('preview:')) return
+    store.setSessionError(sid, null)
     store.setCompacting(sid, true)
     try {
       const ok = await window.electronAPI.compactSession(sid)
@@ -390,22 +365,26 @@ export default function ChatPanel() {
     } finally {
       useAppStore.getState().setCompacting(sid, false)
     }
-    const stats = await window.electronAPI.getSessionStats(sid)
-    if (stats) useAppStore.getState().setStats(sid, stats)
   }, [currentSessionId])
 
   const handleSelectProject = async () => {
     await selectWorkspace()
   }
 
-  const forkCurrentSession = useCallback(async (sessionId: string, keepUserTurns?: number) => {
-    const workspace = useAppStore.getState().currentWorkspace
-    if (!workspace) return
+  const forkCurrentSession = useCallback(async (sessionId: string, message: MessageLike) => {
+    const state = useAppStore.getState()
+    const workspace = state.currentWorkspace
+    if (!workspace || state.currentSessionId !== sessionId || !message.replyKey) return
+    const matches = state.messages[sessionId]?.filter(row => row.replyKey === message.replyKey) ?? []
+    const occurrence = matches.findIndex(row => row.id === message.id) + 1
+    if (!occurrence) return
+    const reply = { key: message.replyKey, occurrence, total: matches.length }
+    const source = sessionId.startsWith('preview:') ? { historyId: sessionId.slice('preview:'.length) } : { liveSessionId: sessionId }
     const intent = beginNavigationIntent()
     try {
-      const result = await window.electronAPI.forkSession(workspace.id, { liveSessionId: sessionId, keepUserTurns })
+      const result = await window.electronAPI.forkSession(workspace.id, { ...source, reply })
       if (!result || 'error' in result) {
-        if (isCurrentNavigationIntent(intent)) showNotice('history.forkFailed')
+        if (isCurrentNavigationIntent(intent)) showNotice('history.branchFailed')
         return
       }
       const { session, messages: restored, historicalAgents } = result
@@ -423,25 +402,9 @@ export default function ChatPanel() {
         }
       })
     } catch {
-      if (isCurrentNavigationIntent(intent)) showNotice('history.forkFailed')
+      if (isCurrentNavigationIntent(intent)) showNotice('history.branchFailed')
     }
   }, [navigate])
-
-  /**
-   * 复制当前对话（DSH 式入口）：整份 fork 成新会话，标题自动加"（副本）"。
-   * 忙碌（流式中）时按钮隐藏——进行中回合的尾巴还没写进落盘文件，此刻复制
-   * 会缺尾巴，与分支按钮同一条安全策略。
-   */
-  const handleDuplicateSession = useCallback(async () => {
-    const sid = currentSessionId
-    if (!sid || duplicating) return
-    setDuplicating(true)
-    try {
-      await forkCurrentSession(sid)
-    } finally {
-      setDuplicating(false)
-    }
-  }, [currentSessionId, duplicating, forkCurrentSession])
 
   const openOfficeFile = async () => {
     const picked = await window.electronAPI.officeOpenDialog()
@@ -450,7 +413,6 @@ export default function ChatPanel() {
   }
 
   const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
-  const exportedFilename = exportSuccessPath ? exportFilename(exportSuccessPath) : null
   const showHero = sessionMessages.length === 0
   const showThinking =
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
@@ -499,64 +461,12 @@ export default function ChatPanel() {
           >
             <PanelRight size={14} />
           </button>
-          {currentSessionId && !currentSessionId.startsWith('preview:') && !isBusy && (
-            <button
-              onClick={() => void handleDuplicateSession()}
-              disabled={duplicating}
-              title={duplicating ? t('history.duplicating') : t('history.duplicate')}
-              aria-label={t('history.duplicate')}
-              className="focus-ring app-no-drag rounded-md p-1.5 text-cream-dim transition-colors hover:bg-overlay hover:text-cream disabled:opacity-60"
-            >
-              {duplicating ? <Loader2 size={13} className="animate-spin" /> : <CopyPlus size={13} />}
-            </button>
-          )}
-          {currentSessionId && (
-            <button
-              onClick={() => void handleExport()}
-              disabled={exporting}
-              title={
-                exporting
-                  ? t('export.exporting')
-                  : exportFailed
-                    ? t('export.failed')
-                    : exportSuccessPath
-                      ? t('export.successWithFile', { filename: exportedFilename ?? '' })
-                    : t('export.button')
-              }
-              aria-label={t('export.button')}
-              className={`focus-ring app-no-drag rounded-md p-1.5 transition-colors hover:bg-overlay disabled:opacity-60 ${
-                exportFailed
-                  ? 'text-red-500'
-                  : exportSuccessPath
-                    ? 'text-emerald-500'
-                    : 'text-cream-dim hover:text-cream'
-              }`}
-            >
-              {exporting ? (
-                <Loader2 size={13} className="animate-spin" />
-              ) : (
-                <Download size={13} />
-              )}
-            </button>
-          )}
-          {exportSuccessPath && (
-            <span
-              className="max-w-[220px] truncate font-medium text-emerald-500"
-              title={exportSuccessPath}
-              aria-live="polite"
-            >
-              {t('export.successWithFile', { filename: exportedFilename ?? '' })}
-            </span>
-          )}
-          {exportFailed && (
-            <span className="font-medium text-red-500" aria-live="polite">
-              {t('export.failed')}
-            </span>
-          )}
           {isCompacting && (
             <span className="flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
               <span className="font-medium text-accent">{t('chat.compacting')}</span>
+              {!isBusy && <button type="button" onClick={handleStop} disabled={isStopping}
+                className="app-no-drag focus-ring rounded px-1 hover:text-cream disabled:opacity-50">{t('common.cancel')}</button>}
             </span>
           )}
           {isStopping ? (
@@ -600,7 +510,7 @@ export default function ChatPanel() {
                   busy={isBusy}
                   stopping={isStopping}
                   focusKey={currentSessionId}
-                  disabled={cliAvailable === false || previewActive}
+                  disabled={cliAvailable === false || previewActive || isCompacting}
                   commands={slashCommands}
                   appCommands={appCommands}
                   onCompact={currentSessionId ? handleCompact : undefined}
@@ -702,13 +612,14 @@ export default function ChatPanel() {
               </div>
             </div>
           )}
+          {isBusy && currentSessionId && <RunningTurnProgress key={currentSessionId} sessionId={currentSessionId} waiting={Boolean(pendingUi)} stopping={isStopping} compacting={isCompacting} />}
           <Composer
             onSend={handleSend}
             onStop={handleStop}
             busy={isBusy}
             stopping={isStopping}
             focusKey={currentSessionId}
-            disabled={cliAvailable === false || previewActive}
+            disabled={cliAvailable === false || previewActive || isCompacting}
             commands={slashCommands}
             appCommands={appCommands}
             onCompact={currentSessionId ? handleCompact : undefined}

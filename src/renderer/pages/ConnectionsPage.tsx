@@ -1,3 +1,4 @@
+import { UpcomingGoogleAds, UpcomingMeasurementPartners } from '../components/UpcomingConnections'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import QRCode from 'qrcode'
@@ -438,6 +439,8 @@ export default function ConnectionsPage() {
           <FigmaConnectionCard />
           <McpConnectionsSection />
           <AdsCopyModelsSection />
+          <UpcomingGoogleAds />
+          <UpcomingMeasurementPartners />
         </div>
       </div>
     </div>

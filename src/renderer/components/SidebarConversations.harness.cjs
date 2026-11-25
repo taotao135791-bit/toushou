@@ -94,11 +94,39 @@ app.whenReady().then(async () => {
     await js(`document.querySelector('[aria-label="Conversations in Alpha"]').click()`)
     await waitFor(`document.querySelectorAll('[data-project-conversations="alpha"] [data-conversation-key]').length===17`)
     const duplicateTitlesKept = await js(`[...document.querySelectorAll('[data-project-conversations="alpha"] [data-conversation-key]')].filter(e=>e.textContent.includes('Duplicate topic')).length`)
-    await js(`document.querySelector('[data-project-list]').scrollTop=60;document.querySelector('[data-all-conversations]').scrollTop=80;window.keptConversationNode=${row('[data-all-conversations]', 3)}`)
-    const before = await js(`({projectScroll:document.querySelector('[data-project-list]').scrollTop,allScroll:document.querySelector('[data-all-conversations]').scrollTop,expanded:document.querySelector('[aria-label="Conversations in Alpha"]').getAttribute('aria-expanded'),historyReads:window.sidebarFixture.historyCalls.length})`)
+    await js(`document.querySelector('[data-sidebar-scroll]').scrollTop=80;window.keptConversationNode=${row('[data-all-conversations]', 3)}`)
+    const before = await js(`({scroll:document.querySelector('[data-sidebar-scroll]').scrollTop,expanded:document.querySelector('[aria-label="Conversations in Alpha"]').getAttribute('aria-expanded'),historyReads:window.sidebarFixture.historyCalls.length})`)
     await js(`window.dispatchEvent(new Event('focus'))`)
     await new Promise(resolve => setTimeout(resolve, 80))
-    const after = await js(`({projectScroll:document.querySelector('[data-project-list]').scrollTop,allScroll:document.querySelector('[data-all-conversations]').scrollTop,expanded:document.querySelector('[aria-label="Conversations in Alpha"]').getAttribute('aria-expanded'),historyReads:window.sidebarFixture.historyCalls.length,sameNode:window.keptConversationNode===${row('[data-all-conversations]', 3)},animated:[...document.querySelectorAll('[data-conversation-key]')].some(e=>!!e.style.transform)})`)
+    const after = await js(`({scroll:document.querySelector('[data-sidebar-scroll]').scrollTop,expanded:document.querySelector('[aria-label="Conversations in Alpha"]').getAttribute('aria-expanded'),historyReads:window.sidebarFixture.historyCalls.length,sameNode:window.keptConversationNode===${row('[data-all-conversations]', 3)},animated:[...document.querySelectorAll('[data-conversation-key]')].some(e=>!!e.style.transform)})`)
+    const dragRow = async (source, target) => {
+      await js(`(() => {
+        const from = ${source}, to = ${target}, dataTransfer = new DataTransfer()
+        const event = type => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer, clientY: to.getBoundingClientRect().top })
+        from.dispatchEvent(event('dragstart'))
+        to.dispatchEvent(event('dragover'))
+        to.dispatchEvent(event('drop'))
+        from.dispatchEvent(event('dragend'))
+      })()`)
+      await frame()
+    }
+    await dragRow("document.querySelector('[data-project-id=beta] [draggable]')", "document.querySelector('[data-project-id=alpha] [draggable]')")
+    const projectOrder = await js("Array.from(document.querySelectorAll('[data-project-id]'), el => el.dataset.projectId)")
+    await dragRow(row('[data-all-conversations]', 3), row('[data-all-conversations]', 2))
+    const ordered = await js(`({saved:window.sidebarFixture.settings.sidebarSessionOrder, sort:window.sidebarFixture.settings.sessionSort,
+      adjacent:${row('[data-all-conversations]', 3)}.nextElementSibling===${row('[data-all-conversations]', 2)},
+      dots:[...document.querySelectorAll('[data-conversation-select]')].every(e=>e.querySelector('[data-session-dot]'))})`)
+    const rowMetrics = async n => js(`(() => {
+      const row = ${row('[data-all-conversations]', n)}, title = row.querySelector('[data-session-title]')
+      const subtitle = row.querySelector('[data-session-subtitle]'), select = row.querySelector('[data-conversation-select]')
+      const more = row.querySelector('[data-session-actions]'), dot = row.querySelector('[data-session-dot]')
+      const relativeX = el => el.getBoundingClientRect().x - row.getBoundingClientRect().x
+      return { titleX: relativeX(title), dotX: relativeX(dot), moreX: relativeX(more), moreWidth: more.offsetWidth,
+        primaryWidth: select.offsetWidth, height: row.offsetHeight, font: getComputedStyle(title).fontWeight,
+        titleColor: getComputedStyle(title).color, subColor: getComputedStyle(subtitle).color,
+        idle: subtitle.textContent.endsWith('Idle'), controls: row.querySelectorAll('button').length }
+    })()`)
+    const rowAppearance = { live: await rowMetrics(1), history: await rowMetrics(3), global: await rowMetrics(4) }
     phase = 'independent action buttons'
     await openActions(2)
     const actionMenuCount = await js(`document.querySelectorAll('[data-session-action-menu] button').length`)
@@ -107,7 +135,8 @@ app.whenReady().then(async () => {
     await waitFor(`window.sidebarFixture.pinned().includes('live-b')`)
     const pinKeyboard = await js(`({snapshot:window.sidebarFixture.snapshot(),activations:window.sidebarFixture.activateCalls.length,resumes:window.sidebarFixture.resumeCalls.length})`)
     for (const n of [3, 4]) {
-      await focusElement(`${row('[data-all-conversations]', n)}.querySelector('[title="Delete session file"]')`)
+      await openActions(n)
+      await focusElement(`document.querySelector('[data-session-action="delete"]')`)
       await enter()
       await waitFor(`!!document.querySelector('[role="alertdialog"]')`)
       await js(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`)
@@ -131,6 +160,7 @@ app.whenReady().then(async () => {
     await waitFor(`window.sidebarFixture.snapshot().current==='resumed-'+window.sidebarFixture.uuid(4)`)
     await js(`window.sidebarFixture.releaseHistory('grant-default')`)
     await new Promise(resolve => setTimeout(resolve, 40))
+    rowAppearance.restored = await rowMetrics(4)
     const oneClickHistory = await js(`({snapshot:window.sidebarFixture.snapshot(),targetReads:window.sidebarFixture.historyCalls.filter(id=>id==='grant-beta').length-${targetReadsBefore},resumes:window.sidebarFixture.resumeCalls.length})`)
     phase = 'project selection'
     await mouseSelect('[data-project-conversations="beta"]', 2)
@@ -261,7 +291,17 @@ app.whenReady().then(async () => {
     await waitFor('window.sidebarFixture.deleteCalls===1')
     await frame()
     const liveDelete = await js(`({beforeUndoKills:${beforeUndoKills}, kills:window.sidebarFixture.killed, retained:window.sidebarFixture.liveIds().includes('live-b'), visible:!!${row('[data-all-conversations]', 2)}})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, before, after, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, archivedLockRejected, archivedLockVisible, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks, lateFork, lockedLiveDelete, liveDelete }))
+    phase = 'continuous scroll beyond 300 durable conversations'
+    await js(`document.querySelector('[data-sidebar-scroll]').scrollTop=0;window.sidebarFixture.addLongHistory()`)
+    await frame()
+    const longRows = "[...document.querySelectorAll('[data-all-conversations] [data-conversation-key]')].filter(el=>el.textContent.includes('Large history '))"
+    const firstPage = await js(`${longRows}.length`)
+    for (let page = 0; page < 12 && await js(`${longRows}.length < 384`); page++) {
+      await js(`(() => { const viewport=document.querySelector('[data-sidebar-scroll]');viewport.scrollTop=viewport.scrollHeight })()`)
+      await frame()
+    }
+    const pages = await js(`({initial:${firstPage}, count:${longRows}.length, oldest:${longRows}.some(el=>el.textContent.includes('Large history 0')), dots:${longRows}.every(el=>el.querySelector('[data-session-dot]'))})`)
+    console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, rowAppearance, before, after, ordered, projectOrder, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, archivedLockRejected, archivedLockVisible, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks, lateFork, lockedLiveDelete, liveDelete, pages }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { win?.destroy(); app.quit() }
 })

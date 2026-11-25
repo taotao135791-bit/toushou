@@ -1,3 +1,4 @@
+import { AUTO_COMPACT_THRESHOLD_DEFAULT } from './compaction'
 export interface CliInfo {
   command: string
   /** Resolved absolute path to the executable, when found. */
@@ -294,6 +295,8 @@ export interface Session {
    */
   pendingActivityAt?: number
   status: 'idle' | 'running' | 'error'
+  /** Native adaptive effort is active for this session. */
+  autoThinking?: boolean
   /** Session file this session was resumed from, if any. */
   resumeFrom?: string
   /** pi's on-disk session file (backfilled after spawn; used to dedup history). */
@@ -342,7 +345,15 @@ export interface ExternalSessionDescriptor {
   createdAt: number
 }
 
+export interface ReplyForkTarget {
+  key: string
+  /** Occurrence and total disambiguate identical replies from legacy transcripts. */
+  occurrence: number
+  total: number
+}
+
 export type SessionEvent =
+  | { type: 'reply_completed'; sessionId: string; replyKey: string }
   | { type: 'title_changed'; sessionId: string; title: string; source: SessionTitleSource; revision: number }
   | { type: 'connected'; sessionId: string }
   | {
@@ -364,7 +375,8 @@ export type SessionEvent =
    * upstream may send explicit `false` for non-terminal ends.
    */
   | { type: 'status'; sessionId: string; status: SessionRuntimeState; isTerminal?: boolean }
-  | { type: 'compaction'; sessionId: string; phase: 'start' | 'end' }
+  | { type: 'compaction'; sessionId: string; phase: 'start' | 'end'; source?: 'manual' | 'auto';
+      outcome?: 'compacted' | 'skipped' | 'aborted' | 'failed'; reason?: 'too_small' | 'already_compacted' }
   /** `recoverable` is false when the session process died (crash/exit). */
   | { type: 'error'; sessionId: string; message: string; recoverable?: boolean }
   | {
@@ -469,7 +481,7 @@ export interface LaunchableTool {
   packageName: string
   /** Manifest displayName, falling back to the package name. */
   label: string
-  /** Slash command sent to the new session (e.g. `/ads`); null for SKILL entries. */
+  /** Slash command, or null for a skill or an extension with native tools. */
   command: string | null
   description?: string
   origin: 'bundled' | 'installed' | 'skill'
@@ -496,11 +508,22 @@ export interface ModelConfig {
 // Custom providers (~/.omp/agent/models.yml — current Oh My Pi profile only)
 // ---------------------------------------------------------------------------
 
-/** Provider API dialects the GUI exposes (omp supports more; these cover the common cases). */
-export type CustomProviderApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages'
+/** Generic dialects plus the native API-key transport supported by OMP's custom-model schema. */
+export type CustomProviderApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages' | 'google-generative-ai'
+
+export type ModelInput = 'text' | 'image'
+
+export function modelInputs(value: unknown): ModelInput[] | undefined {
+  return Array.isArray(value) && value.length > 0 && value.every(item => item === 'text' || item === 'image')
+    ? [...new Set<ModelInput>(value)] : undefined
+}
 
 /** One manually-declared model of a custom provider. */
 export interface CustomProviderModelSpec {
+  /** List-only: the stored model uses a different endpoint or API from its provider. */
+  hasCustomTransport?: boolean
+  /** Omitted retains a native declaration, null requests the catalog default. */
+  input?: ModelInput[] | null
   id: string
   name: string
   contextWindow?: number
@@ -533,7 +556,7 @@ export interface CustomProviderInfo {
   authNone: boolean
   discovery: boolean
   /** Manual models with full detail, so the edit form can round-trip them. */
-  models: { id: string; name: string; contextWindow?: number; maxTokens?: number }[]
+  models: CustomProviderModelSpec[]
   source: 'custom'
 }
 
@@ -601,11 +624,12 @@ export const PI_PROVIDERS: { id: string; label: string }[] = [
 ]
 
 /**
- * Session RPC thinking levels — the enum of `set_thinking_level` /
- * `--thinking`. A live session may be set to `off`. This is a *session
- * runtime state*, never the global default.
+ * Concrete session effort, including the session-scoped `off` setting.
  */
 export type SessionThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** Current OMP also accepts per-turn auto classification over RPC and at spawn. */
+export type SessionThinkingSelection = SessionThinkingLevel | 'auto'
 
 /** Ordered session levels (least to most intensive). */
 export const SESSION_THINKING_LEVELS: readonly SessionThinkingLevel[] = [
@@ -660,6 +684,7 @@ export interface RuntimeProvider {
 
 /** A model as the runtime catalogs it (credential-filtered availability). */
 export interface RuntimeModelInfo {
+  input?: ModelInput[]
   provider: string
   id: string
   /** provider/id — the form config and set_model take. */
@@ -818,9 +843,11 @@ export type StreamingBehavior = 'steer' | 'followUp'
  * defined here so the main process can rebuild transcripts for resumed sessions.
  */
 export interface ChatMessage {
+  images?: Pick<PromptImage, 'data' | 'mimeType'>[]
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  replyKey?: string
   /** system messages only: 'info' renders neutral instead of the error style. */
   variant?: 'info'
   /** Thinking text of an assistant message (collapsible block in the UI). */
@@ -1601,9 +1628,10 @@ export interface BoardDataset {
 export type Language = 'zh' | 'en'
 
 /** Sidebar session-list ordering preference. */
-export type SessionSortOrder = 'recent' | 'name'
+export type SessionSortOrder = 'recent' | 'name' | 'manual'
 
 export interface AppSettings {
+  autoCompactThresholdPercent: number
   /** Settings-file schema version; bumped only when a migration is required. */
   schemaVersion: number
   theme: 'dark' | 'light'
@@ -1642,6 +1670,10 @@ export interface AppSettings {
    */
   memoryStoragePath: string
   /** Sidebar: session list ordering (durable uuids or live ids for archives). */
+  /** Sidebar filing only. The workspace and transcript stay with the original session. */
+  sidebarSessionProjects: Record<string, string>
+  sidebarProjectOrder: string[]
+  sidebarSessionOrder: string[]
   sessionSort: SessionSortOrder
   /** Sidebar: last drag-chosen width in px; the renderer clamps it on read. */
   sidebarWidth: number
@@ -1795,6 +1827,7 @@ export type ReadFileResult =
   | { ok: false; error: string }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  autoCompactThresholdPercent: AUTO_COMPACT_THRESHOLD_DEFAULT,
   schemaVersion: 1,
   theme: 'light',
   language: 'en',
@@ -1812,6 +1845,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pinnedSessionIds: [],
   archivedSessionIds: [],
   lockedSessionIds: [],
+  sidebarSessionProjects: {},
+  sidebarProjectOrder: [],
+  sidebarSessionOrder: [],
   memoryStoragePath: '',
   sessionSort: 'recent',
   sidebarWidth: 240,
@@ -1836,6 +1872,7 @@ export interface SessionState {
   sessionFile?: string
   messageCount: number
   thinkingLevel: string
+  autoThinking?: boolean
   model?: unknown
   /** Thinking capabilities reported by the live model, when exposed by the runtime. */
   modelThinking?: { reasoning?: boolean; thinking: string[] }

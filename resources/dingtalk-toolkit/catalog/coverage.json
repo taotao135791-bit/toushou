@@ -1,0 +1,1228 @@
+{
+  "version": "1.0.69",
+  "source": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/tag/v1.0.69",
+  "schemaCatalogHash": "sha256:871b1233797e9646bd05ecba93b07b1de0d4d98d78a16bf8d7d4cd883d7f4fd0",
+  "total": 1613,
+  "enabled": 768,
+  "reasons": {
+    "administrativeOrDelegated": "Credentials, system utilities, development, programmable actions or integration administration.",
+    "messagingOrNotification": "Direct delivery, replies or explicit notifications.",
+    "localFileOrSignedTransfer": "Unbound local file paths or transfer credentials; requires a separately reviewed transfer flow.",
+    "alternateOrUnreviewedHelper": "Compound or alternate CLI shortcut outside the approved fixed catalog.",
+    "unverifiedOrUnrestrictedInputs": "No bounded invocation confirmed for this leaf, or alternate to a dedicated tool."
+  },
+  "products": {
+    "agoal": {
+      "total": 5,
+      "enabled": 5,
+      "excluded": {}
+    },
+    "aicard": {
+      "total": 9,
+      "enabled": 1,
+      "excluded": {
+        "localFileOrSignedTransfer": [
+          "chart build",
+          "lint",
+          "preview",
+          "template create",
+          "template update"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "chart explain",
+          "explain",
+          "template get"
+        ]
+      }
+    },
+    "aisearch": {
+      "total": 6,
+      "enabled": 3,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+search-behavior",
+          "+search-enterprise",
+          "+search-person"
+        ]
+      }
+    },
+    "aitable": {
+      "total": 313,
+      "enabled": 142,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "supabase api-key create",
+          "datasource create",
+          "datasource get-config",
+          "datasource get-fields",
+          "datasource sync",
+          "datasource update",
+          "field run-ai",
+          "supabase api-key list",
+          "psql",
+          "supabase api-key revoke",
+          "+datasource-create",
+          "+datasource-get-config",
+          "+datasource-get-fields",
+          "+datasource-list-sources",
+          "+datasource-sync",
+          "+datasource-sync-status",
+          "+datasource-update",
+          "+workflow-deploy",
+          "+workflow-disable",
+          "+workflow-enable",
+          "+workflow-get",
+          "+workflow-list",
+          "workflow create",
+          "workflow disable",
+          "workflow edit-example",
+          "workflow enable",
+          "workflow get",
+          "workflow history",
+          "workflow list",
+          "workflow run",
+          "workflow update"
+        ],
+        "alternateOrUnreviewedHelper": [
+          "+advperm-disable",
+          "+advperm-enable",
+          "+app-block-create",
+          "+app-block-delete",
+          "+app-block-get",
+          "+app-block-list",
+          "+app-block-update",
+          "+app-get",
+          "+app-page-create",
+          "+app-page-delete",
+          "+app-page-get",
+          "+app-page-list",
+          "+app-page-update",
+          "+attachment-put",
+          "+attachment-remove",
+          "+attachment-upload",
+          "+base-bootstrap",
+          "+base-copy",
+          "+base-delete",
+          "+base-get",
+          "+base-get-primary-doc-id",
+          "+base-list",
+          "+base-schema-snapshot",
+          "+base-search",
+          "+base-update",
+          "+build-plan",
+          "+build-plan-verify",
+          "+chart-create",
+          "+chart-delete",
+          "+chart-get",
+          "+chart-share-get",
+          "+chart-share-update",
+          "+chart-templates",
+          "+chart-update",
+          "+chart-widgets-example",
+          "+charts-create",
+          "+dashboard-arrange",
+          "+dashboard-config-example",
+          "+dashboard-create",
+          "+dashboard-delete",
+          "+dashboard-diagnose",
+          "+dashboard-get",
+          "+dashboard-list",
+          "+dashboard-preview",
+          "+dashboard-share-get",
+          "+dashboard-share-update",
+          "+dashboard-update",
+          "+data-query",
+          "+export-data",
+          "+field-create",
+          "+field-delete",
+          "+field-get",
+          "+field-run-ai",
+          "+field-update",
+          "+field-wait-ai",
+          "+find-record",
+          "+form-create",
+          "+form-delete",
+          "+form-field-hide",
+          "+form-field-list",
+          "+form-field-update",
+          "+form-get",
+          "+form-list",
+          "+form-questions-remove",
+          "+form-share-get",
+          "+form-share-update",
+          "+form-submit",
+          "+form-update",
+          "+import-data",
+          "+import-file",
+          "+import-upload",
+          "+list-tables",
+          "+read-batch",
+          "+record-batch-create",
+          "+record-bulk-patch",
+          "+record-delete",
+          "+record-download-attachment",
+          "+record-history-list",
+          "+record-primary-doc-create",
+          "+record-primary-doc-get",
+          "+record-query",
+          "+record-query-empty",
+          "+record-share-links",
+          "+record-share-url",
+          "+record-update",
+          "+record-upsert",
+          "+record-upsert-by-key",
+          "+record-write-result",
+          "+resolve-base",
+          "+resolve-field",
+          "+resolve-table",
+          "+resolve-view",
+          "+role-copy",
+          "+role-create",
+          "+role-delete",
+          "+role-get",
+          "+role-list",
+          "+role-members-add",
+          "+role-members-update",
+          "+role-query-user",
+          "+role-update",
+          "+section-create",
+          "+section-delete",
+          "+section-list-empty",
+          "+section-list-nodes",
+          "+section-move-node",
+          "+section-rename",
+          "+section-reorder",
+          "+table-bootstrap",
+          "+table-copy",
+          "+table-delete",
+          "+table-get",
+          "+table-update",
+          "+task-report",
+          "+template-search",
+          "+url-resolve",
+          "+view-delete",
+          "+view-duplicate",
+          "+view-get",
+          "+view-get-frozen-cols",
+          "+view-get-lock",
+          "+view-get-row-height",
+          "+view-lock",
+          "+view-preset-apply",
+          "+view-set-fill-color-rule",
+          "+view-set-frozen-cols",
+          "+view-set-row-height",
+          "+view-update"
+        ],
+        "localFileOrSignedTransfer": [
+          "attachment upload",
+          "export data",
+          "import data",
+          "import upload"
+        ],
+        "messagingOrNotification": [
+          "form share notify",
+          "comment reply"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "app widget create",
+          "app widget update",
+          "chart batch-create",
+          "comment create",
+          "field ai-plugins",
+          "comment update"
+        ]
+      }
+    },
+    "attendance": {
+      "total": 66,
+      "enabled": 41,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+calculate-approve-duration",
+          "+check-companion-schedules",
+          "+check-record",
+          "+check-result",
+          "+get-adjustment-rule",
+          "+get-approve-template",
+          "+get-checkin-record",
+          "+get-class",
+          "+get-complex-overtime-setting",
+          "+get-leave-records",
+          "+get-overtime-rule",
+          "+get-schedule",
+          "+get-self-setting",
+          "+get-summary",
+          "+list-approve",
+          "+list-leave-types",
+          "+my-attendance",
+          "+query-report-data",
+          "+search-adjustment-rule",
+          "+search-class",
+          "+search-group",
+          "+search-overtime-rule",
+          "+this-month"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "checkin records",
+          "class create"
+        ]
+      }
+    },
+    "audit": {
+      "total": 3,
+      "enabled": 0,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "export",
+          "tail",
+          "verify"
+        ]
+      }
+    },
+    "calendar": {
+      "total": 49,
+      "enabled": 23,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+agenda",
+          "+attendee-list",
+          "+book",
+          "+book-list",
+          "+book-search",
+          "+cancel-event",
+          "+conflicts",
+          "+create",
+          "+free",
+          "+freebusy",
+          "+get",
+          "+my-free",
+          "+reschedule",
+          "+room-find",
+          "+room-groups",
+          "+room-search",
+          "+rsvp",
+          "+search-event",
+          "+suggest-time",
+          "+suggestion",
+          "+today",
+          "+tomorrow",
+          "+update",
+          "+week"
+        ],
+        "messagingOrNotification": [
+          "+invite"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "attendee add"
+        ]
+      }
+    },
+    "chat": {
+      "total": 243,
+      "enabled": 88,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "crypto decrypt"
+        ],
+        "alternateOrUnreviewedHelper": [
+          "+recent-conversations",
+          "+at-me",
+          "+bot-find",
+          "+bot-search",
+          "+category-add-conversation",
+          "+category-create",
+          "+category-delete",
+          "+category-list",
+          "+category-list-conversations",
+          "+category-remove-conversation",
+          "+category-rename",
+          "+chat-add-bot",
+          "+chat-audit-join",
+          "+chat-bots",
+          "+chat-create",
+          "+chat-dismiss",
+          "+chat-get-by-id",
+          "+chat-list",
+          "+chat-list-all",
+          "+chat-list-join-requests",
+          "+chat-list-mine",
+          "+chat-members-get",
+          "+chat-members-list",
+          "+chat-messages",
+          "+chat-mute",
+          "+chat-mute-member",
+          "+chat-quit",
+          "+chat-remove-bot",
+          "+chat-role-add",
+          "+chat-role-list",
+          "+chat-role-query-user",
+          "+chat-role-remove",
+          "+chat-role-remove-user",
+          "+chat-role-set-user",
+          "+chat-role-update",
+          "+chat-search",
+          "+chat-set-admin",
+          "+chat-set-history",
+          "+chat-transfer-owner",
+          "+chat-update",
+          "+chat-update-alias",
+          "+chat-update-icon",
+          "+chat-update-nick",
+          "+chat-update-settings",
+          "+conversation-clear-all-red-point",
+          "+conversation-clear-messages",
+          "+conversation-clear-red-point",
+          "+conversation-hide",
+          "+conversation-info",
+          "+conversation-list",
+          "+conversation-list-top",
+          "+conversation-mark-read",
+          "+conversation-mark-unread",
+          "+conversation-mute",
+          "+conversation-set-top",
+          "+dm",
+          "+feed-group-query-item",
+          "+feed-shortcut-create",
+          "+feed-shortcut-remove",
+          "+flag-cancel",
+          "+flag-create",
+          "+flag-list",
+          "+group-members",
+          "+messages-batch-recall-by-bot",
+          "+messages-edit",
+          "+messages-list",
+          "+messages-list-direct",
+          "+messages-list-pin",
+          "+messages-list-unread-conversations",
+          "+messages-mget",
+          "+messages-read-status",
+          "+messages-recall",
+          "+messages-recall-by-bot",
+          "+messages-resource-download",
+          "+messages-resource-url",
+          "+messages-set-pin",
+          "+messages-set-top",
+          "+messages-unset-pin",
+          "+messages-unset-top",
+          "+my-groups",
+          "+search-msg",
+          "+thread-replies",
+          "+unread-chats"
+        ],
+        "localFileOrSignedTransfer": [
+          "message download-media",
+          "conversation-file upload"
+        ],
+        "messagingOrNotification": [
+          "message add-emoji",
+          "message add-text-emotion",
+          "message combine-forward",
+          "message send-a2ui-card",
+          "message send-card",
+          "group notice create",
+          "message create-text-emotion",
+          "group notice edit",
+          "message forward",
+          "thread forward",
+          "group invite-url",
+          "group join-by-invite-url",
+          "message remove-emoji",
+          "message remove-text-emotion",
+          "message reply",
+          "thread reply",
+          "message send-by-webhook",
+          "emotion send",
+          "message send",
+          "message send-by-bot",
+          "thread send",
+          "group share-invite",
+          "+broadcast",
+          "+chat-invite-url",
+          "+messages-add-emoji",
+          "+messages-add-text-emotion",
+          "+messages-batch-send-by-bot",
+          "+messages-combine-forward",
+          "+messages-create-text-emotion",
+          "+messages-forward",
+          "+messages-forward-topic",
+          "+messages-query-send-status",
+          "+messages-remove-emoji",
+          "+messages-remove-text-emotion",
+          "+messages-reply",
+          "+messages-send",
+          "+messages-send-by-bot",
+          "+messages-send-by-webhook",
+          "+messages-send-card",
+          "+messages-update-card",
+          "+send-to-group",
+          "thread add-emoji",
+          "thread add-text-emotion",
+          "thread remove-emoji",
+          "thread remove-text-emotion",
+          "thread update-text-emotion",
+          "message update-a2ui-card",
+          "message update-card",
+          "message update-text-emotion"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "group members add-bot",
+          "toolbar add",
+          "group user-settings set",
+          "chmod",
+          "data-auth cross-org",
+          "toolbar create-custom",
+          "thread create-group",
+          "message edit",
+          "emotion favorite",
+          "group join-by-group-id",
+          "thread promote",
+          "message recall-by-bot",
+          "toolbar remove-custom",
+          "group members remove-bot",
+          "message set-pin-msg",
+          "message set-top-msg",
+          "message unset-pin-msg",
+          "message unset-top-msg",
+          "toolbar update-custom",
+          "group update-settings"
+        ]
+      }
+    },
+    "contact": {
+      "total": 68,
+      "enabled": 49,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+by-mobile",
+          "+dept-members",
+          "+get-roster",
+          "+list-dept-members",
+          "+list-followings",
+          "+list-sub-depts",
+          "+lookup",
+          "+me",
+          "+org",
+          "+resolve-dept",
+          "+search-mobile",
+          "+search-user",
+          "+team"
+        ],
+        "messagingOrNotification": [
+          "user invite",
+          "org invite-info",
+          "+friend-request-send"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "account create",
+          "exclusive-account disable",
+          "exclusive-account enable"
+        ]
+      }
+    },
+    "contract": {
+      "total": 44,
+      "enabled": 32,
+      "excluded": {
+        "localFileOrSignedTransfer": [
+          "account create",
+          "account update",
+          "archive",
+          "project export",
+          "project import-template",
+          "record create",
+          "review analysis",
+          "review create",
+          "subject add",
+          "subject export",
+          "subject import-template",
+          "subject update"
+        ]
+      }
+    },
+    "dev": {
+      "total": 84,
+      "enabled": 0,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "app member add",
+          "app permission add",
+          "connect",
+          "connect list",
+          "connect restart",
+          "connect status",
+          "connect stop",
+          "app create",
+          "app version create",
+          "event create",
+          "liteapp create",
+          "event debug",
+          "app delete",
+          "liteapp delete",
+          "app disable",
+          "app robot disable",
+          "app enable",
+          "app robot enable",
+          "app get",
+          "app credentials get",
+          "app scope get",
+          "app version get",
+          "app version status",
+          "event get",
+          "app robot get",
+          "app webapp get",
+          "liteapp credential",
+          "liteapp detail",
+          "event lint",
+          "app list",
+          "app event list",
+          "app member list",
+          "app permission list",
+          "app version list",
+          "event list",
+          "liteapp list",
+          "mcp auth get",
+          "mcp auth save",
+          "mcp credential bind",
+          "mcp credential debug",
+          "mcp credential delete",
+          "mcp credential get",
+          "mcp credential list",
+          "mcp credential save",
+          "mcp credential unbind",
+          "mcp hsf method-list",
+          "mcp member add",
+          "mcp member list",
+          "mcp member remove",
+          "mcp url get",
+          "mcp service create",
+          "mcp service delete",
+          "mcp service get",
+          "mcp service list",
+          "mcp service update",
+          "mcp tool create-hsf",
+          "mcp tool create",
+          "mcp tool debug",
+          "mcp tool delete",
+          "mcp tool get",
+          "mcp tool list",
+          "mcp tool publish",
+          "mcp tool update-hsf",
+          "mcp tool update",
+          "mcp tool versions",
+          "app version publish",
+          "event publish",
+          "app robot result",
+          "app member remove",
+          "app permission remove",
+          "event offline",
+          "doc search",
+          "app scope set",
+          "app robot config",
+          "app webapp config",
+          "app robot submit",
+          "app event subscribe",
+          "app event unsubscribe",
+          "app update",
+          "app security config",
+          "event update",
+          "liteapp update",
+          "event validate",
+          "app version check-approval"
+        ]
+      }
+    },
+    "devapp": {
+      "total": 25,
+      "enabled": 0,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "+create",
+          "+credentials-get",
+          "+delete",
+          "+disable",
+          "+enable",
+          "+event-list",
+          "+event-subscribe",
+          "+get",
+          "+list",
+          "+member-add",
+          "+member-list",
+          "+member-remove",
+          "+permission-list",
+          "+robot-config",
+          "+robot-disable",
+          "+robot-enable",
+          "+robot-get",
+          "+update",
+          "+version-check-approval",
+          "+version-create",
+          "+version-get",
+          "+version-list",
+          "+version-status",
+          "+webapp-config",
+          "+webapp-get"
+        ]
+      }
+    },
+    "devdoc": {
+      "total": 2,
+      "enabled": 1,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+search-docs"
+        ]
+      }
+    },
+    "ding": {
+      "total": 7,
+      "enabled": 3,
+      "excluded": {
+        "messagingOrNotification": [
+          "message send",
+          "+send-by-message",
+          "+send-personal"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "message recall"
+        ]
+      }
+    },
+    "dingtalk-tag": {
+      "total": 30,
+      "enabled": 1,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "channel binding",
+          "channel capabilities",
+          "channel operator-private",
+          "channel reply",
+          "connect",
+          "connect list",
+          "connect restart",
+          "connect status",
+          "connect stop",
+          "connect unbind",
+          "manage create",
+          "capability mcp create",
+          "capability skill create",
+          "manage delete",
+          "capability mcp delete",
+          "capability skill delete",
+          "manage detail",
+          "capability mcp query",
+          "capability skill query",
+          "capability mcp list",
+          "capability skill list",
+          "manage login",
+          "manage publish",
+          "run run-status",
+          "run trace",
+          "manage set-visibility",
+          "manage save-draft",
+          "capability mcp update",
+          "capability skill update"
+        ]
+      }
+    },
+    "doc": {
+      "total": 99,
+      "enabled": 41,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "+script"
+        ],
+        "alternateOrUnreviewedHelper": [
+          "+access-change",
+          "+access-grant",
+          "+access-revoke",
+          "+background-delete",
+          "+background-update",
+          "+checkpoint-update",
+          "+comment-create",
+          "+comment-delete",
+          "+comment-list",
+          "+comment-update",
+          "+copy",
+          "+create",
+          "+create-from-template",
+          "+create-with-media",
+          "+doc-append",
+          "+download-overwrite",
+          "+export",
+          "+export-get",
+          "+export-submit",
+          "+fetch",
+          "+find-doc",
+          "+history-list",
+          "+history-revert",
+          "+history-save",
+          "+import",
+          "+inspect",
+          "+list",
+          "+media-download",
+          "+media-insert",
+          "+media-list",
+          "+media-preview",
+          "+media-upload",
+          "+move",
+          "+resource-delete",
+          "+resource-download",
+          "+resource-update",
+          "+review",
+          "+search",
+          "+share",
+          "+template-list",
+          "+template-search",
+          "+version-list",
+          "+version-revert",
+          "+version-save"
+        ],
+        "localFileOrSignedTransfer": [
+          "media download",
+          "export get"
+        ],
+        "messagingOrNotification": [
+          "comment react-reply",
+          "comment reply",
+          "+comment-reply",
+          "+grant-and-share",
+          "+share-doc"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "comment create",
+          "create",
+          "comment create-inline",
+          "comment update",
+          "update",
+          "whiteboard insert"
+        ]
+      }
+    },
+    "drive": {
+      "total": 86,
+      "enabled": 45,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+copy",
+          "+cover",
+          "+create-folder",
+          "+create-shortcut",
+          "+delete",
+          "+download",
+          "+find-file",
+          "+info",
+          "+inspect",
+          "+list",
+          "+move",
+          "+publish-get",
+          "+publish-set",
+          "+publish-unset",
+          "+recent",
+          "+recycle-list",
+          "+recycle-restore",
+          "+rename",
+          "+search",
+          "+search-docs",
+          "+star-add",
+          "+star-list",
+          "+star-remove",
+          "+stats",
+          "+upload",
+          "+version-download",
+          "+version-revert"
+        ],
+        "localFileOrSignedTransfer": [
+          "pull",
+          "push",
+          "status",
+          "sync",
+          "upload-info",
+          "export get"
+        ],
+        "messagingOrNotification": [
+          "permission apply",
+          "comment react-reply",
+          "comment reply"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "commit",
+          "comment create-v2",
+          "comment create",
+          "cover",
+          "comment update"
+        ]
+      }
+    },
+    "event": {
+      "total": 7,
+      "enabled": 0,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "consume",
+          "list",
+          "+listen-im",
+          "schema",
+          "send",
+          "status",
+          "stop"
+        ]
+      }
+    },
+    "hrbrain": {
+      "total": 24,
+      "enabled": 13,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+get-pool",
+          "+list-pool-employees",
+          "+list-pools",
+          "+profile-career",
+          "+profile-labels",
+          "+profile-metadata",
+          "+profile-performance",
+          "+query-profile",
+          "+search-employees",
+          "+search-employees-structured",
+          "+search-fields"
+        ]
+      }
+    },
+    "html": {
+      "total": 4,
+      "enabled": 1,
+      "excluded": {
+        "localFileOrSignedTransfer": [
+          "create",
+          "overwrite"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "patch"
+        ]
+      }
+    },
+    "live": {
+      "total": 2,
+      "enabled": 1,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+list-my-lives"
+        ]
+      }
+    },
+    "mail": {
+      "total": 56,
+      "enabled": 31,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+contact-list",
+          "+draft-create",
+          "+draft-edit",
+          "+find-mail-user",
+          "+folder-list",
+          "+message",
+          "+messages",
+          "+recent-mail",
+          "+search-mail",
+          "+tag-list",
+          "+template-create",
+          "+template-list",
+          "+template-update",
+          "+thread",
+          "+thread-list",
+          "+triage",
+          "+unread-mail",
+          "+user-search"
+        ],
+        "localFileOrSignedTransfer": [
+          "message export"
+        ],
+        "messagingOrNotification": [
+          "message forward",
+          "message reply",
+          "message reply-all",
+          "draft send",
+          "message send"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "message share-to-chat"
+        ]
+      }
+    },
+    "markdown": {
+      "total": 6,
+      "enabled": 6,
+      "excluded": {}
+    },
+    "mcp": {
+      "total": 4,
+      "enabled": 0,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "market search",
+          "published invoke",
+          "published tools",
+          "url get"
+        ]
+      }
+    },
+    "mind": {
+      "total": 5,
+      "enabled": 5,
+      "excluded": {}
+    },
+    "minutes": {
+      "total": 75,
+      "enabled": 40,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "+transcript"
+        ],
+        "alternateOrUnreviewedHelper": [
+          "+action-items",
+          "+apply-permission",
+          "+detail",
+          "+download",
+          "+export-pack",
+          "+latest",
+          "+list-all",
+          "+list-mine",
+          "+list-shared",
+          "+mindmap",
+          "+prepare-asr",
+          "+record-pause",
+          "+record-resume",
+          "+record-start",
+          "+record-stop",
+          "+record-wrap-up",
+          "+replace-batch",
+          "+search",
+          "+share",
+          "+speaker-insights",
+          "+speaker-replace",
+          "+summary",
+          "+sync-asr",
+          "+unshare",
+          "+update",
+          "+upload",
+          "+upload-and-analyze"
+        ],
+        "localFileOrSignedTransfer": [
+          "upload cancel",
+          "upload complete",
+          "upload create"
+        ],
+        "messagingOrNotification": [
+          "permission apply",
+          "upload create-and-notify",
+          "+upload-and-notify"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "get audio"
+        ]
+      }
+    },
+    "oa": {
+      "total": 38,
+      "enabled": 21,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "approval template create",
+          "approval template update"
+        ],
+        "alternateOrUnreviewedHelper": [
+          "+approve-by",
+          "+done-approvals",
+          "+list-cc",
+          "+list-executed",
+          "+list-forms",
+          "+list-pending",
+          "+list-submitted",
+          "+my-initiated",
+          "+pending",
+          "+search-forms"
+        ],
+        "localFileOrSignedTransfer": [
+          "approval attachment authorize-download",
+          "approval attachment download-url"
+        ],
+        "messagingOrNotification": [
+          "approval oa-cc-noticer"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "approval attachment authorize-preview",
+          "approval oa-comments"
+        ]
+      }
+    },
+    "outbound-call": {
+      "total": 2,
+      "enabled": 0,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "create",
+          "detail"
+        ]
+      }
+    },
+    "pat": {
+      "total": 4,
+      "enabled": 0,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "chmod",
+          "browser-policy",
+          "+authorize",
+          "+browser-policy"
+        ]
+      }
+    },
+    "report": {
+      "total": 11,
+      "enabled": 7,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+inbox-list",
+          "+outbox-list",
+          "+report-latest"
+        ],
+        "messagingOrNotification": [
+          "entry submit"
+        ]
+      }
+    },
+    "sheet": {
+      "total": 99,
+      "enabled": 90,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "batch-update"
+        ],
+        "alternateOrUnreviewedHelper": [
+          "+list-sheets",
+          "+read"
+        ],
+        "messagingOrNotification": [
+          "comment react-reply",
+          "comment reply"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "comment create",
+          "csv-put",
+          "table-put",
+          "comment update"
+        ]
+      }
+    },
+    "sport": {
+      "total": 37,
+      "enabled": 30,
+      "excluded": {
+        "localFileOrSignedTransfer": [
+          "competition export-task",
+          "competition export",
+          "step export"
+        ],
+        "messagingOrNotification": [
+          "competition announce",
+          "competition invite"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "competition create",
+          "competition update"
+        ]
+      }
+    },
+    "todo": {
+      "total": 44,
+      "enabled": 21,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+assign",
+          "+assign-multi",
+          "+comment",
+          "+complete",
+          "+create",
+          "+created-todos",
+          "+due-today",
+          "+get",
+          "+get-my-tasks",
+          "+get-related-tasks",
+          "+list-attachment",
+          "+list-comment",
+          "+overdue",
+          "+remind",
+          "+reminder",
+          "+search",
+          "+todo-done",
+          "+update",
+          "+upload-attachment"
+        ],
+        "localFileOrSignedTransfer": [
+          "task add-attachment"
+        ],
+        "messagingOrNotification": [
+          "task add-reminder",
+          "task reset-reminder"
+        ],
+        "unverifiedOrUnrestrictedInputs": [
+          "comment add"
+        ]
+      }
+    },
+    "voip": {
+      "total": 1,
+      "enabled": 0,
+      "excluded": {
+        "administrativeOrDelegated": [
+          "minutes auto-start"
+        ]
+      }
+    },
+    "whiteboard": {
+      "total": 18,
+      "enabled": 10,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+diff",
+          "+insert-image",
+          "+query",
+          "+update"
+        ],
+        "localFileOrSignedTransfer": [
+          "export",
+          "export-get",
+          "render",
+          "update"
+        ]
+      }
+    },
+    "wiki": {
+      "total": 37,
+      "enabled": 17,
+      "excluded": {
+        "alternateOrUnreviewedHelper": [
+          "+delete-space",
+          "+feed-list",
+          "+member-add",
+          "+member-list",
+          "+member-remove",
+          "+member-update",
+          "+move",
+          "+move-to-drive",
+          "+node-copy",
+          "+node-create",
+          "+node-delete",
+          "+node-get",
+          "+node-list",
+          "+node-search",
+          "+resolve-space",
+          "+space-create",
+          "+space-get",
+          "+space-list",
+          "+space-search",
+          "+wiki-new-doc"
+        ]
+      }
+    }
+  }
+}

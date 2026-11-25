@@ -236,12 +236,17 @@ export interface SortableSessionRow {
  */
 export function sortSessionRows<T extends SortableSessionRow>(
   rows: readonly T[],
-  sort: SessionSortOrder
+  sort: SessionSortOrder,
+  manualRanks?: ReadonlyMap<string, number>
 ): T[] {
   const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true })
   return [...rows].sort((a, b) => {
     const pinned = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))
     if (pinned !== 0) return pinned
+    if (sort === 'manual' && manualRanks) {
+      const delta = (manualRanks.get(a.key ?? '') ?? -1) - (manualRanks.get(b.key ?? '') ?? -1)
+      if (delta !== 0) return delta
+    }
     if (sort === 'name') {
       const byTitle = collator.compare(a.title, b.title)
       if (byTitle !== 0) return byTitle

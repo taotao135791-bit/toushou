@@ -17,6 +17,7 @@ export const IPC_CHANNELS = {
   FS_SET_ROOT: 'fs:set-root',
   FS_LIST_PROJECT_FILES: 'fs:list-project-files',
   PROJECT_LIST: 'project:list',
+  PROJECT_FILE_CONVERSATION: 'project:file-conversation',
   PROJECT_CREATE: 'project:create',
   PROJECT_IMPORT: 'project:import',
   PROJECT_RECOVER: 'project:recover',
@@ -35,6 +36,9 @@ export const IPC_CHANNELS = {
   WORKSPACE_REVOKE: 'workspace:revoke',
   WORKSPACE_LIST: 'workspace:list',
   /** Open a granted workspace in Finder/Terminal/VS Code; grant id in, real path resolved in Main. */
+  CHAT_ATTACHMENT: 'chat:attachment',
+  CHAT_ATTACHMENT_FOLDER: 'chat:attachment-folder',
+  WORKSPACE_APP_ICONS: 'workspace:app-icons',
   OPEN_WORKSPACE_IN: 'workspace:open-in',
   PACKAGES_LIST: 'packages:list',
   PACKAGES_CAPABILITIES: 'packages:capabilities',

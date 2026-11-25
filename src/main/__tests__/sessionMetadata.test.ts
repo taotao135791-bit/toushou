@@ -62,11 +62,20 @@ describe('reconstructSessionMetadata (branch-aware)', () => {
       entry('thinking_level_change', 'e5', { thinkingLevel: 'medium' }),
       entry('message', 'e6', { message: { role: 'user', content: 'prompt 3' } })
     ])
-    await expect(reconstructSessionMetadata(file)).resolves.toEqual([
+    expect((await reconstructSessionMetadata(file)).turns).toEqual([
       { model: 'openai/gpt-a', thinking: 'high' },
       { model: 'openai/gpt-b', thinking: 'high' },
       { model: 'openai/gpt-b', thinking: 'medium' }
     ])
+  })
+
+  it('restores automatic selection separately from the effective effort', async () => {
+    const file = writeSession([
+      entry('session', null),
+      entry('thinking_level_change', 'e0', { thinkingLevel: 'medium', configured: 'auto' }),
+      entry('message', 'e1', { message: { role: 'user', content: 'prompt' } })
+    ])
+    expect(await reconstructSessionMetadata(file)).toEqual({ turns: [{ thinking: 'medium' }], autoThinking: true })
   })
 
   it('only applies default-role model changes to the parent turn', async () => {
@@ -78,7 +87,7 @@ describe('reconstructSessionMetadata (branch-aware)', () => {
       entry('model_change', 'e3', { model: 'openai/gpt-b', role: 'default' }),
       entry('message', 'e4', { message: { role: 'user', content: 'prompt 2' } })
     ])
-    await expect(reconstructSessionMetadata(file)).resolves.toEqual([
+    expect((await reconstructSessionMetadata(file)).turns).toEqual([
       { model: 'openai/gpt-a', thinking: undefined },
       { model: 'openai/gpt-b', thinking: undefined }
     ])
@@ -96,14 +105,14 @@ describe('reconstructSessionMetadata (branch-aware)', () => {
       JSON.stringify({ type: 'model_change', id: 'r5', parentId: 'r2', model: 'openai/gpt-c' }),
       JSON.stringify({ type: 'message', id: 'r6', parentId: 'r5', message: { role: 'user', content: 'prompt 3' } })
     ])
-    await expect(reconstructSessionMetadata(file)).resolves.toEqual([
+    expect((await reconstructSessionMetadata(file)).turns).toEqual([
       { model: 'openai/gpt-a', thinking: undefined },
       { model: 'openai/gpt-c', thinking: undefined }
     ])
   })
 
   it('returns [] for an unreadable file', async () => {
-    await expect(reconstructSessionMetadata(path.join(dir, 'missing.jsonl'))).resolves.toEqual([])
+    await expect(reconstructSessionMetadata(path.join(dir, 'missing.jsonl'))).resolves.toEqual({ turns: [] })
   })
 })
 

@@ -1,21 +1,30 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DingTalkReadRequest, DingTalkReadResult } from '../shared/connections'
+import type { DingTalkToolRequest, DingTalkToolResult } from '../shared/connections'
 import registerDingTalkTools from '../../resources/dingtalk-toolkit/extensions/index'
 
-const { read, getSession, getSessionBridgeAccess } = vi.hoisted(() => ({
-  read: vi.fn<(tool: DingTalkReadRequest, signal?: AbortSignal) => Promise<DingTalkReadResult>>(),
+type SessionAccess = { cwd: string; remoteReadonly: boolean; mode: 'full' | 'no-bash' | 'ask' | 'readonly' }
+
+const { execute, initialize, connectedLifetime, getSession, getSessionBridgeAccess, showMessageBox, getFocusedWindow } = vi.hoisted(() => ({
+  execute: vi.fn<(tool: DingTalkToolRequest, signal: AbortSignal, canWrite?: () => boolean) => Promise<DingTalkToolResult>>(),
+  initialize: vi.fn<() => Promise<void>>(),
+  connectedLifetime: vi.fn<() => AbortSignal | null>(),
   getSession: vi.fn<() => { origin?: 'feishu' | 'task' } | undefined>(),
-  getSessionBridgeAccess: vi.fn<() => { cwd: string; remoteReadonly: boolean } | null>()
+  getSessionBridgeAccess: vi.fn<() => SessionAccess | null>(),
+  showMessageBox: vi.fn<(...args: unknown[]) => Promise<{ response: number }>>(),
+  getFocusedWindow: vi.fn<() => { isDestroyed(): boolean } | null>()
 }))
 
+vi.mock('electron', () => ({ BrowserWindow: { getFocusedWindow, getAllWindows: () => [] }, dialog: { showMessageBox } }))
 vi.mock('./omp', () => ({ getSession, getSessionBridgeAccess }))
-vi.mock('./integrations/dingtalk/DingTalkConnectionManager', () => ({ dingTalkConnectionManager: { read } }))
+vi.mock('./integrations/dingtalk/DingTalkConnectionManager', () => ({
+  dingTalkConnectionManager: { execute, initialize, connectedLifetime }
+}))
 
-import { DINGTALK_TOOLS_ENV_KEY, dingTalkBridgeEnv, initDingTalkBridge, parseDingTalkReadRequest, revokeDingTalkBridgeTokens } from './dingTalkBridge'
+import { DINGTALK_TOOLS_ENV_KEY, dingTalkBridgeEnv, initDingTalkBridge, parseDingTalkRequest, revokeDingTalkBridgeTokens } from './dingTalkBridge'
 
 const session = 'synthetic-dingtalk-session'
-const access = { cwd: '/synthetic/project', remoteReadonly: false }
-const query: DingTalkReadRequest = { action: 'search_messages', query: '投放复盘' }
+const access: SessionAccess = { cwd: '/synthetic/project', remoteReadonly: false, mode: 'full' }
+const query: DingTalkToolRequest = { action: 'search_messages', query: '投放复盘' }
 
 async function post(url: string, body: unknown, origin?: string) {
   return fetch(url, {
@@ -25,11 +34,24 @@ async function post(url: string, body: unknown, origin?: string) {
   })
 }
 
-describe('DingTalk read request validation', () => {
+describe('DingTalk request validation', () => {
   it('accepts an explicit keyword or an ID and discards query parameters from an official document link', () => {
-    expect(parseDingTalkReadRequest({ action: 'search_documents', query: '  滚动预算  ' })).toEqual({ action: 'search_documents', query: '滚动预算' })
-    expect(parseDingTalkReadRequest({ action: 'read_document', documentId: 'ABC_123-ab' })).toEqual({ action: 'read_document', documentId: 'ABC_123-ab' })
-    expect(parseDingTalkReadRequest({ action: 'read_document', documentId: 'https://alidocs.dingtalk.com/i/nodes/ABC_123-ab?shareId=example' })).toEqual({ action: 'read_document', documentId: 'ABC_123-ab' })
+    expect(parseDingTalkRequest({ action: 'search_documents', query: '  滚动预算  ' })).toEqual({ action: 'search_documents', query: '滚动预算' })
+    expect(parseDingTalkRequest({ action: 'read_document', documentId: 'ABC_123-ab' })).toEqual({ action: 'read_document', documentId: 'ABC_123-ab' })
+    expect(parseDingTalkRequest({ action: 'read_document', documentId: 'https://alidocs.dingtalk.com/i/nodes/ABC_123-ab?shareId=example' })).toEqual({ action: 'read_document', documentId: 'ABC_123-ab' })
+  })
+
+  it('accepts optional initial Markdown and a folder link for creation, preserving whitespace', () => {
+    const title = '示例文档'
+    const content = '#  第一节\r\n\r\n    示例代码\n'
+    const nodeUrl = 'https://alidocs.dingtalk.com/i/nodes/Example123?shareId=sample'
+    expect(parseDingTalkRequest({ action: 'create_document', title })).toEqual({ action: 'create_document', title })
+    expect(parseDingTalkRequest({ action: 'create_document', title, content, folderId: nodeUrl })).toEqual({
+      action: 'create_document', title, content, folderId: 'Example123'
+    })
+    expect(parseDingTalkRequest({ action: 'append_document', content, documentId: nodeUrl })).toEqual({
+      action: 'append_document', content, documentId: 'Example123'
+    })
   })
 
   it.each([
@@ -42,33 +64,97 @@ describe('DingTalk read request validation', () => {
     ['arbitrary URLs', { action: 'read_document', documentId: 'https://example.invalid/i/nodes/ABC' }],
     ['password-looking URL authority', { action: 'read_document', documentId: 'https://synthetic@alidocs.dingtalk.com/i/nodes/ABC' }],
     ['foreign URLs with the official host in their paths', { action: 'read_document', documentId: 'https://example.invalid/alidocs.dingtalk.com/i/nodes/ABC' }],
+    ['alternate creation targets', { action: 'create_document', title: '示例', workspaceId: 'ExampleSpace' }],
+    ['invalid folder links', { action: 'create_document', title: '示例', folderId: 'https://example.invalid/i/nodes/ABC' }],
+    ['oversized titles', { action: 'create_document', title: 'a'.repeat(201) }],
+    ['missing append body', { action: 'append_document', documentId: 'ABC' }],
+    ['message sending', { action: 'workspace_write', operation: 'chat.message.send', args: {} }],
+    ['raw invocation', { action: 'workspace_write', operation: 'api', args: {} }],
+    ['write disguised as read', { action: 'workspace_read', operation: 'sheet.create', args: { name: 'Sample' } }],
+    ['read dispatched as write', { action: 'workspace_write', operation: 'sheet.range.read', args: { node: 'Demo' } }],
+    ['bypassing the native dialog', { action: 'workspace_write', operation: 'drive.upload', args: { file: '/tmp/private' } }],
+    ['catalog service mismatch', { action: 'workspace_catalog', operation: 'sheet.create', service: 'mail' }],
+    ['catalog invalid offset', { action: 'workspace_catalog', cursor: -1 }],
+    ['empty append body', { action: 'append_document', documentId: 'ABC', content: '  ' }],
+    ['oversized writes', { action: 'append_document', documentId: 'ABC', content: '示'.repeat(64_001) }],
+    ['extra append arguments', { action: 'append_document', documentId: 'ABC', content: '示例', overwrite: true }],
     ['untrusted paths', { action: 'read_document', documentId: '../other-tenant' }]
-  ])('rejects %s', (_label, value) => expect(parseDingTalkReadRequest(value)).toBeNull())
+  ])('rejects %s', (_label, value) => expect(parseDingTalkRequest(value)).toBeNull())
 })
 
 describe('DingTalk package and loopback bridge', () => {
+  const append: DingTalkToolRequest = { action: 'append_document', documentId: 'ExampleNode', content: '## 示例\n\n正文\n' }
+  const receipt = { nodeId: 'ExampleNode', url: 'https://alidocs.dingtalk.com/i/nodes/ExampleNode' }
+  let binding: AbortController
+  const endpoint = () => dingTalkBridgeEnv(session)[DINGTALK_TOOLS_ENV_KEY]
+
   beforeAll(initDingTalkBridge)
   beforeEach(() => {
+    binding = new AbortController()
+    initialize.mockReset().mockResolvedValue(undefined)
+    connectedLifetime.mockReset().mockReturnValue(binding.signal)
+    showMessageBox.mockReset().mockResolvedValue({ response: 1 })
+    getFocusedWindow.mockReset().mockReturnValue({ isDestroyed: () => false })
     getSession.mockReset().mockReturnValue({})
     getSessionBridgeAccess.mockReset().mockReturnValue(access)
-    read.mockReset().mockResolvedValue({ ok: true, data: { messages: [{ text: '合成的钉钉消息' }], hasMore: true } })
+    execute.mockReset().mockResolvedValue({ ok: true, data: { messages: [{ text: '合成的钉钉消息' }], hasMore: true } })
   })
   afterEach(() => {
     revokeDingTalkBridgeTokens(session)
     vi.unstubAllEnvs()
   })
 
-  it('registers three read-only tools and reads through the Desktop session capability', async () => {
+  it('registers the fixed tools and reads through the desktop session capability', async () => {
     vi.stubEnv(DINGTALK_TOOLS_ENV_KEY, dingTalkBridgeEnv(session)[DINGTALK_TOOLS_ENV_KEY])
     const tools: Parameters<Parameters<typeof registerDingTalkTools>[0]['registerTool']>[0][] = []
     registerDingTalkTools({ registerTool: tool => tools.push(tool) })
     expect(tools.map(tool => [tool.name, tool.approval])).toEqual([
-      ['toushou_dingtalk_search_messages', 'read'], ['toushou_dingtalk_search_documents', 'read'], ['toushou_dingtalk_read_document', 'read']
+      ['toushou_dingtalk_search_messages', 'read'], ['toushou_dingtalk_search_documents', 'read'],
+      ['toushou_dingtalk_read_document', 'read'],
+      ['toushou_dingtalk_create_document', 'write'], ['toushou_dingtalk_append_document', 'write'],
+      ['toushou_dingtalk_workspace_catalog', 'read'], ['toushou_dingtalk_workspace_read', 'read'],
+      ['toushou_dingtalk_workspace_write', 'write']
     ])
     const result = await tools[0].execute('synthetic-tool', { query: query.query })
     expect(JSON.parse(result.content[0].text)).toEqual({ ok: true, source: 'DingTalk', data: { messages: [{ text: '合成的钉钉消息' }], hasMore: true } })
-    expect(read).toHaveBeenCalledTimes(1)
-    expect(read).toHaveBeenCalledWith(query, expect.any(AbortSignal))
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0].slice(0, 2)).toEqual([query, expect.any(AbortSignal)])
+  })
+
+  it('uses the catalog effect for sheet reads and confirmed writes in a readonly or interactive session', async () => {
+    const url = endpoint()
+    const update = { action: 'workspace_write', operation: 'sheet.range.update', args: {
+      node: 'SyntheticSheet', 'sheet-id': 'Data', range: 'A1:B1', values: [['示例', 12]]
+    } }
+    getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'readonly' })
+    expect((await post(url, update)).status).toBe(403)
+    expect(execute).not.toHaveBeenCalled()
+    expect((await post(url, { action: 'workspace_read', operation: 'sheet.range.read', args: { node: 'SyntheticSheet' } })).status).toBe(200)
+    getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'ask' })
+    expect((await post(url, update)).status).toBe(200)
+    expect(showMessageBox).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ detail: expect.stringContaining('SyntheticSheet') }))
+    expect(execute).toHaveBeenLastCalledWith(update, expect.any(AbortSignal), expect.any(Function))
+  })
+
+  it.each([
+    ['doc.delete', { node: 'SyntheticDoc' }],
+    ['doc.update', { node: 'SyntheticDoc', content: '# Replacement' }],
+    ['chat.message.recall', { 'conversation-id': 'SyntheticChat', 'message-id': 'SyntheticMessage' }],
+    ['chat.group.rename', { id: 'SyntheticChat', name: 'Synthetic group' }],
+    ['chat.group.members.add', { id: 'SyntheticChat', users: 'SyntheticMember' }],
+    ['chat.group.members.remove', { id: 'SyntheticChat', users: 'SyntheticMember' }]
+  ] as const)('requires fresh native confirmation for every %s even in full mode', async (operation, args) => {
+    const url = endpoint()
+    const request = { action: 'workspace_write', operation, args }
+    showMessageBox.mockResolvedValueOnce({ response: 1 }).mockResolvedValueOnce({ response: 0 })
+    expect((await post(url, request)).status).toBe(200)
+    expect(execute).toHaveBeenLastCalledWith(request, expect.any(AbortSignal), expect.any(Function))
+    expect((await post(url, request)).status).toBe(403)
+    expect(execute).toHaveBeenCalledOnce()
+    expect(showMessageBox).toHaveBeenCalledTimes(2)
+    expect(showMessageBox).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      detail: expect.stringContaining(operation), buttons: ['取消', '允许一次'], defaultId: 0, cancelId: 0
+    }))
   })
 
   it('blocks forged capabilities, browser origins, and legacy remote and scheduled sessions', async () => {
@@ -85,14 +171,14 @@ describe('DingTalk package and loopback bridge', () => {
     getSession.mockReturnValue(undefined)
     getSessionBridgeAccess.mockReturnValue(null)
     expect((await post(url, query)).status).toBe(403)
-    expect(read).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('revokes in-flight and future calls when their originating session closes', async () => {
     const url = dingTalkBridgeEnv(session)[DINGTALK_TOOLS_ENV_KEY]
     let requestSignal: AbortSignal | undefined
     const started = new Promise<void>(resolve => {
-      read.mockImplementation((_tool, signal) => new Promise(done => {
+      execute.mockImplementation((_tool, signal) => new Promise(done => {
         requestSignal = signal
         signal?.addEventListener('abort', () => done({ ok: false, error: 'read-failed' }), { once: true })
         resolve()
@@ -104,12 +190,12 @@ describe('DingTalk package and loopback bridge', () => {
     expect(requestSignal?.aborted).toBe(true)
     expect((await request).status).toBe(403)
     expect((await post(url, query)).status).toBe(403)
-    expect(read).toHaveBeenCalledTimes(1)
+    expect(execute).toHaveBeenCalledTimes(1)
   })
 
   it('does not return fetched results after the originating workspace changes', async () => {
     const url = dingTalkBridgeEnv(session)[DINGTALK_TOOLS_ENV_KEY]
-    read.mockImplementation(async () => {
+    execute.mockImplementation(async () => {
       getSessionBridgeAccess.mockReturnValue({ ...access, cwd: '/synthetic/other-project' })
       return { ok: true, data: { content: 'private workspace text' } }
     })
@@ -122,14 +208,121 @@ describe('DingTalk package and loopback bridge', () => {
     vi.stubEnv(DINGTALK_TOOLS_ENV_KEY, dingTalkBridgeEnv(session)[DINGTALK_TOOLS_ENV_KEY])
     const tools: Parameters<Parameters<typeof registerDingTalkTools>[0]['registerTool']>[0][] = []
     registerDingTalkTools({ registerTool: tool => tools.push(tool) })
-    read.mockResolvedValue({ ok: false, error: 'permission-denied' })
+    execute.mockResolvedValue({ ok: false, error: 'permission-denied' })
     const result = await tools[2].execute('synthetic-tool', { documentId: 'SyntheticId' })
     expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false, error: 'permission-denied', hint: expect.stringContaining('内容所有者') })
   })
 
+  it.each(['full', 'no-bash'] as const)('allows document writes with %s access and accepts long multiline Markdown', async mode => {
+    getSessionBridgeAccess.mockReturnValue({ ...access, mode })
+    execute.mockResolvedValue({ ok: true, data: receipt })
+    const content = '# 示例报告\n\n' + '  多行正文\n'.repeat(2_000)
+    const request = { action: 'create_document', title: '示例报告', content }
+    const result = await post(endpoint(), request)
+    expect(await result.json()).toMatchObject({ ok: true, data: receipt })
+    expect(showMessageBox).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0][0]).toEqual(request)
+  })
+
+  it('allows read-only sessions to query but refuses their document writes', async () => {
+    getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'readonly' })
+    expect(await (await post(endpoint(), query)).json()).toMatchObject({ ok: true })
+    expect(await (await post(endpoint(), append)).json()).toMatchObject({ ok: false, error: 'write-forbidden' })
+    expect(showMessageBox).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses writes from remote and scheduled sessions before dispatch', async () => {
+    const url = endpoint()
+    getSessionBridgeAccess.mockReturnValue({ ...access, remoteReadonly: true })
+    expect(await (await post(url, append)).json()).toMatchObject({ ok: false })
+    getSessionBridgeAccess.mockReturnValue(access)
+    getSession.mockReturnValue({ origin: 'task' })
+    expect(await (await post(url, append)).json()).toMatchObject({ ok: false })
+    expect(showMessageBox).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('writes only after approval in ask mode, and declines when confirmation is unavailable', async () => {
+    const url = endpoint()
+    getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'ask' })
+    execute.mockResolvedValue({ ok: true, data: receipt })
+    showMessageBox.mockResolvedValueOnce({ response: 0 })
+    expect(await (await post(url, append)).json()).toMatchObject({ ok: false, error: 'write-forbidden' })
+    getFocusedWindow.mockReturnValueOnce(null)
+    expect(await (await post(url, append)).json()).toMatchObject({ ok: false, error: 'write-forbidden' })
+    expect(execute).not.toHaveBeenCalled()
+    expect(await (await post(url, append)).json()).toMatchObject({ ok: true, data: receipt })
+    expect(showMessageBox).toHaveBeenCalledTimes(2)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0][0]).toEqual(append)
+  })
+
+  it.each(['permission', 'workspace', 'session', 'binding'] as const)('refuses a write when %s changes while the native confirmation is open', async change => {
+    const url = endpoint()
+    getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'ask' })
+    showMessageBox.mockImplementationOnce(async () => {
+      if (change === 'permission') getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'readonly' })
+      if (change === 'workspace') getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'ask', cwd: '/synthetic/other' })
+      if (change === 'session') revokeDingTalkBridgeTokens(session)
+      if (change === 'binding') {
+        binding.abort()
+        connectedLifetime.mockReturnValue(new AbortController().signal)
+      }
+      return { response: 1 }
+    })
+    expect(await (await post(url, append)).json()).toMatchObject({ ok: false })
+    expect(showMessageBox).toHaveBeenCalledTimes(1)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('does not dispatch a direct write if the session becomes read-only during connection setup', async () => {
+    initialize.mockImplementationOnce(async () => {
+      getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'readonly' })
+    })
+    expect(await (await post(endpoint(), append)).json()).toMatchObject({ ok: false })
+    expect(execute).not.toHaveBeenCalled()
+    expect(showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('gives the manager a live permission check for dispatch after async preparation', async () => {
+    let allowedBefore: boolean | undefined
+    let allowedAfter: boolean | undefined
+    execute.mockImplementationOnce(async (_request, _signal, canWrite) => {
+      allowedBefore = canWrite?.()
+      getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'readonly' })
+      allowedAfter = canWrite?.()
+      return { ok: false, error: 'write-forbidden' }
+    })
+    expect(await (await post(endpoint(), append)).json()).toMatchObject({ ok: false })
+    expect(allowedBefore).toBe(true)
+    expect(allowedAfter).toBe(false)
+  })
+
+  it.each(['workspace', 'session'] as const)('returns an uncertain outcome without the receipt if the %s changes after write dispatch', async change => {
+    const url = endpoint()
+    execute.mockImplementationOnce(async () => {
+      if (change === 'workspace') getSessionBridgeAccess.mockReturnValue({ ...access, cwd: '/synthetic/other' })
+      else revokeDingTalkBridgeTokens(session)
+      return { ok: true, data: receipt }
+    })
+    const result = await post(url, append)
+    expect(result.status).toBe(403)
+    expect(await result.json()).toEqual({ ok: false, error: 'write-outcome-unknown' })
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps uncertain remote completion explicit without retrying the write', async () => {
+    execute.mockResolvedValue({ ok: false, error: 'write-outcome-unknown', nodeId: 'ExampleNode' })
+    const result = await post(endpoint(), append)
+    expect(await result.json()).toMatchObject({ ok: false, error: 'write-outcome-unknown', nodeId: 'ExampleNode' })
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
   it('preserves an explicit truncation marker for oversized reads', async () => {
     const url = dingTalkBridgeEnv(session)[DINGTALK_TOOLS_ENV_KEY]
-    read.mockResolvedValue({ ok: true, data: { markdown: '素材数据'.repeat(20_000) } })
+    execute.mockResolvedValue({ ok: true, data: { markdown: '素材数据'.repeat(20_000) } })
     const response = await post(url, { action: 'read_document', documentId: 'SyntheticId' })
     const body = await response.text()
     expect(Buffer.byteLength(body)).toBeLessThanOrEqual(48_000)

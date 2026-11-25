@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Check, ChevronUp, Cpu, KeyRound } from 'lucide-react'
+import { Check, Zap, KeyRound } from 'lucide-react'
+import { parseModelSelector } from '@shared/modelSelector'
 import { PI_PROVIDERS, SessionState } from '@shared/types'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
@@ -122,7 +123,7 @@ export default function ModelPicker({ sessionId, compact = false }: ModelPickerP
   } else {
     // No session: the next-session override, else the runtime default.
     const def = isCurrent
-      ? pendingModel || (runtimeOverview?.modelState.defaultModel ?? '')
+      ? parseModelSelector(pendingModel || runtimeOverview?.modelState.defaultModel || '')?.modelSelector
       : pendingModel || (modelConfig?.defaultProvider && modelConfig?.defaultModel
           ? `${modelConfig.defaultProvider}/${modelConfig.defaultModel}`
           : '')
@@ -151,6 +152,7 @@ export default function ModelPicker({ sessionId, compact = false }: ModelPickerP
     <div className="relative">
       <button
         ref={triggerRef}
+        aria-expanded={open}
         onClick={() => {
           setOpen((v) => !v)
           if (!open) {
@@ -164,17 +166,17 @@ export default function ModelPicker({ sessionId, compact = false }: ModelPickerP
           failed ? t('composer.modelFailed') : label
         }`}
       >
-        <Cpu size={12} className={compact && failed ? 'text-red-500' : ''} />
+        <Zap size={13} className={compact && failed ? 'text-red-500' : ''} />
         {!compact && (
           <span className={`max-w-36 truncate ${failed ? 'text-red-500' : ''}`}>
             {failed ? t('composer.modelFailed') : label}
           </span>
         )}
-        {/* Compact renders icon-only; a lone caret reads as a broken label. */}
-        {!compact && <ChevronUp size={11} className={`composer-picker-chevron transition ${open ? 'rotate-180' : ''}`} />}
+
       </button>
 
       <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} width={256} maxHeight={320}>
+        <div className="px-2.5 py-1.5 text-xs font-medium text-cream-faint">{t('composer.model')}</div>
         {!sessionId && (
           <button
             onClick={() => pick('')}

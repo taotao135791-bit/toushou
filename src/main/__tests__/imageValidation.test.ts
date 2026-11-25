@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { sanitizeImages, base64DecodedBytes, MAX_IMAGE_COUNT } from '../imageValidation'
+import { validatePromptImages, sanitizeImages, base64DecodedBytes, MAX_IMAGE_COUNT } from '../imageValidation'
 
 function b64(s: string): string {
   return Buffer.from(s, 'utf-8').toString('base64')
@@ -51,4 +51,14 @@ describe('base64DecodedBytes', () => {
   it('estimates decoded size from the base64 length', () => {
     expect(base64DecodedBytes(b64('hello'))).toBe(5)
   })
+})
+
+
+it('removes a matching data URL prefix and rejects partial delivery', () => {
+  const data = b64('image')
+  const image = { type: 'image', mimeType: 'image/png', data }
+  expect(validatePromptImages([{ ...image, data: 'data:image/png;base64,' + data }])).toEqual([image])
+  expect(validatePromptImages([image, { ...image, data: 'data:image/jpeg;base64,' + data }])).toBe(false)
+  expect(validatePromptImages(Array(5).fill(image))).toBe(false)
+  expect(validatePromptImages([])).toBeUndefined()
 })

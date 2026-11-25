@@ -1,3 +1,8 @@
+import { createHash } from 'node:crypto'
+import { Readable } from 'node:stream'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -11,23 +16,24 @@ const mocks = vi.hoisted(() => ({
   download: vi.fn(),
   install: vi.fn(),
   get: vi.fn(),
-  open: vi.fn()
+  open: vi.fn(), feed: vi.fn(), fetch: vi.fn(), exec: vi.fn(), temp: ''
 }))
 const emit = (event: string, value?: unknown) => { for (const handler of mocks.handlers.get(event) ?? []) handler(value) }
 vi.mock('electron', () => ({
-  app: { get isPackaged() { return mocks.packaged }, getVersion: () => mocks.version },
+  app: { get isPackaged() { return mocks.packaged }, getVersion: () => mocks.version, getPath: () => mocks.temp },
   BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false, webContents: { send: mocks.send } }] },
   shell: { openExternal: mocks.open }
 }))
 vi.mock('node:child_process', () => ({
   spawnSync: () => ({ stdout: '', stderr: mocks.adHoc ? 'Signature=adhoc' : 'TeamIdentifier=SYNTHETIC' }),
-  execFile: vi.fn(), spawn: vi.fn()
+  execFile: mocks.exec, spawn: vi.fn()
 }))
 vi.mock('electron-updater', () => ({ autoUpdater: {
   on: (event: string, callback: (value?: unknown) => void) => { mocks.handlers.set(event, [...(mocks.handlers.get(event) ?? []), callback]) },
   checkForUpdates: mocks.check, downloadUpdate: mocks.download, quitAndInstall: mocks.install,
-  autoDownload: true, autoInstallOnAppQuit: true
+  setFeedURL: mocks.feed, autoDownload: true, autoInstallOnAppQuit: true
 } }))
+vi.mock('../integrations/tiktok/proxyFetch', () => ({ proxyFetchFor: async () => mocks.fetch }))
 vi.mock('node:https', () => ({ default: { get: mocks.get } }))
 
 let updater: typeof import('../updater')
@@ -41,7 +47,7 @@ beforeEach(async () => {
   mocks.version = '2.0.2'
   mocks.adHoc = false
   mocks.metadata = { status: 200, version: '2.0.2' }
-  Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
   mocks.check.mockImplementation(async () => { emit('checking-for-update'); emit('update-not-available') })
   mocks.download.mockResolvedValue([])
   mocks.get.mockImplementation((_url, _options, callback) => {
@@ -190,18 +196,120 @@ describe('startup update checks', () => {
     expect(updater.getUpdaterStatus()).toMatchObject({ status: 'error', operation: 'install' })
   })
 
-  it.each([['2.0.2', 200, false], ['2.1.0', 503, false], ['2.1.0', 200, true]] as const)('checks unsigned macOS builds silently (%s / HTTP %s)', async (version, status, available) => {
-    mocks.adHoc = true
-    mocks.metadata = { version, status }
+  it.each(['darwin', 'win32'] as const)('follows only the %s pointer on startup and pins all manual downloads', async platform => {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+    const index = { schemaVersion: 1, macos: '2.0.2', windows: '2.0.3' }
+    mocks.fetch.mockImplementation(async () => new Response(JSON.stringify(index)))
     updater.initUpdater()
     await vi.advanceTimersByTimeAsync(10000)
-    expect(mocks.check).not.toHaveBeenCalled()
-    expect(mocks.get).toHaveBeenCalledTimes(1)
-    expect(updater.getUpdaterStatus()).toEqual(available ? { status: 'available', version } : { status: 'idle' })
-    expect(mocks.send).toHaveBeenCalledTimes(available ? 1 : 0)
-    if (!available) expect(await updater.updaterCheck()).toMatchObject({ status: status === 200 ? 'none' : 'error' })
+    const expected = platform === 'darwin' ? { status: 'idle' } : { status: 'available', version: '2.0.3' }
+    expect(updater.getUpdaterStatus()).toEqual(expected)
+    index.macos = '2.0.4'
+    // An in-progress Windows offer retains its target until the next check.
+    index.windows = '2.0.5'
+    await updater.updaterOpenReleasePage()
+    expect(mocks.open).toHaveBeenCalledWith(platform === 'darwin'
+      ? 'https://github.com/taotao135791-bit/toushou/blob/release-channels/README.md'
+      : 'https://github.com/taotao135791-bit/toushou/releases/tag/v2.0.3')
+    expect(mocks.fetch.mock.calls.every(([url]) => url === 'https://raw.githubusercontent.com/taotao135791-bit/toushou/release-channels/stable.json')).toBe(true)
     expect(mocks.download).not.toHaveBeenCalled()
-    expect(mocks.install).not.toHaveBeenCalled()
+  })
+
+  it('binds the signed Mac updater and retries to the offered release, rejects mismatched manifests', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    updater.initUpdater()
+    mocks.fetch.mockResolvedValue(new Response(JSON.stringify({ schemaVersion: 1, windows: '9.0.0', macos: '2.0.3' })))
+    expect(await updater.updaterCheck()).toEqual({ status: 'available', version: '2.0.3' })
+    const asset = { url: `TouShou-${process.arch}.zip`, sha512: Buffer.alloc(64).toString('base64') }
+    mocks.check.mockResolvedValueOnce({ isUpdateAvailable: true, updateInfo: { version: '2.0.4', files: [asset] } })
+    expect(await updater.updaterDownload()).toMatchObject({ status: 'error', operation: 'download' })
+    expect(mocks.download).not.toHaveBeenCalled()
+    mocks.check.mockResolvedValueOnce({ isUpdateAvailable: true, updateInfo: { version: '2.0.3', files: [asset] } })
+    mocks.download.mockImplementation(async () => { emit('update-downloaded', { version: '2.0.3' }) })
+    expect(await updater.updaterDownload()).toEqual({ status: 'downloaded', version: '2.0.3' })
+    expect(mocks.feed.mock.calls.map(([feed]) => feed.url)).toEqual(Array(2).fill('https://github.com/taotao135791-bit/toushou/releases/download/v2.0.3/'))
+    expect(mocks.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a newer concurrent index check from switching a download already selected by the user', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    updater.initUpdater()
+    const index = (version: string) => new Response(JSON.stringify({ schemaVersion: 1, macos: version, windows: '8.0.0' }))
+    mocks.fetch.mockResolvedValueOnce(index('2.0.3'))
+    await updater.updaterCheck()
+    let finishRefresh!: (value: Response) => void
+    mocks.fetch.mockImplementationOnce(() => new Promise<Response>(resolve => { finishRefresh = resolve }))
+    const refresh = updater.updaterCheck(false)
+    await vi.waitFor(() => expect(finishRefresh).toBeTypeOf('function'))
+    const asset = { url: `TouShou-${process.arch}.zip`, sha512: Buffer.alloc(64).toString('base64') }
+    mocks.check.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: '2.0.3', files: [asset] } })
+    let finishDownload!: () => void
+    mocks.download.mockImplementation(() => new Promise<void>(resolve => { finishDownload = () => {
+      emit('update-downloaded', { version: '2.0.3' })
+      resolve()
+    } }))
+    const pending = updater.updaterDownload()
+    await vi.waitFor(() => expect(finishDownload).toBeTypeOf('function'))
+    finishRefresh(index('2.0.4'))
+    expect((await refresh).status).toBe('downloading')
+    finishDownload()
+    expect(await pending).toEqual({ status: 'downloaded', version: '2.0.3' })
+    await updater.updaterOpenReleasePage()
+    expect(mocks.open).toHaveBeenCalledWith('https://github.com/taotao135791-bit/toushou/releases/tag/v2.0.3')
+  })
+
+  it('does not offer global Latest or another platform when the stable index is invalid', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    mocks.adHoc = true
+    mocks.fetch.mockImplementation(async () => new Response('{"schemaVersion":1,"windows":"9.0.0"}'))
+    updater.initUpdater()
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(updater.getUpdaterStatus()).toEqual({ status: 'idle' })
+    expect(await updater.updaterCheck()).toMatchObject({ status: 'error', operation: 'check' })
+    await updater.updaterOpenReleasePage()
+    expect(mocks.open).toHaveBeenCalledWith('https://github.com/taotao135791-bit/toushou/blob/release-channels/README.md')
+    expect(mocks.check).not.toHaveBeenCalled()
+    expect(mocks.download).not.toHaveBeenCalled()
+  })
+
+  it('keeps an unsigned Mac offer during a stale or malformed background refresh', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    mocks.adHoc = true
+    let version = '2.0.4'
+    mocks.fetch.mockImplementation(async () => new Response(JSON.stringify({ schemaVersion: 1, macos: version, windows: '8.0.0' })))
+    updater.initUpdater()
+    expect(await updater.updaterCheck()).toEqual({ status: 'available', version })
+    version = '2.0.3'
+    expect(await updater.updaterCheck()).toEqual({ status: 'available', version: '2.0.4' })
+    version = 'bad-version'
+    expect(await updater.updaterCheck()).toMatchObject({ status: 'error', operation: 'check' })
+    expect(updater.getUpdaterStatus()).toEqual({ status: 'available', version: '2.0.4' })
+    expect(mocks.check).not.toHaveBeenCalled()
+  })
+
+  it('downloads the unsigned Mac ZIP from the offered tag and rejects bad bytes before extraction', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    mocks.adHoc = true
+    mocks.temp = mkdtempSync(path.join(tmpdir(), 'platform-update-'))
+    const filename = `TouShou-${process.arch}.zip`
+    const digest = createHash('sha512').update('expected bytes').digest('base64')
+    const pinned = 'https://github.com/taotao135791-bit/toushou/releases/download/v2.0.3/'
+    mocks.fetch.mockImplementation(async (url: string) => url.endsWith('stable.json')
+      ? new Response(JSON.stringify({ schemaVersion: 1, windows: '9.0.0', macos: '2.0.3' }))
+      : new Response(JSON.stringify({ version: '2.0.3', files: [{ url: filename, sha512: digest }] })))
+    mocks.get.mockImplementation((_url, _opts, callback) => {
+      const response = Object.assign(Readable.from([Buffer.from('incorrect bytes')]), { statusCode: 200, headers: {} })
+      queueMicrotask(() => callback(response))
+      return { on: vi.fn() }
+    })
+    try {
+      updater.initUpdater()
+      expect(await updater.updaterCheck()).toEqual({ status: 'available', version: '2.0.3' })
+      expect(await updater.updaterDownload()).toMatchObject({ status: 'error', message: expect.stringContaining('SHA-512') })
+      expect(mocks.fetch.mock.calls.map(([url]) => url)).toContain(pinned + 'latest-mac.yml')
+      expect(mocks.get.mock.calls[0][0]).toBe(pinned + filename)
+      expect(mocks.exec).not.toHaveBeenCalled()
+    } finally { rmSync(mocks.temp, { recursive: true, force: true }) }
   })
 
   it('does not initialize or check updates in development', async () => {

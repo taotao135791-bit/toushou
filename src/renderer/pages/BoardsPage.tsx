@@ -14,7 +14,6 @@ import {
   FileUp,
   Gauge,
   Hash,
-  LayoutDashboard,
   LayoutGrid,
   Link2,
   ListTodo,
@@ -33,7 +32,6 @@ import {
   Settings2,
   SlidersHorizontal,
   Sparkles,
-  SquareKanban,
   StickyNote,
   Trash2,
   X,
@@ -2089,7 +2087,7 @@ export default function BoardsPage() {
                   onClick={askAgentToProposeCards}
                   className={`${menuItemClass} text-cream-dim hover:bg-overlay hover:text-cream`}
                 >
-                  <LayoutDashboard size={12} />
+                  <BoardsIcon size={12} />
                   {t('boards.cards.propose')}
                 </button>
                 <button
@@ -2271,7 +2269,7 @@ export default function BoardsPage() {
             </div>
           ) : boardsLoadFailed ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-              <SquareKanban size={28} className="text-red-500" />
+              <BoardsIcon size={28} className="text-red-500" />
               <div className="text-sm text-cream-dim">{t('boards.loadFailed')}</div>
               <p className="max-w-lg text-xs text-cream-faint">{language === 'zh' ? '本地看板文件无法读取或升级。原文件未被更改；请先备份数据，再检查文件格式或恢复备份。' : 'Local boards could not be read or upgraded. The source file was preserved. Back up your data, then check the format or restore a backup.'}</p>
               <button
@@ -2284,7 +2282,7 @@ export default function BoardsPage() {
             </div>
           ) : !current ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-              <SquareKanban size={28} className="text-cream-faint" />
+              <BoardsIcon size={28} className="text-cream-faint" />
               <div className="text-sm text-cream-dim">{t('boards.empty')}</div>
               <div className="text-xs text-cream-faint">{t('boards.emptyHint')}</div>
               <button

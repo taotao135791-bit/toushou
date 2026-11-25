@@ -1,41 +1,19 @@
 import { randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { serializeBoundedJson } from '../shared/boundedJson'
-import type { DingTalkReadError, DingTalkReadRequest, DingTalkReadResult } from '../shared/connections'
+import { isDingTalkNodeId, isDingTalkWrite, parseDingTalkRequest } from './integrations/dingtalk/requests'
+import { getWorkspaceOperation } from './integrations/dingtalk/workspaceOperations'
+import type { DingTalkToolError, DingTalkToolResult, DingTalkWriteRequest } from '../shared/connections'
 
-const MAX_BODY_BYTES = 4_096
+export { parseDingTalkRequest }
+
+// The largest accepted Markdown body can be encoded as JSON unicode escapes.
+const MAX_BODY_BYTES = 400_000
 const MAX_RESULT_BYTES = 48_000
 const QUERY_TIMEOUT_MS = 25_000
+const WRITE_TIMEOUT_MS = 180_000
 const MAX_LIVE_CAPABILITIES = 200
 export const DINGTALK_TOOLS_ENV_KEY = 'TOUSHOU_DINGTALK'
-
-function parseDocumentId(value: unknown): string | null {
-  if (typeof value !== 'string' || value.length > 2_048) return null
-  const text = value.trim()
-  if (/^[A-Za-z0-9_-]{1,200}$/.test(text)) return text
-  try {
-    const url = new URL(text)
-    if (url.origin !== 'https://alidocs.dingtalk.com' || url.username || url.password) return null
-    return /^\/i\/nodes\/([A-Za-z0-9_-]{1,200})\/?$/.exec(url.pathname)?.[1] ?? null
-  } catch {
-    return null
-  }
-}
-
-export function parseDingTalkReadRequest(raw: unknown): DingTalkReadRequest | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).length !== 2) return null
-  const input = raw as Record<string, unknown>
-  if (input.action === 'search_messages' || input.action === 'search_documents') {
-    if (typeof input.query !== 'string' || input.query.length > 200 || /[\u0000-\u001f\u007f-\u009f]/.test(input.query)) return null
-    const query = input.query.trim()
-    return query ? { action: input.action, query } : null
-  }
-  if (input.action === 'read_document') {
-    const documentId = parseDocumentId(input.documentId)
-    return documentId ? { action: input.action, documentId } : null
-  }
-  return null
-}
 
 interface SessionCapability {
   sessionId: string
@@ -95,7 +73,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   const closed = new AbortController()
   response.once('close', () => { if (!response.writableEnded) closed.abort() })
-  const signal = AbortSignal.any([capability.lifetime.signal, closed.signal, AbortSignal.timeout(QUERY_TIMEOUT_MS)])
+  let fallback: DingTalkToolError = 'read-failed'
   try {
     let bytes = 0
     const chunks: Buffer[] = []
@@ -111,39 +89,99 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     try { payload = JSON.parse(Buffer.concat(chunks, bytes).toString('utf8')) } catch {
       return send(response, 400, { ok: false, error: 'invalid-input' })
     }
-    const tool = parseDingTalkReadRequest(payload)
+    const tool = parseDingTalkRequest(payload)
     if (!tool) return send(response, 400, { ok: false, error: 'invalid-input' })
 
+    const write = isDingTalkWrite(tool)
+    const signal = AbortSignal.any([capability.lifetime.signal, closed.signal, AbortSignal.timeout(write ? WRITE_TIMEOUT_MS : QUERY_TIMEOUT_MS)])
     const { getSession, getSessionBridgeAccess } = await import('./omp')
-    const liveWorkspace = () => {
+    const liveAccess = () => {
       const access = getSessionBridgeAccess(capability.sessionId)
       const session = getSession(capability.sessionId)
-      // Feishu-origin and scheduled task sessions must not read a desktop user's DingTalk data.
-      return access && session && !access.remoteReadonly && !session.origin ? access.cwd : null
+      return access && session && !access.remoteReadonly && !session.origin ? access : null
     }
-    const workspace = liveWorkspace()
-    if (!workspace || signal.aborted) return send(response, 403, { ok: false, error: 'forbidden' })
+    const initial = liveAccess()
+    if (!initial || signal.aborted) return send(response, 403, { ok: false, error: 'forbidden' })
 
-    const { dingTalkConnectionManager } = await import('./integrations/dingtalk/DingTalkConnectionManager')
-    if (signal.aborted || workspace !== liveWorkspace()) return send(response, 403, { ok: false, error: 'forbidden' })
-    const result = await dingTalkConnectionManager.read(tool, signal)
-    if (capability.lifetime.signal.aborted || workspace !== liveWorkspace()) {
-      return send(response, 403, { ok: false, error: 'forbidden' })
+    const { dingTalkConnectionManager: manager } = await import('./integrations/dingtalk/DingTalkConnectionManager')
+    const sameWorkspace = () => !capability.lifetime.signal.aborted && liveAccess()?.cwd === initial.cwd
+    if (!sameWorkspace()) return send(response, 403, { ok: false, error: 'forbidden' })
+    let result: DingTalkToolResult
+    if (write) {
+      fallback = 'write-failed'
+      if (!['full', 'no-bash', 'ask'].includes(initial.mode)) return send(response, 403, { ok: false, error: 'write-forbidden' })
+      await manager.initialize()
+      const binding = manager.connectedLifetime()
+      if (!binding) return send(response, 200, { ok: false, error: 'not-connected' })
+      const writeSignal = AbortSignal.any([binding, signal])
+      const canWrite = () => {
+        const current = liveAccess()
+        return !writeSignal.aborted && current?.cwd === initial.cwd && current.mode === initial.mode
+      }
+      if (!canWrite()) return send(response, 403, { ok: false, error: 'write-forbidden' })
+      const operation = tool.action === 'workspace_write' ? getWorkspaceOperation(tool.operation) : undefined
+      const needsConfirmation = initial.mode === 'ask' || operation?.effect === 'destructive' || operation?.confirmation === 'user_required'
+      if (needsConfirmation && (!await confirmWrite(tool, writeSignal) || !canWrite())) {
+        return send(response, 403, { ok: false, error: 'write-forbidden' })
+      }
+      fallback = 'write-outcome-unknown'
+      result = await manager.execute(tool, writeSignal, canWrite)
+    } else {
+      result = await manager.execute(tool, signal)
     }
-    if (signal.aborted) return send(response, 200, { ok: false, error: 'read-failed' })
-    return send(response, 200, projectResult(result))
+    if (!sameWorkspace()) return send(response, 403, { ok: false, error: write ? 'write-outcome-unknown' : 'forbidden' })
+    if (signal.aborted) return send(response, 200, { ok: false, error: fallback })
+    return send(response, 200, projectResult(result, fallback))
   } catch {
-    return send(response, 200, { ok: false, error: 'read-failed' })
+    return send(response, 200, { ok: false, error: fallback })
   }
 }
 
-const READ_ERRORS = new Set<DingTalkReadError>([
-  'not-connected', 'invalid-input', 'cli-unavailable', 'organization-access-required', 'not-authorized', 'permission-denied', 'network', 'read-failed'
+async function confirmWrite(tool: DingTalkWriteRequest, signal: AbortSignal): Promise<boolean> {
+  try {
+    const { BrowserWindow, dialog } = await import('electron')
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(candidate => !candidate.isDestroyed())
+    if (!win || win.isDestroyed() || signal.aborted) return false
+    let title = '钉钉文档'
+    let message: string
+    let detail: string
+    if (tool.action === 'workspace_write') {
+      const operation = getWorkspaceOperation(tool.operation)
+      if (!operation) return false
+      title = '钉钉'
+      message = '允许执行这项钉钉操作？'
+      const args = Object.entries(tool.args).map(([key, value]) => {
+        const text = JSON.stringify(value)
+        return key + ' = ' + (text.length > 350 ? text.slice(0, 350) + '…' : text)
+      }).join('\n')
+      detail = [tool.operation, operation.description, args].filter(Boolean).join('\n\n')
+    } else {
+      const creating = tool.action === 'create_document'
+      message = creating ? '允许新建这篇钉钉文档？' : '允许向这篇钉钉文档追加正文？'
+      const target = creating ? tool.title + '（' + (tool.folderId ?? '我的文档') + '）' : 'https://alidocs.dingtalk.com/i/nodes/' + tool.documentId
+      const preview = tool.content?.slice(0, 500) ?? ''
+      detail = [target, preview + ((tool.content?.length ?? 0) > preview.length ? '…' : '')].filter(Boolean).join('\n\n')
+    }
+    const result = await dialog.showMessageBox(win, {
+      type: 'question', title, message,
+      detail, buttons: ['取消', '允许一次'], defaultId: 0, cancelId: 0, noLink: true, signal
+    })
+    return result.response === 1 && !signal.aborted
+  } catch {
+    return false
+  }
+}
+
+const TOOL_ERRORS = new Set<DingTalkToolError>([
+  'not-connected', 'invalid-input', 'cli-unavailable', 'organization-access-required', 'not-authorized', 'permission-denied', 'network', 'read-failed',
+  'write-failed', 'write-forbidden', 'write-outcome-unknown', 'cancelled'
 ])
 
-function projectResult(result: DingTalkReadResult): Record<string, unknown> {
+function projectResult(result: DingTalkToolResult, fallback: DingTalkToolError): Record<string, unknown> {
   if (result.ok) return { ok: true, source: 'DingTalk', data: result.data }
-  return { ok: false, error: READ_ERRORS.has(result.error) ? result.error : 'read-failed' }
+  const error = TOOL_ERRORS.has(result.error) ? result.error : fallback
+  const nodeId = error === 'write-outcome-unknown' && isDingTalkNodeId(result.nodeId) ? result.nodeId : undefined
+  return { ok: false, error, ...(nodeId ? { nodeId } : {}) }
 }
 
 function send(response: ServerResponse, status: number, result: Record<string, unknown>): void {

@@ -192,6 +192,37 @@
   .md hr {
     @apply border-line;
   }
+
+  .assistant-reply > .md {
+    @apply text-[15px] leading-6;
+    overflow-wrap: anywhere;
+  }
+  .assistant-reply > .md p { line-height: inherit; }
+  .assistant-reply > .md h1 { @apply text-xl leading-7; }
+  .assistant-reply > .md h2 { @apply text-[17px] leading-6; }
+  .assistant-reply > .md h3, .assistant-reply > .md h4 { @apply leading-6; }
+  .assistant-reply > .md > * + :is(h1, h2, h3, h4) { @apply mt-5; }
+  .assistant-reply > .md > :is(h1, h2, h3, h4) + * { @apply mt-1.5; }
+  .assistant-reply > .md li > :is(p, ul, ol) + :is(p, ul, ol),
+  .assistant-reply > .md li > :is(ul, ol) { @apply mt-1; }
+  .assistant-reply > .md a {
+    @apply text-[#1973ca] decoration-current dark:text-[#90bff0];
+  }
+  .assistant-reply > .md .chat-attachment-mention {
+    @apply no-underline underline-offset-[3px] hover:underline focus-visible:underline;
+  }
+  .assistant-reply > .md .chat-attachment-mention[data-attachment-kind='xlsx'] > svg {
+    @apply text-[#15934f] dark:text-[#66cf91];
+  }
+  .assistant-reply > .md .chat-attachment-list {
+    @apply grid max-w-md list-none gap-2 p-0;
+  }
+  .assistant-reply > .md .chat-attachment-list > li {
+    @apply m-0 min-w-0;
+  }
+  .assistant-reply > .md .chat-attachment-card {
+    @apply m-0 flex w-full;
+  }
 }
 
 @layer utilities {
@@ -664,5 +695,15 @@ html.board-grid-resizing .react-grid-layout iframe,
 @layer components {
   .project-menu-action {
     @apply flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-cream transition hover:bg-overlay disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .running-progress-indeterminate {
+    animation: running-progress-travel 2.4s ease-in-out infinite alternate;
+  }
+  @keyframes running-progress-travel {
+    from { transform: translateX(0); }
+    to { transform: translateX(233%); }
   }
 }

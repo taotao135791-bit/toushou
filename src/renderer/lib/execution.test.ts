@@ -295,3 +295,53 @@ describe('durable historical agents', () => {
     expect(p.agents.a.tokens).toBe(100) // historical telemetry preserved
   })
 })
+
+describe('in-flight task progress', () => {
+  const active = () => foldExecutionEvent(emptyProjection(S), { type: 'status', sessionId: S, status: 'working' }, 0)
+  const nativePlan = (done: number, total: number, task: string): SessionEvent => ({
+    type: 'tool_result', sessionId: S, id: 'plan', tool: 'todo', isError: false,
+    output: `Remaining items (${total - done}):\n  - ${task} [in_progress] (验证)\nOverall: ${done}/${total} done, ${total - done} open.\nActive phase 1/1`
+  })
+
+  it('uses native OMP result totals after an incremental change; repeated observations do not move the deadline', () => {
+    let state = foldExecutionEvent(active(), nativePlan(1, 5, '读取报表'), 1000)
+    expect(currentTurn(state)?.planProgress).toMatchObject({ done: 1, total: 5, current: '读取报表' })
+    expect(currentTurn(state)?.planTiming?.etaAt).toBeUndefined()
+    state = foldExecutionEvent(state, nativePlan(2, 5, '核对报表'), 21000)
+    expect(currentTurn(state)?.planTiming?.etaAt).toBe(81000)
+    state = foldExecutionEvent(state, nativePlan(2, 5, '核对报表'), 41000)
+    expect(currentTurn(state)?.planTiming?.etaAt).toBe(81000)
+    state = foldExecutionEvent(state, nativePlan(2, 7, '核对报表'), 42000)
+    expect(currentTurn(state)?.planTiming?.etaAt).toBeUndefined()
+    state = foldExecutionEvent(state, { type: 'tool_result', id: 'plan', sessionId: S, tool: 'todo', isError: false, output: 'Todo list cleared.' }, 43000)
+    expect(currentTurn(state)?.planProgress).toBeUndefined()
+  })
+
+  it('adopts a compatible checklist only once the matching call succeeds', () => {
+    const call: SessionEvent = {
+      type: 'tool_call', sessionId: S, id: 'A', tool: 'update_plan',
+      input: { plan: [{ step: '读数', status: 'completed' }, { step: '验收', status: 'in_progress' }] }
+    }
+    const result: SessionEvent = { type: 'tool_result', sessionId: S, id: 'A', tool: 'update_plan', output: 'updated', isError: false }
+    let state = foldExecutionEvent(active(), call, 100)
+    state = foldExecutionEvent(state, { ...result, id: 'B' }, 110)
+    expect(currentTurn(state)?.planProgress).toBeUndefined()
+    state = foldExecutionEvent(state, { ...result, isError: true }, 120)
+    expect(currentTurn(state)?.planProgress).toBeUndefined()
+    state = foldExecutionEvent(foldExecutionEvent(state, call, 140), result, 150)
+    expect(currentTurn(state)?.planProgress).toMatchObject({ total: 2, done: 1, current: '验收' })
+  })
+
+  it('leaves ordinary data reads and standalone checks indeterminate and ends the board estimate on abort', () => {
+    const tool = (tool: string): SessionEvent => ({ type: 'tool_call', sessionId: S, tool, input: {} })
+    let state = foldExecutionEvent(active(), tool('toushou_board_check'))
+    expect(currentTurn(state)?.boardProgress).toBeUndefined()
+    state = foldExecutionEvent(state, tool('toushou_board_build_begin'))
+    state = foldExecutionEvent(state, tool('toushou_af_dataset_pull'))
+    expect(currentTurn(state)?.boardProgress).toBe(30)
+    state = foldExecutionEvent(state, tool('toushou_board_add_widget'))
+    expect(currentTurn(state)?.boardProgress).toBe(65)
+    state = foldExecutionEvent(state, tool('toushou_board_build_abort'))
+    expect(currentTurn(state)?.boardProgress).toBeUndefined()
+  })
+})

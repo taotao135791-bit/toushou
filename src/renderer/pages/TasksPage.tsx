@@ -380,7 +380,7 @@ export default function TasksPage() {
               <Clock size={28} className="mb-3 text-cream-faint/40" />
               <p className="text-[14px] font-medium text-cream-dim">{t('tasks.empty.title')}</p>
               <p className="mt-1 max-w-xs text-[12px] leading-5 text-cream-faint">{t('tasks.empty.subtitle')}</p>
-              <button onClick={openModal} className={`${btn} mt-4 bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright`}>
+              <button onClick={openModal} className={`${btn} mt-4 inline-flex items-center justify-center gap-1.5 whitespace-nowrap bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright`}>
                 <Plus size={12} /> {t('tasks.create')}
               </button>
             </div>

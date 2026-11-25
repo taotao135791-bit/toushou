@@ -82,6 +82,7 @@ export class SessionOriginIndex {
   }
 
   lookup(sessionFile: string): SessionOrigin | undefined {
+    if (!this.entries.size) return undefined
     if (typeof sessionFile !== 'string' || !sessionFile) return undefined
     return this.entries.get(this.key(sessionFile))?.origin
   }

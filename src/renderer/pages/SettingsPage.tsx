@@ -10,6 +10,7 @@ import {
   Trash2
 } from 'lucide-react'
 import { CliCapabilities, CliInfo, PermissionMode, UpdaterStatus } from '@shared/types'
+import { AUTO_COMPACT_THRESHOLD_MIN, AUTO_COMPACT_THRESHOLD_MAX, normalizeAutoCompactThreshold } from '@shared/compaction'
 import type { SessionImportResult, SessionImportSource } from '@shared/sessionImport'
 import { subscribeUpdaterStatus } from '../lib/updaterStatus'
 import { useShallow } from 'zustand/react/shallow'
@@ -49,6 +50,52 @@ function Note({ children }: { children: React.ReactNode }) {
 
 const buttonCls =
   'focus-ring flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition-colors hover:border-ink-600 hover:text-cream disabled:opacity-40'
+
+function AutoCompactSetting() {
+  const t = useT()
+  const [saved, setSaved] = useState<number | null>(null)
+  const [input, setInput] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    let active = true
+    window.electronAPI.getStore('autoCompactThresholdPercent').then(value => {
+      if (active) {
+        const percent = normalizeAutoCompactThreshold(value)
+        setSaved(percent)
+        setInput(String(percent))
+      }
+    }).catch(() => { if (active) setFailed(true) })
+    return () => { active = false }
+  }, [])
+  const value = Number(input)
+  const valid = input.trim() !== '' && Number.isInteger(value) && value >= AUTO_COMPACT_THRESHOLD_MIN && value <= AUTO_COMPACT_THRESHOLD_MAX
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!valid || saving || value === saved) return
+    setSaving(true)
+    try {
+      const ok = await window.electronAPI.setStore('autoCompactThresholdPercent', value)
+      setFailed(!ok)
+      if (ok) setSaved(value)
+    } catch { setFailed(true) }
+    finally { setSaving(false) }
+  }
+  return <Section title={t('settings.conversation')}>
+    <form onSubmit={save} className="flex flex-wrap items-center justify-between gap-3 py-3">
+      <label htmlFor="auto-compact-threshold" className="text-[13px] text-cream">{t('settings.compactThreshold')}</label>
+      <div className="flex items-center gap-2">
+        <input id="auto-compact-threshold" type="number" min={AUTO_COMPACT_THRESHOLD_MIN} max={AUTO_COMPACT_THRESHOLD_MAX} step={1} required
+          disabled={saving} value={input} onChange={event => { setInput(event.target.value); setFailed(false) }}
+          aria-describedby="auto-compact-note" className="focus-ring w-16 rounded-md border border-line bg-ink-800 px-2 py-1 text-right text-xs text-cream" />
+        <span aria-hidden="true" className="text-xs text-cream-dim">%</span>
+        <button type="submit" className={buttonCls} disabled={!valid || saved === value || saving}>{t('settings.saveKey')}</button>
+      </div>
+    </form>
+    <p id="auto-compact-note" className="py-2 text-[11px] leading-relaxed text-cream-faint">{t('settings.compactThresholdNote')}</p>
+    {failed && <p role="alert" className="py-1 text-xs text-red-500">{t('settings.compactThresholdFailed')}</p>}
+  </Section>
+}
 
 const SESSION_IMPORT_SOURCES = [
   { source: 'codex', label: 'Codex' },
@@ -467,6 +514,10 @@ export default function SettingsPage() {
             </Row>
             <Note>{t('settings.notifyPreviewsNote')}</Note>
           </Section>
+
+          {isLegacy ? <Section title={t('settings.conversation')}>
+            <Note>{t('settings.compactLegacy')}</Note>
+          </Section> : <AutoCompactSetting />}
 
           <Section title={t('settings.thinkingDisplay')}>
             <Row label={t('settings.thinkingAutoExpand')}>

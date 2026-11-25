@@ -23,6 +23,8 @@
 
 import type { SessionEvent, SubagentSnapshot, SubagentStatus, SessionRuntimeState, SubagentTelemetry, HistoricalAgentRecord } from '@shared/types'
 
+import { boardMilestone, isPlanTool, readPlanProgress, readPlanResult, timePlan, type PlanProgress, type PlanTiming } from './turnProgress'
+
 export type AgentStatus = SubagentStatus | 'unknown'
 
 export type ToolCategory = 'read' | 'search' | 'edit' | 'command' | 'subagent' | 'other'
@@ -124,6 +126,10 @@ export interface TurnProjection {
   status: TurnStatus
   tools: ToolStats
   trajectory: TrajectoryEntry[]
+  boardProgress?: number
+  planProgress?: PlanProgress
+  planTiming?: PlanTiming
+  pendingPlan?: { callId?: string; plan: PlanProgress }
   /** Latest tool call + its display target ("reading src/x.ts"). */
   lastAction?: { tool: string; target: string }
 }
@@ -203,18 +209,40 @@ export function foldExecutionEvent(
     case 'tool_call': {
       const turn = state.currentTurnId ? state.turns[state.currentTurnId] : undefined
       if (!turn) return state
+      const plan = readPlanProgress(event.tool, event.input)
       return {
         ...state,
         turns: {
           ...state.turns,
           [turn.id]: {
             ...turn,
+            ...(plan && { pendingPlan: { callId: event.id, plan } }),
+            boardProgress: boardMilestone(event.tool, turn.boardProgress),
             tools: addTool(turn.tools, event.tool),
             lastAction: { tool: event.tool, target: toolTarget(event.tool, event.input) },
             trajectory: appendEntry(turn.trajectory, { kind: 'tool', label: event.tool })
           }
         }
       }
+    }
+
+    case 'tool_result': {
+      const turn = currentTurn(state)
+      if (!turn || !isPlanTool(event.tool)) return state
+      const pending = turn.pendingPlan?.callId === event.id ? turn.pendingPlan : undefined
+      const result = event.isError ? undefined : readPlanResult(event.output)
+      const plan = result === undefined && !event.isError ? pending?.plan : result
+      if (!pending && plan === undefined) return state
+      const nextTurn = { ...turn }
+      if (pending) delete nextTurn.pendingPlan
+      if (plan === null) {
+        delete nextTurn.planProgress
+        delete nextTurn.planTiming
+      } else if (plan) {
+        nextTurn.planProgress = plan
+        nextTurn.planTiming = timePlan(turn.planProgress, turn.planTiming, plan, now)
+      }
+      return { ...state, turns: { ...state.turns, [turn.id]: nextTurn } }
     }
 
     case 'thinking': {
@@ -588,7 +616,7 @@ export function emptyTurnCounts(): TurnCounts {
 /** Map the single classifier onto the legacy chat-row verb. */
 export function classifyTool(tool: string): TurnVerb {
   const name = tool.toLowerCase()
-  if (name === 'todo' || name === 'todo_write' || name === 'todowrite' || name === 'plan') {
+  if (isPlanTool(name)) {
     return 'plan'
   }
   switch (classifyToolCall(tool)) {

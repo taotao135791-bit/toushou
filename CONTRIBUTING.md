@@ -28,6 +28,8 @@ commands and `AGENTS.md` for the repository working agreement.
 
 ## Contribution workflow
 
+Mac 和 Windows 并行开发、同步旧分支、提交 PR 和选择发布平台的操作见[中文提交与发版指南](docs/commit-and-release.md)。
+
 1. Search open issues and existing pull requests before starting.
 2. Open an issue for a material change, especially one affecting IPC,
    persistence, extensions, security, or release behavior.
@@ -103,25 +105,12 @@ required check.
 
 ## Release process
 
-1. Land the release PR on `main`, including the intended `package.json`
-   version and release notes.
-2. Confirm required CI checks are green.
-3. Create and push a matching tag, for example:
-
-   ```bash
-   git switch main
-   git pull --ff-only
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
-
-4. The Release workflow verifies that the tag is exactly `v` plus the package
-   version, reruns typecheck/tests/runtime compatibility, packages both macOS
-   architectures, writes SHA-256 checksums, and creates or updates the GitHub
-   Release assets.
-
-Do not manually upload a partial set of updater assets. The workflow validates
-the DMGs, ZIPs, update manifest, and blockmaps before publishing.
+The release PR sets `version` and `toushouReleaseTarget` in `package.json`.
+Tag the tested commit after merging it into `main`. The Release workflow
+validates the selected platforms, verifies the uploaded artifacts, and advances
+the corresponding entries in the stable channel index. The public download
+page and the index are updated together. See the [submission and release
+guide](docs/commit-and-release.md) for commands and recovery steps.
 
 ## Security reports
 

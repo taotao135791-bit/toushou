@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
@@ -25,14 +25,13 @@ describe('DingTalk connection in Electron', () => {
       const env = { ...process.env }
       delete env.ELECTRON_RUN_AS_NODE
       const result = spawnSync(electron, [harness, dir], { encoding: 'utf8', timeout: 45_000, env })
-      const line = result.stdout?.split('\n').find(value => value.startsWith('E2E_RESULT '))
-      expect(line, result.stderr).toBeDefined()
-      expect(JSON.parse(line!.slice('E2E_RESULT '.length)), result.stdout).toEqual({
-        officialAssetAndPlacement: true, oneClick: true, cancelled: true, organizationAccess: true,
+      expect(result.status, result.error?.message || result.stderr).toBe(0)
+      expect(JSON.parse(readFileSync(path.join(dir, 'result.json'), 'utf8'))).toEqual({
+        officialAssetAndPlacement: true, signInScope: true, oneClick: true, cancelled: true, organizationAccess: true,
         connected: true, check: true, disconnect: true
       })
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
     }
   })
 })
@@ -135,6 +134,7 @@ app.whenReady().then(async () => {
 
     await wait('card?.textContent.includes("未连接") && card.querySelector("img").naturalWidth === 444')
     const officialAssetAndPlacement = await js('card.previousElementSibling.querySelector("h2").textContent === "飞书" && card.querySelector("h2").textContent === "钉钉" && card.querySelector("img").src.startsWith("data:image/png")')
+    const signInScope = await js('["搜索聊天消息", "管理群聊", "钉钉文档和表格", "钉钉工作区支持哪些操作", "不代发消息"].every(text => card.textContent.includes(text))')
     await click('钉钉账号登录')
     await wait('card.querySelector("[role=status]").textContent.includes("正在安装钉钉 CLI")')
     await js('(window.dingFixture.beginBrowser(), null)')
@@ -157,17 +157,16 @@ app.whenReady().then(async () => {
     await wait('card.querySelector("[role=status]").textContent.includes("等待钉钉授权")')
     await js('(window.dingFixture.completeLogin("connected"), null)')
     await wait('card.querySelector("[role=status]").textContent === "已连接" && !card.querySelector("[role=alert]")')
-    const connected = await js('card.textContent.includes("测试账号") && card.textContent.includes("测试组织") && card.textContent.includes("搜索钉钉消息、读取文档")')
+    const connected = await js('["测试账号", "测试组织", "创建在线文档", "追加正文", "读取表格里指定的区域", "撤回本人消息", "变更群成员", "覆盖文档全文", "允许一次"].every(text => card.textContent.includes(text))')
     await click('检查连接')
     await wait('card.querySelector("[role=status]").textContent === "已连接" && [...card.querySelectorAll("button")].some(button => button.textContent === "断开连接" && !button.disabled)')
     const check = await js('window.dingFixture.calls.includes("check")')
     await click('断开连接')
     await wait('card.querySelector("[role=status]").textContent === "未连接" && card.textContent.includes("钉钉账号登录")')
     const disconnect = await js('window.dingFixture.calls.includes("disconnect") && !card.textContent.includes("测试账号")')
-    console.log('E2E_RESULT ' + JSON.stringify({ officialAssetAndPlacement, oneClick, cancelled, organizationAccess, connected, check, disconnect }))
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify({ officialAssetAndPlacement, signInScope, oneClick, cancelled, organizationAccess, connected, check, disconnect }))
   } catch (error) {
-    console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error) }))
-    process.exitCode = 1
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify({ fatal: String(error) }))
   } finally {
     win?.destroy()
     app.quit()

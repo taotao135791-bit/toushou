@@ -83,16 +83,45 @@ Key entry is exactly the same direct paste-key form Oh My Pi itself uses.
 - `model_changed` / `thinking_level_changed` events keep pickers in sync
   with the runtime-resolved state.
 
-## Thinking levels — two DIFFERENT domains
+### Selecting a catalog or custom model
 
-**Session thinking** (`set_thinking_level` / `--thinking`) uses the session
-enum: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `off` is
-legal here — it is a session runtime state, never the global default.
+In **Settings → Models**, choose the provider to see its catalog and runtime
+models. Selecting a model shows its known input types and context window.
+Choose **Custom model IDs…** in this menu to open that provider’s editor
+when a model is missing. If the native protocol only supports catalog and
+discovered models (for example, OpenRouter), **Add provider…** opens a
+separate compatible endpoint configuration. Use a distinct provider ID.
+On a supported native endpoint such as Gemini, the editor fills in the
+address and API dialect. Manually defining models requires a provider API
+key or an existing models.yml key.
+
+In **Custom providers**, **Add a catalog model** fills in the model’s known
+capabilities. Catalog information uses the provider ID, full wire model ID,
+API dialect and endpoint. A gateway with a different URL can therefore
+declare its own capabilities even when it reuses an official model name.
+
+A new manually entered model with unknown limits requires a context window
+of **200k, 256k, 300k, 500k or 1M**. Previously configured models retain
+their saved context, including a blank runtime default or a size outside
+these presets. If the gateway supports
+images, select **Text and images** (文字和图片) under **Input types**.
+Click **Save provider** (保存服务商). Leaving the key field empty retains the
+saved key. Reopen the conversation or start a new session to load the
+updated model declaration. With **Auto-discover models** enabled,
+OMP supplies the discovered model list.
+
+## Thinking levels
+
+**Session thinking** uses the concrete efforts `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max`. Current Oh My Pi also accepts `auto` through
+`set_thinking_level` and `--thinking`. The button inside the effort menu selects
+this native mode, which resolves effort per turn. A saved session records its
+automatic selection in the active branch's `thinking_level_change` entries.
 
 **Default thinking** (`omp config defaultThinkingLevel`) uses the config
 enum: `auto`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (verified
 against 17.2.12). `auto` is legal; `off` is NOT. The GUI keeps these as
-separate TypeScript types (`SessionThinkingLevel` vs `DefaultThinkingLevel`)
+separate TypeScript types (`SessionThinkingSelection` and `DefaultThinkingLevel`)
 so a session enum value can never be written to global config.
 
 Per-model subsets are available from the live session model and from
@@ -109,12 +138,28 @@ the repaired levels. Explicit model declarations and custom endpoints keep
 their configured behavior. Open a new session or reopen a saved one to pick
 up config changes from an already running session.
 
-`set_thinking_level` never errors — unsupported levels are **clamped**
-(e.g. xhigh → high) or resolve to "auto" (unknown values). The GUI
-therefore displays the runtime-resolved level (`thinking_level_changed` /
-`get_state.thinkingLevel`), not the requested one. Scope mirrors models:
-session picks are session-only; the Settings default applies to future
-sessions only.
+The runtime can clamp a fixed selection to a model's supported effort. The
+picker displays the confirmed effort for fixed selections and `Auto` when OMP
+reports `configured: "auto"`. A turn's historical metadata retains the
+concrete effort as recorded by the runtime.
+
+## Context usage and compaction
+
+In **Settings → Conversation**, set the automatic compaction threshold to
+a whole percentage from 50 to 95. The default is 80. Current Oh My Pi
+checks the active model’s context window at safe turn boundaries. Changing
+the setting takes effect in an open conversation at its next check.
+The threshold applies to sessions launched by the desktop app.
+
+The token count under the composer is cumulative. Click it to see how many
+tokens currently occupy the window and its capacity. The same panel
+supports manual compaction, also available as `/compact`. A small
+positive fill displays as `<1%`. A runtime that has not reported usage
+displays a pending or unavailable state. Legacy Pi uses its own automatic
+compaction policy.
+
+Automatic and manual compaction each show one status message in the conversation.
+The message updates in place when compaction finishes, is skipped, fails, or is cancelled.
 
 ## Machine skills
 

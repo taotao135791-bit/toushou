@@ -331,6 +331,28 @@ describe('OmpSession queries', () => {
   })
 })
 
+describe('OmpSession active context', () => {
+  it('uses get_state when a populated history reports zero and keeps cumulative tokens independent', async () => {
+    const { s, fake } = makeSession()
+    const result = s.getSessionStats()
+    const answer = (data: unknown) => {
+      const request = JSON.parse(String(fake.stdin.write.mock.calls.at(-1)?.[0]))
+      emitLines(fake, { type: 'response', id: request.id, command: request.type, success: true, data })
+    }
+    answer({
+      userMessages: 12, assistantMessages: 10, toolCalls: 0, cost: 0,
+      tokens: { input: 450_000, output: 1000, cacheRead: 1000, cacheWrite: 0, total: 452_000 },
+      contextUsage: { tokens: 0, contextWindow: 128_000, percent: 0 }
+    })
+    await Promise.resolve()
+    answer({ contextUsage: { tokens: 1600, contextWindow: 128_000, percent: 1 } })
+    expect(await result).toMatchObject({
+      tokens: { total: 452_000 }, contextUsage: { tokens: 1600, contextWindow: 128_000, percent: 1.25 }
+    })
+    s.kill()
+  })
+})
+
 describe('OmpSession assistant text tracking', () => {
   it('accumulates deltas per turn and finalizes at agent_end', () => {
     const { s, fake } = makeSession()

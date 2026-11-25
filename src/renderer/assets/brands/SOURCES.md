@@ -30,3 +30,5 @@ e6227b7dbc49c86da6f4ccfa02ba439428106b0ca627a0a33ea6ad1e09f335b3  figma.svg
 69b023ff2ac2e7e72777701822b842f66128a41cd2035188c89ce45e940eb7bc  google-ads.svg
 5e9c735171956561f39711ea2c6b593ad1d288e53cad060237d0f986202ffb36  tiktok.png
 ```
+
+本地预览使用各品牌的官方图标。Adjust、Airbridge、DFINERY、Kochava 和 Tenjin 分别来自 [Adjust 开发者站](https://dev.adjust.com/favicon.ico)、[Airbridge](https://www.airbridge.io/icon.png)、[DFINERY](https://dfinery.ai/favicon.ico)、[Kochava](https://s34035.pcdn.co/wp-content/uploads/2026/02/cropped-Star-400x400-v2-1-192x192.png) 和 [Tenjin](https://tenjin.com/wp-content/uploads/2023/10/favicon.ico)。Branch 和 Singular 采用 [BranchMetrics](https://github.com/BranchMetrics) 与 [Singular Labs](https://github.com/singular-labs) 的官方组织头像。VS Code 使用[产品图标](https://code.visualstudio.com/assets/apple-touch-icon.png)，访达、终端及 Windows 系统程序使用操作系统图标。文件类型图标来自 [Microsoft Fluent 文件类型图标库](https://developer.microsoft.com/en-us/fluentui#/styles/web/file-type-icons)，已打包供离线显示。

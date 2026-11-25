@@ -64,9 +64,8 @@ function isChildPath(candidate: string, parent: string): boolean {
   return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
 
-function sameIdentity(expected: PathIdentity, actual: PathIdentity | null): actual is PathIdentity {
+function sameIdentity(expected: PathIdentity, actual: PathIdentity): boolean {
   return (
-    actual !== null &&
     actual.realPath === expected.realPath &&
     actual.dev === expected.dev &&
     actual.ino === expected.ino
@@ -97,6 +96,7 @@ async function inspectSessionFile(candidate: string): Promise<PathIdentity | nul
 export class HistorySessionGrantManager {
   private readonly grants = new Map<string, StoredHistorySessionGrant>()
   private readonly grantIdsByOwnerWorkspace = new Map<string, Set<string>>()
+  private readonly pendingLists = new Set<HistorySessionGrantContext>()
   /** Prevent concurrent resume/delete operations from racing the same capability. */
   private readonly leases = new Set<string>()
   private readonly now: () => number
@@ -112,51 +112,73 @@ export class HistorySessionGrantManager {
   }
 
   /**
-   * Replace the caller's prior history capabilities for this exact workspace.
-   * A refresh therefore revokes stale IDs instead of leaving an unbounded set
-   * of old file references reachable from the renderer.
+   * Reconcile a fresh list in one pass. A visible preview keeps its opaque id
+   * only while the same renderer, workspace grant and journal still match.
    */
   async mintForWorkspace(
     history: readonly HistorySessionFile[],
     context: HistorySessionGrantContext
   ): Promise<HistorySessionDescriptor[]> {
-    this.pruneExpired()
-    this.revokeOwnerWorkspace(context.ownerWebContentsId, context.workspaceGrantId)
-
-    const descriptors: HistorySessionDescriptor[] = []
-    const seenPaths = new Set<string>()
-    for (const entry of history) {
-      const identity = await inspectSessionFile(entry.filePath)
-      if (
-        !identity ||
-        seenPaths.has(identity.realPath) ||
-        !(await this.belongsToWorkspaceSessionDirs(identity.realPath, context.workspaceRealPath))
-      ) {
-        continue
+    const { ownerWebContentsId, workspaceGrantId, workspaceRealPath } = context
+    for (const list of this.pendingLists) {
+      if (list.ownerWebContentsId === ownerWebContentsId && list.workspaceGrantId === workspaceGrantId) {
+        this.pendingLists.delete(list)
       }
-      seenPaths.add(identity.realPath)
-
-      const createdAt = this.now()
-      const descriptor: HistorySessionDescriptor = {
-        id: `history-session-${crypto.randomUUID()}`,
-        uuid: entry.uuid,
-        title: entry.title,
-        timestamp: entry.timestamp,
-        ...(entry.origin ? { origin: entry.origin } : {}),
-        ...(entry.importedFrom ? { importedFrom: entry.importedFrom } : {})
-      }
-      this.grants.set(descriptor.id, {
-        ...identity,
-        descriptor,
-        workspaceGrantId: context.workspaceGrantId,
-        workspaceRealPath: context.workspaceRealPath,
-        ownerWebContentsId: context.ownerWebContentsId,
-        expiresAt: createdAt + this.ttlMs
-      })
-      this.idsFor(context.ownerWebContentsId, context.workspaceGrantId).add(descriptor.id)
-      descriptors.push({ ...descriptor })
     }
-    return descriptors
+    const listing = { ...context }
+    this.pendingLists.add(listing)
+    try {
+      const previous = new Map<string, StoredHistorySessionGrant>()
+      const scopeKey = `${ownerWebContentsId}\u0000${workspaceGrantId}`
+      for (const id of this.grantIdsByOwnerWorkspace.get(scopeKey) ?? []) {
+        const grant = this.grants.get(id)
+        if (grant) previous.set(grant.realPath, grant)
+      }
+      const listed = new Map<string, { entry: HistorySessionFile; identity: PathIdentity; reuse?: StoredHistorySessionGrant }>()
+      for (const entry of history) {
+        const identity = await inspectSessionFile(entry.filePath)
+        if (!identity || listed.has(identity.realPath)) continue
+        if (!(await this.belongsToWorkspaceSessionDirs(identity.realPath, workspaceRealPath))) continue
+        const old = previous.get(identity.realPath)
+        let reuse: StoredHistorySessionGrant | undefined
+        if (old?.workspaceRealPath === workspaceRealPath && old.descriptor.uuid === entry.uuid) {
+          // OMP may replace the inode when it rewrites a journal. In that
+          // case check the file header itself before renewing an existing id.
+          if (!sameIdentity(old, identity) && await readSessionUuid(identity.realPath) !== entry.uuid) continue
+          reuse = old
+        }
+        listed.set(identity.realPath, { entry, identity, reuse })
+      }
+
+      // A newer list or workspace/window teardown won while disk I/O was in flight.
+      if (!this.pendingLists.has(listing)) return []
+      const descriptors: HistorySessionDescriptor[] = []
+      for (const { entry, identity, reuse } of listed.values()) {
+        if (reuse && this.grants.get(reuse.descriptor.id) !== reuse) continue
+        const descriptor: HistorySessionDescriptor = {
+          id: reuse?.descriptor.id ?? `history-session-${crypto.randomUUID()}`,
+          uuid: entry.uuid,
+          title: entry.title,
+          timestamp: entry.timestamp,
+          ...(entry.origin ? { origin: entry.origin } : {}),
+          ...(entry.importedFrom ? { importedFrom: entry.importedFrom } : {})
+        }
+        const updated = { ...context, ...identity, descriptor, expiresAt: this.now() + this.ttlMs }
+        if (reuse) {
+          Object.assign(reuse, updated)
+          previous.delete(identity.realPath)
+        } else {
+          this.grants.set(descriptor.id, updated)
+          this.idsFor(ownerWebContentsId, workspaceGrantId).add(descriptor.id)
+        }
+        descriptors.push({ ...descriptor })
+      }
+      for (const old of previous.values()) this.remove(old.descriptor.id)
+      this.pruneExpired()
+      return descriptors
+    } finally {
+      this.pendingLists.delete(listing)
+    }
   }
 
   /**
@@ -191,6 +213,10 @@ export class HistorySessionGrantManager {
       // (deleteStale) can still retire the row; the TTL sweeps it otherwise.
       return null
     }
+    if (current.realPath !== stored.realPath) {
+      this.remove(historyId)
+      return null
+    }
     if (!sameIdentity(stored, current)) {
       // omp resume rewrites the session file in place (fork bookkeeping updates
       // the title/header lines), so the minted dev/ino identity drifts even
@@ -202,15 +228,14 @@ export class HistorySessionGrantManager {
         this.remove(historyId)
         return null
       }
-      const refreshed = current as PathIdentity
-      stored.realPath = refreshed.realPath
-      stored.dev = refreshed.dev
-      stored.ino = refreshed.ino
+      stored.dev = current.dev
+      stored.ino = current.ino
     }
     if (!(await this.belongsToWorkspaceSessionDirs(stored.realPath, context.workspaceRealPath))) {
       this.remove(historyId)
       return null
     }
+    if (this.grants.get(historyId) !== stored) return null
     if (stored.expiresAt <= this.now()) stored.expiresAt = this.now() + this.ttlMs
     return stored.realPath
   }
@@ -305,6 +330,9 @@ export class HistorySessionGrantManager {
 
   /** Revoke all history capabilities tied to a workspace grant. */
   revokeWorkspace(workspaceGrantId: string): void {
+    for (const list of this.pendingLists) {
+      if (list.workspaceGrantId === workspaceGrantId) this.pendingLists.delete(list)
+    }
     for (const [id, stored] of this.grants) {
       if (stored.workspaceGrantId === workspaceGrantId) this.remove(id)
     }
@@ -312,6 +340,9 @@ export class HistorySessionGrantManager {
 
   /** Revoke all capabilities held by a renderer once its webContents is gone. */
   revokeOwner(ownerWebContentsId: number): void {
+    for (const list of this.pendingLists) {
+      if (list.ownerWebContentsId === ownerWebContentsId) this.pendingLists.delete(list)
+    }
     for (const [id, stored] of this.grants) {
       if (stored.ownerWebContentsId === ownerWebContentsId) this.remove(id)
     }
@@ -367,13 +398,6 @@ export class HistorySessionGrantManager {
       this.grantIdsByOwnerWorkspace.set(key, ids)
     }
     return ids
-  }
-
-  private revokeOwnerWorkspace(ownerWebContentsId: number, workspaceGrantId: string): void {
-    const key = `${ownerWebContentsId}\u0000${workspaceGrantId}`
-    const ids = this.grantIdsByOwnerWorkspace.get(key)
-    if (!ids) return
-    for (const id of [...ids]) this.remove(id)
   }
 
   /** Revoke every capability minted for a durable session uuid (any owner). */

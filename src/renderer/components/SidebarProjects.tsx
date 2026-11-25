@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type DragEvent, type MutableRefObject } from 'react'
 import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Copy, FolderOpen, Loader2, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
 import type { ProjectRecord } from '@shared/types'
 import { useProjects } from '../store/projects'
@@ -7,11 +7,22 @@ import { useT } from '../i18n'
 import MenuPortal from './MenuPortal'
 import ProjectPicker from './ProjectPicker'
 import ProjectRecovery from './ProjectRecovery'
+import SidebarList from './SidebarList'
+import { moveSidebarRow, useSidebarDrag, useSidebarOrder } from './sidebarOrder'
 import { currentNavigationIntent } from '../lib/navigationIntent'
 
 type RenderConversations = (path: string) => ReactNode
 
-function ProjectRow({ project, renderConversations }: { project: ProjectRecord; renderConversations?: RenderConversations }) {
+interface ProjectConversations {
+  renderConversations?: RenderConversations
+  draggedSession?: MutableRefObject<string | null>
+  filingPaths?: ReadonlyMap<string, string>
+  onFileSession?: (key: string, project: ProjectRecord) => Promise<boolean>
+}
+
+function ProjectRow({ project, renderConversations, drag, draggedSession, filingPaths, onFileSession }: ProjectConversations & {
+  project: ProjectRecord; drag: ReturnType<ReturnType<typeof useSidebarDrag>>
+}) {
   const t = useT()
   const { activate, archive, restore, remove, pending } = useProjects()
   const current = useAppStore(state => state.currentWorkspace)
@@ -22,8 +33,32 @@ function ProjectRow({ project, renderConversations }: { project: ProjectRecord; 
   const trigger = useRef<HTMLButtonElement>(null)
   const projectButton = useRef<HTMLButtonElement>(null)
   const isCurrent = current?.realPath === project.path
-  return <div data-project-id={project.id}>
-    <div className={`group flex items-center rounded-lg ${isCurrent ? 'bg-overlay' : 'hover:bg-overlay'}`}>
+  const dropKey = () => {
+    const key = draggedSession?.current
+    return key && filingPaths?.has(key) && filingPaths.get(key) !== project.path && !project.archived && !project.missing && !project.isDefault ? key : null
+  }
+  const dragConversationOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!dropKey()) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'move'
+    event.currentTarget.dataset.dropConversation = 'true'
+  }
+  return <div data-project-id={project.id}
+    onDragOverCapture={dragConversationOver}
+    onDragLeave={event => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) delete event.currentTarget.dataset.dropConversation
+    }}
+    onDropCapture={event => {
+      const key = dropKey()
+      delete event.currentTarget.dataset.dropConversation
+      if (!key || !onFileSession) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (draggedSession) draggedSession.current = null
+      void onFileSession(key, project).then(moved => { if (moved) setExpanded(true) })
+    }}>
+    <div {...drag} className={`group flex items-center rounded-lg ${isCurrent ? 'bg-overlay' : 'hover:bg-overlay'}`}>
     {!project.archived && <button type="button" aria-label={t('projects.conversations', { name: project.name })} aria-expanded={expanded} aria-controls={`project-conversations-${project.id}`}
       onClick={() => setExpanded(value => !value)} className="ml-1 shrink-0 rounded p-1 text-cream-faint hover:bg-overlay focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</button>}
     <button ref={projectButton} type="button" disabled={!!pending || project.archived || project.missing} title={project.path}
@@ -52,7 +87,7 @@ function ProjectRow({ project, renderConversations }: { project: ProjectRecord; 
   </div>
 }
 
-export default function SidebarProjects({ renderConversations }: { renderConversations?: RenderConversations } = {}) {
+export default function SidebarProjects(conversations: ProjectConversations = {}) {
   const t = useT()
   const { projects, loaded, loading, error, errorProjectId, refresh, activate, restore, pending, clearError } = useProjects()
   const [expanded, setExpanded] = useState(true)
@@ -76,7 +111,14 @@ export default function SidebarProjects({ renderConversations }: { renderConvers
     window.addEventListener('focus', reload)
     return () => window.removeEventListener('focus', reload)
   }, [refresh])
+  const [order, saveOrder] = useSidebarOrder('sidebarProjectOrder')
+  const ranks = new Map(order.map((key, index) => [key, index]))
   const visible = projects.filter(project => !project.isDefault && project.archived === archived)
+    .sort((a, b) => (ranks.get(a.id) ?? Infinity) - (ranks.get(b.id) ?? Infinity))
+  const drag = useSidebarDrag((source, target, after) => {
+    const next = moveSidebarRow(visible.map(project => project.id), order, source, target, after)
+    if (next) saveOrder(next)
+  })
   const errorProject = projects.find(project => project.id === errorProjectId)
   return <section className="sidebar-projects mt-5 flex min-h-0 flex-col px-2.5" aria-label={t('sidebar.project')}>
     <div className="sidebar-section-header flex shrink-0 items-center gap-1 px-2 pb-1.5">
@@ -86,9 +128,9 @@ export default function SidebarProjects({ renderConversations }: { renderConvers
     </div>
     <MenuPortal open={optionsOpen} triggerRef={optionsRef} onClose={() => setOptionsOpen(false)} width={200} placement="bottom"><button type="button" className="project-menu-action" onClick={() => { setArchived(value => !value); setExpanded(true); setOptionsOpen(false) }}><Archive size={13} />{t(archived ? 'projects.active' : 'projects.archived')}</button></MenuPortal>
     <MenuPortal open={createOpen} triggerRef={plusRef} onClose={() => setCreateOpen(false)} width={300} placement="bottom"><ProjectPicker onDone={() => { setCreateOpen(false); setArchived(false); setExpanded(true); plusRef.current?.focus() }} /></MenuPortal>
-    {expanded && <div className="min-h-0 max-h-56 space-y-0.5 overflow-y-auto overscroll-contain" data-project-list>
+    {expanded && <div className="space-y-0.5" data-project-list>
       {loading && !loaded && <p role="status" className="px-2 py-3 text-xs text-cream-faint">{t('app.loading')}</p>}
-      {visible.map(project => <ProjectRow key={project.id} project={project} renderConversations={renderConversations} />)}
+      <SidebarList items={visible} render={project => <ProjectRow key={project.id} project={project} {...conversations} drag={drag(project.id, archived ? 'archived' : 'projects')} />} />
       {loaded && !visible.length && <p className="sidebar-empty px-2 py-3 text-xs text-cream-faint">{t(archived ? 'projects.noArchived' : 'projects.empty')}</p>}
     </div>}
     {error && !(expanded && visible.some(project => project.id === errorProjectId)) && !createOpen && <div role="alert" className="px-2 py-2 text-xs leading-5 text-red-500">

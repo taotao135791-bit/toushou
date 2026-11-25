@@ -1,5 +1,5 @@
 import { execFile, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, type WriteStream } from 'node:fs'
+import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync, type WriteStream } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -8,13 +8,14 @@ import path from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import YAML from 'yaml'
+import { pickStableVersion, platformAsset, releaseBase, repositoryUrl, stableIndexUrl, stablePlatform, type StablePlatform } from './platformUpdates'
 import { IPC_CHANNELS } from '../shared/constants'
 import { UpdaterStatus } from '../shared/types'
 import { proxyFetchFor } from './integrations/tiktok/proxyFetch'
 
 /**
- * Auto-update via electron-updater (GitHub Releases provider, configured in
- * electron-builder.json). Packaged builds only; in dev every action reports
+ * Packaged macOS and Windows builds resolve their stable platform channel
+ * to a fixed release before downloading. In dev every action reports
  * { status: 'dev' }. Downloads are manual (autoDownload = false) and every
  * status change is broadcast to all windows.
  */
@@ -26,7 +27,8 @@ let activeCheck: { manual: boolean; result: UpdaterStatus | null; downloadGenera
 let downloadGeneration = 0
 let installRequested = false
 let useUnsignedMacUpdater = false
-let pendingUpdate: { version: string; url: string; fileName: string } | null = null
+let offeredVersion: string | undefined
+let downloadingVersion: string | undefined
 let downloadedUnsignedUpdate: { version: string; extractedApp: string; extractDir: string } | null = null
 
 const INITIAL_CHECK_DELAY_MS = 10_000
@@ -107,7 +109,7 @@ function requestText(url: string, redirects = 0, signal?: AbortSignal): Promise<
       url,
       { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Toushou-Updater' }, ...(signal ? { signal } : {}) },
       (response) => {
-        // Windows supplies a hard-deadline signal. Consume body failures too:
+        // Metadata requests have a hard deadline. Consume body failures too:
         // aborting a response can otherwise emit an unhandled stream error.
         if (signal) {
           response.on('error', reject)
@@ -153,43 +155,31 @@ function compareVersions(left: string, right: string): number {
   return 0
 }
 
-function currentMacArtifactName(): string {
-  return `TouShou-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`
+async function readPlatformVersion(platform: StablePlatform): Promise<string> {
+  return pickStableVersion(await readUpdateMetadata(stableIndexUrl), platform)
 }
 
-async function unsignedMacCheck(): Promise<UpdaterStatus> {
+// The offer and every subsequent download attempt share one immutable tag.
+// A background check that started before a download cannot change its target.
+async function checkPlatform(platform: StablePlatform): Promise<void> {
   setCheckStatus({ status: 'checking' })
-  try {
-    // Read the public electron-builder channel file instead of the GitHub
-    // Releases API. The API is rate-limited for unauthenticated desktop
-    // clients, which made valid old installs report HTTP 403 and blocked
-    // in-app updates.
-    const metadata = YAML.parse(
-      await requestText('https://github.com/taotao135791-bit/toushou/releases/latest/download/latest-mac.yml')
-    ) as { version?: unknown; files?: unknown }
-    const version = typeof metadata.version === 'string' ? metadata.version : ''
-    const assetName = currentMacArtifactName()
-    const files = Array.isArray(metadata.files) ? metadata.files : []
-    const asset = files.find(
-      (item): item is { url?: unknown } =>
-        Boolean(item && typeof item === 'object' && (item as { url?: unknown }).url === assetName)
-    )
-    const downloadUrl = `https://github.com/taotao135791-bit/toushou/releases/latest/download/${encodeURIComponent(assetName)}`
-    if (!version || compareVersions(version, app.getVersion()) <= 0) {
-      if (!hasUpdate(currentStatus)) pendingUpdate = null
-      setCheckStatus({ status: 'none' })
-    } else if (!asset) {
-      throw new Error(`当前架构没有可用的 ${assetName} 更新包`)
-    } else {
-      if (currentStatus.status !== 'available' || compareVersions(version, currentStatus.version) >= 0) {
-        pendingUpdate = { version, url: downloadUrl, fileName: assetName }
-      }
-      setCheckStatus({ status: 'available', version })
-    }
-  } catch (err) {
-    setCheckStatus({ status: 'error', message: errorMessage(err), operation: 'check' })
+  const version = await readPlatformVersion(platform)
+  if (activeCheck?.downloadGeneration !== downloadGeneration) return
+  if (compareVersions(version, app.getVersion()) <= 0) {
+    setCheckStatus({ status: 'none' })
+    return
   }
-  return currentStatus
+  if (!offeredVersion || compareVersions(version, offeredVersion) > 0) offeredVersion = version
+  setCheckStatus({ status: 'available', version: offeredVersion })
+}
+
+async function nativePlatformDownload(version: string, platform: StablePlatform): Promise<void> {
+  autoUpdater.autoDownload = false
+  autoUpdater.setFeedURL({ provider: 'generic', url: releaseBase(version), useMultipleRangeRequest: false })
+  const result = await autoUpdater.checkForUpdates()
+  if (!result?.isUpdateAvailable) throw new Error('当前平台没有可用更新，请重新检查。')
+  platformAsset(result.updateInfo, version, platform, process.arch)
+  await autoUpdater.downloadUpdate()
 }
 
 function downloadFile(url: string, destination: string, onProgress: (percent: number) => void, redirects = 0): Promise<void> {
@@ -220,10 +210,7 @@ function downloadFile(url: string, destination: string, onProgress: (percent: nu
         received += chunk.length
         if (total > 0) onProgress(Math.round((received / total) * 1000) / 10)
       })
-      response.pipe(file)
-      file.on('finish', () => file.close(() => resolve()))
-      file.on('error', reject)
-      response.on('error', reject)
+      void pipeline(response, file).then(resolve, reject)
     })
     request.on('error', reject)
   })
@@ -235,9 +222,8 @@ function runCommand(command: string, args: string[]): Promise<void> {
   })
 }
 
-async function unsignedMacDownload(): Promise<UpdaterStatus> {
-  if (!pendingUpdate) return updaterCheck()
-  const update = pendingUpdate
+async function unsignedMacDownload(version: string): Promise<UpdaterStatus> {
+  const update = await fetchPlatformAsset(version, 'macos')
   const root = path.join(app.getPath('temp'), `toushou-update-${update.version}-${Date.now()}`)
   const zipPath = path.join(root, update.fileName)
   const extractDir = path.join(root, 'extracted')
@@ -245,6 +231,7 @@ async function unsignedMacDownload(): Promise<UpdaterStatus> {
   try {
     mkdirSync(extractDir, { recursive: true })
     await downloadFile(update.url, zipPath, (percent) => setStatus({ status: 'progress', percent }))
+    if (!await verifySha512File(zipPath, update.sha512)) throw new Error('Mac 更新包 SHA-512 校验失败，请重试。')
     await runCommand('/usr/bin/ditto', ['-x', '-k', zipPath, extractDir])
     const extractedApp = path.join(extractDir, '投手.app')
     if (!existsSync(path.join(extractedApp, 'Contents', 'Info.plist'))) {
@@ -324,17 +311,21 @@ export function initUpdater(): void {
   // when the user quits after a download.
   autoUpdater.autoInstallOnAppQuit = false
   if (!useUnsignedMacUpdater) {
-    autoUpdater.on('checking-for-update', () => setCheckStatus({ status: 'checking' }))
-    autoUpdater.on('update-available', (info) =>
-      setCheckStatus({ status: 'available', version: info.version })
-    )
-    autoUpdater.on('update-not-available', () => setCheckStatus({ status: 'none' }))
-    autoUpdater.on('download-progress', (progress) =>
-      setStatus({ status: 'progress', percent: Math.round(progress.percent * 10) / 10 })
-    )
-    autoUpdater.on('update-downloaded', (info) =>
-      setStatus({ status: 'downloaded', version: info.version })
-    )
+    if (!stablePlatform(process.platform)) {
+      autoUpdater.on('checking-for-update', () => setCheckStatus({ status: 'checking' }))
+      autoUpdater.on('update-available', info => setCheckStatus({ status: 'available', version: info.version }))
+      autoUpdater.on('update-not-available', () => setCheckStatus({ status: 'none' }))
+    }
+    autoUpdater.on('download-progress', progress => {
+      if (!stablePlatform(process.platform) || downloadingVersion) {
+        setStatus({ status: 'progress', percent: Math.round(progress.percent * 10) / 10 })
+      }
+    })
+    autoUpdater.on('update-downloaded', info => {
+      if (!stablePlatform(process.platform) || info.version === downloadingVersion) {
+        setStatus({ status: 'downloaded', version: info.version })
+      }
+    })
     autoUpdater.on('error', (err) => {
       if (installRequested) {
         installRequested = false
@@ -377,14 +368,10 @@ export async function updaterCheck(manual = true): Promise<UpdaterStatus> {
   const check = { manual, result: null as UpdaterStatus | null, downloadGeneration }
   activeCheck = check
   checkInFlight = (async () => {
-    if (useUnsignedMacUpdater) {
-      await unsignedMacCheck()
-      if (check.downloadGeneration !== downloadGeneration) return currentStatus
-      if (hasUpdate(currentStatus) && check.result?.status !== 'error') return currentStatus
-      return check.result ?? currentStatus
-    }
+    const platform = stablePlatform(process.platform)
+    const checkOnce = () => platform ? checkPlatform(platform) : autoUpdater.checkForUpdates()
     try {
-      await autoUpdater.checkForUpdates()
+      await checkOnce()
     } catch (err) {
       // A single check can die on a transient network blip (VPN route change
       // surfaces as net::ERR_NETWORK_CHANGED, plus the usual timeouts). One
@@ -398,12 +385,13 @@ export async function updaterCheck(manual = true): Promise<UpdaterStatus> {
       } else {
         try {
           await new Promise((resolve) => setTimeout(resolve, 3000))
-          await autoUpdater.checkForUpdates()
+          if (check.downloadGeneration === downloadGeneration) await checkOnce()
         } catch (retryErr) {
           setCheckStatus({ status: 'error', message: errorMessage(retryErr), operation: 'check' })
         }
       }
     }
+    if (check.downloadGeneration !== downloadGeneration) return currentStatus
     if (check.downloadGeneration !== downloadGeneration) return currentStatus
     if (hasUpdate(currentStatus) && check.result?.status !== 'error') return currentStatus
     return check.result ?? currentStatus
@@ -420,18 +408,29 @@ export async function updaterCheck(manual = true): Promise<UpdaterStatus> {
 export async function updaterDownload(): Promise<UpdaterStatus> {
   if (!app.isPackaged) return { status: 'dev' }
   if (isBetaBuild()) return betaManualUpdate('download')
-  if (currentStatus.status === 'downloading' || currentStatus.status === 'progress' || currentStatus.status === 'downloaded') return currentStatus
+  if (downloadingVersion || currentStatus.status === 'downloading' || currentStatus.status === 'progress' || currentStatus.status === 'downloaded') return currentStatus
   downloadGeneration += 1
-  if (useUnsignedMacUpdater) return unsignedMacDownload()
-  // Windows routes through the resilient downloader (stall watchdog, Range
-  // resume, direct/proxy rotation, SHA512 verify); electron-updater's own
-  // executor is the in-function fallback when every attempt fails.
-  if (process.platform === 'win32') return windowsDownload()
+  const platform = stablePlatform(process.platform)
   setStatus({ status: 'downloading' })
   try {
-    await autoUpdater.downloadUpdate()
+    if (platform) {
+      const version = offeredVersion ?? await readPlatformVersion(platform)
+      if (compareVersions(version, app.getVersion()) <= 0) {
+        setStatus({ status: 'none' })
+        return currentStatus
+      }
+      offeredVersion = version
+      downloadingVersion = version
+      if (platform === 'windows') return await windowsDownload(version)
+      if (useUnsignedMacUpdater) return await unsignedMacDownload(version)
+      await nativePlatformDownload(version, platform)
+    } else {
+      await autoUpdater.downloadUpdate()
+    }
   } catch (err) {
     setStatus({ status: 'error', message: errorMessage(err), operation: 'download' })
+  } finally {
+    downloadingVersion = undefined
   }
   return currentStatus
 }
@@ -456,7 +455,15 @@ export function updaterQuitAndInstall(): void {
  * to install).
  */
 export async function updaterOpenReleasePage(): Promise<void> {
-  const destination = isBetaBuild() ? `https://github.com/taotao135791-bit/toushou/releases/tag/beta-v${encodeURIComponent(app.getVersion())}` : 'https://github.com/taotao135791-bit/toushou/releases/latest'
+  const platform = stablePlatform(process.platform)
+  let destination = `${repositoryUrl}/releases/latest`
+  if (isBetaBuild()) {
+    destination = `${repositoryUrl}/releases/tag/beta-v${encodeURIComponent(app.getVersion())}`
+  } else if (platform) {
+    destination = offeredVersion
+      ? `${repositoryUrl}/releases/tag/v${offeredVersion}`
+      : `${repositoryUrl}/blob/release-channels/README.md`
+  }
   await shell.openExternal(destination)
 }
 
@@ -472,20 +479,11 @@ export async function updaterOpenReleasePage(): Promise<void> {
 // falls back to electron-updater's own download when every attempt fails.
 // ---------------------------------------------------------------------------
 
-const UPDATE_BASE = 'https://github.com/taotao135791-bit/toushou/releases/latest/download'
 const WIN_INSTALLER_ATTEMPTS = 8
 const WIN_STALL_TIMEOUT_MS = 30_000
 const WIN_WATCHDOG_TICK_MS = 5_000
 const WIN_DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000
 const WIN_MAX_DOWNLOAD_REQUESTS = 1024
-
-interface WinManifest {
-  version: string
-  url: string
-  fileName: string
-  sha512: string
-  size?: number
-}
 
 interface WinFetchResponse {
   ok: boolean
@@ -642,23 +640,22 @@ function cancelWinBody(response: WinFetchResponse): void {
   try { void Promise.resolve(response.body?.cancel?.()).catch(() => {}) } catch { /* body may already be closed */ }
 }
 
-export function verifySha512File(destination: string, expectedBase64: string): boolean {
+export async function verifySha512File(destination: string, expectedBase64: string): Promise<boolean> {
   const hash = createHash('sha512')
-  hash.update(readFileSync(destination))
+  for await (const chunk of createReadStream(destination)) hash.update(chunk)
   return hash.digest('base64') === expectedBase64
 }
 
-async function fetchWindowsManifest(): Promise<WinManifest> {
+async function readUpdateMetadata(url: string): Promise<string> {
   // Prefer the user's configured network (environment/system proxy) for the
   // tiny manifest too — on machines whose only route to github.com is that
   // proxy, a raw-direct fetch would fail and silently degrade every update
   // to the un-resumable fallback. Direct stays as the fallback route.
-  let text: string
   try {
-    text = await windowsManifestRequest(async signal => {
-      const fetcher = await proxyFetchFor(`${UPDATE_BASE}/latest.yml`, 'updater')
+    return await metadataRequest(async signal => {
+      const fetcher = await proxyFetchFor(url, 'updater')
       signal.throwIfAborted()
-      const response = await fetcher(`${UPDATE_BASE}/latest.yml`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Toushou-Updater' }, signal })
+      const response = await fetcher(url, { headers: { Accept: '*/*', 'User-Agent': 'Toushou-Updater' }, signal })
       const cancel = () => cancelWinBody(response)
       signal.addEventListener('abort', cancel, { once: true })
       try {
@@ -668,23 +665,16 @@ async function fetchWindowsManifest(): Promise<WinManifest> {
       } finally { signal.removeEventListener('abort', cancel) }
     })
   } catch {
-    text = await windowsManifestRequest(signal => requestText(`${UPDATE_BASE}/latest.yml`, 0, signal))
+    return metadataRequest(signal => requestText(url, 0, signal))
   }
-  const metadata = YAML.parse(
-    text
-  ) as { version?: unknown; files?: Array<{ url?: unknown; sha512?: unknown; size?: unknown }> }
-  const version = typeof metadata.version === 'string' ? metadata.version : ''
-  const files = Array.isArray(metadata.files) ? metadata.files : []
-  const asset = files.find((item): item is { url: string; sha512: string; size?: unknown } => {
-    const entry = item && typeof item === 'object' ? (item as { url?: unknown; sha512?: unknown }) : null
-    return !!entry && typeof entry.url === 'string' && entry.url.endsWith('.exe') && typeof entry.sha512 === 'string' && entry.sha512.length > 0
-  })
-  if (!version || !asset) throw new Error('更新清单里缺少 Windows 安装包信息')
-  return { version, url: `${UPDATE_BASE}/${encodeURIComponent(asset.url)}`, fileName: asset.url, sha512: asset.sha512,
-    ...(typeof asset.size === 'number' && Number.isSafeInteger(asset.size) && asset.size > 0 ? { size: asset.size } : {}) }
 }
 
-async function windowsManifestRequest<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function fetchPlatformAsset(version: string, platform: StablePlatform) {
+  const manifest = platform === 'macos' ? 'latest-mac.yml' : 'latest.yml'
+  return platformAsset(YAML.parse(await readUpdateMetadata(releaseBase(version) + manifest)), version, platform, process.arch)
+}
+
+async function metadataRequest<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {
@@ -698,20 +688,16 @@ let winInstallerPath: string | null = null
 let winDownloadActive = false
 
 /** Windows branch of updaterDownload: resilient download + SHA512 verify. */
-async function windowsDownload(): Promise<UpdaterStatus> {
+async function windowsDownload(version: string): Promise<UpdaterStatus> {
   if (winDownloadActive) return currentStatus
   winDownloadActive = true
   winInstallerPath = null
   try {
     setStatus({ status: 'downloading' })
-    const dir = path.join(app.getPath('temp'), 'toushou-update')
+    const dir = path.join(app.getPath('temp'), 'toushou-update', version)
     const destination = path.join(dir, 'TouShou-x64.exe')
     mkdirSync(dir, { recursive: true })
-    const manifest = await fetchWindowsManifest()
-    if (compareVersions(manifest.version, app.getVersion()) <= 0) {
-      setStatus({ status: 'none' })
-      return currentStatus
-    }
+    const manifest = await fetchPlatformAsset(version, 'windows')
     const fetcher: WinFetcher = async (url, init) => (await proxyFetchFor(url, 'updater'))(url, init) as unknown as Promise<WinFetchResponse>
     await downloadResumable(manifest.url, destination, {
       fetcher,
@@ -720,7 +706,7 @@ async function windowsDownload(): Promise<UpdaterStatus> {
         if (winDownloadActive) setStatus({ status: 'progress', percent })
       }
     })
-    if (!verifySha512File(destination, manifest.sha512)) {
+    if (!await verifySha512File(destination, manifest.sha512)) {
       rmSync(destination, { force: true })
       throw new Error('安装包校验失败（下载不完整或被篡改），已删除并请重试。')
     }
@@ -731,7 +717,7 @@ async function windowsDownload(): Promise<UpdaterStatus> {
     // Custom path exhausted: electron-updater's chunked downloader is the
     // second net. Its progress events arrive on the same handler chain.
     try {
-      await autoUpdater.downloadUpdate()
+      await nativePlatformDownload(version, 'windows')
       return currentStatus
     } catch (fallbackErr) {
       void fallbackErr

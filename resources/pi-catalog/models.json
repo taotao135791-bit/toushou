@@ -47973,6 +47973,9 @@
 			"api": "openai-completions",
 			"baseUrl": "https://api.deepseek.com",
 			"reasoning": true,
+			"input": ["text", "image"],
+			"contextWindow": 1048576,
+			"maxTokens": 393216,
 			"thinking": { "mode": "effort", "efforts": ["low", "high", "max"], "defaultLevel": "high" }
 		},
 		"deepseek-v4-flash": {
@@ -47983,7 +47986,8 @@
 			"baseUrl": "https://api.deepseek.com",
 			"reasoning": true,
 			"input": [
-				"text"
+				"text",
+				"image"
 			],
 			"cost": {
 				"input": 0.14,
@@ -47991,8 +47995,8 @@
 				"cacheRead": 0.0028,
 				"cacheWrite": 0
 			},
-			"contextWindow": 1000000,
-			"maxTokens": 384000,
+			"contextWindow": 1048576,
+			"maxTokens": 393216,
 			"compat": {
 				"supportsStore": false,
 				"supportsDeveloperRole": false,
@@ -48137,8 +48141,8 @@
 				"cacheRead": 0.0028,
 				"cacheWrite": 0
 			},
-			"contextWindow": 1000000,
-			"maxTokens": 384000,
+			"contextWindow": 1048576,
+			"maxTokens": 393216,
 			"compat": {
 				"supportsStore": false,
 				"supportsDeveloperRole": false,
@@ -48282,8 +48286,8 @@
 				"cacheRead": 0.003625,
 				"cacheWrite": 0
 			},
-			"contextWindow": 1000000,
-			"maxTokens": 384000,
+			"contextWindow": 1048576,
+			"maxTokens": 393216,
 			"compat": {
 				"supportsStore": false,
 				"supportsDeveloperRole": false,

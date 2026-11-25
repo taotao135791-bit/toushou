@@ -1,3 +1,8 @@
+import { isAutoCompactThreshold } from '../shared/compaction'
+import { writeContextPolicy } from './omp/OmpProcess'
+import { fileSidebarConversation } from './sessionProjectFiling'
+import { handleChatAttachment, openChatAttachmentFolder, transcriptReferencesAttachment } from './chatAttachment'
+import type { ReplyForkTarget } from '../shared/types'
 import { suspendedFacebookBrowserResult } from './legacyFacebookBrowser'
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
@@ -40,7 +45,7 @@ import {
   CheckpointInfo,
   PermissionMode,
   StreamingBehavior,
-  SessionThinkingLevel,
+  SessionThinkingSelection,
   DefaultThinkingLevel,
   SESSION_THINKING_LEVELS,
   DEFAULT_THINKING_LEVELS,
@@ -136,7 +141,7 @@ import {
 } from './scheduledTasks'
 import { readKnowledge, writeKnowledge } from './projectKnowledge'
 import { deliverTaskResult, pruneTaskDeliveryPayloads } from './taskDelivery'
-import { listLaunchableTools } from './toolLaunch'
+import { availablePluginChoices, listLaunchableTools } from './toolLaunch'
 import { searchCommunityPackages } from './community'
 import { scaffoldPlugin } from './pluginScaffold'
 import { getKimiComputerUseStatus, setKimiComputerUseEnabled } from './kimiComputerUse'
@@ -158,13 +163,13 @@ import {
   diffCheckpoint
 } from './checkpoints'
 import { getGitInfo, getFileDiff } from './gitinfo'
-import { listSessionHistory, deleteSessionFileEverywhere, isSessionFilePath, isSessionUuid, listAllSessions, readSessionUuid, sessionsRoot } from './sessionHistory'
+import { listSessionHistory, deleteSessionFileEverywhere, isSessionFilePath, isSessionUuid, listAllSessions, readSessionHistoryMetadata, readSessionUuid, sessionsRoot } from './sessionHistory'
 import { createSessionDeletionLocks } from './sessionDeletionLocks'
 import { readSessionTranscript, readSessionFileTranscript } from './sessionTranscript'
 import { defaultImportSourceDirectory, importSessionHistory } from './sessionImport'
 import type { SessionImportResult } from '../shared/sessionImport'
 import { HistorySessionGrantManager } from './historySessionGrant'
-import { forkSessionFile } from './sessionFork'
+import { forkNumberedSessionFile, forkSessionFile } from './sessionFork'
 import { applyWindowTheme } from './windowTheme'
 import { requestAiBoardWidget, type AiWidgetBoardContext } from './boardWidgetAi'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
@@ -227,7 +232,8 @@ import {
   saveCustomProvider,
   saveProviderKey
 } from './customProviders'
-import { sanitizeImages } from './imageValidation'
+import { MAX_IMAGE_BYTES, IMAGE_MIME_BY_EXT } from '../shared/promptImages'
+import { validatePromptImages } from './imageValidation'
 import { RecentWorkspaceRegistry, WorkspaceGrantManager } from './workspaceGrant'
 import { safeExternalUrl, safeBrowserPanelUrl, safeLoginExternalUrl } from './navigation'
 import { isUiAnswer } from './uiAnswer'
@@ -381,16 +387,6 @@ function sanitizeWidgetFileRead(request: unknown): { boardId: string; widgetId: 
 }
 
 const MAX_READ_FILE_BYTES = 2 * 1024 * 1024
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024
-
-const IMAGE_MIME_BY_EXT: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp'
-}
-
 function broadcastSessionEvent(event: SessionEvent): void {
   const wins = BrowserWindow.getAllWindows()
   for (const win of wins) {
@@ -581,7 +577,7 @@ function sanitizeDialogFilters(value: unknown): { name: string; extensions: stri
   return out.length ? out : fallback
 }
 
-const SESSION_LEVELS: readonly SessionThinkingLevel[] = SESSION_THINKING_LEVELS
+const SESSION_LEVELS: readonly SessionThinkingSelection[] = [...SESSION_THINKING_LEVELS, 'auto']
 const DEFAULT_LEVELS: readonly DefaultThinkingLevel[] = DEFAULT_THINKING_LEVELS
 
 const PERMISSION_MODES: PermissionMode[] = ['full', 'no-bash', 'readonly', 'ask']
@@ -1191,8 +1187,8 @@ export function registerIpc() {
         splitModelSelector(overrides.modelSelector)
           ? overrides.modelSelector
           : undefined
-      const thinkingLevel = SESSION_LEVELS.includes(overrides?.thinkingLevel as SessionThinkingLevel)
-        ? (overrides?.thinkingLevel as SessionThinkingLevel)
+      const thinkingLevel = SESSION_LEVELS.includes(overrides?.thinkingLevel as SessionThinkingSelection)
+        ? (overrides?.thinkingLevel as SessionThinkingSelection)
         : undefined
       // One-shot SKILL launch: Main resolves the id to SOP text itself; the
       // renderer never supplies prompt content, only a validated entry id.
@@ -1225,10 +1221,12 @@ export function registerIpc() {
       images?: unknown,
       streamingBehavior?: unknown
     ) => {
+      const validated = validatePromptImages(images)
+      if (validated === false) return false
       return sendMessage(
         sessionId,
         text,
-        sanitizeImages(images),
+        validated,
         sanitizeStreamingBehavior(streamingBehavior)
       )
     }
@@ -1305,7 +1303,8 @@ export function registerIpc() {
     IPC_CHANNELS.OMP_STEER,
     async (_event: IpcMainInvokeEvent, sessionId: string, message: string, images?: unknown) => {
       if (typeof sessionId !== 'string' || !sessionId || typeof message !== 'string') return false
-      return steer(sessionId, message, sanitizeImages(images))
+      const validated = validatePromptImages(images)
+      return validated !== false && steer(sessionId, message, validated)
     }
   )
 
@@ -1313,13 +1312,14 @@ export function registerIpc() {
     IPC_CHANNELS.OMP_FOLLOW_UP,
     async (_event: IpcMainInvokeEvent, sessionId: string, message: string, images?: unknown) => {
       if (typeof sessionId !== 'string' || !sessionId || typeof message !== 'string') return false
-      return followUp(sessionId, message, sanitizeImages(images))
+      const validated = validatePromptImages(images)
+      return validated !== false && followUp(sessionId, message, validated)
     }
   )
 
   ipcMain.handle(
     IPC_CHANNELS.OMP_SET_THINKING,
-    async (_event: IpcMainInvokeEvent, sessionId: string, level: SessionThinkingLevel) => {
+    async (_event: IpcMainInvokeEvent, sessionId: string, level: SessionThinkingSelection) => {
       if (typeof sessionId !== 'string' || !sessionId) return false
       if (!SESSION_LEVELS.includes(level)) return false
       return setThinkingLevel(sessionId, level)
@@ -1383,7 +1383,7 @@ export function registerIpc() {
   // minted here; resume/delete still require the workspace-bound grant flow.
   ipcMain.handle(IPC_CHANNELS.OMP_LIST_ALL_SESSION_HISTORY, async () => {
     await sessionOriginIndex.ready()
-    const all = await listAllSessions()
+    const all = await listAllSessions(undefined, Infinity)
     const overlays = sessionTitleOverlays()
     return all.map((entry) => {
       const origin = sessionOriginIndex.lookup(entry.filePath)
@@ -1391,7 +1391,7 @@ export function registerIpc() {
         uuid: entry.uuid,
         // Same overlay as the workspace list — the cross-project rows must
         // not show a stale title next to their renamed workspace twin.
-        title: overlays.get(normalizeSessionTitleFile(entry.filePath))?.title ?? entry.title,
+        title: overlays.size ? overlays.get(normalizeSessionTitleFile(entry.filePath))?.title ?? entry.title : entry.title,
         timestamp: entry.timestamp,
         cwd: entry.cwd,
         ...(entry.importedFrom ? { importedFrom: entry.importedFrom } : {}),
@@ -1416,7 +1416,7 @@ export function registerIpc() {
         const origin = sessionOriginIndex.lookup(entry.filePath)
         // Renames/auto-names live in the settings overlay — omp's own title
         // line is stale until (unless) it flushes.
-        const title = overlays.get(normalizeSessionTitleFile(entry.filePath))?.title
+        const title = overlays.size ? overlays.get(normalizeSessionTitleFile(entry.filePath))?.title : undefined
         const withTitle = title ? { ...entry, title } : entry
         return origin ? { ...withTitle, origin } : withTitle
       })
@@ -1455,11 +1455,13 @@ export function registerIpc() {
           // the fact still flashes the project-dir default for that window.
           const overlay = sessionTitleOverlays().get(normalizeSessionTitleFile(filePath))
           const overlayTitle = overlay?.title
+          const disk = overlayTitle ? null : await readSessionHistoryMetadata(filePath)
+          const initialTitle = overlayTitle ?? disk?.title
           let resumed: Awaited<ReturnType<typeof resumeSession>>
           try {
             resumed = await resumeSession(resolved.realPath, broadcastSessionEvent, filePath, {
               ...(origin ? { origin } : {}),
-              ...(overlayTitle ? { initialTitle: overlayTitle } : {}),
+              ...(initialTitle ? { initialTitle } : {}),
               ...(overlay?.metadata ? { initialTitleMetadata: overlay.metadata } : {})
             })
           } catch (error) {
@@ -1528,7 +1530,7 @@ export function registerIpc() {
     async (
       event: IpcMainInvokeEvent,
       grantId: string,
-      payload: { historyId?: unknown; liveSessionId?: unknown; keepUserTurns?: unknown; completeTurnsOnly?: unknown }
+      payload: { historyId?: unknown; liveSessionId?: unknown; reply?: ReplyForkTarget; keepUserTurns?: unknown; completeTurnsOnly?: unknown }
     ) => {
       const resolved = requireGrant(grantId)
       if (!resolved || !payload || typeof payload !== 'object') return null
@@ -1540,24 +1542,44 @@ export function registerIpc() {
             : -1
       if (keep === -1) return { error: 'invalid-request' }
       const completeOnly = payload.completeTurnsOnly === true
-      const suffix = keep === undefined && !completeOnly ? '（副本）' : '（分支）'
+      const reply = payload.reply
+      if (reply !== undefined && (!reply || typeof reply !== 'object' || typeof reply.key !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(reply.key) || !Number.isSafeInteger(reply.total) || !Number.isSafeInteger(reply.occurrence) ||
+        reply.occurrence < 1 || reply.occurrence > reply.total || keep !== undefined || completeOnly)) return { error: 'invalid-request' }
+      const isBranch = !!reply || keep !== undefined || completeOnly
+      async function forkForChat(file: string, live?: ReturnType<typeof getSession>) {
+        const options = { reply, keepUserTurns: keep, completeTurnsOnly: completeOnly }
+        if (!isBranch) {
+          const fork = await forkSessionFile(file, { ...options, titleSuffix: '（副本）' })
+          const overlay = live ? undefined : sessionTitleOverlays().get(normalizeSessionTitleFile(file))
+          const base = live?.title || overlay?.title
+          return { ...fork, initialTitle: base ? base.slice(0, 100) + '（副本）' : undefined, initialTitleMetadata: overlay?.metadata }
+        }
+        const liveTitle = live && (live.titleSource || live.title !== path.basename(live.cwd)) ? live.title : undefined
+        const fork = await forkNumberedSessionFile(file, options, {
+          liveTitle, resumeFrom: live?.resumeFrom,
+          titles: () => ({ overlays: sessionTitleOverlays(), live: listSessions().map(session => session.title) })
+        })
+        return { ...fork, initialTitle: fork.title, initialTitleMetadata: { source: 'manual' as const, revision: 0 } }
+      }
       // LIVE session fork: the durable file comes from Main's own session
       // record. Bind that source to the supplied workspace grant before
       // writing a copy or starting a process.
       if (typeof payload.liveSessionId === 'string' && payload.historyId === undefined) {
         const live = getSession(payload.liveSessionId)
-        const file = live?.sessionFile ?? live?.resumeFrom
-        if (!live || !file) return { error: 'session-not-found' }
-        const baseTitle = typeof live.title === 'string' && live.title ? live.title : undefined
+        if (!live) return { error: 'session-not-found' }
         try {
           if (canonicalExistingPath(live.cwd) !== resolved.realPath) return { error: 'invalid-request' }
+          const state = !live.sessionFile || live.resumeFrom ? await getSessionState(live.id) : null
+          const file = state?.sessionFile ?? live.sessionFile ?? live.resumeFrom
+          if (!file) return { error: 'session-not-found' }
           // A locally restricted session keeps its mode. An explicit GUI fork
           // of a Feishu-origin session follows the existing local resume policy.
           const permissionMode = live.origin === 'feishu' ? undefined : live.readonly ? 'readonly' : live.nativePermissionMode
-          const fork = await forkSessionFile(file, { keepUserTurns: keep, titleSuffix: suffix, completeTurnsOnly: completeOnly })
+          const fork = await forkForChat(file, live)
           const forked = await resumeSession(resolved.realPath, broadcastSessionEvent, fork.filePath, {
             ...(permissionMode ? { permissionMode } : {}),
-            ...(baseTitle ? { initialTitle: `${baseTitle.slice(0, 100)}${suffix}` } : {})
+            initialTitle: fork.initialTitle, initialTitleMetadata: fork.initialTitleMetadata
           })
           if (!forked) return null
           const { resumeFrom: _resumeFrom, sessionFile: _sessionFile, ...session } = forked.session
@@ -1577,12 +1599,10 @@ export function registerIpc() {
           ownerWebContentsId: event.sender.id
         },
         async (filePath) => {
-          const overlay = sessionTitleOverlays().get(normalizeSessionTitleFile(filePath))
-          const overlayTitle = overlay?.title
           try {
-            const fork = await forkSessionFile(filePath, { keepUserTurns: keep, titleSuffix: suffix, completeTurnsOnly: completeOnly })
+            const fork = await forkForChat(filePath)
             const forked = await resumeSession(resolved.realPath, broadcastSessionEvent, fork.filePath, {
-              ...(overlayTitle ? { initialTitle: `${overlayTitle.slice(0, 100)}${suffix}`, initialTitleMetadata: overlay.metadata } : {})
+              initialTitle: fork.initialTitle, initialTitleMetadata: fork.initialTitleMetadata
             })
             if (!forked) return null
             const { resumeFrom: _resumeFrom, sessionFile: _sessionFile, ...session } = forked.session
@@ -1794,6 +1814,47 @@ export function registerIpc() {
   // a terminal, or VS Code. The renderer only ever sends the grant id and a
   // target name; the real path is resolved here through the same grant
   // authority as every other workspace-scoped channel.
+  async function dispatchAttachment(event: IpcMainInvokeEvent, grantId: unknown, target: unknown, action: unknown, sessionId: unknown, folder: boolean) {
+    const workspace = requireGrant(grantId)
+    if (!workspace) return 'unavailable'
+    let readMessages: () => ReturnType<typeof readSessionTranscript> = async () => null
+    try {
+      if (sessionId != null) {
+        if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 512) return 'unavailable'
+        if (sessionId.startsWith('preview:')) {
+          const historyId = sessionId.slice(8)
+          const context = { workspaceGrantId: workspace.grant.id, workspaceRealPath: workspace.realPath, ownerWebContentsId: event.sender.id }
+          if (!await historySessionGrantManager.resolve(historyId, context)) return 'unavailable'
+          readMessages = () => historySessionGrantManager.withResolved(historyId, context,
+            journal => readSessionFileTranscript(journal, { hydrateImages: false }))
+        } else {
+          const live = getSession(sessionId)
+          if (!live || canonicalExistingPath(live.cwd) !== workspace.realPath) return 'unavailable'
+          const journal = live.sessionFile ?? live.resumeFrom
+          readMessages = () => journal ? readSessionFileTranscript(journal, { hydrateImages: false }) : readSessionTranscript(sessionId)
+        }
+      }
+      const downloads = {
+        directory: getWorkspaceSystemPaths().downloads,
+        isReferenced: async (path: string, kind: 'file' | 'folder') => transcriptReferencesAttachment(await readMessages(), path, kind)
+      }
+      return folder ? await openChatAttachmentFolder(workspace.realPath, target, downloads)
+        : await handleChatAttachment(workspace.realPath, target, action, downloads)
+    } catch { return 'unavailable' }
+  }
+  ipcMain.handle(IPC_CHANNELS.CHAT_ATTACHMENT, (event, grantId, target, action, sessionId) =>
+    dispatchAttachment(event, grantId, target, action, sessionId, false))
+  ipcMain.handle(IPC_CHANNELS.CHAT_ATTACHMENT_FOLDER, (event, grantId, directory, sessionId) =>
+    dispatchAttachment(event, grantId, directory, null, sessionId, true))
+  let workspaceIcons: Promise<{ finder?: string; terminal?: string }> | undefined
+  ipcMain.handle(IPC_CHANNELS.WORKSPACE_APP_ICONS, () => {
+    if (process.platform !== 'win32') return {}
+    const system = process.env.SystemRoot || 'C:\\Windows'
+    const nativeIcon = (file: string) => app.getFileIcon(path.join(system, file), { size: 'normal' })
+      .then(icon => icon.isEmpty() ? undefined : icon.toDataURL()).catch(() => undefined)
+    return workspaceIcons ??= Promise.all([nativeIcon('explorer.exe'), nativeIcon('System32/cmd.exe')])
+      .then(([finder, terminal]) => ({ finder, terminal }))
+  })
   ipcMain.handle(
     IPC_CHANNELS.OPEN_WORKSPACE_IN,
     async (_event: IpcMainInvokeEvent, grantId: unknown, target: unknown): Promise<OpenWorkspaceResult> =>
@@ -2126,6 +2187,13 @@ export function registerIpc() {
     }
   })
 
+  ipcMain.handle(IPC_CHANNELS.PROJECT_FILE_CONVERSATION, (_event, key, projectId, previousKey, migrateOnly) =>
+    fileSidebarConversation(key, projectId, previousKey, migrateOnly, id => {
+      const target = projectRegistry.get(id)
+      return Boolean(target && !target.archived && !target.missing && !target.isDefault)
+    })
+  )
+
   ipcMain.handle(IPC_CHANNELS.PROJECT_LIST, () => {
     if (!workspacePaths.defaultWorkspace) throw new Error('system-paths-unavailable')
     return projectRegistry.list()
@@ -2397,7 +2465,9 @@ export function registerIpc() {
     return getPackageManagerCapabilities()
   })
 
-  ipcMain.handle(IPC_CHANNELS.TOOLS_LIST, () => listLaunchableTools())
+  ipcMain.handle(IPC_CHANNELS.TOOLS_LIST, (_event, mode?: unknown) => mode === 'enabled-plugins'
+    ? listPackages().then(availablePluginChoices)
+    : listLaunchableTools())
 
   /** Package sources become CLI argv — reject flags, controls and empty input. */
   function validSource(source: unknown): source is string {
@@ -2829,6 +2899,10 @@ export function registerIpc() {
     // The store holds plain settings data only — a renderer must not persist
     // functions, class instances, or oversized blobs through this channel.
     if (!isPlainStorableValue(value)) return false
+    if (key === 'autoCompactThresholdPercent') {
+      if (!isAutoCompactThreshold(value)) return false
+      writeContextPolicy(value)
+    }
     setStore(key, value as never)
     // Transitional: the settings UI still writes the legacy toolAccess tier;
     // mirror it into permissionMode until the renderer exposes 'ask' itself.
@@ -3430,12 +3504,20 @@ export function registerIpc() {
     return result.canceled ? null : result.filePaths[0]
   })
 
-  ipcMain.handle(IPC_CHANNELS.DIALOG_SELECT_FILE, async (_event, filters?: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.DIALOG_SELECT_FILE, async (_event, filters?: unknown, asComposerAttachment?: boolean) => {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters: sanitizeDialogFilters(filters)
     })
-    return result.canceled ? null : result.filePaths[0]
+    const selected = result.canceled ? undefined : result.filePaths[0]
+    if (!selected) return null
+    if (asComposerAttachment === true) {
+      const ext = path.extname(selected).slice(1).toLowerCase()
+      if (Object.hasOwn(IMAGE_MIME_BY_EXT, ext) || /^(avif|heic|heif|svg|bmp|tiff?|ico)$/.test(ext)) {
+        return readSelectedImage(selected)
+      }
+    }
+    return selected
   })
 
   // Image picker for the composer. The dialog itself is the user's consent,
@@ -3447,16 +3529,23 @@ export function registerIpc() {
     })
     const filePath = result.canceled ? undefined : result.filePaths[0]
     if (!filePath) return null
-    const mimeType = IMAGE_MIME_BY_EXT[path.extname(filePath).slice(1).toLowerCase()]
-    if (!mimeType) return { ok: false, error: 'notImage' }
-    const fs = await import('node:fs/promises')
-    try {
-      const stat = await fs.stat(filePath)
-      if (stat.size > MAX_IMAGE_BYTES) return { ok: false, error: 'tooLarge' }
-      const buf = await fs.readFile(filePath)
-      return { ok: true, name: path.basename(filePath), data: buf.toString('base64'), mimeType }
-    } catch {
-      return { ok: false, error: 'readFailed' }
-    }
+    return readSelectedImage(filePath)
   })
+}
+
+async function readSelectedImage(filePath: string): Promise<SelectImageResult> {
+  const ext = path.extname(filePath).slice(1).toLowerCase()
+  const mimeType = Object.hasOwn(IMAGE_MIME_BY_EXT, ext) ? IMAGE_MIME_BY_EXT[ext] : undefined
+  if (!mimeType) return { ok: false, error: 'notImage' }
+  const fs = await import('node:fs/promises')
+  try {
+    const stat = await fs.stat(filePath)
+    if (stat.size > MAX_IMAGE_BYTES) return { ok: false, error: 'tooLarge' }
+    const buf = await fs.readFile(filePath)
+    if (!buf.length) return { ok: false, error: 'readFailed' }
+    if (buf.length > MAX_IMAGE_BYTES) return { ok: false, error: 'tooLarge' }
+    return { ok: true, name: path.basename(filePath), data: buf.toString('base64'), mimeType }
+  } catch {
+    return { ok: false, error: 'readFailed' }
+  }
 }

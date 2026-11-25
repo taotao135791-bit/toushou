@@ -1,13 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Pencil, Plus, Trash2, X } from 'lucide-react'
 import {
   CustomProviderApi,
   CustomProviderError,
   CustomProviderInfo,
-  CustomProviderSpec
+  CustomProviderModelSpec,
+  CustomProviderSpec,
+  CustomProvidersListResult,
+  RuntimeModelInfo
 } from '@shared/types'
+import { GENERIC_CUSTOM_PROVIDER_APIS, isCustomProviderApi, matchesCatalogEndpoint } from '@shared/modelCatalog'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
+import CustomProviderModelPicker, { parseModelsText } from './CustomProviderModelPicker'
 
 /**
  * Settings → Custom providers (current profile only). opencode-style custom
@@ -22,17 +27,16 @@ interface FormState {
   /** Editing an existing provider — the id is the models.yml key, immutable. */
   locked: boolean
   baseUrl: string
-  api: CustomProviderApi
+  api: string
   authNone: boolean
   apiKey: string
   /** Editing + key already stored: empty input keeps it. */
   hasStoredKey: boolean
   discovery: boolean
-  /**
-   * Preset model ids, one per line ("id" or "id 显示名"). Relay/gateway
-   * endpoints have a fixed model set, so plain text beats per-row editors.
-   */
+  showCustomIds: boolean
   modelsText: string
+  modelDetails: Map<string, CustomProviderModelSpec>
+  savedModelIds: ReadonlySet<string>
 }
 
 const emptyForm = (): FormState => ({
@@ -44,50 +48,55 @@ const emptyForm = (): FormState => ({
   apiKey: '',
   hasStoredKey: false,
   discovery: false,
-  modelsText: ''
+  modelDetails: new Map(),
+  savedModelIds: new Set(),
+  modelsText: '',
+  showCustomIds: false
 })
 
 const formFromProvider = (p: CustomProviderInfo): FormState => ({
   id: p.id,
   locked: true,
   baseUrl: p.baseUrl,
-  api: (['openai-completions', 'openai-responses', 'anthropic-messages'] as const).includes(
-    p.api as CustomProviderApi
-  )
-    ? (p.api as CustomProviderApi)
-    : 'openai-completions',
+  api: p.api || 'openai-completions',
   authNone: p.authNone,
   apiKey: '',
   hasStoredKey: p.hasKey,
   discovery: p.discovery,
+  showCustomIds: false,
+  savedModelIds: new Set(p.models.map(m => m.id)),
+  modelDetails: new Map(p.models.map(m => [m.id, m])),
   modelsText: p.models.map((m) => (m.name && m.name !== m.id ? `${m.id} ${m.name}` : m.id)).join('\n')
 })
 
-/** Parse the one-model-per-line textarea: "id" or "id 显示名". */
-export function parseModelsText(text: string): { id: string; name: string }[] {
-  const seen = new Set<string>()
-  const out: { id: string; name: string }[] = []
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    const space = trimmed.search(/\s/)
-    const id = space === -1 ? trimmed : trimmed.slice(0, space)
-    const name = space === -1 ? '' : trimmed.slice(space).trim()
-    if (seen.has(id)) continue
-    seen.add(id)
-    out.push({ id, name })
-  }
-  return out
+function presetEndpoint(catalog: RuntimeModelInfo[], id: string) {
+  const entry = catalog.find(m => m.provider === id && m.baseUrl && isCustomProviderApi(m.api))
+  return entry?.baseUrl && entry.api ? { baseUrl: entry.baseUrl, api: entry.api } : undefined
 }
 
-export default function CustomProvidersSection() {
+function openProviderForm(id: string, catalog: RuntimeModelInfo[], existing?: CustomProviderInfo): FormState {
+  if (!existing) return { ...emptyForm(), id, ...presetEndpoint(catalog, id) }
+  const next = formFromProvider(existing)
+  const native = catalog.find(m => m.provider === id && (!existing.api || m.api === existing.api) &&
+    (!existing.baseUrl || m.baseUrl?.replace(/\/+$/, '') === existing.baseUrl.replace(/\/+$/, '')))
+  return { ...next, api: existing.api || native?.api || next.api, baseUrl: existing.baseUrl || native?.baseUrl || '' }
+}
+
+export default function CustomProvidersSection({ listing, refresh, requestedProvider, onRequestHandled }: {
+  listing: CustomProvidersListResult | null
+  refresh: () => Promise<void>
+  requestedProvider: { id?: string } | null
+  onRequestHandled: () => void
+}) {
+  const catalog = useAppStore(s => s.runtimeModelCatalog)
+  const sectionRef = useRef<HTMLElement>(null)
   const overview = useAppStore((s) => s.runtimeOverview)
   const loadRuntimeOverview = useAppStore((s) => s.loadRuntimeOverview)
   const loadRuntimeModels = useAppStore((s) => s.loadRuntimeModels)
   const t = useT()
 
-  const [providers, setProviders] = useState<CustomProviderInfo[]>([])
-  const [readError, setReadError] = useState<string | null>(null)
+  const providers = listing?.ok ? listing.providers : []
+  const readError = listing && !listing.ok ? listing.detail ?? listing.error : null
   const [form, setForm] = useState<FormState | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -96,21 +105,53 @@ export default function CustomProvidersSection() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  const refresh = async () => {
-    const res = await window.electronAPI.customProvidersList()
-    if (res.ok) {
-      setProviders(res.providers)
-      setReadError(null)
-    } else {
-      setProviders([])
-      setReadError(res.detail ?? res.error)
-    }
-  }
-
   useEffect(() => {
-    void refresh()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    if (!requestedProvider || !listing) return
+    const id = requestedProvider.id
+    if (id) {
+      const existing = listing.ok ? listing.providers.find(p => p.id === id) : undefined
+      setForm(current => ({
+        ...(current?.id === id ? current : openProviderForm(id, catalog, existing)),
+        showCustomIds: true
+      }))
+    } else {
+      setForm(emptyForm())
+    }
+    setError(null)
+    setNotice(null)
+    onRequestHandled()
+    sectionRef.current?.scrollIntoView({ block: 'start' })
+  }, [requestedProvider, listing, catalog, onRequestHandled])
+
+  const id = form?.id.trim()
+  const api = form?.api
+  const baseUrl = form?.baseUrl
+  const models = form?.modelDetails
+  const presets = useMemo(() => {
+    const matching = new Map<string, RuntimeModelInfo>()
+    if (!id || !api || !baseUrl) return matching
+    for (const entry of catalog) {
+      if (entry.provider === id && !models?.get(entry.id)?.hasCustomTransport &&
+          matchesCatalogEndpoint(entry, { id, api, baseUrl })) {
+        matching.set(entry.id, entry)
+      }
+    }
+    return matching
+  }, [id, api, baseUrl, catalog, models])
+  const needsContext = form && !form.discovery && parseModelsText(form.modelsText).some(({ id }) =>
+    !form.savedModelIds.has(id) && !presets.get(id)?.contextWindow && !form.modelDetails.get(id)?.contextWindow
+  )
+
+  const knownProvider = id ? catalog.some(entry => entry.provider === id) : false
+  const nativeEndpoint = id ? presetEndpoint(catalog, id) : undefined
+  const google = form?.api === 'google-generative-ai'
+  const googleEndpoint = google && form && catalog.some(entry => matchesCatalogEndpoint(entry, form))
+  const formIssue = !form ? null
+    : !form.locked && providers.some(p => p.id === id) ? t('settings.providerIdInUse')
+    : !form.locked && knownProvider && !nativeEndpoint ? t('settings.providerIdReserved')
+    : !isCustomProviderApi(form.api) ? t('settings.providerCatalogOnly')
+    : google && !googleEndpoint ? t('settings.providerNativeEndpoint')
+    : null
 
   // models.yml is a current-omp mechanism; legacy pi never shows this section.
   if (overview?.profile !== 'current') return null
@@ -132,22 +173,22 @@ export default function CustomProvidersSection() {
     }
   }
 
-  const buildSpec = (f: FormState): CustomProviderSpec => ({
+  const buildSpec = (f: FormState, api: CustomProviderApi): CustomProviderSpec => ({
     id: f.id.trim(),
     baseUrl: f.baseUrl.trim(),
-    api: f.api,
+    api,
     apiKey: f.apiKey.trim() ? f.apiKey.trim() : undefined,
     authNone: f.authNone,
     discovery: f.discovery,
-    models: f.discovery ? [] : parseModelsText(f.modelsText)
+    models: f.discovery ? [] : parseModelsText(f.modelsText).map(row => ({ ...f.modelDetails.get(row.id), ...row }))
   })
 
   const save = async () => {
-    if (!form || saving) return
+    if (!form || !isCustomProviderApi(form.api) || saving || needsContext || formIssue) return
     setSaving(true)
     setError(null)
     setNotice(null)
-    const res = await window.electronAPI.customProvidersSave(buildSpec(form))
+    const res = await window.electronAPI.customProvidersSave(buildSpec(form, form.api))
     setSaving(false)
     if (res.ok) {
       setForm(null)
@@ -189,7 +230,7 @@ export default function CustomProvidersSection() {
     'flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim transition-colors hover:border-ink-600 hover:text-cream disabled:opacity-40'
 
   return (
-    <section className="overflow-hidden rounded-[16px] border border-line bg-ink-850 shadow-card">
+    <section ref={sectionRef} className="overflow-hidden rounded-[16px] border border-line bg-ink-850 shadow-card">
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
         <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
           {t('settings.customProviders')}
@@ -226,7 +267,7 @@ export default function CustomProvidersSection() {
             </div>
             <span className="flex shrink-0 items-center gap-2">
               <button
-                onClick={() => { setForm(formFromProvider(p)); setError(null); setNotice(null) }}
+                onClick={() => { setForm(openProviderForm(p.id, catalog, p)); setError(null); setNotice(null) }}
                 disabled={deleting}
                 title={t('settings.customProviderEdit')}
                 className="text-cream-faint transition-colors hover:text-cream disabled:opacity-40"
@@ -269,22 +310,38 @@ export default function CustomProvidersSection() {
             <div className="flex items-center gap-2">
               <input
                 value={form.id}
-                onChange={(e) => patchForm({ id: e.target.value })}
+                list="custom-provider-ids"
+                onChange={(e) => {
+                  const id = e.target.value
+                  const prior = presetEndpoint(catalog, form.id)
+                  const next = presetEndpoint(catalog, id)
+                  const canFill = !form.baseUrl || form.baseUrl === prior?.baseUrl
+                  const endpoint = canFill ? next ?? { baseUrl: '' } : {}
+                  patchForm({
+                    id, ...endpoint,
+                    ...(canFill && !next ? { api: 'openai-completions' } : {}),
+                    ...(canFill && next?.api === 'google-generative-ai' ? { discovery: false, authNone: false } : {})
+                  })
+                }}
                 disabled={form.locked || saving}
                 placeholder={t('settings.customProviderId')}
                 title={form.locked ? undefined : t('settings.customProviderIdHint')}
                 className={`${inputCls} w-44 font-mono`}
               />
+              <datalist id="custom-provider-ids">
+                {overview.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </datalist>
               <select
                 value={form.api}
-                onChange={(e) => patchForm({ api: e.target.value as CustomProviderApi })}
-                disabled={saving}
+                onChange={e => patchForm({ api: e.target.value, ...(e.target.value === 'google-generative-ai' ? { discovery: false, authNone: false } : {}) })}
+                disabled={saving || !isCustomProviderApi(form.api)}
                 className={selectCls}
                 title={t('settings.customProviderApi')}
               >
-                <option value="openai-completions">openai-completions</option>
-                <option value="openai-responses">openai-responses</option>
-                <option value="anthropic-messages">anthropic-messages</option>
+                {GENERIC_CUSTOM_PROVIDER_APIS.map(api => <option key={api} value={api}>{api}</option>)}
+                {(google || nativeEndpoint?.api === 'google-generative-ai') &&
+                  <option value="google-generative-ai">google-generative-ai</option>}
+                {!isCustomProviderApi(form.api) && <option value={form.api}>{form.api}</option>}
               </select>
             </div>
 
@@ -315,11 +372,14 @@ export default function CustomProvidersSection() {
                   type="checkbox"
                   checked={form.authNone}
                   onChange={(e) => patchForm({ authNone: e.target.checked })}
-                  disabled={saving}
+                  disabled={saving || (google && !form.authNone)}
                 />
                 {t('settings.customProviderAuthNone')}
               </label>
             </div>
+
+            {nativeEndpoint && !form.hasStoredKey && form.baseUrl === nativeEndpoint.baseUrl &&
+              <p className="text-[11px] text-cream-faint">{t('settings.customModelKeyNote')}</p>}
 
             {/* model source: discovery, or explicit rows */}
             <label className="flex items-center gap-1.5 text-[12px] text-cream-dim">
@@ -327,32 +387,23 @@ export default function CustomProvidersSection() {
                 type="checkbox"
                 checked={form.discovery}
                 onChange={(e) => patchForm({ discovery: e.target.checked })}
-                disabled={saving}
+                disabled={saving || (google && !form.discovery)}
               />
               {t('settings.customProviderDiscovery')}
             </label>
 
-            {!form.discovery && (
-              <div>
-                <textarea
-                  value={form.modelsText}
-                  onChange={(e) => patchForm({ modelsText: e.target.value })}
-                  disabled={saving}
-                  rows={4}
-                  placeholder={t('settings.customProviderModelsPlaceholder')}
-                  className={`${inputCls} h-auto w-full py-2 font-mono leading-6`}
-                />
-                <p className="mt-1 text-[11px] text-cream-faint">
-                  {t('settings.customProviderModelsHint')}
-                </p>
-              </div>
-            )}
+            {formIssue && <p className="text-xs text-amber-600 dark:text-amber-400">{formIssue}</p>}
+            {!form.discovery && isCustomProviderApi(form.api) && form.id.trim() && <CustomProviderModelPicker presets={presets} savedModelIds={form.savedModelIds} text={form.modelsText}
+              details={form.modelDetails} disabled={saving} custom={form.showCustomIds}
+              onCustomChange={showCustomIds => patchForm({ showCustomIds })}
+              onText={modelsText => patchForm({ modelsText })}
+              onDetails={model => patchForm({ modelDetails: new Map(form.modelDetails).set(model.id, model) })} />}
 
             <div className="flex items-center justify-end gap-2 pt-1">
               <button onClick={() => setForm(null)} disabled={saving} className={buttonCls}>
                 {t('settings.customProviderCancel')}
               </button>
-              <button onClick={save} disabled={saving} className={buttonCls}>
+              <button onClick={save} disabled={saving || !!needsContext || !!formIssue} className={buttonCls}>
                 {saving ? t('settings.saving') : t('settings.customProviderSave')}
               </button>
             </div>

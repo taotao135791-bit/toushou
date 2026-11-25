@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import type { CustomProvidersListResult } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import RuntimeModelSection from './RuntimeModelSection'
@@ -44,6 +45,16 @@ function Note({ children }: { children: React.ReactNode }) {
 export default function CurrentOmpSettings() {
   const overview = useAppStore((s) => s.runtimeOverview)
   const t = useT()
+  const [requestedProvider, setRequestedProvider] = useState<{ id?: string } | null>(null)
+  const [customProviders, setCustomProviders] = useState<CustomProvidersListResult | null>(null)
+  const refreshProviders = useCallback(async () => {
+    try {
+      setCustomProviders(await window.electronAPI.customProvidersList())
+    } catch (error) {
+      setCustomProviders({ ok: false, error: 'read', detail: String(error) })
+    }
+  }, [])
+  useEffect(() => { void refreshProviders() }, [refreshProviders])
   const [machineSkills, setMachineSkillsState] = useState<'enabled' | 'disabled' | 'unknown'>('unknown')
   const [machineSkillCount, setMachineSkillCount] = useState(0)
   const [machinePending, setMachinePending] = useState(false)
@@ -89,9 +100,11 @@ export default function CurrentOmpSettings() {
 
   return (
     <>
-      <RuntimeModelSection />
+      <RuntimeModelSection customProviders={customProviders?.ok ? customProviders.providers : []}
+        onAddCustomModel={id => setRequestedProvider({ id })} />
 
-      <CustomProvidersSection />
+      <CustomProvidersSection listing={customProviders} refresh={refreshProviders}
+        requestedProvider={requestedProvider} onRequestHandled={() => setRequestedProvider(null)} />
 
       <Section title={t('settings.skills')}>
         <Row label={t('settings.machineSkills')}>

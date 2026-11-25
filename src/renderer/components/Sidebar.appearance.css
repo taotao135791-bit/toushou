@@ -183,3 +183,31 @@
     padding-bottom: 10px;
   }
 }
+
+.app-sidebar [data-drop-edge="before"] {
+  box-shadow: inset 0 2px rgb(var(--accent));
+}
+
+.app-sidebar [data-drop-edge="after"] {
+  box-shadow: inset 0 -2px rgb(var(--accent));
+}
+
+
+.app-sidebar [data-project-id][data-drop-conversation] > div:first-child {
+  outline: 1px solid rgb(var(--accent));
+  outline-offset: -1px;
+  background-color: var(--overlay);
+}
+
+/* The 5px resize handle owns the sidebar edge. Leave the native scrollbar
+   a distinct hit area so dragging the thumb never resizes the sidebar. */
+.app-sidebar [data-sidebar-scroll] {
+  margin-inline-end: 5px;
+}
+.app-sidebar [data-sidebar-scroll]::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+.app-sidebar [data-sidebar-scroll]::-webkit-scrollbar-thumb:hover,
+.app-sidebar [data-sidebar-scroll]::-webkit-scrollbar-thumb:active {
+  background-color: rgb(var(--text-faint) / 55%);
+}

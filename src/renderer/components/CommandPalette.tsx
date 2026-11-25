@@ -1,21 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  CalendarClock,
   Clock,
   FileDown,
   History,
-  Library,
+  BookOpen,
   Link2,
-  MessageSquare,
-  Plus,
-  Puzzle,
+  MessageCircle,
+  SquarePen,
+  Layers,
   Search,
-  Settings,
-  SquareKanban,
-  SunMoon,
-  type LucideIcon
+  SlidersHorizontal,
+  SunMoon
 } from 'lucide-react'
+import BoardsIcon from './BoardsIcon'
 import type { HistorySessionDescriptor } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
@@ -56,14 +54,16 @@ interface CommandPaletteProps {
   handlers: CommandPaletteHandlers
 }
 
-const PAGE_ICONS: Record<string, LucideIcon> = {
-  chat: MessageSquare,
-  boards: SquareKanban,
-  skills: Library,
+type PaletteIcon = typeof Clock | typeof BoardsIcon
+
+const PAGE_ICONS: Record<string, PaletteIcon> = {
+  chat: MessageCircle,
+  boards: BoardsIcon,
+  skills: BookOpen,
   connections: Link2,
   tasks: Clock,
-  plugins: Puzzle,
-  settings: Settings
+  plugins: Layers,
+  settings: SlidersHorizontal
 }
 
 const GROUP_ORDER: PaletteItemKind[] = ['page', 'action', 'session', 'task']
@@ -279,11 +279,11 @@ export default function CommandPalette({ open, onClose, handlers }: CommandPalet
     return () => window.removeEventListener('keydown', onKey)
   }, [open, flat, activeIndex, execute, onClose])
 
-  const iconFor = (item: PaletteItem): LucideIcon => {
+  const iconFor = (item: PaletteItem): PaletteIcon => {
     if (item.kind === 'session') return History
-    if (item.kind === 'task') return CalendarClock
+    if (item.kind === 'task') return Clock
     if (item.kind === 'action') {
-      if (item.exec.type === 'newChat') return Plus
+      if (item.exec.type === 'newChat') return SquarePen
       if (item.exec.type === 'toggleTheme') return SunMoon
       return FileDown
     }

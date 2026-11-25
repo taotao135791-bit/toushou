@@ -1,5 +1,6 @@
+import BoardsIcon from './BoardsIcon'
 import { useEffect, useMemo, useState } from 'react'
-import { Check, FileCode2, Hash, LayoutDashboard, ListTodo, StickyNote, X, type LucideIcon } from 'lucide-react'
+import { Check, FileCode2, Hash, ListTodo, StickyNote, X, type LucideIcon } from 'lucide-react'
 import { parseBoardCardsProposal } from '@shared/boardCards'
 import { BoardCardsCard, BoardCardsIssue, KanbanBoard } from '@shared/types'
 import { useT, I18nKey } from '../i18n'
@@ -151,7 +152,7 @@ export default function BoardCardsProposalBlock({ raw }: { raw: string }) {
   if (dismissed) {
     return (
       <div className="flex items-center gap-1.5 rounded-lg border border-line bg-ink-800 px-3 py-2 text-[11px] text-cream-faint">
-        <LayoutDashboard size={11} />
+        <BoardsIcon size={11} />
         {t('boards.cards.ignored')}
       </div>
     )
@@ -163,7 +164,7 @@ export default function BoardCardsProposalBlock({ raw }: { raw: string }) {
     <div className="overflow-hidden rounded-lg border border-line bg-ink-800">
       <div className="flex items-center justify-between border-b border-line bg-overlay px-3 py-1.5">
         <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-cream-faint">
-          <LayoutDashboard size={11} />
+          <BoardsIcon size={11} />
           {t('boards.cards.blockTitle')}
         </span>
         {applyState !== 'applied' && (

@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { isSessionFilePath } from './sessionHistory'
+import type { ReplyForkTarget } from '../shared/types'
+import { assistantReplyKey, isFinalAssistantMessage } from './assistantReplyKey'
+import { isSessionFilePath, listAllSessions, readSessionHistoryMetadata } from './sessionHistory'
+import { normalizeSessionTitleFile } from './sessionNaming'
 
 /**
  * Session forking: duplicate a durable session file, optionally truncated to
@@ -40,14 +43,6 @@ function isUserTurnStart(record: Record<string, unknown>): boolean {
   return entry.role === 'user' && entry.steering !== true
 }
 
-function isFinalAssistantMessage(message: { stopReason?: unknown; content?: unknown }): boolean {
-  const { stopReason, content } = message
-  // The native runtime persists assistant tool requests before those tools
-  // finish. Older transcripts may omit stopReason, so inspect their blocks too.
-  if (stopReason !== undefined && stopReason !== 'stop' && stopReason !== 'length') return false
-  return !Array.isArray(content) || !content.some((block) => block?.type === 'toolCall')
-}
-
 export interface SessionForkResult {
   /** Absolute path of the new forked session file. */
   filePath: string
@@ -55,6 +50,65 @@ export interface SessionForkResult {
   uuid: string
   /** User turns retained (equals the source's total for a full copy). */
   keptUserTurns: number
+}
+
+interface ForkOptions {
+  reply?: ReplyForkTarget
+  keepUserTurns?: number
+  titleSuffix?: string
+  agentDir?: string
+  completeTurnsOnly?: boolean
+}
+
+interface BranchTitleContext {
+  liveTitle?: string
+  resumeFrom?: string
+  titles?: () => { overlays: ReadonlyMap<string, { title?: string }>; live: readonly string[] }
+}
+
+const TITLE_SLOT_BYTES = 256 // OMP's physical first line, including the newline.
+function branchTitleSlot(title: string, updatedAt: string) {
+  return { type: 'title', v: 1, title, source: 'user', updatedAt, pad: '' }
+}
+
+function numberedTitle(base: string, number: number, updatedAt: string): string {
+  const suffix = `（${number}）`
+  const points = Array.from(base.slice(0, 80).replace(/[\uD800-\uDBFF]$/, ''))
+  // Reserve the ordinal before shortening a long Unicode title for OMP.
+  while (points.length) {
+    const candidate = points.join('') + suffix
+    if (candidate.length <= 80 && Buffer.byteLength(JSON.stringify(branchTitleSlot(candidate, updatedAt))) + 1 <= TITLE_SLOT_BYTES) return candidate
+    points.pop()
+  }
+  return suffix
+}
+
+// Electron Main owns all fork IPCs. Release the queue when the new file is
+// durable, before the slower native process handshake.
+let pendingBranch = Promise.resolve()
+export function forkNumberedSessionFile(file: string, options: ForkOptions, context: BranchTitleContext = {}) {
+  const write = pendingBranch.then(async () => {
+    if (!isSessionFilePath(file, options.agentDir)) throw new Error('not-a-session-file')
+    const history = await listAllSessions(options.agentDir, Infinity)
+    const names = context.titles?.()
+    const overlay = (path: string) => names?.overlays.size ? names.overlays.get(normalizeSessionTitleFile(path))?.title : undefined
+    const source = await readSessionHistoryMetadata(file)
+    const restored = context.resumeFrom && context.resumeFrom !== file ? await readSessionHistoryMetadata(context.resumeFrom) : null
+    const display = overlay(file) || (context.resumeFrom && overlay(context.resumeFrom)) || context.liveTitle ||
+      restored?.title || source?.title || 'Untitled'
+    const lineage = source?.branchName ?? restored?.branchName
+    const base = lineage?.title === display ? lineage.base : display
+    const taken = new Set(history.map(row => overlay(row.filePath) || row.title))
+    for (const title of names?.live ?? []) taken.add(title)
+    const updatedAt = new Date().toISOString()
+    let ordinal = 1
+    let title = numberedTitle(base, ordinal, updatedAt)
+    while (taken.has(title)) title = numberedTitle(base, ++ordinal, updatedAt)
+    const fork = await forkSessionFile(file, { ...options, branchName: { base, title, updatedAt } })
+    return { ...fork, title }
+  })
+  pendingBranch = write.then(() => undefined, () => undefined)
+  return write
 }
 
 /**
@@ -67,7 +121,7 @@ export interface SessionForkResult {
  */
 export async function forkSessionFile(
   sourceFilePath: string,
-  options: { keepUserTurns?: number; titleSuffix?: string; agentDir?: string; completeTurnsOnly?: boolean } = {}
+  options: ForkOptions & { branchName?: { base: string; title: string; updatedAt: string } } = {}
 ): Promise<SessionForkResult> {
   if (!isSessionFilePath(sourceFilePath, options.agentDir)) throw new Error('not-a-session-file')
   const keep = options.keepUserTurns === undefined || !Number.isFinite(options.keepUserTurns)
@@ -81,6 +135,8 @@ export async function forkSessionFile(
   while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
 
   const kept: ForkedLine[] = []
+  let matchingReplies = 0
+  let replyEnd: { lines: number; turns: number } | undefined
   let userTurns = 0
   let truncated = false
   // Trailing-turn completeness tracking for completeTurnsOnly: where the last
@@ -108,11 +164,20 @@ export async function forkSessionFile(
       record.type === 'message' &&
       (record.message as { role?: unknown } | undefined)?.role === 'assistant'
     ) {
-      lastTurnHasAssistant = isFinalAssistantMessage(record.message as { stopReason?: unknown; content?: unknown })
+      const assistant = record.message as { role: string; stopReason?: unknown; content?: unknown }
+      lastTurnHasAssistant = isFinalAssistantMessage(assistant)
+      if (options.reply && assistantReplyKey(assistant) === options.reply.key) {
+        matchingReplies++
+        if (matchingReplies === options.reply.occurrence) replyEnd = { lines: kept.length + 1, turns: userTurns }
+      }
     }
     kept.push({ line })
   }
-  if (!truncated && options.completeTurnsOnly && userTurns > 0 && !lastTurnHasAssistant) {
+  if (options.reply) {
+    if (!replyEnd || matchingReplies !== options.reply.total) throw new Error('reply-not-found')
+    kept.length = replyEnd.lines
+    userTurns = replyEnd.turns
+  } else if (!truncated && options.completeTurnsOnly && userTurns > 0 && !lastTurnHasAssistant) {
     // The final turn is still unanswered (mid-stream source): drop it so the
     // branch starts from a complete exchange. Reuses the truncated-tail
     // cleanup below to strip that turn's dangling non-message records.
@@ -141,11 +206,17 @@ export async function forkSessionFile(
       kept.pop()
     }
   }
-  if (userTurns === 0) throw new Error('no-user-turns')
+  if (userTurns === 0 && !replyEnd) throw new Error('no-user-turns')
 
   const uuid = randomUUID()
   const timestamp = new Date().toISOString().replace(/:/g, '-').replace(/\.\d{3}Z$/, 'Z')
   const outLines: string[] = []
+  const branch = options.branchName
+  if (branch) {
+    const slot = branchTitleSlot(branch.title, branch.updatedAt)
+    slot.pad = ' '.repeat(TITLE_SLOT_BYTES - Buffer.byteLength(JSON.stringify(slot)) - 1)
+    outLines.push(JSON.stringify(slot))
+  }
   for (const entry of kept) {
     if (!entry.line) { outLines.push(entry.line); continue }
     try {
@@ -153,9 +224,18 @@ export async function forkSessionFile(
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const record = parsed as Record<string, unknown>
         if (record.type === 'session') {
-          outLines.push(JSON.stringify({ ...record, id: uuid, timestamp: new Date().toISOString() }))
+          const header = { ...record, id: uuid, timestamp: new Date().toISOString() } as Record<string, unknown>
+          if (branch) {
+            header.title = branch.title
+            header.titleSource = 'user'
+            header.toushouBranch = { base: branch.base, title: branch.title }
+          } else {
+            delete header.toushouBranch
+          }
+          outLines.push(JSON.stringify(header))
           continue
         }
+        if (record.type === 'title' && branch) continue
         if (record.type === 'title' && options.titleSuffix && typeof record.title === 'string') {
           const merged = `${record.title}${options.titleSuffix}`.slice(0, 120)
           outLines.push(JSON.stringify({ ...record, title: merged, source: 'user' }))
@@ -167,6 +247,6 @@ export async function forkSessionFile(
   }
   const dir = path.dirname(path.resolve(sourceFilePath))
   const filePath = path.join(dir, `${timestamp}_${uuid}.jsonl`)
-  await writeFile(filePath, `${outLines.join('\n')}\n`, { mode: 0o600 })
+  await writeFile(filePath, `${outLines.join('\n')}\n`, { mode: 0o600, flag: 'wx' })
   return { filePath, uuid, keptUserTurns: userTurns }
 }

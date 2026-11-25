@@ -117,8 +117,15 @@ export function getChatBoardPreview(raw: unknown, deps: Dependencies): ChatBoard
   try {
     const board = (deps.boards ?? listBoards)().find(item => item.id === request.boardId)
     if (!board) return { ok: false, error: 'not-found' }
-    // A result card can verify a saved board without requesting any file.
-    if (request.widgetId === undefined) return { ok: false, error: 'unsupported' }
+    // Only return the selected saved board. Rich documents are rendered through
+    // their separately authorized widget requests when the user views them.
+    if (request.widgetId === undefined) return {
+      ok: true, source: 'board', board: {
+        ...board,
+        widgets: board.widgets.map(widget => widget.type === 'reading-module' || widget.type === 'reading-snapshot'
+          ? { ...widget, config: {} } : widget)
+      }
+    }
     const widget = board.widgets.find(item => item.id === request.widgetId)
     if (!widget) return { ok: false, error: 'not-found' }
     if (widget.type === 'reading-snapshot' || widget.type === 'reading-module') {

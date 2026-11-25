@@ -53,7 +53,7 @@ describe('chat board preview', () => {
     const deps = { access: () => ({ cwd: '/synthetic' }), authorized: () => true, boards: () => [board], readFile }
     expect(getChatBoardPreview(input, { ...deps, access: () => null })).toEqual({ ok: false, error: 'unauthorized' })
     expect(getChatBoardPreview({ ...input, boardId: 'missing' }, deps)).toEqual({ ok: false, error: 'not-found' })
-    expect(getChatBoardPreview(input, deps)).toEqual({ ok: false, error: 'unsupported' })
+    expect(getChatBoardPreview(input, deps)).toEqual({ ok: true, source: 'board', board })
     expect(readFile).not.toHaveBeenCalled()
   })
 
@@ -83,11 +83,11 @@ describe('chat board preview', () => {
       const deps = { access: () => ({ cwd: dir }), authorized: () => true, boards: () => listBoards(file), find: (input: unknown) => findHtmlBoardForReading(input, { file: docFile, boards: () => listBoards(file) }) }
       const result = getChatBoardPreview({ sessionId: 's', boardId: saved.board.id, widgetId: snapshotWidget.id }, deps)
       expect(result).toMatchObject({ ok: true, source: 'snapshot' })
-      if (result.ok) expect(result.html).toContain('42')
+      if (result.ok && result.source === 'snapshot') expect(result.html).toContain('42')
       const module = saved.board.widgets.find(widget => widget.type === 'reading-module')!
       const moduleResult = getChatBoardPreview({ sessionId: 's', boardId: saved.board.id, widgetId: module.id }, deps)
       expect(moduleResult).toMatchObject({ ok: true, source: 'module' })
-      if (moduleResult.ok) expect(moduleResult.html).toContain('42')
+      if (moduleResult.ok && moduleResult.source === 'module') expect(moduleResult.html).toContain('42')
       expect(existsSync(docFile)).toBe(false)
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })

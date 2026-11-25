@@ -5,6 +5,7 @@ import {
   Session,
   SessionEvent,
   SessionRuntimeState,
+  SessionStats,
   StreamingBehavior,
   SubagentMessagesResult,
   SubagentSnapshot,
@@ -74,6 +75,10 @@ export class OmpSession {
   readonly session: Session
   private readonly id: string
   private state: SessionRuntimeState = 'starting'
+  private manualCompaction = false
+  private cancelManualCompaction = false
+  private autoCompaction = false
+  private compactResult?: { id: string; finish(reply: Record<string, unknown> | null): void }
   private readonly pending = new Map<string, PendingQuery>()
   /** Request ids of prompts whose ack we still expect. */
   private readonly pendingPrompts = new Set<string>()
@@ -119,7 +124,12 @@ export class OmpSession {
     this.emit({ type: 'connected', sessionId: this.id })
   }
 
-  get hasPendingWork(): boolean { return this.awaitingTurnStarts.size > 0 || this.pendingPrompts.size > 0 || this.pendingExtensionUi.size > 0 }
+  get hasPendingWork(): boolean {
+    return this.manualCompaction || this.autoCompaction || this.awaitingTurnStarts.size > 0 ||
+      this.pendingPrompts.size > 0 || this.pendingExtensionUi.size > 0
+  }
+
+  get isManuallyCompacting(): boolean { return this.manualCompaction }
 
   get runtimeState(): SessionRuntimeState {
     return this.state
@@ -175,6 +185,7 @@ export class OmpSession {
   /** Send a user prompt. */
   sendPrompt(text: string, images?: PromptImage[], streamingBehavior?: StreamingBehavior): boolean {
     const id = crypto.randomUUID()
+    if (this.manualCompaction) return false
     const ok = this.write({
       id,
       type: 'prompt',
@@ -189,8 +200,83 @@ export class OmpSession {
     return ok
   }
 
+  /** Prefer a coherent runtime snapshot, never the session's cumulative token bill. */
+  async getSessionStats(): Promise<SessionStats | null> {
+    const res = await this.query({ type: 'get_session_stats' })
+    if (res?.success !== true || !res.data) return null
+    const stats = res.data as SessionStats
+    const populated = stats.userMessages > 0 || stats.assistantMessages > 0
+    const validCount = (n: unknown): n is number =>
+      typeof n === 'number' && Number.isFinite(n) && (n > 0 || (n === 0 && !populated))
+    let measured = stats.contextUsage
+    let capacity = measured?.contextWindow
+    // Older profiles may only expose the active capacity/measurement on get_state.
+    if (!validCount(measured?.tokens) || !Number.isFinite(capacity) || !capacity || capacity <= 0) {
+      const state = await this.query({ type: 'get_state' })
+      const snapshot = state?.success === true ? state.data as
+        { contextUsage?: SessionStats['contextUsage']; model?: { contextWindow?: number } } | undefined : undefined
+      if (validCount(snapshot?.contextUsage?.tokens)) measured = snapshot.contextUsage
+      capacity = snapshot?.contextUsage?.contextWindow || snapshot?.model?.contextWindow || capacity
+    }
+    const tokens = validCount(measured?.tokens) ? measured.tokens : null
+    const reportedPercent = measured?.percent
+    const percent = typeof reportedPercent === 'number' && Number.isFinite(reportedPercent) && reportedPercent > 0
+      ? reportedPercent : null
+    return {
+      ...stats,
+      contextUsage: typeof capacity === 'number' && Number.isFinite(capacity) && capacity > 0 ? {
+        tokens, contextWindow: capacity, percent: tokens === null ? percent : 100 * tokens / capacity
+      } : undefined
+    }
+  }
+
+  /** Native manual compaction aborts the active turn, so admit it only while idle. */
+  async compact(): Promise<boolean> {
+    if (this.state !== 'idle' || this.hasPendingWork) return false
+    this.manualCompaction = true
+    this.cancelManualCompaction = false
+    const base = { type: 'compaction', sessionId: this.id, source: 'manual' } as const
+    this.emit({ ...base, phase: 'start' })
+    try {
+      // The provider owns the deadline. Keep the lock until the real result,
+      // cancellation, or child exit, even for a lengthy summary.
+      const capabilities = this.handshakeOutcome?.profile === 'legacy' ? null :
+        await this.query({ type: 'get_available_commands' })
+      const commands = (capabilities?.data as { commands?: Array<{ name?: string }> } | undefined)?.commands
+      let response: Record<string, unknown> | null
+      if (this.cancelManualCompaction) response = { success: false, error: 'Aborted' }
+      else if (commands?.some(c => c.name === 'toushou-compact-context')) response = await this.runCancellableCompaction()
+      else response = await this.query({ type: 'compact' }, null)
+      const error = typeof response?.error === 'string' ? response.error : ''
+      const reason = /nothing to compact|session too small/i.test(error) ? 'too_small'
+        : /already compacted/i.test(error) ? 'already_compacted' : undefined
+      const outcome = response?.success === true ? 'compacted' : reason ? 'skipped'
+        : /abort|cancel/i.test(error) ? 'aborted' : 'failed'
+      if (this.alive) this.emit({ ...base, phase: 'end', outcome, ...(reason && { reason }) })
+      return outcome === 'compacted' || outcome === 'skipped' || outcome === 'aborted'
+    } finally {
+      this.manualCompaction = false
+    }
+  }
+
+  private runCancellableCompaction(): Promise<Record<string, unknown> | null> {
+    const id = crypto.randomUUID()
+    return new Promise(resolve => {
+      const finish = (reply: Record<string, unknown> | null) => {
+        if (this.compactResult?.id !== id) return
+        this.compactResult = undefined
+        resolve(reply)
+      }
+      this.compactResult = { id, finish }
+      void this.query({ type: 'prompt', message: '/toushou-compact-context ' + id }, null, 'toushou-compact:' + id).then(ack => {
+        if (ack?.success !== true) finish(ack)
+      })
+    })
+  }
+
   /** Ask the agent to abort the current turn; converges at agent_end/exit. */
   abort(): boolean {
+    if (this.manualCompaction) this.cancelManualCompaction = true
     const ok = this.write({ id: crypto.randomUUID(), type: 'abort' })
     if (ok && (this.state === 'working' || this.state === 'waiting_for_user')) {
       this.state = 'aborting'
@@ -254,11 +340,11 @@ export class OmpSession {
    * Send an RPC command and await its response, matched by request id.
    * Resolves null on timeout, dead session, or process exit.
    */
-  query(command: Record<string, unknown>, timeoutMs = 8000): Promise<Record<string, unknown> | null> {
+  query(command: Record<string, unknown>, timeoutMs: number | null = 8000, id: string = crypto.randomUUID()): Promise<Record<string, unknown> | null> {
     if (!this.alive) return Promise.resolve(null)
-    const id = crypto.randomUUID()
+    if (this.manualCompaction && (command.type === 'steer' || command.type === 'follow_up')) return Promise.resolve(null)
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
+      const timer = timeoutMs === null ? undefined : setTimeout(() => {
         this.pending.delete(id)
         resolve(null)
       }, timeoutMs)
@@ -366,6 +452,13 @@ export class OmpSession {
       throw err
     }
 
+    if (logical.type === 'extension_ui_request' && logical.method === 'setStatus' && this.compactResult &&
+        logical.statusKey === 'toushou-compact:' + this.compactResult.id) {
+      const message = logical.statusText
+      this.compactResult.finish(message === 'ok' ? { success: true } : { success: false, error: message })
+      return
+    }
+
     // 3. Bookkeeping claims by request id before semantic normalization.
     if (logical.type === 'response' && typeof logical.id === 'string') {
       const query = this.pending.get(logical.id)
@@ -399,6 +492,8 @@ export class OmpSession {
       }
     }
     if (logical.type === 'prompt_result') {
+      // Our extension command has its own result and was never a chat turn.
+      if (typeof logical.id === 'string' && logical.id.startsWith('toushou-compact:')) return
       this.handlePromptResult({ agentInvoked: logical.agentInvoked === true, id: typeof logical.id === 'string' ? logical.id : undefined })
       return
     }
@@ -669,6 +764,11 @@ export class OmpSession {
   // ---------------------------------------------------------------- events
 
   private handleEvent(event: SessionEvent): void {
+    if (event.type === 'compaction') {
+      // Legacy runtimes also emit progress for our explicit request.
+      if (this.manualCompaction) return
+      this.autoCompaction = event.phase === 'start'
+    }
     if (event.type === 'message' && event.role === 'assistant') {
       this.draftText += event.content
     }
@@ -736,6 +836,7 @@ export class OmpSession {
   // --------------------------------------------------------- process end
 
   private resolvePending(value: Record<string, unknown> | null): void {
+    this.compactResult?.finish(value)
     for (const query of this.pending.values()) {
       clearTimeout(query.timer)
       query.resolve(value)
@@ -796,7 +897,7 @@ const FIRST_FRAME_TIMEOUT_MS = 30_000
 
 interface PendingQuery {
   resolve: (payload: Record<string, unknown> | null) => void
-  timer: ReturnType<typeof setTimeout>
+  timer: ReturnType<typeof setTimeout> | undefined
   /** The command type of this request, for safe id-less error correlation. */
   commandType: string
 }

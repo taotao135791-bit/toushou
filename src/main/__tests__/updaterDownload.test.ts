@@ -7,9 +7,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { AddressInfo } from 'node:net'
 
-const updaterMocks = vi.hoisted(() => ({ temp: '', version: '2.2.2', fetch: vi.fn(), proxy: vi.fn(), direct: vi.fn(), fallback: vi.fn(), spawn: vi.fn(), quit: vi.fn() }))
+const updaterMocks = vi.hoisted(() => ({ temp: '', version: '2.2.2', fetch: vi.fn(), proxy: vi.fn(), direct: vi.fn(), fallback: vi.fn(), feed: vi.fn(), check: vi.fn(), spawn: vi.fn(), quit: vi.fn() }))
 vi.mock('electron', () => ({ app: { isPackaged: true, getVersion: () => '2.2.1', getPath: () => updaterMocks.temp, quit: updaterMocks.quit }, BrowserWindow: { getAllWindows: () => [] }, shell: {} }))
-vi.mock('electron-updater', () => ({ autoUpdater: { downloadUpdate: updaterMocks.fallback } }))
+vi.mock('electron-updater', () => ({ autoUpdater: { downloadUpdate: updaterMocks.fallback, setFeedURL: updaterMocks.feed, checkForUpdates: updaterMocks.check } }))
 vi.mock('../integrations/tiktok/proxyFetch', () => ({ proxyFetchFor: updaterMocks.proxy }))
 vi.mock('node:https', () => ({ default: { get: updaterMocks.direct } }))
 vi.mock('node:child_process', () => ({ spawn: updaterMocks.spawn, spawnSync: vi.fn(), execFile: vi.fn() }))
@@ -242,13 +242,13 @@ describe('downloadResumable', () => {
 })
 
 describe('verifySha512File', () => {
-  it('validates against the manifest base64 digest', () => {
+  it('validates against the manifest base64 digest', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'upd-'))
     const file = path.join(dir, 'app.exe')
     writeFileSync(file, 'installer bytes')
     const digest = createHash('sha512').update('installer bytes').digest('base64')
-    expect(verifySha512File(file, digest)).toBe(true)
-    expect(verifySha512File(file, 'wrong-digest==')).toBe(false)
+    expect(await verifySha512File(file, digest)).toBe(true)
+    expect(await verifySha512File(file, 'wrong-digest==')).toBe(false)
     rmSync(dir, { recursive: true, force: true })
   })
 })
@@ -262,7 +262,10 @@ describe('Windows updater lifecycle', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
     updaterMocks.temp = mkdtempSync(path.join(tmpdir(), 'upd-win-'))
     updaterMocks.version = '2.2.2'
-    updaterMocks.fetch.mockImplementation(async (url: string) => url.endsWith('latest.yml')
+    updaterMocks.check.mockRejectedValue(new Error('synthetic fallback check failure'))
+    updaterMocks.fetch.mockImplementation(async (url: string) => url.endsWith('stable.json')
+      ? new Response(JSON.stringify({ schemaVersion: 1, macos: '9.9.9', windows: updaterMocks.version }))
+      : url.endsWith('latest.yml')
       ? new Response(JSON.stringify({ version: updaterMocks.version, files: [{ url: 'TouShou-x64.exe', sha512: createHash('sha512').update(payload).digest('base64'), size: Buffer.byteLength(payload) }] }))
       : new Response(payload, { headers: { 'content-length': String(Buffer.byteLength(payload)) } }))
     updaterMocks.proxy.mockImplementation(async () => updaterMocks.fetch)
@@ -286,7 +289,9 @@ describe('Windows updater lifecycle', () => {
     expect(await updater.updaterDownload()).toEqual({ status: 'none' })
     updaterMocks.version = '2.2.2'
     expect(await updater.updaterDownload()).toEqual({ status: 'downloaded', version: '2.2.2' })
-    expect(updaterMocks.fetch).toHaveBeenCalledTimes(3)
+    expect(updaterMocks.fetch.mock.calls.map(([url]) => url.split('/').slice(-2).join('/'))).toEqual([
+      'release-channels/stable.json', 'release-channels/stable.json', 'v2.2.2/latest.yml', 'v2.2.2/TouShou-x64.exe'
+    ])
   })
 
   it.each(['proxy-setup', 'fetch', 'response-body'] as const)('bounds %s plus a stalled direct manifest fallback', async phase => {
@@ -298,7 +303,8 @@ describe('Windows updater lifecycle', () => {
     const pending = updater.updaterDownload()
     await vi.advanceTimersByTimeAsync(40_000)
     expect(await pending).toMatchObject({ status: 'error', operation: 'download' })
-    expect(updaterMocks.fallback).toHaveBeenCalledTimes(1)
+    expect(updaterMocks.fallback).not.toHaveBeenCalled()
+    expect(updaterMocks.feed).not.toHaveBeenCalled()
     expect(updaterMocks.direct).toHaveBeenCalledTimes(1)
     expect(updaterMocks.direct.mock.calls[0][1].signal.aborted).toBe(true)
   })
@@ -312,7 +318,8 @@ describe('Windows updater lifecycle', () => {
       return request
     })
     expect(await updater.updaterDownload()).toMatchObject({ status: 'error', operation: 'download' })
-    expect(updaterMocks.fallback).toHaveBeenCalledTimes(1)
+    expect(updaterMocks.fallback).not.toHaveBeenCalled()
+    expect(updaterMocks.feed).not.toHaveBeenCalled()
   })
 
   it('cancels a late manifest response without reading its body after the deadline', async () => {
@@ -337,6 +344,24 @@ describe('Windows updater lifecycle', () => {
     await vi.advanceTimersByTimeAsync(40_000)
     await pending
     expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('pins the native fallback to the offered Windows release after a checksum failure', async () => {
+    updaterMocks.fetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('stable.json')) return new Response(JSON.stringify({ schemaVersion: 1, macos: '9.0.0', windows: '2.2.2' }))
+      if (url.endsWith('latest.yml')) return new Response(JSON.stringify({ version: '2.2.2', files: [
+        { url: 'TouShou-x64.exe', sha512: Buffer.alloc(64).toString('base64'), size: 3 }
+      ] }))
+      return new Response('bad')
+    })
+    updaterMocks.check.mockResolvedValue({ isUpdateAvailable: true, updateInfo: {
+      version: '2.2.2', files: [{ url: 'TouShou-x64.exe', sha512: Buffer.alloc(64).toString('base64') }]
+    } })
+    updaterMocks.fallback.mockResolvedValue([])
+    await updater.updaterDownload()
+    expect(updaterMocks.feed).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://github.com/taotao135791-bit/toushou/releases/download/v2.2.2/' }))
+    expect(updaterMocks.fallback).toHaveBeenCalledOnce()
+    expect(() => statSync(path.join(updaterMocks.temp, 'toushou-update', '2.2.2', 'TouShou-x64.exe'))).toThrow()
   })
 
   it('requests NSIS relaunch and only quits after the installer successfully spawns', async () => {

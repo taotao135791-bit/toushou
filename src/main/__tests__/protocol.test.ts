@@ -310,7 +310,7 @@ describe('parseRpcLine', () => {
     })
     expect(parseRpcLine(end, 's1')).toEqual({
       kind: 'event',
-      event: { type: 'compaction', sessionId: 's1', phase: 'end' }
+      event: { type: 'compaction', sessionId: 's1', phase: 'end', outcome: 'skipped' }
     })
   })
 

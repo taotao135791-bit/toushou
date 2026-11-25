@@ -9,7 +9,7 @@ app.whenReady().then(async () => {
   let phase = 'initial'
   const dimensions = async () => {
     if (!win || win.isDestroyed()) return { unavailable: true }
-    const native = { content: win.getContentBounds(), outer: win.getBounds(), workArea: screen.getDisplayMatching(win.getBounds()).workArea, visible: win.isVisible(), focused: win.isFocused() }
+    const native = { content: win.getContentBounds(), outer: win.getBounds(), workArea: screen.getDisplayMatching(win.getBounds()).workArea, visible: win.isVisible(), focused: win.isFocused(), webContentsFocused: win.webContents.isFocused() }
     let renderer
     try { renderer = await win.webContents.executeJavaScript(`({innerWidth,innerHeight,outerWidth,outerHeight,visibility:document.visibilityState,focused:document.hasFocus()})`) }
     catch { renderer = { unavailable: true } }
@@ -28,42 +28,199 @@ app.whenReady().then(async () => {
     win.show()
     // CI displays can have a smaller work area; preserve the viewport under test.
     win.setContentSize(1024, 700)
+    if (process.platform === 'darwin') app.focus({ steal: true })
     win.focus()
     wc.focus()
     await Promise.race([readyToShow, new Promise((_, reject) => setTimeout(() => reject(new Error('ready-to-show timeout')), 5000))])
     const js = source => wc.executeJavaScript(source)
     const waitFor = async expression => {
       const until = Date.now() + 5000
-      while (!await js(expression)) {
+      let result
+      while (!(result = await js(expression))) {
         if (Date.now() > until) {
-          const state = await js(`(() => {const el=document.activeElement;const trigger=document.querySelector('button[aria-label="Add content"]');const action=[...document.querySelectorAll('button')].find(item=>item.textContent.trim()==='Attach image');return {active:el?.getAttribute('aria-label')||el?.tagName,expanded:trigger?.getAttribute('aria-expanded'),attachment:action?getComputedStyle(action).visibility:'missing',events:window.composerInputEvents?.slice(-15)}})()`)
+          const state = await js(`(() => {
+            const describe = el => {
+              if (!el) return null
+              const css = getComputedStyle(el), r = el.getBoundingClientRect()
+              const hit = document.elementFromPoint(r.left + r.width / 2,r.top + r.height / 2)
+              return {html: el.outerHTML.split('>')[0].slice(0,260), text: el.tagName==='BUTTON' ? el.textContent.trim() : undefined,
+                visibility:css.visibility,display:css.display,position:css.position,disabled:el.matches(':disabled'),inert:!!el.closest('[inert]'),
+                offsetParent:el.offsetParent?.tagName, rect:[r.left,r.top,r.width,r.height],hit:hit?.tagName,
+                hitButton:hit?.closest('button')?.textContent.trim(),expanded:el.getAttribute('aria-expanded')}
+            }
+            const tray=document.querySelector('.home-hero .composer-tray button[aria-haspopup=listbox]')
+            return {active:describe(document.activeElement),tray:describe(tray),
+              pluginButtons:[...document.querySelectorAll('button')].filter(button=>button.textContent.trim()==='Plugins').map(describe),
+              input:describe(document.querySelector('input[aria-label="Search skills, connections and plugins"]')),
+              portals:[...document.querySelectorAll('body > .shadow-pop')].map(describe),
+              topLayer:[...document.querySelectorAll('dialog:modal, :popover-open')].map(describe),
+              theme:{classes:document.documentElement.className,bodyClasses:document.body.className, heading:document.querySelector('.effort-heading') && getComputedStyle(document.querySelector('.effort-heading')).color,
+                sampledLight:window.testLightEffort, forcedColors:matchMedia('(forced-colors: active)').matches},
+              openButtons:[...document.querySelectorAll('button[aria-expanded=true]')].map(describe),
+              focusCalls:window.menuFocusCalls?.slice(-10), events:window.composerInputEvents?.slice(-15)}
+          })()`)
           throw new Error(`${phase}: timed out: ${expression}; renderer: ${JSON.stringify(state)}`)
         }
         await new Promise(resolve => setTimeout(resolve, 15))
       }
+      return result
     }
     const frame = () => js(`new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('animation-frame timeout; visible='+document.visibilityState+' focused='+document.hasFocus())),3000);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}))})`)
     await waitFor(`document.visibilityState==='visible' && document.hasFocus() && !!window.chatPerfFixture && innerWidth===1024 && innerHeight===700`)
     await frame()
+    phase = 'open a picked image before and after an image-only send'
+    const imageButton = `document.querySelector('button[aria-label="View image"]')`
+    const lightboxImage = `document.querySelector('dialog[open] img')`
+    const viewImage = async () => {
+      await waitFor(imageButton)
+      await js(imageButton + '.click()')
+      await waitFor(lightboxImage + '?.naturalWidth === 1')
+      const src = await js(lightboxImage + '.src')
+      await js(`document.querySelector('dialog[open] button[aria-label="Close"]').click()`)
+      await waitFor('!document.querySelector("dialog[open]")')
+      return src
+    }
+    await js(`document.querySelector('button[aria-label="Add content"]').click()`)
+    await js("[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Attach file').click()")
+    const stagedImage = await viewImage()
+    await js(`document.querySelector('button[aria-label="Send"]').click()`)
+    await waitFor('window.chatPerfFixture.sentImages.length === 1')
+    const deliveredImage = await viewImage()
+    if (stagedImage !== deliveredImage || !await js('window.chatPerfFixture.sentImages[0].data === ' + JSON.stringify(stagedImage.split(',')[1]))) {
+      throw new Error('The preview and dispatched image bytes differ')
+    }
+    phase = 'chat footer and context compaction'
+    await js('window.chatPerfFixture.finishTurn()')
+    const usageButton = `document.querySelector('button[aria-label="Context usage and compaction"]')`
+    const usageDialog = `document.querySelector('[role="dialog"][aria-label="Context usage and compaction"]')`
+    await waitFor(`${usageButton}?.textContent.trim() === '358.5k tokens'`)
+    const bottomGap = await js(`innerHeight - ${usageButton}.getBoundingClientRect().bottom`)
+    if (bottomGap < 0 || bottomGap > 10) throw new Error('Chat footer did not use bottom space: ' + bottomGap)
+    await js(`${usageButton}.click()`)
+    await waitFor(`${usageDialog}?.textContent.includes('60% · 120k / 200k tokens')`)
+    const progress = `document.querySelector('[data-chat-turn] [role=status][data-compaction-status="running"]')`
+    async function checkCompactionInTranscript(finish) {
+      await waitFor(`${progress}?.textContent.includes('Compacting') && ${progress}.getBoundingClientRect().height > 0`)
+      await js(`window.testCompactionRow = ${progress}; window.chatPerfFixture.${finish}()`)
+      await waitFor(`window.testCompactionRow.isConnected && window.testCompactionRow.dataset.compactionStatus === 'compacted' && window.testCompactionRow.textContent.includes('context compacted') && !${progress}`)
+    }
+    await js(`${usageDialog}.querySelector('button').click()`)
+    await checkCompactionInTranscript('finishManualCompact')
+    await waitFor(`window.chatPerfFixture.compactCalls === 1 && ${usageDialog}?.textContent.includes('<1%')`)
+    await js(`${usageButton}.click()`)
+    await js("document.querySelector('textarea').focus()")
+    await wc.insertText('/compact')
+    await waitFor("[...document.querySelectorAll('button')].some(b => b.textContent.includes('/compact') && b.textContent.includes('<1%'))")
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+    await checkCompactionInTranscript('finishManualCompact')
+    await waitFor("window.chatPerfFixture.compactCalls === 2 && document.querySelector('textarea').value === ''")
+    await js('window.chatPerfFixture.startAutoCompact()')
+    await checkCompactionInTranscript('finishAutoCompact')
+    await js('window.chatPerfFixture.finishImageTest()')
+    await frame()
     phase = 'DeepSeek session thinking selector'
     const modelTrigger = `document.querySelector('button[title="Model"]')`
     const thinkingTrigger = `document.querySelector('button[title="Thinking"]')`
-    const thinkingMenu = `[...document.querySelectorAll('body > div')].find(element => element.firstElementChild?.tagName === 'BUTTON' && element.firstElementChild.textContent.trim() === 'Auto')`
+    const thinkingMenu = `document.querySelector('[data-thinking-menu]')`
     await waitFor(`${modelTrigger}?.ariaLabel === 'Model: DeepSeek-V4.1-Flash' && ${thinkingTrigger}?.ariaLabel === 'Thinking: Auto'`)
     const showThinkingMenu = async () => {
       await js(`${thinkingTrigger}.click()`)
       await waitFor(`!!(${thinkingMenu})`)
     }
-    const thinkingLabels = () => js(`[...(${thinkingMenu}).children].map(button => button.textContent.trim())`)
+    const thinkingLabels = () => js(`[...(${thinkingMenu}).querySelectorAll('[data-thinking-choice]')].map(button => button.textContent.trim())`)
     const chooseThinking = async label => {
-      await js(`[...(${thinkingMenu}).children].find(button => button.textContent.trim() === ${JSON.stringify(label)})?.click()`)
+      await js(`[...(${thinkingMenu}).querySelectorAll('[data-thinking-choice]')].find(button => button.textContent.trim() === ${JSON.stringify(label)})?.click()`)
       await waitFor(`${thinkingTrigger}.ariaLabel === ${JSON.stringify(`Thinking: ${label}`)}`)
     }
     await showThinkingMenu()
     const deepSeekThinking = await thinkingLabels()
-    for (const [index, label] of ['Low', 'High', 'Max', 'Off'].entries()) {
-      if (index > 0) await showThinkingMenu()
-      await chooseThinking(label)
+    const chatMenuAbove = await js(`(${thinkingMenu}).closest('body > div').getBoundingClientRect().bottom <= ${thinkingTrigger}.getBoundingClientRect().top`)
+    const slider = `(${thinkingMenu}).querySelector('input[type="range"]')`
+    const checkMenu = () => waitFor(`!!(${thinkingMenu}) && ${thinkingTrigger}.getAttribute('aria-expanded') === 'true'`)
+    const dismissWithKey = async () => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+      await waitFor(`!(${thinkingMenu})`)
+    }
+    const narrowWidth = 540
+    win.setContentSize(narrowWidth, 700)
+    await waitFor(`innerWidth === ${narrowWidth}`)
+    await frame()
+    const narrowMenuPosition = `(() => {
+      const rect = (${thinkingMenu}).parentElement.getBoundingClientRect()
+      const trigger = (${thinkingTrigger}).getBoundingClientRect()
+      return rect.left >= 16 && rect.right <= innerWidth - 16 && rect.right <= trigger.right + 1
+    })()`
+    await waitFor(narrowMenuPosition)
+    const insetMenu = await js(narrowMenuPosition)
+    win.setContentSize(1024, 700)
+    await waitFor('innerWidth === 1024')
+    await frame()
+    const themeColor = `getComputedStyle((${thinkingMenu}).querySelector('.effort-heading')).color`
+    await js("document.documentElement.classList.remove('dark')")
+    await frame()
+    const lightEffort = await js(`window.testLightEffort = ${themeColor}`)
+    await js("document.documentElement.classList.add('dark')")
+    await waitFor(`${themeColor} !== ${JSON.stringify(lightEffort)}`)
+    const darkEffort = await js(themeColor)
+    await js("document.documentElement.classList.remove('dark')")
+    const fill = `(${thinkingMenu}).querySelector('.effort-fill')`
+    const palette = () => js(`[getComputedStyle(${fill}).backgroundImage, ${themeColor}]`)
+    if (process.platform === 'darwin') app.focus({ steal: true })
+    win.focus()
+    wc.focus()
+    wc.debugger.attach('1.3')
+    const setMotionPreference = value => wc.debugger.sendCommand('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value }]
+    })
+    await setMotionPreference('no-preference')
+    // Compare two frames while the knob is at rest. The repeating tile may
+    // wrap between samples, so account for a full tile of leftward travel.
+    const particlesMoveLeft = () => js(`(async () => {
+      const read = () => getComputedStyle(${fill}, '::before')
+      const x = () => new DOMMatrix(read().transform).m41
+      const tile = parseFloat(read().getPropertyValue('--tile'))
+      const start = x()
+      await new Promise(resolve => setTimeout(resolve, 125))
+      const shift = (start - x() + tile) % tile
+      return read().backgroundImage.includes('radial-gradient') && shift > 0 && shift < tile / 2
+    })()`)
+    const drag = async (start, end, label) => {
+      const rect = await js(`(${slider}).getBoundingClientRect().toJSON()`)
+      const x = fraction => Math.round(rect.left + 13 + (rect.width - 26) * fraction)
+      const y = Math.round(rect.top + rect.height / 2)
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: x(start), y, button: 'left', buttons: 1, clickCount: 1 })
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x(end), y, button: 'left', buttons: 1 })
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x(end), y, button: 'left', buttons: 0, clickCount: 1 })
+      await waitFor(`${thinkingTrigger}.ariaLabel === ${JSON.stringify('Thinking: ' + label)}`)
+      await checkMenu()
+    }
+    await drag(0, 1 / 3, 'Low')
+    const lowPalette = await palette()
+    const blueDrifts = await particlesMoveLeft()
+    await drag(1 / 3, 2 / 3, 'High')
+    const highPalette = await palette()
+    await js(`(${slider}).focus()`)
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'End' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'End' })
+    await waitFor(`${thinkingTrigger}.ariaLabel === 'Thinking: Max'`)
+    await checkMenu()
+    const peakPalette = await palette()
+    const peakDrifts = await particlesMoveLeft()
+    await setMotionPreference('reduce')
+    await waitFor(`getComputedStyle(${fill}, '::before').animationName === 'none' && getComputedStyle(${fill}.firstElementChild).animationName === 'none'`)
+    await setMotionPreference('no-preference')
+    await chooseThinking('Off')
+    await checkMenu()
+    const idleDrifts = await particlesMoveLeft()
+    wc.debugger.detach()
+    await dismissWithKey()
+    const hiddenAuto = await js(`!document.querySelector('button[aria-label="Set thinking level automatically"]')`)
+    const effortInteraction = {
+      insetMenu, themed: lightEffort !== darkEffort, hiddenAuto, blueDrifts, peakDrifts, idleDrifts,
+      sharedBluePalette: lowPalette.every((value, index) => value === highPalette[index]),
+      distinctPeakPalette: lowPalette.every((value, index) => value !== peakPalette[index])
     }
     phase = 'switch model thinking capabilities'
     const chooseModel = async name => {
@@ -78,6 +235,34 @@ app.whenReady().then(async () => {
     await showThinkingMenu()
     const mediumOnlyThinking = await thinkingLabels()
     await chooseThinking('Medium')
+    await js(`document.querySelector('button[aria-label="Set thinking level automatically"]').click()`)
+    await waitFor(`${thinkingTrigger}.ariaLabel === 'Thinking: Auto'`)
+    await checkMenu()
+    // A visible point in the editor is a real outside click. (4, 4) falls
+    // in native window chrome on Windows and never reaches the DOM there.
+    const closeFromEditor = async () => {
+      const editor = `document.querySelector('textarea')`
+      const point = await js(`(() => {
+        const field = ${editor}, rect = field.getBoundingClientRect()
+        for (const fraction of [0.1, 0.5, 0.9]) {
+          const x = Math.round(rect.left + rect.width * fraction), y = Math.round(rect.top + rect.height / 2)
+          if (document.elementFromPoint(x, y) === field) return { x, y }
+        }
+        throw new Error('No visible editor point outside the thinking menu')
+      })()`)
+      wc.sendInputEvent({ type: 'mouseMove', ...point })
+      wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 })
+      wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
+      await waitFor(`!(${thinkingMenu}) && document.activeElement === ${editor}`)
+    }
+    await closeFromEditor()
+    win.setContentSize(narrowWidth, 700)
+    await waitFor(`innerWidth === ${narrowWidth}`)
+    await showThinkingMenu()
+    await waitFor(narrowMenuPosition)
+    await closeFromEditor()
+    win.setContentSize(1024, 700)
+    await waitFor('innerWidth === 1024')
     await chooseModel('Synthetic plain model')
     await showThinkingMenu()
     const plainThinking = await thinkingLabels()
@@ -198,6 +383,7 @@ app.whenReady().then(async () => {
     await frame()
     const defaultRecovered = await js(`({ ...window.chatPerfFixture.recoverySnapshot(),promptGone:!document.querySelector('.home-hero').textContent.includes('Confirm the default save folder'),draft:document.querySelector('.home-hero textarea').value })`)
     phase = 'native undo after typing in the composer'
+    if (process.platform === 'darwin') app.focus({ steal: true })
     win.focus()
     wc.focus()
     await waitFor('document.hasFocus()')
@@ -206,9 +392,19 @@ app.whenReady().then(async () => {
     const invokeAction = `[...document.querySelectorAll('button')].find(button => button.textContent.trim()==='Use skill / plugin…')`
     const search = `document.querySelector('input[role="combobox"][aria-label="Filter skills, commands and plugins"]')`
     const skillOption = `[...document.querySelectorAll('button[role="option"]')].find(button => button.textContent.trim()==='Synthetic team skill')`
-    await js(`window.composerInputEvents=[];for(const type of ['focusin','pointerdown','click','keyup'])document.addEventListener(type,event=>{
-      const el=event.target;const label=el.getAttribute?.('aria-label')||(el.tagName==='BUTTON'?el.textContent.trim():el.tagName);
-      window.composerInputEvents.push({type,label,key:event.key,trusted:event.isTrusted});
+    await js(`window.composerInputEvents=[];window.menuFocusCalls=[];
+    const nativeFocus=HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus=function(...args){
+      const before=document.activeElement;
+      nativeFocus.apply(this,args);
+      window.menuFocusCalls.push({target:this.getAttribute('aria-label')||this.tagName,
+        before:before?.getAttribute('aria-label')||before?.tagName,ok:this===document.activeElement,
+        visible:getComputedStyle(this).visibility,connected:this.isConnected})
+    };
+    for(const type of ['focusin','pointerdown','click','keyup'])document.addEventListener(type,event=>{
+      const el=event.target;const button=el.closest?.('button');
+      const label=el.getAttribute?.('aria-label')||button?.textContent.trim()||el.tagName;
+      window.composerInputEvents.push({type,label,key:event.key,trusted:event.isTrusted,trigger:button?.getAttribute('aria-haspopup')});
     },true)`)
     const key = (keyCode, modifiers = []) => {
       wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
@@ -221,8 +417,21 @@ app.whenReady().then(async () => {
       await frame()
     }
     const click = async (expression) => {
-      await waitFor(`!!(${expression}) && getComputedStyle((${expression})).visibility==='visible'`)
-      const point = await js(`(() => {const r=(${expression}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`)
+      // Async results resize and reposition the portal after its rows mount.
+      // Send native input only when the same button is hit at a stable point.
+      const point = await waitFor(`(async () => {
+        const button = ${expression}
+        if (!button || button.disabled) return false
+        const center = () => {
+          const r = button.getBoundingClientRect()
+          return {x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2)}
+        }
+        const first = center()
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        const last = center()
+        return button.isConnected && first.x === last.x && first.y === last.y &&
+          button.contains(document.elementFromPoint(last.x, last.y)) && last
+      })()`)
       wc.sendInputEvent({ type: 'mouseMove', ...point })
       wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 })
       wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
@@ -235,12 +444,42 @@ app.whenReady().then(async () => {
       await waitFor(`!!${search}`)
       await waitFor(`getComputedStyle(${search}).visibility==='visible'`)
       await frame()
-      const focused = await js(`${search}===document.activeElement`)
-      pickerAutoFocus.push(focused)
-      if (!focused) await click(search)
       await waitFor(`${search}===document.activeElement`)
+      pickerAutoFocus.push(true)
       await waitFor(`!!(${skillOption})`)
     }
+    phase = 'home menus open below the composer'
+    const homeMenusBelow = []
+    for (const selector of ['button[aria-label="Add content"]', 'button[aria-label="Permissions"]', '.composer-model-control button:first-child[title]', 'button[title="Thinking"]', '.composer-tray button[aria-haspopup="menu"]']) {
+      const trigger = `document.querySelector(${JSON.stringify('.home-hero ' + selector)})`
+      await click(trigger)
+      const portal = `document.querySelector('body > div.shadow-pop')`
+      await waitFor(`!!${portal} && getComputedStyle(${portal}).visibility==='visible'`)
+      const below = `${portal}.getBoundingClientRect().top + 1 >= ${trigger}.getBoundingClientRect().bottom`
+      await waitFor(below)
+      homeMenusBelow.push(await js(below))
+      key('Escape')
+      await waitFor(`!${portal}`)
+    }
+    phase = 'home plugin tray'
+    const trayTrigger = `document.querySelector('.home-hero .composer-tray button[aria-haspopup="listbox"]')`
+    const traySearch = `document.querySelector('input[aria-label="Search skills, connections and plugins"]')`
+    const trayOption = label => `[...document.querySelectorAll('[role="option"]')].find(el => el.textContent.trim() === ${JSON.stringify(label)})`
+    await click(trayTrigger)
+    await waitFor(`${trayTrigger}.getAttribute('aria-expanded')==='true' && !!${traySearch} && document.activeElement===${traySearch}`)
+    await waitFor(`!!(${trayOption('DingTalk')}) && !(${trayOption('Report extension')})`)
+    await js('window.chatPerfFixture.releasePluginCatalog()')
+    await waitFor(`!!(${trayOption('DingTalk')}) && !!(${trayOption('synthetic-ads')}) && !!(${trayOption('Synthetic team skill')}) && !!(${trayOption('Report extension')})`)
+    const trayBelow = `${traySearch}.closest('body > div').getBoundingClientRect().top + 1 >= ${trayTrigger}.getBoundingClientRect().bottom`
+    await waitFor(trayBelow)
+    const opensBelow = await js(trayBelow)
+    await waitFor(`document.activeElement===${traySearch}`)
+    await wc.insertText('ding')
+    await waitFor(`!!(${trayOption('DingTalk')}) && !(${trayOption('synthetic-ads')})`)
+    key('Return')
+    await waitFor(`document.querySelector('.home-hero textarea').value.includes('Use the DingTalk connection to')`)
+    const homeTray = await js(`({opensBelow:${opensBelow},draft:document.querySelector('.home-hero textarea').value})`)
+    phase = 'native undo after typing in the composer'
     await js('window.chatPerfFixture.prepareComposer()')
     await waitFor(`${field}?.value==='Review'`)
     await frame()
@@ -278,7 +517,7 @@ app.whenReady().then(async () => {
     await js('window.chatPerfFixture.finishReadingSkill()')
     await frame()
     const composerSwitch = await js(`({drafts:window.chatPerfFixture.composerDrafts(),text:${field}.value})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
+    console.log('E2E_RESULT ' + JSON.stringify({ chatMenuAbove, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

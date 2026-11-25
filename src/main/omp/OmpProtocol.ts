@@ -1,5 +1,6 @@
 import { ExtensionUiAnswer, PanelOpenRequest, SessionEvent, SessionState } from '../../shared/types'
 import { normalizeToolCall } from '../../shared/toolNames'
+import { assistantReplyKey } from '../assistantReplyKey'
 import { safeBrowserPanelUrl } from '../navigation'
 import { safeExtensionExternalUrl } from './extensionLinks'
 import { modelThinkingEfforts } from './modelThinking'
@@ -284,6 +285,8 @@ export function normalizeRpcFrame(
           }
         }
       }
+      const replyKey = assistantReplyKey(msg)
+      if (replyKey) return { kind: 'event', event: { type: 'reply_completed', sessionId, replyKey } }
       return { kind: 'none' }
     }
 
@@ -416,11 +419,15 @@ export function normalizeRpcFrame(
       }
 
     case 'compaction_end':
-    case 'auto_compaction_end':
+    case 'auto_compaction_end': {
+      const outcome = payload.aborted === true ? 'aborted' : payload.errorMessage ? 'failed'
+        : payload.skipped === true ? 'skipped' : payload.result ? 'compacted'
+        : payload.type === 'auto_compaction_end' ? 'skipped' : undefined
       return {
         kind: 'event',
-        event: { type: 'compaction', sessionId, phase: 'end' }
+        event: { type: 'compaction', sessionId, phase: 'end', ...(outcome && { outcome }) }
       }
+    }
 
     // Provider auto-retry: one informational line per attempt, not a stream
     // of raw errors. A final failure ends the turn via message_end (above),
@@ -455,7 +462,7 @@ export function normalizeRpcFrame(
         event: {
           type: 'thinking_level_changed',
           sessionId,
-          level: typeof payload.thinkingLevel === 'string' ? payload.thinkingLevel : undefined
+          level: payload.configured === 'auto' ? 'auto' : typeof payload.thinkingLevel === 'string' ? payload.thinkingLevel : undefined
         }
       }
 

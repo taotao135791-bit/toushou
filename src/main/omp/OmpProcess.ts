@@ -1,9 +1,10 @@
+import { desktopCompactionPolicy } from '../../shared/compaction'
 import { ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { app } from 'electron'
-import { CliInfo, Language, PermissionMode, SessionThinkingLevel } from '../../shared/types'
+import { CliInfo, Language, PermissionMode, SessionThinkingSelection } from '../../shared/types'
 import { getStore } from '../store'
 import { buildAgentArgs } from '../languageArgs'
 import { executableSearchDirs } from './OmpCapabilities'
@@ -43,6 +44,19 @@ function sessionTopicExtensionPath(): string {
 export interface ApprovalConfig {
   mode: 'off' | 'writes' | 'all'
   locale?: 'zh' | 'en'
+}
+
+const contextPolicyPath = () => path.join(app.getPath('userData'), 'omp-context-policy.json')
+
+export function writeContextPolicy(value: unknown): string {
+  const file = contextPolicyPath()
+  const content = JSON.stringify(desktopCompactionPolicy(value))
+  if (existsSync(file) && readFileSync(file, 'utf8') === content) return file
+  mkdirSync(path.dirname(file), { recursive: true })
+  const temp = file + '.' + process.pid + '.tmp'
+  writeFileSync(temp, content, { mode: 0o600 })
+  renameSync(temp, file)
+  return file
 }
 
 /** Per-session approval config file path (one per session — see below). */
@@ -146,7 +160,7 @@ export interface SpawnOptions {
   /** One-shot session-scoped model override (--model spawn arg). */
   modelSelector?: string
   /** One-shot session-scoped thinking override (--thinking spawn arg). */
-  thinkingLevel?: SessionThinkingLevel
+  thinkingLevel?: SessionThinkingSelection
   /** One-shot session-scoped team-skill SOP appended to the system prompt. */
   skillSystemPrompt?: string
   /** `inherit` (production default) or `replace` (test isolation). */
@@ -179,8 +193,15 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
   // bundled approval extension; current omp takes --tools / --approval-mode
   // (its native prompts arrive as ordinary extension_ui_request dialogs).
   const isCurrent = cli.command === 'omp'
+  let contextPolicyFile: string | undefined
   let approval: ApprovalConfig = { mode: 'off' }
   if (isCurrent) {
+    contextPolicyFile = writeContextPolicy(getStore('autoCompactThresholdPercent'))
+    const contextExtension = app.isPackaged
+      ? path.join(process.resourcesPath, 'context-policy', 'index.ts')
+      : path.join(app.getAppPath(), 'resources', 'context-policy', 'index.ts')
+    args.push('--config', contextPolicyFile)
+    if (existsSync(contextExtension)) args.push('-e', contextExtension)
     const plan = resolvePermissionModeCurrent(opts.permissionMode)
     // Restricted runtime profiles keep their fixed tool allowlist.
     if (!plan.tools) {
@@ -211,7 +232,7 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
   if (opts.modelSelector) {
     args.push('--model', opts.modelSelector)
   }
-  if (opts.thinkingLevel) {
+  if (opts.thinkingLevel && (isCurrent || opts.thinkingLevel !== 'auto')) {
     args.push('--thinking', opts.thinkingLevel)
   }
   // Inject the 投手 ad-optimizer persona and steer the reply language.
@@ -227,6 +248,7 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       HOME: homedir(),
       FORCE_COLOR: '0',
       OMP_APPROVAL_CONFIG: approvalConfigFile,
+      ...(contextPolicyFile && { TOUSHOU_CONTEXT_POLICY: contextPolicyFile }),
       // Loopback bridge for the bundled browser-use tools (absent when the
       // bridge could not start; the tools then report a clear error). The
       // per-session token binds bridge actions to this session.

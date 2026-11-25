@@ -7,8 +7,13 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release.yml'
+      - 'tools/release-verify.cjs'
+      - 'test/release-verify.test.cjs'
+      - 'tools/promote-release-channels.cjs'
       - 'tools/release-smoke.cjs'
       - 'tools/release-smoke-processes.cjs'
+  repository_dispatch:
+    types: [recover-stable-release]
   workflow_dispatch:
     inputs:
       platform:
@@ -18,27 +23,89 @@ on:
         default: all
         options:
           - all
+          - macos
           - windows
 
-# Build/preflight jobs do not get a release-writing token. Only tag staging
-# and publication have write permission.
+# Only the tag publication and channel promotion jobs can write to the repository.
 permissions:
   contents: read
 
 # Tags are immutable release identifiers. Never cancel a release while it is
 # packaging or uploading its assets.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'repository_dispatch' && format('refs/tags/{0}', github.event.client_payload.tag) || github.ref }}
   cancel-in-progress: false
 
 jobs:
+  plan:
+    name: Select release platforms
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      mode: ${{ steps.source.outputs.mode }}
+      tag: ${{ steps.source.outputs.tag }}
+      source: ${{ steps.source.outputs.source }}
+      control: ${{ steps.source.outputs.control }}
+      target: ${{ steps.plan.outputs.target }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test release selection and verification
+        run: node --test test/release-verify.test.cjs
+      - name: Resolve control revision and immutable product source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node tools/release-verify.cjs resolve-source >> "$GITHUB_OUTPUT"
+      - name: Check release target, version and source
+        id: plan
+        env:
+          MANUAL_TARGET: ${{ inputs.platform }}
+          SOURCE_SHA: ${{ steps.source.outputs.source }}
+          RELEASE_TAG: ${{ steps.source.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/release-source" "$SOURCE_SHA"
+          cd "$RUNNER_TEMP/release-source"
+          node "$GITHUB_WORKSPACE/tools/release-verify.cjs" plan >> "$GITHUB_OUTPUT"
+      - name: Record release provenance
+        env:
+          MODE: ${{ steps.source.outputs.mode }}
+          CONTROL_SHA: ${{ steps.source.outputs.control }}
+          SOURCE_SHA: ${{ steps.source.outputs.source }}
+          RELEASE_TAG: ${{ steps.source.outputs.tag }}
+          TARGET: ${{ steps.plan.outputs.target }}
+          FAILED_RUN: ${{ steps.source.outputs.failed_run }}
+        run: |
+          {
+            echo "Mode: $MODE"
+            echo
+            echo "- Workflow and verification scripts: $CONTROL_SHA"
+            echo "- Product and release notes: $SOURCE_SHA"
+            echo "- Version tag: ${RELEASE_TAG:-preflight}"
+            echo "- Platforms: $TARGET"
+            if [[ -n "$FAILED_RUN" ]]; then echo "- Original failed push: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$FAILED_RUN"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Verify and package (macOS)
-    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
+    needs: plan
+    if: needs.plan.outputs.target == 'macos' || needs.plan.outputs.target == 'all'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.plan.outputs.source }}
           fetch-depth: 0
 
       # package.json#packageManager is the single source of truth for pnpm.
@@ -55,29 +122,6 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-
-      - name: Verify tag matches package version
-        if: github.event_name == 'push'
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          version="$(node -p 'require("./package.json").version')"
-          expected="v${version}"
-
-          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
-            echo "Release workflow must run from a tag, got ${GITHUB_REF_TYPE}."
-            exit 1
-          fi
-
-          if [[ "${tag}" != "${expected}" ]]; then
-            echo "Tag ${tag} does not match package.json version ${version}."
-            echo "Create ${expected}, or update package.json before tagging."
-            exit 1
-          fi
-
-          git rev-parse --verify "refs/tags/${tag}" >/dev/null
-          echo "Publishing ${tag} from ${GITHUB_SHA}."
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -129,11 +173,11 @@ jobs:
         env:
           # Do not expose empty signing variables as electron-builder inputs:
           # an empty CSC_LINK is interpreted as a local certificate path.
-          RELEASE_CSC_LINK: ${{ github.event_name == 'push' && secrets.CSC_LINK || '' }}
-          RELEASE_CSC_KEY_PASSWORD: ${{ github.event_name == 'push' && secrets.CSC_KEY_PASSWORD || '' }}
-          RELEASE_APPLE_ID: ${{ github.event_name == 'push' && secrets.APPLE_ID || '' }}
-          RELEASE_APPLE_APP_SPECIFIC_PASSWORD: ${{ github.event_name == 'push' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          RELEASE_APPLE_TEAM_ID: ${{ github.event_name == 'push' && secrets.APPLE_TEAM_ID || '' }}
+          RELEASE_CSC_LINK: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.CSC_LINK || '' }}
+          RELEASE_CSC_KEY_PASSWORD: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.CSC_KEY_PASSWORD || '' }}
+          RELEASE_APPLE_ID: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.APPLE_ID || '' }}
+          RELEASE_APPLE_APP_SPECIFIC_PASSWORD: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          RELEASE_APPLE_TEAM_ID: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           set -euo pipefail
 
@@ -262,10 +306,13 @@ jobs:
   # plus latest.yml/blockmap so the in-app updater has a Windows channel.
   build-windows:
     name: Verify and package (Windows)
+    needs: plan
+    if: needs.plan.outputs.target == 'windows' || needs.plan.outputs.target == 'all'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.plan.outputs.source }}
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
@@ -407,124 +454,139 @@ jobs:
             release/SHA256SUMS-windows.txt
 
   verify-assets:
-    name: Verify packaged artifacts (preflight)
-    needs: [build, build-windows]
+    name: Verify selected platform artifacts
+    needs: [plan, build, build-windows]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: TouShou-${{ github.run_id }}-macos
-          path: artifacts/mac
-      - uses: actions/download-artifact@v4
-        with:
-          name: TouShou-${{ github.run_id }}-windows
-          path: artifacts/windows
-      - name: Verify required files and checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          mac_assets=(TouShou-arm64.dmg TouShou-arm64.zip TouShou-arm64.zip.blockmap TouShou-x64.dmg TouShou-x64.zip TouShou-x64.zip.blockmap latest-mac.yml)
-          windows_assets=(TouShou-x64.exe TouShou-x64.exe.blockmap latest.yml)
-          for asset in "${mac_assets[@]}"; do test -s "artifacts/mac/${asset}"; done
-          for asset in "${windows_assets[@]}"; do test -s "artifacts/windows/${asset}"; done
-          test -s artifacts/mac/SHA256SUMS.txt
-          test -s artifacts/windows/SHA256SUMS-windows.txt
-          for asset in "${mac_assets[@]}"; do
-            grep -Fqx "${asset}" <(sed -E 's/^[0-9a-fA-F]{64} [ *]//' artifacts/mac/SHA256SUMS.txt)
-          done
-          for asset in "${windows_assets[@]}"; do
-            grep -Fqx "${asset}" <(sed -E 's/^[0-9a-fA-F]{64} [ *]//' artifacts/windows/SHA256SUMS-windows.txt)
-          done
-          (cd artifacts/mac && sha256sum --check SHA256SUMS.txt)
-          (cd artifacts/windows && sha256sum --check SHA256SUMS-windows.txt)
-
-  stage-release:
-    name: Upload verified assets to draft
-    if: github.event_name == 'push'
-    needs: [build, build-windows, verify-assets]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    env:
+      TARGET: ${{ needs.plan.outputs.target }}
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.control }}
+      - name: Require every selected build and allow only intentional skips
+        env:
+          MAC_RESULT: ${{ needs.build.result }}
+          WINDOWS_RESULT: ${{ needs.build-windows.result }}
+        run: node tools/release-verify.cjs check-builds "$TARGET" "$MAC_RESULT" "$WINDOWS_RESULT"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --prod --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@v4
+        if: env.TARGET != 'windows'
         with:
           name: TouShou-${{ github.run_id }}-macos
-          path: artifacts/mac
+          path: artifacts
       - uses: actions/download-artifact@v4
+        if: env.TARGET != 'macos'
         with:
           name: TouShou-${{ github.run_id }}-windows
-          path: artifacts/windows
-      - name: Create draft and upload artifacts
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          version="$(node -p 'require("./package.json").version')"
-          test "${tag}" = "v${version}"
-          notes="docs/releases/v${version}.md"
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            test "$(gh release view "${tag}" --json isDraft --jq .isDraft)" = true || {
-              echo "Release already published; refusing to overwrite its assets."
-              exit 1
-            }
-            if [[ -f "${notes}" ]]; then
-              gh release edit "${tag}" --notes-file "${notes}"
-            fi
-          else
-            if [[ -f "${notes}" ]]; then
-              gh release create "${tag}" --title "投手 ${tag}" --notes-file "${notes}" --draft
-            else
-              gh release create "${tag}" --title "投手 ${tag}" --generate-notes --draft
-            fi
-          fi
-          assets=()
-          while IFS= read -r asset; do assets+=("${asset}"); done < <(find artifacts/mac artifacts/windows -maxdepth 1 -type f -print | LC_ALL=C sort)
-          test "${#assets[@]}" -gt 0
-          gh release upload "${tag}" "${assets[@]}" --clobber
+          path: artifacts
+      - name: Verify package hashes, updater manifests and checksums
+        run: node tools/release-verify.cjs verify "$TARGET" artifacts "$VERSION"
 
   publish:
     name: Verify uploaded assets and publish
-    if: github.event_name == 'push'
-    needs: [stage-release, verify-assets]
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && needs.verify-assets.result == 'success' }}
+    needs: [plan, verify-assets]
+    runs-on: ubuntu-latest
+    # Serialize the global version check and publication, even across different tags.
+    concurrency:
+      group: stable-release-publish
+      queue: max
+    permissions:
+      contents: write
+    env:
+      TARGET: ${{ needs.plan.outputs.target }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      SOURCE_SHA: ${{ needs.plan.outputs.source }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.control }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --prod --frozen-lockfile --ignore-scripts
+      - name: Check release order again after packaging
+        id: prior
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/release-source" "$SOURCE_SHA"
+          cd "$RUNNER_TEMP/release-source"
+          visibility=$(node "$GITHUB_WORKSPACE/tools/release-verify.cjs" check-publish)
+          echo "visibility=$visibility" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        if: steps.prior.outputs.visibility == 'unpublished' && env.TARGET != 'windows'
+        with:
+          name: TouShou-${{ github.run_id }}-macos
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        if: steps.prior.outputs.visibility == 'unpublished' && env.TARGET != 'macos'
+        with:
+          name: TouShou-${{ github.run_id }}-windows
+          path: artifacts
+      - name: Create or resume draft and upload verified assets
+        if: steps.prior.outputs.visibility == 'unpublished'
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-source/docs/releases/v${VERSION}.md"
+          node tools/release-verify.cjs verify "$TARGET" artifacts "$VERSION"
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|@tsv')" = $'true\tfalse'
+            if [[ -f "$notes" ]]; then gh release edit "$RELEASE_TAG" --notes-file "$notes"; fi
+          else
+            args=(--generate-notes)
+            if [[ -f "$notes" ]]; then args=(--notes-file "$notes"); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --latest=false --title "投手 ${RELEASE_TAG}" "${args[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" artifacts/* --clobber
+      - name: Download and verify the release before making it public
+        env:
+          VISIBILITY: ${{ steps.prior.outputs.visibility }}
+        run: |
+          set -euo pipefail
+          release_dir="$(mktemp -d)"
+          trap 'rm -rf "$release_dir"' EXIT
+          gh release download "$RELEASE_TAG" --dir "$release_dir"
+          node tools/release-verify.cjs verify "$TARGET" "$release_dir" "$VERSION"
+          if [[ "$VISIBILITY" == unpublished ]]; then
+            for sums in artifacts/SHA256SUMS*.txt; do cmp "$sums" "$release_dir/${sums##*/}"; done
+            latest=false
+            if [[ "$VERSION" == 2.9.8 ]]; then latest=true; fi
+            gh release edit "$RELEASE_TAG" --draft=false --latest="$latest"
+          fi
+          test "$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|@tsv')" = $'false\tfalse'
+          test "$(gh api 'repos/{owner}/{repo}/releases/latest' --jq .tag_name)" = v2.9.8
+
+  promote:
+    name: Promote verified platform updates
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && needs.publish.result == 'success' }}
+    needs: [plan, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TARGET: ${{ needs.plan.outputs.target }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check all release assets and publish draft
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          test "$(gh release view "${tag}" --json isDraft --jq .isDraft)" = true || {
-            echo "Expected a draft release; refusing to publish."
-            exit 1
-          }
-          release_dir="$(mktemp -d)"
-          trap 'rm -rf "${release_dir}"' EXIT
-          gh release download "${tag}" --dir "${release_dir}"
-          cd "${release_dir}"
-          mac_assets=(TouShou-arm64.dmg TouShou-arm64.zip TouShou-arm64.zip.blockmap TouShou-x64.dmg TouShou-x64.zip TouShou-x64.zip.blockmap latest-mac.yml)
-          windows_assets=(TouShou-x64.exe TouShou-x64.exe.blockmap latest.yml)
-          for asset in "${mac_assets[@]}" "${windows_assets[@]}" SHA256SUMS.txt SHA256SUMS-windows.txt; do
-            test -s "${asset}" || { echo "Missing or empty uploaded asset: ${asset}"; exit 1; }
-          done
-          for asset in "${mac_assets[@]}"; do
-            grep -Fqx "${asset}" <(sed -E 's/^[0-9a-fA-F]{64} [ *]//' SHA256SUMS.txt) || {
-              echo "Missing macOS checksum: ${asset}"; exit 1;
-            }
-          done
-          for asset in "${windows_assets[@]}"; do
-            grep -Fqx "${asset}" <(sed -E 's/^[0-9a-fA-F]{64} [ *]//' SHA256SUMS-windows.txt) || {
-              echo "Missing Windows checksum: ${asset}"; exit 1;
-            }
-          done
-          sha256sum --check SHA256SUMS.txt
-          sha256sum --check SHA256SUMS-windows.txt
-          gh release edit "${tag}" --draft=false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.control }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tools/promote-release-channels.cjs "$VERSION" "$TARGET"

@@ -1,7 +1,7 @@
 import { Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
-import type { ProjectRecord, RuntimeModelInfo, RuntimeOverview, Session, SessionState, SessionThinkingLevel, SkillEntry, SkillReadResult, WorkspaceGrant } from '@shared/types'
+import type { ProjectRecord, RuntimeModelInfo, RuntimeOverview, Session, SessionState, SessionThinkingSelection, SkillEntry, SkillReadResult, WorkspaceGrant } from '@shared/types'
 import ChatPanel from './ChatPanel'
 import ExecutionActivity from './ExecutionActivity'
 import MessageList from './MessageList'
@@ -55,11 +55,34 @@ browserWindow.clearInterval = (timer) => {
   clearInterval(timer)
 }
 
+let releasePluginCatalog!: () => void
+const pluginCatalogReady = new Promise<void>(resolve => { releasePluginCatalog = resolve })
+let resolveManualCompact: (() => void) | undefined
+
 const fixture = {
+  releasePluginCatalog,
   commits: 0, renderMs: 0, backgroundUpdates: 0,
+  compactCalls: 0,
+  finishManualCompact() { resolveManualCompact?.() },
+  startAutoCompact() {
+    useAppStore.getState().setBusy(current.id, true)
+    useAppStore.getState().applySessionEvent({ type: 'compaction', sessionId: current.id, source: 'auto', phase: 'start' })
+  },
+  finishAutoCompact() {
+    useAppStore.getState().applySessionEvent({ type: 'compaction', sessionId: current.id, source: 'auto', phase: 'end', outcome: 'compacted' })
+    useAppStore.getState().setBusy(current.id, false)
+  },
+  finishTurn() { useAppStore.getState().setBusy(current.id, false) },
   currentModel: deepSeekModel,
   currentThinkingLevel: 'auto',
-  thinkingSelections: [] as Array<{ sessionId: string; level: SessionThinkingLevel }>,
+  sentImages: [] as Array<{ data: string; mimeType: string }>,
+  finishImageTest() {
+    const state = useAppStore.getState()
+    state.setBusy(current.id, false)
+    state.setMessages(current.id, [])
+    state.setSessionError(current.id, null)
+  },
+  thinkingSelections: [] as Array<{ sessionId: string; level: SessionThinkingSelection }>,
   reset() { fixture.commits = 0; fixture.renderMs = 0; fixture.backgroundUpdates = 0 },
   async updateBackground() {
     for (let i = 0; i < 200; i++) {
@@ -193,12 +216,21 @@ const fixture = {
 declare global { interface Window { chatPerfFixture: typeof fixture } }
 window.chatPerfFixture = fixture
 window.electronAPI = {
+  selectComposerAttachment: async () => ({ ok: true, name: 'pixel.png', mimeType: 'image/png',
+    data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9+v6kAAAAASUVORK5CYII=' }),
+  sendMessage: async (_id: string, _text: string, images: Array<{ data: string; mimeType: string }>) => {
+    fixture.sentImages = images
+    return true
+  },
   listCommands: async () => [], getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }), listModels: async () => [],
-  listLaunchableTools: () => new Promise(() => undefined),
+  listLaunchableTools: (mode?: string) => mode === 'enabled-plugins'
+    ? pluginCatalogReady.then(() => [{ id: 'plugin:reports', label: 'Report extension', command: null, origin: 'installed' }])
+    : new Promise(() => undefined),
   listBundledSkills: () => new Promise(() => undefined),
   listSkills: async () => ({ ok: true, entries: [skill] }),
   readSkill: () => new Promise<SkillReadResult>((resolve) => { resolveSkill = resolve }),
   mcpList: async () => [{ enabled: true, name: 'synthetic-ads' }],
+  dingTalkStatus: async () => ({ status: 'connected' }),
   listProjectFiles: async () => [],
   setComposerDrafts: async () => true,
   runtimeListModels: async () => [{ ...deepSeekModel, reasoning: false, thinking: [] }, mediumOnlyModel, plainModel],
@@ -220,14 +252,29 @@ window.electronAPI = {
     state.applySessionEvent({ type: 'model_changed', sessionId })
     return true
   },
-  setThinkingLevel: async (sessionId: string, level: SessionThinkingLevel) => {
+  setThinkingLevel: async (sessionId: string, level: SessionThinkingSelection) => {
     if (sessionId !== current.id) return false
     fixture.thinkingSelections.push({ sessionId, level })
     fixture.currentThinkingLevel = level
     useAppStore.getState().applySessionEvent({ type: 'thinking_level_changed', sessionId, level })
     return true
   },
-  gitInfo: async () => null, getSessionStats: async () => null, setStore: async () => undefined,
+  gitInfo: async () => null,
+  compactSession: async () => {
+    fixture.compactCalls++
+    const event = { type: 'compaction', sessionId: current.id, source: 'manual' } as const
+    useAppStore.getState().applySessionEvent({ ...event, phase: 'start' })
+    await new Promise<void>(resolve => { resolveManualCompact = resolve })
+    resolveManualCompact = undefined
+    useAppStore.getState().applySessionEvent({ ...event, phase: 'end', outcome: 'compacted' })
+    return true
+  },
+  getSessionStats: async () => ({
+    userMessages: 1, assistantMessages: 1, toolCalls: 0, cost: 0,
+    tokens: { input: 352000, output: 6500, cacheRead: 0, cacheWrite: 0, total: 358500 },
+    contextUsage: { tokens: fixture.compactCalls ? 350 : 120000, contextWindow: 200000, percent: null }
+  }),
+  setStore: async () => undefined,
   checkpointList: async () => [],
   listProjects: async () => [{ ...defaultProject }], listRecentWorkspaces: async () => [],
   recoverProject: async (id: string) => { fixture.recoveryCalls.push(id); defaultProject.missing = false; delete defaultProject.unavailableReason; return { ok: true, project: { ...defaultProject }, grant: defaultGrant } }

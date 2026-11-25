@@ -9,7 +9,8 @@ vi.mock('../packages', () => ({
   listPackages: vi.fn(async () => [])
 }))
 
-import { readToolManifest, scanPromptCommands, toolsFromPackageRoot, toolsFromSkills } from '../toolLaunch'
+import type { PackageInfo } from '../../shared/types'
+import { availablePluginChoices, readToolManifest, scanPromptCommands, toolsFromPackageRoot, toolsFromSkills } from '../toolLaunch'
 
 const tempRoots: string[] = []
 
@@ -140,5 +141,16 @@ describe('toolsFromPackageRoot', () => {
   it('returns nothing for a package without prompts', () => {
     const dir = makePackage({ 'package.json': JSON.stringify({ name: 'pkg' }) })
     expect(toolsFromPackageRoot(dir, 'installed')).toEqual([])
+  })
+})
+
+describe('availablePluginChoices', () => {
+  it('offers only enabled registry entries and supports tools without slash commands', () => {
+    const pkg = (name: string, enabled = true, prompts: Record<string, string> = {}): PackageInfo => ({
+      name, source: name, kind: 'npm', resources: [], pinned: false, enabled,
+      path: makePackage({ 'package.json': JSON.stringify({ name }), ...prompts })
+    })
+    const tools = availablePluginChoices([pkg('disabled', false), pkg('extension'), pkg('reports', true, { 'prompts/report.md': '…' })])
+    expect(tools.map(({ label, command }) => [label, command])).toEqual([['extension', null], ['reports', '/report']])
   })
 })
