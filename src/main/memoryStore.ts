@@ -96,6 +96,16 @@ export function projectPathFor(key: string): string | null {
   }
 }
 
+/** 全部有记忆的项目（key + 工作区路径），跨项目检索的索引。 */
+export function listProjectMemoryKeys(): Array<{ key: string; path: string }> {
+  try {
+    const index = JSON.parse(readFileSync(path.join(memoryRoot(), 'projects', 'index.json'), 'utf-8')) as Record<string, string>
+    return Object.entries(index).map(([key, value]) => ({ key, path: value }))
+  } catch {
+    return []
+  }
+}
+
 function writeFileFor(scope: MemoryScope, projectKey: string | null, entries: MemoryEntry[]): void {
   const file = fileFor(scope, projectKey)
   mkdirSync(path.dirname(file), { recursive: true })

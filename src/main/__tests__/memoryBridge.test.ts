@@ -5,9 +5,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const agentDir = mkdtempSync(path.join(tmpdir(), 'memory-bridge-agent-'))
 const stableUserData = mkdtempSync(path.join(tmpdir(), 'memory-bridge-user-'))
+// 跨项目确认框：测试里用这个开关模拟用户「允许/拒绝」。
+const confirmState = vi.hoisted(() => ({ allowed: true }))
+// 广播事件捕获（memory_save 的"已记住"通知），断言用。
+const sentEvents = vi.hoisted(() => [] as unknown[])
 vi.mock('electron', () => ({
-  BrowserWindow: { getAllWindows: () => [] },
-  app: { getPath: () => stableUserData }
+  BrowserWindow: {
+    getAllWindows: () => [{
+      isDestroyed: () => false,
+      isVisible: () => true,
+      webContents: { isDestroyed: () => false, send: (_channel: string, payload: unknown) => { sentEvents.push(payload) } }
+    }]
+  },
+  app: { getPath: () => stableUserData },
+  dialog: {
+    showMessageBoxSync: () => (confirmState.allowed ? 0 : 1)
+  }
 }))
 // NOTE: path relative to THIS test file — a wrong relative path silently
 // un-mocks and the bridge would scan the REAL session directory (铁律).
@@ -105,5 +118,88 @@ describe('memory bridge (project isolation enforced server-side)', () => {
     expect(fromB.ok).toBe(true)
     expect(fromB.project).toEqual([])
     expect(fromB.global).toEqual([])
+
+    // 允许后（确认框模拟用户点头），跨项目就能看到。
+    confirmState.allowed = true
+    const fromBAllowed = await call({ id: 's-b', cwd: PROJECT_B }, { action: 'memory_list' })
+    expect(fromBAllowed.ok).toBe(true)
+  })
+
+  describe('cross-project memory access (manual gate)', () => {
+    beforeEach(async () => {
+      writeSession(PROJECT_A, 'aaaaaaaa-1111-4000-8000-00000000000a', '产品视频脚本', '客户预算是每天五百美元')
+      writeSession(PROJECT_B, 'bbbbbbbb-2222-4000-8000-00000000000b', '地图引导视频', '客户预算是每天三百美元')
+      await initMemoryBridge((sessionId) => {
+        if (sessionId === 's-a') return { id: 's-a', cwd: PROJECT_A, title: '产品视频脚本' }
+        if (sessionId === 's-b') return { id: 's-b', cwd: PROJECT_B, title: '地图引导视频' }
+        return undefined
+      })
+      confirmState.allowed = true
+      await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_save', text: 'A 项目的口径：只投印尼', scope: 'project' })
+    })
+
+    it('memory_all_projects returns other projects ONLY after the user allows the dialog', async () => {
+      confirmState.allowed = false
+      const declined = await call({ id: 's-b', cwd: PROJECT_B }, { action: 'memory_all_projects' })
+      expect(declined.ok).toBe(true)
+      expect(declined.confirmedCrossProject).toBe(false)
+      expect(declined.otherProjects).toEqual([])
+      // 全局和当前项目不受影响，照常返回。
+      expect(declined.currentProject).toEqual([])
+
+      confirmState.allowed = true
+      const allowed = await call({ id: 's-b', cwd: PROJECT_B }, { action: 'memory_all_projects' })
+      expect(allowed.confirmedCrossProject).toBe(true)
+      expect(allowed.otherProjects[0].project).toBe('组内协作开发')
+      expect(allowed.otherProjects[0].entries.some((e: any) => e.text.includes('只投印尼'))).toBe(true)
+    })
+
+    it('memory_search_projects matches a project by name and refuses without user consent', async () => {
+      const hit = await call(
+        { id: 's-b', cwd: PROJECT_B },
+        { action: 'memory_search_projects', projectName: '协作开发', keywords: ['印尼'] }
+      )
+      expect(hit.ok).toBe(true)
+      expect(hit.project).toBe('组内协作开发')
+      expect(hit.entries.some((e: any) => e.text.includes('只投印尼'))).toBe(true)
+
+      confirmState.allowed = false
+      const declined = await call(
+        { id: 's-b', cwd: PROJECT_B },
+        { action: 'memory_search_projects', projectName: '协作开发', keywords: ['印尼'] }
+      )
+      expect(declined).toEqual({ ok: false, error: 'user-declined' })
+
+      const unknown = await call(
+        { id: 's-b', cwd: PROJECT_B },
+        { action: 'memory_search_projects', projectName: '不存在的项目', keywords: ['x'] }
+      )
+      expect(unknown.ok).toBe(false)
+      expect(unknown.error).toBe('project-not-found')
+      expect(Array.isArray(unknown.knownProjects)).toBe(true)
+    })
+
+    it('session_search crosses projects ONLY with projectName AND user consent', async () => {
+      // 不带 projectName：只搜当前项目（B），看不到 A 的对话。
+      const scoped = await call({ id: 's-b', cwd: PROJECT_B }, { action: 'session_search', keywords: ['预算'] })
+      expect(scoped.hits.map((h: any) => h.uuid)).toEqual(['bbbbbbbb-2222-4000-8000-00000000000b'])
+
+      // 带 projectName + 用户允许：跨项目命中 A 的对话。
+      const crossed = await call(
+        { id: 's-b', cwd: PROJECT_B },
+        { action: 'session_search', keywords: ['预算'], projectName: '协作开发' }
+      )
+      expect(crossed.ok).toBe(true)
+      expect(crossed.scope).toContain('cross-project')
+      expect(crossed.hits.some((h: any) => h.uuid === 'aaaaaaaa-1111-4000-8000-00000000000a')).toBe(true)
+
+      // 用户拒绝确认：不返回任何内容。
+      confirmState.allowed = false
+      const declined = await call(
+        { id: 's-b', cwd: PROJECT_B },
+        { action: 'session_search', keywords: ['预算'], projectName: '协作开发' }
+      )
+      expect(declined).toEqual({ ok: false, error: 'user-declined' })
+    })
   })
 })

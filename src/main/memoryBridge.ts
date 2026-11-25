@@ -2,9 +2,9 @@ import { randomBytes } from 'node:crypto'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, dialog } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
-import { deleteMemoryEntry, moveMemoryEntry, projectMemoryKey, readMemoryLayer, saveMemoryEntry, updateMemoryText } from './memoryStore'
+import { deleteMemoryEntry, listProjectMemoryKeys, moveMemoryEntry, projectMemoryKey, readMemoryLayer, saveMemoryEntry, updateMemoryText } from './memoryStore'
 import { sessionDirCandidatesFor, sessionsRoot } from './sessionHistory'
 import { defaultPiAgentDir } from './piSettings'
 
@@ -97,6 +97,39 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body))
 }
 
+/**
+ * 跨项目访问的用户确认（原生弹窗，按钮写动词）。隔离原则"非手动不互相
+ * 访问"的手动闸门：模型声称用户要求跨项目时，必须用户在弹窗里点头，
+ * Main 才放行。拒绝/无窗口时一律不放行。
+ */
+function confirmCrossProject(targetLabel: string): boolean {
+  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.isVisible())
+  if (!win) return false
+  const choice = dialog.showMessageBoxSync(win, {
+    type: 'question',
+    title: '跨项目记忆访问',
+    message: `助手请求查看「${targetLabel}」的记忆`,
+    detail: '当前对话属于另一个项目。项目记忆默认互相隔离；允许后本次将读取目标项目的记忆内容。',
+    buttons: ['允许本次查看', '拒绝'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  })
+  return choice === 0
+}
+
+/** 按名称模糊匹配项目（basename 优先，其次全路径包含）。 */
+function findProjectByName(name: string): { key: string; path: string } | null {
+  const needle = name.trim().toLowerCase()
+  if (!needle) return null
+  const projects = listProjectMemoryKeys()
+  const byBasename = projects.find((p) => {
+    const base = p.path.split(/[\\/]/).filter(Boolean).pop() ?? ''
+    return base.toLowerCase().includes(needle)
+  })
+  return byBasename ?? projects.find((p) => p.path.toLowerCase().includes(needle)) ?? null
+}
+
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const token = (request.url ?? '').replace(/^\//, '')
   const sessionId = tokens.get(token)
@@ -150,7 +183,7 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
       if (result.ok) {
         // 模型写入 → 通知窗口弹"已记住"toast（可撤销）。重复保存不弹。
         for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) {
+          if (!win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
             win.webContents.send(IPC_CHANNELS.MEMORY_SAVED_EVENT, {
               id: result.entry.id,
               scope,
@@ -170,6 +203,58 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
         global: readMemoryLayer('global', null).entries,
         project: readMemoryLayer('project', projectKey).entries
       }
+    }
+    case 'memory_all_projects': {
+      // 「你还记得之前记过什么」：全局 + 全部项目的记忆，一次给全。
+      // 跨项目部分弹用户确认（隔离闸门），拒绝则只返回全局和本项目。
+      const layers = listProjectMemoryKeys().map(({ key, path }) => ({
+        path,
+        entries: readMemoryLayer('project', key).entries
+      }))
+      const others = layers.filter((layer) => layer.path !== cwd)
+      let allowedOthers: typeof layers = []
+      if (others.length > 0) {
+        const totalEntries = others.reduce((count, layer) => count + layer.entries.length, 0)
+        const label = others.length === 1
+          ? path.basename(others[0].path)
+          : `${others.length} 个项目的记忆（共 ${totalEntries} 条）`
+        if (confirmCrossProject(label)) allowedOthers = others
+      }
+      return {
+        ok: true,
+        confirmedCrossProject: allowedOthers.length > 0,
+        global: readMemoryLayer('global', null).entries,
+        currentProject: readMemoryLayer('project', projectMemoryKey(cwd)).entries,
+        otherProjects: allowedOthers.map(({ path, entries }) => ({
+          project: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+          entries
+        }))
+      }
+    }
+    case 'memory_search_projects': {
+      // 「去某个项目里找那条记忆」：按项目名模糊定位 → 用户确认 → 搜索。
+      const projectName = typeof request.projectName === 'string' ? request.projectName : ''
+      const keywords = Array.isArray(request.keywords)
+        ? request.keywords.filter((k): k is string => typeof k === 'string' && k.trim().length > 0).slice(0, 5).map((k) => k.trim())
+        : []
+      if (!keywords.length) return { ok: false, error: 'keywords-required' }
+      const target = findProjectByName(projectName)
+      if (!target) {
+        return {
+          ok: false,
+          error: 'project-not-found',
+          knownProjects: listProjectMemoryKeys().map(({ path }) => path.split(/[\\/]/).filter(Boolean).pop() ?? path)
+        }
+      }
+      if (target.path === cwd) {
+        // 目标就是当前项目：无需确认，直接查。
+        const entries = readMemoryLayer('project', target.key).entries
+        return { ok: true, project: path.basename(target.path), entries: filterEntriesByKeywords(entries, keywords) }
+      }
+      const label = path.basename(target.path)
+      if (!confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
+      const entries = readMemoryLayer('project', target.key).entries
+      return { ok: true, confirmedByUser: true, project: label, entries: filterEntriesByKeywords(entries, keywords) }
     }
     case 'memory_delete': {
       const scope = request.scope === 'global' ? 'global' : 'project'
@@ -228,6 +313,15 @@ function snippetAround(content: string, needle: string): string {
   return content.slice(start, start + MAX_SNIPPET_CHARS).replace(/\s+/g, ' ').trim()
 }
 
+/** 按关键词过滤记忆条目（任一命中即保留；无关键词返回全部）。 */
+function filterEntriesByKeywords(entries: Array<{ id: string; text: string; createdAt: number; updatedAt: number; source?: unknown }>, keywords: string[]): typeof entries {
+  if (keywords.length === 0) return entries
+  return entries.filter((entry) => {
+    const text = entry.text.toLowerCase()
+    return keywords.some((keyword) => text.includes(keyword.toLowerCase()))
+  })
+}
+
 /**
  * 只搜当前项目的会话目录（sessionDirCandidatesFor 的全部候选布局都扫，
  * 不含别的项目）；跨项目必须走用户手动确认的通道，工具层永远给不了。
@@ -237,12 +331,33 @@ function searchSessions(request: Record<string, unknown>, session: BridgeSession
     ? request.keywords.filter((k): k is string => typeof k === 'string' && k.trim().length > 0).slice(0, 5).map((k) => k.trim())
     : []
   if (keywords.length === 0) return { ok: false, error: 'keywords-required' }
+  // 跨项目检索：用户手动触发（模型在用户明确要求时才带 projectName），
+  // Main 再弹一次确认——两层都在才算"手动"。
+  let scanCwd = session.cwd
+  let scopeProject: string | null = null
+  const projectName = typeof request.projectName === 'string' ? request.projectName.trim() : ''
+  if (projectName) {
+    const target = findProjectByName(projectName)
+    if (!target) {
+      return {
+        ok: false,
+        error: 'project-not-found',
+        knownProjects: listProjectMemoryKeys().map(({ path }) => path.split(/[\\/]/).filter(Boolean).pop() ?? path)
+      }
+    }
+    if (target.path !== session.cwd) {
+      const label = path.basename(target.path)
+      if (!confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
+      scopeProject = label
+    }
+    scanCwd = target.path
+  }
   const days = typeof request.days === 'number' && Number.isFinite(request.days) ? Math.min(365, Math.max(1, Math.floor(request.days))) : null
   const titleWords = typeof request.titleWords === 'string' && request.titleWords.trim()
     ? request.titleWords.trim().toLowerCase()
     : null
   const agentDir = defaultPiAgentDir()
-  const dirs = distinctSessionDirs(session.cwd, agentDir)
+  const dirs = distinctSessionDirs(scanCwd, agentDir)
   const agentRoot = sessionsRoot(agentDir)
   const hits: SearchHit[] = []
   let scanned = 0
@@ -289,8 +404,8 @@ function searchSessions(request: Record<string, unknown>, session: BridgeSession
   return {
     ok: true,
     scanned,
-    scope: 'current-project',
-    project: session.title ?? path.basename(session.cwd),
+    scope: scopeProject ? `cross-project: ${scopeProject}` : 'current-project',
+    project: scopeProject ?? session.title ?? path.basename(session.cwd),
     hits: hits.sort((a, b) => b.modifiedAt - a.modifiedAt)
   }
 }
@@ -302,8 +417,22 @@ function readSessionExcerpt(request: Record<string, unknown>, session: BridgeSes
   const uuid = typeof request.uuid === 'string' ? request.uuid : ''
   const keyword = typeof request.keyword === 'string' && request.keyword.trim() ? request.keyword.trim() : null
   if (!uuid) return { ok: false, error: 'uuid-required' }
+  // 跨项目读取：与检索同样的确认闸门。
+  let scanCwd = session.cwd
+  let scopeProject: string | null = null
+  const projectName = typeof request.projectName === 'string' ? request.projectName.trim() : ''
+  if (projectName) {
+    const target = findProjectByName(projectName)
+    if (!target) return { ok: false, error: 'project-not-found' }
+    if (target.path !== session.cwd) {
+      const label = path.basename(target.path)
+      if (!confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
+      scopeProject = label
+    }
+    scanCwd = target.path
+  }
   const agentDir = defaultPiAgentDir()
-  const dirs = distinctSessionDirs(session.cwd, agentDir)
+  const dirs = distinctSessionDirs(scanCwd, agentDir)
   for (const dir of dirs) {
     let files: string[]
     try {
@@ -332,6 +461,7 @@ function readSessionExcerpt(request: Record<string, unknown>, session: BridgeSes
         ok: true,
         uuid,
         title: titleForFile(file),
+        ...(scopeProject ? { project: scopeProject } : {}),
         truncated: excerpt.length < content.length,
         excerpt: excerpt.replace(/\s+\n/g, '\n').trim().slice(0, MAX_READ_CHARS)
       }
