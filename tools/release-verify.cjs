@@ -56,18 +56,24 @@ function compareVersions(left, right) {
   return 0
 }
 
-function guardHistory(version, tags, ancestor) {
+function guardHistory(version, tags, ancestor, phase = 'plan') {
   // An already-public tag may be rechecked and promoted again; promotion never rolls back a channel.
   const versions = tags.filter(tag => tag.startsWith('v') && stableVersion.test(tag.slice(1))).map(tag => tag.slice(1))
   const published = versions.includes(version)
-  if (!published && versions.some(v => compareVersions(v, version) > 0)) throw new Error('A newer stable release is already public')
+  if (!published) {
+    const newer = versions.filter(v => compareVersions(v, version) > 0)
+    if (phase === 'plan' && newer.length) throw new Error('A newer stable release is already public')
+    // Another platform can finish first after this tag passed plan. Allow its ancestor
+    // to finish packaging; platform pointers only advance to a higher version.
+    for (const later of newer) ancestor('HEAD', 'refs/tags/v' + later + '^{commit}')
+  }
   if (compareVersions(version, bridgeVersion) > 0 && !versions.includes(bridgeVersion)) throw new Error('Publish the dual-platform bridge first')
   const previous = versions.filter(v => compareVersions(v, version) < 0).sort(compareVersions).pop()
   if (previous) ancestor('refs/tags/v' + previous + '^{commit}', 'HEAD')
   return published
 }
 
-function checkTag(version) {
+function checkTag(version, phase) {
   const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim()
   const ref = 'refs/tags/v' + version
   if (process.env.GITHUB_REF !== ref || git('rev-parse', ref + '^{commit}') !== git('rev-parse', 'HEAD')) {
@@ -79,7 +85,7 @@ function checkTag(version) {
   ancestor('HEAD', 'refs/remotes/origin/main')
   const result = execFileSync('gh', ['api', '--paginate', 'repos/{owner}/{repo}/releases?per_page=100',
     '--jq', '.[] | select(.draft == false and .prerelease == false) | .tag_name'], { encoding: 'utf8' })
-  return guardHistory(version, result.trim().split(/\r?\n/), ancestor)
+  return guardHistory(version, result.trim().split(/\r?\n/), ancestor, phase)
 }
 
 function payloadNames(platform) {
@@ -139,17 +145,17 @@ async function main() {
   const [command, ...args] = process.argv.slice(2)
   if (command === 'plan') {
     const result = plan(process.env.GITHUB_EVENT_NAME, require('../package.json'), process.env.GITHUB_REF, process.env.MANUAL_TARGET)
-    if (process.env.GITHUB_EVENT_NAME === 'push') checkTag(result.version)
+    if (process.env.GITHUB_EVENT_NAME === 'push') checkTag(result.version, 'plan')
     console.log('version=' + result.version + '\ntarget=' + result.target)
-  } else if (command === 'check-tag') {
-    console.log(checkTag(require('../package.json').version) ? 'public' : 'unpublished')
+  } else if (command === 'check-publish') {
+    console.log(checkTag(require('../package.json').version, 'publish') ? 'public' : 'unpublished')
   } else if (command === 'check-builds') {
     checkBuilds(...args)
   } else if (command === 'verify') {
     const [target, directory] = args
     await verifyFiles(target, directory, require('../package.json').version, require('yaml').parse)
   } else {
-    throw new Error('Expected plan, check-tag, check-builds or verify')
+    throw new Error('Expected plan, check-publish, check-builds or verify')
   }
 }
 

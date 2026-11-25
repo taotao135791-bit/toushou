@@ -474,7 +474,7 @@ jobs:
       - name: Check release order again after packaging
         id: prior
         run: |
-          visibility=$(node tools/release-verify.cjs check-tag)
+          visibility=$(node tools/release-verify.cjs check-publish)
           echo "visibility=$visibility" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         if: steps.prior.outputs.visibility == 'unpublished' && env.TARGET != 'windows'

@@ -65,6 +65,27 @@ test('a new release advances the numeric global version along main and the bridg
   assert.equal(guardHistory('2.9.9', [...tags, 'v2.10.0'], () => {}), true)
 })
 
+test('Windows can finish after a newer Mac release while a fresh low-version tag still fails', () => {
+  const win = '2.9.9'
+  const mac = '2.9.10'
+  const bridge = 'v2.9.8'
+  const ancestry = []
+  const check = (...pair) => ancestry.push(pair)
+  assert.equal(guardHistory(win, [bridge], check, 'plan'), false)
+  assert.equal(guardHistory(mac, [bridge], check, 'plan'), false)
+  const nowPublic = [bridge, 'v' + mac]
+  assert.throws(() => guardHistory(win, nowPublic, check, 'plan'), /newer/)
+  ancestry.length = 0
+  assert.equal(guardHistory(win, nowPublic, check, 'publish'), false)
+  assert.deepEqual(ancestry, [
+    ['HEAD', 'refs/tags/v2.9.10^{commit}'],
+    ['refs/tags/v2.9.8^{commit}', 'HEAD']
+  ])
+  assert.throws(() => guardHistory(win, nowPublic, (first) => {
+    if (first === 'HEAD') throw new Error('late version is not an ancestor of published Mac')
+  }, 'publish'), /not an ancestor/)
+})
+
 test('a missing, corrupt or cross-version installer blocks publication', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'release-integrity-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
