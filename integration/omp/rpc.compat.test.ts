@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { ChildProcess } from 'node:child_process'
-import { writeFileSync, rmSync, mkdtempSync } from 'node:fs'
+import { writeFileSync, mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { OmpSession, OmpProcessLike } from '../../src/main/omp/OmpSession'
@@ -210,9 +211,12 @@ describe('current Oh My Pi (omp) — RPC v2 profile', () => {
       expect(messages).toHaveLength(1)
       expect(messages[0].content[0].text).toBe(bigText)
     } finally {
-      live.session.kill()
+      // The resumed session holds this directory as its working directory on Windows.
+      if (live.proc.pid && live.proc.exitCode === null && live.proc.signalCode === null) {
+        await live.session.killAndWait()
+      }
       live.iso.cleanup()
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   })
 
