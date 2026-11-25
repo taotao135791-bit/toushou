@@ -1597,7 +1597,6 @@ export default function Sidebar() {
         </button>
         {taiji && (
           <TaijiOverlay
-            x={taiji.x}
             targetDark={taiji.targetDark}
             onMid={() => {
               setThemeSource('system')
