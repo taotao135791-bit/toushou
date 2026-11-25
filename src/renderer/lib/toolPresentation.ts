@@ -19,6 +19,9 @@ const LABELS: Record<string, Label> = {
   toushou_dingtalk_read_document: ['阅读钉钉文档', 'Read DingTalk document'],
   toushou_dingtalk_create_document: ['创建钉钉文档', 'Create DingTalk document'],
   toushou_dingtalk_append_document: ['向钉钉文档追加正文', 'Append to DingTalk document'],
+  toushou_dingtalk_workspace_catalog: ['查看钉钉可用操作', 'Browse DingTalk actions'],
+  toushou_dingtalk_workspace_read: ['读取钉钉工作区数据', 'Read DingTalk workspace data'],
+  toushou_dingtalk_workspace_write: ['写入钉钉工作区数据', 'Update DingTalk workspace data'],
   mcp__tiktok_ads_auth_advertiser_get: ['查看 TikTok 授权账户', 'View authorized TikTok accounts'],
   mcp__tiktok_ads_advertiser_info_get: ['查看 TikTok 账户信息', 'View TikTok account information'],
   mcp__tiktok_ads_report_integrated_get: ['读取 TikTok 广告报表', 'Read TikTok ads report'],
@@ -53,6 +56,19 @@ PROXY_TOOLS.add('toushou_dingtalk_search_documents')
 PROXY_TOOLS.add('toushou_dingtalk_read_document')
 PROXY_TOOLS.add('toushou_dingtalk_create_document')
 PROXY_TOOLS.add('toushou_dingtalk_append_document')
+PROXY_TOOLS.add('toushou_dingtalk_workspace_catalog')
+PROXY_TOOLS.add('toushou_dingtalk_workspace_read')
+PROXY_TOOLS.add('toushou_dingtalk_workspace_write')
+// OMP 19 mounts extension tools as shell commands. Recognize only a single
+// literal invocation. Pipelines, substitutions and compound commands keep
+// their ordinary command label.
+const mountedDingTalk = /^(toushou_dingtalk_[a-z_]+)(?:[ \t]+(?:'[^'\r\n]*'|"[^"\x60$\\\r\n]*"|[a-zA-Z0-9_.:/=,+-]+))*[ \t]*$/
+export function mountedDingTalkAction(command: unknown): string | null {
+  if (typeof command !== 'string' || command.length > 80_000 || /[\r\n]/.test(command)) return null
+  const match = mountedDingTalk.exec(command.trimStart())
+  if (!match || !PROXY_TOOLS.has(match[1]) || /(?:^|[ \t])(?:--help|-h)(?:[ \t]|$)/.test(command)) return null
+  return match[1]
+}
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 function parse(value: unknown): unknown {
   if (typeof value !== 'string') return value
@@ -99,6 +115,7 @@ function computeToolPresentation(call: ToolCallRecord, language: Language): Tool
   const name = call.tool.toLowerCase()
   let action = name
   let input = object(parse(call.input))
+  if (name === 'bash') action = mountedDingTalkAction(input?.command) ?? name
   const viewingSchema = name === 'read' && typeof input?.path === 'string' && /^xd:\/\/toushou_[a-z0-9_]{1,112}$/.test(input.path)
   if (name === 'write' && typeof input?.path === 'string' && input.path.startsWith('xd://')) {
     const proxy = /^xd:\/\/(toushou_[a-z0-9_]+)$/.exec(input.path)?.[1]

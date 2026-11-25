@@ -68,6 +68,13 @@ describe('DingTalk request validation', () => {
     ['invalid folder links', { action: 'create_document', title: '示例', folderId: 'https://example.invalid/i/nodes/ABC' }],
     ['oversized titles', { action: 'create_document', title: 'a'.repeat(201) }],
     ['missing append body', { action: 'append_document', documentId: 'ABC' }],
+    ['message sending', { action: 'workspace_write', operation: 'chat.message.send', args: {} }],
+    ['raw invocation', { action: 'workspace_write', operation: 'api', args: {} }],
+    ['write disguised as read', { action: 'workspace_read', operation: 'sheet.create', args: { name: 'Sample' } }],
+    ['read dispatched as write', { action: 'workspace_write', operation: 'sheet.range.read', args: { node: 'Demo' } }],
+    ['bypassing the native dialog', { action: 'workspace_write', operation: 'drive.upload', args: { file: '/tmp/private' } }],
+    ['catalog service mismatch', { action: 'workspace_catalog', operation: 'sheet.create', service: 'mail' }],
+    ['catalog invalid offset', { action: 'workspace_catalog', cursor: -1 }],
     ['empty append body', { action: 'append_document', documentId: 'ABC', content: '  ' }],
     ['oversized writes', { action: 'append_document', documentId: 'ABC', content: '示'.repeat(64_001) }],
     ['extra append arguments', { action: 'append_document', documentId: 'ABC', content: '示例', overwrite: true }],
@@ -97,19 +104,57 @@ describe('DingTalk package and loopback bridge', () => {
     vi.unstubAllEnvs()
   })
 
-  it('registers three reads and two writes and reads through the desktop session capability', async () => {
+  it('registers the fixed tools and reads through the desktop session capability', async () => {
     vi.stubEnv(DINGTALK_TOOLS_ENV_KEY, dingTalkBridgeEnv(session)[DINGTALK_TOOLS_ENV_KEY])
     const tools: Parameters<Parameters<typeof registerDingTalkTools>[0]['registerTool']>[0][] = []
     registerDingTalkTools({ registerTool: tool => tools.push(tool) })
     expect(tools.map(tool => [tool.name, tool.approval])).toEqual([
       ['toushou_dingtalk_search_messages', 'read'], ['toushou_dingtalk_search_documents', 'read'],
       ['toushou_dingtalk_read_document', 'read'],
-      ['toushou_dingtalk_create_document', 'write'], ['toushou_dingtalk_append_document', 'write']
+      ['toushou_dingtalk_create_document', 'write'], ['toushou_dingtalk_append_document', 'write'],
+      ['toushou_dingtalk_workspace_catalog', 'read'], ['toushou_dingtalk_workspace_read', 'read'],
+      ['toushou_dingtalk_workspace_write', 'write']
     ])
     const result = await tools[0].execute('synthetic-tool', { query: query.query })
     expect(JSON.parse(result.content[0].text)).toEqual({ ok: true, source: 'DingTalk', data: { messages: [{ text: '合成的钉钉消息' }], hasMore: true } })
     expect(execute).toHaveBeenCalledTimes(1)
     expect(execute.mock.calls[0].slice(0, 2)).toEqual([query, expect.any(AbortSignal)])
+  })
+
+  it('uses the catalog effect for sheet reads and confirmed writes in a readonly or interactive session', async () => {
+    const url = endpoint()
+    const update = { action: 'workspace_write', operation: 'sheet.range.update', args: {
+      node: 'SyntheticSheet', 'sheet-id': 'Data', range: 'A1:B1', values: [['示例', 12]]
+    } }
+    getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'readonly' })
+    expect((await post(url, update)).status).toBe(403)
+    expect(execute).not.toHaveBeenCalled()
+    expect((await post(url, { action: 'workspace_read', operation: 'sheet.range.read', args: { node: 'SyntheticSheet' } })).status).toBe(200)
+    getSessionBridgeAccess.mockReturnValue({ ...access, mode: 'ask' })
+    expect((await post(url, update)).status).toBe(200)
+    expect(showMessageBox).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ detail: expect.stringContaining('SyntheticSheet') }))
+    expect(execute).toHaveBeenLastCalledWith(update, expect.any(AbortSignal), expect.any(Function))
+  })
+
+  it.each([
+    ['doc.delete', { node: 'SyntheticDoc' }],
+    ['doc.update', { node: 'SyntheticDoc', content: '# Replacement' }],
+    ['chat.message.recall', { 'conversation-id': 'SyntheticChat', 'message-id': 'SyntheticMessage' }],
+    ['chat.group.rename', { id: 'SyntheticChat', name: 'Synthetic group' }],
+    ['chat.group.members.add', { id: 'SyntheticChat', users: 'SyntheticMember' }],
+    ['chat.group.members.remove', { id: 'SyntheticChat', users: 'SyntheticMember' }]
+  ] as const)('requires fresh native confirmation for every %s even in full mode', async (operation, args) => {
+    const url = endpoint()
+    const request = { action: 'workspace_write', operation, args }
+    showMessageBox.mockResolvedValueOnce({ response: 1 }).mockResolvedValueOnce({ response: 0 })
+    expect((await post(url, request)).status).toBe(200)
+    expect(execute).toHaveBeenLastCalledWith(request, expect.any(AbortSignal), expect.any(Function))
+    expect((await post(url, request)).status).toBe(403)
+    expect(execute).toHaveBeenCalledOnce()
+    expect(showMessageBox).toHaveBeenCalledTimes(2)
+    expect(showMessageBox).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      detail: expect.stringContaining(operation), buttons: ['取消', '允许一次'], defaultId: 0, cancelId: 0
+    }))
   })
 
   it('blocks forged capabilities, browser origins, and legacy remote and scheduled sessions', async () => {

@@ -51,18 +51,34 @@ describe('tool presentation', () => {
 
   it.each([
     ['toushou_dingtalk_create_document', '创建钉钉文档', 'Create DingTalk document'],
-    ['toushou_dingtalk_append_document', '向钉钉文档追加正文', 'Append to DingTalk document']
+    ['toushou_dingtalk_append_document', '向钉钉文档追加正文', 'Append to DingTalk document'],
+    ['toushou_dingtalk_workspace_catalog', '查看钉钉可用操作', 'Browse DingTalk actions'],
+    ['toushou_dingtalk_workspace_read', '读取钉钉工作区数据', 'Read DingTalk workspace data'],
+    ['toushou_dingtalk_workspace_write', '写入钉钉工作区数据', 'Update DingTalk workspace data']
   ])('shows %s as a DingTalk action without including document content in the header', (tool, zh, en) => {
     const input = { markdown: 'synthetic draft text' }
     const direct = call(tool, input, { ok: true })
     const proxy = call('write', { path: `xd://${tool}`, content: JSON.stringify(input) }, { ok: false })
-    for (const record of [direct, proxy]) {
+    const mounted = call('bash', { command: `${tool} --json '${JSON.stringify(input)}'` }, { ok: true })
+    for (const record of [direct, proxy, mounted]) {
       expect(toolBrandForCall(record)).toBe('dingtalk')
       expect(presentToolCall(record, 'zh')).toMatchObject({ label: zh, summary: null })
       expect(presentToolCall(record, 'en')).toMatchObject({ label: en, summary: null })
     }
     expect(presentToolCall(direct, 'zh').status).toBe('completed')
     expect(presentToolCall(proxy, 'en').status).toBe('failed')
+  })
+
+  it('keeps compound shell commands and unrelated mentions unbranded', () => {
+    const name = 'toushou_dingtalk_workspace_read'
+    for (const command of [
+      `echo ${name}`, `${name} --help`, `${name} --operation x && echo end`,
+      `${name} | cat`, `${name} --args "$HOME"`, `${name}\nother`, `${name}_other --id sample`
+    ]) {
+      const record = call('bash', { command })
+      expect(toolBrandForCall(record)).toBeNull()
+      expect(presentToolCall(record, 'en').label).toBe('Run command')
+    }
   })
 
   it('renders a collapsed, accessible status without exposing raw names or parameters', () => {

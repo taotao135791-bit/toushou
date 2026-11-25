@@ -7,6 +7,8 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 import { spawnCommand } from '../../command'
 import { executableSearchDirs } from '../../omp/OmpCapabilities'
+import { getWorkspaceOperation, parseWorkspaceArgs, workspaceArguments, workspaceCatalogVersion, projectWorkspaceResult } from './workspaceOperations'
+import { parseNode } from './requests'
 
 const DWS_TAG = 'v1.0.69'
 const RELEASE = 'DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/' + DWS_TAG
@@ -237,7 +239,7 @@ function jsonObject(text: string): Record<string, unknown> | undefined {
   try { return record(JSON.parse(text)) } catch { return undefined }
 }
 
-function writeReceipt(result: ProcessResult, target?: string): DocumentWriteReceipt {
+function writeReceipt(result: ProcessResult, target?: string, mode: 'append' | 'overwrite' = 'append'): DocumentWriteReceipt {
   const response = jsonObject(result.stdout)
   const error = record(response?.error) ?? record(jsonObject(result.stderr)?.error)
   const details = record(error?.details)
@@ -259,13 +261,49 @@ function writeReceipt(result: ProcessResult, target?: string): DocumentWriteRece
   const operation = target ? 'doc.update' : 'doc.create'
   if (result.exitCode !== 0 || response?.contractVersion !== 'doc.operation.v1' || response.operation !== operation
       || response.ok !== true || response.complete !== true || response.status !== 'success' || data?.executed === false
-      || !nodeId || (target && (nodeId !== target || data?.mode !== 'append'))) throw unknown
+      || !nodeId || (target && (nodeId !== target || data?.mode !== mode))) throw unknown
   // DWS verifies all written content but cannot resolve the recipient of an @mention from readback.
   const unverified = data?.unverified
   const mentionOnly = data?.verified === false && data.verificationScope === 'partial'
     && Array.isArray(unverified) && unverified.length === 1 && unverified[0] === 'mention_targets'
   if (data?.verified !== true && !mentionOnly) throw unknown
   return mentionOnly ? { nodeId, mentionTargetsUnverified: true } : { nodeId }
+}
+
+const emptyPermissionReceipts = new Set(['doc.permission.remove', 'doc.permission.update', 'wiki.member.remove', 'wiki.member.update'])
+const fileOnlyReceipts = new Set(['mail.attachment.download', 'sheet.export-csv', 'doc.download'])
+
+function workspaceReceipt(result: ProcessResult, id: string, privatePath?: string): unknown {
+  const response = jsonObject(result.stdout)
+  const details = record(response?.error) ?? record(jsonObject(result.stderr)?.error)
+  if (details?.execution_started === false) {
+    if (details.reason === 'authentication_required') throw new DingTalkCliError('not-authorized')
+    throw readError(result, 'write-failed')
+  }
+  if (result.exitCode !== 0 || details) throw new DingTalkCliError('write-outcome-unknown')
+  // These commands print human status only. The native save helper separately verifies
+  // that this invocation produced the expected regular file before publishing it.
+  if (!response && fileOnlyReceipts.has(id) && !/^\s*[{[]/.test(result.stdout)) return { saved: true }
+  if (!response) throw new DingTalkCliError('write-outcome-unknown')
+  if (emptyPermissionReceipts.has(id) && Object.keys(response).length === 0) return { success: true }
+  // DWS 1.0.69 emits both its unified outcome and older service-specific success receipts.
+  const unified = response.outcome !== undefined
+  const data = record(response.data)
+  const docReceipt = response.contractVersion === 'doc.operation.v1' && response.ok === true && response.complete === true
+    && response.status === 'success' && data?.verified === true
+  const uploadReceipt = (id === 'drive.upload' || id === 'doc.upload') && !!safeNodeId(response.dentryUuid)
+  const acknowledged = unified ? response.ok === true && response.outcome === 'success' : response.success === true || docReceipt || uploadReceipt
+  const states = [response, data, record(response.result), record(data?.result)]
+  if (Array.isArray(response.steps)) states.push(...response.steps.slice(0, 1024).map(record))
+  const uncertain = states.some(item => item && (
+    item.ok === false || item.success === false || item.isError === true || item.error || item.complete === false
+    || item.executed === false || item.verified === false || item.dry_run === true || item.dryRun === true
+    || (Array.isArray(item.errors) && item.errors.length > 0) || (typeof item.failedCount === 'number' && item.failedCount > 0)
+    || (typeof item.outcome === 'string' && item.outcome !== 'success')
+    || (typeof item.status === 'string' && /pending|unknown|partial|fail|error|cancel|timeout|planned|processing|queued/i.test(item.status))
+  ))
+  if (!acknowledged || uncertain) throw new DingTalkCliError('write-outcome-unknown')
+  return projectWorkspaceResult(response, privatePath)
 }
 
 /** Use the desktop's configured proxies and keep redirects under Main's allowlist. */
@@ -386,7 +424,7 @@ export class DingTalkCli {
     return process.platform === 'win32' ? 'dws.exe' : 'dws'
   }
 
-  async find(signal?: AbortSignal): Promise<DingTalkCliInstallation | null> {
+  async find(signal?: AbortSignal, requiredVersion?: string): Promise<DingTalkCliInstallation | null> {
     const managed = path.join(this.directory, this.binaryName)
     const candidates = this.options.searchDirectories?.() ?? [
       ...executableSearchDirs(),
@@ -399,7 +437,7 @@ export class DingTalkCli {
         await access(executable, constants.X_OK)
         const version = binaryVersion(await this.run(executable, ['--version'], path.dirname(executable), 8_000, signal))
         const source = executable === managed ? 'managed' : 'external'
-        if (version && (source === 'external' || version === DWS_TAG)) return { path: executable, version, source }
+        if (version && (!requiredVersion || version === requiredVersion) && (source === 'external' || version === DWS_TAG)) return { path: executable, version, source }
       } catch (error) {
         if (error instanceof DingTalkCliError && error.code === 'cancelled') throw error
       }
@@ -500,6 +538,63 @@ export class DingTalkCli {
     return this.read(cli, profile, ['doc', 'read', '--node=' + documentId], signal)
   }
 
+  async workspaceOperation(cli: DingTalkCliInstallation, profile: string, id: string, input: Record<string, unknown>, signal?: AbortSignal, canDispatch?: () => boolean): Promise<unknown> {
+    checkCancelled(signal)
+    const operation = getWorkspaceOperation(id)
+    const args = parseWorkspaceArgs(id, input)
+    if (!operation || !args) throw new DingTalkCliError(operation?.effect === 'read' || !operation ? 'read-failed' : 'write-failed')
+    const profileFlag = this.profileArgument(profile)
+    const write = operation.effect !== 'read'
+    if (write && canDispatch && !canDispatch()) throw new DingTalkCliError('permission-denied')
+    const requiredVersion = 'v' + workspaceCatalogVersion
+    const pinned = cli.version === requiredVersion ? cli : (await this.find(signal, requiredVersion) ?? await this.install(signal))
+    if (pinned.version !== requiredVersion || !path.isAbsolute(pinned.path) || /\.(cmd|bat)$/i.test(pinned.path)) throw new DingTalkCliError('cli-unavailable')
+    if (id === 'doc.update') {
+      const node = parseNode(args.node)
+      if (!node || typeof args.content !== 'string' || operation.stdin !== 'content') throw new DingTalkCliError('write-failed')
+      if (canDispatch && !canDispatch()) throw new DingTalkCliError('permission-denied')
+      const receipt = await this.write(pinned, profile, workspaceArguments(operation, { ...args, node }), args.content, signal, node, 'overwrite')
+      return { ...receipt, url: 'https://alidocs.dingtalk.com/i/nodes/' + receipt.nodeId }
+    }
+    const argv = [profileFlag, ...workspaceArguments(operation, args), '--format=json', write ? '--timeout=30' : '--timeout=25']
+    if (operation.transfer) {
+      const flag = operation.transfer
+      const { withDingTalkTransfer } = await import('./workspaceFileTransfer')
+      try {
+        return await withDingTalkTransfer(id, flag, signal, async filePath => {
+          const data = await this.dispatchWorkspace(pinned, [...argv, '--' + flag + '=' + filePath], operation, signal, canDispatch, filePath)
+          return flag === 'output' ? { saved: true } : data
+        }, canDispatch)
+      } catch (error) {
+        if (error instanceof DingTalkCliError) throw error
+        checkCancelled(signal)
+        throw new DingTalkCliError('write-failed')
+      }
+    }
+    return this.dispatchWorkspace(pinned, argv, operation, signal, canDispatch)
+  }
+
+  private async dispatchWorkspace(cli: DingTalkCliInstallation, argv: string[], operation: NonNullable<ReturnType<typeof getWorkspaceOperation>>,
+    signal?: AbortSignal, canDispatch?: () => boolean, privatePath?: string): Promise<unknown> {
+    const write = operation.effect !== 'read'
+    checkCancelled(signal)
+    if (write && canDispatch && !canDispatch()) throw new DingTalkCliError('permission-denied')
+    let result: ProcessResult
+    try {
+      result = await this.run(cli.path, argv, path.dirname(cli.path), write ? 150_000 : 35_000, signal)
+      checkCancelled(signal)
+    } catch (error) {
+      if (!write) throw error instanceof DingTalkCliError ? error : new DingTalkCliError('read-failed')
+      if (error instanceof DingTalkCliError && error.code === 'cli-unavailable') throw error
+      throw new DingTalkCliError('write-outcome-unknown')
+    }
+    if (write) return workspaceReceipt(result, operation.id, privatePath)
+    const data = parseResult(result, 'read-failed')
+    const envelope = record(data)
+    if (envelope?.ok === false || envelope?.outcome === 'failure') throw readError(result, 'read-failed')
+    return projectWorkspaceResult(data)
+  }
+
   async createDocument(cli: DingTalkCliInstallation, profile: string, title: string, content?: string, folderId?: string, signal?: AbortSignal): Promise<DocumentWriteReceipt> {
     if (!title.trim() || title.length > 200 || /[\x00-\x1f\x7f]/.test(title) || (folderId !== undefined && !safeNodeId(folderId))) {
       throw new DingTalkCliError('write-failed')
@@ -516,7 +611,7 @@ export class DingTalkCli {
     return this.write(cli, profile, ['doc', '+update', '--node=' + documentId, '--command=append', '--content=-', '--yes'], content, signal, documentId)
   }
 
-  private async write(cli: DingTalkCliInstallation, profile: string, args: string[], content: string, signal?: AbortSignal, target?: string): Promise<DocumentWriteReceipt> {
+  private async write(cli: DingTalkCliInstallation, profile: string, args: string[], content: string, signal?: AbortSignal, target?: string, mode?: 'append' | 'overwrite'): Promise<DocumentWriteReceipt> {
     checkCancelled(signal)
     if (!path.isAbsolute(cli.path)) throw new DingTalkCliError('cli-unavailable')
     if (content.length > 64_000 || content.includes('\0')) throw new DingTalkCliError('write-failed')
@@ -524,12 +619,13 @@ export class DingTalkCli {
     let result: ProcessResult
     try {
       result = await this.run(cli.path, argv, path.dirname(cli.path), 150_000, signal, { input: content })
+      checkCancelled(signal)
     } catch (error) {
       if (error instanceof DingTalkCliError && error.code === 'cli-unavailable') throw error
       // Once dispatched, a timeout, interruption or lost response cannot prove the write failed.
       throw new DingTalkCliError('write-outcome-unknown', target)
     }
-    return writeReceipt(result, target)
+    return writeReceipt(result, target, mode)
   }
 
   private profileArgument(profile: string): string {

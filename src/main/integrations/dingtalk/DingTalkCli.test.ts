@@ -5,6 +5,8 @@ import path from 'node:path'
 import { DingTalkCli, DingTalkCliError, type DingTalkCliInstallation } from './DingTalkCli'
 
 vi.mock('electron', () => ({ app: { getPath: () => '' } }))
+const chooseTransfer = vi.hoisted(() => vi.fn())
+vi.mock('./workspaceFileTransfer', () => ({ withDingTalkTransfer: chooseTransfer }))
 
 const tempDirectories: string[] = []
 afterEach(async () => {
@@ -25,6 +27,129 @@ const cli: DingTalkCliInstallation = { path: path.resolve('dws-fixture'), versio
 const profile = 'ding_fixture:staff_fixture'
 
 describe('DingTalk CLI', () => {
+  it('runs reviewed workspace commands with bound identity and literal named flags, without a shell or stdin input', async () => {
+    const run = vi.fn<Run>().mockResolvedValue(processOutput({ ok: true, data: { values: [[42]], access_token: 'synthetic-secret' } }))
+    const dws = new DingTalkCli({ run })
+    await expect(dws.workspaceOperation(cli, profile, 'sheet.range.read', { node: 'node123', range: 'A1:B1' })).resolves.toEqual({ ok: true, data: { values: [[42]] } })
+    const [file, argv, cwd, time, signal, input] = run.mock.calls[0]
+    expect(file).toBe(cli.path)
+    expect(argv.slice(0, 4)).toEqual(['--profile=' + profile, 'sheet', 'range', 'read'])
+    expect(argv).toEqual(expect.arrayContaining(['--node=node123', '--range=A1:B1', '--format=json', '--timeout=25']))
+    expect([cwd, time, signal, input]).toEqual([path.dirname(cli.path), 35_000, undefined, undefined])
+    await expect(dws.workspaceOperation(cli, 'wrong,other', 'sheet.range.read', { node: 'n' })).rejects.toMatchObject({ code: 'not-authorized' })
+    await expect(dws.workspaceOperation(cli, profile, 'mcp.call', {})).rejects.toBeInstanceOf(DingTalkCliError)
+    await expect(dws.workspaceOperation(cli, profile, 'sheet.range.read', { node: '@priv', profile })).rejects.toBeInstanceOf(DingTalkCliError)
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses explicit workspace write receipts and never replays a missing or partially completed write', async () => {
+    const args = { node: 'n', 'sheet-id': 's', range: 'A1:B1', values: [['量', 42]] }
+    const run = vi.fn<Run>()
+    const dws = new DingTalkCli({ run })
+    const update = (signal?: AbortSignal) => dws.workspaceOperation(cli, profile, 'sheet.range.update', args, signal)
+    run.mockResolvedValueOnce(processOutput({ success: true }))
+    await expect(update()).resolves.toEqual({ success: true })
+    expect(run.mock.calls[0][1]).toContain('--values=' + JSON.stringify([[{ type: 'text', text: '量' }, { type: 'text', text: '42' }]]))
+    for (const receipt of [{}, { ok: true, outcome: 'pending' }, { ok: true, outcome: 'partial_failure' },
+      { success: true, data: { executed: false } }, { success: true, status: 'partial' }, { success: true, dry_run: true },
+      { success: true, result: { failedCount: 2 } }, { success: true, steps: [{ status: 'failed' }] }]) {
+      run.mockResolvedValueOnce(processOutput(receipt))
+      await expect(update()).rejects.toMatchObject({ code: 'write-outcome-unknown' })
+    }
+    run.mockResolvedValueOnce(processOutput({ error: { execution_started: false, reason: 'PERMISSION_DENIED' } }, 1))
+    await expect(update()).rejects.toMatchObject({ code: 'permission-denied' })
+    run.mockRejectedValueOnce(new Error('synthetic private response'))
+    await expect(update()).rejects.toMatchObject({ code: 'write-outcome-unknown', message: 'write-outcome-unknown' })
+    await expect(update(AbortSignal.abort())).rejects.toMatchObject({ code: 'cancelled' })
+    const controller = new AbortController()
+    run.mockImplementationOnce(async () => { controller.abort(); return processOutput({ success: true }) })
+    await expect(update(controller.signal)).rejects.toMatchObject({ code: 'write-outcome-unknown' })
+    expect(run).toHaveBeenCalledTimes(12)
+  })
+
+  it('selects the audited CLI for workspace operations while preserving an existing compatible installation for legacy calls', async () => {
+    const run = vi.fn<Run>().mockResolvedValue(processOutput({ success: true }))
+    const dws = new DingTalkCli({ run })
+    const find = vi.spyOn(dws, 'find').mockResolvedValue(null)
+    const install = vi.spyOn(dws, 'install').mockResolvedValue(cli)
+    const newer = { ...cli, path: cli.path + '-new', version: 'v1.1.0' }
+    await dws.searchDocuments(newer, profile, '示例', 2)
+    expect(find).not.toHaveBeenCalled()
+    expect(run.mock.calls[0][0]).toBe(newer.path)
+    await dws.workspaceOperation(newer, profile, 'sheet.range.read', { node: 'n' })
+    expect(find).toHaveBeenCalledWith(undefined, 'v1.0.69')
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(run.mock.calls[1][0]).toBe(cli.path)
+  })
+
+  it('takes a transfer path only from the native picker and checks write permission again when the picker returns', async () => {
+    const run = vi.fn<Run>().mockResolvedValue(processOutput({ success: true, savedPath: '/synthetic/private-location' }))
+    const dws = new DingTalkCli({ run })
+    let permitted = true
+    const download = () => dws.workspaceOperation(cli, profile, 'drive.download', { node: 'node-42' }, undefined, () => permitted)
+    chooseTransfer.mockImplementationOnce(async (_id, _flag, _signal, dispatch) => {
+      permitted = false
+      return dispatch('/synthetic/private-location')
+    })
+    await expect(download()).rejects.toMatchObject({ code: 'permission-denied' })
+    expect(run).not.toHaveBeenCalled()
+    permitted = true
+    chooseTransfer.mockImplementationOnce((_id, _flag, _signal, dispatch) => dispatch('/synthetic/private-location'))
+    await expect(download()).resolves.toEqual({ saved: true })
+    expect(run.mock.calls[0][1]).toContain('--output=/synthetic/private-location')
+    await expect(dws.workspaceOperation(cli, profile, 'drive.download', { node: 'n', output: '/other' })).rejects.toBeInstanceOf(DingTalkCliError)
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses repeatable Cobra flags and recognizes each audited legacy receipt without exposing local staging paths', async () => {
+    const run = vi.fn<Run>()
+    const dws = new DingTalkCli({ run })
+    run.mockResolvedValueOnce(processOutput({ items: [] }))
+    await dws.workspaceOperation(cli, profile, 'drive.search', { query: '月报', extensions: ['adoc', 'pdf'] })
+    expect(run.mock.calls[0][1]).toEqual(expect.arrayContaining(['--extensions=adoc', '--extensions=pdf']))
+
+    run.mockResolvedValueOnce(processOutput({}))
+    await expect(dws.workspaceOperation(cli, profile, 'doc.permission.update', { node: 'n', users: 'u', role: 'viewer' })).resolves.toEqual({ success: true })
+    expect(run.mock.calls[1][1]).toEqual(expect.arrayContaining(['--notify=false', '--yes=true']))
+
+    const staging = '/synthetic/private-location'
+    chooseTransfer.mockImplementation((_id, _flag, _signal, dispatch) => dispatch(staging))
+    run.mockResolvedValueOnce(processOutput({ contractVersion: 'doc.operation.v1', ok: true, status: 'success', complete: true,
+      data: { verified: true, name: 'example', savedPath: staging, info: 'saved ' + staging } }))
+    const uploaded = await dws.workspaceOperation(cli, profile, 'doc.media.insert', { node: 'n' })
+    expect(uploaded).toMatchObject({ data: { verified: true, name: 'example' } })
+    expect(JSON.stringify(uploaded)).not.toContain(staging)
+    run.mockResolvedValueOnce({ exitCode: 0, stdout: '附件已保存到: ' + staging, stderr: '' })
+    await expect(dws.workspaceOperation(cli, profile, 'mail.attachment.download', { 'attachment-id': 'a', email: 'demo@example.org', 'message-id': 'm' })).resolves.toEqual({ saved: true })
+    expect(run.mock.calls[3][1]).toContain('--name=attachment.bin')
+    run.mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '导出完成' })
+    await expect(dws.workspaceOperation(cli, profile, 'sheet.export-csv', { node: 'n' })).resolves.toEqual({ saved: true })
+    run.mockResolvedValueOnce({ exitCode: 0, stdout: '', stderr: '' })
+    await expect(dws.workspaceOperation(cli, profile, 'drive.upload', {})).rejects.toMatchObject({ code: 'write-outcome-unknown' })
+    chooseTransfer.mockReset()
+  })
+
+  it('overwrites only the confirmed document, with Markdown on stdin and a verified overwrite readback', async () => {
+    const run = vi.fn<Run>()
+    const dws = new DingTalkCli({ run })
+    const args = { node: 'https://alidocs.dingtalk.com/i/nodes/fixtureNode', content: '@file.md\n\n# 正文\n' + '新'.repeat(26_000) }
+    const update = (input = args) => dws.workspaceOperation(cli, profile, 'doc.update', input, undefined, () => true)
+    const data = { nodeId: 'fixtureNode', mode: 'overwrite', verified: true }
+    const receipt = { contractVersion: 'doc.operation.v1', status: 'success', complete: true, ok: true, operation: 'doc.update', data }
+    run.mockResolvedValueOnce(processOutput(receipt))
+    await expect(update()).resolves.toEqual({ nodeId: 'fixtureNode', url: args.node })
+    const argv = run.mock.calls[0][1]
+    expect(argv).toEqual(expect.arrayContaining(['doc', '+update', '--node=fixtureNode', '--content=-', '--command=overwrite', '--yes=true']))
+    expect(argv.join(' ')).not.toContain('正文')
+    expect(run.mock.calls[0][5]).toEqual({ input: args.content })
+    run.mockResolvedValueOnce(processOutput({ ...receipt, data: { ...data, mode: 'append' } }))
+    await expect(update()).rejects.toMatchObject({ code: 'write-outcome-unknown', nodeId: 'fixtureNode' })
+    run.mockResolvedValueOnce(processOutput({ ...receipt, data: { ...data, executed: false } }))
+    await expect(update()).rejects.toMatchObject({ code: 'write-outcome-unknown' })
+    await expect(update({ ...args, node: 'https://example.com/doc' })).rejects.toMatchObject({ code: 'write-failed' })
+    expect(run).toHaveBeenCalledTimes(3)
+  })
+
   it('reads the account from the official OAuth JSON response and calls only fixed login arguments', async () => {
     const run = vi.fn<Run>().mockResolvedValue(processOutput({
       success: true, corp_id: 'ding_fixture', user_id: 'staff_fixture',

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { serializeBoundedJson } from '../shared/boundedJson'
 import { isDingTalkNodeId, isDingTalkWrite, parseDingTalkRequest } from './integrations/dingtalk/requests'
+import { getWorkspaceOperation } from './integrations/dingtalk/workspaceOperations'
 import type { DingTalkToolError, DingTalkToolResult, DingTalkWriteRequest } from '../shared/connections'
 
 export { parseDingTalkRequest }
@@ -118,7 +119,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         return !writeSignal.aborted && current?.cwd === initial.cwd && current.mode === initial.mode
       }
       if (!canWrite()) return send(response, 403, { ok: false, error: 'write-forbidden' })
-      if (initial.mode === 'ask' && (!await confirmWrite(tool, writeSignal) || !canWrite())) {
+      const operation = tool.action === 'workspace_write' ? getWorkspaceOperation(tool.operation) : undefined
+      const needsConfirmation = initial.mode === 'ask' || operation?.effect === 'destructive' || operation?.confirmation === 'user_required'
+      if (needsConfirmation && (!await confirmWrite(tool, writeSignal) || !canWrite())) {
         return send(response, 403, { ok: false, error: 'write-forbidden' })
       }
       fallback = 'write-outcome-unknown'
@@ -139,12 +142,28 @@ async function confirmWrite(tool: DingTalkWriteRequest, signal: AbortSignal): Pr
     const { BrowserWindow, dialog } = await import('electron')
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(candidate => !candidate.isDestroyed())
     if (!win || win.isDestroyed() || signal.aborted) return false
-    const creating = tool.action === 'create_document'
-    const target = creating ? tool.title + '（' + (tool.folderId ?? '我的文档') + '）' : 'https://alidocs.dingtalk.com/i/nodes/' + tool.documentId
-    const preview = tool.content?.slice(0, 500) ?? ''
-    const detail = [target, preview + ((tool.content?.length ?? 0) > preview.length ? '…' : '')].filter(Boolean).join('\n\n')
+    let title = '钉钉文档'
+    let message: string
+    let detail: string
+    if (tool.action === 'workspace_write') {
+      const operation = getWorkspaceOperation(tool.operation)
+      if (!operation) return false
+      title = '钉钉'
+      message = '允许执行这项钉钉操作？'
+      const args = Object.entries(tool.args).map(([key, value]) => {
+        const text = JSON.stringify(value)
+        return key + ' = ' + (text.length > 350 ? text.slice(0, 350) + '…' : text)
+      }).join('\n')
+      detail = [tool.operation, operation.description, args].filter(Boolean).join('\n\n')
+    } else {
+      const creating = tool.action === 'create_document'
+      message = creating ? '允许新建这篇钉钉文档？' : '允许向这篇钉钉文档追加正文？'
+      const target = creating ? tool.title + '（' + (tool.folderId ?? '我的文档') + '）' : 'https://alidocs.dingtalk.com/i/nodes/' + tool.documentId
+      const preview = tool.content?.slice(0, 500) ?? ''
+      detail = [target, preview + ((tool.content?.length ?? 0) > preview.length ? '…' : '')].filter(Boolean).join('\n\n')
+    }
     const result = await dialog.showMessageBox(win, {
-      type: 'question', title: '钉钉文档', message: creating ? '允许新建这篇钉钉文档？' : '允许向这篇钉钉文档追加正文？',
+      type: 'question', title, message,
       detail, buttons: ['取消', '允许一次'], defaultId: 0, cancelId: 0, noLink: true, signal
     })
     return result.response === 1 && !signal.aborted
@@ -155,7 +174,7 @@ async function confirmWrite(tool: DingTalkWriteRequest, signal: AbortSignal): Pr
 
 const TOOL_ERRORS = new Set<DingTalkToolError>([
   'not-connected', 'invalid-input', 'cli-unavailable', 'organization-access-required', 'not-authorized', 'permission-denied', 'network', 'read-failed',
-  'write-failed', 'write-forbidden', 'write-outcome-unknown'
+  'write-failed', 'write-forbidden', 'write-outcome-unknown', 'cancelled'
 ])
 
 function projectResult(result: DingTalkToolResult, fallback: DingTalkToolError): Record<string, unknown> {

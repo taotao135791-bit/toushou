@@ -25,6 +25,7 @@ const fixture = () => ({
   searchDocuments: vi.fn().mockResolvedValue({ documents: ['Synthetic document'] }),
   readDocument: vi.fn().mockResolvedValue({ markdown: '# Synthetic' }),
   createDocument: vi.fn().mockResolvedValue({ nodeId }),
+  workspaceOperation: vi.fn().mockResolvedValue({ updated: true }),
   appendDocument: vi.fn().mockResolvedValue({ nodeId })
 })
 
@@ -100,6 +101,22 @@ describe('DingTalk account connection', () => {
     expect(cli.createDocument).toHaveBeenLastCalledWith(tool, owner.profile, create.title, append.content, folderId, expect.any(AbortSignal))
     expect(await manager.execute(append, undefined, allow)).toEqual(savedDocument)
     expect(cli.appendDocument).toHaveBeenCalledWith(tool, owner.profile, nodeId, append.content, expect.any(AbortSignal))
+  })
+
+  it('lists available sheet operations locally and dispatches the selected range update under the bound identity', async () => {
+    const cli = fixture()
+    const manager = new DingTalkConnectionManager({ cli, file })
+    const catalog = await manager.execute({ action: 'workspace_catalog', service: 'sheet', operation: 'sheet.range.update' })
+    expect(catalog).toMatchObject({ ok: true, data: { id: 'sheet.range.update', params: { values: { required: true } } } })
+    expect(cli.find).not.toHaveBeenCalled()
+    await manager.connect()
+    const args = { node: 'SyntheticSheet', 'sheet-id': 'Data', range: 'A1:B1', values: [['日期', 10]] }
+    const write = { action: 'workspace_write' as const, operation: 'sheet.range.update', args }
+    expect(await manager.execute(write)).toEqual({ ok: false, error: 'write-forbidden' })
+    expect(cli.workspaceOperation).not.toHaveBeenCalled()
+    const allow = () => true
+    expect(await manager.execute(write, undefined, allow)).toEqual({ ok: true, data: { updated: true } })
+    expect(cli.workspaceOperation).toHaveBeenCalledWith(tool, owner.profile, write.operation, args, expect.any(AbortSignal), allow)
   })
 
   it('requires write permission independently of the account connection for every mutation', async () => {

@@ -1,4 +1,5 @@
 import type { ToolCallRecord } from './toolCalls'
+import { mountedDingTalkAction } from './toolPresentation'
 
 export type ToolBrand = 'facebook' | 'tiktok' | 'feishu' | 'dingtalk' | 'google' | 'figma' | 'appsflyer'
 export interface WebsiteSource { url: string; hostname: string }
@@ -18,6 +19,7 @@ function actionFor(call: ToolCallRecord): { name: string; input: Record<string, 
   if (cached) return cached
   let name = call.tool.toLowerCase()
   let input = parse(call.input)
+  if (name === 'bash') name = mountedDingTalkAction(input?.command) ?? name
   if ((name === 'read' || name === 'write') && typeof input?.path === 'string') {
     const proxy = /^xd:\/\/([a-z][a-z0-9_]{0,127})$/.exec(input.path)
     if (proxy) { name = proxy[1]; input = call.tool.toLowerCase() === 'write' ? parse(input.content) : null }

@@ -15,6 +15,7 @@ import type {
 } from '../../../shared/connections'
 import { DingTalkCli, DingTalkCliError, type DingTalkCliIdentity, type DingTalkCliInstallation } from './DingTalkCli'
 import { isDingTalkNodeId, isDingTalkWrite, parseDingTalkRequest } from './requests'
+import { listWorkspaceOperations } from './workspaceOperations'
 
 export const DINGTALK_GUIDE_URL = 'https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/README_zh.md#开始使用'
 
@@ -22,8 +23,8 @@ const definition: ConnectionDefinition = {
   id: 'dingtalk',
   kind: 'channel',
   label: '钉钉',
-  description: '授权投手在对话中搜索钉钉消息，查阅、新建及追加在线文字文档。',
-  capabilities: ['messages.read', 'docs.read', 'docs.create', 'docs.append']
+  description: '在当前钉钉账号权限内操作在线表格、文档和其他办公应用，查询聊天消息。',
+  capabilities: ['messages.read', 'docs.read', 'docs.create', 'docs.append', 'workspace.catalog', 'workspace.read', 'workspace.write']
 }
 
 const statusByState: Record<DingTalkConnectionState, ConnectionStatus> = {
@@ -35,7 +36,7 @@ const statusByState: Record<DingTalkConnectionState, ConnectionStatus> = {
   error: 'failed'
 }
 
-type Cli = Pick<DingTalkCli, 'find' | 'install' | 'status' | 'login' | 'currentUser' | 'searchMessages' | 'searchDocuments' | 'readDocument' | 'createDocument' | 'appendDocument'>
+type Cli = Pick<DingTalkCli, 'find' | 'install' | 'status' | 'login' | 'currentUser' | 'searchMessages' | 'searchDocuments' | 'readDocument' | 'createDocument' | 'appendDocument' | 'workspaceOperation'>
 type ConnectionOperation = 'connect' | 'check'
 
 function exactProfile(value: unknown): value is string {
@@ -170,13 +171,17 @@ export class DingTalkConnectionManager {
   }
 
   async execute(input: DingTalkToolRequest, signal?: AbortSignal, canWrite?: () => boolean): Promise<DingTalkToolResult> {
+    const request = parseDingTalkRequest(input)
+    if (!request) return { ok: false, error: 'invalid-input' }
+    if (request.action === 'workspace_catalog') {
+      const data = listWorkspaceOperations(request.service, request.operation, request.cursor)
+      return data ? { ok: true, data } : { ok: false, error: 'invalid-input' }
+    }
     await this.initialize()
     const cli = this.installation
     const profile = this.identity?.profile
     const lifetime = this.connectedLifetime()
     if (!lifetime || !cli || !profile || this.profile !== profile) return { ok: false, error: 'not-connected' }
-    const request = parseDingTalkRequest(input)
-    if (!request) return { ok: false, error: 'invalid-input' }
     const write = isDingTalkWrite(request)
     if (this.activeRequests >= 3) return { ok: false, error: write ? 'write-failed' : 'read-failed' }
     const task = signal ? AbortSignal.any([signal, lifetime]) : lifetime
@@ -185,6 +190,10 @@ export class DingTalkConnectionManager {
       if (write) {
         // Recheck the initiating session and approval after asynchronous connection setup.
         if (task.aborted || !canWrite?.()) return { ok: false, error: 'write-forbidden' }
+        if (request.action === 'workspace_write') {
+          const data = await this.cli.workspaceOperation(cli, profile, request.operation, request.args, task, canWrite)
+          return task.aborted ? { ok: false, error: 'write-outcome-unknown' } : { ok: true, data }
+        }
         const result = request.action === 'create_document'
           ? await this.cli.createDocument(cli, profile, request.title, request.content, request.folderId, task)
           : await this.cli.appendDocument(cli, profile, request.documentId, request.content, task)
@@ -196,7 +205,8 @@ export class DingTalkConnectionManager {
       }
       task.throwIfAborted()
       let data: unknown
-      if (request.action === 'read_document') data = await this.cli.readDocument(cli, profile, request.documentId, task)
+      if (request.action === 'workspace_read') data = await this.cli.workspaceOperation(cli, profile, request.operation, request.args, task)
+      else if (request.action === 'read_document') data = await this.cli.readDocument(cli, profile, request.documentId, task)
       else if (request.action === 'search_messages') data = await this.cli.searchMessages(cli, profile, request.query, 20, task)
       else data = await this.cli.searchDocuments(cli, profile, request.query, 10, task)
       task.throwIfAborted()
@@ -216,7 +226,7 @@ export class DingTalkConnectionManager {
           const nodeId = error.nodeId ?? (request.action === 'append_document' ? request.documentId : undefined)
           return { ok: false, error: 'write-outcome-unknown', ...(isDingTalkNodeId(nodeId) ? { nodeId } : {}) }
         }
-        if (code === 'network' || code === 'permission-denied' || code === 'write-failed') return { ok: false, error: code }
+        if (code === 'network' || code === 'permission-denied' || code === 'write-failed' || code === 'cancelled') return { ok: false, error: code }
       }
       return { ok: false, error: write ? 'write-outcome-unknown' : 'read-failed' }
     } finally {
