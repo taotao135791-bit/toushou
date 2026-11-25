@@ -124,6 +124,11 @@
     transition-timing-function: var(--ease);
   }
 
+  /* 按钮按下微缩（学 kimi/dsh 的按压反馈）：只在可点击态生效，轻到不遮挡文字。 */
+  button:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
       animation-duration: 1ms !important;
@@ -541,6 +546,22 @@
 @keyframes panel-out {
   from { opacity: 1; transform: none; }
   to { opacity: 0; transform: translateY(4px) scale(0.98); }
+}
+
+/* Dropdown/popover panels (MenuPortal family): enter from the anchor edge —
+ * a menu that pops UP grows from its bottom edge, and vice versa. */
+.menu-pop-in {
+  animation: menu-pop-in var(--dur-1) var(--ease-out) both;
+}
+.menu-pop-in.origin-top {
+  transform-origin: top center;
+}
+.menu-pop-in.origin-bottom {
+  transform-origin: bottom center;
+}
+@keyframes menu-pop-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 /* A row that just appeared (new session, new task…) eases in. */
