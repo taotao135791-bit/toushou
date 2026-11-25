@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { ChildProcess } from 'node:child_process'
 import { writeFileSync, mkdtempSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { OmpSession, OmpProcessLike } from '../../src/main/omp/OmpSession'
@@ -222,23 +223,51 @@ describe('current Oh My Pi (omp) — RPC v2 profile', () => {
 
   it('session scope vs default scope: switching a session never changes the default', async () => {
     if (!available) return
-    const iso = isolatedRpc(OMP_BIN)
-    const run = makeExecRunner(OMP_BIN, { env: iso.env, envMode: 'replace' })
-    const thinkingBefore = (await configGet(run, 'defaultThinkingLevel'))?.value
-    const rolesBefore = (await configGet(run, 'modelRoles'))?.value
-
-    const s1 = startSession(OMP_BIN, [], iso)
+    const iso = createIsolatedOmpEnvironment()
+    const models = ['first', 'second'].map(id => ({ id, contextWindow: 48000, maxTokens: 2048 }))
+    const endpoint = createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ object: 'list', data: models.map(({ id }) => ({ id, object: 'model' })) }))
+      } else {
+        res.writeHead(404).end()
+      }
+    })
+    let live: LiveSession | undefined
     try {
-      await waitFor(() => s1.session.handshakeOutcome !== null, 15_000, 'handshake')
-      if (diedEarly(s1)) return
-      // Session-scoped RPC never writes the global config read above.
-      expect(await s1.session.query({ type: 'set_model', provider: 'deepseek', modelId: 'x' })).toBeTruthy()
-      expect(
-        JSON.stringify((await configGet(run, 'defaultThinkingLevel'))?.value)
-      ).toBe(JSON.stringify(thinkingBefore))
-      expect(JSON.stringify((await configGet(run, 'modelRoles'))?.value)).toBe(JSON.stringify(rolesBefore))
+      await new Promise<void>((resolve, reject) => endpoint.once('error', reject).listen(0, '127.0.0.1', resolve))
+      const address = endpoint.address()
+      if (!address || typeof address === 'string') throw new Error('Missing fixture port')
+      writeFileSync(path.join(iso.agentDir, 'models.yml'), JSON.stringify({ providers: { fixture: {
+        baseUrl: `http://127.0.0.1:${address.port}/v1`, api: 'openai-completions', apiKey: 'fixture', models
+      } } }))
+      writeFileSync(path.join(iso.agentDir, 'config.yml'), JSON.stringify({
+        defaultThinkingLevel: 'low', modelRoles: { default: 'fixture/first' }
+      }))
+      const run = makeExecRunner(OMP_BIN, { env: iso.env, envMode: 'replace' })
+      const rolesBefore = (await configGet(run, 'modelRoles'))?.value
+      expect(rolesBefore).toMatchObject({ default: 'fixture/first' })
+      expect((await configGet(run, 'defaultThinkingLevel'))?.value).toBe('low')
+
+      live = startSession(OMP_BIN, [], iso)
+      const { session } = live
+      await waitFor(() => session.handshakeOutcome !== null, 15_000, 'handshake')
+      expect(await session.query({ type: 'get_state' })).toMatchObject({
+        success: true, data: { model: { provider: 'fixture', id: 'first' } }
+      })
+      expect(await session.query({ type: 'set_model', provider: 'fixture', modelId: 'second' }))
+        .toMatchObject({ success: true })
+      expect(await session.query({ type: 'get_state' })).toMatchObject({
+        success: true, data: { model: { provider: 'fixture', id: 'second' } }
+      })
+      expect((await configGet(run, 'modelRoles'))?.value).toEqual(rolesBefore)
+      expect((await configGet(run, 'defaultThinkingLevel'))?.value).toBe('low')
     } finally {
-      s1.session.kill()
+      if (live?.proc.pid && live.proc.exitCode === null && live.proc.signalCode === null) {
+        await live.session.killAndWait()
+      }
+      endpoint.closeAllConnections()
+      await new Promise<void>(resolve => endpoint.close(() => resolve()))
       iso.cleanup()
     }
   })
