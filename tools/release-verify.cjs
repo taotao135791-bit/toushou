@@ -79,8 +79,13 @@ function checkTag(version, phase) {
   if (process.env.GITHUB_REF !== ref || git('rev-parse', ref + '^{commit}') !== git('rev-parse', 'HEAD')) {
     throw new Error('Release tag and checked-out commit differ')
   }
-  // checkout fetch-depth: 0 provides all tag refs; refresh main on retries.
-  git('fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main', ref + ':' + ref)
+  // checkout may materialize the event tag as a lightweight tag at the commit.
+  // Compare peeled commits without replacing the checkout's local tag object.
+  const remoteTag = 'refs/toushou-release-check/remote-tag'
+  git('fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main', '+' + ref + ':' + remoteTag)
+  if (git('rev-parse', remoteTag + '^{commit}') !== git('rev-parse', 'HEAD')) {
+    throw new Error('Remote release tag and checked-out commit differ')
+  }
   const ancestor = (first, second) => git('merge-base', '--is-ancestor', first, second)
   ancestor('HEAD', 'refs/remotes/origin/main')
   const result = execFileSync('gh', ['api', '--paginate', 'repos/{owner}/{repo}/releases?per_page=100',

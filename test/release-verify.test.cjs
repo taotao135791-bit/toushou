@@ -137,6 +137,8 @@ test('pushed tags must be on remote main before a formal build can start', { ski
   git('commit', '-am', 'bridge')
   git('tag', '-a', 'v2.9.8', '-m', 'bridge')
   git('push', 'origin', 'v2.9.8')
+  // Simulate checkout@v4's event ref at the commit while the remote tag is annotated.
+  git('tag', '-f', 'v2.9.8', 'HEAD')
   const fakeBin = join(temporary, 'bin')
   mkdirSync(fakeBin)
   writeFileSync(join(fakeBin, 'gh'), '#!/bin/sh\necho v2.9.7\n', { mode: 0o700 })
@@ -149,4 +151,8 @@ test('pushed tags must be on remote main before a formal build can start', { ski
   const result = run()
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /version=2\.9\.8\ntarget=all/)
+  git('--git-dir=' + remote, 'update-ref', 'refs/tags/v2.9.8', 'refs/tags/v2.9.7')
+  const changedTag = run()
+  assert.notEqual(changedTag.status, 0)
+  assert.match(changedTag.stderr, /Remote release tag and checked-out commit differ/)
 })
