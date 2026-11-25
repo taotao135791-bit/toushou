@@ -101,11 +101,19 @@ function App() {
 
   useEffect(() => {
     const {
-      setTheme, setLanguage, setCliAvailable, setSetupComplete, applySessionEvent,
+      setLanguage, setCliAvailable, setSetupComplete, applySessionEvent,
       registerSessions, setScheduledTasks, setWorkspacePanel
     } = useAppStore.getState()
     window.electronAPI.getStore('theme').then((theme) => {
-      setTheme(theme)
+      // 启动水合不走 setTheme（那会把主题来源覆盖成 manual）。
+      if (theme === 'dark' || theme === 'light') {
+        useAppStore.setState({ theme })
+        document.documentElement.classList.toggle('dark', theme === 'dark')
+      }
+    })
+    window.electronAPI.getStore('themeSource').then((source) => {
+      // system：挂监听并按系统深浅色立即解析实际主题。
+      if (source === 'system') useAppStore.getState().setThemeSource('system')
     })
     window.electronAPI.getStore('language').then((language) => {
       setLanguage(language)

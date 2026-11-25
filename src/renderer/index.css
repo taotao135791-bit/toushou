@@ -129,6 +129,43 @@
     transform: scale(0.97);
   }
 
+  /* 滑块全局样式（学 kimi 的双风格：细轨道 + 白色圆 thumb 带投影）。
+     已有自定义皮肤的滑块（如 effort-slider）特异性更高，不受影响。 */
+  input[type='range'] {
+    appearance: none;
+    height: 16px;
+    background: transparent;
+    cursor: pointer;
+  }
+  input[type='range']::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: rgb(var(--bg-sunken));
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+  }
+  input[type='range']::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    margin-top: -4px;
+    border-radius: 50%;
+    background: #fff;
+    border: 0.5px solid rgb(0 0 0 / 0.2);
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+    transition: transform 120ms var(--ease);
+  }
+  input[type='range']:hover::-webkit-slider-thumb,
+  input[type='range']:focus-visible::-webkit-slider-thumb {
+    transform: scale(1.15);
+  }
+  input[type='range']:active::-webkit-slider-thumb {
+    transform: scale(1.05);
+  }
+  input[type='range']:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
       animation-duration: 1ms !important;
@@ -562,6 +599,54 @@
 @keyframes menu-pop-in {
   from { opacity: 0; transform: scale(0.96); }
   to { opacity: 1; transform: scale(1); }
+}
+
+/* 展开类容器（归档组/项目对话列表）的挂载入场：轻下移 + 淡入。
+   收起是直接卸载（懒渲染语义不变），所以只有入场没有出场。 */
+@keyframes disclose-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 太极旋转（主题右键「跟随系统」仪式层的中心图形）。 */
+@keyframes taiji-spin {
+  from { transform: rotate(0deg) scale(0.7); }
+  40% { transform: rotate(360deg) scale(1); }
+  to { transform: rotate(720deg) scale(1); }
+}
+
+/* 主题按钮的图标悬停动效（用户点名"太阳转一下"）：悬停时日/月转 90°。 */
+.sidebar-theme-btn .theme-icon svg {
+  transition: transform 250ms var(--ease-out);
+}
+.sidebar-theme-btn:hover .theme-icon svg {
+  transform: rotate(90deg);
+}
+html.dark .sidebar-theme-btn:hover .theme-icon svg {
+  transform: rotate(-90deg);
+}
+
+/* 主题按钮右键「切到跟随系统」的仪式动画：屏幕中心的阴阳鱼旋转揭示，
+ * 旋转两圈后渐隐（学用户点名的太极意象；kimi 的圆形揭示是单色版）。
+ * prefers-reduced-motion 时整个 overlay 直接不渲染（组件层已兜底）。 */
+.taiji-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.taiji-overlay .taiji-figure {
+  width: min(42vmin, 420px);
+  height: min(42vmin, 420px);
+  filter: drop-shadow(0 8px 40px rgb(0 0 0 / 0.35));
+  animation: taiji-reveal 1.3s var(--ease-in-out) both;
+}
+@keyframes taiji-reveal {
+  0% { opacity: 0; transform: rotate(-180deg) scale(0.35); }
+  45% { opacity: 1; transform: rotate(0deg) scale(1); }
+  100% { opacity: 0; transform: rotate(360deg) scale(1.5); }
 }
 
 /* A row that just appeared (new session, new task…) eases in. */

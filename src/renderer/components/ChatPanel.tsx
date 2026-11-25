@@ -7,6 +7,8 @@ import {
   Loader2,
   ChevronDown,
   PanelRight,
+  ScrollText,
+  X,
   Clock3,
   Layers,
   Link2,
@@ -86,6 +88,11 @@ export default function ChatPanel() {
   const queuedCount = useAppStore((s) => currentSessionId ? s.queuedMessages[currentSessionId]?.length ?? 0 : 0)
   const queuePauseReason = useAppStore((s) => currentSessionId ? s.queuePauseReasons[currentSessionId] : undefined)
   const queueDispatching = useAppStore((s) => currentSessionId ? s.queueDispatching[currentSessionId] : undefined)
+  const sessionInstruction = useAppStore((s) => currentSessionId ? s.sessionInstructions[currentSessionId] : undefined)
+  const setSessionInstructions = useAppStore((s) => s.setSessionInstructions)
+  /** 会话设定编辑弹窗（学 kimi 的会话设定：手写长期指令）。 */
+  const [instructionOpen, setInstructionOpen] = useState(false)
+  const [instructionDraft, setInstructionDraft] = useState('')
   const { viewportRef: scrollRef, contentRef, onScroll: handleTranscriptScroll, showJump, jumpToBottom } = useTranscriptScroll(currentSessionId)
   const [commandResult, setCommandResult] = useState<{ sessionId: string; commands: SlashCommand[] } | null>(null)
   const slashCommands = commandResult?.sessionId === currentSessionId ? commandResult.commands : undefined
@@ -449,6 +456,18 @@ export default function ChatPanel() {
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-cream-dim">
+          {currentSessionId && (
+            <button
+              onClick={() => { setInstructionDraft(sessionInstruction ?? ''); setInstructionOpen(true) }}
+              aria-label={t('chat.instruction.open')}
+              title={sessionInstruction ? t('chat.instruction.hasOne') : t('chat.instruction.open')}
+              className={`focus-ring app-no-drag rounded-md p-1.5 transition-colors hover:bg-overlay hover:text-cream ${
+                sessionInstruction ? 'text-accent' : 'text-cream-faint'
+              }`}
+            >
+              <ScrollText size={14} />
+            </button>
+          )}
           {currentWorkspace && <OpenWithMenu workspaceId={currentWorkspace.id} compact={compact} />}
           <button
             onClick={toggleWorkspace}
@@ -489,6 +508,53 @@ export default function ChatPanel() {
         </header>
       ) : (
         <div className="app-drag h-12 shrink-0" />
+      )}
+
+      {instructionOpen && currentSessionId && (
+        <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div role="dialog" aria-modal="true" aria-label={t('chat.instruction.open')}
+            className="dialog-panel w-full max-w-[560px] rounded-2xl border border-line bg-ink-850 p-4 shadow-pop">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-[13px] font-medium text-cream">{t('chat.instruction.title')}</h3>
+              <button onClick={() => setInstructionOpen(false)} aria-label={t('common.cancel')}
+                className="focus-ring rounded-md p-1 text-cream-faint hover:bg-overlay hover:text-cream"><X size={14} /></button>
+            </div>
+            <p className="mb-2 text-[11.5px] leading-4 text-cream-faint">{t('chat.instruction.hint')}</p>
+            <textarea
+              value={instructionDraft}
+              onChange={(e) => setInstructionDraft(e.target.value)}
+              rows={6}
+              placeholder={t('chat.instruction.placeholder')}
+              className="w-full resize-none rounded-lg border border-line bg-ink-900 px-2.5 py-2 text-[12.5px] leading-5 text-cream placeholder-cream-faint outline-none focus:border-accent/40"
+            />
+            <div className="mt-3 flex items-center justify-end gap-2">
+              {sessionInstruction && (
+                <button
+                  onClick={() => { setInstructionDraft(''); setSessionInstructions(currentSessionId, '') }}
+                  className="focus-ring rounded-lg border border-line px-2.5 py-1 text-[12px] text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
+                >
+                  {t('chat.instruction.clear')}
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  const text = instructionDraft.trim()
+                  if (!text) return
+                  setSessionInstructions(currentSessionId, text)
+                  setInstructionOpen(false)
+                  // 设定作为一条正式消息发送：立即生效、写入会话历史
+                  // （resume 后模型依然可见），并复用排队/转向兼容链路。
+                  void handleSend(`【会话设定】此后所有回复遵守以下要求：\n${text}\n（本条为设定同步消息，无需逐条复述。）`)
+                }}
+                disabled={!instructionDraft.trim()}
+                title={t('chat.instruction.apply')}
+                className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-not-allowed disabled:bg-overlay-strong disabled:text-cream-faint"
+              >
+                {t('chat.instruction.apply')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="relative min-h-0 flex-1">

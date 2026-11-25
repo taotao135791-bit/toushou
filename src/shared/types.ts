@@ -1669,6 +1669,8 @@ export interface AppSettings {
    * 用户在设置页指定，切换时 Main 负责迁移既有记忆文件。
    */
   memoryStoragePath: string
+  /** 主题来源：manual = 用户手动选深/浅；system = 跟随系统深浅色实时切换。 */
+  themeSource: 'manual' | 'system'
   /** Sidebar: session list ordering (durable uuids or live ids for archives). */
   /** Sidebar filing only. The workspace and transcript stay with the original session. */
   sidebarSessionProjects: Record<string, string>
@@ -1697,6 +1699,12 @@ export interface AppSettings {
    */
   sessionTitles: Record<string, string>
   sessionTitleMetadata: Record<string, SessionTitleMetadata>
+  /**
+   * 会话设定（学 kimi 的会话设定）：用户为某个对话手写的长期指令，
+   * 按 sessionId 存储。保存时作为一条设定消息发给模型（写入会话历史，
+   * resume 后模型依然可见），同时留存于此供编辑和恢复。
+   */
+  sessionInstructions: Record<string, string>
 }
 
 // --- Scheduled tasks --------------------------------------------------------
@@ -1849,6 +1857,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sidebarProjectOrder: [],
   sidebarSessionOrder: [],
   memoryStoragePath: '',
+  themeSource: 'manual',
   sessionSort: 'recent',
   sidebarWidth: 240,
   bundledPackages: {},
@@ -1857,6 +1866,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   scheduledTasks: [],
   tiktokAutoRefresh: false,
   sessionTitles: {},
+  sessionInstructions: {},
   sessionTitleMetadata: {}
 }
 

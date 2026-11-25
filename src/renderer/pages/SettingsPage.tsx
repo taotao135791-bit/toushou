@@ -4,6 +4,7 @@ import {
   Download,
   FolderCog,
   Languages,
+  Monitor,
   Moon,
   RefreshCw,
   Sun,
@@ -190,14 +191,16 @@ const PERMISSION_MODES: { value: PermissionMode; label: I18nKey; note: I18nKey }
 ]
 
 export default function SettingsPage() {
-  const { theme, language, setTheme, setLanguage, permissionMode, setPermissionMode } = useAppStore(
+  const { theme, language, setTheme, setLanguage, permissionMode, setPermissionMode, themeSource, setThemeSource } = useAppStore(
     useShallow((s) => ({
       theme: s.theme,
       language: s.language,
       setTheme: s.setTheme,
       setLanguage: s.setLanguage,
       permissionMode: s.permissionMode,
-      setPermissionMode: s.setPermissionMode
+      setPermissionMode: s.setPermissionMode,
+      themeSource: s.themeSource,
+      setThemeSource: s.setThemeSource
     }))
   )
   const thinkingAutoExpand = useAppStore((s) => s.thinkingAutoExpand)
@@ -387,6 +390,44 @@ export default function SettingsPage() {
         : 'border-transparent text-cream-dim hover:text-cream'
     }`
 
+  /** Segmented control with a sliding pill indicator (学 dsh 的 SegmentedControl)：
+   *  the raised pill slides under the selected segment instead of each
+   *  segment painting its own border. Equal-width tracks keep the math pure CSS. */
+  const Segmented = <T extends string>({ value, options, onChange, ariaLabel }: {
+    value: T
+    options: Array<{ value: T; label: React.ReactNode }>
+    onChange: (value: T, event?: React.MouseEvent<HTMLButtonElement>) => void
+    ariaLabel?: string
+  }) => {
+    const index = Math.max(0, options.findIndex((option) => option.value === value))
+    return (
+      <div role="group" aria-label={ariaLabel} className="relative flex rounded-full border border-line bg-ink-800 p-0.5">
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0.5 rounded-full bg-ink-850 shadow-card transition-[left] duration-200 [transition-timing-function:var(--ease-out)]"
+          style={{
+            width: `calc((100% - 4px) / ${options.length})`,
+            left: `calc(2px + ${index} * (100% - 4px) / ${options.length})`
+          }}
+        />
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={option.value === value}
+            onClick={(event) => onChange(option.value, event)}
+            className={`focus-ring relative z-[1] flex min-h-8 items-center justify-center px-2 text-[12px] font-medium transition-colors ${
+              option.value === value ? 'text-cream' : 'text-cream-dim hover:text-cream'
+            }`}
+            style={{ width: `calc((100% - 4px) / ${options.length})` }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <header className="app-drag flex h-12 shrink-0 items-center border-b border-line px-4">
@@ -428,17 +469,12 @@ export default function SettingsPage() {
 
           <Section title={t('settings.permissions')}>
             <Row label={t('settings.permissionMode')}>
-              <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                {PERMISSION_MODES.map((mode) => (
-                  <button
-                    key={mode.value}
-                    onClick={() => changePermissionMode(mode.value)}
-                    className={seg(permissionMode === mode.value)}
-                  >
-                    {t(mode.label)}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                ariaLabel={t('settings.permissionMode')}
+                value={permissionMode}
+                onChange={(value) => changePermissionMode(value)}
+                options={PERMISSION_MODES.map((mode) => ({ value: mode.value, label: t(mode.label) }))}
+              />
             </Row>
             <Note>{t(PERMISSION_MODES.find((m) => m.value === permissionMode)?.note ?? 'settings.permissionsNote.ask')}</Note>
           </Section>
@@ -449,28 +485,35 @@ export default function SettingsPage() {
             <Row label={`${t('settings.language')} / ${language === 'zh' ? 'Language' : '语言'}`}>
               <div className="flex items-center gap-2">
                 <Languages size={14} className="text-cream-faint" aria-hidden="true" />
-                <div role="group" aria-label={t('settings.language')} className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                  <button type="button" aria-pressed={language === 'zh'} onClick={(e) => runLanguageTransition(() => setLanguage('zh'), { x: e.clientX, y: e.clientY })} className={seg(language === 'zh')}>
-                    {t('settings.languageZh')}
-                  </button>
-                  <button type="button" aria-pressed={language === 'en'} onClick={(e) => runLanguageTransition(() => setLanguage('en'), { x: e.clientX, y: e.clientY })} className={seg(language === 'en')}>
-                    {t('settings.languageEn')}
-                  </button>
-                </div>
+                <Segmented
+                  ariaLabel={t('settings.language')}
+                  value={language}
+                  onChange={(value, event) => runLanguageTransition(() => setLanguage(value), event ? { x: event.clientX, y: event.clientY } : undefined)}
+                  options={[
+                    { value: 'zh' as const, label: t('settings.languageZh') },
+                    { value: 'en' as const, label: t('settings.languageEn') }
+                  ]}
+                />
               </div>
             </Row>
             <Row label={t('settings.theme')}>
               <div role="group" aria-label={t('settings.theme')} className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                <button type="button" aria-pressed={theme === 'light'} onClick={(e) => runThemeTransition(() => setTheme('light'), { x: e.clientX, y: e.clientY }, 'light')} className={seg(theme === 'light')}>
+                <button type="button" aria-pressed={themeSource === 'manual' && theme === 'light'} onClick={(e) => runThemeTransition(() => setTheme('light'), { x: e.clientX, y: e.clientY }, 'light')} className={seg(themeSource === 'manual' && theme === 'light')}>
                   <span className="flex items-center gap-1">
                     <Sun size={11} />
                     {t('settings.themeLight')}
                   </span>
                 </button>
-                <button type="button" aria-pressed={theme === 'dark'} onClick={(e) => runThemeTransition(() => setTheme('dark'), { x: e.clientX, y: e.clientY }, 'dark')} className={seg(theme === 'dark')}>
+                <button type="button" aria-pressed={themeSource === 'manual' && theme === 'dark'} onClick={(e) => runThemeTransition(() => setTheme('dark'), { x: e.clientX, y: e.clientY }, 'dark')} className={seg(themeSource === 'manual' && theme === 'dark')}>
                   <span className="flex items-center gap-1">
                     <Moon size={11} />
                     {t('settings.themeDark')}
+                  </span>
+                </button>
+                <button type="button" aria-pressed={themeSource === 'system'} onClick={() => setThemeSource('system')} className={seg(themeSource === 'system')}>
+                  <span className="flex items-center gap-1">
+                    <Monitor size={11} />
+                    {t('settings.themeSystem')}
                   </span>
                 </button>
               </div>

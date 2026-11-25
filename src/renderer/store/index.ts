@@ -205,6 +205,8 @@ export interface OfficeEditHandoff {
 
 interface AppState {
   theme: 'dark' | 'light'
+  /** 主题来源：manual 手动选；system 跟随系统深浅色（theme 是解析后的实际值）。 */
+  themeSource: 'manual' | 'system'
   language: Language
   /** 思维链展示策略（学 deepseek-harness TranscriptViewPolicy）：流式时自动展开。 */
   thinkingAutoExpand: boolean
@@ -340,11 +342,15 @@ interface AppState {
   runtimeModelCatalog: RuntimeModelInfo[]
   /** sessionId -> runtime-confirmed selection (auto or resolved fixed effort). */
   sessionThinking: Record<string, string | undefined>
+  /** 会话设定：用户为该对话手写的长期指令（persist；保存时发送设定消息）。 */
+  sessionInstructions: Record<string, string>
   /** sessionId -> bumped on model_changed; pickers refetch get_state. */
   sessionModelVersion: Record<string, number>
   /** Native login flow state (idle when no flow runs). */
   loginState: LoginState
   setTheme: (theme: 'dark' | 'light') => void
+  /** 主题来源：system 时挂系统深浅色监听自动切换，manual 时移除。 */
+  setThemeSource: (source: 'manual' | 'system') => void
   setLanguage: (language: Language) => void
   setThinkingAutoExpand: (value: boolean) => void
   setThinkingCollapseTiming: (value: 'on-complete' | 'until-next-input') => void
@@ -424,6 +430,8 @@ interface AppState {
   setBusy: (sessionId: string, busy: boolean) => void
   /** Set/clear a session's user-visible failure banner (i18n key). */
   setSessionError: (sessionId: string, key: I18nKey | null) => void
+  /** 保存会话设定并持久化（发送设定消息由 ChatPanel 走正常发送链路）。 */
+  setSessionInstructions: (sessionId: string, text: string) => void
   /** Clear a recoverable error only when it is still the expected key. */
   clearSessionErrorIf: (sessionId: string, key: I18nKey) => void
   /** Append a message to the session's queue. */
@@ -607,8 +615,18 @@ function migrateComposerDraft(drafts: ComposerDrafts, previousKey: string, nextK
   return draft ? setComposerDraft(cleared, nextKey, draft) : clearComposerDraft(cleared, nextKey)
 }
 
-export const useAppStore = create<AppState>((set, get) => ({
-  theme: 'light',
+/** 系统深浅色监听（themeSource=system 时挂载）；解析结果走 setTheme 同一链路。 */
+let themeMediaRef: MediaQueryList | null = null
+function onSystemThemeChanged(): void {
+  const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  const theme = dark ? 'dark' : 'light'
+  useAppStore.setState({ theme })
+  document.documentElement.classList.toggle('dark', dark)
+  window.electronAPI.setStore('theme', theme)
+}
+
+export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
+  themeSource: 'manual',
   language: 'en',
   thinkingAutoExpand: true,
   thinkingCollapseTiming: 'on-complete',
@@ -672,15 +690,35 @@ export const useAppStore = create<AppState>((set, get) => ({
   runtimeModels: [],
   runtimeModelCatalog: [],
   sessionThinking: {},
+  sessionInstructions: {},
   sessionModelVersion: {},
   loginState: { status: 'idle' },
   pendingModel: null,
   pendingThinking: null,
 
   setTheme: (theme) => {
+    // 手动选深/浅 = 放弃跟随系统（source 切回 manual，监听摘除）。
+    if (get().themeSource !== 'manual') get().setThemeSource('manual')
     set({ theme })
     document.documentElement.classList.toggle('dark', theme === 'dark')
     window.electronAPI.setStore('theme', theme)
+  },
+  // 跟随系统：system 时监听系统深浅色，解析成实际主题走 setTheme（窗口底色
+  // 由 main 的 applyWindowTheme 经同一 store 键同步）。手动选深/浅会切回 manual。
+  setThemeSource: (source) => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    const mediaRef = themeMediaRef
+    if (mediaRef) {
+      mediaRef.removeListener(onSystemThemeChanged)
+      themeMediaRef = null
+    }
+    set({ themeSource: source })
+    window.electronAPI.setStore('themeSource', source)
+    if (source === 'system' && media) {
+      themeMediaRef = media
+      media.addEventListener('change', onSystemThemeChanged)
+      onSystemThemeChanged()
+    }
   },
   setLanguage: (language) => {
     set({ language })
@@ -1179,6 +1217,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       const next = key ?? undefined
       if (state.sessionErrors[sessionId] === next) return state
       return { sessionErrors: { ...state.sessionErrors, [sessionId]: next } }
+    }),
+  setSessionInstructions: (sessionId, text) =>
+    set((state) => {
+      const next = { ...state.sessionInstructions, [sessionId]: text }
+      window.electronAPI.setStore('sessionInstructions', next)
+      return { sessionInstructions: next }
     }),
   clearSessionErrorIf: (sessionId, key) =>
     set((state) => {

@@ -9,6 +9,7 @@ import {
   Trash2,
   Sun,
   Moon,
+  Monitor,
   Search,
   SlidersHorizontal,
   SquarePen,
@@ -22,7 +23,6 @@ import {
   ArchiveRestore,
   ArrowUpDown,
   Check,
-  ChevronDown,
   ChevronRight,
   Loader2,
   Link2,
@@ -42,6 +42,7 @@ import { finishHistoryResume, historyResumeGrant, openGlobalHistory } from '../l
 import { ConfirmDialog } from './ConfirmDialog'
 import { UndoableDeleteBanner, useUndoableDelete } from './UndoableDelete'
 import { runThemeTransition } from '../lib/themeTransition'
+import TaijiOverlay from './TaijiOverlay'
 import {
   recordDurableUuid,
   recordsForWorkspace,
@@ -127,7 +128,12 @@ function SessionMoreButton({ id, label, trigger, loading, toggle }: {
     <button ref={ref} type="button" data-session-actions={id} aria-label={label} title={label}
       disabled={loading} aria-busy={loading || undefined} aria-haspopup="menu" aria-expanded={!!trigger && trigger === ref.current}
       onClick={event => toggle(event.currentTarget)}
-      className="shrink-0 rounded-md p-1.5 text-cream-faint transition-colors hover:bg-overlay-strong hover:text-cream focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait">
+      className={`shrink-0 rounded-md p-1.5 text-cream-faint transition-[opacity,transform,background-color,color] duration-200 hover:bg-overlay-strong hover:text-cream focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait ${
+        // 悬浮进入行范围才浮现（学 kimi 的 icon-only 纪律）；菜单开着时保持可见。
+        !!trigger && trigger === ref.current
+          ? 'opacity-100 scale-100'
+          : 'opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 group-focus-within:opacity-100 group-focus-within:scale-100 focus:opacity-100 focus:scale-100'
+      }`}>
       {loading ? <Loader2 size={14} className="animate-spin" /> : <MoreHorizontal size={14} />}
     </button>
   )
@@ -160,6 +166,10 @@ export default function Sidebar() {
   const sessionRecords = useAppStore((s) => s.sessionRecords)
   const language = useAppStore((s) => s.language)
   const theme = useAppStore((s) => s.theme)
+  const themeSource = useAppStore((s) => s.themeSource)
+  const setThemeSource = useAppStore((s) => s.setThemeSource)
+  /** 右键「跟随系统」的太极仪式层坐标（x + 目标深浅）。 */
+  const [taiji, setTaiji] = useState<{ x: number; targetDark: boolean } | null>(null)
   const busy = useAppStore((s) => s.busy)
   const pinnedSessionIds = useAppStore((s) => s.pinnedSessionIds)
   const archivedSessionIds = useAppStore((s) => s.archivedSessionIds)
@@ -961,7 +971,7 @@ export default function Sidebar() {
     }`
 
   const iconBtn =
-    'shrink-0 rounded-md p-1 text-cream-faint opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100'
+    'shrink-0 rounded-md p-1 text-cream-faint opacity-0 transition-[opacity,transform] duration-200 group-hover:opacity-100 group-hover:scale-100 scale-90 group-focus-within:opacity-100 focus:opacity-100 focus:scale-100'
 
   // Action slots reserve their width; hovering never moves the select button.
 
@@ -1520,17 +1530,19 @@ export default function Sidebar() {
             <button
               onClick={() => setArchiveOpen(!archiveOpen)}
               title={t('sidebar.showArchived')}
+              aria-expanded={archiveOpen}
               className="flex w-full items-center gap-1 px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint transition-colors hover:text-cream-dim"
             >
-              {archiveOpen ? (
-                <ChevronDown size={11} strokeWidth={1.5} />
-              ) : (
-                <ChevronRight size={11} strokeWidth={1.5} />
-              )}
+              <ChevronRight
+                size={11}
+                strokeWidth={1.5}
+                className={`transition-transform duration-200 ${archiveOpen ? 'rotate-90' : ''}`}
+              />
               {t('sidebar.archived', { count: archivedEntries.length })}
             </button>
+            {/* 展开动画（学 kimi 菜单）：挂载时播放入场；收起直接卸载，保住懒渲染语义。 */}
             {archiveOpen && (
-              <div className="space-y-0.5"><SidebarList items={archivedEntries} render={renderArchivedRow} /></div>
+              <div className="space-y-0.5 pb-1 [animation:disclose-in_180ms_var(--ease-out)_both] origin-top"><SidebarList items={archivedEntries} render={renderArchivedRow} /></div>
             )}
           </div>
         )}
@@ -1555,12 +1567,45 @@ export default function Sidebar() {
         </button>
         <button
           onClick={(e) => runThemeTransition(() => setTheme(theme === 'dark' ? 'light' : 'dark'), { x: e.clientX, y: e.clientY }, theme === 'dark' ? 'light' : 'dark')}
-          title={t('sidebar.theme')}
+          onContextMenu={(e) => {
+            // 右键 = 自动开关：手动→跟随系统（放太极仪式层，主题切换藏在
+            // 颜色扩展之下）；跟随系统→切回手动（保持当前深浅，无仪式）。
+            e.preventDefault()
+            if (themeSource === 'system') {
+              setThemeSource('manual')
+              return
+            }
+            const targetDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+            setTaiji({ x: e.clientX, targetDark })
+            // 真实切换藏在仪式层扩展之下（onMid 回调触发）。
+          }}
+          title={themeSource === 'system' ? t('sidebar.themeAutoHint') : t('sidebar.themeRightHint')}
           aria-label={t('sidebar.theme')}
-          className="focus-ring ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
+          className="focus-ring sidebar-theme-btn relative ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
         >
-          <span key={theme} className="theme-icon">{theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}</span>
+          <span key={theme} className="theme-icon">
+            {themeSource === 'system' ? <Monitor size={14} /> : theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+          </span>
+          {themeSource === 'system' && (
+            <span
+              aria-hidden="true"
+              className="absolute -right-0.5 -top-0.5 flex h-3 w-3 items-center justify-center rounded-full bg-accent text-[8px] font-bold leading-none text-[rgb(var(--bg-app))]"
+            >
+              A
+            </span>
+          )}
         </button>
+        {taiji && (
+          <TaijiOverlay
+            x={taiji.x}
+            targetDark={taiji.targetDark}
+            onMid={() => {
+              setThemeSource('system')
+              setTaiji(null)
+            }}
+            onDone={() => setTaiji(null)}
+          />
+        )}
       </div>
 
       <MenuPortal open={Boolean(menuEntry)} triggerRef={sessionMenuTrigger} onClose={closeSessionMenu} width={208} placement="bottom">
