@@ -1,4 +1,4 @@
-// Stable-release planning and artifact verification. Only the two history checks read GitHub.
+// Stable-release planning and artifact verification. Only the control checkout runs these commands.
 const { execFileSync } = require('node:child_process')
 const { createHash } = require('node:crypto')
 const { createReadStream, lstatSync, readdirSync, readFileSync } = require('node:fs')
@@ -73,17 +73,56 @@ function guardHistory(version, tags, ancestor, phase = 'plan') {
   return published
 }
 
+function resolveSource(eventName, ref, control, event, failedRun) {
+  if (!/^[0-9a-f]{40}$/.test(control)) throw new Error('Expected a full control commit SHA')
+  if (eventName === 'repository_dispatch') {
+    const payload = event.client_payload
+    if (event.action !== 'recover-stable-release' || ref !== 'refs/heads/main' || event.repository?.default_branch !== 'main' ||
+        !payload || Object.keys(payload).sort().join(',') !== 'commit,tag' ||
+        typeof payload.tag !== 'string' || !payload.tag.startsWith('v') || !stableVersion.test(payload.tag.slice(1)) ||
+        typeof payload.commit !== 'string' || !/^[0-9a-f]{40}$/.test(payload.commit)) {
+      throw new Error('Recovery needs the default main workflow, an existing stable tag and its full commit SHA')
+    }
+    const run = failedRun(payload.tag, payload.commit)
+    if (!/^[1-9]\d*$/.test(run)) throw new Error('Recovery requires a failed tag-push release for the exact source commit')
+    return { control, source: payload.commit, tag: payload.tag, mode: 'recovery', failed_run: String(run) }
+  }
+  if (eventName === 'push') {
+    if (!ref.startsWith('refs/tags/v') || !stableVersion.test(ref.slice('refs/tags/v'.length))) throw new Error('Expected stable release tag')
+    return { control, source: control, tag: ref.slice('refs/tags/'.length), mode: 'release' }
+  }
+  if (eventName !== 'workflow_dispatch' && eventName !== 'pull_request') throw new Error('Unsupported release event')
+  return { control, source: control, tag: '', mode: 'preflight' }
+}
+
+function failedPushRun(tag, commit) {
+  // Query this repository's release workflow only. Filter again by the tag, since
+  // several tags can legally point to the same commit. No caller-supplied run ID.
+  const endpoint = 'repos/{owner}/{repo}/actions/workflows/release.yml/runs?event=push&status=failure&head_sha=' + commit + '&per_page=100'
+  const lines = execFileSync('gh', ['api', '--paginate', endpoint, '--jq',
+    '.workflow_runs[] | select(.event == "push" and .conclusion == "failure") | [.head_branch,.head_sha,.id] | @tsv'], { encoding: 'utf8' })
+  const match = lines.trim().split(/\r?\n/).map(line => line.split('\t')).find(([branch, sha]) => branch === tag && sha === commit)
+  return match?.[2] || ''
+}
+
+function candidateMetadata() {
+  return JSON.parse(readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'))
+}
+
 function checkTag(version, phase) {
   const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim()
   const ref = 'refs/tags/v' + version
-  if (process.env.GITHUB_REF !== ref || git('rev-parse', ref + '^{commit}') !== git('rev-parse', 'HEAD')) {
+  const expectedRef = process.env.RELEASE_TAG ? 'refs/tags/' + process.env.RELEASE_TAG : process.env.GITHUB_REF
+  const head = git('rev-parse', 'HEAD')
+  if (expectedRef !== ref || git('rev-parse', ref + '^{commit}') !== head ||
+      (process.env.SOURCE_SHA && process.env.SOURCE_SHA !== head)) {
     throw new Error('Release tag and checked-out commit differ')
   }
   // checkout may materialize the event tag as a lightweight tag at the commit.
   // Compare peeled commits without replacing the checkout's local tag object.
   const remoteTag = 'refs/toushou-release-check/remote-tag'
   git('fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main', '+' + ref + ':' + remoteTag)
-  if (git('rev-parse', remoteTag + '^{commit}') !== git('rev-parse', 'HEAD')) {
+  if (git('rev-parse', remoteTag + '^{commit}') !== head) {
     throw new Error('Remote release tag and checked-out commit differ')
   }
   const ancestor = (first, second) => git('merge-base', '--is-ancestor', first, second)
@@ -148,21 +187,30 @@ async function verifyFiles(target, directory, version, parseManifest) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2)
-  if (command === 'plan') {
-    const result = plan(process.env.GITHUB_EVENT_NAME, require('../package.json'), process.env.GITHUB_REF, process.env.MANUAL_TARGET)
-    if (process.env.GITHUB_EVENT_NAME === 'push') checkTag(result.version, 'plan')
+  if (command === 'resolve-source') {
+    const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'))
+    const control = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+    const resolved = resolveSource(process.env.GITHUB_EVENT_NAME, process.env.GITHUB_REF, control, event, failedPushRun)
+    for (const [key, value] of Object.entries(resolved)) console.log(key + '=' + value)
+  } else if (command === 'plan') {
+    const tag = process.env.RELEASE_TAG
+    const event = process.env.GITHUB_EVENT_NAME
+    const recovery = event === 'repository_dispatch'
+    const result = plan(recovery ? 'push' : event, candidateMetadata(), tag ? 'refs/tags/' + tag : process.env.GITHUB_REF, process.env.MANUAL_TARGET)
+    if (event === 'push' || recovery) checkTag(result.version, 'plan')
     console.log('version=' + result.version + '\ntarget=' + result.target)
   } else if (command === 'check-publish') {
-    console.log(checkTag(require('../package.json').version, 'publish') ? 'public' : 'unpublished')
+    console.log(checkTag(candidateMetadata().version, 'publish') ? 'public' : 'unpublished')
   } else if (command === 'check-builds') {
     checkBuilds(...args)
   } else if (command === 'verify') {
-    const [target, directory] = args
-    await verifyFiles(target, directory, require('../package.json').version, require('yaml').parse)
+    const [target, directory, version] = args
+    if (!version || !stableVersion.test(version)) throw new Error('Expected the selected package version')
+    await verifyFiles(target, directory, version, require('yaml').parse)
   } else {
-    throw new Error('Expected plan, check-publish, check-builds or verify')
+    throw new Error('Expected resolve-source, plan, check-publish, check-builds or verify')
   }
 }
 
-module.exports = { platforms, checkBuilds, plan, guardHistory, payloadNames, verifyFiles }
+module.exports = { platforms, checkBuilds, plan, resolveSource, guardHistory, payloadNames, verifyFiles }
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1 })

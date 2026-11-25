@@ -12,6 +12,8 @@ on:
       - 'tools/promote-release-channels.cjs'
       - 'tools/release-smoke.cjs'
       - 'tools/release-smoke-processes.cjs'
+  repository_dispatch:
+    types: [recover-stable-release]
   workflow_dispatch:
     inputs:
       platform:
@@ -31,14 +33,21 @@ permissions:
 # Tags are immutable release identifiers. Never cancel a release while it is
 # packaging or uploading its assets.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'repository_dispatch' && format('refs/tags/{0}', github.event.client_payload.tag) || github.ref }}
   cancel-in-progress: false
 
 jobs:
   plan:
     name: Select release platforms
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
+      mode: ${{ steps.source.outputs.mode }}
+      tag: ${{ steps.source.outputs.tag }}
+      source: ${{ steps.source.outputs.source }}
+      control: ${{ steps.source.outputs.control }}
       target: ${{ steps.plan.outputs.target }}
       version: ${{ steps.plan.outputs.version }}
     steps:
@@ -50,13 +59,43 @@ jobs:
           node-version: 22
       - name: Test release selection and verification
         run: node --test test/release-verify.test.cjs
+      - name: Resolve control revision and immutable product source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node tools/release-verify.cjs resolve-source >> "$GITHUB_OUTPUT"
       - name: Check release target, version and source
         id: plan
         env:
           MANUAL_TARGET: ${{ inputs.platform }}
+          SOURCE_SHA: ${{ steps.source.outputs.source }}
+          RELEASE_TAG: ${{ steps.source.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: node tools/release-verify.cjs plan >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/release-source" "$SOURCE_SHA"
+          cd "$RUNNER_TEMP/release-source"
+          node "$GITHUB_WORKSPACE/tools/release-verify.cjs" plan >> "$GITHUB_OUTPUT"
+      - name: Record release provenance
+        env:
+          MODE: ${{ steps.source.outputs.mode }}
+          CONTROL_SHA: ${{ steps.source.outputs.control }}
+          SOURCE_SHA: ${{ steps.source.outputs.source }}
+          RELEASE_TAG: ${{ steps.source.outputs.tag }}
+          TARGET: ${{ steps.plan.outputs.target }}
+          FAILED_RUN: ${{ steps.source.outputs.failed_run }}
+        run: |
+          {
+            echo "Mode: $MODE"
+            echo
+            echo "- Workflow and verification scripts: $CONTROL_SHA"
+            echo "- Product and release notes: $SOURCE_SHA"
+            echo "- Version tag: ${RELEASE_TAG:-preflight}"
+            echo "- Platforms: $TARGET"
+            if [[ -n "$FAILED_RUN" ]]; then echo "- Original failed push: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$FAILED_RUN"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build:
     name: Verify and package (macOS)
@@ -66,6 +105,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.plan.outputs.source }}
           fetch-depth: 0
 
       # package.json#packageManager is the single source of truth for pnpm.
@@ -133,11 +173,11 @@ jobs:
         env:
           # Do not expose empty signing variables as electron-builder inputs:
           # an empty CSC_LINK is interpreted as a local certificate path.
-          RELEASE_CSC_LINK: ${{ github.event_name == 'push' && secrets.CSC_LINK || '' }}
-          RELEASE_CSC_KEY_PASSWORD: ${{ github.event_name == 'push' && secrets.CSC_KEY_PASSWORD || '' }}
-          RELEASE_APPLE_ID: ${{ github.event_name == 'push' && secrets.APPLE_ID || '' }}
-          RELEASE_APPLE_APP_SPECIFIC_PASSWORD: ${{ github.event_name == 'push' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          RELEASE_APPLE_TEAM_ID: ${{ github.event_name == 'push' && secrets.APPLE_TEAM_ID || '' }}
+          RELEASE_CSC_LINK: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.CSC_LINK || '' }}
+          RELEASE_CSC_KEY_PASSWORD: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.CSC_KEY_PASSWORD || '' }}
+          RELEASE_APPLE_ID: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.APPLE_ID || '' }}
+          RELEASE_APPLE_APP_SPECIFIC_PASSWORD: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          RELEASE_APPLE_TEAM_ID: ${{ (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           set -euo pipefail
 
@@ -272,6 +312,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.plan.outputs.source }}
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
@@ -419,8 +460,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TARGET: ${{ needs.plan.outputs.target }}
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.control }}
       - name: Require every selected build and allow only intentional skips
         env:
           MAC_RESULT: ${{ needs.build.result }}
@@ -443,11 +487,11 @@ jobs:
           name: TouShou-${{ github.run_id }}-windows
           path: artifacts
       - name: Verify package hashes, updater manifests and checksums
-        run: node tools/release-verify.cjs verify "$TARGET" artifacts
+        run: node tools/release-verify.cjs verify "$TARGET" artifacts "$VERSION"
 
   publish:
     name: Verify uploaded assets and publish
-    if: ${{ !cancelled() && github.event_name == 'push' && needs.verify-assets.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && needs.verify-assets.result == 'success' }}
     needs: [plan, verify-assets]
     runs-on: ubuntu-latest
     # Serialize the global version check and publication, even across different tags.
@@ -459,11 +503,14 @@ jobs:
     env:
       TARGET: ${{ needs.plan.outputs.target }}
       VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      SOURCE_SHA: ${{ needs.plan.outputs.source }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.plan.outputs.control }}
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -474,7 +521,10 @@ jobs:
       - name: Check release order again after packaging
         id: prior
         run: |
-          visibility=$(node tools/release-verify.cjs check-publish)
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/release-source" "$SOURCE_SHA"
+          cd "$RUNNER_TEMP/release-source"
+          visibility=$(node "$GITHUB_WORKSPACE/tools/release-verify.cjs" check-publish)
           echo "visibility=$visibility" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         if: steps.prior.outputs.visibility == 'unpublished' && env.TARGET != 'windows'
@@ -490,17 +540,17 @@ jobs:
         if: steps.prior.outputs.visibility == 'unpublished'
         run: |
           set -euo pipefail
-          notes="docs/releases/v${VERSION}.md"
-          node tools/release-verify.cjs verify "$TARGET" artifacts
-          if gh release view "$GITHUB_REF_NAME" --json isDraft >/dev/null 2>&1; then
-            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|@tsv')" = $'true\tfalse'
-            if [[ -f "$notes" ]]; then gh release edit "$GITHUB_REF_NAME" --notes-file "$notes"; fi
+          notes="$RUNNER_TEMP/release-source/docs/releases/v${VERSION}.md"
+          node tools/release-verify.cjs verify "$TARGET" artifacts "$VERSION"
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|@tsv')" = $'true\tfalse'
+            if [[ -f "$notes" ]]; then gh release edit "$RELEASE_TAG" --notes-file "$notes"; fi
           else
             args=(--generate-notes)
             if [[ -f "$notes" ]]; then args=(--notes-file "$notes"); fi
-            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --latest=false --title "投手 ${GITHUB_REF_NAME}" "${args[@]}"
+            gh release create "$RELEASE_TAG" --verify-tag --draft --latest=false --title "投手 ${RELEASE_TAG}" "${args[@]}"
           fi
-          gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
+          gh release upload "$RELEASE_TAG" artifacts/* --clobber
       - name: Download and verify the release before making it public
         env:
           VISIBILITY: ${{ steps.prior.outputs.visibility }}
@@ -508,20 +558,20 @@ jobs:
           set -euo pipefail
           release_dir="$(mktemp -d)"
           trap 'rm -rf "$release_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" --dir "$release_dir"
-          node tools/release-verify.cjs verify "$TARGET" "$release_dir"
+          gh release download "$RELEASE_TAG" --dir "$release_dir"
+          node tools/release-verify.cjs verify "$TARGET" "$release_dir" "$VERSION"
           if [[ "$VISIBILITY" == unpublished ]]; then
             for sums in artifacts/SHA256SUMS*.txt; do cmp "$sums" "$release_dir/${sums##*/}"; done
             latest=false
             if [[ "$VERSION" == 2.9.8 ]]; then latest=true; fi
-            gh release edit "$GITHUB_REF_NAME" --draft=false --latest="$latest"
+            gh release edit "$RELEASE_TAG" --draft=false --latest="$latest"
           fi
-          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|@tsv')" = $'false\tfalse'
+          test "$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease]|@tsv')" = $'false\tfalse'
           test "$(gh api 'repos/{owner}/{repo}/releases/latest' --jq .tag_name)" = v2.9.8
 
   promote:
     name: Promote verified platform updates
-    if: ${{ !cancelled() && github.event_name == 'push' && needs.publish.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight' && needs.publish.result == 'success' }}
     needs: [plan, publish]
     runs-on: ubuntu-latest
     permissions:
@@ -534,6 +584,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.plan.outputs.control }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:

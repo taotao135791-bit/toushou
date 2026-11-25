@@ -5,7 +5,7 @@ const { createHash } = require('node:crypto')
 const { join } = require('node:path')
 const { tmpdir } = require('node:os')
 const { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs')
-const { checkBuilds, guardHistory, plan, platforms, payloadNames, verifyFiles } = require('../tools/release-verify.cjs')
+const { checkBuilds, guardHistory, plan, resolveSource, platforms, payloadNames, verifyFiles } = require('../tools/release-verify.cjs')
 
 const version = '2.9.9'
 const sha = (name, bytes) => createHash(name).update(bytes).digest(name === 'sha512' ? 'base64' : 'hex')
@@ -52,6 +52,29 @@ test('stable pushes need the matching numeric tag, selected platform and complet
   assert.throws(() => plan('push', { version, toushouReleaseTarget: 'linux' }, 'refs/tags/v' + version))
   assert.throws(() => plan('push', { version: '2.9.8', toushouReleaseTarget: 'windows' }, 'refs/tags/v2.9.8'))
   assert.equal(plan('push', { version: '2.9.8', toushouReleaseTarget: 'all' }, 'refs/tags/v2.9.8').target, 'all')
+})
+
+test('a recovery can only use a stable tag, exact commit and previously failed push from the default main workflow', () => {
+  const control = 'a'.repeat(40)
+  const commit = 'b'.repeat(40)
+  const tag = 'v2.9.8'
+  const event = { action: 'recover-stable-release', repository: { default_branch: 'main' }, client_payload: { tag, commit } }
+  const resolve = (payload, ref = 'refs/heads/main', failedRun = () => '42') => resolveSource('repository_dispatch', ref, control, payload, failedRun)
+  assert.deepEqual(resolve(event, undefined, (actualTag, actualCommit) => {
+    assert.equal(actualTag, tag)
+    assert.equal(actualCommit, commit)
+    return '45'
+  }), { control, source: commit, tag, mode: 'recovery', failed_run: '45' })
+  assert.throws(() => resolve(event, 'refs/heads/feature'))
+  assert.throws(() => resolve({ ...event, action: 'other' }))
+  assert.throws(() => resolve({ ...event, repository: { default_branch: 'other' } }))
+  for (const bad of [{ tag: 'main', commit }, { tag, commit: 'short' }, { tag, commit, target: 'macos' }]) {
+    assert.throws(() => resolve({ ...event, client_payload: bad }))
+  }
+  assert.throws(() => resolve(event, undefined, () => ''), /failed tag-push/)
+  assert.equal(resolveSource('workflow_dispatch', 'refs/heads/main', control, event, () => {}).mode, 'preflight')
+  assert.equal(resolveSource('pull_request', 'refs/pull/1/merge', control, event, () => {}).mode, 'preflight')
+  assert.deepEqual(resolveSource('push', 'refs/tags/' + tag, commit, {}, () => {}), { control: commit, source: commit, tag, mode: 'release' })
 })
 
 test('a new release advances the numeric global version along main and the bridge exists', () => {
@@ -151,8 +174,38 @@ test('pushed tags must be on remote main before a formal build can start', { ski
   const result = run()
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /version=2\.9\.8\ntarget=all/)
+  // Recovery runs the control script from main against the original checkout.
+  const control = join(temporary, 'control')
+  mkdirSync(join(control, 'tools'), { recursive: true })
+  writeFileSync(join(control, 'package.json'), JSON.stringify({ version: '10.0.0', toushouReleaseTarget: 'windows' }))
+  const controlScript = join(control, 'tools/release-verify.cjs')
+  copyFileSync(script, controlScript)
+  const original = git('rev-parse', 'HEAD').toString().trim()
+  const recoveryEnv = { ...process.env, PATH: fakeBin + ':' + process.env.PATH, GITHUB_EVENT_NAME: 'repository_dispatch',
+    GITHUB_REF: 'refs/heads/main', RELEASE_TAG: 'v2.9.8', SOURCE_SHA: original }
+  const recovered = spawnSync(process.execPath, [controlScript, 'plan'], { cwd: directory, encoding: 'utf8', env: recoveryEnv })
+  assert.equal(recovered.status, 0, recovered.stderr)
+  assert.equal(recovered.stdout.trim(), 'version=2.9.8\ntarget=all')
+  const wrongSource = spawnSync(process.execPath, [controlScript, 'check-publish'], {
+    cwd: directory, encoding: 'utf8', env: { ...recoveryEnv, SOURCE_SHA: '0'.repeat(40) }
+  })
+  assert.notEqual(wrongSource.status, 0)
+
   git('--git-dir=' + remote, 'update-ref', 'refs/tags/v2.9.8', 'refs/tags/v2.9.7')
   const changedTag = run()
   assert.notEqual(changedTag.status, 0)
   assert.match(changedTag.stderr, /Remote release tag and checked-out commit differ/)
+})
+
+test('publishing and signing require a GitHub push or recovery event even if a preflight reports release mode', () => {
+  const text = readFileSync(join(__dirname, '../.github/workflows/release.yml'), 'utf8')
+  const eventGate = "(github.event_name == 'push' || github.event_name == 'repository_dispatch') && needs.plan.outputs.mode != 'preflight'"
+  const secrets = text.split('\n').filter(line => line.includes('&& secrets.'))
+  assert.equal(secrets.length, 5)
+  for (const line of secrets) assert.ok(line.includes(eventGate))
+  for (const job of ['publish', 'promote']) {
+    const start = text.indexOf('\n  ' + job + ':\n')
+    const gate = text.slice(start).split('\n').find(line => line.startsWith('    if:'))
+    assert.ok(gate && gate.includes(eventGate), job)
+  }
 })
