@@ -135,7 +135,7 @@ export default function ThinkingPicker({ sessionId, compact = false }: ThinkingP
   const displayLevel = preview ?? level
   const sliderIndex = Math.max(0, options.indexOf(displayLevel as SessionThinkingLevel))
 
-  const progress = options.length > 1 ? 100 * sliderIndex / (options.length - 1) : 0
+  const position = options.length > 1 ? sliderIndex / (options.length - 1) : 0
   const modelName = catalogEntry?.name ?? selector
   return (
     <div className="flex items-center">
@@ -152,26 +152,30 @@ export default function ThinkingPicker({ sessionId, compact = false }: ThinkingP
         {!compact && <ChevronUp size={10} className={`composer-picker-chevron transition ${open ? 'rotate-180' : ''}`} />}
       </button>
       <MenuPortal open={open} triggerRef={triggerRef} onClose={() => { setOpen(false); setPreview(null) }} align="end" width={282}>
-        <div data-thinking-menu className="px-2.5 py-2">
+        <div data-thinking-menu data-peak={position === 1} className="px-2.5 py-2">
           <div className="relative mb-3 flex min-h-8 flex-col items-center justify-center px-6">
             <Zap size={15} aria-hidden="true" className="effort-bolt absolute left-0 top-1" />
             <strong className="effort-heading text-sm font-semibold">{levelLabel(displayLevel, t)}</strong>
             {modelName && <span title={modelName} className="max-w-full truncate text-xs text-cream-faint">{modelName}</span>}
           </div>
-          <div className="effort-track" style={{ '--effort-fill': `${progress}%` } as CSSProperties}>
-          <input
-            type="range" min={0} max={options.length - 1} step={1} value={sliderIndex}
-            disabled={options.length < 2}
-            aria-label={t('composer.thinking')} aria-valuetext={t(LEVEL_LABEL[options[sliderIndex]])}
-            className="effort-slider focus-ring"
-            onChange={event => setPreview(options[Number(event.currentTarget.value)])}
-            onPointerDown={() => { dragging.current = true }}
-            onPointerCancel={() => { dragging.current = false; setPreview(null) }}
-            onPointerUp={event => { dragging.current = false; void pick(options[Number(event.currentTarget.value)]) }}
-            onKeyUp={event => {
-              if (['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Enter'].includes(event.key)) void pick(options[Number(event.currentTarget.value)])
-            }}
-          />
+          <div className="effort-track" data-at-start={position === 0} style={{ '--effort-position': position } as CSSProperties}>
+            <div aria-hidden="true" className="effort-rail">
+              <div className="effort-ticks">{options.map(id => <i key={id} />)}</div>
+              <div className="effort-fill"><span className="effort-glow" /></div>
+            </div>
+            <input
+              type="range" min={0} max={options.length - 1} step={1} value={sliderIndex}
+              disabled={options.length < 2}
+              aria-label={t('composer.thinking')} aria-valuetext={t(LEVEL_LABEL[options[sliderIndex]])}
+              className="effort-slider focus-ring"
+              onChange={event => setPreview(options[Number(event.currentTarget.value)])}
+              onPointerDown={() => { dragging.current = true }}
+              onPointerCancel={() => { dragging.current = false; setPreview(null) }}
+              onPointerUp={event => { dragging.current = false; void pick(options[Number(event.currentTarget.value)]) }}
+              onKeyUp={event => {
+                if (['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Enter'].includes(event.key)) void pick(options[Number(event.currentTarget.value)])
+              }}
+            />
           </div>
           <div className="mt-1 flex items-start justify-between gap-0.5">
             {options.map(id => <button key={id} type="button" data-thinking-choice={id}

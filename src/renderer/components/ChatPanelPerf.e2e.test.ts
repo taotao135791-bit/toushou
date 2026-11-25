@@ -29,7 +29,10 @@ describe('ChatPanel background metadata rendering', () => {
       expect(result.status, JSON.stringify({ status: result.status, signal: result.signal, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code })).toBe(0)
       console.info('CHAT_PANEL_PERF ' + JSON.stringify(data))
       expect(data.chatMenuAbove).toBe(true)
-      expect(data.effortInteraction).toEqual({ insetMenu: true, themed: true, trackHasStars: true, hiddenAuto: true })
+      expect(data.effortInteraction).toEqual({
+        insetMenu: true, themed: true, hiddenAuto: true, blueDrifts: true, peakDrifts: true,
+        idleDrifts: true, sharedBluePalette: true, distinctPeakPalette: true
+      })
       expect(data.homeMenusBelow).toEqual([true, true, true, true, true])
       expect(data.deepSeekThinking).toEqual(['Off', 'Low', 'High', 'Max', 'Auto'])
       expect(data.mediumOnlyThinking).toEqual(['Off', 'Medium', 'Auto'])

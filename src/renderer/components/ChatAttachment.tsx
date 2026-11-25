@@ -1,6 +1,6 @@
-import { Fragment, memo, useEffect, useRef, useState } from 'react'
+import { Fragment, memo, type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, X } from 'lucide-react'
+import { Download, FileText, Image as ImageIcon, Sheet, X } from 'lucide-react'
 import type { PromptImage } from '@shared/types'
 import { chatAttachment, type AttachmentKind } from '@shared/chatAttachment'
 import { useAppStore } from '../store'
@@ -15,16 +15,18 @@ import xlsx from '../assets/file-types/xlsx.svg'
 import zip from '../assets/file-types/zip.svg'
 
 const icons: Record<AttachmentKind, string> = { audio, docx, pdf, photo, pptx, txt, video, xlsx, zip }
+const mentionIcons: Partial<Record<AttachmentKind, typeof FileText>> = { photo: ImageIcon, xlsx: Sheet }
 
-export function AttachmentCard({ target, label }: { target: string; label?: string }) {
+interface AttachmentProps { target: string; label?: string }
+
+function useAttachment(target: string) {
   const file = chatAttachment(target)
   const zh = useAppStore(s => s.language === 'zh')
   const [error, setError] = useState(false)
   const [pending, setPending] = useState(false)
   const inFlight = useRef(false)
-  if (!file) return <>{label ?? target}</>
   const activate = async (action: 'open' | 'save') => {
-    if (inFlight.current) return
+    if (!file || inFlight.current) return
     inFlight.current = true
     setPending(true)
     setError(false)
@@ -39,9 +41,31 @@ export function AttachmentCard({ target, label }: { target: string; label?: stri
     } catch { setError(true) }
     finally { inFlight.current = false; setPending(false) }
   }
+  return { file, zh, pending, error, activate }
+}
+
+export function AttachmentMention({ target, label, fallbackHref, children }: AttachmentProps & { fallbackHref?: string; children?: ReactNode }) {
+  const { file, zh, pending, error, activate } = useAttachment(target)
+  if (!file) return <>{children ?? (label || target)}</>
+  const Icon = mentionIcons[file.kind] ?? FileText
+  return <>
+    <a href={file.remote ? file.target : fallbackHref} aria-disabled={pending || undefined} title={target}
+      onClick={event => { event.preventDefault(); void activate('open') }}
+      onAuxClick={event => { if (event.button === 1) { event.preventDefault(); void activate('open') } }}
+      aria-label={children ? label || file.name : undefined} data-attachment-kind={file.kind}
+      className="chat-attachment-mention focus-ring inline max-w-full rounded-sm text-left [overflow-wrap:anywhere]">
+      {children ?? <><Icon size={14} aria-hidden="true" className="mr-1 inline-block align-[-2px]" />{label || file.name}</>}
+    </a>
+    {error && <span role="status" className="px-1 text-xs text-amber-700">{zh ? '文件不可用' : 'File unavailable'}</span>}
+  </>
+}
+
+export function AttachmentCard({ target, label }: AttachmentProps) {
+  const { file, zh, pending, error, activate } = useAttachment(target)
+  if (!file) return <>{label ?? target}</>
   const open = file.sandbox ? (zh ? '选择本地副本' : 'Locate local copy') : (zh ? '打开附件' : 'Open attachment')
   const save = zh ? '另存为' : 'Save a copy'
-  return <span className="my-1 inline-flex max-w-full items-center gap-1 rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
+  return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center gap-1 rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
     <button type="button" disabled={pending} onClick={() => void activate('open')} aria-label={open + ' · ' + file.name}
       title={target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">
       <img src={icons[file.kind]} alt="" width={30} height={30} className="m-0 h-8 w-8 shrink-0" />

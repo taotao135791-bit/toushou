@@ -169,31 +169,108 @@
   border-radius: 999px;
 }
 
-.effort-heading, .effort-bolt { color: #7150ce; }
-.dark .effort-heading, .dark .effort-bolt { color: #ba9bff; }
+[data-thinking-menu] {
+  --effort-ink: #1468b7;
+  --effort-base: linear-gradient(100deg, #3477eb, #3b7af1);
+  --effort-light: #83b5ff66;
+}
+[data-thinking-menu][data-peak="true"] {
+  --effort-ink: #7843da;
+  --effort-base: linear-gradient(105deg, #355be1, #6735de 54%, #4921bf);
+  --effort-light: #d59dffbf;
+}
+.dark [data-thinking-menu] { --effort-ink: #84baff; }
+.dark [data-thinking-menu][data-peak="true"] { --effort-ink: #c19aff; }
+.effort-heading, .effort-bolt { color: var(--effort-ink); }
+.effort-bolt { fill: currentColor; }
 
 .effort-track {
   position: relative;
   height: 24px;
   border-radius: 999px;
-  background-color: rgb(var(--text) / 0.1);
-  box-shadow: inset 0 0 0 1px rgb(var(--text) / 0.09);
 }
-.effort-track::before {
-  content: '';
+.effort-rail {
   position: absolute;
   inset: 0;
+  overflow: hidden;
   border-radius: inherit;
-  clip-path: inset(0 calc(100% - var(--effort-fill)) 0 0);
-  background:
-    radial-gradient(circle at 8% 64%, #ffffffc2 0 1.3px, transparent 1.8px),
-    radial-gradient(circle at 21% 23%, #ffffff84 0 0.7px, transparent 1.3px),
-    radial-gradient(circle at 36% 71%, #ffffffa3 0 1.8px, transparent 2.3px),
-    radial-gradient(circle at 48% 35%, #ffffffad 0 0.8px, transparent 1.4px),
-    radial-gradient(circle at 62% 60%, #ffffffcf 0 1.2px, transparent 1.9px),
-    radial-gradient(circle at 76% 22%, #ffffff9e 0 0.9px, transparent 1.5px),
-    radial-gradient(circle at 90% 69%, #ffffffc2 0 1.6px, transparent 2.3px),
-    linear-gradient(100deg, #2364eb, #6654ed 55%, #a25af5);
+  background: rgb(var(--text) / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(var(--text) / 0.09);
+  pointer-events: none;
+}
+.effort-ticks {
+  position: absolute;
+  inset: 0 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.effort-ticks i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgb(var(--text) / 0.23);
+}
+.effort-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  /* The native knob travels between centers, half a thumb in from each edge. */
+  width: calc(13px + (100% - 26px) * var(--effort-position));
+  overflow: hidden;
+  background: var(--effort-base);
+  --effort-spark: 255 255 255;
+}
+[data-peak="true"] .effort-fill { width: 100%; }
+.effort-track[data-at-start="true"] .effort-fill {
+  /* At zero the thumb covers the fill. Keep a faint blue drift on the idle rail. */
+  width: 100%;
+  background: transparent;
+  --effort-light: #549aff18;
+  --effort-spark: 97 155 235;
+}
+.effort-glow {
+  position: absolute;
+  inset: -60% -35%;
+  background: radial-gradient(ellipse 34% 90% at 50% 50%, var(--effort-light), transparent);
+  animation: effort-glow 4.8s ease-in-out infinite alternate;
+}
+/* Two repeating particle fields travel one tile per cycle for a seamless loop. */
+.effort-fill::before, .effort-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0 calc(-1 * var(--tile)) 0 0;
+  background-repeat: repeat-x;
+  background-size: var(--tile) 100%;
+  animation: effort-drift var(--drift-time) linear infinite;
+}
+.effort-fill::before {
+  --tile: 116px;
+  --drift-time: 1.04s;
+  background-image:
+    radial-gradient(circle at 7% 62%, rgb(var(--effort-spark) / 0.57) 0 1.15px, transparent 1.8px),
+    radial-gradient(circle at 29% 28%, rgb(var(--effort-spark) / 0.47) 0 0.65px, transparent 1.2px),
+    radial-gradient(circle at 38% 77%, rgb(var(--effort-spark) / 0.4) 0 0.9px, transparent 1.5px),
+    radial-gradient(circle at 67% 46%, rgb(var(--effort-spark) / 0.64) 0 0.8px, transparent 1.4px),
+    radial-gradient(circle at 91% 83%, rgb(var(--effort-spark) / 0.49) 0 1px, transparent 1.65px);
+}
+.effort-fill::after {
+  --tile: 89px;
+  --drift-time: 1.15s;
+  background-image:
+    radial-gradient(circle at 12% 80%, rgb(var(--effort-spark) / 0.29) 0 0.85px, transparent 1.5px),
+    radial-gradient(circle at 47% 35%, rgb(var(--effort-spark) / 0.33) 0 0.6px, transparent 1.15px),
+    radial-gradient(circle at 81% 57%, rgb(var(--effort-spark) / 0.23) 0 1px, transparent 1.65px);
+}
+@keyframes effort-drift {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--tile))); }
+}
+@keyframes effort-glow {
+  from { transform: translateX(-14%); }
+  to { transform: translateX(14%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .effort-fill::before, .effort-fill::after, .effort-glow { animation: none; }
 }
 .effort-slider {
   position: relative;
@@ -219,6 +296,8 @@
   border: 1px solid #dedce6;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 4px #241d4429;
+  box-shadow: 0 1px 3px #182d472e, 0 0 1px #182d472e;
+  transition: transform 140ms ease-out;
 }
+.effort-slider:active:not(:disabled)::-webkit-slider-thumb { transform: scale(1.12); }
 .effort-slider:disabled { cursor: default; }

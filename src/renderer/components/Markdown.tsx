@@ -1,10 +1,12 @@
-import { createContext, useContext, ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, memo, useEffect, useRef, useState } from 'react'
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
+import { createContext, useContext, ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, memo, useEffect, useId, useMemo, useRef, useState } from 'react'
+import ReactMarkdown, { defaultUrlTransform, type Options } from 'react-markdown'
 import { chatAttachment } from '@shared/chatAttachment'
-import { AttachmentCard } from './ChatAttachment'
+import { AttachmentCard, AttachmentMention } from './ChatAttachment'
+import { groupReplyAttachments, isInlineFilePath } from './replyAttachments'
 import remarkGfm from 'remark-gfm'
 import { Check, Copy } from 'lucide-react'
 import { useT } from '../i18n'
+import { useAppStore } from '../store'
 import { richRenderers } from '../lib/richRenderers'
 
 interface CodeChildProps {
@@ -68,7 +70,7 @@ function ExternalLink({ href, children, title }: ComponentPropsWithoutRef<'a'>) 
   return <BrowserLink href={href} title={title}>{children}</BrowserLink>
 }
 
-function MarkdownImage({ src, alt = '', title }: ComponentPropsWithoutRef<'img'>) {
+function MarkdownImage({ src, alt = '', title, replyAttachments }: ComponentPropsWithoutRef<'img'> & { replyAttachments?: boolean }) {
   const inLink = useContext(InMarkdownLink)
   const [failed, setFailed] = useState<string>()
   const t = useT()
@@ -77,7 +79,8 @@ function MarkdownImage({ src, alt = '', title }: ComponentPropsWithoutRef<'img'>
   // Local files use the host opener. A Markdown image pointing to an MP4
   // (common in imported transcripts) can also be opened through its card.
   if (file && (!file.remote || file.kind !== 'photo' || failed === src)) {
-    return inLink ? <span>{alt || file.name}</span> : <AttachmentCard target={src} label={alt} />
+    if (inLink) return <span>{alt || file.name}</span>
+    return replyAttachments ? <AttachmentMention target={src} label={alt} /> : <AttachmentCard target={src} label={alt} />
   }
   if (!file && !/^https?:\/\//i.test(src)) return <span>{alt}</span>
   if (failed === src) {
@@ -92,12 +95,7 @@ function MarkdownImage({ src, alt = '', title }: ComponentPropsWithoutRef<'img'>
 function InlineCode({ children, className }: ComponentPropsWithoutRef<'code'>) {
   const inLink = useContext(InMarkdownLink)
   const path = typeof children === 'string' ? children.trim() : ''
-  // Absolute/explicit references can contain spaces; bare relative references
-  // need a filename shape so shell commands and code snippets stay copyable.
-  const explicit = /^(?:[./~][\\/]|\/|[a-z]:[\\/]|sandbox:|file:)/i.test(path)
-  const filename = /^[\p{L}\p{N}_.()%-]+(?:[\\/][\p{L}\p{N}_.()%-]+)*$/u.test(path)
-  const relative = /^[\p{L}\p{N}_.()%-]+[\\/][\p{L}\p{N}_.()% \\/-]+$/u.test(path)
-  if (!inLink && (explicit || filename || relative) && chatAttachment(path)) return <AttachmentCard target={path} />
+  if (!inLink && isInlineFilePath(path) && chatAttachment(path)) return <AttachmentCard target={path} />
   return <code className={className}>{children}</code>
 }
 
@@ -129,6 +127,22 @@ const components = {
   }
 }
 
+function ReplyAttachmentList({ children }: { children?: ReactNode }) {
+  const label = useAppStore(s => s.language === 'zh' ? '附件' : 'Attachments')
+  return <ul aria-label={label} className="chat-attachment-list">{children}</ul>
+}
+
+const replyComponents = {
+  ...components,
+  a: BrowserLink,
+  code: 'code' as const,
+  img: (props: ComponentPropsWithoutRef<'img'>) => <MarkdownImage {...props} replyAttachments />,
+  'reply-attachment-mention': (props: ComponentPropsWithoutRef<typeof AttachmentMention>) =>
+    <InMarkdownLink.Provider value><AttachmentMention {...props} /></InMarkdownLink.Provider>,
+  'reply-attachment-card': AttachmentCard,
+  'reply-attachment-list': ReplyAttachmentList
+}
+
 /** Minimum spacing between full markdown parses while a reply is streaming. */
 const STREAM_PARSE_INTERVAL_MS = 120
 
@@ -142,7 +156,11 @@ const STREAM_PARSE_INTERVAL_MS = 120
  * always render immediately, and the trailing timer guarantees the final
  * content lands.
  */
-const Markdown = memo(function Markdown({ content }: { content: string }) {
+const Markdown = memo(function Markdown({ content, replyAttachments = false }: { content: string; replyAttachments?: boolean }) {
+  const id = useId()
+  const rehypePlugins = useMemo<Options['rehypePlugins']>(
+    () => replyAttachments ? [[groupReplyAttachments, 'reply-file-' + id]] : undefined, [replyAttachments, id]
+  )
   const [rendered, setRendered] = useState(content)
   const parseClock = useRef({ at: 0, timer: null as ReturnType<typeof setTimeout> | null })
 
@@ -179,7 +197,8 @@ const Markdown = memo(function Markdown({ content }: { content: string }) {
 
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={remarkPlugins} components={components} urlTransform={url => chatAttachment(url) ? url : defaultUrlTransform(url)}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}
+        components={replyAttachments ? replyComponents : components} urlTransform={url => chatAttachment(url) ? url : defaultUrlTransform(url)}>
         {rendered}
       </ReactMarkdown>
     </div>

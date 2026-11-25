@@ -192,6 +192,37 @@
   .md hr {
     @apply border-line;
   }
+
+  .assistant-reply > .md {
+    @apply text-[15px] leading-6;
+    overflow-wrap: anywhere;
+  }
+  .assistant-reply > .md p { line-height: inherit; }
+  .assistant-reply > .md h1 { @apply text-xl leading-7; }
+  .assistant-reply > .md h2 { @apply text-[17px] leading-6; }
+  .assistant-reply > .md h3, .assistant-reply > .md h4 { @apply leading-6; }
+  .assistant-reply > .md > * + :is(h1, h2, h3, h4) { @apply mt-5; }
+  .assistant-reply > .md > :is(h1, h2, h3, h4) + * { @apply mt-1.5; }
+  .assistant-reply > .md li > :is(p, ul, ol) + :is(p, ul, ol),
+  .assistant-reply > .md li > :is(ul, ol) { @apply mt-1; }
+  .assistant-reply > .md a {
+    @apply text-[#1973ca] decoration-current dark:text-[#90bff0];
+  }
+  .assistant-reply > .md .chat-attachment-mention {
+    @apply no-underline underline-offset-[3px] hover:underline focus-visible:underline;
+  }
+  .assistant-reply > .md .chat-attachment-mention[data-attachment-kind='xlsx'] > svg {
+    @apply text-[#15934f] dark:text-[#66cf91];
+  }
+  .assistant-reply > .md .chat-attachment-list {
+    @apply grid max-w-md list-none gap-2 p-0;
+  }
+  .assistant-reply > .md .chat-attachment-list > li {
+    @apply m-0 min-w-0;
+  }
+  .assistant-reply > .md .chat-attachment-card {
+    @apply m-0 flex w-full;
+  }
 }
 
 @layer utilities {

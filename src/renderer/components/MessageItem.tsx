@@ -441,7 +441,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
 
   // Assistant text spans the column edge to edge — no avatar, no bubble.
   return (
-    <div className="msg-in group">
+    <div className="msg-in group assistant-reply">
       {message.thinking && (
         <div className="mb-1.5">
           <button
@@ -464,7 +464,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
           )}
         </div>
       )}
-      <Markdown content={guideSplit.clean} />
+      <Markdown content={guideSplit.clean} replyAttachments />
       <ConnectionGuideCard kinds={guideSplit.guides} />
       {hasActionText && (
         <div className="mt-2 flex flex-wrap items-center gap-1">

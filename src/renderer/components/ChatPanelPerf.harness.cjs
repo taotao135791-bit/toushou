@@ -165,11 +165,27 @@ app.whenReady().then(async () => {
     await waitFor(`${themeColor} !== ${JSON.stringify(lightEffort)}`)
     const darkEffort = await js(themeColor)
     await js("document.documentElement.classList.remove('dark')")
-    const trackHasStars = await js(`getComputedStyle((${slider}).parentElement, '::before').backgroundImage.includes('radial-gradient')`)
+    const fill = `(${thinkingMenu}).querySelector('.effort-fill')`
+    const palette = () => js(`[getComputedStyle(${fill}).backgroundImage, ${themeColor}]`)
     if (process.platform === 'darwin') app.focus({ steal: true })
     win.focus()
     wc.focus()
     wc.debugger.attach('1.3')
+    const setMotionPreference = value => wc.debugger.sendCommand('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value }]
+    })
+    await setMotionPreference('no-preference')
+    // Compare two frames while the knob is at rest. The repeating tile may
+    // wrap between samples, so account for a full tile of leftward travel.
+    const particlesMoveLeft = () => js(`(async () => {
+      const read = () => getComputedStyle(${fill}, '::before')
+      const x = () => new DOMMatrix(read().transform).m41
+      const tile = parseFloat(read().getPropertyValue('--tile'))
+      const start = x()
+      await new Promise(resolve => setTimeout(resolve, 125))
+      const shift = (start - x() + tile) % tile
+      return read().backgroundImage.includes('radial-gradient') && shift > 0 && shift < tile / 2
+    })()`)
     const drag = async (start, end, label) => {
       const rect = await js(`(${slider}).getBoundingClientRect().toJSON()`)
       const x = fraction => Math.round(rect.left + 13 + (rect.width - 26) * fraction)
@@ -181,18 +197,31 @@ app.whenReady().then(async () => {
       await checkMenu()
     }
     await drag(0, 1 / 3, 'Low')
+    const lowPalette = await palette()
+    const blueDrifts = await particlesMoveLeft()
     await drag(1 / 3, 2 / 3, 'High')
-    wc.debugger.detach()
+    const highPalette = await palette()
     await js(`(${slider}).focus()`)
     wc.sendInputEvent({ type: 'keyDown', keyCode: 'End' })
     wc.sendInputEvent({ type: 'keyUp', keyCode: 'End' })
     await waitFor(`${thinkingTrigger}.ariaLabel === 'Thinking: Max'`)
     await checkMenu()
+    const peakPalette = await palette()
+    const peakDrifts = await particlesMoveLeft()
+    await setMotionPreference('reduce')
+    await waitFor(`getComputedStyle(${fill}, '::before').animationName === 'none' && getComputedStyle(${fill}.firstElementChild).animationName === 'none'`)
+    await setMotionPreference('no-preference')
     await chooseThinking('Off')
     await checkMenu()
+    const idleDrifts = await particlesMoveLeft()
+    wc.debugger.detach()
     await dismissWithKey()
     const hiddenAuto = await js(`!document.querySelector('button[aria-label="Set thinking level automatically"]')`)
-    const effortInteraction = { insetMenu, themed: lightEffort !== darkEffort, trackHasStars, hiddenAuto }
+    const effortInteraction = {
+      insetMenu, themed: lightEffort !== darkEffort, hiddenAuto, blueDrifts, peakDrifts, idleDrifts,
+      sharedBluePalette: lowPalette.every((value, index) => value === highPalette[index]),
+      distinctPeakPalette: lowPalette.every((value, index) => value !== peakPalette[index])
+    }
     phase = 'switch model thinking capabilities'
     const chooseModel = async name => {
       await js(`${modelTrigger}.click()`)
