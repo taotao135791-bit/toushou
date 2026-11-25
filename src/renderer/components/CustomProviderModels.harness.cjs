@@ -167,12 +167,12 @@ app.whenReady().then(async () => {
     await edit(formId, 'my-compatible-endpoint')
     assert.deepEqual(await values(api), ['openai-completions', 'openai-responses', 'anthropic-messages'])
     assert.equal(await js(api + '.value'), 'openai-completions')
-    console.log('MODEL_SETTINGS_OK')
+    fs.writeFileSync(path.join(dir, 'result.txt'), 'MODEL_SETTINGS_OK')
   } catch (error) {
     console.error(error)
     process.exitCode = 1
   } finally {
     win?.destroy()
-    app.quit()
+    app.exit(process.exitCode ?? 0)
   }
 })

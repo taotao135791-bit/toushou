@@ -1,0 +1,103 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import register from '../../../resources/dingtalk-toolkit/extensions/index'
+
+type Tool = Parameters<Parameters<typeof register>[0]['registerTool']>[0]
+const tools = new Map<string, Tool>()
+register({ registerTool: tool => tools.set(tool.name, tool) })
+const create = tools.get('toushou_dingtalk_create_document')!
+const append = tools.get('toushou_dingtalk_append_document')!
+const fetchMock = vi.fn<typeof fetch>()
+const bridge = 'http://127.0.0.1:9999/' + 'a'.repeat(48)
+const exampleId = 'ExampleDoc'
+
+beforeEach(() => {
+  fetchMock.mockReset()
+  vi.stubEnv('TOUSHOU_DINGTALK', bridge)
+  vi.stubGlobal('fetch', fetchMock)
+})
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+})
+
+describe('DingTalk document tools', () => {
+  it('publishes distinct write tools with explicit required fields and limits', () => {
+    expect(create.approval).toBe('write')
+    expect(append.approval).toBe('write')
+    expect(create.parameters).toMatchObject({
+      required: ['title'], additionalProperties: false, properties: {
+        title: { maxLength: 200 }, content: { maxLength: 64_000 }, folderId: { maxLength: 2048 }
+      }
+    })
+    expect(append.parameters).toMatchObject({
+      required: ['documentId', 'content'], additionalProperties: false, properties: {
+        documentId: { maxLength: 2048 }, content: { maxLength: 64_000 }
+      }
+    })
+  })
+
+  it.each([
+    [create, 'create_document', { title: '示例文档' }],
+    [create, 'create_document', { title: '示例文档', content: '# 示例正文\n', folderId: 'ExampleFolder' }],
+    [append, 'append_document', { documentId: exampleId, content: '\n## 示例\n\n  - 追加正文\n' }]
+  ] as const)('sends a single request with the specified fields and preserves Markdown whitespace', async (tool, action, arguments_) => {
+    const reply = { ok: true, source: 'DingTalk', data: { documentId: exampleId } }
+    fetchMock.mockResolvedValue(Response.json(reply))
+    const result = await tool.execute('call', arguments_)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe(bridge)
+    expect(init).toMatchObject({ method: 'POST', redirect: 'error', signal: expect.any(AbortSignal) })
+    expect(JSON.parse(init?.body as string)).toEqual({ action, ...arguments_ })
+    expect(JSON.parse(result.content[0].text)).toEqual(reply)
+  })
+
+  it.each([
+    [create, { content: 'missing-title' }],
+    [create, { title: ' ', folderId: 'ExampleFolder' }],
+    [create, { title: '示例文档', action: 'other_action' }],
+    [create, { title: '示例文档', folderId: 1 }],
+    [append, { documentId: exampleId, content: 'x'.repeat(64_001) }],
+    [append, { documentId: exampleId, content: '示例', extra: true }]
+  ] as const)('rejects undeclared, missing or invalid input before contacting the bridge', async (tool, params) => {
+    const result = await tool.execute('call', params)
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false, error: 'invalid-input' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps remote denial, desktop permission denial and uncertain completion distinct', async () => {
+    for (const error of ['permission-denied', 'write-forbidden', 'write-failed', 'write-outcome-unknown']) {
+      fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error }))
+      const result = await create.execute('call', { title: '示例文档' })
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false, error, hint: expect.any(String) })
+    }
+    fetchMock.mockRejectedValueOnce(new Error('synthetic disconnect'))
+    const result = await append.execute('call', { documentId: exampleId, content: '示例' })
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false, error: 'write-outcome-unknown', hint: expect.stringContaining('核对正文') })
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+  })
+
+  it('provides an official verification link only for a valid node reported on an uncertain write', async () => {
+    const error = 'write-outcome-unknown'
+    const misleadingUrl = 'https://example.invalid/not-the-document'
+    fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error, nodeId: exampleId, url: misleadingUrl }))
+    const verified = JSON.parse((await create.execute('call', { title: '示例文档' })).content[0].text)
+    expect(verified).toMatchObject({ ok: false, error, nodeId: exampleId, url: `https://alidocs.dingtalk.com/i/nodes/${exampleId}` })
+    for (const invalid of ['../other', misleadingUrl, 'x'.repeat(201)]) {
+      fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error, nodeId: invalid, url: misleadingUrl }))
+      const result = JSON.parse((await create.execute('call', { title: '示例文档' })).content[0].text)
+      expect(result.nodeId).toBeUndefined()
+      expect(result.url).toBeUndefined()
+    }
+    for (const otherError of ['write-forbidden', 'unexpected-error']) {
+      fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error: otherError, nodeId: exampleId }))
+      expect(JSON.parse((await create.execute('call', { title: '示例文档' })).content[0].text).url).toBeUndefined()
+    }
+  })
+
+  it('declines nonlocal bridge configuration without sending document contents', async () => {
+    vi.stubEnv('TOUSHOU_DINGTALK', 'https://example.invalid/' + 'a'.repeat(48))
+    expect(JSON.parse((await create.execute('call', { title: '示例文档' })).content[0].text)).toMatchObject({ ok: false, error: 'forbidden' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})

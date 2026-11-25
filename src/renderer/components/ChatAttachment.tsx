@@ -1,9 +1,10 @@
 import { Fragment, memo, type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, FileText, Image as ImageIcon, Sheet, X } from 'lucide-react'
+import { Download, FileText, FolderOpen, Image as ImageIcon, Sheet, X } from 'lucide-react'
 import type { PromptImage } from '@shared/types'
 import { chatAttachment, type AttachmentKind } from '@shared/chatAttachment'
 import { useAppStore } from '../store'
+import { useT } from '../i18n'
 import audio from '../assets/file-types/audio.svg'
 import docx from '../assets/file-types/docx.svg'
 import pdf from '../assets/file-types/pdf.svg'
@@ -21,31 +22,35 @@ interface AttachmentProps { target: string; label?: string }
 
 function useAttachment(target: string) {
   const file = chatAttachment(target)
-  const zh = useAppStore(s => s.language === 'zh')
+  const t = useT()
   const [error, setError] = useState(false)
   const [pending, setPending] = useState(false)
   const inFlight = useRef(false)
-  const activate = async (action: 'open' | 'save') => {
-    if (!file || inFlight.current) return
+  const activate = async (action: 'open' | 'save' | 'reveal' | 'open-folder') => {
+    if (inFlight.current || (!file && action !== 'open-folder') || (file?.remote && action !== 'open')) return
     inFlight.current = true
     setPending(true)
     setError(false)
     try {
-      if (file.remote) {
+      if (file?.remote) {
         const result = await window.electronAPI.openExternalUrl(file.target)
         setError(!result.ok)
       } else {
         const { currentWorkspace: workspace, currentSessionId } = useAppStore.getState()
-        setError(!workspace || await window.electronAPI.chatAttachment(workspace.id, target, action, currentSessionId) === 'unavailable')
+        if (!workspace) { setError(true); return }
+        const result = action === 'open-folder'
+          ? await window.electronAPI.openChatAttachmentFolder(workspace.id, target, currentSessionId)
+          : await window.electronAPI.chatAttachment(workspace.id, target, action, currentSessionId)
+        setError(result === 'unavailable')
       }
     } catch { setError(true) }
     finally { inFlight.current = false; setPending(false) }
   }
-  return { file, zh, pending, error, activate }
+  return { file, t, pending, error, activate }
 }
 
 export function AttachmentMention({ target, label, fallbackHref, children }: AttachmentProps & { fallbackHref?: string; children?: ReactNode }) {
-  const { file, zh, pending, error, activate } = useAttachment(target)
+  const { file, t, pending, error, activate } = useAttachment(target)
   if (!file) return <>{children ?? (label || target)}</>
   const Icon = mentionIcons[file.kind] ?? FileText
   return <>
@@ -56,26 +61,64 @@ export function AttachmentMention({ target, label, fallbackHref, children }: Att
       className="chat-attachment-mention focus-ring inline max-w-full rounded-sm text-left [overflow-wrap:anywhere]">
       {children ?? <><Icon size={14} aria-hidden="true" className="mr-1 inline-block align-[-2px]" />{label || file.name}</>}
     </a>
-    {error && <span role="status" className="px-1 text-xs text-amber-700">{zh ? '文件不可用' : 'File unavailable'}</span>}
+    {error && <span role="status" className="px-1 text-xs text-amber-700">{t('chat.attachmentUnavailable')}</span>}
   </>
 }
 
-export function AttachmentCard({ target, label }: AttachmentProps) {
-  const { file, zh, pending, error, activate } = useAttachment(target)
-  if (!file) return <>{label ?? target}</>
-  const open = file.sandbox ? (zh ? '选择本地副本' : 'Locate local copy') : (zh ? '打开附件' : 'Open attachment')
-  const save = zh ? '另存为' : 'Save a copy'
-  return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center gap-1 rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
-    <button type="button" disabled={pending} onClick={() => void activate('open')} aria-label={open + ' · ' + file.name}
+export function AttachmentFolderMention({ target, label }: AttachmentProps) {
+  const { t, pending, error, activate } = useAttachment(target)
+  return <>
+    <button type="button" disabled={pending} onClick={() => void activate('open-folder')}
+      aria-label={t('chat.attachmentOpenFolder') + ' · ' + (label || target)} title={target}
+      className="chat-attachment-mention focus-ring inline max-w-full rounded-sm text-left align-baseline text-[#1973ca] [overflow-wrap:anywhere] dark:text-[#90bff0]">
+      <FolderOpen size={14} aria-hidden="true" className="mr-1 inline-block align-[-2px]" />{label || target}
+    </button>
+    {error && <span role="status" className="px-1 text-xs text-amber-700">{t('chat.attachmentFolderUnavailable')}</span>}
+  </>
+}
+
+export function AttachmentFolderCard({ target, label }: AttachmentProps) {
+  const { t, pending, error, activate } = useAttachment(target)
+  const name = label || target.split(/[\\/]/).filter(Boolean).pop() || target
+  const platform = typeof window === 'undefined' ? undefined : window.electronAPI?.platform
+  const open = t(platform === 'darwin' ? 'chat.attachmentOpenFolderFinder' : platform === 'win32' ? 'chat.attachmentOpenFolderExplorer' : 'chat.attachmentOpenFolder')
+  return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
+    <button type="button" disabled={pending} onClick={() => void activate('open-folder')} aria-label={open + ' · ' + name}
       title={target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">
-      <img src={icons[file.kind]} alt="" width={30} height={30} className="m-0 h-8 w-8 shrink-0" />
-      <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{label || file.name}</span>
-        <span className="block truncate text-[11px] text-cream-faint">{file.ext.toUpperCase()}{file.sandbox && ' · ' + open}{label && label !== file.name ? ' · ' + file.name : ''}</span>
+      <FolderOpen size={26} aria-hidden="true" className="mx-[3px] shrink-0 text-cream-dim" />
+      <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{name}</span>
+        <span className="block truncate text-[11px] text-cream-faint">{open}</span>
       </span>
     </button>
+    {error && <span role="status" className="px-1 text-xs text-amber-700">{t('chat.attachmentFolderUnavailable')}</span>}
+  </span>
+}
+
+export function AttachmentCard({ target, label }: AttachmentProps) {
+  const { file, t, pending, error, activate } = useAttachment(target)
+  if (!file) return <>{label ?? target}</>
+  const reveal = t('chat.attachmentShowInFolder')
+  const { revealOnly } = file
+  const open = revealOnly ? reveal : t(file.sandbox ? 'chat.attachmentLocate' : 'chat.attachmentOpen')
+  const save = t('chat.attachmentSave')
+  const platform = typeof window === 'undefined' ? undefined : window.electronAPI?.platform
+  const revealTitle = platform === 'darwin' ? t('chat.openInFinder') : platform === 'win32' ? t('chat.attachmentShowInExplorer') : reveal
+  return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center gap-1 rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
+    <button type="button" disabled={pending} onClick={() => void activate(revealOnly ? 'reveal' : 'open')} aria-label={open + ' · ' + file.name}
+      title={revealOnly ? revealTitle : target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">
+      <img src={icons[file.kind]} alt="" width={30} height={30} className="m-0 h-8 w-8 shrink-0" />
+      <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{label || file.name}</span>
+        <span className="block truncate text-[11px] text-cream-faint">{file.ext.toUpperCase()}{(file.sandbox || revealOnly) && ' · ' + open}{label && label !== file.name ? ' · ' + file.name : ''}</span>
+      </span>
+    </button>
+    {!file.remote && !revealOnly && <button type="button" disabled={pending} onClick={() => void activate('reveal')}
+      title={revealTitle} aria-label={reveal + ' · ' + file.name}
+      className="focus-ring inline-flex min-h-8 shrink-0 items-center gap-1 rounded-lg px-1.5 text-[11px] text-cream-dim hover:bg-overlay">
+      <FolderOpen size={14} aria-hidden="true" />{reveal}
+    </button>}
     {!file.remote && <button type="button" disabled={pending} aria-label={save + ' · ' + file.name} title={save}
       className="focus-ring shrink-0 rounded-lg p-2 text-cream-dim hover:bg-overlay" onClick={() => void activate('save')}><Download size={14} /></button>}
-    {error && <span role="status" className="px-1 text-xs text-amber-700">{zh ? '文件不可用' : 'File unavailable'}</span>}
+    {error && <span role="status" className="px-1 text-xs text-amber-700">{t('chat.attachmentUnavailable')}</span>}
   </span>
 }
 

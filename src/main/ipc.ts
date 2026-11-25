@@ -1,7 +1,7 @@
 import { isAutoCompactThreshold } from '../shared/compaction'
 import { writeContextPolicy } from './omp/OmpProcess'
 import { fileSidebarConversation } from './sessionProjectFiling'
-import { handleChatAttachment, transcriptReferencesFile } from './chatAttachment'
+import { handleChatAttachment, openChatAttachmentFolder, transcriptReferencesAttachment } from './chatAttachment'
 import type { ReplyForkTarget } from '../shared/types'
 import { suspendedFacebookBrowserResult } from './legacyFacebookBrowser'
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
@@ -1811,26 +1811,38 @@ export function registerIpc() {
   // a terminal, or VS Code. The renderer only ever sends the grant id and a
   // target name; the real path is resolved here through the same grant
   // authority as every other workspace-scoped channel.
-  ipcMain.handle(IPC_CHANNELS.CHAT_ATTACHMENT, (event, grantId, target, action, sessionId) => {
+  async function dispatchAttachment(event: IpcMainInvokeEvent, grantId: unknown, target: unknown, action: unknown, sessionId: unknown, folder: boolean) {
     const workspace = requireGrant(grantId)
     if (!workspace) return 'unavailable'
-    return handleChatAttachment(workspace.realPath, target, action, {
-      directory: getWorkspaceSystemPaths().downloads,
-      isReferenced: async file => {
-        if (typeof sessionId !== 'string' || sessionId.length > 512) return false
+    let readMessages: () => ReturnType<typeof readSessionTranscript> = async () => null
+    try {
+      if (sessionId != null) {
+        if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 512) return 'unavailable'
         if (sessionId.startsWith('preview:')) {
+          const historyId = sessionId.slice(8)
           const context = { workspaceGrantId: workspace.grant.id, workspaceRealPath: workspace.realPath, ownerWebContentsId: event.sender.id }
-          return !!await historySessionGrantManager.withResolved(sessionId.slice(8), context, async journal =>
-            transcriptReferencesFile(await readSessionFileTranscript(journal, { hydrateImages: false }), file))
+          if (!await historySessionGrantManager.resolve(historyId, context)) return 'unavailable'
+          readMessages = () => historySessionGrantManager.withResolved(historyId, context,
+            journal => readSessionFileTranscript(journal, { hydrateImages: false }))
+        } else {
+          const live = getSession(sessionId)
+          if (!live || canonicalExistingPath(live.cwd) !== workspace.realPath) return 'unavailable'
+          const journal = live.sessionFile ?? live.resumeFrom
+          readMessages = () => journal ? readSessionFileTranscript(journal, { hydrateImages: false }) : readSessionTranscript(sessionId)
         }
-        const live = getSession(sessionId)
-        if (!live || canonicalExistingPath(live.cwd) !== workspace.realPath) return false
-        const journal = live.sessionFile ?? live.resumeFrom
-        const messages = journal ? await readSessionFileTranscript(journal, { hydrateImages: false }) : await readSessionTranscript(sessionId)
-        return transcriptReferencesFile(messages, file)
       }
-    })
-  })
+      const downloads = {
+        directory: getWorkspaceSystemPaths().downloads,
+        isReferenced: async (path: string, kind: 'file' | 'folder') => transcriptReferencesAttachment(await readMessages(), path, kind)
+      }
+      return folder ? await openChatAttachmentFolder(workspace.realPath, target, downloads)
+        : await handleChatAttachment(workspace.realPath, target, action, downloads)
+    } catch { return 'unavailable' }
+  }
+  ipcMain.handle(IPC_CHANNELS.CHAT_ATTACHMENT, (event, grantId, target, action, sessionId) =>
+    dispatchAttachment(event, grantId, target, action, sessionId, false))
+  ipcMain.handle(IPC_CHANNELS.CHAT_ATTACHMENT_FOLDER, (event, grantId, directory, sessionId) =>
+    dispatchAttachment(event, grantId, directory, null, sessionId, true))
   let workspaceIcons: Promise<{ finder?: string; terminal?: string }> | undefined
   ipcMain.handle(IPC_CHANNELS.WORKSPACE_APP_ICONS, () => {
     if (process.platform !== 'win32') return {}

@@ -44,7 +44,7 @@ describe('chat attachments in Markdown', () => {
     ['`report.pdf`', 'report.pdf', 'PDF']
   ])('renders a named file card with a separate save action for %s', (input, name, text) => {
     const html = renderToStaticMarkup(<Markdown content={input} />)
-    expect(html.match(/<button\b/g)).toHaveLength(2)
+    expect(html.match(/<button\b/g)).toHaveLength(3)
     expect(html).toContain(name)
     expect(html).toContain(text)
   })
@@ -95,6 +95,56 @@ function reply(content: string) {
 }
 
 describe('assistant reply attachment mentions and footer', () => {
+  it('locates an HTML report and plain file names in a delivery folder named later in the reply', () => {
+    const { document, footers } = reply([
+      '请打开 `示例周报.html`，也可看 [周报](./示例周报.html)。',
+      '',
+      '文件都在 `/tmp/示例交付/`：HTML（图已内嵌）、`.md`（纯文本）、`fig1-3.png`（单独三张图）。',
+      '',
+      '其他附件：指标.csv。'
+    ].join('\n'))
+    const cards = elements(footers[0], 'li')
+    expect(cards).toHaveLength(3)
+    expect(visibleText(cards[0])).toContain('示例周报.html')
+    expect(attr(elements(cards[1], 'button')[0], 'title')).toBe('/tmp/示例交付')
+    expect(attr(elements(cards[2], 'button')[0], 'title')).toBe('/tmp/示例交付/指标.csv')
+    const paragraphs = elements(document, 'p')
+    expect(mentionsIn(paragraphs[0]).map(link => attr(link, 'href'))).toEqual(Array(2).fill('#' + attr(cards[0], 'id')))
+    expect(attr(mentionsIn(paragraphs[0])[0], 'title')).toBe('/tmp/示例交付/示例周报.html')
+    expect(elements(paragraphs[1], 'button').map(el => attr(el, 'title'))).toEqual(['/tmp/示例交付', '/tmp/示例交付'])
+    expect(elements(paragraphs[1], 'button').map(visibleText)).toEqual(['/tmp/示例交付/', 'fig1-3.png'])
+    expect(elements(paragraphs[1], 'code').map(visibleText)).toEqual(['.md'])
+  })
+
+  it('deduplicates range folder cards while preserving links whose actual target is a literal range filename', () => {
+    const { document, footers } = reply('输出目录：`/tmp/sample-plots/`，图片有 `fig1–3.png` 和 fig4-6.png。另附[单个文件](fig8-9.png)。')
+    const paragraph = elements(document, 'p')[0]
+    expect(elements(paragraph, 'button').map(visibleText)).toEqual(['/tmp/sample-plots/', 'fig1–3.png', 'fig4-6.png'])
+    expect(mentionsIn(paragraph).map(el => attr(el, 'title'))).toEqual(['/tmp/sample-plots/fig8-9.png'])
+    expect(elements(footers[0], 'li').map(el => attr(elements(el, 'button')[0], 'title'))).toEqual(['/tmp/sample-plots', '/tmp/sample-plots/fig8-9.png'])
+    const unknown = reply('输出为 `fig1-3.png` 和 `.md`。')
+    expect(unknown.footers).toHaveLength(0)
+    expect(elements(unknown.document, 'code').map(visibleText)).toEqual(['fig1-3.png', '.md'])
+  })
+
+  it('uses multiple locally named directories without guessing a destination for an earlier ambiguous name', () => {
+    const { document, footers } = reply([
+      '先看 `report.csv`。', '',
+      '甲的输出目录：`/tmp/Example North`，明细见 `report.csv`。',
+      '',
+      '乙的输出目录：`/tmp/Example South`，明细见 [报告](report.csv)。'
+    ].join('\n'))
+    expect(elements(elements(document, 'p')[0], 'code').map(visibleText)).toEqual(['report.csv'])
+    const cards = elements(footers[0], 'li')
+    expect(cards.map(card => attr(elements(card, 'button')[0], 'title'))).toEqual(['/tmp/Example North/report.csv', '/tmp/Example South/report.csv'])
+  })
+
+  it('reuses a unique explicit file path for a basename and preserves an explicitly linked literal range filename', () => {
+    const { document, footers } = reply('打开 `report.pdf`，完整路径是 `/tmp/sample/report.pdf`。\n\n[文件](./fig1-3.png)')
+    expect(mentionsIn(elements(document, 'p')[0]).map(el => attr(el, 'title'))).toEqual(['/tmp/sample/report.pdf', '/tmp/sample/report.pdf'])
+    expect(elements(footers[0], 'li')).toHaveLength(2)
+  })
+
   it('keeps labels and punctuation in the sentence and puts the deduplicated card after the closing paragraph', () => {
     const { html, document, footers } = reply('请看[明细](report.pdf)，也可以打开 `report.pdf`。\n\n以上是结论。')
     const paragraphs = elements(document, 'p')
@@ -108,7 +158,7 @@ describe('assistant reply attachment mentions and footer', () => {
     const cardId = attr(cards[0], 'id')
     expect(cardId).toBeTruthy()
     expect(mentions.map(link => attr(link, 'href'))).toEqual(['#' + cardId, '#' + cardId])
-    expect(elements(footers[0], 'button')).toHaveLength(2)
+    expect(elements(footers[0], 'button')).toHaveLength(3)
     expect(html.indexOf('以上是结论。')).toBeLessThan(html.indexOf('<ul'))
   })
 

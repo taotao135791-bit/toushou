@@ -38,6 +38,8 @@ export function chatAttachment(raw: unknown) {
   const name = file.split(/[\\/]/).pop() ?? ''
   const dot = name.lastIndexOf('.')
   const ext = name.slice(dot + 1).toLowerCase()
-  const kind = dot > 0 ? fileTypes.get(ext) : undefined
-  return kind ? { name, ext, kind, target, remote, sandbox } : null
+  // Local HTML reports may be saved or revealed; remote HTML remains a normal web link.
+  const revealOnly = !remote && (ext === 'html' || ext === 'htm')
+  const kind = dot > 0 ? (revealOnly ? 'txt' : fileTypes.get(ext)) : undefined
+  return kind ? { name, ext, kind, target, remote, sandbox, revealOnly } : null
 }

@@ -10,10 +10,11 @@ import type {
   DingTalkConnectionResult,
   DingTalkConnectionSnapshot,
   DingTalkConnectionState,
-  DingTalkReadRequest,
-  DingTalkReadResult
+  DingTalkToolRequest,
+  DingTalkToolResult
 } from '../../../shared/connections'
 import { DingTalkCli, DingTalkCliError, type DingTalkCliIdentity, type DingTalkCliInstallation } from './DingTalkCli'
+import { isDingTalkNodeId, isDingTalkWrite, parseDingTalkRequest } from './requests'
 
 export const DINGTALK_GUIDE_URL = 'https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/README_zh.md#开始使用'
 
@@ -21,8 +22,8 @@ const definition: ConnectionDefinition = {
   id: 'dingtalk',
   kind: 'channel',
   label: '钉钉',
-  description: '授权投手在对话中搜索钉钉消息和阅读文档。',
-  capabilities: ['messages.read', 'docs.read']
+  description: '授权投手在对话中搜索钉钉消息，查阅、新建及追加在线文字文档。',
+  capabilities: ['messages.read', 'docs.read', 'docs.create', 'docs.append']
 }
 
 const statusByState: Record<DingTalkConnectionState, ConnectionStatus> = {
@@ -34,7 +35,7 @@ const statusByState: Record<DingTalkConnectionState, ConnectionStatus> = {
   error: 'failed'
 }
 
-type Cli = Pick<DingTalkCli, 'find' | 'install' | 'status' | 'login' | 'currentUser' | 'searchMessages' | 'searchDocuments' | 'readDocument'>
+type Cli = Pick<DingTalkCli, 'find' | 'install' | 'status' | 'login' | 'currentUser' | 'searchMessages' | 'searchDocuments' | 'readDocument' | 'createDocument' | 'appendDocument'>
 type ConnectionOperation = 'connect' | 'check'
 
 function exactProfile(value: unknown): value is string {
@@ -61,7 +62,11 @@ function saveLink(file: string, profile: string): void {
 function connectionError(error: unknown): DingTalkConnectionError {
   if (error instanceof DingTalkCliError) {
     if (error.code === 'permission-denied') return 'authorization-failed'
-    if (error.code !== 'read-failed' && error.code !== 'cancelled') return error.code
+    switch (error.code) {
+      case 'cli-unavailable': case 'install-failed': case 'authorization-failed':
+      case 'organization-access-required': case 'network': case 'not-authorized':
+        return error.code
+    }
   }
   return 'connection-failed'
 }
@@ -82,8 +87,8 @@ export class DingTalkConnectionManager {
   private loaded?: Promise<void>
   private initialized?: Promise<void>
   private operation?: { controller: AbortController; completion: Promise<DingTalkConnectionResult> }
-  private readLifetime = new AbortController()
-  private readers = 0
+  private bindingLifetime = new AbortController()
+  private activeRequests = 0
   private stopped = false
 
   constructor(options: { cli?: Cli; file?: string } = {}) {
@@ -136,11 +141,11 @@ export class DingTalkConnectionManager {
 
   async disconnect(): Promise<DingTalkConnectionResult> {
     this.cancelOperation()
-    this.cancelReads()
+    this.cancelRequests()
     await this.loadLink()
     // A caller may have queued another action during the initial disk read.
     this.cancelOperation()
-    this.cancelReads()
+    this.cancelRequests()
     this.identity = undefined
     this.lastConnectedAt = undefined
     try {
@@ -157,50 +162,65 @@ export class DingTalkConnectionManager {
   shutdown(): void {
     this.stopped = true
     this.cancelOperation()
-    this.cancelReads()
+    this.cancelRequests()
   }
 
-  async read(request: DingTalkReadRequest, signal?: AbortSignal): Promise<DingTalkReadResult> {
+  connectedLifetime(): AbortSignal | null {
+    return this.state === 'connected' && !this.stopped ? this.bindingLifetime.signal : null
+  }
+
+  async execute(input: DingTalkToolRequest, signal?: AbortSignal, canWrite?: () => boolean): Promise<DingTalkToolResult> {
     await this.initialize()
     const cli = this.installation
     const profile = this.identity?.profile
-    if (this.stopped || !cli || !profile || this.profile !== profile || this.state !== 'connected') {
-      return { ok: false, error: 'not-connected' }
-    }
-    if (this.readers >= 3) return { ok: false, error: 'read-failed' }
-    const lifetime = this.readLifetime.signal
+    const lifetime = this.connectedLifetime()
+    if (!lifetime || !cli || !profile || this.profile !== profile) return { ok: false, error: 'not-connected' }
+    const request = parseDingTalkRequest(input)
+    if (!request) return { ok: false, error: 'invalid-input' }
+    const write = isDingTalkWrite(request)
+    if (this.activeRequests >= 3) return { ok: false, error: write ? 'write-failed' : 'read-failed' }
     const task = signal ? AbortSignal.any([signal, lifetime]) : lifetime
-    this.readers++
+    this.activeRequests++
     try {
+      if (write) {
+        // Recheck the initiating session and approval after asynchronous connection setup.
+        if (task.aborted || !canWrite?.()) return { ok: false, error: 'write-forbidden' }
+        const result = request.action === 'create_document'
+          ? await this.cli.createDocument(cli, profile, request.title, request.content, request.folderId, task)
+          : await this.cli.appendDocument(cli, profile, request.documentId, request.content, task)
+        if (task.aborted || !isDingTalkNodeId(result?.nodeId)) return { ok: false, error: 'write-outcome-unknown' }
+        return { ok: true, data: {
+          nodeId: result.nodeId, url: 'https://alidocs.dingtalk.com/i/nodes/' + result.nodeId,
+          ...(result.mentionTargetsUnverified ? { mentionTargetsUnverified: true, note: '正文已写入，钉钉未能核实文中 @ 的具体对象。' } : {})
+        } }
+      }
       task.throwIfAborted()
       let data: unknown
-      if (request.action === 'read_document') {
-        if (!/^[A-Za-z0-9_-]{1,200}$/.test(request.documentId)) return { ok: false, error: 'invalid-input' }
-        data = await this.cli.readDocument(cli, profile, request.documentId, task)
-      } else {
-        const query = request.query.trim()
-        if (!query || query.length > 200 || /[\x00-\x1f\x7f]/.test(query)) return { ok: false, error: 'invalid-input' }
-        data = request.action === 'search_messages'
-          ? await this.cli.searchMessages(cli, profile, query, 20, task)
-          : await this.cli.searchDocuments(cli, profile, query, 10, task)
-      }
+      if (request.action === 'read_document') data = await this.cli.readDocument(cli, profile, request.documentId, task)
+      else if (request.action === 'search_messages') data = await this.cli.searchMessages(cli, profile, request.query, 20, task)
+      else data = await this.cli.searchDocuments(cli, profile, request.query, 10, task)
       task.throwIfAborted()
       return { ok: true, data }
     } catch (error) {
+      if (task.aborted && write) return { ok: false, error: 'write-outcome-unknown' }
       if (lifetime.aborted) return { ok: false, error: 'not-connected' }
       if (error instanceof DingTalkCliError) {
         const code = error.code
         if (code === 'not-authorized' || code === 'organization-access-required' || code === 'cli-unavailable') {
-          this.cancelReads()
+          this.cancelRequests()
           this.identity = undefined
           this.setState('error', code)
           return { ok: false, error: code }
         }
-        if (code === 'network' || code === 'permission-denied') return { ok: false, error: code }
+        if (code === 'write-outcome-unknown' || (code === 'network' && write)) {
+          const nodeId = error.nodeId ?? (request.action === 'append_document' ? request.documentId : undefined)
+          return { ok: false, error: 'write-outcome-unknown', ...(isDingTalkNodeId(nodeId) ? { nodeId } : {}) }
+        }
+        if (code === 'network' || code === 'permission-denied' || code === 'write-failed') return { ok: false, error: code }
       }
-      return { ok: false, error: 'read-failed' }
+      return { ok: false, error: write ? 'write-outcome-unknown' : 'read-failed' }
     } finally {
-      this.readers--
+      this.activeRequests--
     }
   }
 
@@ -276,7 +296,7 @@ export class DingTalkConnectionManager {
       if (!identity) throw new DingTalkCliError('not-authorized')
       if (this.profile !== identity.profile) {
         saveLink(this.file, identity.profile)
-        this.cancelReads()
+        this.cancelRequests()
         this.profile = identity.profile
       }
       this.identity = identity
@@ -298,9 +318,9 @@ export class DingTalkConnectionManager {
     active?.controller.abort()
   }
 
-  private cancelReads(): void {
-    this.readLifetime.abort()
-    this.readLifetime = new AbortController()
+  private cancelRequests(): void {
+    this.bindingLifetime.abort()
+    this.bindingLifetime = new AbortController()
   }
 
   private setState(state: DingTalkConnectionState, error?: DingTalkConnectionError): void {

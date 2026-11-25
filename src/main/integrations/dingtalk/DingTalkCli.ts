@@ -66,10 +66,12 @@ export type DingTalkCliErrorCode =
   | 'not-authorized'
   | 'permission-denied'
   | 'read-failed'
+  | 'write-failed'
+  | 'write-outcome-unknown'
   | 'cancelled'
 
 export class DingTalkCliError extends Error {
-  constructor(readonly code: DingTalkCliErrorCode) {
+  constructor(readonly code: DingTalkCliErrorCode, readonly nodeId?: string) {
     super(code)
     this.name = 'DingTalkCliError'
   }
@@ -88,6 +90,11 @@ export interface DingTalkCliIdentity {
   organizationName?: string
 }
 
+interface DocumentWriteReceipt {
+  nodeId: string
+  mentionTargetsUnverified?: true
+}
+
 interface ProcessResult {
   exitCode: number
   stdout: string
@@ -100,7 +107,7 @@ type RunProcess = (
   directory: string,
   timeout: number,
   signal?: AbortSignal,
-  outputFd?: number
+  io?: number | { input: string }
 ) => Promise<ProcessResult>
 
 interface DingTalkCliOptions {
@@ -127,7 +134,7 @@ function environment(): NodeJS.ProcessEnv {
   }
 }
 
-const runProcess: RunProcess = (executable, args, directory, timeout, signal, outputFd) => new Promise((resolve, reject) => {
+const runProcess: RunProcess = (executable, args, directory, timeout, signal, io) => new Promise((resolve, reject) => {
   checkCancelled(signal)
   const stdout: Buffer[] = []
   const stderr: Buffer[] = []
@@ -135,7 +142,7 @@ const runProcess: RunProcess = (executable, args, directory, timeout, signal, ou
     cwd: directory,
     env: environment(),
     windowsHide: true,
-    stdio: ['ignore', outputFd ?? 'pipe', 'pipe']
+    stdio: [typeof io === 'object' ? 'pipe' : 'ignore', typeof io === 'number' ? io : 'pipe', 'pipe']
   })
   let size = 0
   let failure: DingTalkCliError | undefined
@@ -157,11 +164,18 @@ const runProcess: RunProcess = (executable, args, directory, timeout, signal, ou
   if (signal?.aborted) cancel()
   child.stdout?.on('data', capture(stdout))
   child.stderr?.on('data', capture(stderr))
+  let inputFailed = false
+  if (typeof io === 'object' && child.stdin) {
+    // A CLI that rejects arguments may close stdin before reading the document.
+    child.stdin.on('error', () => { inputFailed = true })
+    child.stdin.end(io.input, 'utf8')
+  }
   child.on('error', () => { failure ??= new DingTalkCliError('cli-unavailable') })
   child.once('close', code => {
     clearTimeout(timer)
     signal?.removeEventListener('abort', cancel)
     if (failure) { reject(failure); return }
+    if (inputFailed && code === 0) { reject(new DingTalkCliError('write-outcome-unknown')); return }
     resolve({ exitCode: code ?? -1, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') })
   })
 })
@@ -176,6 +190,11 @@ function displayName(value: unknown): string | undefined {
 }
 
 const exactProfile = /^[A-Za-z0-9_.@=-]{1,256}:[A-Za-z0-9_.@=-]{1,256}$/
+const nodeIdPattern = /^[A-Za-z0-9_-]{1,256}$/
+
+function safeNodeId(value: unknown): string | undefined {
+  return typeof value === 'string' && nodeIdPattern.test(value) ? value : undefined
+}
 
 function identity(value: Record<string, unknown>, fallback: DingTalkCliErrorCode): DingTalkCliIdentity {
   const { corp_id, user_id } = value
@@ -212,6 +231,41 @@ function parseResult(result: ProcessResult, fallback: DingTalkCliErrorCode): unk
   const envelope = record(parsed)
   if (envelope?.success === false || envelope?.isError === true || envelope?.error) throw readError(result, fallback)
   return parsed
+}
+
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  try { return record(JSON.parse(text)) } catch { return undefined }
+}
+
+function writeReceipt(result: ProcessResult, target?: string): DocumentWriteReceipt {
+  const response = jsonObject(result.stdout)
+  const error = record(response?.error) ?? record(jsonObject(result.stderr)?.error)
+  const details = record(error?.details)
+  const data = record(response?.data)
+  const nodeId = safeNodeId(data?.nodeId)
+  const recoveryId = target ?? nodeId ?? safeNodeId(record(details?.data)?.nodeId) ?? safeNodeId(details?.nodeId)
+  const unknown = new DingTalkCliError('write-outcome-unknown', recoveryId)
+  if (error) {
+    // A later chunk or the verification read can fail even after creation succeeded.
+    if (error.execution_started === true || details?.status === 'partial_success' || details?.status === 'unknown') throw unknown
+    if (error.execution_started === false || error.category === 'validation' || error.category === 'auth') {
+      if (error.reason === 'authentication_required') throw new DingTalkCliError('not-authorized')
+      const failure = readError(result, 'write-failed')
+      if (failure.code === 'network') throw unknown
+      throw failure
+    }
+    throw unknown
+  }
+  const operation = target ? 'doc.update' : 'doc.create'
+  if (result.exitCode !== 0 || response?.contractVersion !== 'doc.operation.v1' || response.operation !== operation
+      || response.ok !== true || response.complete !== true || response.status !== 'success' || data?.executed === false
+      || !nodeId || (target && (nodeId !== target || data?.mode !== 'append'))) throw unknown
+  // DWS verifies all written content but cannot resolve the recipient of an @mention from readback.
+  const unverified = data?.unverified
+  const mentionOnly = data?.verified === false && data.verificationScope === 'partial'
+    && Array.isArray(unverified) && unverified.length === 1 && unverified[0] === 'mention_targets'
+  if (data?.verified !== true && !mentionOnly) throw unknown
+  return mentionOnly ? { nodeId, mentionTargetsUnverified: true } : { nodeId }
 }
 
 /** Use the desktop's configured proxies and keep redirects under Main's allowlist. */
@@ -442,8 +496,40 @@ export class DingTalkCli {
   }
 
   readDocument(cli: DingTalkCliInstallation, profile: string, documentId: string, signal?: AbortSignal): Promise<unknown> {
-    if (!/^[A-Za-z0-9_-]{1,256}$/.test(documentId)) throw new DingTalkCliError('read-failed')
+    if (!safeNodeId(documentId)) throw new DingTalkCliError('read-failed')
     return this.read(cli, profile, ['doc', 'read', '--node=' + documentId], signal)
+  }
+
+  async createDocument(cli: DingTalkCliInstallation, profile: string, title: string, content?: string, folderId?: string, signal?: AbortSignal): Promise<DocumentWriteReceipt> {
+    if (!title.trim() || title.length > 200 || /[\x00-\x1f\x7f]/.test(title) || (folderId !== undefined && !safeNodeId(folderId))) {
+      throw new DingTalkCliError('write-failed')
+    }
+    const args = ['doc', '+create', '--name=' + title]
+    if (folderId) args.push('--folder=' + folderId)
+    if (content !== undefined) args.push('--content=-')
+    return this.write(cli, profile, args, content ?? '', signal)
+  }
+
+  async appendDocument(cli: DingTalkCliInstallation, profile: string, documentId: string, content: string, signal?: AbortSignal): Promise<DocumentWriteReceipt> {
+    if (!safeNodeId(documentId) || !content.trim()) throw new DingTalkCliError('write-failed')
+    // The desktop has authorized this write. Keep the update action fixed to append.
+    return this.write(cli, profile, ['doc', '+update', '--node=' + documentId, '--command=append', '--content=-', '--yes'], content, signal, documentId)
+  }
+
+  private async write(cli: DingTalkCliInstallation, profile: string, args: string[], content: string, signal?: AbortSignal, target?: string): Promise<DocumentWriteReceipt> {
+    checkCancelled(signal)
+    if (!path.isAbsolute(cli.path)) throw new DingTalkCliError('cli-unavailable')
+    if (content.length > 64_000 || content.includes('\0')) throw new DingTalkCliError('write-failed')
+    const argv = [this.profileArgument(profile), ...args, '--format=json', '--timeout=30']
+    let result: ProcessResult
+    try {
+      result = await this.run(cli.path, argv, path.dirname(cli.path), 150_000, signal, { input: content })
+    } catch (error) {
+      if (error instanceof DingTalkCliError && error.code === 'cli-unavailable') throw error
+      // Once dispatched, a timeout, interruption or lost response cannot prove the write failed.
+      throw new DingTalkCliError('write-outcome-unknown', target)
+    }
+    return writeReceipt(result, target)
   }
 
   private profileArgument(profile: string): string {

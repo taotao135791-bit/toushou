@@ -102,14 +102,52 @@ describe('HistorySessionGrantManager', () => {
     await expect(manager.mintForWorkspace([history(otherWorkspaceFile)], context())).resolves.toEqual([])
   })
 
-  it('revokes the prior opaque id when the same renderer refreshes history', async () => {
+  it('keeps an idle preview bound through refresh, with fresh display metadata and the original lease', async () => {
     const filePath = writeSession(workspaceA)
-    const [first] = await manager.mintForWorkspace([history(filePath)], context())
-    const [refreshed] = await manager.mintForWorkspace([history(filePath)], context())
+    const entry = history(filePath)
+    const [first] = await manager.mintForWorkspace([entry], context())
+    now += 200
+    const [refreshed] = await manager.mintForWorkspace([{ ...entry, title: 'Updated' }], context())
 
-    expect(refreshed.id).not.toBe(first.id)
+    expect(refreshed).toMatchObject({ id: first.id, title: 'Updated' })
+    expectSamePath(await manager.withResolved(first.id, context(), async file => file), fs.realpathSync(filePath))
+    const [otherWindow] = await manager.mintForWorkspace([entry], context('workspace-a', 42))
+    expect(otherWindow.id).not.toBe(first.id)
+    await expect(manager.resolve(first.id, context('workspace-a', 42))).resolves.toBeNull()
+    await manager.mintForWorkspace([], context())
     await expect(manager.resolve(first.id, context())).resolves.toBeNull()
-    expectSamePath(await manager.resolve(refreshed.id, context()), fs.realpathSync(filePath))
+    expectSamePath(await manager.resolve(otherWindow.id, context('workspace-a', 42)), fs.realpathSync(filePath))
+    const [relisted] = await manager.mintForWorkspace([entry], context())
+    expect(relisted.id).not.toBe(first.id)
+  })
+
+  it('revokes the old preview when the listed uuid or canonical journal changes', async () => {
+    const entry = history(writeSession(workspaceA))
+    const [original] = await manager.mintForWorkspace([entry], context())
+    const changed = { ...entry, uuid: 'another-session' }
+    const [replacement] = await manager.mintForWorkspace([changed], context())
+    expect(replacement.id).not.toBe(original.id)
+    await expect(manager.resolve(original.id, context())).resolves.toBeNull()
+    const moved = { ...changed, filePath: writeSession(workspaceA, 'moved.jsonl') }
+    const [newPath] = await manager.mintForWorkspace([moved], context())
+    expect(newPath.id).not.toBe(replacement.id)
+    await expect(manager.resolve(replacement.id, context())).resolves.toBeNull()
+  })
+
+  it('does not restore a removed entry from an older pending refresh or after window/workspace teardown', async () => {
+    const entry = history(writeSession(workspaceA))
+    const [first] = await manager.mintForWorkspace([entry], context())
+    const staleList = manager.mintForWorkspace([entry], context())
+    await manager.mintForWorkspace([], context())
+    await expect(staleList).resolves.toEqual([])
+    await expect(manager.resolve(first.id, context())).resolves.toBeNull()
+
+    const closingWindow = manager.mintForWorkspace([entry], context())
+    manager.revokeOwner(41)
+    await expect(closingWindow).resolves.toEqual([])
+    const closingWorkspace = manager.mintForWorkspace([entry], context())
+    manager.revokeWorkspace('workspace-a')
+    await expect(closingWorkspace).resolves.toEqual([])
   })
 
   it('exposes the descriptor uuid read-only for the delete lock check', async () => {
@@ -198,7 +236,9 @@ describe('HistorySessionGrantManager', () => {
     })
 
     await vi.waitFor(() => expect(release).toBeTypeOf('function'))
-    await expect(manager.withResolved(descriptor.id, context(), async () => true)).resolves.toBeNull()
+    const [refreshed] = await manager.mintForWorkspace([history(filePath)], context())
+    expect(refreshed.id).toBe(descriptor.id)
+    await expect(manager.withResolved(refreshed.id, context(), async () => true)).resolves.toBeNull()
     release?.()
     await expect(first).resolves.toBe(true)
   })
@@ -228,7 +268,20 @@ describe('HistorySessionGrantManager rewritten files', () => {
     fs.renameSync(filePath, `${filePath}.original`)
     fs.writeFileSync(filePath, `{"type":"title","v":1}\n{"type":"session","id":"${UUID}"}\n`)
 
-    await expectSamePath(await manager.resolve(descriptor.id, context()), fs.realpathSync(filePath))
+    const [refreshed] = await manager.mintForWorkspace([history(filePath, UUID)], context())
+    expect(refreshed.id).toBe(descriptor.id)
+    expectSamePath(await manager.resolve(descriptor.id, context()), fs.realpathSync(filePath))
+  })
+
+  it('does not follow a swapped journal symlink even when another copy has the same uuid', async () => {
+    const filePath = writeHeaderedSession(UUID, 'original.jsonl')
+    const otherPath = writeHeaderedSession(UUID, 'copy.jsonl')
+    const [original] = await manager.mintForWorkspace([history(filePath, UUID)], context())
+    fs.rmSync(filePath)
+    fs.symlinkSync(otherPath, filePath)
+    await expect(manager.resolve(original.id, context())).resolves.toBeNull()
+    const [replacement] = await manager.mintForWorkspace([history(filePath, UUID)], context())
+    expect(replacement.id).not.toBe(original.id)
   })
 
   it('still revokes when the rewrite carried a different uuid (superseded row)', async () => {
@@ -329,8 +382,6 @@ describe('HistorySessionGrantManager.deleteByUuid', () => {
     const fileA = writeSessionWithHeader(workspaceA, UUID, `a_${UUID}.jsonl`)
     const otherUuid = '99999999-9999-9999-9999-999999999999'
     const otherFile = writeSessionWithHeader(workspaceA, otherUuid, `other_${otherUuid}.jsonl`)
-    // One mint for both files: a second mintForWorkspace call would revoke the
-    // first batch regardless of any delete.
     const [descriptor, otherDescriptor] = await manager.mintForWorkspace(
       [history(fileA), history(otherFile, otherUuid)],
       context()

@@ -1,11 +1,11 @@
 {
   "name": "toushou-dingtalk-toolkit",
-  "version": "0.1.0",
-  "description": "投手钉钉消息和文档只读查询工具",
-  "displayName": "钉钉只读工具",
+  "version": "0.2.0",
+  "description": "在投手中搜索钉钉消息与文档、读取文档、创建文档和追加正文",
+  "displayName": "钉钉消息与文档",
   "author": "投手团队",
   "license": "MIT",
-  "keywords": ["pi-package", "dingtalk", "readonly"],
+  "keywords": ["pi-package", "dingtalk", "documents"],
   "pi": { "extensions": ["extensions/index.ts"] },
   "omp": { "extensions": ["extensions/index.ts"] },
   "files": ["extensions"]

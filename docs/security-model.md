@@ -102,9 +102,11 @@ history/resume and reconstructs metadata/agents from the active branch only
 
 The history-list API returns only `HistorySessionDescriptor` values (`id`,
 title, timestamp, uuid), never a durable transcript path or header cwd. The
-opaque id expires, is revoked on workspace/window teardown or history refresh,
-and is valid only with the same active workspace grant and renderer that
-listed it.
+id is valid only for the renderer and active workspace grant that listed it.
+Refreshing a list renews the id for a revalidated session at the same canonical
+path and UUID. If OMP replaced the journal inode, its header must also match.
+A removed or replaced entry loses its old id, as does a closed workspace or
+window.
 
 Historical agent records are reconstructed from OMP's durable `task` tool
 results. Background/async agents end up in the same `task` result format; the

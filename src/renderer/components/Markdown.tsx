@@ -1,8 +1,9 @@
 import { createContext, useContext, ComponentPropsWithoutRef, ReactElement, ReactNode, isValidElement, memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Options } from 'react-markdown'
 import { chatAttachment } from '@shared/chatAttachment'
-import { AttachmentCard, AttachmentMention } from './ChatAttachment'
-import { groupReplyAttachments, isInlineFilePath } from './replyAttachments'
+import { AttachmentCard, AttachmentFolderCard, AttachmentFolderMention, AttachmentMention } from './ChatAttachment'
+import { groupReplyAttachments, indexReplyAttachments } from './replyAttachments'
+import { isInlineFilePath } from '@shared/replyAttachmentPaths'
 import remarkGfm from 'remark-gfm'
 import { Check, Copy } from 'lucide-react'
 import { useT } from '../i18n'
@@ -110,6 +111,7 @@ function extractCode(children: ReactNode): { lang: string; raw: string } {
 }
 
 const remarkPlugins = [remarkGfm]
+const replyRemarkPlugins: Options['remarkPlugins'] = [remarkGfm, indexReplyAttachments]
 
 const components = {
   a: ExternalLink,
@@ -139,6 +141,8 @@ const replyComponents = {
   img: (props: ComponentPropsWithoutRef<'img'>) => <MarkdownImage {...props} replyAttachments />,
   'reply-attachment-mention': (props: ComponentPropsWithoutRef<typeof AttachmentMention>) =>
     <InMarkdownLink.Provider value><AttachmentMention {...props} /></InMarkdownLink.Provider>,
+  'reply-attachment-folder': AttachmentFolderMention,
+  'reply-attachment-folder-card': AttachmentFolderCard,
   'reply-attachment-card': AttachmentCard,
   'reply-attachment-list': ReplyAttachmentList
 }
@@ -197,7 +201,7 @@ const Markdown = memo(function Markdown({ content, replyAttachments = false }: {
 
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}
+      <ReactMarkdown remarkPlugins={replyAttachments ? replyRemarkPlugins : remarkPlugins} rehypePlugins={rehypePlugins}
         components={replyAttachments ? replyComponents : components} urlTransform={url => chatAttachment(url) ? url : defaultUrlTransform(url)}>
         {rendered}
       </ReactMarkdown>

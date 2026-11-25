@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { presentToolCall } from './toolPresentation'
+import { toolBrandForCall } from './toolBrand'
 import { applyToolResult, type ToolCallRecord } from './toolCalls'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -46,6 +47,22 @@ describe('tool presentation', () => {
     const other = call('write', { path: 'xd://toushou_board_add_widget/extra', content: JSON.stringify({ type: 'file' }) }, { ok: true })
     expect(presentToolCall(other, 'en')).toMatchObject({ label: 'Tool call', summary: null })
     expect(presentToolCall(call('toushou_board_add_widget', { type: 'unknown-private-name' }), 'en').summary).toBeNull()
+  })
+
+  it.each([
+    ['toushou_dingtalk_create_document', '创建钉钉文档', 'Create DingTalk document'],
+    ['toushou_dingtalk_append_document', '向钉钉文档追加正文', 'Append to DingTalk document']
+  ])('shows %s as a DingTalk action without including document content in the header', (tool, zh, en) => {
+    const input = { markdown: 'synthetic draft text' }
+    const direct = call(tool, input, { ok: true })
+    const proxy = call('write', { path: `xd://${tool}`, content: JSON.stringify(input) }, { ok: false })
+    for (const record of [direct, proxy]) {
+      expect(toolBrandForCall(record)).toBe('dingtalk')
+      expect(presentToolCall(record, 'zh')).toMatchObject({ label: zh, summary: null })
+      expect(presentToolCall(record, 'en')).toMatchObject({ label: en, summary: null })
+    }
+    expect(presentToolCall(direct, 'zh').status).toBe('completed')
+    expect(presentToolCall(proxy, 'en').status).toBe('failed')
   })
 
   it('renders a collapsed, accessible status without exposing raw names or parameters', () => {

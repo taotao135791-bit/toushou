@@ -37,6 +37,7 @@ export const IPC_CHANNELS = {
   WORKSPACE_LIST: 'workspace:list',
   /** Open a granted workspace in Finder/Terminal/VS Code; grant id in, real path resolved in Main. */
   CHAT_ATTACHMENT: 'chat:attachment',
+  CHAT_ATTACHMENT_FOLDER: 'chat:attachment-folder',
   WORKSPACE_APP_ICONS: 'workspace:app-icons',
   OPEN_WORKSPACE_IN: 'workspace:open-in',
   PACKAGES_LIST: 'packages:list',

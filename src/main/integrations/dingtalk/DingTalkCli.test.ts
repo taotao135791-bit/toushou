@@ -76,6 +76,103 @@ describe('DingTalk CLI', () => {
     })
   })
 
+  it('creates blank and populated documents and appends only to the bound node, with Markdown on stdin', async () => {
+    const receipt = (operation: string, data: Record<string, unknown>) => processOutput({
+      contractVersion: 'doc.operation.v1', operation, ok: true, complete: true, status: 'success',
+      data: { nodeId: 'node123', verified: true, ...data }
+    })
+    const run = vi.fn<Run>()
+      .mockResolvedValueOnce(receipt('doc.create', { result: { ignored: 'extra' } }))
+      .mockResolvedValueOnce(receipt('doc.create', {}))
+      .mockResolvedValueOnce(receipt('doc.update', { mode: 'append' }))
+    const dws = new DingTalkCli({ run })
+    const content = '@fixture.md\n\n# 进度\n--command=overwrite'
+    const result = { nodeId: 'node123' }
+    await expect(dws.createDocument(cli, profile, '--workspace=literal', content, 'folder123')).resolves.toEqual(result)
+    await expect(dws.createDocument(cli, profile, '空白')).resolves.toEqual(result)
+    await expect(dws.appendDocument(cli, profile, 'node123', content)).resolves.toEqual(result)
+    const tail = ['--format=json', '--timeout=30']
+    const start = ['--profile=' + profile, 'doc']
+    expect(run.mock.calls.map(([, args, , , , io]) => [args, io])).toEqual([
+      [[...start, '+create', '--name=--workspace=literal', '--folder=folder123', '--content=-', ...tail], { input: content }],
+      [[...start, '+create', '--name=空白', ...tail], { input: '' }],
+      [[...start, '+update', '--node=node123', '--command=append', '--content=-', '--yes', ...tail], { input: content }]
+    ])
+  })
+
+  it('validates write inputs before dispatch and distinguishes cancellation before dispatch', async () => {
+    const run = vi.fn<Run>()
+    const dws = new DingTalkCli({ run })
+    await expect(dws.createDocument(cli, profile, '\n')).rejects.toMatchObject({ code: 'write-failed' })
+    await expect(dws.createDocument(cli, profile, '新建', '', '../fixture')).rejects.toMatchObject({ code: 'write-failed' })
+    await expect(dws.appendDocument(cli, profile, 'node123', '\0bad')).rejects.toMatchObject({ code: 'write-failed' })
+    await expect(dws.appendDocument(cli, profile, 'node123', 'x'.repeat(64_001))).rejects.toMatchObject({ code: 'write-failed' })
+    await expect(dws.appendDocument(cli, 'corp:one,corp:two', 'node123', 'x')).rejects.toMatchObject({ code: 'not-authorized' })
+    await expect(dws.createDocument(cli, profile, '标题', undefined, undefined, AbortSignal.abort())).rejects.toMatchObject({ code: 'cancelled' })
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('keeps partial, interrupted, malformed and unverified writes uncertain without replaying them', async () => {
+    // The pinned dws writes error JSON to stderr, including node IDs for partially committed creates.
+    const partial = { error: { execution_started: true, details: { status: 'partial_success', data: { nodeId: 'known123' } } } }
+    const base = { contractVersion: 'doc.operation.v1', operation: 'doc.update', ok: true, complete: true, status: 'success' }
+    const run = vi.fn<Run>()
+      .mockResolvedValueOnce({ exitCode: 4, stdout: '', stderr: JSON.stringify(partial) })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: 'truncated', stderr: '' })
+      .mockResolvedValueOnce(processOutput({ ...base, data: { nodeId: 'other', mode: 'append', verified: true } }))
+      .mockResolvedValueOnce(processOutput({ ...base, data: { nodeId: 'n', command: 'append', executed: false } }))
+      .mockResolvedValueOnce(processOutput({ ...base, data: { nodeId: 'n', mode: 'append', verified: false } }))
+      .mockRejectedValueOnce(new DingTalkCliError('network'))
+      .mockRejectedValueOnce(new DingTalkCliError('cancelled'))
+    const dws = new DingTalkCli({ run })
+    await expect(dws.createDocument(cli, profile, '报告')).rejects.toMatchObject({ code: 'write-outcome-unknown', nodeId: 'known123' })
+    for (let i = 0; i < 6; i++) {
+      await expect(dws.appendDocument(cli, profile, 'n', '正文')).rejects.toMatchObject({ code: 'write-outcome-unknown', nodeId: 'n' })
+    }
+    expect(run).toHaveBeenCalledTimes(7)
+  })
+
+  it('reports confirmed rejections without exposing upstream text or confusing a failed readback with a permission denial', async () => {
+    const run = vi.fn<Run>()
+      .mockResolvedValueOnce(processOutput({ error: { category: 'validation', message: 'synthetic' } }, 3))
+      .mockResolvedValueOnce(processOutput({ error: { reason: 'permission_denied', execution_started: false } }, 1))
+      .mockResolvedValueOnce(processOutput({ error: { category: 'auth', reason: 'authentication_required' } }, 1))
+      .mockResolvedValueOnce(processOutput({ error: { reason: 'permission_denied', details: { status: 'partial_success', data: { nodeId: 'https://untrusted.invalid/' } } } }, 1))
+    const dws = new DingTalkCli({ run })
+    for (const code of ['write-failed', 'permission-denied', 'not-authorized', 'write-outcome-unknown']) {
+      await expect(dws.createDocument(cli, profile, '测试')).rejects.toMatchObject({ code, message: code, nodeId: undefined })
+    }
+  })
+
+  it('accepts the official content readback when only the identity of a mention cannot be verified', async () => {
+    const run = vi.fn<Run>().mockResolvedValue(processOutput({
+      contractVersion: 'doc.operation.v1', operation: 'doc.create', ok: true, status: 'success', complete: true,
+      data: { nodeId: 'new123', verified: false, verificationScope: 'partial', unverified: ['mention_targets'] }
+    }))
+    await expect(new DingTalkCli({ run }).createDocument(cli, profile, '正文')).resolves.toEqual({
+      nodeId: 'new123', mentionTargetsUnverified: true
+    })
+  })
+
+  it('delivers multiline UTF-8 through the real subprocess stdin including EOF', async () => {
+    const directory = await tempDirectory()
+    const scriptPath = path.join(directory, 'fixture.cjs')
+    const executable = process.platform === 'win32' ? path.join(directory, 'dws.cmd') : scriptPath
+    const content = '@local-fixture.md\n\n# 正文\n' + 'π'.repeat(20_000)
+    const script = [
+      '#!/usr/bin/env node',
+      "const input = require('node:fs').readFileSync(0, 'utf8')",
+      "const valid = input.startsWith('@local-fixture.md\\n\\n# 正文\\n') && input.endsWith('π'.repeat(20000))",
+      "if (!valid || !process.argv.includes('--content=-')) process.exit(1)",
+      "console.log(JSON.stringify({ contractVersion: 'doc.operation.v1', operation: 'doc.create', ok: true, status: 'success', complete: true, data: { nodeId: 'offline123', verified: true } }))"
+    ].join('\n')
+    await writeFile(scriptPath, script, { mode: 0o700 })
+    if (process.platform === 'win32') {
+      await writeFile(executable, `@"${process.execPath}" "%~dp0fixture.cjs" %*\r\n`)
+    }
+    await expect(new DingTalkCli().createDocument({ ...cli, path: executable }, profile, '报告', content)).resolves.toEqual({ nodeId: 'offline123' })
+  })
+
   it('distinguishes a document permission denial from expired account authorization', async () => {
     const run = vi.fn<Run>()
       .mockResolvedValueOnce(processOutput({ success: false, message: '无权访问这份文档' }))

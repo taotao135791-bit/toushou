@@ -1,16 +1,19 @@
 import type { ExtraProps } from 'react-markdown'
 import { chatAttachment } from '@shared/chatAttachment'
+import { collectReplyAttachmentPaths, isInlineFilePath, plainPathTokens } from '@shared/replyAttachmentPaths'
 
 type Element = NonNullable<ExtraProps['node']>
 type Child = Element['children'][number]
-interface Reference { target: string; label: string; anchor: string }
+interface Reference { target: string; label: string; anchor: string; folder?: boolean }
 
-// Explicit paths can contain spaces. A bare filename needs a tighter shape
-// so a command such as `cat report.csv` remains a copyable code example.
-export function isInlineFilePath(path: string): boolean {
-  return /^(?:[./~][\\/]|\/|[a-z]:[\\/]|sandbox:|file:)/i.test(path)
-    || /^[\p{L}\p{N}_.()%-]+(?:[\\/][\p{L}\p{N}_.()%-]+)*$/u.test(path)
-    || /^[\p{L}\p{N}_.()%-]+[\\/][\p{L}\p{N}_.()% \\/-]+$/u.test(path)
+type PathIndex = ReturnType<typeof collectReplyAttachmentPaths>
+interface ParsedFile { data: Record<string, unknown>; value: unknown }
+
+/** Use the same Markdown tree already parsed for display. */
+export function indexReplyAttachments() {
+  return (tree: Parameters<typeof collectReplyAttachmentPaths>[0], file: ParsedFile): void => {
+    file.data.replyPaths = collectReplyAttachmentPaths(tree, String(file.value))
+  }
 }
 
 function textLabel(child: Child): string {
@@ -35,39 +38,78 @@ function referenceElement(tagName: string, target: string, label: string): Eleme
 
 /** Transform the parsed reply once, after reference links and GFM have been resolved. */
 export function groupReplyAttachments(idPrefix: string) {
-  return (tree: { children: Child[] }): void => {
+  return (tree: { children: Child[] }, parsed: ParsedFile): void => {
+    const paths = parsed.data.replyPaths as PathIndex | undefined
     const files = new Map<string, Reference>()
 
+    function mention(raw: string, offset: number, label: string, source: 'text' | 'code' | 'link', thumbnail?: Child[]): Element | undefined {
+      const folder = paths?.folderAt.get(offset)
+      if (folder) return referenceElement('reply-attachment-folder', folder, label || raw)
+      const linked = source === 'link'
+      const group = !linked && paths?.rangeFolder(raw, offset)
+      if (group) {
+        const key = 'folder:' + group
+        if (!files.has(key)) files.set(key, { target: group, label: '', folder: true, anchor: idPrefix + '-' + files.size })
+        return referenceElement('reply-attachment-folder', group, label || raw)
+      }
+      const target = paths ? paths.resolve(raw, offset, linked) : raw
+      const file = target && chatAttachment(target)
+      if (!target || !file) return
+      // A standalone word in ordinary prose needs an explicit or contextual location.
+      if (source === 'text' && target === raw && !/^(?:\/|[a-z]:[\\/]|~[\\/])/i.test(file.target)) return
+      let key = file.target
+      if (file.remote) key = new URL(key).href
+      else if (/^[a-z]:[\\/]/i.test(key)) key = key.replace(/\\/g, '/').toLowerCase()
+      else key = key.replace(/^(?:\.\/)+/, '')
+      const card = files.get(key) ?? { target, label: label || file.name, anchor: idPrefix + '-' + files.size }
+      files.set(key, card)
+      const element = referenceElement('reply-attachment-mention', target, label || file.name)
+      element.properties.fallbackHref = '#' + card.anchor
+      if (thumbnail) element.children = thumbnail
+      return element
+    }
+
     function visit(children: Child[]): void {
-      for (const [index, child] of children.entries()) {
+      for (let index = 0; index < children.length; index++) {
+        const child = children[index]
+        const start = child.position?.start.offset ?? 0
+        if (child.type === 'text' && paths && (paths.files.size || paths.folders.size)) {
+          let end = 0
+          const pieces: Child[] = []
+          for (const { raw, offset } of plainPathTokens(child.value)) {
+            const element = mention(raw, start + offset, raw, 'text')
+            if (!element) continue
+            if (offset > end) pieces.push({ type: 'text', value: child.value.slice(end, offset) })
+            pieces.push(element)
+            end = offset + raw.length
+          }
+          if (pieces.length) {
+            if (end < child.value.length) pieces.push({ type: 'text', value: child.value.slice(end) })
+            children.splice(index, 1, ...pieces)
+            index += pieces.length - 1
+          }
+          continue
+        }
         if (child.type !== 'element' || child.tagName === 'pre') continue
-        let target: string
+        let raw: string
         switch (child.tagName) {
-          case 'a': target = String(child.properties.href ?? ''); break
-          case 'img': target = String(child.properties.src ?? ''); break
+          case 'a': raw = String(child.properties.href ?? ''); break
+          case 'img': raw = String(child.properties.src ?? ''); break
           case 'code':
-            target = textLabel(child).trim()
-            if (!isInlineFilePath(target)) continue
+            raw = textLabel(child).trim()
+            if (!isInlineFilePath(raw)) continue
             break
           default: visit(child.children); continue
         }
-        const file = chatAttachment(target)
-        // An ordinary link owns its label and thumbnail. Never make nested
-        // buttons inside it. Embedded web photos keep their original preview.
-        if (!file || (child.tagName === 'img' && file.remote && file.kind === 'photo')) continue
-        const label = child.tagName === 'code' ? file.name : textLabel(child) || file.name
-        // Canonicalize only the lookup key. Main must validate the original
-        // target (decoding percent-escapes twice changes literal filenames).
-        let key = file.target
-        if (file.remote) key = new URL(key).href
-        else if (/^[a-z]:[\\/]/i.test(key)) key = key.replace(/\\/g, '/')
-        else key = key.replace(/^(?:\.\/)+/, '')
-        const card = files.get(key) ?? { target, label, anchor: idPrefix + '-' + files.size }
-        files.set(key, card)
-        const mention = referenceElement('reply-attachment-mention', target, label)
-        mention.properties.fallbackHref = '#' + card.anchor
-        if (child.tagName === 'a' && child.children.some(isWebPreview)) mention.children = child.children
-        children[index] = mention
+        const file = chatAttachment(raw)
+        if (child.tagName === 'img' && file?.remote && file.kind === 'photo') continue
+        const label = child.tagName === 'code' ? file?.name ?? raw : textLabel(child)
+        const element = mention(raw, start, label, child.tagName === 'code' ? 'code' : 'link', child.tagName === 'a' && child.children.some(isWebPreview) ? child.children : undefined)
+        if (element) children[index] = element
+        else if ((child.tagName === 'a' || child.tagName === 'img') && file && !file.remote) {
+          // A group abbreviation or ambiguous filename has no single link destination.
+          children[index] = { type: 'text', value: label || file.name }
+        }
       }
     }
 
@@ -76,7 +118,7 @@ export function groupReplyAttachments(idPrefix: string) {
     tree.children.push({
       type: 'element', tagName: 'reply-attachment-list', properties: {},
       children: Array.from(files.values(), ref => ({
-        type: 'element', tagName: 'li', properties: { id: ref.anchor }, children: [referenceElement('reply-attachment-card', ref.target, ref.label)]
+        type: 'element', tagName: 'li', properties: { id: ref.anchor }, children: [referenceElement(ref.folder ? 'reply-attachment-folder-card' : 'reply-attachment-card', ref.target, ref.label)]
       }))
     })
   }

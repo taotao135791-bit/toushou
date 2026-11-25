@@ -152,13 +152,18 @@ export interface DingTalkConnectionResult {
   error?: DingTalkConnectionError
 }
 
-export type DingTalkReadRequest =
+export type DingTalkWriteRequest =
+  | { action: 'create_document'; title: string; content?: string; folderId?: string }
+  | { action: 'append_document'; documentId: string; content: string }
+
+export type DingTalkToolRequest =
   | { action: 'search_messages' | 'search_documents'; query: string }
   | { action: 'read_document'; documentId: string }
+  | DingTalkWriteRequest
 
-export type DingTalkReadError = 'not-connected' | 'invalid-input' | 'cli-unavailable' | 'organization-access-required' | 'not-authorized' | 'permission-denied' | 'network' | 'read-failed'
+export type DingTalkToolError = 'not-connected' | 'invalid-input' | 'cli-unavailable' | 'organization-access-required' | 'not-authorized' | 'permission-denied' | 'network' | 'read-failed' | 'write-failed' | 'write-outcome-unknown' | 'write-forbidden'
 
-export type DingTalkReadResult = { ok: true; data: unknown } | { ok: false; error: DingTalkReadError }
+export type DingTalkToolResult = { ok: true; data: unknown } | { ok: false; error: DingTalkToolError; nodeId?: string }
 
 export interface FeishuToolRequest {
   action:

@@ -508,8 +508,9 @@ export interface ElectronAPI {
   gitInfo: (grantId: string) => Promise<GitInfo | null>
   /** Unified diff of one file (synthetic new-file diff for untracked files). */
   gitFileDiff: (grantId: string, filePath: string) => Promise<string | null>
-  /** Open a conversation attachment or save a local copy. */
-  chatAttachment: (workspaceId: string, target: string, action: 'open' | 'save', sessionId?: string | null) => Promise<'ok' | 'unavailable' | 'cancelled'>
+  /** Open, save or show a conversation attachment in its system folder. */
+  chatAttachment: (workspaceId: string, target: string, action: 'open' | 'save' | 'reveal', sessionId?: string | null) => Promise<'ok' | 'unavailable' | 'cancelled'>
+  openChatAttachmentFolder: (workspaceId: string, directory: string, sessionId?: string | null) => Promise<'ok' | 'unavailable'>
   platform: NodeJS.Platform
   workspaceAppIcons: () => Promise<{ finder?: string; terminal?: string }>
   /** Open the granted workspace in its platform file manager, terminal or VS Code. */
@@ -1038,6 +1039,7 @@ const api: ElectronAPI = {
   gitFileDiff: (grantId: string, filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.GIT_FILE_DIFF, grantId, filePath),
   chatAttachment: (workspaceId, target, action, sessionId) => ipcRenderer.invoke(IPC_CHANNELS.CHAT_ATTACHMENT, workspaceId, target, action, sessionId),
+  openChatAttachmentFolder: (workspaceId, directory, sessionId) => ipcRenderer.invoke(IPC_CHANNELS.CHAT_ATTACHMENT_FOLDER, workspaceId, directory, sessionId),
   platform: process.platform,
   workspaceAppIcons: () => ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_APP_ICONS),
   /** Open the granted workspace in its platform file manager, terminal or VS Code. */

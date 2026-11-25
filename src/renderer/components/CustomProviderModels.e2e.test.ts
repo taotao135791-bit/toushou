@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
@@ -26,7 +26,7 @@ it('selects catalog models and round-trips custom limits in the Electron setting
     })
     expect(result.error).toBeUndefined()
     expect(result.status, result.stdout + result.stderr).toBe(0)
-    expect(result.stdout).toContain('MODEL_SETTINGS_OK')
+    expect(readFileSync(path.join(dir, 'result.txt'), 'utf8')).toBe('MODEL_SETTINGS_OK')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

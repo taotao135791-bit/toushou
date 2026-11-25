@@ -17,6 +17,8 @@ const LABELS: Record<string, Label> = {
   toushou_dingtalk_search_messages: ['搜索钉钉消息', 'Search DingTalk messages'],
   toushou_dingtalk_search_documents: ['搜索钉钉文档', 'Search DingTalk documents'],
   toushou_dingtalk_read_document: ['阅读钉钉文档', 'Read DingTalk document'],
+  toushou_dingtalk_create_document: ['创建钉钉文档', 'Create DingTalk document'],
+  toushou_dingtalk_append_document: ['向钉钉文档追加正文', 'Append to DingTalk document'],
   mcp__tiktok_ads_auth_advertiser_get: ['查看 TikTok 授权账户', 'View authorized TikTok accounts'],
   mcp__tiktok_ads_advertiser_info_get: ['查看 TikTok 账户信息', 'View TikTok account information'],
   mcp__tiktok_ads_report_integrated_get: ['读取 TikTok 广告报表', 'Read TikTok ads report'],
@@ -49,6 +51,8 @@ const PROXY_TOOLS = new Set(['toushou_boards_list', 'toushou_board_get', 'tousho
 PROXY_TOOLS.add('toushou_dingtalk_search_messages')
 PROXY_TOOLS.add('toushou_dingtalk_search_documents')
 PROXY_TOOLS.add('toushou_dingtalk_read_document')
+PROXY_TOOLS.add('toushou_dingtalk_create_document')
+PROXY_TOOLS.add('toushou_dingtalk_append_document')
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 function parse(value: unknown): unknown {
   if (typeof value !== 'string') return value
