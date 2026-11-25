@@ -1,6 +1,7 @@
 {
   "name": "toushou",
-  "version": "2.9.7",
+  "version": "2.9.8",
+  "toushouReleaseTarget": "all",
   "description": "桌面原生广告优化师 Agent",
   "author": "投手团队",
   "private": true,
