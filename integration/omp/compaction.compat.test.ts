@@ -66,7 +66,8 @@ describe('OMP compaction in a live RPC session', () => {
       }))
       const events: SessionEvent[] = []
       const completed = () => events.filter(e => e.type === 'compaction' && e.outcome === 'compacted').length
-      const proc = iso.spawnRpc(bin,['--model','fixture/medium','--config',file,'--no-tools','--no-skills','--no-rules','--no-title',
+      // OMP 19.2+ rejects --no-tools alongside an explicit policy extension.
+      const proc = iso.spawnRpc(bin,['--model','fixture/medium','--config',file,'--tools','read','--no-skills','--no-rules','--no-title',
         '-e',path.resolve('resources/context-policy/index.ts')])
       const exited = new Promise<void>(resolve=>proc.once('close',()=>resolve()))
       const session = new OmpSession({id:'probe',cwd:iso.agentDir,title:'',createdAt:0,status:'idle'},
