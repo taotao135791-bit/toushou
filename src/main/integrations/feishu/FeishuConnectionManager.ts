@@ -42,8 +42,9 @@ const FEISHU_DEFINITION: ConnectionDefinition = {
  * full set; the OAuth consent page then never refuses a requested scope. */
 const ALL_USER_SCOPES = [
   ...Object.values(FEISHU_CAPABILITY_SCOPES).map((meta) => meta.scope),
-  // 媒体上传（文件块）需要云空间写权限；能力表里只有只读项，这里显式补齐。
-  'drive:drive'
+  // 媒体上传（文件块）的专用用户权限——能力表里没有这一项，显式补齐。
+  // （drive:drive 不是本场景的正确 scope：GPT 侧实测 docx 文件块上传走的是这个专用权限。）
+  'docs:document.media:upload'
 ]
 
 export class FeishuConnectionManager {
