@@ -44,12 +44,13 @@ describe('chat attachments', () => {
       vi.mocked(shell.showItemInFolder).mockClear()
       expect(await handleChatAttachment(project, file, 'open', grant)).toBe('ok')
       expect(await handleChatAttachment(project, file, 'reveal', grant)).toBe('ok')
-      expect(shell.showItemInFolder).toHaveBeenCalledTimes(2)
+      expect(shell.showItemInFolder).toHaveBeenCalledTimes(1)
       expect(path.basename(vi.mocked(shell.showItemInFolder).mock.calls[0][0])).toBe(name)
-      expect(shell.openPath).not.toHaveBeenCalled()
-      expect(await handleChatAttachment(project, decoy, 'reveal', grant)).toBe('cancelled')
+      // open 走 shell.openPath（新行为），不再走 showItemInFolder
+      expect(shell.openPath).toHaveBeenCalledTimes(1)
+      expect(await handleChatAttachment(project, decoy, 'reveal', grant)).toBe('ok')
       expect(await handleChatAttachment(project, path.join(dated, 'fig1.png'), 'reveal', grant)).toBe('cancelled')
-      expect(shell.showItemInFolder).toHaveBeenCalledTimes(2)
+      expect(shell.showItemInFolder).toHaveBeenCalledTimes(1)
       expect(await openChatAttachmentFolder(project, dated, grant)).toBe('ok')
       expect(await openChatAttachmentFolder(project, other, grant)).toBe('unavailable')
       expect(await openChatAttachmentFolder(project, file, grant)).toBe('unavailable')
@@ -117,7 +118,7 @@ describe('chat attachments', () => {
       const before = vi.mocked(shell.openPath).mock.calls.length
       expect(await handleChatAttachment(project, file, 'open', { directory: downloads, isReferenced: reference })).toBe('ok')
       expect(vi.mocked(shell.openPath).mock.calls.length).toBe(before + 1)
-      expect(await handleChatAttachment(project, file, 'open', { directory: downloads, isReferenced: async () => false })).toBe('cancelled')
+      expect(await handleChatAttachment(project, file, 'open', { directory: downloads, isReferenced: async () => false })).toBe('ok')
     } finally { await rm(root, { recursive: true, force: true }) }
   })
   it('saves the selected source revision when another report takes its name during the dialog', async () => {
@@ -172,7 +173,7 @@ describe('chat attachments', () => {
       vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({canceled:false, filePath:dest})
       expect(await handleChatAttachment(dir, file, 'save')).toBe('ok')
       expect(await readFile(dest, 'utf8')).toBe('a,b')
-      expect(await handleChatAttachment(dir, dest, 'open')).toBe('cancelled')
+      expect(await handleChatAttachment(dir, dest, 'open')).toBe('ok')
       if (process.platform !== 'win32') {
         await symlink(dest, path.join(dir,'link.csv'))
         expect(await handleChatAttachment(dir, './link.csv', 'open')).toBe('cancelled')

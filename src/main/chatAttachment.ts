@@ -134,6 +134,23 @@ export async function handleChatAttachment(workspace: string, raw: unknown, acti
   if (!file || file.remote || (action !== 'open' && action !== 'save' && action !== 'reveal')) return 'unavailable'
   try {
     const candidate = absoluteAttachmentPath(file.target) ?? path.resolve(workspace, file.target)
+
+    /* 查看/调用不受工作区限制（DSH/Kimi 原则）：Agent（omp）本身有全盘文件
+     * 读写能力——它创建的文件用户就能打开。只要路径真实存在且是文件，
+     * 就直接 open/reveal，不做路径守卫。写入（另存为）仍走原安全流程。 */
+    if (action === 'open' || action === 'reveal') {
+      const resolved = await fs.realpath(candidate).catch(() => undefined)
+      if (resolved) {
+        const stat = await fs.stat(resolved).catch(() => undefined)
+        if (stat?.isFile()) {
+          if (action === 'reveal') { shell.showItemInFolder(resolved); return 'ok' }
+          const openError = await shell.openPath(resolved)
+          return openError === '' ? 'ok' : 'unavailable'
+        }
+      }
+      // 文件不在 candidate 路径 → 落入下方 grantedSource + dialog 原流程
+    }
+
     let source = file.sandbox ? undefined : await grantedSource(workspace, file.target, candidate, downloads)
     if (!source) {
       const selected = await dialog.showOpenDialog({
