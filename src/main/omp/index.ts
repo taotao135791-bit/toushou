@@ -22,12 +22,13 @@ import {
   RpcOutcome,
   HistoricalAgentRecord
 } from '../../shared/types'
-import { getStore, rememberRecentProject } from '../store'
+import { getStore, setStore, rememberRecentProject } from '../store'
 import { getOperationGrantManager } from '../operationGrant'
 import { validateOfficePath } from '../officeFile'
 import { AgentMessage, mapAgentMessages } from '../messageMapping'
 import { reconstructSessionMetadata, reconstructHistoricalAgents } from '../sessionMetadata'
 import { isSessionFilePath, isSessionUuid, readSessionUuid } from '../sessionHistory'
+import { isSessionMoving } from '../sessionProjectMove'
 import { planSpawn, removeApprovalConfig, resolvePermissionMode, spawnProcess, writeApprovalConfig } from './OmpProcess'
 import { OmpSession } from './OmpSession'
 import { sessionModelThinking } from './OmpProtocol'
@@ -87,6 +88,26 @@ export function getSessionBridgeAccess(sessionId: string): { cwd: string; mode: 
   const policy = sessionBridgePermissions.get(sessionId, getStore('permissionMode'))
   if (!live || !policy) return null
   return { cwd: live.cwd, ...policy }
+}
+
+export function readSessionInstruction(sessionId: string): string {
+  const uuid = sessions.get(sessionId)?.session.draftSessionUuid
+  if (!isSessionUuid(uuid)) return ''
+  const text = getStore('sessionInstructions')?.[uuid]
+  return typeof text === 'string' ? text.slice(0, 4_000) : ''
+}
+
+export async function writeSessionInstruction(sessionId: string, text: string): Promise<boolean> {
+  const session = sessions.get(sessionId)?.session
+  if (!session || session.remoteReadonly) return false
+  if (!session.draftSessionUuid) await getSessionState(sessionId)
+  const uuid = session.draftSessionUuid
+  if (!isSessionUuid(uuid) || sessions.get(sessionId)?.session !== session) return false
+  const instructions = { ...getStore('sessionInstructions') }
+  if (text) instructions[uuid] = text
+  else delete instructions[uuid]
+  setStore('sessionInstructions', instructions)
+  return true
 }
 
 /**
@@ -217,17 +238,6 @@ export function createSession(
     // Knowledge file is optional — never block session creation.
   }
 
-  // 长期记忆（全局 + 本项目）：用户让投手"记住"的内容跨对话生效。项目隔离
-  // 在 memoryStore 裁决——只有当前 cwd 的项目层会进入这个 prompt。可失败：
-  // 存储读取问题绝不能挡住会话创建。
-  let memoryPrompt: string | undefined
-  try {
-    const { buildMemoryPrompt } = require('../memoryStore') as { buildMemoryPrompt(cwd: string, language: 'zh' | 'en'): string | null }
-    memoryPrompt = buildMemoryPrompt(cwd, getStore('language') === 'en' ? 'en' : 'zh') ?? undefined
-  } catch {
-    // Memory is optional — never block session creation.
-  }
-
   const permissionMode = opts?.permissionMode ?? getStore('permissionMode')
   const plan = planSpawn(id, cli, {
     permissionMode,
@@ -235,7 +245,7 @@ export function createSession(
     resumeSessionPath: opts?.resumeSessionPath,
     modelSelector: opts?.modelSelector,
     thinkingLevel: opts?.thinkingLevel,
-    skillSystemPrompt: [opts?.skillSystemPrompt, knowledgePrompt, memoryPrompt].filter(Boolean).join('\n\n') || undefined
+    skillSystemPrompt: [opts?.skillSystemPrompt, knowledgePrompt].filter(Boolean).join('\n\n') || undefined
   })
   // A stale recent-project entry (e.g. a cleaned /tmp dir) would otherwise
   // surface as a misleading "spawn omp ENOENT" — say what actually happened.
@@ -373,6 +383,31 @@ export async function closeIdleProjectSessions(projectPath: string): Promise<boo
     try { cwd = canonicalExistingPath(cwd) } catch { /* retain lexical path */ }
     return pathsOverlap(projectPath, cwd)
   })
+  return terminateIdleSessions(relevant)
+}
+
+/** Retire only runtimes writing this journal before migrating it to another project. */
+export async function closeIdleSessionsForMove(uuid: string, filePath: string, workspace: string, liveSessionId?: string): Promise<string[] | null> {
+  if (liveSessionId && getSession(liveSessionId)) {
+    // OMP can fork on the first turn after resume. Confirm the staged journal
+    // still belongs to the runtime immediately before testing whether it is idle.
+    const current = await liveSessionJournal(liveSessionId)
+    if (!current || current.filePath !== filePath || current.uuid !== uuid) return null
+  }
+  if (projectChildren.hasRetiringOverlap(workspace)) return null
+  const relevant = [...sessions.values()].filter(({ session }) => {
+    if (session.id === liveSessionId || session.draftSessionUuid === uuid) return true
+    // The explicit resume path can be an older journal after OMP has forked.
+    // Prefer the file that currently exists for the live session.
+    const file = [session.sessionFile, session.resumeFrom].find(candidate => candidate && existsSync(candidate))
+    if (!file) return false
+    try { return canonicalExistingPath(file) === filePath } catch { return false }
+  })
+  if (relevant.some(entry => entry.runtimeState !== 'idle' || entry.hasPendingWork || entry.session.status === 'running')) return null
+  return await terminateIdleSessions(relevant) ? relevant.map(entry => entry.session.id) : null
+}
+
+async function terminateIdleSessions(relevant: OmpSession[]): Promise<boolean> {
   const exits = relevant.map(entry => {
     const exit = trackTermination(entry)
     removeApprovalConfig(entry.session.id)
@@ -455,9 +490,10 @@ export function respondExtensionUi(
 }
 
 /** Hot-switch the model of a live session via the RPC set_model command. */
-export function setSessionModel(sessionId: string, provider: string, modelId: string): boolean {
+export async function setSessionModel(sessionId: string, provider: string, modelId: string): Promise<boolean> {
   stopThinkingForCurrentDraft(sessionId)
-  return sessions.get(sessionId)?.setModel(provider, modelId) ?? false
+  const response = await querySession(sessionId, { type: 'set_model', provider, modelId })
+  return response?.success === true
 }
 
 /**
@@ -646,17 +682,39 @@ export async function getSessionState(sessionId: string): Promise<SessionState |
   // exists, so a draft written before a fork is still found in history.
   if (live && state.sessionFile && isSessionUuid(state.sessionId) &&
       live.draftSessionUuid !== state.sessionId && (!live.draftSessionUuid || existsSync(state.sessionFile))) {
+    const previous = live.draftSessionUuid
+    if (isSessionUuid(previous)) {
+      const instructions = getStore('sessionInstructions') ?? {}
+      if (typeof instructions[previous] === 'string' && !Object.hasOwn(instructions, state.sessionId)) {
+        setStore('sessionInstructions', { ...instructions, [state.sessionId]: instructions[previous] })
+      }
+    }
     live.draftSessionUuid = state.sessionId
   }
   return { ...state, autoThinking: live?.autoThinking, draftSessionUuid: live?.draftSessionUuid, modelThinking: sessionModelThinking(state.model) }
 }
 
+/** Resolve an existing live journal from Main and the runtime's current state. */
+export async function liveSessionJournal(sessionId: string): Promise<{ filePath: string; uuid: string } | null> {
+  const session = getSession(sessionId)
+  if (!session) return null
+  const state = await getSessionState(sessionId)
+  if (!state || getSession(sessionId) !== session) return null
+  const candidate = [state.sessionFile, session.sessionFile, session.resumeFrom].find(file => file && existsSync(file))
+  if (!candidate || !isSessionFilePath(candidate)) return null
+  try {
+    const filePath = canonicalExistingPath(candidate)
+    const uuid = await readSessionUuid(filePath)
+    return isSessionUuid(uuid) && getSession(sessionId) === session ? { filePath, uuid } : null
+  } catch { return null }
+}
+
 /** Full transcript of a session, mapped to GUI chat messages (get_messages). */
-export async function getSessionMessages(sessionId: string): Promise<ChatMessage[]> {
+export async function getSessionMessages(sessionId: string): Promise<ChatMessage[] | null> {
   const res = await querySession(sessionId, { type: 'get_messages' }, 15_000)
-  if (!res || res.success !== true || !res.data) return []
+  if (!res || res.success !== true || !res.data) return null
   const raw = (res.data as { messages?: unknown }).messages
-  if (!Array.isArray(raw)) return []
+  if (!Array.isArray(raw)) return null
   return mapAgentMessages(raw as AgentMessage[])
 }
 
@@ -727,9 +785,10 @@ export async function resumeSession(
 ): Promise<{ session: Session; messages: ChatMessage[]; historicalAgents: HistoricalAgentRecord[] } | null> {
   if (!isSessionFilePath(filePath)) return null
   const uuid = await readSessionUuid(filePath)
+  if (!isSessionUuid(uuid) || isSessionMoving(uuid) || !existsSync(filePath)) return null
   const session = createSession(cwd, onEvent, {
     resumeSessionPath: filePath,
-    ...(isSessionUuid(uuid) ? { draftSessionUuid: uuid } : {}),
+    draftSessionUuid: uuid,
     ...(opts?.initialTitle ? { initialTitle: opts.initialTitle } : {}),
     ...(opts?.initialTitleMetadata ? { initialTitleMetadata: opts.initialTitleMetadata } : {}),
     ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {}),
@@ -742,12 +801,12 @@ export async function resumeSession(
   // `steering` flag. Unknown (unrecorded) metadata stays unknown — never guessed.
   const { turns: metadata, autoThinking } = await reconstructSessionMetadata(filePath)
   session.autoThinking ??= autoThinking
-  if (messages.length === 0 && metadata.length > 0) {
+  if (!messages || (messages.length === 0 && metadata.length > 0)) {
     // A cold runtime (or a very large transcript) can miss the get_messages
     // round-trip. Give it one more chance before declaring the transcript
     // unavailable — but never present an empty chat for a file that has turns.
     messages = await getSessionMessages(session.id)
-    if (messages.length === 0) {
+    if (!messages || (messages.length === 0 && metadata.length > 0)) {
       killSession(session.id)
       throw new ResumeTranscriptError()
     }

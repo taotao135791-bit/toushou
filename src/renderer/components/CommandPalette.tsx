@@ -16,7 +16,7 @@ import {
 import BoardsIcon from './BoardsIcon'
 import type { HistorySessionDescriptor } from '@shared/types'
 import { useAppStore } from '../store'
-import { useT } from '../i18n'
+import { modShortcut, useT } from '../i18n'
 import {
   buildPaletteItems,
   filterPaletteItems,
@@ -368,7 +368,7 @@ export default function CommandPalette({ open, onClose, handlers }: CommandPalet
                       >
                         {item.title}
                       </span>
-                      {item.exec.type === 'newChat' && <span className="kbd shrink-0">⌘N</span>}
+                      {item.exec.type === 'newChat' && <span className="kbd shrink-0">{modShortcut('N')}</span>}
                       {hint && (
                         <span className="max-w-[45%] shrink-0 truncate text-[11px] text-cream-faint">
                           {hint}

@@ -24,6 +24,8 @@ interface MagneticButtonProps {
   className?: string
   title?: string
   'aria-label'?: string
+  /** Mount a plain button when pointer tracking is turned off. */
+  enabled?: boolean
   /** 禁用交互：不吸附、不发光、不响应点击，样式仍由 className 负责。 */
   disabled?: boolean
   /** 磁场半径（px）。 */
@@ -37,8 +39,19 @@ interface MagneticButtonProps {
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
+const buttonLayout = 'relative flex items-center justify-center select-none touch-manipulation'
 
-export default function MagneticButton({
+export default function MagneticButton({ enabled = true, ...props }: MagneticButtonProps) {
+  if (enabled) return <AnimatedMagneticButton {...props} />
+  return (
+    <button type="button" aria-label={props['aria-label']} aria-disabled={props.disabled || undefined} title={props.title}
+      onClick={props.disabled ? undefined : props.onClick} className={`${buttonLayout} ${props.className ?? ''}`}>
+      {props.children}
+    </button>
+  )
+}
+
+function AnimatedMagneticButton({
   children,
   onClick,
   className,
@@ -76,8 +89,23 @@ export default function MagneticButton({
   // 磁场感知：全局指针移动 + 距离计算，不占用布局空间也不遮挡相邻控件。
   useEffect(() => {
     if (reduced || disabled) return
+    let frame = 0
+    let pointer: PointerEvent | undefined
     const onMove = (event: PointerEvent) => {
       if (event.pointerType === 'touch' || event.buttons !== 0) return
+      pointer = event
+      if (!frame) frame = window.requestAnimationFrame(updatePosition)
+    }
+    const cancelMove = () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      frame = 0
+      pointer = undefined
+    }
+    function updatePosition() {
+      const event = pointer
+      frame = 0
+      pointer = undefined
+      if (!event) return
       const rect = buttonRef.current?.getBoundingClientRect()
       if (!rect) return
       const dx = event.clientX - (rect.left + rect.width / 2)
@@ -96,17 +124,24 @@ export default function MagneticButton({
       glowX.set(clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100))
       glowY.set(clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100))
     }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('blur', release)
+    const onBlur = () => { cancelMove(); release() }
+    window.addEventListener('pointermove', onMove, { passive: true })
+    window.addEventListener('blur', onBlur)
     return () => {
+      cancelMove()
       window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('blur', release)
+      window.removeEventListener('blur', onBlur)
       x.stop()
       y.stop()
+      hoverScale.stop()
       glowOpacity.stop()
+      x.set(0)
+      y.set(0)
+      hoverScale.set(1)
+      glowOpacity.set(0)
       engaged.current = false
     }
-  }, [disabled, glow, glowOpacity, glowX, glowY, pull, radius, reduced, release, spring, x, y])
+  }, [disabled, glow, glowOpacity, glowX, glowY, hoverScale, pull, radius, reduced, release, spring, x, y])
 
   const onButtonEnter = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (reduced || disabled || event.pointerType === 'touch') return
@@ -117,7 +152,7 @@ export default function MagneticButton({
     animate(hoverScale, 1, HOVER_SPRING)
   }
   const onTouchDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (reduced || event.pointerType !== 'touch') return
+    if (reduced || disabled || event.pointerType !== 'touch') return
     animate(hoverScale, TOUCH_SCALE, HOVER_SPRING)
   }
   const onTouchUp = () => {
@@ -141,7 +176,7 @@ export default function MagneticButton({
       onPointerUp={onTouchUp}
       onPointerCancel={onTouchUp}
       style={{ x, y, scale: hoverScale }}
-      className={`relative flex items-center justify-center will-change-transform select-none touch-manipulation focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-[#C9F45A] ${className ?? ''}`}
+      className={`${buttonLayout} will-change-transform ${className ?? ''}`}
     >
       {glow && (
         <motion.span

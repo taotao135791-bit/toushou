@@ -75,7 +75,7 @@ describe('createSessionForCurrentProject', () => {
     })
   })
 
-  it('clears only the snapshot consumed by a successful session creation', async () => {
+  it('reuses the last explicit choice for consecutive new conversations', async () => {
     const createSession = vi.fn().mockResolvedValue(session)
     vi.stubGlobal('window', {
       electronAPI: {
@@ -87,11 +87,11 @@ describe('createSessionForCurrentProject', () => {
 
     await expect(createSessionForCurrentProject()).resolves.toBe(session.id)
 
-    expect(useAppStore.getState()).toMatchObject({
-      pendingModel: null,
-      pendingThinking: null,
-      currentSessionId: session.id
-    })
+    useAppStore.setState({ currentSessionId: null })
+    await expect(createSessionForCurrentProject()).resolves.toBe(session.id)
+    expect(createSession.mock.calls).toEqual(Array.from({ length: 2 }, () => [
+      workspace.id, { modelSelector: 'deepseek/deepseek-v4-flash', thinkingLevel: 'high' }
+    ]))
   })
 
  it('does not erase a newer picker choice made while creation is in flight', async () => {
@@ -114,6 +114,42 @@ describe('createSessionForCurrentProject', () => {
       pendingModel: 'openai/gpt-5',
       pendingThinking: 'low'
     })
+  })
+
+  it('uses runtime defaults on first launch and restores the saved choice on restart', async () => {
+    const createSession = vi.fn().mockResolvedValue(session)
+    let stored: { model: string | null; thinking: string | null } | null = null
+    vi.stubGlobal('window', { electronAPI: {
+      createSession,
+      getSessionState: vi.fn().mockResolvedValue(null),
+      getSubagents: vi.fn().mockResolvedValue(null),
+      getStore: vi.fn(async () => stored),
+      setStore: vi.fn(async (_key, value) => { stored = value; return true })
+    } })
+    useAppStore.setState({ pendingModel: null, pendingThinking: null })
+    await createSessionForCurrentProject()
+    expect(createSession).toHaveBeenLastCalledWith(workspace.id, {})
+    useAppStore.getState().setPendingModel('openai/gpt-5')
+    useAppStore.getState().setPendingThinking('medium')
+    useAppStore.setState({ currentSessionId: null, pendingModel: null, pendingThinking: null })
+    await useAppStore.getState().loadChatPreferences()
+    await createSessionForCurrentProject()
+    expect(createSession).toHaveBeenLastCalledWith(workspace.id, { modelSelector: 'openai/gpt-5', thinkingLevel: 'medium' })
+  })
+
+  it('remembers live choices only after the runtime accepts them', async () => {
+    const getSessionState = vi.fn().mockResolvedValue({ model: { provider: 'openai', id: 'gpt-5' }, thinkingLevel: 'medium' })
+    const setSessionModel = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const setThinkingLevel = vi.fn().mockResolvedValue(true)
+    vi.stubGlobal('window', { electronAPI: { getSessionState, setSessionModel, setThinkingLevel } })
+    useAppStore.setState({ currentSessionId: session.id })
+    const state = useAppStore.getState()
+    expect(await state.setCurrentSessionModel('openai', 'missing')).toBe(false)
+    expect(state.getSessionOverrides()).toEqual({ modelSelector: 'deepseek/deepseek-v4-flash', thinkingLevel: 'high' })
+    expect(await state.setCurrentSessionModel('openai', 'gpt-5')).toBe(true)
+    expect(state.getSessionOverrides()).toEqual({ modelSelector: 'openai/gpt-5', thinkingLevel: 'medium' })
+    expect(await state.setCurrentSessionThinking('auto')).toBe(true)
+    expect(state.getSessionOverrides()).toEqual({ modelSelector: 'openai/gpt-5', thinkingLevel: 'auto' })
   })
 
   it('anchors to the default workspace when no project is selected', async () => {

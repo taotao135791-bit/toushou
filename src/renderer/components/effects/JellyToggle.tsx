@@ -28,18 +28,17 @@ const MIN_VISUAL_DURATION = 0.35 // s
 const MAX_VELOCITY = 1400 // px/s
 // 颜色交叉渐变 220ms 由类名 duration-[220ms] 承载（规格值）。
 
-/* ---- 颜色（深色系规格值，交叉渐变 220ms） ---- */
-const TRACK_OFF_BG = 'rgba(237, 238, 240, 0.055)'
-const TRACK_OFF_BORDER = 'rgba(237, 238, 240, 0.14)'
-const KNOB_OFF = '#d9dbdf'
-const TRACK_ON_BG = 'rgba(201, 244, 90, 0.17)'
-const TRACK_ON_BORDER = 'rgba(201, 244, 90, 0.48)'
-const KNOB_ON = '#c9f45a'
-const SHADOW_OFF = '0 6px 16px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35)'
-const SHADOW_ON = '0 6px 18px rgba(201, 244, 90, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.55)'
-/* sm 档阴影按比例减淡（规格只固定 lg）。 */
-const SHADOW_OFF_SM = '0 3px 8px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35)'
-const SHADOW_ON_SM = '0 3px 9px rgba(201, 244, 90, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.55)'
+// The settings use the same neutral surfaces and focus color as the shell.
+const TRACK_OFF_BG = 'rgb(var(--accent) / 0.10)'
+const TRACK_OFF_BORDER = 'rgb(var(--accent) / 0.17)'
+const KNOB_OFF = 'rgb(var(--bg-app))'
+const TRACK_ON_BG = 'rgb(var(--accent))'
+const TRACK_ON_BORDER = TRACK_ON_BG
+const KNOB_ON = KNOB_OFF
+const SHADOW_OFF = '0 1px 3px rgb(0 0 0 / 0.17)'
+const SHADOW_ON = SHADOW_OFF
+const SHADOW_OFF_SM = SHADOW_OFF
+const SHADOW_ON_SM = SHADOW_OFF
 
 interface JellyToggleProps {
   /** 受控选中态。 */
@@ -237,7 +236,7 @@ export default function JellyToggle({ checked, defaultChecked = false, onChange,
           animate(x, target ? travel : 0, spring)
         }
       }}
-      className={`relative inline-block shrink-0 outline-none [touch-action:pan-y] transition-[background-color,border-color,opacity] duration-[220ms] focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-[#C9F45A] ${disabled ? 'cursor-default opacity-40' : 'cursor-pointer'}`}
+      className={`relative inline-block shrink-0 focus-ring [touch-action:pan-y] transition-[background-color,border-color,opacity] duration-[220ms] ${disabled ? 'cursor-default opacity-40' : 'cursor-pointer'}`}
       style={{
         width: geo.width,
         height: geo.height,

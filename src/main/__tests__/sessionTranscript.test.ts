@@ -42,6 +42,27 @@ describe('readSessionTranscript (OMP_SESSION_TRANSCRIPT handler core)', () => {
     await expect(readSessionTranscript('session-live')).resolves.toEqual(messages)
     expect(vi.mocked(getSessionMessages)).toHaveBeenCalledWith('session-live')
   })
+
+  it.each([{ rpcMessages: null }, { rpcMessages: [] }])('uses the resumed journal when the runtime returns $rpcMessages', async ({ rpcMessages }) => {
+    const profile = mkdtempSync(path.join(tmpdir(), 'live-journal-'))
+    vi.stubEnv('PI_CODING_AGENT_DIR', profile)
+    vi.stubEnv('OMP_PROFILE', 'default')
+    try {
+      const dir = path.join(profile, 'sessions', 'project')
+      mkdirSync(dir, { recursive: true })
+      const journal = path.join(dir, 'prior.jsonl')
+      writeFileSync(journal, JSON.stringify({ type: 'message', message: { role: 'user', content: 'Recover this turn' } }) + '\n')
+      vi.mocked(getSession).mockReturnValue({
+        id: 'resume-id', cwd: '/w', title: 'Existing conversation', createdAt: 1, status: 'idle',
+        sessionFile: path.join(dir, 'future.jsonl'), resumeFrom: journal
+      })
+      vi.mocked(getSessionMessages).mockResolvedValue(rpcMessages)
+      await expect(readSessionTranscript('resume-id')).resolves.toMatchObject([{ role: 'user', content: 'Recover this turn' }])
+    } finally {
+      vi.unstubAllEnvs()
+      rmSync(profile, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('readSessionFileTranscript (instant history preview)', () => {

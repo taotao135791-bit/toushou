@@ -1,6 +1,8 @@
-import { spawn, ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { win32 } from 'node:path'
 import { shell } from 'electron'
 import { OpenWorkspaceResult, OpenWorkspaceTarget } from '../shared/types'
+import { spawnCommand } from './command'
 
 /**
  * "Open with" launchers for the chat top bar utility menu: reveal the current
@@ -14,6 +16,7 @@ import { OpenWorkspaceResult, OpenWorkspaceTarget } from '../shared/types'
  */
 
 const OPEN_WORKSPACE_TARGETS: readonly OpenWorkspaceTarget[] = ['finder', 'terminal', 'editor']
+type WorkspaceLauncher = typeof spawnCommand
 
 /** Narrow an untrusted IPC value to an OpenWorkspaceTarget. */
 export function isOpenWorkspaceTarget(value: unknown): value is OpenWorkspaceTarget {
@@ -25,8 +28,10 @@ export function isOpenWorkspaceTarget(value: unknown): value is OpenWorkspaceTar
  * the app window, stdio discarded, and the error event ALWAYS consumed — an
  * unhandled 'error' on a ChildProcess crashes Main.
  */
-function spawnDetached(command: string, args: string[], onError?: () => void): ChildProcess {
-  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
+function spawnDetached(
+  command: string, args: string[], onError: () => void, options?: SpawnOptions, launch: WorkspaceLauncher = spawn
+): ChildProcess {
+  const child = launch(command, args, { detached: true, stdio: 'ignore', windowsHide: true, ...options })
   child.on('error', () => onError?.())
   child.unref()
   return child
@@ -39,7 +44,9 @@ function spawnDetached(command: string, args: string[], onError?: () => void): C
  * after `graceMs`. The grace timer is cleared on the fast path so tests and
  * IPC turnarounds never linger.
  */
-function launchSettled(command: string, args: string[], graceMs = 2500): Promise<boolean> {
+function launchSettled(
+  command: string, args: string[], graceMs = 2500, options?: SpawnOptions, launch: WorkspaceLauncher = spawn
+): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false
     let timer: NodeJS.Timeout | null = null
@@ -49,7 +56,7 @@ function launchSettled(command: string, args: string[], graceMs = 2500): Promise
       if (timer) clearTimeout(timer)
       resolve(ok)
     }
-    const child = spawnDetached(command, args, () => done(false))
+    const child = spawnDetached(command, args, () => done(false), options, launch)
     child.once('close', (code) => done(code === 0))
     timer = setTimeout(() => done(true), graceMs)
   })
@@ -101,10 +108,13 @@ export async function openWorkspaceInTarget(
         return ok ? { ok: true } : { ok: false, reason: 'terminal-missing' }
       }
       if (process.platform === 'win32') {
-        // `start` opens a fresh console; its first quoted token is the window
-        // title, so the empty string guards the real command behind it.
-        spawnDetached('cmd', ['/c', 'start', '', 'cmd', '/K', `cd /d ${realPath}`])
-        return { ok: true }
+        const cmd = win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe')
+        // START gets a new interactive console. Pass the project as cwd so
+        // spaces and shell metacharacters in the directory stay filesystem data.
+        const ok = await launchSettled(cmd, ['/D', '/C', 'start "" cmd /D /K'], 400, {
+          cwd: realPath, windowsVerbatimArguments: true
+        })
+        return ok ? { ok: true } : { ok: false, reason: 'terminal-missing' }
       }
       const ok = await openTerminalLinux(realPath)
       return ok ? { ok: true } : { ok: false, reason: 'terminal-missing' }
@@ -115,8 +125,9 @@ export async function openWorkspaceInTarget(
         return ok ? { ok: true } : { ok: false, reason: 'editor-missing' }
       }
       if (process.platform === 'win32') {
-        // `code` ships as a .cmd shim on Windows; only cmd.exe can launch it.
-        const ok = await launchSettled('cmd', ['/c', 'code', realPath])
+        // VS Code ships a .cmd shim. Reuse our Windows CLI launcher so each
+        // argument survives cmd's parsing intact.
+        const ok = await launchSettled('code.cmd', [realPath], 2500, undefined, spawnCommand)
         return ok ? { ok: true } : { ok: false, reason: 'editor-missing' }
       }
       const ok = await launchSettled('code', [realPath])

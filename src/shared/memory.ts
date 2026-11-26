@@ -23,4 +23,4 @@ export interface MemoryLayerView {
 
 export type MemorySaveResult =
   | { ok: true; entry: MemoryEntry; duplicate: boolean }
-  | { ok: false; error: 'invalid-text' | 'too-many-entries' | 'too-large' }
+  | { ok: false; error: 'invalid-text' | 'too-many-entries' | 'too-large' | 'storage-unavailable' }

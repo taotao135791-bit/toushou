@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 import { MemoryEntry, MemoryScope } from '../shared/memory'
@@ -48,7 +48,7 @@ function isMemoryFile(value: unknown): value is MemoryFile {
   return file.version === 1 && Array.isArray(file.entries) && file.entries.every(isMemoryEntry)
 }
 
-/** Stable per-project key: real path hash, immune to spelling/drive-case drift. */
+/** Stable hash of the Main-owned workspace path. */
 export function projectMemoryKey(cwd: string): string {
   return createHash('sha256').update(cwd.replace(/[\\/]+$/, '')).digest('hex').slice(0, 16)
 }
@@ -100,7 +100,9 @@ export function projectPathFor(key: string): string | null {
 export function listProjectMemoryKeys(): Array<{ key: string; path: string }> {
   try {
     const index = JSON.parse(readFileSync(path.join(memoryRoot(), 'projects', 'index.json'), 'utf-8')) as Record<string, string>
-    return Object.entries(index).map(([key, value]) => ({ key, path: value }))
+    return Object.entries(index)
+      .filter(([key, value]) => /^[a-f0-9]{16}$/.test(key) && typeof value === 'string' && projectMemoryKey(value) === key)
+      .map(([key, value]) => ({ key, path: value }))
   } catch {
     return []
   }
@@ -109,9 +111,14 @@ export function listProjectMemoryKeys(): Array<{ key: string; path: string }> {
 function writeFileFor(scope: MemoryScope, projectKey: string | null, entries: MemoryEntry[]): void {
   const file = fileFor(scope, projectKey)
   mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  writeFileSync(tmp, JSON.stringify({ version: 1, entries } satisfies MemoryFile), 'utf-8')
-  renameSync(tmp, file)
+  const temporary = mkdtempSync(path.join(path.dirname(file), '.memory-'))
+  try {
+    const staged = path.join(temporary, 'entries.json')
+    writeFileSync(staged, JSON.stringify({ version: 1, entries } satisfies MemoryFile), { encoding: 'utf8', mode: 0o600 })
+    renameSync(staged, file)
+  } finally {
+    try { rmSync(temporary, { recursive: true, force: true }) } catch { /* Deferred cleanup. */ }
+  }
 }
 
 /**
@@ -152,12 +159,15 @@ export function saveMemoryEntry(input: {
   scope: MemoryScope
   cwd?: string
   source?: MemoryEntry['source']
-}): { ok: true; entry: MemoryEntry; duplicate: boolean } | { ok: false; error: 'invalid-text' | 'too-many-entries' | 'too-large' } {
+}): { ok: true; entry: MemoryEntry; duplicate: boolean } | { ok: false; error: 'invalid-text' | 'too-many-entries' | 'too-large' | 'storage-unavailable' } {
   const text = input.text.trim()
   if (!isNonEmptyString(text, MAX_ENTRY_CHARS)) return { ok: false, error: 'invalid-text' }
   const projectKey = input.scope === 'project' ? projectMemoryKey(input.cwd ?? '') : null
   if (input.scope === 'project' && !input.cwd) return { ok: false, error: 'invalid-text' }
   const layer = readMemoryLayer(input.scope, projectKey)
+  if (layer.corrupt) {
+    return { ok: false, error: 'storage-unavailable' }
+  }
   const existing = layer.entries.find((entry) => entry.text === text)
   if (existing) {
     // Verbatim duplicate: return the stored entry so the caller can surface
@@ -175,7 +185,8 @@ export function saveMemoryEntry(input: {
   const entries = [...layer.entries, entry]
   const serialized = JSON.stringify({ version: 1, entries } satisfies MemoryFile)
   if (Buffer.byteLength(serialized, 'utf8') > MAX_FILE_BYTES) return { ok: false, error: 'too-large' }
-  writeFileFor(input.scope, projectKey, entries)
+  try { writeFileFor(input.scope, projectKey, entries) }
+  catch { return { ok: false, error: 'storage-unavailable' } }
   if (input.scope === 'project' && input.cwd && projectKey) noteProjectPath(projectKey, input.cwd)
   return { ok: true, entry, duplicate: false }
 }
@@ -197,24 +208,38 @@ export function updateMemoryText(scope: MemoryScope, id: string, text: string, c
     entry.id === id ? { ...entry, text: text.trim(), updatedAt: Date.now() } : entry
   )
   if (JSON.stringify(next) === JSON.stringify(layer.entries)) return false
+  if (Buffer.byteLength(JSON.stringify({ version: 1, entries: next }), 'utf8') > MAX_FILE_BYTES) return false
   writeFileFor(scope, projectKey, next)
   return true
 }
 
 /** Move one entry between layers (手动跨项目流动的唯一通道). */
 export function moveMemoryEntry(id: string, from: MemoryScope, to: MemoryScope, cwd?: string): boolean {
-  const fromKey = from === 'project' ? projectMemoryKey(cwd ?? '') : null
-  const toKey = to === 'project' ? projectMemoryKey(cwd ?? '') : null
+  if (from === to || !cwd) return false
+  const fromKey = from === 'project' ? projectMemoryKey(cwd) : null
+  const toKey = to === 'project' ? projectMemoryKey(cwd) : null
   const source = readMemoryLayer(from, fromKey)
   const entry = source.entries.find((item) => item.id === id)
   if (!entry) return false
   const target = readMemoryLayer(to, toKey)
-  if (target.entries.length >= MAX_ENTRIES_PER_FILE) return false
-  const moved: MemoryEntry = { ...entry, updatedAt: Date.now() }
-  writeFileFor(from, fromKey, source.entries.filter((item) => item.id !== id))
-  writeFileFor(to, toKey, [...target.entries, moved])
-  if (to === 'project' && cwd && toKey) noteProjectPath(toKey, cwd)
-  return true
+  if (target.corrupt) return false
+  const existing = target.entries.find(item => item.id === id)
+  if (existing && existing.text !== entry.text) return false
+  try {
+    // Commit the destination first. If removing the source fails, both copies
+    // remain and a retry can finish the move using the original entry id.
+    if (!existing) {
+      const entries = [...target.entries, { ...entry, updatedAt: Date.now() }]
+      if (entries.length > MAX_ENTRIES_PER_FILE ||
+          Buffer.byteLength(JSON.stringify({ version: 1, entries }), 'utf8') > MAX_FILE_BYTES) return false
+      writeFileFor(to, toKey, entries)
+    }
+    if (toKey) noteProjectPath(toKey, cwd)
+    writeFileFor(from, fromKey, source.entries.filter(item => item.id !== id))
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -222,24 +247,29 @@ export function moveMemoryEntry(id: string, from: MemoryScope, to: MemoryScope, 
  * 然后写入新设置。目标目录必须存在且为空（不覆盖用户已有数据）。
  * 返回错误码让设置页提示具体原因。
  */
+function comparableDirectory(directory: string): string {
+  try { return realpathSync(directory) } catch { /* A target may not exist yet. */ }
+  try { return path.join(realpathSync(path.dirname(directory)), path.basename(directory)) }
+  catch { return path.resolve(directory) }
+}
+
 export function changeMemoryStorage(targetDir: string, migrate: boolean): { ok: true; path: string } | { ok: false; error: 'same-path' | 'default-target' | 'not-empty' | 'not-writable' | 'invalid-dir' } {
   const target = targetDir.trim()
   if (!path.isAbsolute(target)) return { ok: false, error: 'invalid-dir' }
   const current = memoryRoot()
-  if (path.resolve(target) === path.resolve(current)) return { ok: false, error: 'same-path' }
+  const canonicalTarget = comparableDirectory(target)
+  const relative = path.relative(comparableDirectory(current), canonicalTarget)
+  if (relative && !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative)) {
+    return { ok: false, error: 'invalid-dir' }
+  }
+  if (!relative) return { ok: false, error: 'same-path' }
   const defaultRoot = path.join(app.getPath('userData'), 'memory')
-  if (path.resolve(target) === path.resolve(defaultRoot)) return { ok: false, error: 'default-target' }
+  if (!path.relative(canonicalTarget, comparableDirectory(defaultRoot))) return { ok: false, error: 'default-target' }
   try {
     mkdirSync(target, { recursive: true })
-    // 可写试探 + 空目录检查：覆盖别人已有的记忆数据不可接受。
-    const probe = path.join(target, '.memory-write-probe')
-    writeFileSync(probe, 'probe', 'utf-8')
-    rmSync(probe)
-    const existing = readdirSync(target)
-    if (existing.length > 0) return { ok: false, error: 'not-empty' }
-    if (migrate && existsSync(current)) {
-      cpSync(current, target, { recursive: true })
-    }
+    if (readdirSync(target).length > 0) return { ok: false, error: 'not-empty' }
+    accessSync(target, constants.W_OK)
+    if (migrate && existsSync(current)) copyMemoryData(current, target)
     setStore('memoryStoragePath', target)
     return { ok: true, path: target }
   } catch {
@@ -247,16 +277,31 @@ export function changeMemoryStorage(targetDir: string, migrate: boolean): { ok: 
   }
 }
 
+function copyMemoryData(current: string, target: string): void {
+  // Only the owned memory files belong to a migration. Exclude symlinks and
+  // unrelated files in a previously chosen folder.
+  const filter = (source: string) => {
+    const relative = path.relative(current, source)
+    if (!relative) return true
+    const stat = lstatSync(source)
+    if (relative === 'projects') return stat.isDirectory()
+    if (!stat.isFile()) return false
+    return /^global\.json(?:\.corrupt)?$/.test(relative) ||
+      /^projects[/\\](?:index|[a-f0-9]{16})\.json(?:\.corrupt)?$/.test(relative)
+  }
+  cpSync(current, target, { recursive: true, filter, force: false, errorOnExist: true })
+}
+
 export function resetMemoryStorageToDefault(migrate: boolean): { ok: true } | { ok: false; error: 'not-empty' | 'not-writable' } {
   const defaultRoot = path.join(app.getPath('userData'), 'memory')
   const current = memoryRoot()
-  if (path.resolve(current) === path.resolve(defaultRoot)) return { ok: true }
+  if (!path.relative(comparableDirectory(current), comparableDirectory(defaultRoot))) return { ok: true }
   try {
     mkdirSync(defaultRoot, { recursive: true })
     const existing = readdirSync(defaultRoot)
     if (migrate && existing.length > 0) return { ok: false, error: 'not-empty' }
     if (migrate && existsSync(current)) {
-      cpSync(current, defaultRoot, { recursive: true })
+      copyMemoryData(current, defaultRoot)
     }
     setStore('memoryStoragePath', '')
     return { ok: true }

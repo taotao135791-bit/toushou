@@ -21,18 +21,22 @@ function isSafeSessionId(value: unknown): value is string {
   )
 }
 
-/**
- * Full transcript of a LIVE session for renderer-side backfill (e.g. a
- * Feishu-origin session the GUI attached to mid-conversation). Messages are
- * built by the runtime's own get_messages → mapAgentMessages mapping — the
- * exact parser the resume path uses — never by re-parsing the durable file
- * renderer-style. Null for invalid ids and for sessions that are not live in
- * Main's registry; the caller keeps whatever it already rendered.
- */
+/** Read the live transcript, falling back to its authorized journal when the runtime has no messages. */
 export async function readSessionTranscript(sessionId: unknown): Promise<ChatMessage[] | null> {
   if (!isSafeSessionId(sessionId)) return null
-  if (!getSession(sessionId)) return null
-  return getSessionMessages(sessionId)
+  const session = getSession(sessionId)
+  if (!session) return null
+  const live = await getSessionMessages(sessionId)
+  if (live?.length) return live
+
+  // A resumed session can report its future journal before writing it.
+  // Try the current journal first, then the journal it resumed from.
+  for (const journal of new Set([session.sessionFile, session.resumeFrom])) {
+    if (!journal || !isSessionFilePath(journal)) continue
+    const stored = await readSessionFileTranscript(journal)
+    if (stored?.length) return stored
+  }
+  return live
 }
 
 /** Safety bounds for the file peek: a runaway file must never wedge Main. */

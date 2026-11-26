@@ -608,47 +608,6 @@
   to { opacity: 1; transform: none; }
 }
 
-/* 太极旋转（主题右键「跟随系统」仪式层的中心图形）。 */
-@keyframes taiji-spin {
-  from { transform: rotate(0deg) scale(0.7); }
-  40% { transform: rotate(360deg) scale(1); }
-  to { transform: rotate(720deg) scale(1); }
-}
-
-/* 主题按钮的图标悬停动效（用户点名"太阳转一下"）：悬停时日/月转 90°。 */
-.sidebar-theme-btn .theme-icon svg {
-  transition: transform 250ms var(--ease-out);
-}
-.sidebar-theme-btn:hover .theme-icon svg {
-  transform: rotate(90deg);
-}
-html.dark .sidebar-theme-btn:hover .theme-icon svg {
-  transform: rotate(-90deg);
-}
-
-/* 主题按钮右键「切到跟随系统」的仪式动画：屏幕中心的阴阳鱼旋转揭示，
- * 旋转两圈后渐隐（学用户点名的太极意象；kimi 的圆形揭示是单色版）。
- * prefers-reduced-motion 时整个 overlay 直接不渲染（组件层已兜底）。 */
-.taiji-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-}
-.taiji-overlay .taiji-figure {
-  width: min(42vmin, 420px);
-  height: min(42vmin, 420px);
-  filter: drop-shadow(0 8px 40px rgb(0 0 0 / 0.35));
-  animation: taiji-reveal 1.3s var(--ease-in-out) both;
-}
-@keyframes taiji-reveal {
-  0% { opacity: 0; transform: rotate(-180deg) scale(0.35); }
-  45% { opacity: 1; transform: rotate(0deg) scale(1); }
-  100% { opacity: 0; transform: rotate(360deg) scale(1.5); }
-}
-
 /* A row that just appeared (new session, new task…) eases in. */
 .row-in {
   animation: row-in var(--dur-2) var(--ease-out) both;

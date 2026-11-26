@@ -1,5 +1,7 @@
+import { sessionThinkingOptionsFor, supportedSessionThinking } from '../lib/thinking'
+import { modelSelectorOf } from '../lib/runtimeSnapshot'
 import { create } from 'zustand'
-import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingSelection, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingSelection, SESSION_THINKING_LEVELS, RecentChatPreferences, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
@@ -285,6 +287,7 @@ interface AppState {
   sessionPreviews: Record<string, { title: string; failed: boolean }>
   /** 会话内容装载中（首开从 durable 转写回填）；装载完成前聊天区不渲染 home hero。 */
   transcriptHydrating: Record<string, boolean>
+  transcriptUnavailable: Record<string, boolean>
   /** Live session ids hidden by an in-flight optimistic delete (still running). */
   pendingDeleteLiveIds: Record<string, true>
   /** 点击历史行时按 uuid 种下的稳定时间：注册表行落地即用，消灭先顶到顶再落回的跳动。 */
@@ -336,8 +339,6 @@ interface AppState {
   runtimeModelCatalog: RuntimeModelInfo[]
   /** sessionId -> runtime-confirmed selection (auto or resolved fixed effort). */
   sessionThinking: Record<string, string | undefined>
-  /** 会话设定：用户为该对话手写的长期指令（persist；保存时发送设定消息）。 */
-  sessionInstructions: Record<string, string>
   /** sessionId -> bumped on model_changed; pickers refetch get_state. */
   sessionModelVersion: Record<string, number>
   /** Native login flow state (idle when no flow runs). */
@@ -346,6 +347,8 @@ interface AppState {
   /** 主题来源：system 时挂系统深浅色监听自动切换，manual 时移除。 */
   setThemeSource: (source: 'manual' | 'system') => void
   setLanguage: (language: Language) => void
+  composerSendMagnetism: boolean
+  setComposerSendMagnetism: (value: boolean) => void
   setThinkingAutoExpand: (value: boolean) => void
   setThinkingCollapseTiming: (value: 'on-complete' | 'until-next-input') => void
   /** Set the default permission mode for new sessions and persist it. */
@@ -426,8 +429,6 @@ interface AppState {
   setBusy: (sessionId: string, busy: boolean) => void
   /** Set/clear a session's user-visible failure banner (i18n key). */
   setSessionError: (sessionId: string, key: I18nKey | null) => void
-  /** 保存会话设定并持久化（发送设定消息由 ChatPanel 走正常发送链路）。 */
-  setSessionInstructions: (sessionId: string, text: string) => void
   /** Clear a recoverable error only when it is still the expected key. */
   clearSessionErrorIf: (sessionId: string, key: I18nKey) => void
   /** Append a message to the session's queue. */
@@ -511,32 +512,16 @@ interface AppState {
   setInstallStatus: (status: InstallStatus) => void
   /** (Re)load model config + available models from the main process. */
   loadModelState: () => Promise<void>
-  /**
-   * Hot-switch the CURRENT session's model — session scope only. Never
-   * touches the default for future sessions (that lives in Settings).
-   */
   setCurrentSessionModel: (provider: string, modelId: string) => Promise<boolean>
-  /** Hot-switch the CURRENT session's thinking level — session scope only. */
   setCurrentSessionThinking: (level: SessionThinkingSelection) => Promise<boolean>
-  /** Model selector for the NEXT session's spawn args (''/null = runtime default). */
+  /** Last explicit composer choices, shared by future conversations. */
   pendingModel: string | null
-  /** Thinking level for the NEXT session's spawn args (null = runtime default). */
   pendingThinking: SessionThinkingSelection | null
-  /** Set the next-session model override (composer pickers without a session). */
   setPendingModel: (selector: string | null) => void
-  /** Set the next-session thinking override. */
   setPendingThinking: (level: SessionThinkingSelection | null) => void
-  /** Snapshot next-session spawn overrides without consuming the user's choice. */
+  rememberChatPreferences: (choice: RecentChatPreferences) => void
+  loadChatPreferences: () => Promise<void>
   getSessionOverrides: () => { modelSelector?: string; thinkingLevel?: SessionThinkingSelection }
-  /**
-   * Clear only overrides that still match a successful session's snapshot.
-   * A picker change made while creation is in flight belongs to the next
-   * session and must remain selected.
-   */
-  clearSessionOverrides: (overrides: {
-    modelSelector?: string
-    thinkingLevel?: SessionThinkingSelection
-  }) => void
   /** Refresh the runtime settings overview (profile/capabilities/providers). */
   loadRuntimeOverview: (force?: boolean) => Promise<void>
   /** Refresh the runtime model catalog (current profile). */
@@ -621,11 +606,14 @@ function onSystemThemeChanged(): void {
   window.electronAPI.setStore('theme', theme)
 }
 
+let chatChoiceRevision = 0
+
 export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
   themeSource: 'manual',
   language: 'en',
   thinkingAutoExpand: true,
   thinkingCollapseTiming: 'on-complete',
+  composerSendMagnetism: true,
   permissionMode: 'ask',
   currentWorkspace: null,
   sessions: [],
@@ -663,6 +651,7 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
   compacting: {},
   sessionPreviews: {},
   transcriptHydrating: {},
+  transcriptUnavailable: {},
   pendingDeleteLiveIds: {},
   resumeRecencySeeds: {},
   stats: {},
@@ -687,7 +676,6 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
   runtimeModels: [],
   runtimeModelCatalog: [],
   sessionThinking: {},
-  sessionInstructions: {},
   sessionModelVersion: {},
   loginState: { status: 'idle' },
   pendingModel: null,
@@ -721,6 +709,10 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
     set({ language })
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'
     window.electronAPI.setStore('language', language)
+  },
+  setComposerSendMagnetism: (value) => {
+    set({ composerSendMagnetism: value })
+    void window.electronAPI.setStore('composerSendMagnetism', value)
   },
   setThinkingAutoExpand: (value) => {
     set({ thinkingAutoExpand: value })
@@ -1013,40 +1005,31 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
   setPendingOpenHistory: (target) => {
     set({ pendingOpenHistory: target })
   },
-  /**
-   * First-open transcript hydration for ANY session whose transcript is not
-   * in the store yet (externally created, task-spawned, …). The renderer
-   * only folded live events since this window started listening, so the
-   * durable runtime transcript is authoritative once, fetched through
-   * OMP_SESSION_TRANSCRIPT (Main-parsed). A guard set makes it once per
-   * session per app run; the alignment merge (transcriptMerge) keeps any
-   * streamed rows that landed while the fetch was in flight, so ordering
-   * with concurrently-applied live events is preserved without a refetch.
-   * Sessions already tracked in the store — including freshly created
-   * empty ones — are skipped.
-   */
+  /** Backfill missed history once while preserving streamed rows and allowing failed reads to retry. */
   ensureTranscript: async (sessionId) => {
-    if (transcriptBackfilled.has(sessionId)) return
-    if (get().messages[sessionId]) return
-    transcriptBackfilled.add(sessionId)
-    set((state) => ({ transcriptHydrating: { ...state.transcriptHydrating, [sessionId]: true } }))
-    // 测试桩/极旧 preload 可能没有该 API——同步调用缺失会直接抛 TypeError
-    //（.catch 挂不上），必须先判存在。
-    const api = window.electronAPI as { sessionTranscript?: (id: string) => Promise<unknown> }
-    const fetched = typeof api.sessionTranscript === 'function'
-      ? ((await api.sessionTranscript(sessionId).catch(() => null)) as MessageLike[] | null)
-      : null
-    set((state) => {
-      const hydrating = { ...state.transcriptHydrating }
+    if (sessionId.startsWith('preview:') || transcriptBackfilled.has(sessionId) || get().transcriptHydrating[sessionId]) return
+    const state = get()
+    const session = state.sessions.find(item => item.id === sessionId)
+    const existing = state.messages[sessionId]
+    if (existing && !session?.origin && (existing.length > 0 || (!session?.resumeFrom && !session?.resumedHistoryId))) return
+
+    set((current) => ({ transcriptHydrating: { ...current.transcriptHydrating, [sessionId]: true } }))
+    const fetched = await window.electronAPI.sessionTranscript?.(sessionId).catch(() => null)
+    if (Array.isArray(fetched)) transcriptBackfilled.add(sessionId)
+    set((current) => {
+      const hydrating = { ...current.transcriptHydrating }
+      const unavailable = { ...current.transcriptUnavailable }
       delete hydrating[sessionId]
-      return { transcriptHydrating: hydrating }
-    })
-    if (!fetched || fetched.length === 0) return
-    set((state) => {
-      const current = state.messages[sessionId] ?? []
-      const merged = mergeTranscriptBackfill(fetched as MessageLike[], current)
-      if (merged === current) return state
-      return { messages: { ...state.messages, [sessionId]: merged } }
+      if (Array.isArray(fetched)) delete unavailable[sessionId]
+      else unavailable[sessionId] = true
+
+      const existing = current.messages[sessionId] ?? []
+      const merged = fetched?.length ? mergeTranscriptBackfill(fetched, existing) : existing
+      return {
+        transcriptHydrating: hydrating,
+        transcriptUnavailable: unavailable,
+        ...(merged === existing ? {} : { messages: { ...current.messages, [sessionId]: merged } })
+      }
     })
   },
   hydrateSubagents: async (sessionId) => {
@@ -1222,12 +1205,6 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
       const next = key ?? undefined
       if (state.sessionErrors[sessionId] === next) return state
       return { sessionErrors: { ...state.sessionErrors, [sessionId]: next } }
-    }),
-  setSessionInstructions: (sessionId, text) =>
-    set((state) => {
-      const next = { ...state.sessionInstructions, [sessionId]: text }
-      window.electronAPI.setStore('sessionInstructions', next)
-      return { sessionInstructions: next }
     }),
   clearSessionErrorIf: (sessionId, key) =>
     set((state) => {
@@ -1728,20 +1705,62 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
   },
 
   setCurrentSessionModel: async (provider, modelId) => {
-    const sid = get().currentSessionId
-    if (!sid || !provider || !modelId) return false
-    return window.electronAPI.setSessionModel(sid, provider, modelId)
+    const sessionId = get().currentSessionId
+    if (!sessionId || !provider || !modelId) return false
+    const revision = ++chatChoiceRevision
+    if (!await window.electronAPI.setSessionModel(sessionId, provider, modelId)) return false
+    const model = `${provider}/${modelId}`
+    const state = await window.electronAPI.getSessionState(sessionId).catch(() => null)
+    if (revision === chatChoiceRevision) {
+      const level = state?.autoThinking ? 'auto' : state?.thinkingLevel
+      const thinking = level === 'auto' || SESSION_THINKING_LEVELS.some(item => item === level)
+        ? level as SessionThinkingSelection
+        : get().pendingThinking
+      get().rememberChatPreferences({ model, thinking })
+    }
+    return true
   },
 
   setCurrentSessionThinking: async (level) => {
-    const sid = get().currentSessionId
-    if (!sid) return false
-    return window.electronAPI.setThinkingLevel(sid, level)
+    const sessionId = get().currentSessionId
+    if (!sessionId) return false
+    const revision = ++chatChoiceRevision
+    if (!await window.electronAPI.setThinkingLevel(sessionId, level)) return false
+    const state = await window.electronAPI.getSessionState(sessionId).catch(() => null)
+    if (revision === chatChoiceRevision) {
+      const actual = state?.thinkingLevel
+      const thinking = level !== 'auto' && SESSION_THINKING_LEVELS.some(item => item === actual)
+        ? actual as SessionThinkingSelection : level
+      get().rememberChatPreferences({ model: modelSelectorOf(state) ?? get().pendingModel, thinking })
+    }
+    return true
   },
 
-  setPendingModel: (selector) => set({ pendingModel: selector }),
+  rememberChatPreferences: ({ model, thinking }) => {
+    ++chatChoiceRevision
+    set({ pendingModel: model, pendingThinking: thinking })
+    void window.electronAPI.setStore?.('recentChatPreferences', { model, thinking })?.catch(() => {})
+  },
 
-  setPendingThinking: (level) => set({ pendingThinking: level }),
+  loadChatPreferences: async () => {
+    const revision = chatChoiceRevision
+    const choice = await window.electronAPI.getStore('recentChatPreferences').catch(() => null)
+    if (revision !== chatChoiceRevision || !choice) return
+    const { model, thinking } = choice
+    set({
+      pendingModel: typeof model === 'string' && model ? model : null,
+      pendingThinking: thinking === 'auto' || SESSION_THINKING_LEVELS.some(item => item === thinking) ? thinking : null
+    })
+  },
+
+  setPendingModel: (selector) => {
+    const { pendingThinking, runtimeOverview, runtimeModels } = get()
+    const model = runtimeModels.find(item => item.selector === selector)
+    const options = sessionThinkingOptionsFor(runtimeOverview?.profile === 'legacy' ? 'legacy' : 'current', model)
+    get().rememberChatPreferences({ model: selector, thinking: supportedSessionThinking(pendingThinking, options) })
+  },
+
+  setPendingThinking: (thinking) => get().rememberChatPreferences({ model: get().pendingModel, thinking }),
 
   getSessionOverrides: () => {
     const { pendingModel, pendingThinking } = get()
@@ -1749,17 +1768,6 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
       ...(pendingModel ? { modelSelector: pendingModel } : {}),
       ...(pendingThinking ? { thinkingLevel: pendingThinking } : {})
     }
-  },
-
-  clearSessionOverrides: (overrides) => {
-    set((state) => ({
-      ...(overrides.modelSelector !== undefined && state.pendingModel === overrides.modelSelector
-        ? { pendingModel: null }
-        : {}),
-      ...(overrides.thinkingLevel !== undefined && state.pendingThinking === overrides.thinkingLevel
-        ? { pendingThinking: null }
-        : {})
-    }))
   },
 
   applySessionEvent: (event) => {
@@ -1840,6 +1848,7 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
       const wasBusy = Boolean(get().busy[event.sessionId])
       const nextBusy = STATUS_BUSY[event.status]
       if (event.status === 'working') {
+        get().clearSessionErrorIf(event.sessionId, 'chat.turnFailed')
         const pending = get().queueDispatching[event.sessionId]
         if (pending?.phase === 'sending' && !pending.runtimeStarted) {
           set((state) => ({ queueDispatching: { ...state.queueDispatching, [event.sessionId]: { ...pending, runtimeStarted: true } } }))
@@ -1864,7 +1873,7 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
           // stray or repeated 'idle' from draining more than one message.
           if (wasBusy) {
             const drained = get().drainQueuedMessage(event.sessionId)
-            if (!drained && event.sessionId !== get().currentSessionId) {
+            if (!drained && !event.aborted && event.sessionId !== get().currentSessionId) {
               // Turn finished in a background session — flag it unread
               get().markSessionUnread(event.sessionId)
             }
@@ -1922,6 +1931,7 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
         }
       }))
     } else if (event.type === 'error') {
+      const turnFailed = event.turnFailed && event.recoverable !== true && get().busy[event.sessionId]
       if (event.recoverable === false && get().compacting[event.sessionId]) {
         get().setCompacting(event.sessionId, false)
         queueCompactionRow({ type: 'compaction', sessionId: event.sessionId, phase: 'end', outcome: 'failed' }, true)
@@ -1955,6 +1965,7 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
             }
           : {})
       }))
+      if (turnFailed && event.recoverable !== false) get().setSessionError(event.sessionId, 'chat.turnFailed')
       if (event.recoverable === false) {
         get().setSessionError(event.sessionId, 'chat.sessionDead')
         // The session died out of view — surface it in the sidebar like any

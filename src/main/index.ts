@@ -10,7 +10,7 @@ import { registerIpc, shutdownSessionsForQuit, tiktokAdsConnectionManager } from
 import { pruneOrphanedHtmlBoards } from './htmlBoards'
 import { cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { syncMachineSkills } from './piSettings'
-import { detectCli, getSession } from './omp'
+import { detectCli, getSession, getSessionBridgeAccess, readSessionInstruction } from './omp'
 import { initUpdater } from './updater'
 import { initSessionTopicBridge } from './sessionTopicBridge'
 import { installNavigationGuards } from './navigation'
@@ -131,9 +131,8 @@ function createWindow() {
     height,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: 'hiddenInset',
     // Slightly inset the native macOS controls within the 44px drag area.
-    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 14 } } : {}),
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 14 } } : {}),
     backgroundColor: themeBackgroundColor(getStore('theme') ?? 'light'),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -223,13 +222,19 @@ app.whenReady().then(async () => {
     await initTiktokBridge()
     await initBoardsBridge()
     await initAdsCopyBridge()
-    // 记忆桥：会话 identity 由 omp 注册表按 id 提供（cwd 决定项目隔离）。
-    await initMemoryBridge((sessionId) => {
-      const session = getSession(sessionId)
-      return session ? { id: session.id, cwd: session.cwd, title: session.title } : undefined
-    })
   } catch (error) {
     console.warn('[tasks] tool bridge unavailable', error)
+  }
+  try {
+    await initMemoryBridge(sessionId => {
+      const access = getSessionBridgeAccess(sessionId)
+      const session = getSession(sessionId)
+      return access && session ? {
+        ...access, id: sessionId, title: session.title, instruction: readSessionInstruction(sessionId)
+      } : undefined
+    })
+  } catch (error) {
+    console.warn('[memory] tool bridge unavailable', error)
   }
   try {
     await initSessionTopicBridge()

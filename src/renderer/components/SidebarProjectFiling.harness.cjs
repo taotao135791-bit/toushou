@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('node:path')
+const fs = require('node:fs')
 const assert = require('node:assert/strict')
 const [, , dir, phase] = process.argv
 if (process.platform === 'darwin') app.setActivationPolicy('accessory')
@@ -8,6 +9,35 @@ app.whenReady().then(async () => {
   const store = require(path.join(dir, 'filing.cjs'))
   ipcMain.handle('read', () => store.getStore('sidebarSessionProjects'))
   ipcMain.handle('file', (_event, key, project, previous, migrate) => store.fileSidebarConversation(key, project, previous, migrate, id => ['alpha', 'beta'].includes(id)))
+  const agentDir = path.join(dir, 'omp-profile')
+  const sourceDir = path.join(agentDir, 'sessions', 'legacy-layout')
+  fs.mkdirSync(sourceDir, { recursive: true })
+  const projects = { alpha: '/synthetic/client-a/project', beta: '/synthetic/client-b/project' }
+  const folders = Object.fromEntries(Object.keys(projects).map(id => {
+    const folder = path.join(dir, id)
+    fs.mkdirSync(folder, { recursive: true })
+    return [id, fs.realpathSync.native(folder)]
+  }))
+  const idForCwd = cwd => Object.keys(projects).find(id => projects[id] === cwd)
+  const rowForFile = ({ cwd, filePath, ...row }) => ({ ...row, cwd: projects[Object.keys(folders).find(id => folders[id] === cwd)] })
+  const seed = row => {
+    const filename = path.join(sourceDir, `${row.uuid}.jsonl`)
+    fs.writeFileSync(filename, JSON.stringify({ type: 'session', id: row.uuid, cwd: folders[idForCwd(row.cwd)], timestamp: new Date(row.timestamp).toISOString() }) + '\n' + JSON.stringify({ type: 'message', message: { role: 'user', content: 'Synthetic original context' } }) + '\n', { flag: 'wx' })
+  }
+  const fixtureUuid = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0')
+  if (phase === 'save') for (const n of [1, 3]) seed({ uuid: fixtureUuid(n), cwd: projects.alpha, timestamp: 100 + n })
+  ipcMain.handle('rows', async () => (await store.listAllSessions(agentDir)).map(rowForFile))
+  ipcMain.handle('seed', (_event, row) => seed(row))
+  ipcMain.handle('move', async (_event, _grant, key, target) => {
+    const [cwd, uuid] = JSON.parse(key)
+    const source = folders[idForCwd(cwd)]
+    if (!source || !folders[target]) return { ok: false, error: 'not-found' }
+    const result = await store.moveSessionJournal({ source, uuid, target: folders[target], agentDir, available: () => true, prepare: async () => true })
+    if (!result.ok) return result
+    const row = (await store.listAllSessions(agentDir)).find(row => row.uuid === uuid)
+    const retired = phase === 'save' && uuid === fixtureUuid(1) ? ['live-a'] : phase === 'save' && uuid === fixtureUuid(59) ? ['new-runtime'] : []
+    return { ok: true, row: rowForFile(row), retiredSessionIds: retired }
+  })
   const win = new BrowserWindow({ show: false, useContentSize: true, width: 1024, height: 700, webPreferences: { offscreen: phase === 'scrollbar', sandbox: true, contextIsolation: true, backgroundThrottling: false, preload: path.join(dir, 'bridge.cjs') } })
   const wc = win.webContents
   wc.session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, reply) => reply({ cancel: true }))
@@ -32,14 +62,18 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(dir,'index.html'), {query:{phase}})
     await wait(row(all,id(3)))
     if (phase === 'save') {
-      // A scoped history row, a live row and a new session without a file yet.
       await drag(row(all,id(3)),header('beta')); await wait(row(group('beta'),id(3)))
-      await drag(row(all,id(1)),header('beta')); await wait(row(group('beta'),id(1)))
       await js('filingFixture.addFresh()')
-      await drag(row(all,"'runtime:new-runtime'"),header('beta')); await wait(row(group('beta'),"'runtime:new-runtime'"))
-      await js('filingFixture.publishDurable()'); await wait(row(group('beta'),id(59)))
-      await wait("filingBridge.read().then(map=>!Object.keys(map).some(k=>k.includes('runtime:new-runtime'))&&Object.keys(map).length===3)")
+      await drag(row(all,"'runtime:new-runtime'"),header('beta'))
+      await wait("document.body.textContent.includes('Could not move the conversation')")
+      await js('filingFixture.publishDurable()')
+      await drag(row(all,id(59)),header('beta')); await wait(row(group('beta'),id(59)))
       assert.equal(await js('sidebarFixture.activateCalls.length+sidebarFixture.resumeCalls.length'),0)
+      await drag(row(all,id(1)),header('beta')); await wait(row(group('beta'),id(1)))
+      await wait("sidebarFixture.snapshot().current==='resumed-'+sidebarFixture.uuid(1) && document.body.textContent.includes('Synthetic original context')")
+      assert.equal(await js('sidebarFixture.resumeCalls.at(-1).grantId'),'grant-beta')
+      assert.equal(await js('sidebarFixture.snapshot().workspace'),projects.beta)
+      assert.equal(await js('document.querySelector("main header").textContent.includes("Beta")'),true)
     } else if (phase === 'cold') {
       await js("document.querySelector('[aria-label=\"Conversations in Beta\"]').click()")
       for (const n of [1,3,59]) await wait(row(group('beta'),id(n)))
@@ -51,8 +85,8 @@ app.whenReady().then(async () => {
       await wait("sidebarFixture.snapshot().workspace==='/synthetic/client-b/project'")
       await js(`${row(group('beta'),id(1))}.querySelector('[data-conversation-select]').click()`)
       await wait("sidebarFixture.snapshot().current==='resumed-'+sidebarFixture.uuid(1) && document.body.textContent.includes('Synthetic original context')")
-      assert.equal(await js('sidebarFixture.resumeCalls.at(-1).grantId'),'grant-alpha')
-      assert.equal(await js('sidebarFixture.snapshot().workspace'),'/synthetic/client-a/project')
+      assert.equal(await js('sidebarFixture.resumeCalls.at(-1).grantId'),'grant-beta')
+      assert.equal(await js('sidebarFixture.snapshot().workspace'),projects.beta)
       await js(`(() => { const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'Continue the original topic');input.dispatchEvent(new Event('input',{bubbles:true})) })()`)
       await wait("document.querySelector('[aria-label=Send]')?.disabled===false")
       await js("document.querySelector('[aria-label=Send]').click()")
@@ -60,7 +94,7 @@ app.whenReady().then(async () => {
     } else if (phase === 'reopen') {
       await js("document.querySelector('[aria-label=\"Conversations in Alpha\"]').click();document.querySelector('[aria-label=\"Conversations in Beta\"]').click()")
       await wait(row(group('alpha'),id(3))); await wait(row(group('beta'),id(1))); await wait(row(group('beta'),id(59)))
-      assert.equal(await js('filingBridge.read().then(map=>Object.keys(map).length)'),2)
+      assert.equal(await js('filingBridge.read().then(map=>Object.keys(map).length)'),0)
     }
     if (phase === 'scrollbar') {
       // Chromium receives mouse input; measure the actual painted gutter as

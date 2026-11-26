@@ -6,15 +6,19 @@ import type { ChildProcess } from 'node:child_process'
 // shell.showItemInFolder are both mocked at the boundary.
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 vi.mock('electron', () => ({ shell: { showItemInFolder: vi.fn() } }))
+vi.mock('../command', () => ({ spawnCommand: vi.fn() }))
 
 import { spawn } from 'node:child_process'
 import { shell } from 'electron'
+import { spawnCommand } from '../command'
 import { isOpenWorkspaceTarget, openWorkspaceInRequest, openWorkspaceInTarget } from '../openWorkspaceIn'
 
 const spawnMock = vi.mocked(spawn)
+const spawnCommandMock = vi.mocked(spawnCommand)
 const showItemInFolderMock = vi.mocked(shell.showItemInFolder)
 
 const DIR = '/tmp/omp-open-in-proj'
+const WIN_DIR = 'D:\\Ad Ops\\华南 & 直营 %数据%'
 /** Grant lookup standing in for ipc.ts's requireGrant. */
 type GrantLookup = (id: unknown) => { realPath: string } | null
 const defaultLookup: GrantLookup = () => ({ realPath: DIR })
@@ -46,6 +50,7 @@ function setPlatform(value: NodeJS.Platform): void {
 
 beforeEach(() => {
   spawnMock.mockReset()
+  spawnCommandMock.mockReset()
   showItemInFolderMock.mockReset()
   lookup.mockReset()
   lookup.mockImplementation(defaultLookup)
@@ -139,18 +144,25 @@ describe('openWorkspaceInRequest terminal', () => {
     expect(result).toEqual({ ok: false, reason: 'terminal-missing' })
   })
 
-  it('opens a cmd window cd-ed into the workspace on Windows', async () => {
+  it('opens a CMD window in the granted Windows directory without interpolating its path', async () => {
     setPlatform('win32')
-    const child = fakeChild()
+    const child = fakeChild({ code: 0 })
     spawnMock.mockReturnValue(child)
+    lookup.mockReturnValue({ realPath: WIN_DIR })
     const result = await openWorkspaceInRequest(lookup, 'grant-1', 'terminal')
     expect(result).toEqual({ ok: true })
     expect(spawnMock).toHaveBeenCalledWith(
-      'cmd',
-      ['/c', 'start', '', 'cmd', '/K', `cd /d ${DIR}`],
-      expect.objectContaining({ detached: true })
+      expect.stringMatching(/System32[\\\\]cmd\.exe$/i),
+      ['/D', '/C', 'start "" cmd /D /K'],
+      expect.objectContaining({ cwd: WIN_DIR, detached: true, windowsVerbatimArguments: true })
     )
     expect(child.unref).toHaveBeenCalled()
+  })
+
+  it('reports Windows terminal launch failures', async () => {
+    setPlatform('win32')
+    spawnMock.mockReturnValue(fakeChild({ error: 'spawn ENOENT' }))
+    expect(await openWorkspaceInTarget(WIN_DIR, 'terminal')).toEqual({ ok: false, reason: 'terminal-missing' })
   })
 
   it('falls back down the linux terminal chain on spawn failure', async () => {
@@ -211,14 +223,15 @@ describe('openWorkspaceInRequest editor', () => {
     expect(spawnMock).toHaveBeenCalledWith('code', [DIR], expect.anything())
   })
 
-  it('routes through cmd on Windows where `code` is a .cmd shim', async () => {
+  it('routes Windows VS Code through the CLI shim launcher with a discrete argument', async () => {
     setPlatform('win32')
-    spawnMock.mockReturnValue(fakeChild({ code: 0 }))
+    spawnCommandMock.mockReturnValue(fakeChild({ code: 0 }))
+    lookup.mockReturnValue({ realPath: WIN_DIR })
     const result = await openWorkspaceInRequest(lookup, 'grant-1', 'editor')
     expect(result).toEqual({ ok: true })
-    expect(spawnMock).toHaveBeenCalledWith(
-      'cmd',
-      ['/c', 'code', DIR],
+    expect(spawnCommandMock).toHaveBeenCalledWith(
+      'code.cmd',
+      [WIN_DIR],
       expect.objectContaining({ detached: true })
     )
   })

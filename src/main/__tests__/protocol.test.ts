@@ -475,7 +475,7 @@ describe('parseRpcLine', () => {
     })
     expect(parseRpcLine(line, 's1')).toEqual({
       kind: 'event',
-      event: { type: 'error', sessionId: 's1', message: 'OpenAI API error (401): invalid_api_key' }
+      event: { type: 'error', sessionId: 's1', turnFailed: true, message: 'OpenAI API error (401): invalid_api_key' }
     })
   })
 

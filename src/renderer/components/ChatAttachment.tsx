@@ -4,7 +4,8 @@ import { Download, FileText, FolderOpen, Image as ImageIcon, Sheet, X } from 'lu
 import type { PromptImage } from '@shared/types'
 import { chatAttachment, type AttachmentKind } from '@shared/chatAttachment'
 import { useAppStore } from '../store'
-import { useT } from '../i18n'
+import { fileManagerRevealKey, useT } from '../i18n'
+import { shortcutPlatform } from '../lib/platformShortcut'
 import audio from '../assets/file-types/audio.svg'
 import docx from '../assets/file-types/docx.svg'
 import pdf from '../assets/file-types/pdf.svg'
@@ -80,7 +81,7 @@ export function AttachmentFolderMention({ target, label }: AttachmentProps) {
 export function AttachmentFolderCard({ target, label }: AttachmentProps) {
   const { t, pending, error, activate } = useAttachment(target)
   const name = label || target.split(/[\\/]/).filter(Boolean).pop() || target
-  const platform = typeof window === 'undefined' ? undefined : window.electronAPI?.platform
+  const platform = shortcutPlatform()
   const open = t(platform === 'darwin' ? 'chat.attachmentOpenFolderFinder' : platform === 'win32' ? 'chat.attachmentOpenFolderExplorer' : 'chat.attachmentOpenFolder')
   return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
     <button type="button" disabled={pending} onClick={() => void activate('open-folder')} aria-label={open + ' · ' + name}
@@ -101,8 +102,7 @@ export function AttachmentCard({ target, label }: AttachmentProps) {
   const { revealOnly } = file
   const open = revealOnly ? reveal : t(file.sandbox ? 'chat.attachmentLocate' : 'chat.attachmentOpen')
   const save = t('chat.attachmentSave')
-  const platform = typeof window === 'undefined' ? undefined : window.electronAPI?.platform
-  const revealTitle = platform === 'darwin' ? t('chat.openInFinder') : platform === 'win32' ? t('chat.attachmentShowInExplorer') : reveal
+  const revealTitle = t(fileManagerRevealKey())
   return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center gap-1 rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
     <button type="button" disabled={pending} onClick={() => void activate(revealOnly ? 'reveal' : 'open')} aria-label={open + ' · ' + file.name}
       title={revealOnly ? revealTitle : target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">

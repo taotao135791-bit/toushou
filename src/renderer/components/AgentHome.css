@@ -172,7 +172,7 @@
 [data-thinking-menu] {
   --effort-ink: #1468b7;
   --effort-ink-hi: #7843da;
-  --effort-base: linear-gradient(100deg, #3477eb, #3b7af1);
+  --effort-base: linear-gradient(100deg, #5d9af7, #387be9);
   --effort-peak: linear-gradient(105deg, #355be1, #6735de 54%, #4921bf);
   --effort-light: #83b5ff66;
 }
@@ -181,11 +181,10 @@
   --effort-light: #d59dffbf;
 }
 .dark [data-thinking-menu] { --effort-ink: #84baff; --effort-ink-hi: #c19aff; }
-.effort-heading, .effort-bolt, .effort-burst::before, .effort-burst::after {
-  /* Ink rides the effort position: blue at rest, violet as effort climbs. */
-  color: color-mix(in oklab, var(--effort-ink), var(--effort-ink-hi) calc(var(--effort-position, 0) * 100%));
+.effort-heading {
+  color: var(--effort-ink);
 }
-.effort-bolt { fill: currentColor; }
+[data-peak="true"] .effort-heading { color: var(--effort-ink-hi); }
 
 .effort-track {
   position: relative;
@@ -197,8 +196,7 @@
   inset: 0;
   overflow: hidden;
   border-radius: inherit;
-  /* 轨道完全透明：滑块只靠填充和刻度点表达，不再有黑色条（GPT 式）。 */
-  background: transparent;
+  background: rgb(var(--bg-sunken));
   pointer-events: none;
 }
 .effort-ticks {
@@ -225,13 +223,14 @@
 }
 [data-peak="true"] .effort-fill { width: 100%; }
 .effort-peak-fill {
-  /* Purple overlay fades in with the effort position (ChatGPT-style morph). */
+  /* The violet overlay only appears at the highest supported effort. */
   position: absolute;
   inset: 0;
   background: var(--effort-peak);
-  opacity: calc(var(--effort-position, 0) * 1);
+  opacity: 0;
   pointer-events: none;
 }
+[data-peak="true"] .effort-peak-fill { opacity: 1; }
 .effort-track[data-at-start="true"] .effort-fill {
   /* At zero the thumb covers the fill. Keep a faint blue drift on the idle rail. */
   width: 100%;
@@ -280,42 +279,6 @@
   from { transform: translateX(-14%); }
   to { transform: translateX(14%); }
 }
-/* Dot ring that bursts outward from the thumb on grab / commit. The pseudo
-   elements hold 6 box-shadow dots each; scaling them flings the ring outward. */
-.effort-burst {
-  position: absolute;
-  top: 50%;
-  left: calc(13px + (100% - 26px) * var(--effort-position, 0));
-  width: 0;
-  height: 0;
-  pointer-events: none;
-}
-.effort-burst::before, .effort-burst::after {
-  content: '';
-  position: absolute;
-  left: -2px;
-  top: -2px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  animation: effort-burst 560ms var(--ease-out) forwards;
-}
-.effort-burst::before {
-  box-shadow:
-    0 -13px 0 currentColor, 11px -6px 0 currentColor, 11px 7px 0 currentColor,
-    0 13px 0 currentColor, -11px 7px 0 currentColor, -11px -6px 0 currentColor;
-}
-.effort-burst::after {
-  box-shadow:
-    -8px -11px 0 currentColor, 8px -11px 0 currentColor, 14px 2px 0 currentColor,
-    8px 11px 0 currentColor, -8px 11px 0 currentColor, -14px 2px 0 currentColor;
-  animation-delay: 70ms;
-}
-@keyframes effort-burst {
-  0% { transform: scale(0.2); opacity: 0; }
-  35% { opacity: 1; }
-  100% { transform: scale(1.5); opacity: 0; }
-}
 /* Springy swap shared by picker labels and menu checkmarks (duang overshoot). */
 .picker-label-pop, .picker-check-pop {
   animation: picker-pop 300ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
@@ -326,13 +289,12 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .effort-fill::before, .effort-fill::after, .effort-glow,
-  .effort-burst::before, .effort-burst::after,
   .picker-label-pop, .picker-check-pop { animation: none; }
 }
 .effort-slider {
   /* 新 Chromium 对 range 有内置"fluent"绘制层（黑轨道线 + 小白 thumb），
      CSS 伪元素压不掉——整个 input 用 opacity:0 隐藏绘制，交互（拖动/键盘/
-     命中）不受影响；可见层是填充条 + 果冻拇指。 */
+     命中）不受影响；可见层是填充条和圆形滑块。 */
   -webkit-appearance: none;
   appearance: none;
   position: relative;
@@ -346,7 +308,7 @@
   cursor: pointer;
   touch-action: none;
 }
-/* 键盘焦点环转移到果冻拇指（input 本体不可见）。 */
+/* The visible thumb provides the keyboard focus ring. */
 .effort-slider:focus-visible ~ .effort-thumb-live {
   outline: 2px solid #c9f45a;
   outline-offset: 3px;

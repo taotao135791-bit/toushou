@@ -1,12 +1,23 @@
 import { randomBytes } from 'node:crypto'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
-import { closeSync, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, constants, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { BrowserWindow, dialog } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
-import { deleteMemoryEntry, listProjectMemoryKeys, moveMemoryEntry, projectMemoryKey, readMemoryLayer, saveMemoryEntry, updateMemoryText } from './memoryStore'
-import { sessionDirCandidatesFor, sessionsRoot } from './sessionHistory'
+import { buildMemoryPrompt, listProjectMemoryKeys, projectMemoryKey, readMemoryLayer, saveMemoryEntry } from './memoryStore'
+import { isSessionFilePath, sessionDirCandidatesFor, sessionsRoot } from './sessionHistory'
 import { defaultPiAgentDir } from './piSettings'
+import { getStore } from './store'
+import type { PermissionMode } from '../shared/types'
+
+function projectLabel(cwd: string): string {
+  return cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? cwd
+}
+
+function sameProject(left: string, right: string): boolean {
+  if (left === right) return true
+  try { return path.relative(realpathSync(left), realpathSync(right)) === '' } catch { return false }
+}
 
 /** 候选目录含同一物理目录的新旧布局别名；按真实路径去重再扫，避免重复计入。 */
 function distinctSessionDirs(cwd: string, agentDir: string): string[] {
@@ -48,12 +59,14 @@ const MAX_READ_CHARS = 12_000
 function readHead(file: string, maxBytes: number): string | null {
   let fd: number | null = null
   try {
-    fd = openSync(file, 'r')
-    const size = fstatSync(fd).size
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    const stat = fstatSync(fd)
+    if (!stat.isFile()) return null
+    const size = stat.size
     const len = Math.min(maxBytes, size)
     const buf = Buffer.alloc(len)
-    readSync(fd, buf, 0, len, 0)
-    return buf.toString('utf-8')
+    const bytes = readSync(fd, buf, 0, len, 0)
+    return buf.toString('utf8', 0, bytes)
   } catch {
     return null
   } finally {
@@ -67,13 +80,16 @@ function readHead(file: string, maxBytes: number): string | null {
 function readTail(file: string, maxBytes: number): string | null {
   let fd: number | null = null
   try {
-    fd = openSync(file, 'r')
-    const size = fstatSync(fd).size
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    const stat = fstatSync(fd)
+    if (!stat.isFile()) return null
+    const size = stat.size
     const start = Math.max(0, size - maxBytes)
     const len = size - start
     const buf = Buffer.alloc(len)
-    readSync(fd, buf, 0, len, start)
-    return buf.toString('utf-8')
+    const bytes = readSync(fd, buf, 0, len, start)
+    const text = buf.toString('utf8', 0, bytes)
+    return start > 0 ? text.slice(text.indexOf('\n') + 1) : text
   } catch {
     return null
   } finally {
@@ -88,6 +104,9 @@ interface BridgeSession {
   id: string
   cwd: string
   title?: string
+  mode: PermissionMode
+  remoteReadonly?: boolean
+  instruction?: string
 }
 
 let lookup: ((sessionId: string) => BridgeSession | undefined) | null = null
@@ -100,7 +119,7 @@ export function initMemoryBridge(sessionLookup: (sessionId: string) => BridgeSes
   if (port !== null) return Promise.resolve()
   if (ready) return ready
   ready = new Promise((resolve, reject) => {
-    const server = createServer((request, response) => void handle(request, response))
+    const server = createServer((request, response) => void handle(request, response).catch(() => { if (!response.destroyed) response.destroy() }))
     server.once('error', reject)
     server.listen(0, '127.0.0.1', () => {
       const address = server.address()
@@ -143,20 +162,20 @@ function json(response: ServerResponse, status: number, body: unknown): void {
  * 访问"的手动闸门：模型声称用户要求跨项目时，必须用户在弹窗里点头，
  * Main 才放行。拒绝/无窗口时一律不放行。
  */
-function confirmCrossProject(targetLabel: string): boolean {
+async function confirmCrossProject(targetLabel: string): Promise<boolean> {
   const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.isVisible())
   if (!win) return false
-  const choice = dialog.showMessageBoxSync(win, {
+  const { response } = await dialog.showMessageBox(win, {
     type: 'question',
     title: '跨项目记忆访问',
     message: `助手请求查看「${targetLabel}」的记忆`,
     detail: '当前对话属于另一个项目。项目记忆默认互相隔离；允许后本次将读取目标项目的记忆内容。',
     buttons: ['允许本次查看', '拒绝'],
-    defaultId: 0,
+    defaultId: 1,
     cancelId: 1,
     noLink: true
   })
-  return choice === 0
+  return response === 0
 }
 
 /** 按名称模糊匹配项目（basename 优先，其次全路径包含）。 */
@@ -164,11 +183,9 @@ function findProjectByName(name: string): { key: string; path: string } | null {
   const needle = name.trim().toLowerCase()
   if (!needle) return null
   const projects = listProjectMemoryKeys()
-  const byBasename = projects.find((p) => {
-    const base = p.path.split(/[\\/]/).filter(Boolean).pop() ?? ''
-    return base.toLowerCase().includes(needle)
-  })
-  return byBasename ?? projects.find((p) => p.path.toLowerCase().includes(needle)) ?? null
+  const exact = projects.filter(project => projectLabel(project.path).toLowerCase() === needle || project.path.toLowerCase() === needle)
+  const matches = exact.length ? exact : projects.filter(project => projectLabel(project.path).toLowerCase().includes(needle))
+  return matches.length === 1 ? matches[0] : null
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -191,6 +208,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   const session = lookup?.(sessionId)
   if (!session) return json(response, 410, { ok: false, error: 'session-gone' })
+  if (tokens.get(token) !== sessionId || session.remoteReadonly) return json(response, 403, { ok: false, error: 'permission-denied' })
   try {
     return json(response, 200, await dispatch(body, session))
   } catch (error) {
@@ -213,10 +231,29 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
   switch (request.action) {
     case 'memory_save': {
       const scope = request.scope === 'global' ? 'global' : 'project'
+      const text = typeof request.text === 'string' ? request.text.trim() : ''
+      if (!text || text.length > 4_000) return { ok: false, error: 'invalid-text' }
+      if (session.mode === 'readonly') return { ok: false, error: 'permission-denied' }
+      if (session.mode === 'ask' || scope === 'global') {
+        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(w => w.isVisible() && !w.isDestroyed())
+        if (!win) return { ok: false, error: 'permission-denied' }
+        const en = getStore('language') === 'en'
+        const destination = scope === 'global' ? (en ? 'All projects' : '所有项目') : projectLabel(cwd)
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'question', title: en ? 'Save memory' : '保存记忆',
+          message: destination, detail: text.slice(0, 500),
+          buttons: en ? ['Save memory', 'Cancel'] : ['保存记忆', '取消'],
+          defaultId: 1, cancelId: 1, noLink: true
+        })
+        const current = lookup?.(session.id)
+        if (response !== 0 || !current || current.remoteReadonly || current.mode === 'readonly' || current.cwd !== cwd) {
+          return { ok: false, error: 'permission-denied' }
+        }
+      }
       // 来源自动记录当前对话（管理界面可追溯），不依赖模型自报。
       const source = { sessionTitle: (session.title ?? '').slice(0, 120) || undefined }
       const result = saveMemoryEntry({
-        text: typeof request.text === 'string' ? request.text : '',
+        text,
         scope,
         cwd,
         source: source.sessionTitle ? source : undefined
@@ -224,7 +261,7 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
       if (result.ok) {
         // 模型写入 → 通知窗口弹"已记住"toast（可撤销）。重复保存不弹。
         for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+          if (!result.duplicate && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
             win.webContents.send(IPC_CHANNELS.MEMORY_SAVED_EVENT, {
               id: result.entry.id,
               scope,
@@ -250,27 +287,22 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
     case 'memory_all_projects': {
       // 「你还记得之前记过什么」：全局 + 全部项目的记忆，一次给全。
       // 跨项目部分弹用户确认（隔离闸门），拒绝则只返回全局和本项目。
-      const layers = listProjectMemoryKeys().map(({ key, path }) => ({
-        path,
-        entries: readMemoryLayer('project', key).entries
-      }))
-      const others = layers.filter((layer) => layer.path !== cwd)
-      let allowedOthers: typeof layers = []
+      const others = listProjectMemoryKeys().filter(layer => !sameProject(layer.path, cwd))
+      let allowedOthers: typeof others = []
       if (others.length > 0) {
-        const totalEntries = others.reduce((count, layer) => count + layer.entries.length, 0)
         const label = others.length === 1
-          ? path.basename(others[0].path)
-          : `${others.length} 个项目的记忆（共 ${totalEntries} 条）`
-        if (confirmCrossProject(label)) allowedOthers = others
+          ? projectLabel(others[0].path)
+          : `${others.length} 个项目的记忆`
+        if (await confirmCrossProject(label)) allowedOthers = others
       }
       return {
         ok: true,
         confirmedCrossProject: allowedOthers.length > 0,
         global: readMemoryLayer('global', null).entries,
         currentProject: readMemoryLayer('project', projectMemoryKey(cwd)).entries,
-        otherProjects: allowedOthers.map(({ path, entries }) => ({
-          project: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
-          entries
+        otherProjects: allowedOthers.map(({ path, key }) => ({
+          project: projectLabel(path),
+          entries: readMemoryLayer('project', key).entries
         }))
       }
     }
@@ -285,34 +317,25 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
       if (!target) {
         return {
           ok: false,
-          error: 'project-not-found',
-          knownProjects: listProjectMemoryKeys().map(({ path }) => path.split(/[\\/]/).filter(Boolean).pop() ?? path)
+          error: 'project-not-found'
         }
       }
-      if (target.path === cwd) {
+      if (sameProject(target.path, cwd)) {
         // 目标就是当前项目：无需确认，直接查。
         const entries = readMemoryLayer('project', target.key).entries
-        return { ok: true, project: path.basename(target.path), entries: filterEntriesByKeywords(entries, keywords) }
+        return { ok: true, project: projectLabel(target.path), entries: filterEntriesByKeywords(entries, keywords) }
       }
-      const label = path.basename(target.path)
-      if (!confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
+      const label = projectLabel(target.path)
+      if (!await confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
       const entries = readMemoryLayer('project', target.key).entries
       return { ok: true, confirmedByUser: true, project: label, entries: filterEntriesByKeywords(entries, keywords) }
     }
-    case 'memory_delete': {
-      const scope = request.scope === 'global' ? 'global' : 'project'
-      const removed = deleteMemoryEntry(scope, typeof request.id === 'string' ? request.id : '', cwd)
-      return { ok: removed }
-    }
-    case 'memory_move': {
-      const to = request.to === 'global' ? 'global' : 'project'
-      const moved = moveMemoryEntry(typeof request.id === 'string' ? request.id : '', to === 'global' ? 'project' : 'global', to, cwd)
-      return { ok: moved }
-    }
-    case 'memory_update': {
-      const scope = request.scope === 'global' ? 'global' : 'project'
-      const updated = updateMemoryText(scope, typeof request.id === 'string' ? request.id : '', typeof request.text === 'string' ? request.text : '', cwd)
-      return { ok: updated }
+    case 'prompt_context': {
+      const language = getStore('language') === 'en' ? 'en' : 'zh'
+      const instruction = session.instruction
+        ? (language === 'en' ? '## Conversation instructions' : '## 本会话设定') + '\n' + session.instruction
+        : ''
+      return { ok: true, prompt: [buildMemoryPrompt(cwd, language), instruction].filter(Boolean).join('\n\n') }
     }
     case 'session_search': {
       return searchSessions(request, session)
@@ -348,6 +371,34 @@ function titleForFile(file: string): string {
   return path.basename(file)
 }
 
+/** A directory label is not proof of ownership in historical OMP layouts. */
+function readOwnedSessionHead(file: string, cwd: string, agentDir: string, limit: number): string | null {
+  if (!isSessionFilePath(file, agentDir)) return null
+  try {
+    if (path.relative(file, realpathSync(file)) !== '') return null
+    const head = readHead(file, limit)
+    if (!head) return null
+    const record = JSON.parse(head.split('\n', 1)[0])
+    return record?.type === 'session' && typeof record.cwd === 'string' && sameProject(record.cwd, cwd) ? head : null
+  } catch { return null }
+}
+
+function transcriptText(records: string): string {
+  const messages: string[] = []
+  for (const line of records.split('\n')) {
+    try {
+      const entry = JSON.parse(line)
+      const message = entry?.message
+      if (entry?.type !== 'message' || !message || !['user', 'assistant'].includes(message.role)) continue
+      if (typeof message.content === 'string') messages.push(message.content)
+      else if (Array.isArray(message.content)) {
+        messages.push(message.content.filter((part: any) => part?.type === 'text' && typeof part.text === 'string').map((part: { text: string }) => part.text).join('\n'))
+      }
+    } catch { /* A bounded read can end in a partial JSONL record. */ }
+  }
+  return messages.join('\n')
+}
+
 function snippetAround(content: string, needle: string): string {
   const lower = content.toLowerCase()
   const at = lower.indexOf(needle.toLowerCase())
@@ -369,7 +420,7 @@ function filterEntriesByKeywords(entries: Array<{ id: string; text: string; crea
  * 只搜当前项目的会话目录（sessionDirCandidatesFor 的全部候选布局都扫，
  * 不含别的项目）；跨项目必须走用户手动确认的通道，工具层永远给不了。
  */
-function searchSessions(request: Record<string, unknown>, session: BridgeSession): unknown {
+async function searchSessions(request: Record<string, unknown>, session: BridgeSession): Promise<unknown> {
   const keywords = Array.isArray(request.keywords)
     ? request.keywords.filter((k): k is string => typeof k === 'string' && k.trim().length > 0).slice(0, 5).map((k) => k.trim())
     : []
@@ -384,13 +435,12 @@ function searchSessions(request: Record<string, unknown>, session: BridgeSession
     if (!target) {
       return {
         ok: false,
-        error: 'project-not-found',
-        knownProjects: listProjectMemoryKeys().map(({ path }) => path.split(/[\\/]/).filter(Boolean).pop() ?? path)
+        error: 'project-not-found'
       }
     }
-    if (target.path !== session.cwd) {
-      const label = path.basename(target.path)
-      if (!confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
+    if (!sameProject(target.path, session.cwd)) {
+      const label = projectLabel(target.path)
+      if (!await confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
       scopeProject = label
     }
     scanCwd = target.path
@@ -430,10 +480,11 @@ function searchSessions(request: Record<string, unknown>, session: BridgeSession
       if (titleWords && !title.toLowerCase().includes(titleWords)) continue
       // 有界读取：头 512KB + 尾 128KB，并消耗全局字节预算（防止大转写文件阻塞主进程）。
       if (scanBudget <= 0) break
-      const head = readHead(file, 512_000) ?? ''
-      const tail = readTail(file, 128_000) ?? ''
-      scanBudget -= head.length + tail.length
-      const content = head + String.fromCharCode(10) + tail
+      const head = readOwnedSessionHead(file, scanCwd, agentDir, 512_000)
+      if (!head) continue
+      const tail = stat.size > 512_000 ? readTail(file, 128_000) ?? '' : ''
+      scanBudget -= Buffer.byteLength(head) + Buffer.byteLength(tail)
+      const content = transcriptText(head + '\n' + tail)
       const matched = keywords.find((keyword) => content.toLowerCase().includes(keyword.toLowerCase()))
       if (!matched) continue
       hits.push({
@@ -457,7 +508,7 @@ function searchSessions(request: Record<string, unknown>, session: BridgeSession
 /**
  * 读取一个命中的老对话（限当前项目；按 uuid 定位文件，返回有界摘录）。
  */
-function readSessionExcerpt(request: Record<string, unknown>, session: BridgeSession): unknown {
+async function readSessionExcerpt(request: Record<string, unknown>, session: BridgeSession): Promise<unknown> {
   const uuid = typeof request.uuid === 'string' ? request.uuid : ''
   const keyword = typeof request.keyword === 'string' && request.keyword.trim() ? request.keyword.trim() : null
   if (!uuid) return { ok: false, error: 'uuid-required' }
@@ -468,9 +519,9 @@ function readSessionExcerpt(request: Record<string, unknown>, session: BridgeSes
   if (projectName) {
     const target = findProjectByName(projectName)
     if (!target) return { ok: false, error: 'project-not-found' }
-    if (target.path !== session.cwd) {
-      const label = path.basename(target.path)
-      if (!confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
+    if (!sameProject(target.path, session.cwd)) {
+      const label = projectLabel(target.path)
+      if (!await confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
       scopeProject = label
     }
     scanCwd = target.path
@@ -486,12 +537,9 @@ function readSessionExcerpt(request: Record<string, unknown>, session: BridgeSes
     }
     for (const name of files) {
       const file = path.join(dir, name)
-      let content: string
-      try {
-        content = readTail(file, MAX_READ_CHARS * 8) ?? ''
-      } catch {
-        continue
-      }
+      if (!readOwnedSessionHead(file, scanCwd, agentDir, 16_000)) continue
+      const content = transcriptText(readTail(file, MAX_READ_CHARS * 8) ?? '')
+      if (!content) continue
       let excerpt: string
       if (keyword) {
         const at = content.toLowerCase().indexOf(keyword.toLowerCase())

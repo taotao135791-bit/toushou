@@ -36,7 +36,7 @@ function ProjectRow({ project, renderConversations, drag, draggedSession, filing
   const isCurrent = current?.realPath === project.path
   const dropKey = () => {
     const key = draggedSession?.current
-    return key && filingPaths?.has(key) && filingPaths.get(key) !== project.path && !project.archived && !project.missing && !project.isDefault ? key : null
+    return key && filingPaths?.has(key) && !project.archived && !project.missing && !project.isDefault ? key : null
   }
   const dragConversationOver = (event: DragEvent<HTMLDivElement>) => {
     if (!dropKey()) return
@@ -59,16 +59,16 @@ function ProjectRow({ project, renderConversations, drag, draggedSession, filing
       if (draggedSession) draggedSession.current = null
       void onFileSession(key, project).then(moved => { if (moved) setExpanded(true) })
     }}>
-    <div {...drag} className={`group flex items-center rounded-lg ${isCurrent ? 'bg-overlay' : 'hover:bg-overlay'}`}>
+    <div {...drag} className={`group flex min-h-8 items-center rounded-lg ${isCurrent ? 'bg-overlay' : 'hover:bg-overlay'}`}>
     {!project.archived && <button type="button" aria-label={t('projects.conversations', { name: project.name })} aria-expanded={expanded} aria-controls={`project-conversations-${project.id}`}
       onClick={() => setExpanded(value => !value)} className="ml-1 shrink-0 rounded p-1 text-cream-faint hover:bg-overlay focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"><ChevronRight size={12} className={`transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} /></button>}
-    <button ref={projectButton} type="button" disabled={!!pending || project.archived || project.missing} title={project.path}
-      onClick={() => { setExpanded(true); if (!isCurrent) void activate(project.id) }} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left disabled:opacity-60">
+    <button ref={projectButton} type="button" data-project-select disabled={!!pending || project.archived || project.missing} title={project.name}
+      onClick={() => { setExpanded(true); if (!isCurrent) void activate(project.id) }} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left disabled:opacity-60">
       {/* 文件夹图标随展开状态开/合（学 kimi 的状态图标切换），切换带轻缩放淡入。 */}
       <span key={expanded ? 'open' : 'closed'} className="shrink-0 text-cream-faint row-in" style={{ animationDuration: '150ms' }}>
         {expanded ? <FolderOpen size={14} /> : <Folder size={14} className="-scale-x-100" />}
       </span>
-      <span className="min-w-0 flex-1"><span className="block truncate text-[12.5px] text-cream">{project.isDefault ? t('sidebar.defaultWorkspace') : project.name}</span><span className="block truncate text-[10.5px] text-cream-faint">{project.path}</span></span>
+      <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-5 text-cream">{project.isDefault ? t('sidebar.defaultWorkspace') : project.name}</span>
     </button>
     {pending?.endsWith(project.id) && <Loader2 size={12} className="shrink-0 animate-spin text-cream-faint" />}
     <button ref={trigger} type="button" aria-label={t('projects.actions', { name: project.name })} aria-expanded={open} aria-haspopup="menu"
@@ -99,7 +99,7 @@ function ProjectRow({ project, renderConversations, drag, draggedSession, filing
         className="ml-3 border-l border-line pl-1 [animation:disclose-in_180ms_var(--ease-out)_both] origin-top"
         data-project-conversations={project.id}
       >
-        {renderConversations?.(project.path) || <p className="px-2.5 py-2 text-[11.5px] text-cream-faint">{t('projects.noConversations')}</p>}
+        {renderConversations?.(project.path) || <p className="px-2.5 py-1.5 text-[11.5px] text-cream-faint">{t('projects.noConversations')}</p>}
       </div>
     )}
   </div>

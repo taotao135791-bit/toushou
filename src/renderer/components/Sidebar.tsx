@@ -1,5 +1,5 @@
 import type { ProjectRecord } from '@shared/types'
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   MessageCircle,
@@ -29,9 +29,10 @@ import {
   Clock,
   CopyPlus,
   BriefcaseBusiness,
-  MoreHorizontal
+  MoreHorizontal,
+  ScrollText
 } from 'lucide-react'
-import { HistorySessionDescriptor, HistorySessionRow, SessionSortOrder } from '@shared/types'
+import { HistorySessionDescriptor, HistorySessionRow, Session, SessionSortOrder } from '@shared/types'
 import { MessageLike, useAppStore } from '../store'
 import { historyComposerDraftKey, NEW_CHAT_DRAFT_KEY, sessionComposerDraftKey } from '../lib/composerDraft'
 import { useT, modShortcut } from '../i18n'
@@ -42,14 +43,12 @@ import { finishHistoryResume, historyResumeGrant, openGlobalHistory } from '../l
 import { ConfirmDialog } from './ConfirmDialog'
 import { UndoableDeleteBanner, useUndoableDelete } from './UndoableDelete'
 import { runThemeTransition } from '../lib/themeTransition'
-import TaijiOverlay from './TaijiOverlay'
 import {
   recordDurableUuid,
   recordsForWorkspace,
   sessionFileUuid,
   sortSessionRows
 } from '../lib/sessionRegistry'
-import { formatRelativeTime } from '../lib/time'
 import { getSessionStatus, type SessionStatusKind } from '../lib/sessionStatus'
 import { basename } from '../lib/path'
 import { useConfirmId } from '../lib/confirmClick'
@@ -57,6 +56,8 @@ import Logo from './Logo'
 import BoardsIcon from './BoardsIcon'
 import MenuPortal from './MenuPortal'
 import SidebarProjects from './SidebarProjects'
+import SessionInstructionDialog from './SessionInstructionDialog'
+import { shortcutPlatform } from '../lib/platformShortcut'
 import JellyToggle from './effects/JellyToggle'
 import HoldToDelete, { HOLD_TO_DELETE_MS } from './effects/HoldToDelete'
 import SidebarList from './SidebarList'
@@ -113,12 +114,22 @@ async function resolveLiveWorkspace(cwd: string, intent: number, options?: { pre
   return null
 }
 
-const rowStatusColors: Record<SessionStatusKind, [string, string]> = {
-  idle: ['bg-cream-faint', 'text-cream-faint/70'],
-  error: ['bg-red-500', 'text-red-500'],
-  attention: ['animate-pulse bg-red-400', 'text-red-400'],
-  running: ['animate-pulse bg-amber-400', 'text-amber-400'],
-  unread: ['bg-accent', 'text-accent']
+const conversationRow = 'group flex min-h-8 items-center gap-1 rounded-lg px-2 transition-colors duration-150'
+const conversationSelect = 'flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent'
+
+function SessionStatusIndicator({ status, label }: { status: SessionStatusKind; label?: string }) {
+  if (status === 'idle') return null
+  return (
+    <span aria-hidden="true" title={label} data-session-status={status} className="grid w-3 shrink-0 place-items-center">
+      {status === 'running' ? (
+        <Loader2 size={12} className="text-cream-faint motion-safe:animate-spin" />
+      ) : status === 'attention' ? (
+        <AlertCircle size={12} className="text-amber-600 dark:text-amber-400" />
+      ) : (
+        <span data-session-dot className={`h-2 w-2 rounded-full ${status === 'error' ? 'bg-red-500 dark:bg-red-400' : 'bg-blue-500 dark:bg-blue-400'}`} />
+      )}
+    </span>
+  )
 }
 
 function SessionMoreButton({ id, label, trigger, loading, toggle }: {
@@ -136,7 +147,7 @@ function SessionMoreButton({ id, label, trigger, loading, toggle }: {
           ? 'opacity-100 scale-100'
           : 'opacity-0 scale-90 group-hover:opacity-100 group-hover:scale-100 group-focus-within:opacity-100 group-focus-within:scale-100 focus:opacity-100 focus:scale-100'
       }`}>
-      {loading ? <Loader2 size={14} className="animate-spin" /> : <MoreHorizontal size={14} />}
+      <MoreHorizontal size={14} aria-hidden="true" />
     </button>
   )
 }
@@ -166,13 +177,12 @@ export default function Sidebar() {
   const currentSessionId = useAppStore((s) => s.currentSessionId)
   const cliAvailable = useAppStore((s) => s.cliAvailable)
   const sessionRecords = useAppStore((s) => s.sessionRecords)
-  const language = useAppStore((s) => s.language)
   const theme = useAppStore((s) => s.theme)
   const themeSource = useAppStore((s) => s.themeSource)
   const setThemeSource = useAppStore((s) => s.setThemeSource)
   /** 右键「跟随系统」的太极仪式层坐标（x + 目标深浅）。 */
-  const [taiji, setTaiji] = useState<{ x: number; targetDark: boolean } | null>(null)
   const busy = useAppStore((s) => s.busy)
+  const sessionErrors = useAppStore((s) => s.sessionErrors)
   const pinnedSessionIds = useAppStore((s) => s.pinnedSessionIds)
   const archivedSessionIds = useAppStore((s) => s.archivedSessionIds)
   const lockedSessionIds = useAppStore((s) => s.lockedSessionIds)
@@ -186,8 +196,6 @@ export default function Sidebar() {
   const scheduledTasks = useAppStore((s) => s.scheduledTasks)
   const projectRecords = useProjects(state => state.projects)
   const archivedProjectPaths = useMemo(() => new Set(projectRecords.filter(project => project.archived).map(project => project.path)), [projectRecords])
-  const defaultProjectPaths = useMemo(() => new Set(projectRecords.filter(project => project.isDefault).map(project => project.path)), [projectRecords])
-  const projectNames = useMemo(() => new Map(projectRecords.map(project => [project.path, project.name])), [projectRecords])
   const setCurrentSessionId = useAppStore((s) => s.setCurrentSessionId)
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const setSessions = useAppStore((s) => s.setSessions)
@@ -203,6 +211,7 @@ export default function Sidebar() {
 
   const [sessionMenuId, setSessionMenuId] = useState<string | null>(null)
   const sessionMenuTrigger = useRef<HTMLButtonElement | null>(null)
+  const [instructionSession, setInstructionSession] = useState<{ id: string; title: string } | null>(null)
   // Avoid starting duplicate copies from repeated clicks.
   const [forkingSessionId, setForkingSessionId] = useState<string | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -258,7 +267,7 @@ export default function Sidebar() {
 
   // Session list ordering. Persisted through Main's typed settings store like
   // the sidebar width; hydrated once on mount (store default is 'recent').
-  const { assignments, file } = useFiledProjects()
+  const { assignments, file, move } = useFiledProjects()
   const draggedSession = useRef<string | null>(null)
   const [manualOrder, saveManualOrder] = useSidebarOrder('sidebarSessionOrder')
   const sortChanged = useRef(false)
@@ -427,12 +436,12 @@ export default function Sidebar() {
     if (next && isCurrentNavigationIntent(next.intent)) next.open()
   }
 
-  const handleResumeHistory = async (info: HistorySessionDescriptor, expectedWorkspace?: string, epoch = beginNavigationIntent(), fromGlobal = false): Promise<boolean> => {
+  const handleResumeHistory = async (info: HistorySessionDescriptor, expectedWorkspace?: string, epoch = beginNavigationIntent(), fromGlobal = false, onSelected?: (session: Session) => void): Promise<boolean> => {
     if (!isCurrentNavigationIntent(epoch)) return false
     // While the list is reloading for a new workspace its entries may still
     // belong to the previous project — resuming one would use the new grant.
     if (resumingHistoryRef.current || openingLiveRef.current || (resumingGlobalRef.current && !fromGlobal)) {
-      queuedOpen.current = { intent: epoch, open: () => void handleResumeHistory(info, expectedWorkspace, epoch) }
+      queuedOpen.current = { intent: epoch, open: () => void handleResumeHistory(info, expectedWorkspace, epoch, false, onSelected) }
       return false
     }
     const targetWorkspace = expectedWorkspace ?? useAppStore.getState().currentWorkspace?.realPath
@@ -521,6 +530,7 @@ export default function Sidebar() {
           setCurrentSessionId(session.id, epoch)
           if (previewShown) useAppStore.getState().clearSessionPreview(previewId)
           if (!previewShown) navigate('/')
+          onSelected?.({ ...session, title })
         }
       })
       if (!selected && isCurrentNavigationIntent(epoch)) showNotice('history.restoredInOtherProject')
@@ -669,9 +679,9 @@ export default function Sidebar() {
    * that project is in the recents list (the only trusted authority source),
    * then resume. Everything else asks the user to add the folder first.
    */
-  const handleOpenGlobal = async (row: (typeof globalHistory)[number], epoch = beginNavigationIntent()) => {
+  const handleOpenGlobal = async (row: HistorySessionRow, epoch = beginNavigationIntent(), onSelected?: (session: Session) => void) => {
     if (resumingGlobalRef.current || resumingHistoryRef.current || openingLiveRef.current) {
-      queuedOpen.current = { intent: epoch, open: () => void handleOpenGlobal(row, epoch) }
+      queuedOpen.current = { intent: epoch, open: () => void handleOpenGlobal(row, epoch, onSelected) }
       return
     }
     resumingGlobalRef.current = true
@@ -692,7 +702,7 @@ export default function Sidebar() {
           if (!state.historyLoading && state.sessionRecords.some(record => !record.isLive && record.workspaceRealPath === row.cwd && record.history?.uuid === row.uuid)) return Promise.resolve()
           return loadScopedHistory(id)
         },
-        resume: (info, workspace) => handleResumeHistory(info, workspace, epoch, true)
+        resume: (info, workspace) => handleResumeHistory(info, workspace, epoch, true, onSelected)
       })
       if (!isCurrentNavigationIntent(epoch)) return
       if (result === 'loading') showNotice('history.loading')
@@ -825,10 +835,6 @@ export default function Sidebar() {
   const toggleSessionLock = async (uuid: string, locked: boolean) => {
     if (await setSessionLocked(uuid, !locked) === 'failed') showNotice('sidebar.lockSaveFailed')
   }
-  const renderLockBadge = (uuid: string | null) => uuid !== null && lockedSet.has(uuid) && (
-    <Lock size={10} className="shrink-0 text-accent" role="img" aria-label={t('sidebar.locked')} />
-  )
-
   // Archive key of a live session: its durable uuid when the registry knows
   // one, else the runtime id. UUID keys survive the live→durable handoff.
   const durableUuidOfSession = useCallback(
@@ -851,8 +857,7 @@ export default function Sidebar() {
   // ---- unified "最近" flat list ------------------------------------------
   // Live sessions (every project), workspace-bound history rows, and the
   // cross-project durable scan merge into one list. The durable scan is what
-  // makes the sidebar survive restarts. Rows of projects other than the
-  // active one carry their project as a suffix.
+  // makes the sidebar survive restarts.
 
   // History entries whose file belongs to a live session (resumed from it or
   // freshly created into it) are hidden; the search box filters by title too.
@@ -912,16 +917,46 @@ export default function Sidebar() {
 
   const fileInProject = async (key: string, project: ProjectRecord) => {
     const entry = filing.entries.get(key)
-    if (!entry || project.isDefault || project.archived || project.missing) return false
-    const previousKey = runtimeFilingKey(entry)
-    const moved = await file(key, project.path === entry.workspacePath ? null : project.id,
-      previousKey && previousKey !== key && assignments[previousKey] ? previousKey : undefined)
-    showNotice(moved ? 'sidebar.filedInProject' : 'sidebar.fileInProjectFailed')
-    // A new runtime may be dragged before the first snapshot supplies its
-    // transcript identity. The handoff above persists its placement under
-    // the durable key as soon as the runtime publishes one.
-    if (moved && entry.kind === 'live' && previousKey === key) void useAppStore.getState().refreshComposerDraftIdentity(entry.session.id)
-    return moved
+    const before = useAppStore.getState()
+    if (!entry || !before.currentWorkspace || project.isDefault || project.archived || project.missing) return false
+    if (entry.kind === 'live' && (before.busy[entry.session.id] || before.queuedMessages[entry.session.id]?.length)) {
+      showNotice('sidebar.moveConversationBusy')
+      return false
+    }
+    const sourceId = entry.kind === 'live' ? entry.session.id : entry.kind === 'history' ? `preview:${entry.info.id}` : undefined
+    const selected = Boolean(sourceId) && before.currentSessionId === sourceId
+    const intent = selected ? beginNavigationIntent() : undefined
+    const result = await move(before.currentWorkspace.id, entry, project.id)
+    const retired = new Set(result.retiredSessionIds)
+    const current = useAppStore.getState()
+    if (retired.size) current.setSessions(current.sessions.filter(session => !retired.has(session.id)))
+    const reopen = intent !== undefined && isCurrentNavigationIntent(intent) && current.currentSessionId === sourceId
+    if (!result.ok) {
+      if (reopen && sourceId && retired.has(sourceId)) {
+        const uuid = entry.kind === 'live' ? entry.session.draftSessionUuid ?? sessionFileUuid(entry.session.sessionFile ?? entry.session.resumeFrom) : undefined
+        if (uuid) await handleOpenGlobal({ cwd: entry.workspacePath, uuid, title: entry.title, timestamp: entry.timestamp }, intent)
+      }
+      if (result.error === 'busy') showNotice('sidebar.moveConversationBusy')
+      else if (result.error === 'conflict') showNotice('sidebar.moveConversationConflict')
+      else showNotice('sidebar.fileInProjectFailed')
+      return false
+    }
+    const { row } = result
+    useAppStore.setState(state => ({
+      globalHistory: [row, ...state.globalHistory.filter(item => item.uuid !== row.uuid || (item.cwd !== entry.workspacePath && item.cwd !== row.cwd))],
+      sessionRecords: state.sessionRecords.filter(record => record.isLive || record.workspaceRealPath !== entry.workspacePath || record.history?.uuid !== row.uuid)
+    }))
+    const nextKey = JSON.stringify([row.cwd, row.uuid])
+    if (nextKey !== key && manualOrder.includes(key)) saveManualOrder(manualOrder.map(item => item === key ? nextKey : item))
+    showNotice('sidebar.filedInProject')
+    void useAppStore.getState().loadAllHistorySessions()
+    if (reopen) {
+      if (row.cwd !== entry.workspacePath || retired.size > 0) await handleOpenGlobal(row, intent)
+    } else {
+      const workspace = useAppStore.getState().currentWorkspace
+      if (workspace && (workspace.realPath === entry.workspacePath || workspace.realPath === row.cwd)) void loadHistorySessions(workspace.id)
+    }
+    return true
   }
 
   // Archived test per entry kind. Live rows consult their durable uuid too, so
@@ -975,11 +1010,7 @@ export default function Sidebar() {
   const iconBtn =
     'shrink-0 rounded-md p-1 text-cream-faint opacity-0 transition-[opacity,transform] duration-200 group-hover:opacity-100 group-hover:scale-100 scale-90 group-focus-within:opacity-100 focus:opacity-100 focus:scale-100'
 
-  // Action slots reserve their width; hovering never moves the select button.
-
-  // Provenance chip shared by live, history and cross-project rows: a session
-  // spawned by a Feishu route or a scheduled task keeps its badge even after
-  // the in-memory registry is gone (origin rides the durable index).
+  // Provenance stays in the row menu even after the live runtime closes.
   const renderOriginBadge = (origin?: 'feishu' | 'task', importedFrom?: HistorySessionDescriptor['importedFrom']) => {
     const importedLabel = importedFrom === 'codex' ? 'Codex' : importedFrom === 'claude' ? 'Claude Code' : undefined
     if (!origin && !importedLabel) return null
@@ -1019,30 +1050,22 @@ export default function Sidebar() {
       .catch(() => showNotice('sidebar.renameFailed'))
   }
 
-  const importedSourceByRuntime = new Map(sessionRecords.flatMap(record =>
-    record.runtimeSessionId && record.history?.importedFrom ? [[record.runtimeSessionId, record.history.importedFrom] as const] : []
-  ))
-  function rowTime(timestamp: number, cwd?: string) {
-    const time = formatRelativeTime(timestamp, language)
-    return cwd && cwd !== currentWorkspace?.realPath && !defaultProjectPaths.has(cwd)
-      ? `${projectNames.get(cwd) || basename(cwd) || cwd} · ${time}` : time
-  }
-  function rowBody(title: string, timestamp: string, status: SessionStatusKind, badges: ReactNode, error?: string) {
-    const [dotColor, statusColor] = rowStatusColors[status]
+  function rowBody(title: string, status: SessionStatusKind, statusLabel?: string) {
     return <>
-      <span data-session-dot aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
-      <span className="min-w-0 flex-1">
-        <span className={`flex min-w-0 items-center gap-1.5 ${status === 'error' ? 'text-cream-faint line-through' : 'text-cream'}`}>
-          <span data-session-title className="min-w-0 truncate text-[13px] font-medium leading-5">{title}</span>
-          {badges}
-        </span>
-        <span data-session-subtitle className={`block truncate text-[11px] leading-4 ${error ? 'text-red-500' : 'text-cream-faint'}`}>
-          {error ?? timestamp}
-          {!error && <span className={`ml-1 text-[10px] font-medium ${statusColor}`}>{t(`sidebar.status.${status}`)}</span>}
-        </span>
-      </span>
+      <span data-session-title className="min-w-0 flex-1 truncate text-[13px] font-medium leading-5">{title}</span>
+      <SessionStatusIndicator status={status} label={statusLabel} />
     </>
   }
+
+  function rowLabel(title: string, uuid: string | null, draftKey: string | null, statusLabel?: string) {
+    return [
+      title,
+      statusLabel,
+      uuid && lockedSet.has(uuid) ? t('sidebar.locked') : null,
+      draftKey && draftSessionIds.has(draftKey) ? t('sidebar.draftBadge') : null
+    ].filter(Boolean).join(', ')
+  }
+
   function rowMore(key: string, id: string, title: string, loading = false) {
     return <SessionMoreButton id={id} loading={loading} label={t('sidebar.sessionActions', { title })}
       trigger={sessionMenuId === key ? sessionMenuTrigger.current : null} toggle={element => {
@@ -1052,40 +1075,30 @@ export default function Sidebar() {
         setSessionMenuId(same ? null : key)
       }} />
   }
-  const renderSessionRow = (session: (typeof sessions)[number], key: string) => {
+  const renderSessionRow = (session: Session, key: string) => {
     const active = currentSessionId === session.id
-    const running = Boolean(busy[session.id])
-    const unread = !active && Boolean(unreadSessionIds[session.id])
-    // A background session waiting on an approval/plugin dialog needs the
-    // user — outranks the plain working dot.
-    const waiting = (uiRequests[session.id] || []).length > 0
-    // The process is gone (spawn failure / crash) — outranks everything.
-    const dead = session.status === 'error'
-    const status = getSessionStatus({ busy: running, waiting, error: dead, unread })
-    const statusLabel = t(`sidebar.status.${status}`)
+    const running = busy[session.id] ?? session.status === 'running'
+    const waiting = Boolean(uiRequests[session.id]?.length)
+    const failure = sessionErrors[session.id]
+    const failed = session.status === 'error' || (!running && (
+      failure === 'chat.sendFailed' || failure === 'chat.queueDeliveryUnknown' ||
+      failure === 'chat.sessionDead' || failure === 'chat.turnFailed'
+    ))
+    const status = getSessionStatus({ busy: running, waiting, error: failed, unread: !active && Boolean(unreadSessionIds[session.id]) })
+    const statusLabel = status === 'idle' ? undefined : t(`sidebar.status.${status}`)
     const pinned = pinnedSet.has(session.id)
-    // Externally created (Feishu channel) rows keep a brand badge so users can
-    // tell where the conversation lives; foreign-workspace rows carry the
-    // project suffix like the cross-project history rows do.
     const title = displayTitle(session.title, basename(session.cwd) || session.cwd)
     return (
       <div
         key={key}
         data-conversation-key={key}
         {...dragSession(key, pinned ? 'pinned' : 'recent')}
-        className={`group flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 transition-colors duration-150 ${
-          active ? 'bg-selected' : 'hover:bg-overlay'
-        }`}
+        className={`${conversationRow} ${active ? 'bg-selected' : 'hover:bg-overlay'}`}
       >
         <button type="button" data-conversation-select onClick={() => void handleOpenLive(session)}
-          title={title} aria-label={`${title}, ${statusLabel}`} aria-current={active ? 'true' : undefined}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-          {rowBody(title, rowTime(session.lastActivityAt ?? session.createdAt, session.cwd), status, <>
-            {renderOriginBadge(session.origin, importedSourceByRuntime.get(session.id))}
-            {renderDraftBadge(sessionComposerDraftKey(session))}
-            {renderLockBadge(durableUuidOfSession(session.id))}
-            {pinned && <Pin size={10} className="shrink-0 text-accent" aria-hidden="true" />}
-          </>)}
+          title={title} aria-label={rowLabel(title, durableUuidOfSession(session.id), sessionComposerDraftKey(session), statusLabel)}
+          aria-current={active ? 'true' : undefined} className={`${conversationSelect} text-cream`}>
+          {rowBody(title, status, statusLabel)}
         </button>
         {rowMore(key, session.id, title)}
       </div>
@@ -1093,7 +1106,7 @@ export default function Sidebar() {
   }
 
   /**
-   * Archived rows are read-only summaries: title + project suffix, unarchive
+   * Archived rows offer a title, unarchive, lock
    * and delete. Opening one auto-unarchives it — an open session is not
    * archived — so history/global rows resume as usual with their key cleared
    * first and the resumed live row stays visible.
@@ -1111,6 +1124,7 @@ export default function Sidebar() {
     }
     const archivedUuid = entry.kind === 'history' ? entry.info.uuid : entry.kind === 'global' ? entry.row.uuid : durableUuidOfSession(entry.session.id)
     const locked = archivedUuid !== null && lockedSet.has(archivedUuid)
+    const title = displayTitle(entry.title, entry.projectName)
     const confirmDelete = () => {
       // 锁定对话一律拦在入口：不进乐观删除（否则会先藏行/杀进程再回滚）。
       if (locked) {
@@ -1126,20 +1140,11 @@ export default function Sidebar() {
         key={entry.key}
         data-conversation-key={entry.key}
         {...dragSession(entry.key, entry.pinned ? 'archived-pinned' : 'archived')}
-        className="group flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 transition-colors duration-150 hover:bg-overlay"
+        className={`${conversationRow} hover:bg-overlay`}
       >
-        <button type="button" data-conversation-select onClick={unarchiveAndOpen} title={entry.title}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-          <span data-session-dot aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-cream-faint" />
-          <span className="min-w-0 flex-1">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[13px] leading-5 text-cream-faint">{displayTitle(entry.title, entry.projectName)}</span>
-              {renderLockBadge(archivedUuid)}
-            </span>
-            <span className="block truncate text-[11px] leading-4 text-cream-faint/70">
-              {defaultProjectPaths.has(entry.workspacePath) ? formatRelativeTime(entry.timestamp, language) : `${projectNames.get(entry.workspacePath) || entry.projectName} · ${formatRelativeTime(entry.timestamp, language)}`}
-            </span>
-          </span>
+        <button type="button" data-conversation-select onClick={unarchiveAndOpen} title={title}
+          aria-label={rowLabel(title, archivedUuid, null)} className={`${conversationSelect} text-cream-faint`}>
+          {rowBody(title, 'idle')}
         </button>
         <button
           type="button"
@@ -1185,21 +1190,14 @@ export default function Sidebar() {
     const title = displayTitle(info.title, basename(currentWorkspace?.realPath ?? ''))
     const error = restoreFailedHistoryId === info.id ? t('history.restoreFailed')
       : deleteFailedHistoryId === info.id ? t('history.deleteFailed') : undefined
+    const status = resuming ? 'running' : error ? 'error' : 'idle'
+    const statusLabel = resuming ? t('history.loading') : error
     return (
-      <div
-        key={key}
-        data-conversation-key={key}
-        {...dragSession(key, 'recent')}
-        className={`group flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 transition-colors duration-150 hover:bg-overlay ${resuming ? 'opacity-60' : ''}`}
-      >
+      <div key={key} data-conversation-key={key} {...dragSession(key, 'recent')} className={`${conversationRow} hover:bg-overlay`}>
         <button type="button" data-conversation-select disabled={resuming} onClick={() => void handleResumeHistory(info)} title={title}
-          aria-label={`${title}, ${error ?? t('sidebar.status.idle')}`}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait">
-          {rowBody(title, rowTime(info.timestamp), 'idle', <>
-            {renderOriginBadge(info.origin, info.importedFrom)}
-            {renderDraftBadge(historyComposerDraftKey(info.uuid))}
-            {renderLockBadge(info.uuid)}
-          </>, error)}
+          aria-label={rowLabel(title, info.uuid, historyComposerDraftKey(info.uuid), statusLabel)}
+          className={`${conversationSelect} text-cream disabled:cursor-wait`}>
+          {rowBody(title, status, statusLabel)}
         </button>
         {rowMore(key, info.uuid, title, resuming)}
       </div>
@@ -1211,39 +1209,23 @@ export default function Sidebar() {
    * is resolved Main-side by uuid, so it works no matter which workspace is
    * active — including rows whose restore failed and never minted a capability.
    */
-  const renderGlobalRow = (row: (typeof globalHistory)[number], key: string) => {
-    // Only the row being resumed greys and locks — one pending resume must
-    // not freeze every cross-project row in the list.
+  const renderGlobalRow = (row: HistorySessionRow, key: string) => {
     const resuming = resumingGlobalUuid === row.uuid
     const title = displayTitle(row.title, basename(row.cwd) || row.cwd)
     const error = deleteFailedGlobalUuid === row.uuid ? t('history.deleteFailed') : undefined
+    const status = resuming ? 'running' : error ? 'error' : 'idle'
+    const statusLabel = resuming ? t('history.loading') : error
     return (
-      <div
-        key={key}
-        data-conversation-key={key}
-        {...dragSession(key, 'recent')}
-        className={`group flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 transition-colors duration-150 hover:bg-overlay ${resuming ? 'opacity-60' : ''}`}
-      >
+      <div key={key} data-conversation-key={key} {...dragSession(key, 'recent')} className={`${conversationRow} hover:bg-overlay`}>
         <button type="button" data-conversation-select disabled={resuming} onClick={() => void handleOpenGlobal(row)} title={title}
-          aria-label={`${title}, ${error ?? t('sidebar.status.idle')}`}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait">
-          {rowBody(title, rowTime(row.timestamp, row.cwd), 'idle', <>
-            {renderOriginBadge(row.origin, row.importedFrom)}
-            {renderDraftBadge(historyComposerDraftKey(row.uuid))}
-            {renderLockBadge(row.uuid)}
-          </>, error)}
+          aria-label={rowLabel(title, row.uuid, historyComposerDraftKey(row.uuid), statusLabel)}
+          className={`${conversationSelect} text-cream disabled:cursor-wait`}>
+          {rowBody(title, status, statusLabel)}
         </button>
         {rowMore(key, row.uuid, title, resuming)}
       </div>
     )
   }
-
-  // Archived live sessions don't count toward the running banner — they are
-  // killed on archive, so a remaining busy entry is a fallback-path leftover.
-  const runningCount = useMemo(
-    () => sessions.reduce((count, s) => count + (busy[s.id] && !isSessionArchived(s.id) ? 1 : 0), 0),
-    [sessions, busy, isSessionArchived]
-  )
 
   const renderRecentEntry = (entry: RecentEntry) => {
     if (entry.kind === 'live') return renderSessionRow(entry.session, entry.key)
@@ -1256,6 +1238,14 @@ export default function Sidebar() {
   const menuUuid = menuEntry?.kind === 'history' ? menuEntry.info.uuid : menuEntry?.kind === 'global' ? menuEntry.row.uuid
     : menuSession ? durableUuidOfSession(menuSession.id) : null
   const menuLocked = !!menuUuid && lockedSet.has(menuUuid)
+  const menuHistory = menuEntry?.kind === 'history' ? menuEntry.info : menuEntry?.kind === 'global' ? menuEntry.row : undefined
+  const openSessionInstruction = (session: Session) => {
+    if (session.remoteReadonly) {
+      showNotice('chat.instruction.readonly')
+      return
+    }
+    setInstructionSession({ id: session.id, title: displayTitle(session.title, basename(session.cwd) || session.cwd) })
+  }
   const closeSessionMenu = () => {
     setSessionMenuId(null)
     archiveSessionConfirm.reset()
@@ -1279,8 +1269,7 @@ export default function Sidebar() {
       data-sidebar-appearance="lightweight"
       className="app-sidebar relative flex shrink-0 flex-col border-r border-line bg-ink-900 max-w-[min(360px,30vw)]"
     >
-      {/* drag spacer — clears the macOS traffic lights */}
-      <div className="sidebar-window-drag app-drag h-11 shrink-0" />
+      {shortcutPlatform() === 'darwin' && <div className="sidebar-window-drag app-drag h-11 shrink-0" />}
 
       {/* Resize handle: spans everything below the drag spacer so it never
           fights window dragging, overlays the border, highlights on hover,
@@ -1293,7 +1282,7 @@ export default function Sidebar() {
         onPointerUp={handleResizeEnd}
         onPointerCancel={handleResizeEnd}
         onDoubleClick={() => commitSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
-        className={`app-no-drag absolute bottom-0 right-0 top-11 z-20 w-[5px] touch-none cursor-col-resize transition-colors duration-150 ${
+        className={`app-no-drag absolute bottom-0 right-0 ${shortcutPlatform() === 'darwin' ? 'top-11' : 'top-0'} z-20 w-[5px] touch-none cursor-col-resize transition-colors duration-150 ${
           sidebarResizing ? 'bg-accent/50' : 'hover:bg-accent/25'
         }`}
       />
@@ -1412,14 +1401,6 @@ export default function Sidebar() {
         const items = projectConversations.get(path)
         return items?.length ? <SidebarList items={items} render={renderRecentEntry} /> : null
       }} />
-
-      {/* Running task count */}
-      {runningCount > 0 && (
-        <div className="mx-2.5 mt-2 flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-600 dark:text-amber-300">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
-          {t('sidebar.runningCount', { count: runningCount })}
-        </div>
-      )}
 
       <div className="sidebar-conversations mt-5 px-2.5 pb-4" data-all-conversations>
         <div className="sidebar-section-header flex items-center justify-between px-2 pb-1.5">
@@ -1553,17 +1534,9 @@ export default function Sidebar() {
         </button>
         <button
           onClick={(e) => runThemeTransition(() => setTheme(theme === 'dark' ? 'light' : 'dark'), { x: e.clientX, y: e.clientY }, theme === 'dark' ? 'light' : 'dark')}
-          onContextMenu={(e) => {
-            // 右键 = 自动开关：手动→跟随系统（放太极仪式层，主题切换藏在
-            // 颜色扩展之下）；跟随系统→切回手动（保持当前深浅，无仪式）。
-            e.preventDefault()
-            if (themeSource === 'system') {
-              setThemeSource('manual')
-              return
-            }
-            const targetDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
-            setTaiji({ x: e.clientX, targetDark })
-            // 真实切换藏在仪式层扩展之下（onMid 回调触发）。
+          onContextMenu={(event) => {
+            event.preventDefault()
+            setThemeSource(themeSource === 'system' ? 'manual' : 'system')
           }}
           title={themeSource === 'system' ? t('sidebar.themeAutoHint') : t('sidebar.themeRightHint')}
           aria-label={t('sidebar.theme')}
@@ -1572,29 +1545,23 @@ export default function Sidebar() {
           <span key={theme} className="theme-icon">
             {themeSource === 'system' ? <Monitor size={14} /> : theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
           </span>
-          {themeSource === 'system' && (
-            <span
-              aria-hidden="true"
-              className="absolute -right-0.5 -top-0.5 flex h-3 w-3 items-center justify-center rounded-full bg-accent text-[8px] font-bold leading-none text-[rgb(var(--bg-app))]"
-            >
-              A
-            </span>
-          )}
         </button>
-        {taiji && (
-          <TaijiOverlay
-            targetDark={taiji.targetDark}
-            /* onMid 只做真实切换；卸载留给 onDone（flood+fade 演完）——
-               提前卸载会把仪式拦腰截断，主题跳变暴露出来。 */
-            onMid={() => setThemeSource('system')}
-            onDone={() => setTaiji(null)}
-          />
-        )}
       </div>
 
       <MenuPortal open={Boolean(menuEntry)} triggerRef={sessionMenuTrigger} onClose={closeSessionMenu} width={208} placement="bottom">
         {menuEntry && <div data-session-action-menu={menuSession?.id ?? menuUuid}>
-          <div className="truncate px-2.5 py-2 text-xs font-medium text-cream" title={menuEntry.title}>{displayTitle(menuEntry.title, menuEntry.projectName)}</div>
+          <div className="flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium text-cream">
+            <span className="min-w-0 flex-1 truncate" title={menuEntry.title}>{displayTitle(menuEntry.title, menuEntry.projectName)}</span>
+            {renderOriginBadge(menuSession?.origin ?? menuHistory?.origin, menuSession ? recordByRuntimeId.get(menuSession.id)?.history?.importedFrom : menuHistory?.importedFrom)}
+            {menuSession ? renderDraftBadge(sessionComposerDraftKey(menuSession)) : menuUuid && renderDraftBadge(historyComposerDraftKey(menuUuid))}
+          </div>
+          {!menuSession?.remoteReadonly && <button type="button" data-session-action="instructions" className="project-menu-action" onClick={() => {
+            closeSessionMenu()
+            sessionMenuTrigger.current?.focus()
+            if (menuSession) openSessionInstruction(menuSession)
+            else if (menuEntry.kind === 'history') void handleResumeHistory(menuEntry.info, undefined, beginNavigationIntent(), false, openSessionInstruction)
+            else if (menuEntry.kind === 'global') void handleOpenGlobal(menuEntry.row, beginNavigationIntent(), openSessionInstruction)
+          }}><ScrollText size={13} aria-hidden="true" />{t('chat.instruction.open')}</button>}
           {menuSession && <button type="button" data-session-action="pin" className="project-menu-action" onClick={() => { togglePinSession(menuSession.id); closeSessionMenu(); sessionMenuTrigger.current?.focus() }}>
             {pinnedSet.has(menuSession.id) ? <PinOff size={13} /> : <Pin size={13} />}{t(pinnedSet.has(menuSession.id) ? 'sidebar.unpin' : 'sidebar.pin')}
           </button>}
@@ -1638,6 +1605,9 @@ export default function Sidebar() {
           </HoldToDelete>
         </div>}
       </MenuPortal>
+
+      {instructionSession && <SessionInstructionDialog key={instructionSession.id} session={instructionSession}
+        onClose={() => setInstructionSession(null)} fallbackFocus={sessionMenuTrigger} />}
 
       {notice && (
         <div

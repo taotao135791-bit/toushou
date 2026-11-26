@@ -31,6 +31,11 @@ describe('same-turn session topic runtime compatibility', () => {
     await initSessionTopicBridge({ getSession: id => sessions.find(session => session.id === id), getRevision: naming.revision, nameSession: naming })
     const requests: Array<Record<string, unknown>> = []
     const provider = createServer((req, res) => {
+      if (req.url === '/memory') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, prompt: 'Synthetic next-turn memory block' }))
+        return
+      }
       let body = ''
       req.on('data', chunk => { body += chunk })
       req.on('end', () => {
@@ -55,7 +60,7 @@ describe('same-turn session topic runtime compatibility', () => {
         args.push('Analyze this synthetic account and keep the sidebar topic concise.')
         const child = spawnCommand(process.env.OMP_BIN || 'omp', args, {
           cwd: root,
-          env: { PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: agentDir, NO_COLOR: '1', FORCE_COLOR: '0', ...sessionTopicBridgeEnv('synthetic') },
+          env: { PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: agentDir, NO_COLOR: '1', FORCE_COLOR: '0', TOUSHOU_MEMORY: `http://127.0.0.1:${address.port}/memory`, ...sessionTopicBridgeEnv('synthetic') },
           stdio: ['ignore', 'pipe', 'pipe']
         })
         let stdout = '', stderr = ''
@@ -71,6 +76,7 @@ describe('same-turn session topic runtime compatibility', () => {
       expect(tools.some(tool => tool.function.name === 'toushou_session_topic')).toBe(true)
       if (mode === 'readonly') expect(tools.some(tool => ['bash', 'edit', 'write', 'python'].includes(tool.function.name))).toBe(false)
       expect(JSON.stringify(requests[0].messages)).toContain(`revision=${revision}`)
+      expect(JSON.stringify(requests[0].messages)).toContain('Synthetic next-turn memory block')
       expect(sessions[0]).toMatchObject({ title: 'TikTok成本诊断', titleSource: 'auto', titleRevision: revision })
       expect(titles[sessions[0].sessionFile]).toBe('TikTok成本诊断')
       expect(metadata[sessions[0].sessionFile]).toEqual({ source: 'auto', revision })

@@ -61,9 +61,9 @@ export function executableSearchDirs(
   const canonical = (dir: string) => platform === 'win32' ? path.resolve(dir).toLowerCase() : path.resolve(dir)
   const dirs = (env.PATH || '').split(path.delimiter).filter(dir => dir && path.isAbsolute(dir) && canonical(dir) !== canonical(process.cwd()))
   const home = homedir()
+  if (platform === 'darwin') dirs.push('/opt/homebrew/bin')
+  if (platform !== 'win32') dirs.push('/usr/local/bin')
   dirs.push(
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
     // Default location of the official bun installer; omp shells out to bun
     // for plugin install/uninstall, so a standard bun setup must be visible
     // even though it is absent from a Finder-launched app's PATH.

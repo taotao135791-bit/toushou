@@ -14,7 +14,7 @@ import {
 import { DirectoryGrant, PluginScaffoldError, PluginScaffoldOutput, PluginTemplate } from '@shared/types'
 import { isValidPackageName, isValidVersion } from '@shared/pluginScaffold'
 import { useAppStore } from '../store'
-import { useT, I18nKey } from '../i18n'
+import { fileManagerRevealKey, useT, I18nKey } from '../i18n'
 
 const inputClass =
   'w-full rounded-lg border border-line bg-ink-900 px-3 py-2 text-[13px] text-cream outline-none transition-all placeholder:text-cream-faint focus:border-accent/50 focus:shadow-[0_0_0_3px_var(--accent-soft)]'
@@ -215,7 +215,7 @@ export default function PluginAuthorPage() {
                   className="flex items-center gap-1.5 rounded-full border border-line px-3.5 py-2 text-[12px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
                 >
                   <FolderOpen size={12} />
-                  {t('author.reveal')}
+                  {t(fileManagerRevealKey())}
                 </button>
                 {installed ? (
                   <span className="flex items-center gap-1.5 rounded-full bg-accent-soft px-3.5 py-2 text-[12px] font-medium text-accent">

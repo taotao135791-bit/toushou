@@ -1,12 +1,12 @@
 import finderIcon from '../assets/brands/finder.png'
 import terminalIcon from '../assets/brands/terminal.png'
 import editorIcon from '../assets/brands/vscode.png'
-import { useAppStore } from '../store'
 import { useEffect, useRef, useState } from 'react'
 import { Code, ExternalLink, FolderSymlink, Terminal } from 'lucide-react'
 import { OpenWorkspaceTarget } from '@shared/types'
-import { useT } from '../i18n'
+import { fileManagerRevealKey, useT } from '../i18n'
 import { showNotice } from '../lib/notice'
+import { shortcutPlatform } from '../lib/platformShortcut'
 import MenuPortal from './MenuPortal'
 
 /**
@@ -36,9 +36,8 @@ export default function OpenWithMenu({
     }
   }
 
-  const platform = window.electronAPI.platform
+  const platform = shortcutPlatform()
   const [nativeIcons, setNativeIcons] = useState<{ finder?: string; terminal?: string }>({})
-  const zh = useAppStore(s => s.language === 'zh')
   useEffect(() => {
     if (!open || platform !== 'win32') return
     let current = true
@@ -47,11 +46,9 @@ export default function OpenWithMenu({
   }, [open, platform])
   const images = { editor: editorIcon, finder: platform === 'darwin' ? finderIcon : nativeIcons.finder,
     terminal: platform === 'darwin' ? terminalIcon : nativeIcons.terminal }
-  const fileManager = platform === 'win32' ? (zh ? '在文件资源管理器中显示' : 'Show in File Explorer')
-    : platform === 'linux' ? (zh ? '在文件管理器中显示' : 'Show in file manager') : t('chat.openInFinder')
   const items: Array<{ target: OpenWorkspaceTarget; icon: typeof Code; label: string }> = [
-    { target: 'finder', icon: FolderSymlink, label: fileManager },
-    { target: 'terminal', icon: Terminal, label: platform === 'win32' ? (zh ? '在命令提示符中打开' : 'Open in Command Prompt') : t('chat.openInTerminal') },
+    { target: 'finder', icon: FolderSymlink, label: t(fileManagerRevealKey(platform)) },
+    { target: 'terminal', icon: Terminal, label: t(platform === 'win32' ? 'chat.openInCommandPrompt' : 'chat.openInTerminal') },
     { target: 'editor', icon: Code, label: t('chat.openInEditor') }
   ]
 
