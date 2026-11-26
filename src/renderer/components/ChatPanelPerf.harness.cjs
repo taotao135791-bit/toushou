@@ -125,7 +125,8 @@ app.whenReady().then(async () => {
     const thinkingMenu = `document.querySelector('[data-thinking-menu]')`
     await waitFor(`${modelTrigger}?.ariaLabel === 'Model: DeepSeek-V4.1-Flash' && ${thinkingTrigger}?.ariaLabel === 'Thinking: Auto'`)
     const showThinkingMenu = async () => {
-      await js(`${thinkingTrigger}.click()`)
+      // 合并调整器：选完模型后弹窗保持打开（继续调强度）——仅在未打开时点击。
+      await js(`(() => { const b = ${thinkingTrigger}; if (b.getAttribute('aria-expanded') !== 'true') b.click() })()`)
       await waitFor(`!!(${thinkingMenu})`)
     }
     const thinkingLabels = () => js(`[...(${thinkingMenu}).querySelectorAll('[data-thinking-choice]')].map(button => button.textContent.trim())`)
@@ -135,7 +136,13 @@ app.whenReady().then(async () => {
     }
     await showThinkingMenu()
     const deepSeekThinking = await thinkingLabels()
-    const chatMenuAbove = await js(`(${thinkingMenu}).closest('body > div').getBoundingClientRect().bottom <= ${thinkingTrigger}.getBoundingClientRect().top`)
+    // 合并调整器：弹窗含模型列表+强度区，更高；矮窗口下允许覆盖触发行，
+    // 只要求完整落在视口内（MenuPortal 的 maxHeight 会裁剪并内部滚动）。
+    const menuPlacement = await js(`(() => {
+      const m = (${thinkingMenu}).closest('body > div').getBoundingClientRect()
+      return { within: m.top >= 0 && m.bottom <= innerHeight && m.left >= 0 && m.right <= innerWidth, height: Math.round(m.height) }
+    })()`)
+    const chatMenuWithinViewport = menuPlacement.within
     const slider = `(${thinkingMenu}).querySelector('input[type="range"]')`
     const checkMenu = () => waitFor(`!!(${thinkingMenu}) && ${thinkingTrigger}.getAttribute('aria-expanded') === 'true'`)
     const dismissWithKey = async () => {
@@ -147,10 +154,11 @@ app.whenReady().then(async () => {
     win.setContentSize(narrowWidth, 700)
     await waitFor(`innerWidth === ${narrowWidth}`)
     await frame()
+    // 合并调整器：弹窗锚定模型药丸（左对齐），窄窗下不得溢出视口。
     const narrowMenuPosition = `(() => {
       const rect = (${thinkingMenu}).parentElement.getBoundingClientRect()
-      const trigger = (${thinkingTrigger}).getBoundingClientRect()
-      return rect.left >= 16 && rect.right <= innerWidth - 16 && rect.right <= trigger.right + 1
+      const trigger = document.querySelector('button[title="Model"]').getBoundingClientRect()
+      return rect.left >= 8 && rect.right <= innerWidth - 8 && rect.left <= trigger.left + 1
     })()`
     await waitFor(narrowMenuPosition)
     const insetMenu = await js(narrowMenuPosition)
@@ -167,6 +175,8 @@ app.whenReady().then(async () => {
     await js("document.documentElement.classList.remove('dark')")
     const fill = `(${thinkingMenu}).querySelector('.effort-fill')`
     const palette = () => js(`[getComputedStyle(${fill}).backgroundImage, ${themeColor}]`)
+    // The purple overlay inside the fill fades in with the effort position.
+    const morphAt = () => js(`Number(getComputedStyle((${fill}).querySelector('.effort-peak-fill')).opacity)`)
     if (process.platform === 'darwin') app.focus({ steal: true })
     win.focus()
     wc.focus()
@@ -198,9 +208,11 @@ app.whenReady().then(async () => {
     }
     await drag(0, 1 / 3, 'Low')
     const lowPalette = await palette()
+    const lowMorph = await morphAt()
     const blueDrifts = await particlesMoveLeft()
     await drag(1 / 3, 2 / 3, 'High')
     const highPalette = await palette()
+    const highMorph = await morphAt()
     await js(`(${slider}).focus()`)
     wc.sendInputEvent({ type: 'keyDown', keyCode: 'End' })
     wc.sendInputEvent({ type: 'keyUp', keyCode: 'End' })
@@ -209,7 +221,7 @@ app.whenReady().then(async () => {
     const peakPalette = await palette()
     const peakDrifts = await particlesMoveLeft()
     await setMotionPreference('reduce')
-    await waitFor(`getComputedStyle(${fill}, '::before').animationName === 'none' && getComputedStyle(${fill}.firstElementChild).animationName === 'none'`)
+    await waitFor(`getComputedStyle(${fill}, '::before').animationName === 'none' && getComputedStyle((${fill}).querySelector('.effort-glow')).animationName === 'none'`)
     await setMotionPreference('no-preference')
     await chooseThinking('Off')
     await checkMenu()
@@ -219,7 +231,9 @@ app.whenReady().then(async () => {
     const hiddenAuto = await js(`!document.querySelector('button[aria-label="Set thinking level automatically"]')`)
     const effortInteraction = {
       insetMenu, themed: lightEffort !== darkEffort, hiddenAuto, blueDrifts, peakDrifts, idleDrifts,
-      sharedBluePalette: lowPalette.every((value, index) => value === highPalette[index]),
+      sharedBluePalette: lowPalette[0] === highPalette[0],
+      inkClimbs: lowPalette[1] !== highPalette[1],
+      fillMorphs: highMorph > lowMorph,
       distinctPeakPalette: lowPalette.every((value, index) => value !== peakPalette[index])
     }
     phase = 'switch model thinking capabilities'
@@ -517,7 +531,7 @@ app.whenReady().then(async () => {
     await js('window.chatPerfFixture.finishReadingSkill()')
     await frame()
     const composerSwitch = await js(`({drafts:window.chatPerfFixture.composerDrafts(),text:${field}.value})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ chatMenuAbove, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
+    console.log('E2E_RESULT ' + JSON.stringify({ chatMenuWithinViewport, menuHeight: menuPlacement.height, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

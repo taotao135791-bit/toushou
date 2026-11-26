@@ -39,13 +39,13 @@ import { filterSlashItems, groupSlashItems, SlashMenuItem } from '../lib/slashCo
 import { useGitInfo } from '../lib/useGitInfo'
 import { basename } from '../lib/path'
 import { showNotice } from '../lib/notice'
-import ModelPicker from './ModelPicker'
-import ThinkingPicker from './ThinkingPicker'
+import ModelThinkingPicker from './ModelThinkingPicker'
 import PermissionPicker from './PermissionPicker'
 import UsageMonitor, { ContextReadout } from './UsageMonitor'
 import MenuPortal, { ComposerMenuPlacement } from './MenuPortal'
 import InvokePicker from './InvokePicker'
 import ProjectPicker from './ProjectPicker'
+import MagneticButton from './effects/MagneticButton'
 import { useProjects } from '../store/projects'
 import './AgentHome.css'
 
@@ -1504,8 +1504,7 @@ export default memo(function Composer({
             </div>
             <div className="flex items-center gap-1.5">
               <div className="composer-model-control">
-                <ModelPicker sessionId={currentSessionId} compact={compact} />
-                <ThinkingPicker sessionId={currentSessionId} compact={compact} />
+                <ModelThinkingPicker sessionId={currentSessionId} compact={compact} />
               </div>
               {busy ? (
                 <div className="flex items-center gap-1.5">
@@ -1535,30 +1534,31 @@ export default memo(function Composer({
                       </button>
                     </>
                   )}
-                  <button
+                  <MagneticButton
                     onClick={onStop}
                     disabled={stopping}
                     title={stopLabel}
                     aria-label={stopLabel}
-                    className="focus-ring flex h-8 w-8 items-center justify-center rounded-full bg-cream text-ink-950 transition-colors duration-150 hover:opacity-85 disabled:cursor-wait disabled:opacity-70"
+                    className={`focus-ring h-8 w-8 rounded-full bg-cream text-ink-950 transition-colors duration-150 hover:opacity-85 ${stopping ? 'cursor-wait opacity-70' : ''}`}
+                    glow={false}
                   >
                     {stopping ? <Loader2 size={13} className="animate-spin" /> : <Square size={11} fill="currentColor" />}
-                  </button>
+                  </MagneticButton>
                 </div>
               ) : (
-                <button
+                <MagneticButton
                   onClick={handleSend}
                   disabled={!canSend}
                   title={t('composer.send')}
                   aria-label={t('composer.send')}
-                  className={`composer-send focus-ring flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full transition-colors duration-150 ${
+                  className={`composer-send focus-ring h-[36px] w-[36px] shrink-0 rounded-full transition-colors duration-150 ${
                     canSend
                       ? 'bg-accent text-[rgb(var(--bg-app))] hover:bg-accent-bright'
                       : 'cursor-not-allowed bg-overlay-strong text-cream-faint'
                   }`}
                 >
                   <ArrowUp size={16} strokeWidth={2.5} />
-                </button>
+                </MagneticButton>
               )}
             </div>
           </div>
