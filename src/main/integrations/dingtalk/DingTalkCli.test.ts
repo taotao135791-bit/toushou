@@ -161,6 +161,36 @@ describe('DingTalk CLI', () => {
     expect(run).toHaveBeenCalledWith(cli.path, ['auth', 'login', '--format=json'], path.dirname(cli.path), 300_000, undefined)
   })
 
+  it('classifies a rejected MCP grant as a request to reauthorize the existing profile', async () => {
+    const run = vi.fn<Run>()
+    const dws = new DingTalkCli({ run })
+    for (const detail of ['invalidParameter.authCode.notFound', 'providerError - 不合法的临时授权码']) {
+      run.mockResolvedValueOnce({
+        exitCode: 5, stdout: '', stderr: JSON.stringify({
+          error: { category: 'internal', code: 5, message: `MCP token exchange failed: ${detail}` }
+        })
+      })
+      await expect(dws.currentUser(cli, profile)).rejects.toMatchObject({
+        code: 'profile-reauthorization-required', message: 'profile-reauthorization-required'
+      })
+    }
+    run.mockResolvedValueOnce({
+      exitCode: 5, stdout: '', stderr: JSON.stringify({ error: { message: 'MCP token exchange failed: internal service error' } })
+    })
+    await expect(dws.currentUser(cli, profile)).rejects.toMatchObject({ code: 'read-failed' })
+  })
+
+  it('passes the exact profile to the official login and rejects a different returned identity', async () => {
+    const run = vi.fn<Run>().mockResolvedValue(processOutput({ success: true, corp_id: 'ding_fixture', user_id: 'staff_fixture' }))
+    const dws = new DingTalkCli({ run })
+    await expect(dws.login(cli, undefined, profile)).resolves.toMatchObject({ profile })
+    expect(run.mock.calls[0][1]).toEqual(['auth', 'login', '--format=json', '--profile=' + profile])
+    run.mockResolvedValueOnce(processOutput({ success: true, corp_id: 'ding_fixture', user_id: 'staff_other' }))
+    await expect(dws.login(cli, undefined, profile)).rejects.toMatchObject({ code: 'not-authorized' })
+    await expect(dws.login(cli, undefined, '--profile=other')).rejects.toMatchObject({ code: 'not-authorized' })
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
   it('does not follow the terminal default account when verifying a pinned identity', async () => {
     const run = vi.fn<Run>().mockResolvedValue(processOutput({
       success: true, authenticated: true, corp_id: 'ding_other', user_id: 'staff_other'

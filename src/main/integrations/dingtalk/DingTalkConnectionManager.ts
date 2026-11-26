@@ -63,6 +63,7 @@ function saveLink(file: string, profile: string): void {
 function connectionError(error: unknown): DingTalkConnectionError {
   if (error instanceof DingTalkCliError) {
     if (error.code === 'permission-denied') return 'authorization-failed'
+    if (error.code === 'profile-reauthorization-required') return 'not-authorized'
     switch (error.code) {
       case 'cli-unavailable': case 'install-failed': case 'authorization-failed':
       case 'organization-access-required': case 'network': case 'not-authorized':
@@ -71,8 +72,6 @@ function connectionError(error: unknown): DingTalkConnectionError {
   }
   return 'connection-failed'
 }
-
-const authorizationExpired = (error: unknown): boolean => error instanceof DingTalkCliError && error.code === 'not-authorized'
 
 /** Stores the explicitly linked user/organization ID only. DWS owns authentication. */
 export class DingTalkConnectionManager {
@@ -215,7 +214,7 @@ export class DingTalkConnectionManager {
       if (task.aborted && write) return { ok: false, error: 'write-outcome-unknown' }
       if (lifetime.aborted) return { ok: false, error: 'not-connected' }
       if (error instanceof DingTalkCliError) {
-        const code = error.code
+        const code = error.code === 'profile-reauthorization-required' ? 'not-authorized' : error.code
         if (code === 'not-authorized' || code === 'organization-access-required' || code === 'cli-unavailable') {
           this.cancelRequests()
           this.identity = undefined
@@ -274,6 +273,7 @@ export class DingTalkConnectionManager {
       }
       if (!cli) throw new DingTalkCliError('cli-unavailable')
 
+      let renewalProfile: string | undefined
       let identity = await this.cli.status(cli, this.profile, signal).catch(error => {
         // Some older DWS vaults return an inconclusive readonly snapshot.
         // A new explicit login can recover it via the official browser flow.
@@ -289,16 +289,20 @@ export class DingTalkConnectionManager {
         try {
           await this.cli.currentUser(cli, identity.profile, signal)
         } catch (error) {
-          if (kind !== 'connect' || !authorizationExpired(error)) throw error
+          const code = error instanceof DingTalkCliError ? error.code : undefined
+          if (kind !== 'connect' || (code !== 'not-authorized' && code !== 'profile-reauthorization-required')) throw error
+          if (code === 'profile-reauthorization-required') renewalProfile = identity.profile
           identity = null
         }
         signal.throwIfAborted()
       }
       if (!identity && kind === 'connect') {
         this.setState('authorizing')
-        identity = await this.cli.login(cli, signal)
+        identity = await this.cli.login(cli, signal, renewalProfile)
         signal.throwIfAborted()
-        if (!identity || !exactProfile(identity.profile)) throw new DingTalkCliError('not-authorized')
+        if (!identity || !exactProfile(identity.profile) || (renewalProfile && identity.profile !== renewalProfile)) {
+          throw new DingTalkCliError('not-authorized')
+        }
         this.setState('checking')
         await this.cli.currentUser(cli, identity.profile, signal)
         signal.throwIfAborted()

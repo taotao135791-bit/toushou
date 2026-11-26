@@ -230,6 +230,43 @@ describe('DingTalk account connection', () => {
     expect(cli.currentUser).toHaveBeenLastCalledWith(tool, differentAccount.profile, expect.any(AbortSignal))
   })
 
+  it('renews a rejected CLI grant for the same profile and verifies it before creating the link', async () => {
+    const cli = fixture()
+    cli.currentUser.mockRejectedValueOnce(new DingTalkCliError('profile-reauthorization-required'))
+    const manager = new DingTalkConnectionManager({ cli, file })
+    const states: string[] = []
+    manager.setStatusListener(snapshot => states.push(snapshot.state))
+    expect(await manager.connect()).toMatchObject({ ok: true, snapshot: { configured: true, state: 'connected' } })
+    expect(states).toEqual(['checking', 'authorizing', 'checking', 'connected'])
+    expect(cli.login).toHaveBeenCalledTimes(1)
+    expect(cli.login).toHaveBeenCalledWith(tool, expect.any(AbortSignal), owner.profile)
+    expect(cli.currentUser).toHaveBeenCalledTimes(2)
+    expect(cli.currentUser).toHaveBeenLastCalledWith(tool, owner.profile, expect.any(AbortSignal))
+    expect(JSON.parse(await readFile(file, 'utf8')).profile).toBe(owner.profile)
+  })
+
+  it('keeps the original binding if renewal returns a different account', async () => {
+    await writeFile(file, JSON.stringify({ version: 1, profile: owner.profile }))
+    const cli = fixture()
+    cli.currentUser.mockRejectedValueOnce(new DingTalkCliError('profile-reauthorization-required'))
+    cli.login.mockResolvedValueOnce(differentAccount)
+    const manager = new DingTalkConnectionManager({ cli, file })
+    expect(await manager.connect()).toMatchObject({ ok: false, error: 'not-authorized' })
+    expect(cli.currentUser).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(await readFile(file, 'utf8')).profile).toBe(owner.profile)
+  })
+
+  it('reports that the bound account needs login without opening the browser during a check', async () => {
+    await writeFile(file, JSON.stringify({ version: 1, profile: owner.profile }))
+    const cli = fixture()
+    cli.currentUser.mockRejectedValueOnce(new DingTalkCliError('profile-reauthorization-required'))
+    const manager = new DingTalkConnectionManager({ cli, file })
+    await manager.initialize()
+    expect(manager.getSnapshot()).toMatchObject({ state: 'error', lastError: 'not-authorized', configured: true })
+    expect(cli.login).not.toHaveBeenCalled()
+    expect(JSON.parse(await readFile(file, 'utf8')).profile).toBe(owner.profile)
+  })
+
   it('uses the official login to recover an inconclusive local credential snapshot', async () => {
     const cli = fixture()
     cli.status.mockRejectedValue(new DingTalkCliError('authorization-failed'))
