@@ -28,12 +28,14 @@ describe('ChatPanel background metadata rendering', () => {
       expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
       expect(result.status, JSON.stringify({ status: result.status, signal: result.signal, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code })).toBe(0)
       console.info('CHAT_PANEL_PERF ' + JSON.stringify(data))
-      expect(data.chatMenuAbove).toBe(true)
+      expect(data.idleRecovery).toEqual({ keptConversationView: true, errorCleared: true })
+      expect(data.chatMenuWithinViewport).toBe(true)
       expect(data.effortInteraction).toEqual({
         insetMenu: true, themed: true, hiddenAuto: true, blueDrifts: true, peakDrifts: true,
-        idleDrifts: true, sharedBluePalette: true, distinctPeakPalette: true
+        idleDrifts: true, sharedBluePalette: true, ordinaryInkStaysBlue: true, violetOnlyAtPeak: true, distinctPeakPalette: true,
+        alwaysRound: true, particlesOnRailOnly: true
       })
-      expect(data.homeMenusBelow).toEqual([true, true, true, true, true])
+      expect(data.homeMenusBelow).toEqual([true, true, true, true])
       expect(data.deepSeekThinking).toEqual(['Off', 'Low', 'High', 'Max', 'Auto'])
       expect(data.mediumOnlyThinking).toEqual(['Off', 'Medium', 'Auto'])
       expect(data.plainThinking).toEqual(['Off', 'Auto'])

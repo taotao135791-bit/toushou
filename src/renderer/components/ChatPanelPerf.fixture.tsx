@@ -15,6 +15,8 @@ const defaultProject: ProjectRecord = { id: 'default', name: 'TouShou workspace'
 const defaultGrant: WorkspaceGrant = { id: 'grant-default', realPath: defaultProject.path, displayPath: defaultProject.path, source: 'default', createdAt: 1 }
 const skill: SkillEntry = { id: 'synthetic.md', name: 'Synthetic team skill', author: '', description: '', kind: 'markdown', sizeBytes: 12, updatedAtMillis: 1 }
 const reviewSessionId = 'background-0'
+const hydrationSessionId = 'idle-transcript'
+let transcriptReady = false
 let resolveSkill: ((result: SkillReadResult) => void) | undefined
 const probeSessionId = 'projection-probe'
 const probeMessages: MessageLike[] = [
@@ -94,6 +96,14 @@ const fixture = {
     }
   },
   renameCurrent() { useAppStore.getState().setSessionTitle('current', 'Renamed current conversation') },
+  openIdleConversation() {
+    const idle = { ...current, id: hydrationSessionId, title: 'Idle conversation' }
+    useAppStore.setState(state => ({ currentSessionId: idle.id, sessions: [idle, ...state.sessions] }))
+  },
+  returnToConversation() {
+    transcriptReady = true
+    window.dispatchEvent(new Event('focus'))
+  },
   updateCurrentStatus() { useAppStore.getState().setSessions(useAppStore.getState().sessions.map(session => session.id === 'current' ? { ...session, status: 'error' } : session)) },
   updatePermission() { useAppStore.getState().setSessions(useAppStore.getState().sessions.map(session => session.id === 'current' ? { ...session, readonly: true } : session)) },
   addMessage() { useAppStore.getState().addMessage('current', { id: 'synthetic-message', role: 'user', content: 'Synthetic current message' }) },
@@ -259,6 +269,9 @@ window.electronAPI = {
     useAppStore.getState().applySessionEvent({ type: 'thinking_level_changed', sessionId, level })
     return true
   },
+  sessionTranscript: async (id: string) => id !== hydrationSessionId ? [] : transcriptReady
+    ? [{ id: 'idle-history', role: 'assistant', content: 'Recovered the existing conversation' }]
+    : null,
   gitInfo: async () => null,
   compactSession: async () => {
     fixture.compactCalls++

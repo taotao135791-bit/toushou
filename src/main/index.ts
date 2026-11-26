@@ -10,7 +10,7 @@ import { registerIpc, shutdownSessionsForQuit, tiktokAdsConnectionManager } from
 import { pruneOrphanedHtmlBoards } from './htmlBoards'
 import { cancelOwnerHtmlBoardAiEdits } from './htmlBoardAi'
 import { syncMachineSkills } from './piSettings'
-import { detectCli } from './omp'
+import { detectCli, getSession, getSessionBridgeAccess, readSessionInstruction } from './omp'
 import { initUpdater } from './updater'
 import { initSessionTopicBridge } from './sessionTopicBridge'
 import { installNavigationGuards } from './navigation'
@@ -19,6 +19,7 @@ import { initDingTalkBridge } from './dingTalkBridge'
 import { initTasksBridge } from './tasksBridge'
 import { initTiktokBridge } from './tiktokBridge'
 import { initBoardsBridge } from './boardsBridge'
+import { initMemoryBridge } from './memoryBridge'
 import { initAdsCopyBridge } from './adsCopyBridge'
 import { ensureKernelSkill } from './kernelSkill'
 import { feishuConnectionManager } from './integrations/feishu/FeishuConnectionManager'
@@ -26,7 +27,7 @@ import { dingTalkConnectionManager } from './integrations/dingtalk/DingTalkConne
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { tokenKeepAlive } from './tokenKeepAlive'
 import { installFileLogging } from './lib/logger'
-import { applyWindowTheme, themeBackgroundColor } from './windowTheme'
+import { applyWindowTheme, themeBackgroundColor, setThemeSourceMode } from './windowTheme'
 
 // File logging must be the first thing main does: it captures the console
 // output of the startup sequence below into userData/logs/main.log.
@@ -130,9 +131,8 @@ function createWindow() {
     height,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: 'hiddenInset',
     // Slightly inset the native macOS controls within the 44px drag area.
-    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 14 } } : {}),
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 14 } } : {}),
     backgroundColor: themeBackgroundColor(getStore('theme') ?? 'light'),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -226,6 +226,17 @@ app.whenReady().then(async () => {
     console.warn('[tasks] tool bridge unavailable', error)
   }
   try {
+    await initMemoryBridge(sessionId => {
+      const access = getSessionBridgeAccess(sessionId)
+      const session = getSession(sessionId)
+      return access && session ? {
+        ...access, id: sessionId, title: session.title, instruction: readSessionInstruction(sessionId)
+      } : undefined
+    })
+  } catch (error) {
+    console.warn('[memory] tool bridge unavailable', error)
+  }
+  try {
     await initSessionTopicBridge()
   } catch {
     // Metadata naming is independent of advertising tools and never blocks startup.
@@ -244,6 +255,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('[bundled-packages] startup preparation failed', error)
   }
+  setThemeSourceMode(getStore('themeSource') === 'system' ? 'system' : 'manual')
   applyWindowTheme(getStore('theme'))
   registerIpc()
   createWindow()

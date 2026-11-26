@@ -1,8 +1,9 @@
 import { isAutoCompactThreshold } from '../shared/compaction'
 import { writeContextPolicy } from './omp/OmpProcess'
-import { fileSidebarConversation } from './sessionProjectFiling'
+import { fileSidebarConversation, sidebarConversationIdentity } from './sessionProjectFiling'
+import { isSessionMoving, moveSessionJournal, withSessionMove } from './sessionProjectMove'
 import { handleChatAttachment, openChatAttachmentFolder, transcriptReferencesAttachment } from './chatAttachment'
-import type { ReplyForkTarget } from '../shared/types'
+import type { MoveConversationResult, ReplyForkTarget } from '../shared/types'
 import { suspendedFacebookBrowserResult } from './legacyFacebookBrowser'
 import { ipcMain, dialog, shell, app, BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import fs from 'node:fs'
@@ -91,6 +92,8 @@ import {
   updateApprovalConfig,
   exportHtml,
   getSessionState,
+  readSessionInstruction,
+  writeSessionInstruction,
   setSessionName,
   markSessionFile,
   markSessionTitle,
@@ -100,6 +103,8 @@ import {
   getSessionBridgeAccess,
   hasProjectSessionsInFlight,
   closeIdleProjectSessions,
+  closeIdleSessionsForMove,
+  liveSessionJournal,
   setSessionUserTurnHook,
   setSessionGoneHook
 } from './omp'
@@ -116,6 +121,7 @@ import { getModelConfig, setModelConfig, setApiKey, clearApiKey, syncMachineSkil
 import { listAvailableModels, listCatalogModels, invalidateModelCache } from './piModels'
 import { getStore, rememberRecentProject, setStore } from './store'
 import { loadComposerDrafts, saveComposerDrafts } from './composerDraftsFile'
+import { deleteMemoryEntry, moveMemoryEntry, projectMemoryKey, readMemoryLayer, resetMemoryStorageToDefault, saveMemoryEntry, changeMemoryStorage, updateMemoryText } from './memoryStore'
 import { installOmp } from './installer'
 import { ensureBundledPackages } from './bundledPackages'
 import { beginRuntimePreparation } from './runtimePreparationGate'
@@ -169,7 +175,7 @@ import { defaultImportSourceDirectory, importSessionHistory } from './sessionImp
 import type { SessionImportResult } from '../shared/sessionImport'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { forkNumberedSessionFile, forkSessionFile } from './sessionFork'
-import { applyWindowTheme } from './windowTheme'
+import { applyWindowTheme, setThemeSourceMode } from './windowTheme'
 import { requestAiBoardWidget, type AiWidgetBoardContext } from './boardWidgetAi'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
@@ -178,6 +184,7 @@ import { AdsCopyModelStore, MAX_PROVIDERS, validateAdsCopyModelInput, type AdsCo
 import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
+import { revokeMemoryBridgeTokens } from './memoryBridge'
 import { revokeDingTalkBridgeTokens } from './dingTalkBridge'
 import { refreshBoard } from './boardRefresh'
 import { parseBoardRefreshRequest } from '../shared/boardRefresh'
@@ -401,6 +408,7 @@ function broadcastSessionEvent(event: SessionEvent): void {
     revokeBrowserUseSession(event.sessionId)
     revokeBoardsBridgeTokens(event.sessionId)
     revokeAdsCopyBridgeTokens(event.sessionId)
+    revokeMemoryBridgeTokens(event.sessionId)
   }
   if (event.type === 'status' && event.status === 'idle') nameSessionDurally.runtimeIdle(event.sessionId)
   maybeNotifyTurnFinished(event)
@@ -471,18 +479,18 @@ async function pruneSessionTitles(): Promise<void> {
   const keys = Object.keys(titles)
   if (keys.length <= 200) return
   titlesPrunedThisRun = true
-  const alive: Record<string, string> = {}
-  await Promise.all(
-    keys.map(async (file) => {
-      try {
-        await stat(file)
-        alive[file] = titles[file]
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') alive[file] = titles[file]
-      }
-    })
-  )
-  setStore('sessionTitles', alive)
+  const missing = new Set<string>()
+  await Promise.all(keys.map(async file => {
+    try { await stat(file) }
+    catch (error) { if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') missing.add(file) }
+  }))
+  if (!missing.size) return
+  // Keep a rename or a project move saved while the older scan was in flight.
+  const current = { ...getStore('sessionTitles') }
+  for (const file of missing) {
+    if (current[file] === titles[file]) delete current[file]
+  }
+  setStore('sessionTitles', current)
 }
 
 function sanitizeStreamingBehavior(value: unknown): StreamingBehavior | undefined {
@@ -786,7 +794,8 @@ export function registerIpc() {
     let resumeSessionPath: string | undefined
     if (opts?.resumeSessionFile && opts.taskId && opts.runId && opts.reuseGeneration) {
       const context = { runId: opts.runId, generation: opts.reuseGeneration, cwd }
-      if (await taskSessionBelongsToWorkspace(opts.resumeSessionFile, cwd) && taskReuseContextIsCurrent(opts.taskId, context)) resumeSessionPath = opts.resumeSessionFile
+      const fileUuid = await readSessionUuid(opts.resumeSessionFile)
+      if (isSessionUuid(fileUuid) && await taskSessionBelongsToWorkspace(opts.resumeSessionFile, cwd) && taskReuseContextIsCurrent(opts.taskId, context) && !isSessionMoving(fileUuid) && fs.existsSync(opts.resumeSessionFile)) resumeSessionPath = opts.resumeSessionFile
       else clearTaskReuseSessionFile(opts.taskId, opts.resumeSessionFile, context)
     }
     const session = createSession(
@@ -2191,6 +2200,80 @@ export function registerIpc() {
     })
   )
 
+  ipcMain.handle(IPC_CHANNELS.PROJECT_MOVE_CONVERSATION, async (_event, grantId: unknown, key: unknown, projectId: unknown, runtimeId: unknown): Promise<MoveConversationResult> => {
+    const identity = sidebarConversationIdentity(key)
+    const active = requireGrant(grantId)
+    const project = projectRegistry.get(projectId)
+    if (!identity || !active || !project || project.isDefault || project.missing || project.archived) return { ok: false, error: 'not-found' }
+    const [source, reference] = identity
+    if (!path.isAbsolute(source) || hasControl(source)) return { ok: false, error: 'not-found' }
+    const liveSessionId = runtimeId ?? (reference.startsWith('runtime:') ? reference.slice('runtime:'.length) : undefined)
+    let uuid = reference
+    let knownSource = active.realPath === source
+    if (liveSessionId !== undefined) {
+      if (typeof liveSessionId !== 'string' || !liveSessionId || liveSessionId.length > 512 || hasControl(liveSessionId)) return { ok: false, error: 'not-found' }
+      const session = getSession(liveSessionId)
+      if (session) {
+        if (session.cwd !== source) return { ok: false, error: 'not-found' }
+        const journal = await liveSessionJournal(liveSessionId)
+        if (!journal) return { ok: false, error: 'not-found' }
+        uuid = journal.uuid
+        knownSource = true
+      }
+    }
+    if (!isSessionUuid(uuid)) return { ok: false, error: 'not-found' }
+    // Resolve cross-workspace sources against OMP's own index before probing
+    // a directory supplied by the renderer (including Windows UNC paths).
+    if (!knownSource && !(await listAllSessions(undefined, Infinity)).some(row => row.uuid === uuid && row.cwd === source)) {
+      return { ok: false, error: 'not-found' }
+    }
+    const result = await withSessionMove(uuid, async (): Promise<MoveConversationResult> => {
+      if (sessionDeletionLocks.isDeleting(uuid)) return { ok: false, error: 'busy' }
+      await sessionOriginIndex.ready()
+      const fileMetadata = (file: string) => ({ overlay: sessionTitleOverlays().get(normalizeSessionTitleFile(file)), origin: sessionOriginIndex.lookup(file) })
+      let retiredSessionIds: string[] = []
+      let savedFileMetadata: ReturnType<typeof fileMetadata> | undefined
+      const moved = await moveSessionJournal({
+        uuid, source, target: project.path,
+        available: () => {
+          if (isProjectDeletionInProgress(source) || isProjectDeletionInProgress(project.path)) return false
+          const target = projectRegistry.get(project.id)
+          return !!target && !target.archived && !target.missing && target.path === project.path
+        },
+        prepare: async file => {
+          const retired = await closeIdleSessionsForMove(uuid, file, source, liveSessionId)
+          if (retired === null) return false
+          retiredSessionIds = retired
+          savedFileMetadata = fileMetadata(file)
+          return true
+        }
+      })
+      if (!moved.ok) return retiredSessionIds.length ? { ...moved, retiredSessionIds } : moved
+      const { sourceFile, filePath } = moved
+      const { overlay, origin } = savedFileMetadata ?? fileMetadata(sourceFile)
+      if (sourceFile !== filePath) {
+        const targetFile = normalizeSessionTitleFile(filePath)
+        if (overlay?.title) setStore('sessionTitles', { ...getStore('sessionTitles'), [targetFile]: overlay.title })
+        if (overlay?.metadata) setStore('sessionTitleMetadata', { ...getStore('sessionTitleMetadata'), [targetFile]: overlay.metadata })
+        forgetSessionTitle(sourceFile)
+        if (origin) sessionOriginIndex.record(filePath, origin)
+      }
+      const assignments = { ...getStore('sidebarSessionProjects') }
+      const oldKeys = [JSON.stringify(identity), JSON.stringify([source, uuid]), JSON.stringify([project.path, uuid]), ...retiredSessionIds.map(id => JSON.stringify([source, `runtime:${id}`]))]
+      if (oldKeys.some(old => Object.hasOwn(assignments, old))) {
+        for (const old of oldKeys) delete assignments[old]
+        setStore('sidebarSessionProjects', assignments)
+      }
+      const disk = await readSessionHistoryMetadata(filePath)
+      return {
+        ok: true,
+        row: { cwd: project.path, uuid, title: overlay?.title ?? disk?.title ?? 'Untitled', timestamp: disk?.timestamp ?? Date.now(), ...(origin ? { origin } : {}), ...(disk?.importedFrom ? { importedFrom: disk.importedFrom } : {}) },
+        retiredSessionIds
+      }
+    })
+    return result === 'busy' ? { ok: false, error: 'busy' } : result
+  })
+
   ipcMain.handle(IPC_CHANNELS.PROJECT_LIST, () => {
     if (!workspacePaths.defaultWorkspace) throw new Error('system-paths-unavailable')
     return projectRegistry.list()
@@ -2892,10 +2975,19 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.STORE_SET, async (_event, key: keyof AppSettings, value: unknown) => {
     if (typeof key !== 'string') return false
-    if (key === 'recentProjects' || key === 'lockedSessionIds') return false
+    if (key === 'recentProjects' || key === 'lockedSessionIds' || key === 'memoryStoragePath' || key === 'sessionInstructions') return false
     // The store holds plain settings data only — a renderer must not persist
     // functions, class instances, or oversized blobs through this channel.
     if (!isPlainStorableValue(value)) return false
+    if (key === 'composerSendMagnetism' && typeof value !== 'boolean') return false
+    if (key === 'recentChatPreferences') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+      const { model, thinking } = value as Record<string, unknown>
+      if (model !== null && (typeof model !== 'string' || !isValidModelSelector(model) || !splitModelSelector(model))) return false
+      if (thinking !== null && !SESSION_LEVELS.includes(thinking as SessionThinkingSelection)) return false
+      setStore(key, { model, thinking: thinking as SessionThinkingSelection | null })
+      return true
+    }
     if (key === 'autoCompactThresholdPercent') {
       if (!isAutoCompactThreshold(value)) return false
       writeContextPolicy(value)
@@ -2909,6 +3001,8 @@ export function registerIpc() {
     // macOS exposes the native backdrop during rubber-band overscroll, so a
     // theme flip must repaint it too (see applyWindowTheme).
     if (key === 'theme') applyWindowTheme(value)
+    // 主题来源（manual/system）决定 nativeTheme 是钉死具体值还是跟随 OS。
+    if (key === 'themeSource') setThemeSourceMode(value === 'system' ? 'system' : 'manual')
     return true
   })
 
@@ -2916,6 +3010,93 @@ export function registerIpc() {
 
   ipcMain.handle(IPC_CHANNELS.COMPOSER_DRAFTS_SET, async (_event, value: unknown) => {
     return saveComposerDrafts(value)
+  })
+
+  // --- 长期记忆（设置页管理；omp 工具走 memoryBridge，不经这些通道） ---
+
+  const memoryWorkspace = (cwd: unknown): string | undefined =>
+    typeof cwd === 'string' ? grantManager.list().find(grant => grant.realPath === cwd)?.realPath : undefined
+  const memoryProjectKeyOf = (cwd: unknown): string | null => {
+    const workspace = memoryWorkspace(cwd)
+    return workspace ? projectMemoryKey(workspace) : null
+  }
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_LIST, (_event, cwd: unknown) => {
+    const key = memoryProjectKeyOf(cwd)
+    return {
+      global: readMemoryLayer('global', null).entries,
+      project: key ? readMemoryLayer('project', key).entries : []
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_SAVE, (_event, input: unknown) => {
+    if (typeof input !== 'object' || input === null) return { ok: false, error: 'invalid-text' as const }
+    const request = input as Record<string, unknown>
+    const scope = request.scope === 'global' ? 'global' as const : 'project' as const
+    const cwd = scope === 'project' ? memoryWorkspace(request.cwd) : undefined
+    if (scope === 'project' && !cwd) return { ok: false, error: 'invalid-text' as const }
+    const result = saveMemoryEntry({
+      text: typeof request.text === 'string' ? request.text : '',
+      scope,
+      cwd,
+      source: typeof request.sourceTitle === 'string' ? { sessionTitle: request.sourceTitle.slice(0, 120) } : undefined
+    })
+    return result
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_DELETE, (_event, scope: unknown, id: unknown, cwd: unknown) => {
+    if ((scope !== 'global' && scope !== 'project') || typeof id !== 'string') return false
+    const key = scope === 'project' ? memoryProjectKeyOf(cwd) : null
+    if (scope === 'project' && !key) return false
+    return deleteMemoryEntry(scope, id, cwd && typeof cwd === 'string' ? cwd : undefined)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_UPDATE, (_event, scope: unknown, id: unknown, text: unknown, cwd: unknown) => {
+    if ((scope !== 'global' && scope !== 'project') || typeof id !== 'string' || typeof text !== 'string') return false
+    const key = scope === 'project' ? memoryProjectKeyOf(cwd) : null
+    if (scope === 'project' && !key) return false
+    return updateMemoryText(scope, id, text, typeof cwd === 'string' ? cwd : undefined)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_MOVE, (_event, id: unknown, from: unknown, to: unknown, cwd: unknown) => {
+    if (typeof id !== 'string') return false
+    if ((from !== 'global' && from !== 'project') || (to !== 'global' && to !== 'project')) return false
+    const workspace = memoryWorkspace(cwd)
+    return workspace ? moveMemoryEntry(id, from, to, workspace) : false
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_STORAGE_GET, () => {
+    const custom = getStore('memoryStoragePath')
+    return {
+      path: typeof custom === 'string' && custom.trim() ? custom.trim() : path.join(app.getPath('userData'), 'memory'),
+      isDefault: !(typeof custom === 'string' && custom.trim())
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_STORAGE_CHANGE, async (event, migrate: unknown) => {
+    if (typeof migrate !== 'boolean') return { ok: false, error: 'invalid-dir' as const }
+    const parent = BrowserWindow.fromWebContents(event.sender)
+    if (!parent) return { ok: false, error: 'cancelled' as const }
+    const selected = await dialog.showOpenDialog(parent, {
+      title: getStore('language') === 'en' ? 'Select memory folder' : '选择记忆存储位置',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (selected.canceled || !selected.filePaths[0] || parent.isDestroyed()) {
+      return { ok: false, error: 'cancelled' as const }
+    }
+    return changeMemoryStorage(selected.filePaths[0], migrate)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SESSION_INSTRUCTION_GET, (_event, id: unknown) => (
+    typeof id === 'string' ? readSessionInstruction(id) : ''
+  ))
+  ipcMain.handle(IPC_CHANNELS.SESSION_INSTRUCTION_SET, async (_event, id: unknown, value: unknown) => {
+    if (typeof id !== 'string' || typeof value !== 'string' || value.length > 4_000) return false
+    try { return await writeSessionInstruction(id, value.trim()) } catch { return false }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_STORAGE_RESET, (_event, migrate: unknown) => {
+    return resetMemoryStorageToDefault(migrate === true)
   })
 
   // --- Diagnostics -----------------------------------------------------------

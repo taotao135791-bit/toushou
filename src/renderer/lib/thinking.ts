@@ -3,6 +3,7 @@ import {
   DEFAULT_THINKING_LEVELS,
   RuntimeModelInfo,
   SessionThinkingLevel,
+  SessionThinkingSelection,
   SESSION_THINKING_LEVELS
 } from '@shared/types'
 
@@ -50,4 +51,15 @@ export function defaultThinkingOptionsFor(
 ): readonly DefaultThinkingLevel[] {
   const efforts = knownEfforts(catalogEntry)
   return efforts.length > 0 ? ['auto', ...efforts] : DEFAULT_THINKING_LEVELS
+}
+
+
+/** Reuse the last fixed effort where supported, otherwise use the closest lower level. */
+export function supportedSessionThinking(
+  selected: SessionThinkingSelection | null,
+  options: readonly SessionThinkingLevel[]
+): SessionThinkingSelection | null {
+  if (selected === null || selected === 'auto' || options.includes(selected)) return selected
+  const previous = SESSION_THINKING_LEVELS.indexOf(selected)
+  return options.findLast(level => SESSION_THINKING_LEVELS.indexOf(level) <= previous) ?? 'off'
 }

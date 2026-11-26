@@ -43,6 +43,10 @@
       "to": "boards-toolkit"
     },
     {
+      "from": "resources/memory-toolkit",
+      "to": "memory-toolkit"
+    },
+    {
       "from": "resources/browser-use-toolkit",
       "to": "browser-use-toolkit"
     },

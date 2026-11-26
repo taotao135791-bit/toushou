@@ -1,5 +1,7 @@
+import { sessionThinkingOptionsFor, supportedSessionThinking } from '../lib/thinking'
+import { modelSelectorOf } from '../lib/runtimeSnapshot'
 import { create } from 'zustand'
-import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingSelection, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
+import { CheckpointInfo, ExternalSessionDescriptor, FileGrant, HistorySessionRow, ScheduledTask, OfficeEditCell, Session, SessionEvent, SessionRuntimeState, SessionStats, PackageDescriptor, InstallStatus, Language, ModelConfig, PermissionMode, PiModel, PromptImage, RuntimeOverview, RuntimeModelInfo, LoginState, LoginAnswer, SessionThinkingSelection, SESSION_THINKING_LEVELS, RecentChatPreferences, HistoricalAgentRecord, WorkspaceGrant, RecentWorkspaceDescriptor } from '@shared/types'
 import { applyToolResult, ToolCallRecord } from '../lib/toolCalls'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
 import { emptyProjection, foldExecutionEvent, ExecutionProjection, applyAgentRoster, foldUserSteer, applyHistoricalAgents } from '../lib/execution'
@@ -152,14 +154,6 @@ const STATUS_BUSY: Partial<Record<SessionRuntimeState, boolean>> = {
   failed: false
 }
 
-function commitPendingSessionActivity(sessions: Session[], activeSessionId: string | null): Session[] {
-  return sessions.map((session) =>
-    session.pendingActivityAt !== undefined && session.id !== activeSessionId
-      ? { ...session, lastActivityAt: session.pendingActivityAt, pendingActivityAt: undefined }
-      : session
-  )
-}
-
 /**
  * App and Settings can both refresh the runtime overview. Only the most
  * recently-started request may update the singleton store: otherwise an older
@@ -205,6 +199,8 @@ export interface OfficeEditHandoff {
 
 interface AppState {
   theme: 'dark' | 'light'
+  /** 主题来源：manual 手动选；system 跟随系统深浅色（theme 是解析后的实际值）。 */
+  themeSource: 'manual' | 'system'
   language: Language
   /** 思维链展示策略（学 deepseek-harness TranscriptViewPolicy）：流式时自动展开。 */
   thinkingAutoExpand: boolean
@@ -289,6 +285,9 @@ interface AppState {
    * preview readable instead of a blank chat.
    */
   sessionPreviews: Record<string, { title: string; failed: boolean }>
+  /** 会话内容装载中（首开从 durable 转写回填）；装载完成前聊天区不渲染 home hero。 */
+  transcriptHydrating: Record<string, boolean>
+  transcriptUnavailable: Record<string, boolean>
   /** Live session ids hidden by an in-flight optimistic delete (still running). */
   pendingDeleteLiveIds: Record<string, true>
   /** 点击历史行时按 uuid 种下的稳定时间：注册表行落地即用，消灭先顶到顶再落回的跳动。 */
@@ -345,13 +344,17 @@ interface AppState {
   /** Native login flow state (idle when no flow runs). */
   loginState: LoginState
   setTheme: (theme: 'dark' | 'light') => void
+  /** 主题来源：system 时挂系统深浅色监听自动切换，manual 时移除。 */
+  setThemeSource: (source: 'manual' | 'system') => void
   setLanguage: (language: Language) => void
+  composerSendMagnetism: boolean
+  setComposerSendMagnetism: (value: boolean) => void
   setThinkingAutoExpand: (value: boolean) => void
   setThinkingCollapseTiming: (value: 'on-complete' | 'until-next-input') => void
   /** Set the default permission mode for new sessions and persist it. */
   setPermissionMode: (mode: PermissionMode) => void
   /** Replace the active workspace grant (and sync the MRU real paths). */
-  setCurrentWorkspace: (grant: WorkspaceGrant | null) => void
+  setCurrentWorkspace: (grant: WorkspaceGrant | null, options?: { preserveSession?: boolean }) => void
   /** Activate a Main-listed recent workspace by opaque id. */
   activateRecentWorkspace: (recentId: string, navigationIntent?: number) => Promise<void>
   /** Show the native folder dialog and select the resulting grant. */
@@ -374,10 +377,12 @@ interface AppState {
   setCurrentSessionId: (id: string | null, navigationIntent?: number) => void
   setPendingOpenHistory: (target: { uuid: string; cwd: string } | null) => void
   /**
-   * One-time durable-transcript backfill for external (Feishu-origin)
-   * sessions on first open; no-op for everything else. See backfillExternalTranscript.
+   * First-open durable-transcript hydration for ANY session whose transcript
+   * is not in the store yet (externally created, task-spawned, …). Sessions
+   * already tracked in the store — including freshly created empty ones —
+   * are skipped.
    */
-  backfillExternalTranscript: (sessionId: string) => Promise<void>
+  ensureTranscript: (sessionId: string) => Promise<void>
   /** Hydrate the subagent roster for a session from `get_subagents` (live merge). */
   hydrateSubagents: (sessionId: string) => Promise<void>
   /** Fold durable historical agents (reconstructed on resume) into the projection. */
@@ -507,32 +512,16 @@ interface AppState {
   setInstallStatus: (status: InstallStatus) => void
   /** (Re)load model config + available models from the main process. */
   loadModelState: () => Promise<void>
-  /**
-   * Hot-switch the CURRENT session's model — session scope only. Never
-   * touches the default for future sessions (that lives in Settings).
-   */
   setCurrentSessionModel: (provider: string, modelId: string) => Promise<boolean>
-  /** Hot-switch the CURRENT session's thinking level — session scope only. */
   setCurrentSessionThinking: (level: SessionThinkingSelection) => Promise<boolean>
-  /** Model selector for the NEXT session's spawn args (''/null = runtime default). */
+  /** Last explicit composer choices, shared by future conversations. */
   pendingModel: string | null
-  /** Thinking level for the NEXT session's spawn args (null = runtime default). */
   pendingThinking: SessionThinkingSelection | null
-  /** Set the next-session model override (composer pickers without a session). */
   setPendingModel: (selector: string | null) => void
-  /** Set the next-session thinking override. */
   setPendingThinking: (level: SessionThinkingSelection | null) => void
-  /** Snapshot next-session spawn overrides without consuming the user's choice. */
+  rememberChatPreferences: (choice: RecentChatPreferences) => void
+  loadChatPreferences: () => Promise<void>
   getSessionOverrides: () => { modelSelector?: string; thinkingLevel?: SessionThinkingSelection }
-  /**
-   * Clear only overrides that still match a successful session's snapshot.
-   * A picker change made while creation is in flight belongs to the next
-   * session and must remain selected.
-   */
-  clearSessionOverrides: (overrides: {
-    modelSelector?: string
-    thinkingLevel?: SessionThinkingSelection
-  }) => void
   /** Refresh the runtime settings overview (profile/capabilities/providers). */
   loadRuntimeOverview: (force?: boolean) => Promise<void>
   /** Refresh the runtime model catalog (current profile). */
@@ -607,11 +596,24 @@ function migrateComposerDraft(drafts: ComposerDrafts, previousKey: string, nextK
   return draft ? setComposerDraft(cleared, nextKey, draft) : clearComposerDraft(cleared, nextKey)
 }
 
-export const useAppStore = create<AppState>((set, get) => ({
-  theme: 'light',
+/** 系统深浅色监听（themeSource=system 时挂载）；解析结果走 setTheme 同一链路。 */
+let themeMediaRef: MediaQueryList | null = null
+function onSystemThemeChanged(): void {
+  const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  const theme = dark ? 'dark' : 'light'
+  useAppStore.setState({ theme })
+  document.documentElement.classList.toggle('dark', dark)
+  window.electronAPI.setStore('theme', theme)
+}
+
+let chatChoiceRevision = 0
+
+export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
+  themeSource: 'manual',
   language: 'en',
   thinkingAutoExpand: true,
   thinkingCollapseTiming: 'on-complete',
+  composerSendMagnetism: true,
   permissionMode: 'ask',
   currentWorkspace: null,
   sessions: [],
@@ -648,6 +650,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   sessionErrors: {},
   compacting: {},
   sessionPreviews: {},
+  transcriptHydrating: {},
+  transcriptUnavailable: {},
   pendingDeleteLiveIds: {},
   resumeRecencySeeds: {},
   stats: {},
@@ -678,14 +682,37 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingThinking: null,
 
   setTheme: (theme) => {
+    // 手动选深/浅 = 放弃跟随系统（source 切回 manual，监听摘除）。
+    if (get().themeSource !== 'manual') get().setThemeSource('manual')
     set({ theme })
     document.documentElement.classList.toggle('dark', theme === 'dark')
     window.electronAPI.setStore('theme', theme)
+  },
+  // 跟随系统：system 时监听系统深浅色，解析成实际主题走 setTheme（窗口底色
+  // 由 main 的 applyWindowTheme 经同一 store 键同步）。手动选深/浅会切回 manual。
+  setThemeSource: (source) => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    const mediaRef = themeMediaRef
+    if (mediaRef) {
+      mediaRef.removeListener(onSystemThemeChanged)
+      themeMediaRef = null
+    }
+    set({ themeSource: source })
+    window.electronAPI.setStore('themeSource', source)
+    if (source === 'system' && media) {
+      themeMediaRef = media
+      media.addEventListener('change', onSystemThemeChanged)
+      onSystemThemeChanged()
+    }
   },
   setLanguage: (language) => {
     set({ language })
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'
     window.electronAPI.setStore('language', language)
+  },
+  setComposerSendMagnetism: (value) => {
+    set({ composerSendMagnetism: value })
+    void window.electronAPI.setStore('composerSendMagnetism', value)
   },
   setThinkingAutoExpand: (value) => {
     set({ thinkingAutoExpand: value })
@@ -699,12 +726,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ permissionMode })
     window.electronAPI.setStore('permissionMode', permissionMode)
   },
-  setCurrentWorkspace: (grant) =>
+  setCurrentWorkspace: (grant, options) =>
     set((state) => {
       if (!grant) return {
         currentWorkspace: null,
-        currentSessionId: null,
-        sessions: commitPendingSessionActivity(state.sessions, null)
+        currentSessionId: null
       }
       // The MRU stores the grant's canonical realPath — that is what Main
       // persists for sessions (session.cwd), so display-spelling variants of
@@ -717,13 +743,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Grant ids are ephemeral. Workspace scope follows canonical realPath,
       // so re-activating the same project does not discard its current chat.
       const workspaceChanged = state.currentWorkspace?.realPath !== realPath
+      // preserveSession: the caller is mid-navigation and will select the
+      // target conversation right after this. Keeping the current session
+      // visible across the workspace swap avoids the new-chat flash (and the
+      // stuck-on-new-chat failure mode when the navigation is superseded) —
+      // 切换期间永远不经过空状态（学 dsh/kimi：旧内容保持到新内容就绪）。
+      const clearSession = workspaceChanged && !options?.preserveSession
       return {
         currentWorkspace: grant,
         recentProjects,
-        ...(workspaceChanged ? {
-          currentSessionId: null,
-          sessions: commitPendingSessionActivity(state.sessions, null)
-        } : {})
+        ...(clearSession ? { currentSessionId: null } : {})
       }
     }),
   activateRecentWorkspace: async (recentId, navigationIntent = beginNavigationIntent()) => {
@@ -843,8 +872,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           previous?.lastActivityAt ??
           state.resumeRecencySeeds[sessionFileUuid(merged.resumeFrom ?? merged.sessionFile) ?? ''] ??
           merged.lastActivityAt,
-        // Renderer-owned pending stamp must also survive registry re-reports.
-        pendingActivityAt: previous?.pendingActivityAt
       }
       const same =
         previous &&
@@ -863,15 +890,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         previous.readonly === guarded.readonly &&
         previous.nativePermissionMode === guarded.nativePermissionMode &&
         previous.nativePermissionMutable === guarded.nativePermissionMutable &&
-        previous.lastActivityAt === guarded.lastActivityAt &&
-        previous.pendingActivityAt === guarded.pendingActivityAt
+        previous.lastActivityAt === guarded.lastActivityAt
       const nextCurrentSessionId = select ? guarded.id : state.currentSessionId
       if (same && nextCurrentSessionId === state.currentSessionId) return state
       changed = true
       return {
-        sessions: commitPendingSessionActivity(
-          [guarded, ...state.sessions.filter((item) => item.id !== guarded.id)], nextCurrentSessionId
-        ),
+        sessions: [guarded, ...state.sessions.filter((item) => item.id !== guarded.id)],
         sessionRecords: upsertLiveSessionRecord(state.sessionRecords, guarded),
         composerDrafts: migrateComposerDraft(
           state.composerDrafts, previous ? sessionComposerDraftKey(previous) : guarded.id, sessionComposerDraftKey(guarded)
@@ -967,13 +991,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // that spawned while the user was elsewhere).
     if (currentSessionId) {
       void get().hydrateSubagents(currentSessionId)
-      void get().backfillExternalTranscript(currentSessionId)
+      void get().ensureTranscript(currentSessionId)
     }
     set((state) => ({
       currentSessionId,
-      // Leaving a session commits its pending interaction stamp — the row
-      // re-floats to the top only now, never while the session is open.
-      sessions: commitPendingSessionActivity(state.sessions, currentSessionId),
       // Selecting a session marks it read
       unreadSessionIds:
         currentSessionId && state.unreadSessionIds[currentSessionId]
@@ -984,26 +1005,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPendingOpenHistory: (target) => {
     set({ pendingOpenHistory: target })
   },
-  /**
-   * First-open transcript backfill for Feishu-origin sessions. The renderer
-   * only folded live events since this window started listening, so the
-   * durable runtime transcript is authoritative once, fetched through
-   * OMP_SESSION_TRANSCRIPT (Main-parsed). A guard set makes it once per
-   * session per app run; the alignment merge (transcriptMerge) keeps any
-   * streamed rows that landed while the fetch was in flight, so ordering
-   * with concurrently-applied live events is preserved without a refetch.
-   */
-  backfillExternalTranscript: async (sessionId) => {
-    if (transcriptBackfilled.has(sessionId)) return
-    if (get().sessions.find((s) => s.id === sessionId)?.origin !== 'feishu') return
-    transcriptBackfilled.add(sessionId)
-    const fetched = await window.electronAPI.sessionTranscript(sessionId).catch(() => null)
-    if (!fetched || fetched.length === 0) return
-    set((state) => {
-      const current = state.messages[sessionId] ?? []
-      const merged = mergeTranscriptBackfill(fetched as MessageLike[], current)
-      if (merged === current) return state
-      return { messages: { ...state.messages, [sessionId]: merged } }
+  /** Backfill missed history once while preserving streamed rows and allowing failed reads to retry. */
+  ensureTranscript: async (sessionId) => {
+    if (sessionId.startsWith('preview:') || transcriptBackfilled.has(sessionId) || get().transcriptHydrating[sessionId]) return
+    const state = get()
+    const session = state.sessions.find(item => item.id === sessionId)
+    const existing = state.messages[sessionId]
+    if (existing && !session?.origin && (existing.length > 0 || (!session?.resumeFrom && !session?.resumedHistoryId))) return
+
+    set((current) => ({ transcriptHydrating: { ...current.transcriptHydrating, [sessionId]: true } }))
+    const fetched = await window.electronAPI.sessionTranscript?.(sessionId).catch(() => null)
+    if (Array.isArray(fetched)) transcriptBackfilled.add(sessionId)
+    set((current) => {
+      const hydrating = { ...current.transcriptHydrating }
+      const unavailable = { ...current.transcriptUnavailable }
+      delete hydrating[sessionId]
+      if (Array.isArray(fetched)) delete unavailable[sessionId]
+      else unavailable[sessionId] = true
+
+      const existing = current.messages[sessionId] ?? []
+      const merged = fetched?.length ? mergeTranscriptBackfill(fetched, existing) : existing
+      return {
+        transcriptHydrating: hydrating,
+        transcriptUnavailable: unavailable,
+        ...(merged === existing ? {} : { messages: { ...current.messages, [sessionId]: merged } })
+      }
     })
   },
   hydrateSubagents: async (sessionId) => {
@@ -1550,13 +1576,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const current = state.sessions.find((session) => session.id === sessionId)
       if (!current) return state
       return {
-        // Defer the active row's reorder until switch-away; a background
-        // queue has already been left and must update immediately.
-        sessions: state.sessions.map((s) => s.id !== sessionId ? s : (
-          state.currentSessionId === sessionId
-            ? { ...s, pendingActivityAt: Date.now() }
-            : { ...s, lastActivityAt: Date.now(), pendingActivityAt: undefined }
-        ))
+        // 活动即浮顶：当前对话与后台对话都立即刷新 recency（Kimi/ChatGPT 行为）。
+        sessions: state.sessions.map((s) => s.id !== sessionId ? s : { ...s, lastActivityAt: Date.now() })
       }
     }),
   maybeNameSession: async (sessionId) => {
@@ -1684,20 +1705,62 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setCurrentSessionModel: async (provider, modelId) => {
-    const sid = get().currentSessionId
-    if (!sid || !provider || !modelId) return false
-    return window.electronAPI.setSessionModel(sid, provider, modelId)
+    const sessionId = get().currentSessionId
+    if (!sessionId || !provider || !modelId) return false
+    const revision = ++chatChoiceRevision
+    if (!await window.electronAPI.setSessionModel(sessionId, provider, modelId)) return false
+    const model = `${provider}/${modelId}`
+    const state = await window.electronAPI.getSessionState(sessionId).catch(() => null)
+    if (revision === chatChoiceRevision) {
+      const level = state?.autoThinking ? 'auto' : state?.thinkingLevel
+      const thinking = level === 'auto' || SESSION_THINKING_LEVELS.some(item => item === level)
+        ? level as SessionThinkingSelection
+        : get().pendingThinking
+      get().rememberChatPreferences({ model, thinking })
+    }
+    return true
   },
 
   setCurrentSessionThinking: async (level) => {
-    const sid = get().currentSessionId
-    if (!sid) return false
-    return window.electronAPI.setThinkingLevel(sid, level)
+    const sessionId = get().currentSessionId
+    if (!sessionId) return false
+    const revision = ++chatChoiceRevision
+    if (!await window.electronAPI.setThinkingLevel(sessionId, level)) return false
+    const state = await window.electronAPI.getSessionState(sessionId).catch(() => null)
+    if (revision === chatChoiceRevision) {
+      const actual = state?.thinkingLevel
+      const thinking = level !== 'auto' && SESSION_THINKING_LEVELS.some(item => item === actual)
+        ? actual as SessionThinkingSelection : level
+      get().rememberChatPreferences({ model: modelSelectorOf(state) ?? get().pendingModel, thinking })
+    }
+    return true
   },
 
-  setPendingModel: (selector) => set({ pendingModel: selector }),
+  rememberChatPreferences: ({ model, thinking }) => {
+    ++chatChoiceRevision
+    set({ pendingModel: model, pendingThinking: thinking })
+    void window.electronAPI.setStore?.('recentChatPreferences', { model, thinking })?.catch(() => {})
+  },
 
-  setPendingThinking: (level) => set({ pendingThinking: level }),
+  loadChatPreferences: async () => {
+    const revision = chatChoiceRevision
+    const choice = await window.electronAPI.getStore('recentChatPreferences').catch(() => null)
+    if (revision !== chatChoiceRevision || !choice) return
+    const { model, thinking } = choice
+    set({
+      pendingModel: typeof model === 'string' && model ? model : null,
+      pendingThinking: thinking === 'auto' || SESSION_THINKING_LEVELS.some(item => item === thinking) ? thinking : null
+    })
+  },
+
+  setPendingModel: (selector) => {
+    const { pendingThinking, runtimeOverview, runtimeModels } = get()
+    const model = runtimeModels.find(item => item.selector === selector)
+    const options = sessionThinkingOptionsFor(runtimeOverview?.profile === 'legacy' ? 'legacy' : 'current', model)
+    get().rememberChatPreferences({ model: selector, thinking: supportedSessionThinking(pendingThinking, options) })
+  },
+
+  setPendingThinking: (thinking) => get().rememberChatPreferences({ model: get().pendingModel, thinking }),
 
   getSessionOverrides: () => {
     const { pendingModel, pendingThinking } = get()
@@ -1705,17 +1768,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(pendingModel ? { modelSelector: pendingModel } : {}),
       ...(pendingThinking ? { thinkingLevel: pendingThinking } : {})
     }
-  },
-
-  clearSessionOverrides: (overrides) => {
-    set((state) => ({
-      ...(overrides.modelSelector !== undefined && state.pendingModel === overrides.modelSelector
-        ? { pendingModel: null }
-        : {}),
-      ...(overrides.thinkingLevel !== undefined && state.pendingThinking === overrides.thinkingLevel
-        ? { pendingThinking: null }
-        : {})
-    }))
   },
 
   applySessionEvent: (event) => {
@@ -1796,6 +1848,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const wasBusy = Boolean(get().busy[event.sessionId])
       const nextBusy = STATUS_BUSY[event.status]
       if (event.status === 'working') {
+        get().clearSessionErrorIf(event.sessionId, 'chat.turnFailed')
         const pending = get().queueDispatching[event.sessionId]
         if (pending?.phase === 'sending' && !pending.runtimeStarted) {
           set((state) => ({ queueDispatching: { ...state.queueDispatching, [event.sessionId]: { ...pending, runtimeStarted: true } } }))
@@ -1820,7 +1873,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           // stray or repeated 'idle' from draining more than one message.
           if (wasBusy) {
             const drained = get().drainQueuedMessage(event.sessionId)
-            if (!drained && event.sessionId !== get().currentSessionId) {
+            if (!drained && !event.aborted && event.sessionId !== get().currentSessionId) {
               // Turn finished in a background session — flag it unread
               get().markSessionUnread(event.sessionId)
             }
@@ -1878,6 +1931,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }))
     } else if (event.type === 'error') {
+      const turnFailed = event.turnFailed && event.recoverable !== true && get().busy[event.sessionId]
       if (event.recoverable === false && get().compacting[event.sessionId]) {
         get().setCompacting(event.sessionId, false)
         queueCompactionRow({ type: 'compaction', sessionId: event.sessionId, phase: 'end', outcome: 'failed' }, true)
@@ -1911,6 +1965,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
           : {})
       }))
+      if (turnFailed && event.recoverable !== false) get().setSessionError(event.sessionId, 'chat.turnFailed')
       if (event.recoverable === false) {
         get().setSessionError(event.sessionId, 'chat.sessionDead')
         // The session died out of view — surface it in the sidebar like any

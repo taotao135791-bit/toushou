@@ -83,6 +83,15 @@ app.whenReady().then(async () => {
       nativeKeyboardClicks.push(clicks.length)
       if (clicks.length !== 1 || !clicks[0].trusted) throw new Error(`${phase}: Enter must activate exactly once through native input: ${JSON.stringify(clicks)}`)
     }
+
+    // 长按删除：键盘 Enter 需按住超过 holdMs 才触发确认弹窗。
+    const holdEnter = async () => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
+      wc.sendInputEvent({ type: 'char', keyCode: '\r' })
+      await new Promise(resolve => setTimeout(resolve, 1700))
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+      await frame()
+    }
     const openActions = async n => {
       await focusElement(`${row('[data-all-conversations]', n)}.querySelector('[data-session-actions]')`)
       await enter()
@@ -94,7 +103,9 @@ app.whenReady().then(async () => {
     await js(`document.querySelector('[aria-label="Conversations in Alpha"]').click()`)
     await waitFor(`document.querySelectorAll('[data-project-conversations="alpha"] [data-conversation-key]').length===17`)
     const duplicateTitlesKept = await js(`[...document.querySelectorAll('[data-project-conversations="alpha"] [data-conversation-key]')].filter(e=>e.textContent.includes('Duplicate topic')).length`)
+    await waitFor(`document.querySelector('[data-project-conversations="alpha"]').getAnimations().every(animation=>animation.playState==='finished')`)
     await js(`document.querySelector('[data-sidebar-scroll]').scrollTop=80;window.keptConversationNode=${row('[data-all-conversations]', 3)}`)
+    await frame()
     const before = await js(`({scroll:document.querySelector('[data-sidebar-scroll]').scrollTop,expanded:document.querySelector('[aria-label="Conversations in Alpha"]').getAttribute('aria-expanded'),historyReads:window.sidebarFixture.historyCalls.length})`)
     await js(`window.dispatchEvent(new Event('focus'))`)
     await new Promise(resolve => setTimeout(resolve, 80))
@@ -115,21 +126,36 @@ app.whenReady().then(async () => {
     await dragRow(row('[data-all-conversations]', 3), row('[data-all-conversations]', 2))
     const ordered = await js(`({saved:window.sidebarFixture.settings.sidebarSessionOrder, sort:window.sidebarFixture.settings.sessionSort,
       adjacent:${row('[data-all-conversations]', 3)}.nextElementSibling===${row('[data-all-conversations]', 2)},
-      dots:[...document.querySelectorAll('[data-conversation-select]')].every(e=>e.querySelector('[data-session-dot]'))})`)
+      idleRowsClean:[...document.querySelectorAll('[data-conversation-select]')].every(e=>!e.querySelector('[data-session-dot], [data-session-subtitle]'))})`)
     const rowMetrics = async n => js(`(() => {
       const row = ${row('[data-all-conversations]', n)}, title = row.querySelector('[data-session-title]')
-      const subtitle = row.querySelector('[data-session-subtitle]'), select = row.querySelector('[data-conversation-select]')
-      const more = row.querySelector('[data-session-actions]'), dot = row.querySelector('[data-session-dot]')
+      const select = row.querySelector('[data-conversation-select]'), more = row.querySelector('[data-session-actions]')
       const relativeX = el => el.getBoundingClientRect().x - row.getBoundingClientRect().x
-      return { titleX: relativeX(title), dotX: relativeX(dot), moreX: relativeX(more), moreWidth: more.offsetWidth,
+      return { titleX: relativeX(title), moreX: relativeX(more), moreWidth: more.offsetWidth,
         primaryWidth: select.offsetWidth, height: row.offsetHeight, font: getComputedStyle(title).fontWeight,
-        titleColor: getComputedStyle(title).color, subColor: getComputedStyle(subtitle).color,
-        idle: subtitle.textContent.endsWith('Idle'), controls: row.querySelectorAll('button').length }
+        titleColor: getComputedStyle(title).color, nameOnly: select.textContent.trim() === title.textContent.trim(),
+        noIndicator: !select.querySelector('[data-session-status]'), controls: row.querySelectorAll('button').length }
     })()`)
     const rowAppearance = { live: await rowMetrics(1), history: await rowMetrics(3), global: await rowMetrics(4) }
     phase = 'independent action buttons'
     await openActions(2)
     const actionMenuCount = await js(`document.querySelectorAll('[data-session-action-menu] button').length`)
+    const actionsButton = `${row('[data-all-conversations]', 2)}.querySelector('[data-session-actions]')`
+    phase = 'session instructions and compact project appearance'
+    const projectNameOnly = await js(`document.querySelector('[data-project-id=alpha] [draggable]').textContent.trim()==='Alpha'`)
+    await js(`document.querySelector('[data-session-action="instructions"]').click()`)
+    await waitFor(`document.querySelector('[role=dialog] textarea')?.value==='Synthetic saved instruction'`)
+    await js(`(() => {
+      const editor = document.querySelector('[role=dialog] textarea')
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, 'Synthetic revised instruction')
+      editor.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    })()`)
+    await js(`[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent==='Apply to conversation').click()`)
+    await waitFor(`!document.querySelector('[role=dialog]')`)
+    const instruction = await js(`({saved:window.sidebarFixture.instructions.get('live-b'), snapshot:window.sidebarFixture.snapshot(), focus:document.activeElement===${actionsButton}, headerAction:!!document.querySelector('header [aria-label="Session instructions"]')})`)
+    await js(`${actionsButton}.click()`)
+    await settleMenu()
+    phase = 'independent action buttons'
     await focusElement(`document.querySelector('[data-session-action="pin"]')`)
     await enter()
     await waitFor(`window.sidebarFixture.pinned().includes('live-b')`)
@@ -137,7 +163,7 @@ app.whenReady().then(async () => {
     for (const n of [3, 4]) {
       await openActions(n)
       await focusElement(`document.querySelector('[data-session-action="delete"]')`)
-      await enter()
+      await holdEnter()
       await waitFor(`!!document.querySelector('[role="alertdialog"]')`)
       await js(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`)
       await waitFor(`!document.querySelector('[role="alertdialog"]')`)
@@ -147,6 +173,17 @@ app.whenReady().then(async () => {
     await mouseSelect('[data-all-conversations]', 2)
     await waitFor(`window.sidebarFixture.snapshot().current==='live-b'`)
     const centerMouse = await js(`(() => {const r=${row('[data-all-conversations]', 2)}.querySelector('[data-conversation-select]').getBoundingClientRect();return {snapshot:window.sidebarFixture.snapshot(),pinned:window.sidebarFixture.pinned(),deletes:window.sidebarFixture.deleteCalls,bounds:{left:r.left,width:r.width}}})()`)
+    phase = 'running, completed, and failed sidebar cues'
+    const statusRow = row('[data-all-conversations]', 1)
+    const status = kind => `${statusRow}.querySelector('[data-session-status="${kind}"]')`
+    await js(`window.sidebarFixture.markRunning('live-a')`)
+    await waitFor(`!!${status('running')}`)
+    const rightIndicator = await js(`${status('running')}.getBoundingClientRect().left > ${statusRow}.querySelector('[data-session-title]').getBoundingClientRect().left`)
+    await js(`window.sidebarFixture.endTurn('live-a', false)`)
+    await waitFor(`!!${status('unread')}?.querySelector('.bg-blue-500')`)
+    await js(`window.sidebarFixture.markRunning('live-a');window.sidebarFixture.endTurn('live-a', true)`)
+    await waitFor(`!!${status('error')}?.querySelector('.bg-red-500')`)
+    const rowCues = await js(`({rightIndicator:${rightIndicator}, errorLabel:${statusRow}.querySelector('[data-conversation-select]').getAttribute('aria-label')})`)
     phase = 'project selection'
     await js(`document.querySelector('[aria-label="Conversations in Beta"]').click()`)
     await waitFor(`!!${row('[data-project-conversations="beta"]', 2)}`)
@@ -166,7 +203,7 @@ app.whenReady().then(async () => {
     await mouseSelect('[data-project-conversations="beta"]', 2)
     await waitFor(`window.sidebarFixture.snapshot().current==='live-b' && window.sidebarFixture.snapshot().workspace==='/synthetic/client-b/project'`)
     const afterProjectSelect = await js(`({snapshot:window.sidebarFixture.snapshot(),expanded:document.querySelector('[aria-label="Conversations in Alpha"]').getAttribute('aria-expanded'),activateCalls:window.sidebarFixture.activateCalls.length})`)
-    await js(`document.querySelector('[data-project-id="beta"] button[title="/synthetic/client-b/project"]').click()`)
+    await js(`document.querySelector('[data-project-id="beta"] [data-project-select]').click()`)
     await new Promise(resolve => setTimeout(resolve, 40))
     const noExtraActivation = await js(`window.sidebarFixture.activateCalls.length===${afterProjectSelect.activateCalls}`)
     phase = 'late history resume'
@@ -187,14 +224,14 @@ app.whenReady().then(async () => {
     const archivedSemantics = await js(`({outerRole:${row('[data-all-conversations]', 10)}.getAttribute('role'),primaryHasNested:${row('[data-all-conversations]', 10)}.querySelector('[data-conversation-select]').querySelectorAll('button,input,a,select').length})`)
     phase = 'archived lock reflects persisted state'
     const archivedRow = row('[data-all-conversations]', 10)
-    const archivedBadge = `${archivedRow}.querySelector('[data-conversation-select] [aria-label="Locked conversation"]')`
+    const archivedBadge = `${archivedRow}.querySelector('[data-conversation-select][aria-label$="Locked conversation"]')`
     const archivedLock = `${archivedRow}.querySelector('[title="Lock conversation"]')`
     await js(`window.sidebarFixture.allowLockWrite=false;${archivedLock}.click()`)
     await waitFor('document.querySelector(\'[role="status"]\')?.textContent.includes("Could not save the conversation lock")')
     const archivedLockRejected = await js(`!${archivedBadge}&&!window.sidebarFixture.locks.has(window.sidebarFixture.uuid(10))`)
     await js(`window.sidebarFixture.allowLockWrite=true;${archivedLock}.click()`)
     await waitFor(`!!${archivedBadge}&&window.sidebarFixture.locks.has(window.sidebarFixture.uuid(10))`)
-    const archivedLockVisible = await js(`getComputedStyle(${archivedBadge}).opacity==='1'`)
+    const archivedLockAvailable = await js(`!!${archivedBadge}&&!!${archivedRow}.querySelector('[title="Unlock conversation"]')`)
     await js(`${archivedRow}.querySelector('[title="Unlock conversation"]').click()`)
     await waitFor(`!${archivedBadge}&&!window.sidebarFixture.locks.has(window.sidebarFixture.uuid(10))`)
     await mouseSelect('[data-all-conversations]', 10)
@@ -300,8 +337,17 @@ app.whenReady().then(async () => {
       await js(`(() => { const viewport=document.querySelector('[data-sidebar-scroll]');viewport.scrollTop=viewport.scrollHeight })()`)
       await frame()
     }
-    const pages = await js(`({initial:${firstPage}, count:${longRows}.length, oldest:${longRows}.some(el=>el.textContent.includes('Large history 0')), dots:${longRows}.every(el=>el.querySelector('[data-session-dot]'))})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, rowAppearance, before, after, ordered, projectOrder, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, archivedLockRejected, archivedLockVisible, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks, lateFork, lockedLiveDelete, liveDelete, pages }))
+    const pages = await js(`({initial:${firstPage}, count:${longRows}.length, oldest:${longRows}.some(el=>el.textContent.includes('Large history 0')), idleRowsClean:${longRows}.every(el=>!el.querySelector('[data-session-dot], [data-session-subtitle]'))})`)
+    phase = 'session instructions from durable history'
+    const historicalRow = row('[data-all-conversations]', 1000)
+    await js(`window.sidebarFixture.slowResume=false;${historicalRow}.querySelector('[data-session-actions]').click()`)
+    await settleMenu()
+    await js(`document.querySelector('[data-session-action="instructions"]').click()`)
+    await waitFor(`!!document.querySelector('[role=dialog] textarea')`)
+    const historyInstruction = await js(`({current:window.sidebarFixture.snapshot().current, title:document.querySelector('#session-instruction-name')?.textContent})`)
+    await js(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`)
+    await waitFor(`!document.querySelector('[role=dialog]')`)
+    console.log('E2E_RESULT ' + JSON.stringify({ defaultHidden, duplicateTitlesKept, rowAppearance, projectNameOnly, instruction, historyInstruction, rowCues, before, after, ordered, projectOrder, actionMenuCount, pinKeyboard, deleteKeyboard, beforeHover, centerMouse, oneClickHistory, afterProjectSelect, noExtraActivation, afterLateResume, archivedSemantics, archivedLockRejected, archivedLockAvailable, allRowsSemantic, globalNewChat, lateActivation, composerWins, firstSend, lateCreate, firstArchive, resetArchive, finalArchive, fullTitle, nativeKeyboardClicks, lateFork, lockedLiveDelete, liveDelete, pages }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { win?.destroy(); app.quit() }
 })

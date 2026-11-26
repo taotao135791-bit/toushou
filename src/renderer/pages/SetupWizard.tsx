@@ -4,6 +4,7 @@ import { Download, CheckCircle, AlertCircle, KeyRound, Loader2, Terminal, ArrowR
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
+import { shortcutPlatform } from '../lib/platformShortcut'
 import Logo from '../components/Logo'
 
 export default function SetupWizard() {
@@ -25,7 +26,7 @@ export default function SetupWizard() {
   const t = useT()
   const navigate = useNavigate()
 
-  const isWindows = /Win/.test(navigator.platform || navigator.userAgent)
+  const isWindows = shortcutPlatform() === 'win32'
   const manualCommand = isWindows ? 'irm https://omp.sh/install.ps1 | iex' : 'curl -fsSL https://omp.sh/install | sh'
   const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
   const [manualFailed, setManualFailed] = useState(false)

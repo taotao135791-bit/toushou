@@ -3,6 +3,7 @@ import { ClipboardPaste, Loader2, PenLine, Plus, Trash2, Zap } from 'lucide-reac
 import { useT } from '../i18n'
 import { parseRelayBlock } from '../lib/relayBlockParse'
 import { ConfirmDialog, type ConfirmDialogRequest } from './ConfirmDialog'
+import JellyToggle from './effects/JellyToggle'
 
 interface AdsCopyModelRow {
   id: string
@@ -262,13 +263,12 @@ export default function AdsCopyModelsSection() {
             const last = testResult[row.id]
             return (
               <div key={row.id} className="mb-1.5 flex items-center gap-2 rounded-xl border border-line bg-ink-900/60 px-3 py-2.5">
-                <input
-                  type="checkbox"
-                  disabled={busy || loadFailed}
+                <JellyToggle
+                  size="sm"
                   checked={row.inPool}
+                  disabled={busy || loadFailed}
                   onChange={() => void togglePool(row)}
                   aria-label={t('adsCopy.poolToggle')}
-                  className="h-4 w-4 accent-[var(--accent)]"
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">

@@ -105,6 +105,14 @@ describe('executableSearchDirs', () => {
     const normalized = dirs.map((dir) => dir.replace(/\\/g, '/'))
     expect(normalized.some((dir) => dir.endsWith('/omp'))).toBe(false)
   })
+
+  it('only adds platform-specific system binary directories', () => {
+    const env = { PATH: '' }
+    expect(executableSearchDirs('darwin', env)).toEqual(expect.arrayContaining(['/opt/homebrew/bin', '/usr/local/bin']))
+    expect(executableSearchDirs('linux', env)).not.toContain('/opt/homebrew/bin')
+    expect(executableSearchDirs('win32', env)).not.toContain('/opt/homebrew/bin')
+    expect(executableSearchDirs('win32', env)).not.toContain('/usr/local/bin')
+  })
 })
 
 

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { ReadingSnapshot } from '@shared/readingSnapshot'
 import type { KanbanBoard } from '@shared/types'
 import { useModalBoundary } from '../../lib/modalBoundary'
+import JellyToggle from '../../components/effects/JellyToggle'
 
 export function SaveReadingBoardDialog({ snapshot, language, onClose, onSaved, initialAi = false }: {
   snapshot: ReadingSnapshot; language: 'zh' | 'en'; onClose: () => void; onSaved: (board: KanbanBoard, openAi?: boolean, widgetId?: string) => void; initialAi?: boolean
@@ -70,7 +71,7 @@ export function SaveReadingBoardDialog({ snapshot, language, onClose, onSaved, i
         <label className="flex items-center gap-2"><input type="radio" name="reading-presentation" checked={presentation === 'report'} disabled={busy} onChange={() => setPresentation('report')} />{zh ? '整页报告' : 'Full report'}</label>
       </fieldset>
       <p className="mt-1 text-[12px] text-cream-faint">{presentation === 'modular' ? (zh ? '指标、说明和图表可分别拖动、调整大小与编辑；保留完整读数。' : 'Move, resize and edit metrics, notes and charts separately; the full snapshot is retained.') : (zh ? '以一个完整读数报告展示。' : 'Show one complete reading report.')}</p>
-      <label className="mt-3 flex items-center gap-2 text-[13px] text-cream"><input type="checkbox" checked={chart} onChange={e => setChart(e.target.checked)} disabled={busy} />{zh ? '同时添加账户消耗可视化（可选）' : 'Include account spend visualization (optional)'}</label>
+      <div className="mt-3 flex items-center gap-2 text-[13px] text-cream"><JellyToggle size="sm" checked={chart} onChange={setChart} disabled={busy} aria-label={zh ? '同时添加账户消耗可视化（可选）' : 'Include account spend visualization (optional)'} /><span>{zh ? '同时添加账户消耗可视化（可选）' : 'Include account spend visualization (optional)'}</span></div>
       <p className="mt-1 text-[12px] text-cream-faint">{zh ? '按平台和币种分别展示。失败或未知读数不会作为零计算。' : 'Grouped by platform and currency. Failed or unknown readings are not zero.'}</p>
       {error && <p role="alert" className="mt-3 text-[12px] text-red-600">{errorText}</p>}
       <div className="mt-5 flex justify-end gap-2"><button disabled={busy} onClick={onClose} className="focus-ring rounded-full border border-line px-3 py-1.5 text-[12px] text-cream-dim">{zh ? '取消' : 'Cancel'}</button><button disabled={busy || (destination === 'new' && !name.trim()) || (destination === 'existing' && (!selected || loading || loadFailed))} onClick={() => void save()} className="focus-ring rounded-full bg-accent px-4 py-1.5 text-[12px] text-[rgb(var(--bg-app))] disabled:opacity-40">{busy ? (zh ? '保存中…' : 'Saving…') : (initialAi ? (zh ? '保存并用 AI 生成' : 'Save and create with AI') : (zh ? '保存并打开看板' : 'Save and open board'))}</button></div>

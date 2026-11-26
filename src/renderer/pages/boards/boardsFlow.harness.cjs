@@ -186,7 +186,7 @@ const e2ePlace = e2eSecondary ? { x: e2eSecondary.workArea.x + 24, y: e2eSeconda
     await wc.executeJavaScript(`window.boardFixture.scenario.snapshotSaveFail=true`)
     await wc.executeJavaScript(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Save as new board').click()`)
     await wait()
-    const chartInitially = await wc.executeJavaScript(`document.querySelector('[role=dialog] input[type=checkbox]').checked`)
+    const chartInitially = await wc.executeJavaScript(`document.querySelector('[role=dialog] [role=switch]').getAttribute('aria-checked') === 'true'`)
     await wc.executeJavaScript(`(() => {const dialog=document.querySelector('[role=dialog]');const name=dialog.querySelector('#reading-board-name');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(name,'Snapshot fixture');name.dispatchEvent(new Event('input',{bubbles:true}));[...dialog.querySelectorAll('label')].find(e=>e.textContent.trim()==='Full report').querySelector('input').click()})()`)
     await wait()
     await wc.executeJavaScript(`[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent.trim()==='Save and open board').click()`)

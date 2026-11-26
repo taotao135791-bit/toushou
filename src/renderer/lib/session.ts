@@ -9,10 +9,7 @@ import { beginNavigationIntent, isCurrentNavigationIntent } from './navigationIn
  * recovery and this function leaves the draft and picker choices intact.
  * Returns the new session id, or null when no workspace could be resolved.
  *
- * Next-session overrides (composer pickers used without an active session)
- * are snapshotted here and passed as spawn args. They are cleared only after
- * Main has actually created the session, so a failed create keeps the user's
- * picker choices for a retry.
+ * Snapshot the composer's most recent choices for each new conversation.
  */
 export async function createSessionForCurrentProject(
   extra?: { skillId?: string; permissionMode?: 'readonly' },
@@ -23,8 +20,7 @@ export async function createSessionForCurrentProject(
     currentWorkspace,
     selectDefaultWorkspace,
     addSession,
-    getSessionOverrides,
-    clearSessionOverrides
+    getSessionOverrides
   } = useAppStore.getState()
   let grant = currentWorkspace
   if (!grant) {
@@ -34,10 +30,6 @@ export async function createSessionForCurrentProject(
   }
   const overrides = getSessionOverrides()
   const session = await window.electronAPI.createSession(grant.id, { ...overrides, ...extra })
-  // Clear only the values this successful request used. If the user changed a
-  // picker while Main was creating the session, that newer choice is reserved
-  // for the next session instead of being erased by this completion.
-  clearSessionOverrides(overrides)
   // Preserve the created session for the submitted prompt, but a newer user
   // choice owns the foreground. Internal adoption reuses the original intent.
   addSession(session, false)

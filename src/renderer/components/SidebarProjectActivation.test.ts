@@ -22,7 +22,7 @@ describe('Sidebar project entry validation', () => {
     activate.mockResolvedValue(false)
     const intent = beginNavigationIntent()
     expect(await activateSidebarProject(project.path, intent)).toBe('unavailable')
-    expect(activate).toHaveBeenCalledWith(project.id, intent)
+    expect(activate).toHaveBeenCalledWith(project.id, intent, undefined)
   })
 
   it.each(['missing', 'archived'] as const)('revalidates a registered %s project even when its old workspace grant is current', async status => {
@@ -31,7 +31,7 @@ describe('Sidebar project entry validation', () => {
     activate.mockResolvedValue(false)
     const intent = beginNavigationIntent()
     expect(await activateSidebarProject(project.path, intent)).toBe('unavailable')
-    expect(activate).toHaveBeenCalledWith(project.id, intent)
+    expect(activate).toHaveBeenCalledWith(project.id, intent, undefined)
   })
 
   it('keeps current available projects without creating an extra activation', async () => {

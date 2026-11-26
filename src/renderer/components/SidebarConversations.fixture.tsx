@@ -31,6 +31,13 @@ const fixture = {
   forkCalls: [] as Array<{ grantId: string; liveSessionId: string }>,
   finishFork: null as (() => void) | null,
   markRunning(id: string) { useAppStore.getState().setBusy(id, true) },
+  endTurn(id: string, failed: boolean) {
+    const state = useAppStore.getState()
+    state.applySessionEvent(failed
+      ? { type: 'error', sessionId: id, turnFailed: true, message: 'Synthetic agent failure' }
+      : { type: 'status', sessionId: id, status: 'idle' })
+  },
+  instructions: new Map([['live-b', 'Synthetic saved instruction']]),
   slowActivation: false, finishActivation: null as (() => void) | null,
   slowCreate: false, finishCreate: null as (() => void) | null,
   creates: [] as string[], sent: [] as Array<{ id: string; text: string }>,
@@ -68,6 +75,8 @@ window.sidebarFixture = fixture
 window.electronAPI = {
   getStore: async (key: string) => key === 'sidebarWidth' ? 260 : key === 'sessionSort' ? 'recent' : key === 'lockedSessionIds' ? [...fixture.locks] : undefined,
   setStore: async (key: string, value: unknown) => { fixture.settings[key] = value; return true },
+  sessionInstruction: async (id: string) => fixture.instructions.get(id) ?? '',
+  setSessionInstruction: async (id: string, value: string) => { fixture.instructions.set(id, value); return true },
   setSessionLocked: async (id: string, locked: boolean) => {
     if (!fixture.allowLockWrite) return false
     if (locked) fixture.locks.add(id)
@@ -113,6 +122,7 @@ window.electronAPI = {
     }
   }),
   getSubagents: async () => [],
+  sessionTranscript: async () => [],
   getSessionState: async () => null,
   gitInfo: async () => null,
   getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }), listModels: async () => [],

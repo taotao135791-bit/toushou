@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type DragEvent, type MutableRefObject } from 'react'
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Copy, FolderOpen, Loader2, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, Loader2, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
+import HoldToDelete from './effects/HoldToDelete'
 import type { ProjectRecord } from '@shared/types'
 import { useProjects } from '../store/projects'
 import { useAppStore } from '../store'
@@ -35,7 +36,7 @@ function ProjectRow({ project, renderConversations, drag, draggedSession, filing
   const isCurrent = current?.realPath === project.path
   const dropKey = () => {
     const key = draggedSession?.current
-    return key && filingPaths?.has(key) && filingPaths.get(key) !== project.path && !project.archived && !project.missing && !project.isDefault ? key : null
+    return key && filingPaths?.has(key) && !project.archived && !project.missing && !project.isDefault ? key : null
   }
   const dragConversationOver = (event: DragEvent<HTMLDivElement>) => {
     if (!dropKey()) return
@@ -58,13 +59,16 @@ function ProjectRow({ project, renderConversations, drag, draggedSession, filing
       if (draggedSession) draggedSession.current = null
       void onFileSession(key, project).then(moved => { if (moved) setExpanded(true) })
     }}>
-    <div {...drag} className={`group flex items-center rounded-lg ${isCurrent ? 'bg-overlay' : 'hover:bg-overlay'}`}>
+    <div {...drag} className={`group flex min-h-8 items-center rounded-lg ${isCurrent ? 'bg-overlay' : 'hover:bg-overlay'}`}>
     {!project.archived && <button type="button" aria-label={t('projects.conversations', { name: project.name })} aria-expanded={expanded} aria-controls={`project-conversations-${project.id}`}
-      onClick={() => setExpanded(value => !value)} className="ml-1 shrink-0 rounded p-1 text-cream-faint hover:bg-overlay focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">{expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</button>}
-    <button ref={projectButton} type="button" disabled={!!pending || project.archived || project.missing} title={project.path}
-      onClick={() => { setExpanded(true); if (!isCurrent) void activate(project.id) }} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left disabled:opacity-60">
-      <FolderOpen size={14} className="shrink-0 text-cream-faint" />
-      <span className="min-w-0 flex-1"><span className="block truncate text-[12.5px] text-cream">{project.isDefault ? t('sidebar.defaultWorkspace') : project.name}</span><span className="block truncate text-[10.5px] text-cream-faint">{project.path}</span></span>
+      onClick={() => setExpanded(value => !value)} className="ml-1 shrink-0 rounded p-1 text-cream-faint hover:bg-overlay focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"><ChevronRight size={12} className={`transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} /></button>}
+    <button ref={projectButton} type="button" data-project-select disabled={!!pending || project.archived || project.missing} title={project.name}
+      onClick={() => { setExpanded(true); if (!isCurrent) void activate(project.id) }} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left disabled:opacity-60">
+      {/* 文件夹图标随展开状态开/合（学 kimi 的状态图标切换），切换带轻缩放淡入。 */}
+      <span key={expanded ? 'open' : 'closed'} className="shrink-0 text-cream-faint row-in" style={{ animationDuration: '150ms' }}>
+        {expanded ? <FolderOpen size={14} /> : <Folder size={14} className="-scale-x-100" />}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-5 text-cream">{project.isDefault ? t('sidebar.defaultWorkspace') : project.name}</span>
     </button>
     {pending?.endsWith(project.id) && <Loader2 size={12} className="shrink-0 animate-spin text-cream-faint" />}
     <button ref={trigger} type="button" aria-label={t('projects.actions', { name: project.name })} aria-expanded={open} aria-haspopup="menu"
@@ -76,14 +80,28 @@ function ProjectRow({ project, renderConversations, drag, draggedSession, filing
       {project.isDefault ? <p className="px-2.5 py-2 text-[11px] leading-5 text-cream-faint">{t('projects.defaultHelp')}</p> : <>
         <div className="my-1 border-t border-line" />
         <button type="button" disabled={!!pending} className="project-menu-action" onClick={async () => { setOpen(false); await (project.archived ? restore(project.id) : archive(project.id)) }}>{project.archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}{t(project.archived ? 'projects.restore' : 'projects.archive')}</button>
-        <button type="button" disabled={!!pending} className="project-menu-action text-red-500" onClick={() => { setOpen(false); void remove(project.id) }}><Trash2 size={13} />{t('projects.delete')}</button>
+        <HoldToDelete
+          disabled={!!pending}
+          onConfirm={() => { setOpen(false); void remove(project.id) }}
+          ariaLabel={t('projects.delete')}
+          label={t('projects.delete')}
+          className={`project-menu-action text-red-500 hover:bg-red-500/10 ${pending ? 'opacity-40' : ''} data-[holding=true]:bg-red-500/10`}
+        >
+          <Trash2 size={13} />
+        </HoldToDelete>
       </>}
     </MenuPortal>
     </div>
     <ProjectRecovery project={project} onRecovered={() => projectButton.current?.focus()} />
-    {!project.archived && expanded && <div id={`project-conversations-${project.id}`} className="ml-3 border-l border-line pl-1" data-project-conversations={project.id}>
-      {renderConversations?.(project.path) || <p className="px-2.5 py-2 text-[11.5px] text-cream-faint">{t('projects.noConversations')}</p>}
-    </div>}
+    {!project.archived && expanded && (
+      <div
+        id={`project-conversations-${project.id}`}
+        className="ml-3 border-l border-line pl-1 [animation:disclose-in_180ms_var(--ease-out)_both] origin-top"
+        data-project-conversations={project.id}
+      >
+        {renderConversations?.(project.path) || <p className="px-2.5 py-1.5 text-[11.5px] text-cream-faint">{t('projects.noConversations')}</p>}
+      </div>
+    )}
   </div>
 }
 
@@ -122,7 +140,7 @@ export default function SidebarProjects(conversations: ProjectConversations = {}
   const errorProject = projects.find(project => project.id === errorProjectId)
   return <section className="sidebar-projects mt-5 flex min-h-0 flex-col px-2.5" aria-label={t('sidebar.project')}>
     <div className="sidebar-section-header flex shrink-0 items-center gap-1 px-2 pb-1.5">
-      <button type="button" className="sidebar-section-title flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left text-xs font-semibold text-cream-faint" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{t(archived ? 'projects.archived' : 'sidebar.project')}<ChevronDown size={12} className={expanded ? '' : '-rotate-90'} /></button>
+      <button type="button" className="sidebar-section-title flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left text-xs font-semibold text-cream-faint" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{t(archived ? 'projects.archived' : 'sidebar.project')}<ChevronDown size={12} className={`transition-transform duration-200 ${expanded ? '' : '-rotate-90'}`} /></button>
       <button ref={optionsRef} type="button" className="sidebar-section-action rounded-md p-1 text-cream-faint hover:bg-overlay hover:text-cream" aria-label={t('projects.options')} aria-expanded={optionsOpen} onClick={() => setOptionsOpen(value => !value)}><MoreHorizontal size={15} /></button>
       <button ref={plusRef} type="button" className="sidebar-section-action rounded-md p-1 text-cream-faint hover:bg-overlay hover:text-cream" aria-label={t('projects.create')} aria-expanded={createOpen} onClick={() => { clearError(); setCreateOpen(value => !value) }}><Plus size={15} /></button>
     </div>

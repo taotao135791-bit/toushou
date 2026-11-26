@@ -65,6 +65,7 @@ export default function ChatPanel() {
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const selectWorkspace = useProjects((s) => s.importFolder)
   const unavailableDefault = useProjects(s => s.projects.find(project => project.isDefault && project.missing))
+  const projectLabel = useProjects(s => s.projects.find(project => project.path === currentWorkspace?.realPath)?.name)
   // Per-session slices only: streaming deltas of OTHER sessions must not
   // re-render this chat, and unrelated store writes must not either.
   const sessionMessages = useAppStore((s) =>
@@ -80,9 +81,11 @@ export default function ChatPanel() {
   const pendingUi = useAppStore((s) =>
     currentSessionId ? (s.uiRequests[currentSessionId] ?? EMPTY_UI_REQUESTS)[0] : undefined
   )
-  const sessionError = useAppStore((s) =>
-    currentSessionId ? s.sessionErrors[currentSessionId] : undefined
-  )
+  const sessionError = useAppStore((s) => {
+    const error = currentSessionId ? s.sessionErrors[currentSessionId] : undefined
+    // Provider failures already have their own transcript row.
+    return error === 'chat.turnFailed' ? undefined : error
+  })
   const queuedCount = useAppStore((s) => currentSessionId ? s.queuedMessages[currentSessionId]?.length ?? 0 : 0)
   const queuePauseReason = useAppStore((s) => currentSessionId ? s.queuePauseReasons[currentSessionId] : undefined)
   const queueDispatching = useAppStore((s) => currentSessionId ? s.queueDispatching[currentSessionId] : undefined)
@@ -412,8 +415,26 @@ export default function ChatPanel() {
     setWorkspacePanel({ kind: 'office', grant: picked.grant, name: picked.name })
   }
 
-  const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
-  const showHero = sessionMessages.length === 0
+  const projectName = currentWorkspace ? projectLabel || basename(currentWorkspace.displayPath) : null
+  const transcriptHydrating = useAppStore(s => Boolean(currentSessionId && s.transcriptHydrating[currentSessionId]))
+  const transcriptUnavailable = useAppStore(s => Boolean(currentSessionId && s.transcriptUnavailable[currentSessionId]))
+  const refreshTranscript = useCallback(() => {
+    const { currentSessionId, ensureTranscript } = useAppStore.getState()
+    if (currentSessionId && document.visibilityState !== 'hidden') void ensureTranscript(currentSessionId)
+  }, [])
+  useEffect(() => {
+    refreshTranscript()
+  }, [currentSessionId, refreshTranscript])
+  useEffect(() => {
+    window.addEventListener('focus', refreshTranscript)
+    document.addEventListener('visibilitychange', refreshTranscript)
+    return () => {
+      window.removeEventListener('focus', refreshTranscript)
+      document.removeEventListener('visibilitychange', refreshTranscript)
+    }
+  }, [refreshTranscript])
+
+  const showHero = !currentSessionId
   const showThinking =
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
 
@@ -497,8 +518,7 @@ export default function ChatPanel() {
         {showHero ? (
           <div className="agent-home flex min-h-full flex-col items-center">
             <div className="home-hero flex flex-col items-center">
-              <h1 className="home-heading">{t('home.heading')}</h1>
-              <div className="w-full">
+              <h1 className="home-heading">{t('home.heading')}</h1>              <div className="w-full">
                 {!currentWorkspace && unavailableDefault && <div className="mb-3 rounded-xl border border-line px-2 py-2 text-xs text-cream-dim">
                   <p className="px-2.5 pb-1">{t('projects.defaultUnavailable')}</p>
                   <p className="break-all px-2.5 pb-2 text-[11px] text-cream-faint">{unavailableDefault.path}</p>
@@ -545,6 +565,21 @@ export default function ChatPanel() {
         ) : (
           <div className="mx-auto max-w-[760px]">
             <MessageList messages={sessionMessages} sessionId={currentSessionId} onRetry={handleRetry} onBranch={forkCurrentSession} />
+            {transcriptHydrating && (
+              <div className="msg-in flex items-center gap-2 px-6 pb-2 text-[12px] text-cream-faint">
+                <Loader2 size={13} className="animate-spin" />
+                {t('chat.loadingTranscript')}
+              </div>
+            )}
+            {!transcriptHydrating && transcriptUnavailable && !sessionMessages.length && (
+              <div role="status" className="flex flex-wrap items-center gap-2 px-6 py-4 text-xs text-cream-dim">
+                <CircleAlert size={13} aria-hidden="true" />
+                {t('chat.transcriptUnavailable')}
+                <button type="button" onClick={refreshTranscript} className="focus-ring rounded-md px-2 py-1 font-medium text-cream hover:bg-overlay">
+                  {t('msg.retry')}
+                </button>
+              </div>
+            )}
             <ExecutionActivity sessionId={currentSessionId} />
             {showThinking && (
               <div className="msg-in flex items-center gap-1 px-6 pb-6">

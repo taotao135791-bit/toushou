@@ -92,13 +92,13 @@
 }
 
 .app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-projects {
-  margin-top: clamp(12px, calc(19vh - 114px), 48px);
+  margin-top: clamp(12px, calc(9vh - 48px), 24px);
   padding-inline: var(--sidebar-inset);
 }
 
 .app-sidebar[data-sidebar-appearance="lightweight"] .sidebar-conversations {
   min-height: 80px;
-  margin-top: clamp(10px, calc(18vh - 108px), 45px);
+  margin-top: clamp(10px, calc(8vh - 44px), 20px);
   padding-inline: var(--sidebar-inset);
 }
 

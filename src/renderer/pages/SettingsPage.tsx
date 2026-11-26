@@ -1,11 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Bell,
+  Brain,
   Check,
+  Cpu,
+  Database,
   Download,
   FolderCog,
+  Info,
   Languages,
+  Lightbulb,
+  Monitor,
   Moon,
+  Palette,
   RefreshCw,
+  ShieldCheck,
   Sun,
   Trash2
 } from 'lucide-react'
@@ -15,17 +24,19 @@ import type { SessionImportResult, SessionImportSource } from '@shared/sessionIm
 import { subscribeUpdaterStatus } from '../lib/updaterStatus'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
-import { I18nKey, useT } from '../i18n'
+import { fileManagerRevealKey, I18nKey, useT } from '../i18n'
 import { runLanguageTransition, runThemeTransition } from '../lib/themeTransition'
 import CurrentOmpSettings from '../components/CurrentOmpSettings'
 import LegacyPiSettings from '../components/LegacyPiSettings'
+import MemorySection from '../components/MemorySection'
+import JellyToggle from '../components/effects/JellyToggle'
 
 /** RPC protocol versions this GUI can drive (mirrors the main-process handshake). */
 const SUPPORTED_RPC_PROTOCOLS: readonly number[] = [1, 2]
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, navId }: { title: string; children: React.ReactNode; navId?: string }) {
   return (
-    <section className="overflow-hidden rounded-[16px] border border-line bg-ink-850 shadow-card">
+    <section id={navId} className="scroll-mt-3 overflow-hidden rounded-[16px] border border-line bg-ink-850 shadow-card">
       <div className="border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
         {title}
       </div>
@@ -33,6 +44,17 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     </section>
   )
 }
+
+const SETTINGS_NAV = [
+  { id: 'settings-nav-runtime', label: 'Oh My Pi' as const, icon: Cpu },
+  { id: 'settings-nav-permissions', label: 'settings.permissions' as const, icon: ShieldCheck },
+  { id: 'settings-nav-memory', label: 'settings.memory.title' as const, icon: Brain },
+  { id: 'settings-nav-appearance', label: 'settings.appearance' as const, icon: Palette },
+  { id: 'settings-nav-notifications', label: 'settings.notifications' as const, icon: Bell },
+  { id: 'settings-nav-thinking', label: 'settings.thinkingDisplay' as const, icon: Lightbulb },
+  { id: 'settings-nav-data', label: 'settings.data' as const, icon: Database },
+  { id: 'settings-nav-about', label: 'settings.about' as const, icon: Info }
+]
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -189,18 +211,22 @@ const PERMISSION_MODES: { value: PermissionMode; label: I18nKey; note: I18nKey }
 ]
 
 export default function SettingsPage() {
-  const { theme, language, setTheme, setLanguage, permissionMode, setPermissionMode } = useAppStore(
+  const { theme, language, setTheme, setLanguage, permissionMode, setPermissionMode, themeSource, setThemeSource } = useAppStore(
     useShallow((s) => ({
       theme: s.theme,
       language: s.language,
       setTheme: s.setTheme,
       setLanguage: s.setLanguage,
       permissionMode: s.permissionMode,
-      setPermissionMode: s.setPermissionMode
+      setPermissionMode: s.setPermissionMode,
+      themeSource: s.themeSource,
+      setThemeSource: s.setThemeSource
     }))
   )
   const thinkingAutoExpand = useAppStore((s) => s.thinkingAutoExpand)
   const thinkingCollapseTiming = useAppStore((s) => s.thinkingCollapseTiming)
+  const composerSendMagnetism = useAppStore(s => s.composerSendMagnetism)
+  const setComposerSendMagnetism = useAppStore(s => s.setComposerSendMagnetism)
   const t = useT()
   const [cli, setCli] = useState<CliInfo | null>(null)
   const [caps, setCaps] = useState<CliCapabilities | null>(null)
@@ -386,14 +412,99 @@ export default function SettingsPage() {
         : 'border-transparent text-cream-dim hover:text-cream'
     }`
 
+  /** Segmented control with a sliding pill indicator (学 dsh 的 SegmentedControl)：
+   *  the raised pill slides under the selected segment instead of each
+   *  segment painting its own border. Equal-width tracks keep the math pure CSS. */
+  const Segmented = <T extends string>({ value, options, onChange, ariaLabel }: {
+    value: T
+    options: Array<{ value: T; label: React.ReactNode }>
+    onChange: (value: T, event?: React.MouseEvent<HTMLButtonElement>) => void
+    ariaLabel?: string
+  }) => {
+    const index = Math.max(0, options.findIndex((option) => option.value === value))
+    return (
+      <div role="group" aria-label={ariaLabel} className="relative flex rounded-full border border-line bg-ink-800 p-0.5">
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0.5 rounded-full bg-ink-850 shadow-card transition-[left] duration-200 [transition-timing-function:var(--ease-out)]"
+          style={{
+            width: `calc((100% - 4px) / ${options.length})`,
+            left: `calc(2px + ${index} * (100% - 4px) / ${options.length})`
+          }}
+        />
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={option.value === value}
+            onClick={(event) => onChange(option.value, event)}
+            className={`focus-ring relative z-[1] flex min-h-8 items-center justify-center px-2 text-[12px] font-medium transition-colors ${
+              option.value === value ? 'text-cream' : 'text-cream-dim hover:text-cream'
+            }`}
+            style={{ width: `calc((100% - 4px) / ${options.length})` }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    )
+  }
+
+  // 左侧导航：锚点列表 + 滚动高亮（内容多了一屏放不下，学 dsh/kimi 的设置页）。
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const [activeNav, setActiveNav] = useState(SETTINGS_NAV[0].id)
+  const handleSettingsScroll = useCallback(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    if (container.scrollTop > 0 && container.scrollHeight - container.scrollTop - container.clientHeight <= 2) {
+      setActiveNav(SETTINGS_NAV[SETTINGS_NAV.length - 1].id)
+      return
+    }
+    const containerTop = container.getBoundingClientRect().top
+    let current = SETTINGS_NAV[0].id
+    for (const item of SETTINGS_NAV) {
+      const el = document.getElementById(item.id)
+      if (el && el.getBoundingClientRect().top - containerTop <= 40) current = item.id
+    }
+    setActiveNav(current)
+  }, [])
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id)
+    const container = scrollContainerRef.current
+    if (!el || !container) return
+    const top = container.scrollTop + el.getBoundingClientRect().top - container.getBoundingClientRect().top - 12
+    container.scrollTo({ top, behavior: 'instant' })
+    setActiveNav(id)
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <header className="app-drag flex h-12 shrink-0 items-center border-b border-line px-4">
         <span className="text-[13px] font-medium text-cream">{t('settings.title')}</span>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-5">
+      <div className="flex min-h-0 flex-1">
+        <nav aria-label={t('settings.nav')} className="hidden w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line p-3 min-[900px]:flex">
+          {SETTINGS_NAV.map((item) => {
+            const Icon = item.icon
+            const active = activeNav === item.id
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => scrollToSection(item.id)}
+                aria-current={active ? 'true' : undefined}
+                className={`focus-ring flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition ${active ? 'bg-overlay font-medium text-cream' : 'text-cream-dim hover:bg-overlay/60 hover:text-cream'}`}
+              >
+                <Icon size={13} className={active ? 'text-accent' : 'text-cream-faint'} aria-hidden="true" />
+                <span className="truncate">{item.label === 'Oh My Pi' ? item.label : t(item.label)}</span>
+              </button>
+            )
+          })}
+        </nav>
+        <div ref={scrollContainerRef} onScroll={handleSettingsScroll} className="relative min-w-0 flex-1 overflow-y-auto p-5">
         <div className="mx-auto max-w-[680px] space-y-4">
+          <div id="settings-nav-runtime">
           {isCurrent && !probingStaleOverview ? (
             <CurrentOmpSettings />
           ) : isLegacy ? (
@@ -425,52 +536,62 @@ export default function SettingsPage() {
             </Section>
           )}
 
-          <Section title={t('settings.permissions')}>
+          </div>
+
+          <Section navId="settings-nav-permissions" title={t('settings.permissions')}>
             <Row label={t('settings.permissionMode')}>
-              <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                {PERMISSION_MODES.map((mode) => (
-                  <button
-                    key={mode.value}
-                    onClick={() => changePermissionMode(mode.value)}
-                    className={seg(permissionMode === mode.value)}
-                  >
-                    {t(mode.label)}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                ariaLabel={t('settings.permissionMode')}
+                value={permissionMode}
+                onChange={(value) => changePermissionMode(value)}
+                options={PERMISSION_MODES.map((mode) => ({ value: mode.value, label: t(mode.label) }))}
+              />
             </Row>
             <Note>{t(PERMISSION_MODES.find((m) => m.value === permissionMode)?.note ?? 'settings.permissionsNote.ask')}</Note>
           </Section>
 
-          <Section title={t('settings.appearance')}>
+          <div id="settings-nav-memory"><MemorySection /></div>
+
+          <Section navId="settings-nav-appearance" title={t('settings.appearance')}>
             <Row label={`${t('settings.language')} / ${language === 'zh' ? 'Language' : '语言'}`}>
               <div className="flex items-center gap-2">
                 <Languages size={14} className="text-cream-faint" aria-hidden="true" />
-                <div role="group" aria-label={t('settings.language')} className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                  <button type="button" aria-pressed={language === 'zh'} onClick={(e) => runLanguageTransition(() => setLanguage('zh'), { x: e.clientX, y: e.clientY })} className={seg(language === 'zh')}>
-                    {t('settings.languageZh')}
-                  </button>
-                  <button type="button" aria-pressed={language === 'en'} onClick={(e) => runLanguageTransition(() => setLanguage('en'), { x: e.clientX, y: e.clientY })} className={seg(language === 'en')}>
-                    {t('settings.languageEn')}
-                  </button>
-                </div>
+                <Segmented
+                  ariaLabel={t('settings.language')}
+                  value={language}
+                  onChange={(value, event) => runLanguageTransition(() => setLanguage(value), event ? { x: event.clientX, y: event.clientY } : undefined)}
+                  options={[
+                    { value: 'zh' as const, label: t('settings.languageZh') },
+                    { value: 'en' as const, label: t('settings.languageEn') }
+                  ]}
+                />
               </div>
             </Row>
             <Row label={t('settings.theme')}>
               <div role="group" aria-label={t('settings.theme')} className="flex rounded-full border border-line bg-ink-800 p-0.5">
-                <button type="button" aria-pressed={theme === 'light'} onClick={(e) => runThemeTransition(() => setTheme('light'), { x: e.clientX, y: e.clientY }, 'light')} className={seg(theme === 'light')}>
+                <button type="button" aria-pressed={themeSource === 'manual' && theme === 'light'} onClick={(e) => runThemeTransition(() => setTheme('light'), { x: e.clientX, y: e.clientY }, 'light')} className={seg(themeSource === 'manual' && theme === 'light')}>
                   <span className="flex items-center gap-1">
                     <Sun size={11} />
                     {t('settings.themeLight')}
                   </span>
                 </button>
-                <button type="button" aria-pressed={theme === 'dark'} onClick={(e) => runThemeTransition(() => setTheme('dark'), { x: e.clientX, y: e.clientY }, 'dark')} className={seg(theme === 'dark')}>
+                <button type="button" aria-pressed={themeSource === 'manual' && theme === 'dark'} onClick={(e) => runThemeTransition(() => setTheme('dark'), { x: e.clientX, y: e.clientY }, 'dark')} className={seg(themeSource === 'manual' && theme === 'dark')}>
                   <span className="flex items-center gap-1">
                     <Moon size={11} />
                     {t('settings.themeDark')}
                   </span>
                 </button>
+                <button type="button" aria-pressed={themeSource === 'system'} onClick={() => setThemeSource('system')} className={seg(themeSource === 'system')}>
+                  <span className="flex items-center gap-1">
+                    <Monitor size={11} />
+                    {t('settings.themeSystem')}
+                  </span>
+                </button>
               </div>
+            </Row>
+            <Row label={t('settings.composerSendMagnetism')}>
+              <JellyToggle size="sm" checked={composerSendMagnetism} onChange={setComposerSendMagnetism}
+                aria-label={t('settings.composerSendMagnetism')} />
             </Row>
             <Row label={t('settings.devChrome')}>
               <div className="flex items-center gap-2">
@@ -487,7 +608,7 @@ export default function SettingsPage() {
             </Row>
           </Section>
 
-          <Section title={t('settings.notifications')}>
+          <Section navId="settings-nav-notifications" title={t('settings.notifications')}>
             <Row label={t('settings.notifyCompletion')}>
               <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
                 <button onClick={() => changeNotifications(true)} className={seg(notifications)}>
@@ -516,7 +637,7 @@ export default function SettingsPage() {
             <Note>{t('settings.compactLegacy')}</Note>
           </Section> : <AutoCompactSetting />}
 
-          <Section title={t('settings.thinkingDisplay')}>
+          <Section navId="settings-nav-thinking" title={t('settings.thinkingDisplay')}>
             <Row label={t('settings.thinkingAutoExpand')}>
               <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
                 <button onClick={() => useAppStore.getState().setThinkingAutoExpand(true)} className={seg(thinkingAutoExpand)}>
@@ -586,13 +707,13 @@ export default function SettingsPage() {
             >
               <button onClick={showCliSettings} disabled={!cli?.available} className={buttonCls}>
                 <FolderCog size={11} />
-                {t('settings.showInFinder')}
+                {t(fileManagerRevealKey())}
               </button>
             </Row>
             {cliSettingsError && <Note>{t('settings.cliSettingsUnavailable')}</Note>}
           </Section>
 
-          <Section title={t('settings.data')}>
+          <Section navId="settings-nav-data" title={t('settings.data')}>
             <SessionImportRows />
             <Row label={t('settings.clearRecent')}>
               <button
@@ -619,7 +740,7 @@ export default function SettingsPage() {
             </Row>
           </Section>
 
-          <Section title={t('settings.about')}>
+          <Section navId="settings-nav-about" title={t('settings.about')}>
             <Row label={t('settings.version')}>
               <span className="font-mono text-xs text-cream-dim">{version || '—'}</span>
             </Row>
@@ -736,6 +857,7 @@ export default function SettingsPage() {
               </div>
             </Row>
           </Section>
+        </div>
         </div>
       </div>
     </div>

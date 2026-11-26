@@ -9,6 +9,7 @@ import { useT, I18nKey } from '../i18n'
 import { showNotice } from '../lib/notice'
 import { useModalBoundary } from '../lib/modalBoundary'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import JellyToggle from '../components/effects/JellyToggle'
 import { basename } from '../lib/path'
 import { formatRelativeTime } from '../lib/time'
 
@@ -535,10 +536,9 @@ export default function TasksPage() {
                             <RefreshCcw size={14} />
                           </button>
                         )}
-                        <button onClick={() => void handleToggle(task)} title={task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
-                          className={`relative h-5 w-9 rounded-full transition-colors ${task.enabled ? 'bg-emerald-500' : 'bg-line-strong'}`}>
-                          <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${task.enabled ? 'left-[18px]' : 'left-0.5'}`} />
-                        </button>
+                        <JellyToggle size="sm" checked={task.enabled} onChange={() => void handleToggle(task)}
+                          title={task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}
+                          aria-label={`${task.name}: ${task.enabled ? t('sidebar.taskEnabled') : t('sidebar.taskDisabled')}`} />
                         <button onClick={() => setPendingDeleteTask({ id: task.id, name: task.name })}
                           title={t('sidebar.deleteSession')}
                           className="rounded-lg p-1.5 text-cream-faint transition-colors hover:bg-red-500/10 hover:text-red-500">
@@ -673,24 +673,14 @@ export default function TasksPage() {
                   <span className="mt-1 block leading-4">{targetsFailed ? (language === 'zh' ? '飞书未连接或无法读取聊天列表，请检查连接后重试。' : 'Feishu is disconnected or chats could not be loaded. Check the connection and try again.') : (language === 'zh' ? '先在飞书中与投手聊天，再选择收件目标。历史任务未选择时不会自动发送。' : 'Chat with Toushou in Feishu first, then choose a recipient. Existing tasks do not send until a recipient is chosen.')}</span>
                 </label>
               )}
-              <label className="mt-1 flex cursor-pointer items-center gap-2 text-[11px] text-cream-faint">
-                <input
-                  type="checkbox"
-                  checked={form.notifyOnComplete}
-                  onChange={(e) => setForm(f => ({ ...f, notifyOnComplete: e.target.checked }))}
-                  className="focus-ring h-3.5 w-3.5 accent-accent"
-                />
-                {t('tasks.notifyOnComplete')}
-              </label>
-              <label className="flex cursor-pointer items-center gap-2 text-[11px] text-cream-faint">
-                <input
-                  type="checkbox"
-                  checked={form.reuseSession}
-                  onChange={(e) => setForm(f => ({ ...f, reuseSession: e.target.checked }))}
-                  className="focus-ring h-3.5 w-3.5 accent-accent"
-                />
-                {t('tasks.reuseSession')}
-              </label>
+              <div className="mt-1 flex items-center gap-2 text-[11px] text-cream-faint">
+                <JellyToggle size="sm" checked={form.notifyOnComplete} onChange={(value) => setForm(f => ({ ...f, notifyOnComplete: value }))} aria-label={t('tasks.notifyOnComplete')} />
+                <span>{t('tasks.notifyOnComplete')}</span>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-cream-faint">
+                <JellyToggle size="sm" checked={form.reuseSession} onChange={(value) => setForm(f => ({ ...f, reuseSession: value }))} aria-label={t('tasks.reuseSession')} />
+                <span>{t('tasks.reuseSession')}</span>
+              </div>
               {form.reuseSession && (
                 <p className="text-[11px] leading-4 text-cream-faint">{t('tasks.reuseSessionHint')}</p>
               )}

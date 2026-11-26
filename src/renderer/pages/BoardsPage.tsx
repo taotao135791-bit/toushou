@@ -24,6 +24,7 @@ import {
   MessageSquarePlus,
   Maximize,
   Minimize,
+  Copy,
   MoreHorizontal,
   Palette,
   Pencil,
@@ -97,6 +98,8 @@ import { FbReadingAccountManager } from './boards/FbReadingAccountManager'
 import { BoardDesignDialog } from './boards/BoardDesignDialog'
 import { boardCanvasStyle } from './boards/boardCanvasStyle'
 import BrandIcon from '../components/BrandIcon'
+import HoldToDelete from '../components/effects/HoldToDelete'
+import MenuPortal from '../components/MenuPortal'
 import { TodayReading } from './boards/TodayReading'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
@@ -741,6 +744,45 @@ export default function BoardsPage() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [createMenuOpen, boardMenuOpen, toolsMenuOpen, galleryOpen, readingPickerOpen, masterMetricsOpen, datasetsOpen, detailOpen, composeOpen])
+
+  const [duplicatingBoard, setDuplicatingBoard] = useState(false)
+  const [renamingBoardId, setRenamingBoardId] = useState<string | null>(null)
+  const [tabRenameDraft, setTabRenameDraft] = useState('')
+  const commitBoardRename = () => {
+    const id = renamingBoardId
+    const name = tabRenameDraft.trim()
+    if (!id || !name) return
+    mutateBoard(id, (b) => ({ ...b, name }))
+    setRenamingBoardId(null)
+    setToast({ ok: true, text: language === 'zh' ? '看板已重命名。' : 'Board renamed.' })
+  }
+  const duplicateBoard = async (id: string) => {
+    const source = (boards ?? []).find(b => b.id === id)
+    if (!source || duplicatingBoard) return
+    setDuplicatingBoard(true)
+    try {
+      const copy = {
+        ...createBoard(t('boards.duplicateName', { name: source.name })),
+        description: source.description,
+        style: source.style,
+        masterScope: source.masterScope,
+        widgets: source.widgets
+      }
+      const result = await window.electronAPI.saveBoard(copy)
+      if (!result.ok) {
+        setToast({ ok: false, text: language === 'zh' ? '复制看板失败，请重试。' : 'Duplicate board failed. Retry.' })
+        return
+      }
+      const list = await window.electronAPI.listBoards()
+      setBoards(list)
+      switchBoard(copy.id)
+      setToast({ ok: true, text: language === 'zh' ? '看板已复制。' : 'Board duplicated.' })
+    } catch {
+      setToast({ ok: false, text: language === 'zh' ? '复制看板失败，请重试。' : 'Duplicate board failed. Retry.' })
+    } finally {
+      setDuplicatingBoard(false)
+    }
+  }
 
   const switchBoard = (id: string) => {
     revealTargetRef.current = null
@@ -1776,7 +1818,91 @@ export default function BoardsPage() {
     )
   }
 
-  const menuItemClass =
+/** 看板页签的"三个点"二级菜单：锁定 / 复制 / 长按删除（悬浮浮现）。 */
+function BoardTabMenu({ locked, duplicating, itemClass, labels, onToggleLock, onDuplicate, onDelete, onRename }: {
+  locked: boolean
+  duplicating: boolean
+  itemClass: string
+  labels: { lock: string; unlock: string; duplicate: string; del: string; rename: string }
+  onToggleLock: () => void
+  onDuplicate: () => void
+  onDelete: () => void
+  onRename: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((v) => !v)
+        }}
+        className="focus-ring shrink-0 rounded-full p-0.5 text-cream-faint opacity-0 scale-90 transition-[background-color,opacity,transform] group-hover:opacity-100 group-hover:scale-100 group-focus-within:opacity-100 focus:opacity-100 hover:bg-overlay hover:text-cream"
+      >
+        <MoreHorizontal size={10} />
+      </button>
+      <MenuPortal open={open} triggerRef={triggerRef} onClose={() => setOpen(false)} align="end" width={168} placement="bottom">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            setOpen(false)
+            onToggleLock()
+          }}
+          className={`${itemClass} ${locked ? 'text-accent' : 'text-cream-dim hover:bg-overlay hover:text-cream'}`}
+        >
+          {locked ? <Lock size={12} /> : <LockOpen size={12} />}
+          {locked ? labels.unlock : labels.lock}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            setOpen(false)
+            onRename()
+          }}
+          className={`${itemClass} text-cream-dim hover:bg-overlay hover:text-cream`}
+        >
+          <Pencil size={12} />
+          {labels.rename}
+        </button>
+        <button
+          type="button"
+          disabled={duplicating}
+          onClick={(e) => {
+            e.stopPropagation()
+            setOpen(false)
+            onDuplicate()
+          }}
+          className={`${itemClass} text-cream-dim hover:bg-overlay hover:text-cream disabled:opacity-50`}
+        >
+          <Copy size={12} />
+          {labels.duplicate}
+        </button>
+        <HoldToDelete
+          disabled={locked}
+          onConfirm={() => {
+            setOpen(false)
+            onDelete()
+          }}
+          ariaLabel={labels.del}
+          label={labels.del}
+          title={locked ? labels.del : undefined}
+          className={`${itemClass} ${locked ? 'text-cream-faint/50' : 'text-red-500/80 hover:bg-red-500/10 hover:text-red-500'} data-[holding=true]:bg-red-500/10`}
+        >
+          <Trash2 size={12} />
+        </HoldToDelete>
+      </MenuPortal>
+    </>
+  )
+}
+
+const menuItemClass =
     'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition'
 
   const zh = language === 'zh'
@@ -1842,6 +1968,48 @@ export default function BoardsPage() {
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
       <UndoableDeleteBanner pending={undoableDelete.pending} remaining={undoableDelete.remaining} onUndo={undoableDelete.cancel} onConfirm={undoableDelete.confirm} />
+      {renamingBoardId && (
+        // 居中重命名对话框：背板不点击取消（误触不能吃掉改了一半的名字），
+        // ✕/Escape 取消，Enter/保存提交——与侧栏会话重命名同一契约。
+        <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('boards.rename')}
+            className="dialog-panel w-96 rounded-xl border border-line bg-ink-900 p-4 shadow-pop"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 text-[12px] font-medium text-cream">{t('boards.rename')}</div>
+            <input
+              autoFocus
+              value={tabRenameDraft}
+              onChange={(e) => setTabRenameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitBoardRename()
+                if (e.key === 'Escape') setRenamingBoardId(null)
+              }}
+              maxLength={60}
+              aria-label={t('boards.rename')}
+              className="w-full rounded-lg border border-line bg-ink-850 px-2.5 py-1.5 text-[13px] text-cream outline-none transition focus:border-accent/50"
+            />
+            <div className="mt-3 flex justify-end gap-1.5">
+              <button
+                onClick={() => setRenamingBoardId(null)}
+                className="rounded-full border border-line px-3 py-1 text-[11.5px] text-cream-dim transition hover:border-ink-600 hover:text-cream"
+              >
+                {t('boards.renameCancel')}
+              </button>
+              <button
+                onClick={commitBoardRename}
+                disabled={!tabRenameDraft.trim()}
+                className="rounded-full bg-cream px-3 py-1 text-[11.5px] font-medium text-ink-950 transition hover:opacity-90 disabled:opacity-40"
+              >
+                {t('boards.renameSave')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <header className="app-drag relative z-30 flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
         <BoardsIcon size={15} className="shrink-0 text-accent" />
         <span className="shrink-0 text-[13px] font-medium text-cream">{t('boards.title')}</span>
@@ -1899,7 +2067,7 @@ export default function BoardsPage() {
                 }}
                 onClick={() => switchBoard(b.id)}
                 title={t('boards.tabDragHint')}
-                className={`flex max-w-[200px] shrink-0 cursor-pointer items-center gap-1 rounded-full border px-3 py-1 text-[12px] transition ${
+                className={`group flex max-w-[200px] shrink-0 cursor-pointer items-center gap-1 rounded-full border px-3 py-1 text-[12px] transition ${
                   active
                     ? 'border-line bg-ink-850 text-cream shadow-card'
                     : 'border-transparent text-cream-faint hover:bg-overlay hover:text-cream-dim'
@@ -1914,36 +2082,22 @@ export default function BoardsPage() {
                   <span className="truncate">{boardScopedBoardTitle(b)}</span>
                 </button>
                 {active && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        toggleBoardLock()
-                      }}
-                      title={locked ? t('boards.unlock') : t('boards.lock')}
-                      aria-label={locked ? t('boards.unlock') : t('boards.lock')}
-                      className={`focus-ring shrink-0 rounded-full p-0.5 transition hover:bg-overlay ${
-                        locked ? 'text-accent' : 'text-cream-faint hover:text-cream'
-                      }`}
-                    >
-                      {locked ? <Lock size={10} /> : <LockOpen size={10} />}
-                    </button>
-                    {!locked && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          requestDeleteBoard()
-                        }}
-                        title={t('boards.deleteBoard')}
-                        aria-label={t('boards.deleteBoard')}
-                        className="focus-ring shrink-0 rounded-full p-0.5 text-cream-faint transition hover:bg-red-500/15 hover:text-red-500"
-                      >
-                        <X size={10} />
-                      </button>
-                    )}
-                  </>
+                  <BoardTabMenu
+                    locked={locked}
+                    duplicating={duplicatingBoard}
+                    itemClass={menuItemClass}
+                    labels={{
+                      lock: t('boards.lock'),
+                      unlock: t('boards.unlock'),
+                      duplicate: t('boards.duplicate'),
+                      del: t('boards.deleteBoard'),
+                      rename: t('boards.rename')
+                    }}
+                    onToggleLock={toggleBoardLock}
+                    onDuplicate={() => void duplicateBoard(b.id)}
+                    onDelete={requestDeleteBoard}
+                    onRename={() => { setRenamingBoardId(b.id); setTabRenameDraft(boardScopedBoardTitle(b)) }}
+                  />
                 )}
               </div>
             )
@@ -2090,13 +2244,14 @@ export default function BoardsPage() {
                   <BoardsIcon size={12} />
                   {t('boards.cards.propose')}
                 </button>
-                <button
-                  onClick={requestDeleteBoard}
-                  className={`${menuItemClass} text-red-500/80 hover:bg-red-500/10 hover:text-red-500`}
+                <HoldToDelete
+                  onConfirm={requestDeleteBoard}
+                  ariaLabel={t('boards.deleteBoard')}
+                  label={t('boards.deleteBoard')}
+                  className={`${menuItemClass} text-red-500/80 hover:bg-red-500/10 hover:text-red-500 data-[holding=true]:bg-red-500/10`}
                 >
                   <Trash2 size={12} />
-                  {t('boards.deleteBoard')}
-                </button>
+                </HoldToDelete>
               </div>
             )}
           </div>

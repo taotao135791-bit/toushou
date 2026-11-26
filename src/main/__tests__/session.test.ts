@@ -182,6 +182,7 @@ describe('OmpSession abort', () => {
     // The aborting transition must be observable: scheduled-task runs settle a
     // cancelled firing as failed only when they see this status first.
     expect(statusEvents(events)).toEqual(['working', 'aborting', 'idle'])
+    expect(events.at(-1)).toMatchObject({ type: 'status', status: 'idle', aborted: true })
   })
 })
 

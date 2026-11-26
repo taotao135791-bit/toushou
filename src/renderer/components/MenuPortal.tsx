@@ -34,6 +34,7 @@ export default function MenuPortal({
   placement: requestedPlacement,
   align = 'start',
   initialFocusRef,
+  returnFocusRef,
   children
 }: {
   open: boolean
@@ -45,6 +46,7 @@ export default function MenuPortal({
   placement?: 'top' | 'bottom'
   align?: 'start' | 'end'
   initialFocusRef?: React.RefObject<HTMLElement | null>
+  returnFocusRef?: React.RefObject<HTMLElement | null>
   children: ReactNode
 }) {
   const composerPlacement = useContext(ComposerMenuPlacement)
@@ -91,7 +93,7 @@ export default function MenuPortal({
       if (event.key === 'Escape') {
         event.preventDefault()
         closeRef.current()
-        triggerRef.current?.focus()
+        ;(returnFocusRef?.current ?? triggerRef.current)?.focus()
       }
     }
     position()
@@ -109,7 +111,7 @@ export default function MenuPortal({
       window.removeEventListener('pointerdown', onPointerDown)
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [open, triggerRef, placement, align, width, maxHeight])
+  }, [open, triggerRef, returnFocusRef, placement, align, width, maxHeight])
 
   const positioned = open && anchor !== null
   useLayoutEffect(() => {
@@ -153,7 +155,7 @@ export default function MenuPortal({
         maxWidth: align === 'end' ? 'calc(100vw - 32px)' : 'calc(100vw - 16px)',
         maxHeight: anchor?.room !== undefined ? Math.min(maxHeight ?? Infinity, anchor.room) : maxHeight === undefined ? 'calc(100dvh - 16px)' : `min(${maxHeight}px, calc(100dvh - 16px))`
       }}
-      className="overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop"
+      className={`menu-pop-in ${placement === 'bottom' || placement === 'below' ? 'origin-top' : 'origin-bottom'} overflow-y-auto rounded-xl border border-line bg-ink-850 p-1 shadow-pop`}
     >
       {children}
     </div>,

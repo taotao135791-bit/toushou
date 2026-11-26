@@ -17,6 +17,7 @@ import { tasksBridgeEnv } from '../tasksBridge'
 import { tiktokBridgeEnv } from '../tiktokBridge'
 import { appsFlyerToolEnv } from '../appsflyerConnection'
 import { boardsBridgeEnv } from '../boardsBridge'
+import { memoryBridgeEnv } from '../memoryBridge'
 import { adsCopyBridgeEnv } from '../adsCopyBridge'
 import { sessionTopicBridgeEnv } from '../sessionTopicBridge'
 
@@ -258,6 +259,7 @@ export function planSpawn(sessionId: string, cli: CliInfo, opts: SpawnOptions): 
       ...tiktokBridgeEnv(sessionId),
       ...appsFlyerToolEnv(),
       ...boardsBridgeEnv(sessionId),
+      ...memoryBridgeEnv(sessionId),
       ...adsCopyBridgeEnv(sessionId),
       ...sessionTopicBridgeEnv(sessionId)
     }),

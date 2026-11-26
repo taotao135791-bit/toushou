@@ -53,8 +53,9 @@ Object.assign(window, {
   electronAPI: { detectCli: async () => ({ available: false }), onInstallStatus: () => () => {} },
   setupFixture: {
     clipboard,
-    mount(platform: string) {
+    mount(platform: string, electronPlatform?: string) {
       Object.defineProperty(navigator, 'platform', { configurable: true, value: platform })
+      Object.assign(window.electronAPI, { platform: electronPlatform })
       useAppStore.setState({ cliAvailable: false, language: 'en' })
       root.render(<MemoryRouter><SetupWizard key={platform} /></MemoryRouter>)
     }
@@ -86,7 +87,7 @@ app.whenReady().then(async () => {
     const hasButton = label => '[...document.querySelectorAll("button")].some(b => b.textContent.trim() === ' + JSON.stringify(label) + ')'
     const clickCopy = () => js('[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Copy").click()')
 
-    await js('setupFixture.mount("Win32")')
+    await js('setupFixture.mount("MacIntel", "win32")')
     await wait('document.querySelector("label")?.textContent === "Run in PowerShell"')
     assert.equal(await js(hasButton('Auto-install agent runtime')), false)
     assert.equal(await js('document.querySelector("input").value'), 'irm https://omp.sh/install.ps1 | iex')
@@ -100,7 +101,7 @@ app.whenReady().then(async () => {
     await js('setupFixture.clipboard.resolve()')
     await wait(hasButton('Copied'))
 
-    await js('setupFixture.mount("MacIntel")')
+    await js('setupFixture.mount("Win32", "darwin")')
     await wait(hasButton('Auto-install agent runtime'))
     await clickCopy()
     assert.equal(await js('setupFixture.clipboard.command'), 'curl -fsSL https://omp.sh/install | sh')

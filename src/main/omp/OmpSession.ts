@@ -302,11 +302,6 @@ export class OmpSession {
     return true
   }
 
-  /** Hot-switch the model via the RPC set_model command. */
-  setModel(provider: string, modelId: string): boolean {
-    return this.write({ id: crypto.randomUUID(), type: 'set_model', provider, modelId })
-  }
-
   /** Enable/disable the subagent event subscription (current profile only). */
   async setSubagentSubscription(level: SubagentSubscriptionLevel): Promise<RpcOutcome<{ level: SubagentSubscriptionLevel }>> {
     const res = await this.query({ type: 'set_subagent_subscription', level })
@@ -793,16 +788,17 @@ export class OmpSession {
       // turn open.
       if (event.isTerminal === false) return
       if (this.state !== 'idle') {
+        const aborted = this.state === 'aborting'
         this.cancelPendingExtensionUi()
         this.state = 'idle'
         this.finalizeDraft()
-        this.emit(event)
+        this.emit(aborted ? { ...event, aborted } : event)
       }
       return
     }
 
     if (event.type === 'error' && event.recoverable !== true) {
-      this.emit(event)
+      this.emit(this.state === 'aborting' && event.turnFailed ? { ...event, turnFailed: false } : event)
       this.cancelPendingExtensionUi()
       this.finalizeDraft()
       // A provider failure ends the turn even without agent_end.

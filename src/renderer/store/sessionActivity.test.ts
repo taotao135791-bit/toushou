@@ -45,30 +45,30 @@ describe('session activity', () => {
     const restored = session('a', { lastActivityAt: 50 })
     useAppStore.getState().addSession(restored, false)
     useAppStore.getState().setCurrentSessionId('a')
-    expect(useAppStore.getState().sessions.find((s) => s.id === 'a')).toMatchObject({
-      lastActivityAt: 50, pendingActivityAt: undefined
-    })
+    expect(useAppStore.getState().sessions.find((s) => s.id === 'a')).toMatchObject({ lastActivityAt: 50 })
     // A later live registry report cannot erase the original history time.
     useAppStore.getState().addSession(session('a'), false)
     expect(useAppStore.getState().sessions.find((s) => s.id === 'a')?.lastActivityAt).toBe(50)
   })
 
-  it('defers activity of the open conversation until the user leaves it', () => {
+  it('floats the open conversation immediately on activity (Kimi/ChatGPT behavior)', () => {
     const store = useAppStore.getState()
     store.touchSession('a')
     store.setCurrentSessionId('a')
-    expect(useAppStore.getState().sessions[0]).toMatchObject({ pendingActivityAt: 5_000 })
-    expect(useAppStore.getState().sessions[0].lastActivityAt).toBeUndefined()
+    expect(useAppStore.getState().sessions[0]).toMatchObject({
+      lastActivityAt: 5_000
+    })
+    // 离开后时间戳保持，行保持在最近位置。
     store.setCurrentSessionId('b')
     expect(useAppStore.getState().sessions[0]).toMatchObject({
-      lastActivityAt: 5_000, pendingActivityAt: undefined
+      lastActivityAt: 5_000
     })
   })
 
   it('commits a background queued send immediately without another navigation', () => {
     useAppStore.getState().touchSession('b')
     expect(useAppStore.getState().sessions[1]).toMatchObject({
-      lastActivityAt: 5_000, pendingActivityAt: undefined
+      lastActivityAt: 5_000
     })
   })
 
@@ -78,7 +78,7 @@ describe('session activity', () => {
     store.addSession(session('tool-launch'), true)
     expect(useAppStore.getState().currentSessionId).toBe('tool-launch')
     expect(useAppStore.getState().sessions.find((s) => s.id === 'a')).toMatchObject({
-      lastActivityAt: 5_000, pendingActivityAt: undefined
+      lastActivityAt: 5_000
     })
   })
 
@@ -88,16 +88,16 @@ describe('session activity', () => {
     store.setCurrentWorkspace(grant)
     expect(useAppStore.getState().currentSessionId).toBeNull()
     expect(useAppStore.getState().sessions[0]).toMatchObject({
-      lastActivityAt: 5_000, pendingActivityAt: undefined
+      lastActivityAt: 5_000
     })
   })
 
-  it('keeps the current row pending when reactivating the same workspace', () => {
+  it('keeps the current conversation when reactivating the same workspace', () => {
     const store = useAppStore.getState()
     store.touchSession('a')
     store.setCurrentWorkspace(workspace('/synthetic/project'))
     expect(useAppStore.getState().currentSessionId).toBe('a')
-    expect(useAppStore.getState().sessions[0].lastActivityAt).toBeUndefined()
+    expect(useAppStore.getState().sessions[0]).toMatchObject({ lastActivityAt: 5_000 })
   })
 })
 

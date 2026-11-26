@@ -13,6 +13,7 @@ import { GENERIC_CUSTOM_PROVIDER_APIS, isCustomProviderApi, matchesCatalogEndpoi
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import CustomProviderModelPicker, { parseModelsText } from './CustomProviderModelPicker'
+import JellyToggle from './effects/JellyToggle'
 
 /**
  * Settings → Custom providers (current profile only). opencode-style custom
@@ -367,30 +368,32 @@ export default function CustomProvidersSection({ listing, refresh, requestedProv
                 }
                 className={`${inputCls} min-w-52 flex-1`}
               />
-              <label className="flex shrink-0 items-center gap-1.5 text-[12px] text-cream-dim">
-                <input
-                  type="checkbox"
+              <div className="flex shrink-0 items-center gap-2 text-[12px] text-cream-dim">
+                <JellyToggle
+                  size="sm"
                   checked={form.authNone}
-                  onChange={(e) => patchForm({ authNone: e.target.checked })}
+                  onChange={(value) => patchForm({ authNone: value })}
                   disabled={saving || (google && !form.authNone)}
+                  aria-label={t('settings.customProviderAuthNone')}
                 />
-                {t('settings.customProviderAuthNone')}
-              </label>
+                <span>{t('settings.customProviderAuthNone')}</span>
+              </div>
             </div>
 
             {nativeEndpoint && !form.hasStoredKey && form.baseUrl === nativeEndpoint.baseUrl &&
               <p className="text-[11px] text-cream-faint">{t('settings.customModelKeyNote')}</p>}
 
             {/* model source: discovery, or explicit rows */}
-            <label className="flex items-center gap-1.5 text-[12px] text-cream-dim">
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-2 text-[12px] text-cream-dim">
+              <JellyToggle
+                size="sm"
                 checked={form.discovery}
-                onChange={(e) => patchForm({ discovery: e.target.checked })}
+                onChange={(value) => patchForm({ discovery: value })}
                 disabled={saving || (google && !form.discovery)}
+                aria-label={t('settings.customProviderDiscovery')}
               />
-              {t('settings.customProviderDiscovery')}
-            </label>
+              <span>{t('settings.customProviderDiscovery')}</span>
+            </div>
 
             {formIssue && <p className="text-xs text-amber-600 dark:text-amber-400">{formIssue}</p>}
             {!form.discovery && isCustomProviderApi(form.api) && form.id.trim() && <CustomProviderModelPicker presets={presets} savedModelIds={form.savedModelIds} text={form.modelsText}

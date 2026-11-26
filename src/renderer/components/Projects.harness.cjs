@@ -183,7 +183,7 @@ app.whenReady().then(async () => {
     pathMenu.copied = await js(`window.projectsFixture.clipboard===window.projectsFixture.projects.find(p=>p.id==='long').path`)
     await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`)
     phase = 'delete confirmation'
-    await js(`document.querySelector('#sidebar-projects button[title="/synthetic/projects/Sidebar created"]').click()`)
+    await js(`document.querySelector('#sidebar-projects button[data-project-select][title="Sidebar created"]').click()`)
     await waitFor(`window.projectsFixture.snapshot().current==='/synthetic/projects/Sidebar created'`)
     await js(`window.projectsFixture.seedSession('created-3')`)
     await actions('Sidebar created')

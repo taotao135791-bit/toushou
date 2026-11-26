@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Undo2, X } from 'lucide-react'
+import { Undo2 } from 'lucide-react'
 import { useT } from '../i18n'
 
 /**
@@ -7,7 +7,7 @@ import { useT } from '../i18n'
  * 显示带进度条与剩余秒数的横幅，用户可随时撤销。倒计时结束才真正执行删除。
  * 避免误删重要看板/对话（学 dsh 的 latest-wins + 可撤销交互）。
  *
- * 约定：执行函数返回 Promise；横幅全屏固定，点撤销或 × 立即取消。
+ * 约定：执行函数返回 Promise；横幅全屏固定，「撤销」恢复目标，「立即删除」确认。
  */
 
 export interface PendingDeletion {
@@ -95,14 +95,20 @@ export function useUndoableDelete() {
     }, 1000)
   }, [clearTimer])
 
-  useEffect(() => () => clearTimer(), [clearTimer])
+  // Leaving the page cancels the staged deletion and restores its optimistic state.
+  useEffect(() => () => {
+    clearTimer()
+    const target = pendingRef.current
+    pendingRef.current = null
+    target?.restore()
+  }, [clearTimer])
 
   return { pending, remaining, schedule, cancel, confirm }
 }
 
 /**
  * 倒计时横幅：固定在页面**底部**（顶部会挡住看板标签栏和总控条），进度条
- * 随秒数收缩。「撤销」恢复界面；× 关闭 = 确认删除（立即执行，不等倒计时）。
+ * 随秒数收缩。「撤销」恢复界面，「立即删除」确认。
  */
 export function UndoableDeleteBanner({
   pending,
@@ -143,7 +149,7 @@ export function UndoableDeleteBanner({
             aria-label={t('undoDelete.confirmNow')}
             className="shrink-0 rounded-md p-1 text-cream-faint transition hover:bg-overlay hover:text-cream"
           >
-            <X size={12} />
+            {t('undoDelete.confirmNow')}
           </button>
         </div>
         <div className="h-[3px] w-full bg-overlay">

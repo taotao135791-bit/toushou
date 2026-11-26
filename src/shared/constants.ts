@@ -18,6 +18,7 @@ export const IPC_CHANNELS = {
   FS_LIST_PROJECT_FILES: 'fs:list-project-files',
   PROJECT_LIST: 'project:list',
   PROJECT_FILE_CONVERSATION: 'project:file-conversation',
+  PROJECT_MOVE_CONVERSATION: 'project:move-conversation',
   PROJECT_CREATE: 'project:create',
   PROJECT_IMPORT: 'project:import',
   PROJECT_RECOVER: 'project:recover',
@@ -74,6 +75,20 @@ export const IPC_CHANNELS = {
   /** Composer drafts (image-bearing, so they live in their own file). */
   COMPOSER_DRAFTS_GET: 'composer-drafts:get',
   COMPOSER_DRAFTS_SET: 'composer-drafts:set',
+  /** 长期记忆（全局/项目分层；Main 存储，设置页管理）。 */
+  MEMORY_LIST: 'memory:list',
+  MEMORY_SAVE: 'memory:save',
+  MEMORY_DELETE: 'memory:delete',
+  MEMORY_UPDATE: 'memory:update',
+  MEMORY_MOVE: 'memory:move',
+  /** Main → renderer：模型刚写入一条记忆（toast 撤回用）。 */
+  MEMORY_SAVED_EVENT: 'memory:saved-event',
+  /** 记忆存储位置（默认/自定义 + 迁移）。 */
+  MEMORY_STORAGE_GET: 'memory:storage-get',
+  MEMORY_STORAGE_CHANGE: 'memory:storage-change',
+  SESSION_INSTRUCTION_GET: 'session:instruction-get',
+  SESSION_INSTRUCTION_SET: 'session:instruction-set',
+  MEMORY_STORAGE_RESET: 'memory:storage-reset',
   COMPOSER_DRAFTS_FLUSH_REQUEST: 'composer-drafts:flush-request',
   COMPOSER_DRAFTS_FLUSHED: 'composer-drafts:flushed',
   BOARDS_LIST: 'boards:list',
