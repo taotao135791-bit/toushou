@@ -27,7 +27,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 最新发版
 
-**macOS v2.9.9** 更新了会话侧栏、项目迁移和任务进度，并新增跨会话记忆。Windows 最新正式版为 2.9.8。[发布说明](docs/releases/v2.9.9.md) · [开发者提交指南](docs/commit-and-release.md)
+**macOS v3.0.0** 修复钉钉与 TikTok 的重连、对话附件定位，并精简思考滑块文案。Windows 最新正式版为 2.9.8。[发布说明](docs/releases/v3.0.0.md) · [开发者提交指南](docs/commit-and-release.md)
 
 ## 开发
 
