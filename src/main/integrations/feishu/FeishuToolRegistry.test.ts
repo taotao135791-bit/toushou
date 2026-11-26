@@ -141,8 +141,10 @@ describe('FeishuToolRegistry', () => {
     const request = vi.fn(async (config: Record<string, unknown>) => {
       seen.push(config)
       const url = String(config.url)
-      if (url.includes('/blocks/') && url.endsWith('/children') && (config.data as { children?: Array<{ block_type?: number }> })?.children?.[0]?.block_type === 27) {
-        return { code: 0, data: { children: [{ block_id: 'file-block-1' }] } }
+      const children = (config.data as { children?: Array<{ block_type?: number }> } | undefined)?.children
+      if (url.includes('/blocks/') && url.endsWith('/children') && children?.[0]?.block_type === 23) {
+        // 创建响应返回外层 view 块，内部媒体块从嵌套 children 取
+        return { code: 0, data: { children: [{ block_id: 'view-33', children: [{ block_id: 'inner-23', block_type: 23 }] }] } }
       }
       if (config.method === 'PATCH') return { code: 0, data: {} }
       return { code: 0, data: {} }
@@ -156,13 +158,14 @@ describe('FeishuToolRegistry', () => {
     const result = await registry.execute({ action: 'doc_file_attach', documentId: 'doc1', localPath })
     expect(result.ok).toBe(true)
     // 上传走 SDK 的 uploadAll：参数含正确 parent_type/parent_node（教程 6.1 流程）
-    const uploadCall = uploadAll.mock.calls[0]?.[0] as { parent_type?: string; parent_node?: string; file_name?: string; size?: number } | undefined
+    const uploadCall = uploadAll.mock.calls[0]?.[0] as { parent_type?: string; parent_node?: string; file_name?: string; size?: number; extra?: string } | undefined
     expect(uploadCall?.parent_type).toBe('docx_file')
-    expect(uploadCall?.parent_node).toBe('file-block-1')
+    expect(uploadCall?.parent_node).toBe('inner-23')
+    expect(uploadCall?.extra && JSON.parse(uploadCall.extra).drive_route_token).toBe('doc1')
     expect(uploadCall?.size).toBe(2048)
     const patch = seen.find(config => String(config.method) === 'PATCH')
-    const patchData = patch?.data as { file?: { token?: string } } | undefined
-    expect(patchData?.file?.token).toBe('file-token-1')
+    const patchData = patch?.data as { replace_file?: { token?: string } } | undefined
+    expect(patchData?.replace_file?.token).toBe('file-token-1')
   })
 
   it('doc_file_attach refuses missing local files without any network call', async () => {

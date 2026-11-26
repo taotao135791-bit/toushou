@@ -267,20 +267,46 @@ export class FeishuToolRegistry {
           }
           if (bytes.length === 0) return { ok: false, error: '本地文件是空的（0 字节），无法上传' }
           const name = localPath.split(/[\\/]/).pop() ?? 'attachment'
-          // 兼容流程（教程 6.1）：先建空文件块拿内部块 ID → 以内部块为父上传 → 回写 token。
-          const createConfig = { method: 'POST', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parent)}/children`, data: { children: [{ block_type: 27, file: {} }] } }
+          const ext = (name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : 'txt').toLowerCase()
+          // 图片素材 → 原生图片块（27，直接显示）；其余（txt/mp4/pdf 等）→ 文件块（23，附件+播放器）。
+          const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)
+          const isVideo = ['mp4', 'mov', 'm4v', 'webm'].includes(ext)
+          const blockType = isImage ? 27 : 23
+          const mediaParentType = isImage ? 'docx_image' : 'docx_file'
+          // 文件块带 view_type 2（内嵌播放器，教程 3.2）；图片块不需要。
+          const emptyElement = isImage
+            ? { image: {} }
+            : isVideo ? { file: { view_type: 2 } } : { file: {} }
+          // 兼容流程：先建空媒体块 → 从嵌套结构取内部文件块 ID → 以它为 parent_node 上传 → replace 回写。
+          const createConfig = { method: 'POST', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parent)}/children`, data: { children: [{ block_type: blockType, ...(emptyElement as Record<string, unknown>) }] } }
           const created = await channel.rawClient.request(createConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
           const createCode = typeof created.code === 'number' ? created.code : 0
           if (createCode !== 0) return { ok: false, error: friendlyApiError(created) }
-          const createdData = created.data as { children?: Array<{ block_id?: string }> } | undefined
-          const fileBlockId = createdData?.children?.[0]?.block_id
-          if (!fileBlockId) return { ok: false, error: '文件块创建成功但未返回块 ID' }
+          // 创建响应通常返回外层 view 块；内部媒体块 ID 从嵌套 children 取，取不到再 GET 兜底。
+          const createdData = created.data as { children?: Array<{ block_id?: string; children?: Array<{ block_id?: string; block_type?: number }> }> } | undefined
+          let mediaBlockId = createdData?.children?.[0]?.children?.[0]?.block_id
+          if (!mediaBlockId) {
+            const outerBlockId = createdData?.children?.[0]?.block_id
+            if (!outerBlockId) return { ok: false, error: '媒体块创建成功但未返回块 ID' }
+            const inner = await channel.rawClient.request({ method: 'GET', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(outerBlockId)}/children` }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
+            const innerData = inner.data as { items?: Array<{ block_id?: string; block_type?: number }> } | undefined
+            mediaBlockId = innerData?.items?.[0]?.block_id
+          }
+          if (!mediaBlockId) return { ok: false, error: '未找到内部媒体块 ID，无法上传' }
           // 媒体上传走 SDK 的 uploadAll（内部正确序列化 multipart；raw request 手拼会 400）。
+          // extra.drive_route_token = 所属文档 ID（飞书素材接口的路由要求）。
           const uploader = (channel.rawClient as unknown as {
             drive?: { v1?: { media?: { uploadAll?: (params: Record<string, unknown>, options?: unknown) => Promise<Record<string, unknown>> } } }
           }).drive?.v1?.media
           if (!uploader?.uploadAll) return { ok: false, error: '当前飞书客户端不支持媒体上传接口' }
-          const uploaded = await uploader.uploadAll({ file_name: name, parent_type: 'docx_file', parent_node: fileBlockId, size: bytes.length, file: bytes }, withUserAccessToken(userAccessToken as string)) as Record<string, unknown>
+          const uploaded = await uploader.uploadAll({
+            file_name: name,
+            parent_type: mediaParentType,
+            parent_node: mediaBlockId,
+            size: bytes.length,
+            file: bytes,
+            extra: JSON.stringify({ drive_route_token: documentId })
+          }, withUserAccessToken(userAccessToken as string)) as Record<string, unknown>
           const uploadCode = typeof uploaded.code === 'number' ? uploaded.code : 0
           if (uploadCode !== 0) {
             // 错误必须带原始上下文（铁律）：400 可能是能力缺失/参数/父节点关系，
@@ -291,11 +317,14 @@ export class FeishuToolRegistry {
           const uploadData = uploaded.data as { token?: string } | undefined
           const fileToken = uploadData?.token
           if (!fileToken) return { ok: false, error: '媒体上传成功但未返回 file token' }
-          const patchConfig = { method: 'PATCH', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(fileBlockId)}`, data: { update_all_fields: true, block_type: 27, file: { token: fileToken } } }
+          // 回写：图片块 replace_image；文件块 replace_file——都用创建时返回的同一个块 ID。
+          const patchConfig = isImage
+            ? { method: 'PATCH', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(mediaBlockId)}`, data: { replace_image: { token: fileToken } } }
+            : { method: 'PATCH', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(mediaBlockId)}`, data: { replace_file: { token: fileToken } } }
           const patched = await channel.rawClient.request(patchConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
           const patchCode = typeof patched.code === 'number' ? patched.code : 0
-          if (patchCode !== 0) return { ok: false, error: friendlyApiError(patched) + '（file token 回写失败，文件块为空壳）' }
-          return { ok: true, data: { fileBlockId, fileToken, fileName: name, size: bytes.length } }
+          if (patchCode !== 0) return { ok: false, error: friendlyApiError(patched) + '（媒体 token 回写失败，块为空壳）' }
+          return { ok: true, data: { mediaBlockId, fileToken, fileName: name, size: bytes.length } }
         }
         case 'doc_update_block': {
           const documentId = string(request.documentId)
