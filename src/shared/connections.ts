@@ -190,6 +190,7 @@ export interface FeishuToolRequest {
     | 'doc_table_fill'
     | 'doc_delete_block'
     | 'doc_file_attach'
+    | 'doc_update_block'
   [key: string]: unknown
 }
 

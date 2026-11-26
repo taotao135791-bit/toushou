@@ -288,6 +288,27 @@ export class FeishuToolRegistry {
           if (patchCode !== 0) return { ok: false, error: friendlyApiError(patched) + '（file token 回写失败，文件块为空壳）' }
           return { ok: true, data: { fileBlockId, fileToken, fileName: name, size: bytes.length } }
         }
+        case 'doc_update_block': {
+          const documentId = string(request.documentId)
+          const blockId = string(request.blockId)
+          const text = typeof request.text === 'string' ? request.text : ''
+          if (!documentId || !blockId) return invalid('documentId 和 blockId 不能为空')
+          // 先读原块保留其 block_type（只改文字元素，不动块类型）。
+          const readResponse = await channel.rawClient.request({ method: 'GET', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(blockId)}` }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
+          const readCode = typeof readResponse.code === 'number' ? readResponse.code : 0
+          if (readCode !== 0) return { ok: false, error: friendlyApiError(readResponse) }
+          const block = (readResponse.data as { block?: Record<string, unknown> } | undefined)?.block
+          if (!block || typeof block.block_type !== 'number') return { ok: false, error: '目标块不存在或不可编辑（仅支持文字类块）' }
+          const blockType = block.block_type as number
+          const textFamilies = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17]
+          if (!textFamilies.includes(blockType)) return { ok: false, error: `block_type ${blockType} 不是文字类块，不能这样修改` }
+          const familyName = ([, 'text', 'heading1', 'heading2', 'heading3', 'heading4', 'heading5', 'heading6', 'heading7', 'heading8', 'heading9', 'bullet', 'number', , , 'quote', , , 'todo'])[blockType] ?? 'text'
+          const patchConfig = { method: 'PATCH', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(blockId)}`, data: { update_all_fields: true, block_type: blockType, [familyName]: { elements: [{ text_run: { content: text } }] } } }
+          const patched = await channel.rawClient.request(patchConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
+          const patchCode = typeof patched.code === 'number' ? patched.code : 0
+          if (patchCode !== 0) return { ok: false, error: friendlyApiError(patched) }
+          return { ok: true }
+        }
       }
     } catch (error) {
       return { ok: false, error: safeError(error) }
@@ -374,7 +395,7 @@ export function capabilityFor(action: FeishuToolRequest['action']): FeishuCapabi
   if (action === 'doc_list' || action === 'doc_search') return 'drive'
   if (action === 'doc_read' || action === 'doc_blocks') return 'docs.read'
   if (action === 'doc_create' || action === 'doc_append') return 'docs.write'
-  if (action === 'doc_insert_blocks' || action === 'doc_table_fill' || action === 'doc_delete_block' || action === 'doc_file_attach') return 'docs.write'
+  if (action === 'doc_insert_blocks' || action === 'doc_table_fill' || action === 'doc_delete_block' || action === 'doc_file_attach' || action === 'doc_update_block') return 'docs.write'
   if (action === 'sheets_read') return 'sheets.read'
   if (action === 'sheets_write' || action === 'sheets_create') return 'sheets.write'
   if (action === 'bitable_read' || action === 'bitable_query') return 'bitable.read'

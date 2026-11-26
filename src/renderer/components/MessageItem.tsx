@@ -148,6 +148,14 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
     if (thinkingDisclosure === 'preview' && !showThinkingPreview) setThinkingDisclosure('closed')
   }, [thinkingDisclosure, showThinkingPreview])
   const toggleThinking = () => setThinkingDisclosure(thinkingOpen ? 'manual-closed' : 'manual-open')
+  // 流式跟随尾部（DSH/Kimi 行为）：思维文字追加时视口钉在最新内容上，
+  // 用户随时可以上翻回看；结束后松开，恢复自由滚动。
+  const thinkingPreRef = useRef<HTMLPreElement>(null)
+  useEffect(() => {
+    if (!thinkingStreaming) return
+    const el = thinkingPreRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [message.thinking, thinkingStreaming, thinkingOpen])
   const now = useActivityClock(thinkingStreaming)
   const thinkingEnd = message.thinkingEndTs ?? (thinkingStreaming ? now : 0)
   const thinkingElapsed =
@@ -458,7 +466,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
             {thinkingOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
           {thinkingOpen && (
-            <pre className={`mt-1 overflow-y-auto whitespace-pre-wrap rounded-lg bg-overlay px-3 py-2 font-mono text-[12px] leading-5 text-cream-dim ${showThinkingPreview ? 'h-24 shrink-0' : 'max-h-64'}`}>
+            <pre ref={thinkingPreRef} className={`mt-1 overflow-y-auto whitespace-pre-wrap rounded-lg bg-overlay px-3 py-2 font-mono text-[12px] leading-5 text-cream-dim ${showThinkingPreview ? 'h-40 shrink-0' : 'max-h-64'}`}>
               {message.thinking}
             </pre>
           )}
