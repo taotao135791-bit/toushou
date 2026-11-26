@@ -95,7 +95,14 @@ export function useUndoableDelete() {
     }, 1000)
   }, [clearTimer])
 
-  useEffect(() => () => clearTimer(), [clearTimer])
+  // 卸载（切换页面等）时若有未决删除：视为确认，立即执行——否则目标停留在
+  // "视觉已删但从未持久删除"的幽灵态，重载后会复活。
+  useEffect(() => () => {
+    clearTimer()
+    const target = pendingRef.current
+    pendingRef.current = null
+    if (target) void target.execute().catch(() => {})
+  }, [clearTimer])
 
   return { pending, remaining, schedule, cancel, confirm }
 }

@@ -813,3 +813,6 @@ html.board-grid-resizing .react-grid-layout iframe,
     to { transform: translateX(233%); }
   }
 }
+
+/* 长按删除按钮的秒数徽章（伪元素渲染，不进 textContent）。 */
+.hold-seconds::after { content: attr(data-seconds); }

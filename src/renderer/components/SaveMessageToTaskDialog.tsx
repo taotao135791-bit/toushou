@@ -6,6 +6,7 @@ import { ScheduledTask } from '@shared/types'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { showNotice } from '../lib/notice'
+import JellyToggle from './effects/JellyToggle'
 
 /**
  * Explicit chat → scheduled-task handoff, mirroring SaveMessageToBoardDialog.
@@ -210,16 +211,10 @@ export function SaveMessageToTaskDialog({
                 </label>
               )}
             </div>
-            <label className="flex cursor-pointer items-center gap-2 text-[11px] text-cream-faint">
-              <input
-                type="checkbox"
-                checked={notifyOnComplete}
-                onChange={(event) => setNotifyOnComplete(event.target.checked)}
-                disabled={busy}
-                className="h-3.5 w-3.5 accent-[var(--accent)]"
-              />
-              {t('tasks.notifyOnComplete')}
-            </label>
+            <div className="flex items-center gap-2 text-[11px] text-cream-faint">
+              <JellyToggle size="sm" checked={notifyOnComplete} onChange={setNotifyOnComplete} disabled={busy} aria-label={t('tasks.notifyOnComplete')} />
+              <span>{t('tasks.notifyOnComplete')}</span>
+            </div>
           </div>
         )}
 

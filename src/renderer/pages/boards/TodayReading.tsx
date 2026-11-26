@@ -40,6 +40,7 @@ import { FacebookMcpToday } from './FacebookMcpToday'
 import { buildTikTokAccountDraft } from './tiktokAccountDraft'
 import { mergeSingleTikTokReading } from './tiktokAccountRefresh'
 import { buildTikTokPageRead, matchesTikTokPageRead, scopeTikTokPageData, type TikTokPageScope } from './tiktokTodayScope'
+import JellyToggle from '../../components/effects/JellyToggle'
 import {
   ReadingErrorNotice,
   fbReadingNotice,
@@ -528,8 +529,8 @@ export function TodayReading({ onSaved }: { onSaved?: (board: KanbanBoard, openA
             {currentTikTok.datasetSync?.ok === false && !tiktokBusy && !['reading-in-progress', 'reading-cancelled'].includes(currentTikTok.datasetSync.error) && <p role="status" className="text-[12px] text-amber-700 dark:text-amber-300">{t(currentTikTok.datasetSync.error === 'superseded' ? 'boards.datasets.syncSuperseded' : currentTikTok.datasetSync.error === 'proof-failed' ? 'boards.datasets.proofFailed' : currentTikTok.datasetSync.error === 'row-limit' ? 'boards.datasets.ttRowLimit' : 'boards.datasets.syncFailed')}</p>}
             <div className="flex flex-wrap items-center gap-3 text-[12px] text-cream-dim">
               <input type="search" aria-label={zh ? '筛选巡检结果' : 'Filter inspection results'} placeholder={zh ? '筛选账户名或 ID' : 'Filter account name or ID'} value={resultQuery} onChange={e => setResultQuery(e.target.value)} className="rounded-lg border border-line bg-ink-850 px-3 py-1.5 text-cream" />
-              <label className="flex items-center gap-1"><input type="checkbox" checked={onlyFailed} onChange={e => setOnlyFailed(e.target.checked)} />{zh ? '仅失败或未读取' : 'Failed or unread only'}</label>
-              <label className="flex items-center gap-1"><input type="checkbox" checked={sortSpend} onChange={e => setSortSpend(e.target.checked)} />{zh ? '按币种分组后消耗排序' : 'Sort spend within each currency'}</label>
+              <div className="flex items-center gap-1.5"><JellyToggle size="sm" checked={onlyFailed} onChange={setOnlyFailed} aria-label={zh ? '仅失败或未读取' : 'Failed or unread only'} /><span>{zh ? '仅失败或未读取' : 'Failed or unread only'}</span></div>
+              <div className="flex items-center gap-1.5"><JellyToggle size="sm" checked={sortSpend} onChange={setSortSpend} aria-label={zh ? '按币种分组后消耗排序' : 'Sort spend within each currency'} /><span>{zh ? '按币种分组后消耗排序' : 'Sort spend within each currency'}</span></div>
               <span role="status">{zh ? `显示 ${displayedTikTok.length} / ${currentTikTok.accounts.length} 个账户；列表筛选不改变保存范围。` : `Showing ${displayedTikTok.length} / ${currentTikTok.accounts.length} accounts; filtering does not change the saved scope.`}</span>
             </div>
             {displayedTikTok.length === 0 && <p className="text-[12px] text-cream-faint">{zh ? '没有匹配的账户。' : 'No matching accounts.'}</p>}

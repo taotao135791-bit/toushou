@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type DragEvent, type MutableRefObject } from 'react'
 import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, Loader2, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
+import HoldToDelete from './effects/HoldToDelete'
 import type { ProjectRecord } from '@shared/types'
 import { useProjects } from '../store/projects'
 import { useAppStore } from '../store'
@@ -79,7 +80,15 @@ function ProjectRow({ project, renderConversations, drag, draggedSession, filing
       {project.isDefault ? <p className="px-2.5 py-2 text-[11px] leading-5 text-cream-faint">{t('projects.defaultHelp')}</p> : <>
         <div className="my-1 border-t border-line" />
         <button type="button" disabled={!!pending} className="project-menu-action" onClick={async () => { setOpen(false); await (project.archived ? restore(project.id) : archive(project.id)) }}>{project.archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}{t(project.archived ? 'projects.restore' : 'projects.archive')}</button>
-        <button type="button" disabled={!!pending} className="project-menu-action text-red-500" onClick={() => { setOpen(false); void remove(project.id) }}><Trash2 size={13} />{t('projects.delete')}</button>
+        <HoldToDelete
+          disabled={!!pending}
+          onConfirm={() => { setOpen(false); void remove(project.id) }}
+          ariaLabel={t('projects.delete')}
+          label={t('projects.delete')}
+          className={`project-menu-action text-red-500 hover:bg-red-500/10 ${pending ? 'opacity-40' : ''} data-[holding=true]:bg-red-500/10`}
+        >
+          <Trash2 size={13} />
+        </HoldToDelete>
       </>}
     </MenuPortal>
     </div>

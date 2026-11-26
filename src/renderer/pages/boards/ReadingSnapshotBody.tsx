@@ -10,6 +10,7 @@ import { startReadingAnalysis } from '../../lib/readingAnalysis'
 import { beginNavigationIntent, isCurrentNavigationIntent } from '../../lib/navigationIntent'
 import { ReadingSnapshotView } from './ReadingSnapshotView'
 import { HtmlBoardEditor } from './HtmlBoardEditor'
+import JellyToggle from '../../components/effects/JellyToggle'
 
 /** Snapshot controls never send a model request; prompts are reviewed locally first. */
 export function ReadingSnapshotBody({ widget, boardId, autoOpenAi = false, onAiOpened, showReadingSource = false }: { widget: BoardWidget; boardId: string; autoOpenAi?: boolean; onAiOpened?: () => void; showReadingSource?: boolean }) {
@@ -84,7 +85,7 @@ export function ReadingSnapshotBody({ widget, boardId, autoOpenAi = false, onAiO
       <button type="button" disabled={busy} onClick={() => void customize()} className={buttonClass}>{zh ? '修改看板' : 'Edit board'}</button>
       {savedView && <button type="button" onClick={() => setSourceView(value => !value)} className={buttonClass}>{sourceView ? (zh ? '返回自定义布局' : 'Show saved layout') : (zh ? '查看原始读数' : 'View source readings')}</button>}
       <button type="button" disabled={busy} onClick={() => void reviewHighlights()} className={buttonClass}>{zh ? '分析与对话高光' : 'Analyze and highlight in chat'}</button>
-      <label className="flex items-center gap-2"><input type="checkbox" checked={anonymous} onChange={e => setAnonymous(e.target.checked)} disabled={busy} />{zh ? '导出时脱敏账户信息' : 'Anonymize account information on export'}</label>
+      <div className="flex items-center gap-2"><JellyToggle size="sm" checked={anonymous} onChange={setAnonymous} disabled={busy} aria-label={zh ? '导出时脱敏账户信息' : 'Anonymize account information on export'} /><span>{zh ? '导出时脱敏账户信息' : 'Anonymize account information on export'}</span></div>
       <button type="button" disabled={busy || (renderError && !sourceView)} onClick={() => void exportHtml()} className={buttonClass}>{zh ? '导出 HTML' : 'Export HTML'}</button>
       {status && <span role="status">{status}</span>}
       {renderError && !sourceView && <span role="alert">{zh ? '保存的布局无法显示，原读数仍保留。请重试打开编辑器。' : 'The saved layout could not be displayed. Original readings are retained; retry the editor.'} <button type="button" disabled={busy} onClick={() => void customize()} className={buttonClass}>{zh ? '重试' : 'Retry'}</button></span>}

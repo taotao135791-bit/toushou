@@ -21,6 +21,8 @@ import { formatReadingWindow, tiktokReadingRangeWindow } from '@shared/todayRead
 import { useAppStore } from '../../store'
 import { useT, I18nKey } from '../../i18n'
 import { FbReadingAccountManager } from './FbReadingAccountManager'
+import JellyRange from '../../components/effects/JellyRange'
+import JellyToggle from '../../components/effects/JellyToggle'
 
 /**
  * In-card widget configuration layer: covers the widget body with a small
@@ -497,15 +499,10 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
         {saveError && <p role="alert" className="text-[11px] text-red-500">{language === 'zh' ? '保存失败或看板已变化，草稿仍保留。请核对后重新打开。' : 'Save failed or the board changed. Your draft is preserved; review and reopen.'}</p>}
         {sizeError && <p role="alert" className="text-[11px] text-red-500">{language === 'zh' ? '请输入范围内的整数尺寸。' : 'Enter whole-number dimensions in range.'}</p>}
         {widget.type === 'clock' && (
-          <label className="flex cursor-pointer items-center gap-2 text-[12px] text-cream-dim">
-            <input
-              type="checkbox"
-              checked={showSeconds}
-              onChange={(e) => setShowSeconds(e.target.checked)}
-              className="accent-[rgb(var(--accent))]"
-            />
-            {t('boards.config.showSeconds')}
-          </label>
+          <div className="flex items-center gap-2 text-[12px] text-cream-dim">
+            <JellyToggle size="sm" checked={showSeconds} onChange={setShowSeconds} aria-label={t('boards.config.showSeconds')} />
+            <span>{t('boards.config.showSeconds')}</span>
+          </div>
         )}
         {(widget.type === 'fb-reading' || widget.type === 'fb-reading-summary') && (
           <>
@@ -798,15 +795,10 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
           </Field>
         )}
         {isChart && (
-          <label className="flex cursor-pointer items-center gap-2 text-[12px] text-cream-dim">
-            <input
-              type="checkbox"
-              checked={showValues}
-              onChange={(e) => setShowValues(e.target.checked)}
-              className="accent-[rgb(var(--accent))]"
-            />
-            {t('boards.config.showValues')}
-          </label>
+          <div className="flex items-center gap-2 text-[12px] text-cream-dim">
+            <JellyToggle size="sm" checked={showValues} onChange={setShowValues} aria-label={t('boards.config.showValues')} />
+            <span>{t('boards.config.showValues')}</span>
+          </div>
         )}
         {isChart && source === 'manual' && (
           <>
@@ -1020,26 +1012,26 @@ export function WidgetConfigPanel({ widget, boardUpdatedAt, datasets, masterScop
           <div className="mt-2 grid grid-cols-2 gap-2">
             <Field label={t('boards.appearance.radius')}>
               <div className="flex items-center gap-1.5">
-                <input
-                  type="range"
-                  min="0"
-                  max="32"
+                <JellyRange
+                  min={0}
+                  max={32}
                   value={style.radius ?? 16}
-                  onChange={(event) => setStyle((current) => ({ ...current, radius: Number(event.target.value) }))}
-                  className="min-w-0 flex-1 accent-[rgb(var(--accent))]"
+                  onChange={(radius) => setStyle((current) => ({ ...current, radius }))}
+                  label={t('boards.appearance.radius')}
+                  className="min-w-0 flex-1"
                 />
                 <span className="w-5 text-right font-mono text-[10px] text-cream-faint">{style.radius ?? 16}</span>
               </div>
             </Field>
             <Field label={t('boards.appearance.padding')}>
               <div className="flex items-center gap-1.5">
-                <input
-                  type="range"
-                  min="6"
-                  max="32"
+                <JellyRange
+                  min={6}
+                  max={32}
                   value={style.padding ?? 12}
-                  onChange={(event) => setStyle((current) => ({ ...current, padding: Number(event.target.value) }))}
-                  className="min-w-0 flex-1 accent-[rgb(var(--accent))]"
+                  onChange={(padding) => setStyle((current) => ({ ...current, padding }))}
+                  label={t('boards.appearance.padding')}
+                  className="min-w-0 flex-1"
                 />
                 <span className="w-5 text-right font-mono text-[10px] text-cream-faint">{style.padding ?? 12}</span>
               </div>
