@@ -275,8 +275,12 @@ export class FeishuToolRegistry {
           const createdData = created.data as { children?: Array<{ block_id?: string }> } | undefined
           const fileBlockId = createdData?.children?.[0]?.block_id
           if (!fileBlockId) return { ok: false, error: '文件块创建成功但未返回块 ID' }
-          const uploadConfig = { method: 'POST', url: '/open-apis/drive/v1/medias/upload_all', data: { file_name: name, parent_type: 'docx_file', parent_node: fileBlockId, size: bytes.length, file: bytes }, type: 'multipart' as const }
-          const uploaded = await channel.rawClient.request(uploadConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
+          // 媒体上传走 SDK 的 uploadAll（内部正确序列化 multipart；raw request 手拼会 400）。
+          const uploader = (channel.rawClient as unknown as {
+            drive?: { v1?: { media?: { uploadAll?: (params: Record<string, unknown>, options?: unknown) => Promise<Record<string, unknown>> } } }
+          }).drive?.v1?.media
+          if (!uploader?.uploadAll) return { ok: false, error: '当前飞书客户端不支持媒体上传接口' }
+          const uploaded = await uploader.uploadAll({ file_name: name, parent_type: 'docx_file', parent_node: fileBlockId, size: bytes.length, file: bytes }, withUserAccessToken(userAccessToken as string)) as Record<string, unknown>
           const uploadCode = typeof uploaded.code === 'number' ? uploaded.code : 0
           if (uploadCode !== 0) return { ok: false, error: friendlyApiError(uploaded) + '（上传失败：若提示权限不足，需要到飞书应用后台补云文档上传 scope 并重新授权）' }
           const uploadData = uploaded.data as { token?: string } | undefined

@@ -134,18 +134,20 @@ describe('FeishuToolRegistry', () => {
     const localPath = path.join(dir, 'report.pdf')
     writeFileSync(localPath, Buffer.alloc(2048, 7))
     const seen: Array<Record<string, unknown>> = []
+    const uploadAll = vi.fn(async (params: Record<string, unknown>) => {
+      seen.push({ url: '/medias/upload_all', ...params })
+      return { code: 0, data: { token: 'file-token-1' } }
+    })
     const request = vi.fn(async (config: Record<string, unknown>) => {
-      void config
       seen.push(config)
       const url = String(config.url)
       if (url.includes('/blocks/') && url.endsWith('/children') && (config.data as { children?: Array<{ block_type?: number }> })?.children?.[0]?.block_type === 27) {
         return { code: 0, data: { children: [{ block_id: 'file-block-1' }] } }
       }
-      if (url.includes('/medias/upload_all')) return { code: 0, data: { token: 'file-token-1' } }
       if (config.method === 'PATCH') return { code: 0, data: {} }
       return { code: 0, data: {} }
     })
-    const channel = { rawClient: { request } }
+    const channel = { rawClient: { request, drive: { v1: { media: { uploadAll } } } } }
     const registry = new FeishuToolRegistry(
       () => channel as never,
       () => true,
@@ -153,9 +155,11 @@ describe('FeishuToolRegistry', () => {
     )
     const result = await registry.execute({ action: 'doc_file_attach', documentId: 'doc1', localPath })
     expect(result.ok).toBe(true)
-    const upload = seen.find(config => String(config.url).includes('/medias/upload_all'))
-    expect(upload).toBeTruthy()
-    expect((upload as { type?: string }).type).toBe('multipart')
+    // 上传走 SDK 的 uploadAll：参数含正确 parent_type/parent_node（教程 6.1 流程）
+    const uploadCall = uploadAll.mock.calls[0]?.[0] as { parent_type?: string; parent_node?: string; file_name?: string; size?: number } | undefined
+    expect(uploadCall?.parent_type).toBe('docx_file')
+    expect(uploadCall?.parent_node).toBe('file-block-1')
+    expect(uploadCall?.size).toBe(2048)
     const patch = seen.find(config => String(config.method) === 'PATCH')
     const patchData = patch?.data as { file?: { token?: string } } | undefined
     expect(patchData?.file?.token).toBe('file-token-1')
