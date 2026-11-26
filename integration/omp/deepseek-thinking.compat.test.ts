@@ -16,6 +16,13 @@ const MODEL_ID = 'deepseek-flash'
 const MODEL_NAME = 'DeepSeek-V4.1-Flash'
 const SELECTOR = `deepseek/${MODEL_ID}`
 const EFFORTS = ['low', 'high', 'max'] as const
+// A cold model discovery can take longer than 15s on a loaded runner.
+// Allow the production first-frame (30s) and protocol-negotiation (5s)
+// deadlines to run before the fixture gives up on its own.
+const STARTUP_TIMEOUT_MS = 36_000
+const TURN_TIMEOUT_MS = 15_000
+// The pinned runtime can start twice, then run four turns and their RPC checks.
+const TEST_TIMEOUT_MS = 240_000
 
 describe('DeepSeek Flash runtime thinking', () => {
   it('keeps the discovered model and sends each selected effort on the wire', async () => {
@@ -61,6 +68,7 @@ describe('DeepSeek Flash runtime thinking', () => {
       const fixture = { providers: { deepseek: { apiKey: 'synthetic-deepseek-key' } } }
       delete iso.env.OMP_PROFILE
       delete iso.env.PI_PROFILE
+      const loopback = '127.0.0.1,localhost,::1'
       Object.assign(iso.env, {
         USERPROFILE: iso.homeDir,
         APPDATA: iso.homeDir,
@@ -68,7 +76,9 @@ describe('DeepSeek Flash runtime thinking', () => {
         XDG_CONFIG_HOME: iso.homeDir,
         XDG_DATA_HOME: iso.homeDir,
         XDG_CACHE_HOME: iso.homeDir,
-        OMP_CODING_AGENT_DIR: iso.agentDir
+        OMP_CODING_AGENT_DIR: iso.agentDir,
+        NO_PROXY: loopback,
+        no_proxy: loopback
       })
 
       const startSession = async () => {
@@ -94,7 +104,7 @@ describe('DeepSeek Flash runtime thinking', () => {
           session.kill()
           await exited
         }
-        await vi.waitFor(() => expect(session.handshakeOutcome?.profile, stderr).toBe('current'), { timeout: 15_000 })
+        await vi.waitFor(() => expect(session.handshakeOutcome?.profile, stderr).toBe('current'), { timeout: STARTUP_TIMEOUT_MS })
         return { session, events, stderr: () => stderr }
       }
 
@@ -131,7 +141,7 @@ describe('DeepSeek Flash runtime thinking', () => {
         expect(session.sendPrompt(`Synthetic ${level} probe.`)).toBe(true)
         await vi.waitFor(() => {
           expect(events.slice(firstEvent), stderr()).toContainEqual(expect.objectContaining({ type: 'status', status: 'idle' }))
-        }, { timeout: 12_000 })
+        }, { timeout: TURN_TIMEOUT_MS })
         expect(requests).toHaveLength(requestIndex + 1)
         const body = requests[requestIndex]
         expect(body.model).toBe(MODEL_ID)
@@ -147,12 +157,12 @@ describe('DeepSeek Flash runtime thinking', () => {
       expect(await session.query({ type: 'set_thinking_level', level: 'auto' }), stderr()).toMatchObject({ success: true })
       await vi.waitFor(() => expect(events.slice(beforeAuto)).toContainEqual(
         expect.objectContaining({ type: 'thinking_level_changed', level: 'auto' })
-      ))
+      ), { timeout: TURN_TIMEOUT_MS })
     } finally {
       await lifecycle.closeSession?.()
       provider.closeAllConnections()
       await new Promise<void>(resolve => provider.close(() => resolve()))
       iso.cleanup()
     }
-  }, 60_000)
+  }, TEST_TIMEOUT_MS)
 })
