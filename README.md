@@ -27,7 +27,7 @@ V2 使用流程与限制见[多平台读数](docs/multi-platform-readings.md)和
 
 ## 最新发版
 
-**v2.9.8** 是 macOS 和 Windows 的双端过渡版。旧版可通过应用内更新升级，之后两端各自获取适合本平台的正式版。[发布说明](docs/releases/v2.9.8.md) · [开发者提交指南](docs/commit-and-release.md)
+**macOS v2.9.9** 更新了会话侧栏、项目迁移和任务进度，并新增跨会话记忆。Windows 最新正式版为 2.9.8。[发布说明](docs/releases/v2.9.9.md) · [开发者提交指南](docs/commit-and-release.md)
 
 ## 开发
 
