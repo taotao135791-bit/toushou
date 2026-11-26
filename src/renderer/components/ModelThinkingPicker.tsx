@@ -87,7 +87,6 @@ export default function ModelThinkingPicker({ sessionId, compact = false }: Mode
   const queued = useRef<{ session: string; level: SessionThinkingSelection }>()
   const writing = useRef(false)
   const dragging = useRef(false)
-  const [dragHint, setDragHint] = useState(false)
   const [failedSession, setFailedSession] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<{ sessionId: string; modelVersion: number; state: SessionState | null }>()
   const [stateRefresh, setStateRefresh] = useState(0)
@@ -166,7 +165,6 @@ export default function ModelThinkingPicker({ sessionId, compact = false }: Mode
   const displayLevel = preview ?? level
   const sliderIndex = Math.max(0, options.indexOf(displayLevel as SessionThinkingLevel))
   const position = options.length > 1 ? sliderIndex / (options.length - 1) : 0
-  const heavy = displayLevel === 'high' || displayLevel === 'xhigh' || displayLevel === 'max'
   const modelName = catalogEntry?.name ?? selector
 
   // ----- grouped model list -----
@@ -369,8 +367,8 @@ export default function ModelThinkingPicker({ sessionId, compact = false }: Mode
           ) : (
             <div data-thinking-menu data-peak={position === 1} style={{ '--effort-position': position } as CSSProperties} className="px-2.5 py-2">
               <div className="mb-2 flex min-h-8 items-center justify-between gap-2">
-                <span key={dragHint ? 'hint' : String(displayLevel)} className="effort-heading picker-label-pop text-sm font-semibold">
-                  {dragHint ? t(heavy ? 'composer.thinkingHintHeavy' : 'composer.thinkingHintLight') : levelLabel(displayLevel, t)}
+                <span data-thinking-level-label className="effort-heading text-sm font-semibold">
+                  {levelLabel(displayLevel, t)}
                 </span>
                 <button ref={paneFocusRef} type="button" data-open-model-list onClick={() => {
                   setModelListOpen(true)
@@ -393,9 +391,9 @@ export default function ModelThinkingPicker({ sessionId, compact = false }: Mode
               aria-label={t('composer.thinking')} aria-valuetext={t(LEVEL_LABEL[options[sliderIndex]])}
               className="effort-slider"
               onChange={event => setPreview(options[Number(event.currentTarget.value)])}
-              onPointerDown={() => { dragging.current = true; setDragHint(true) }}
-              onPointerCancel={() => { dragging.current = false; setDragHint(false); setPreview(null) }}
-              onPointerUp={event => { dragging.current = false; setDragHint(false); void pickThinking(options[Number(event.currentTarget.value)]) }}
+              onPointerDown={() => { dragging.current = true }}
+              onPointerCancel={() => { dragging.current = false; setPreview(null) }}
+              onPointerUp={event => { dragging.current = false; void pickThinking(options[Number(event.currentTarget.value)]) }}
               onKeyUp={event => {
                 if (['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Enter'].includes(event.key)) { void pickThinking(options[Number(event.currentTarget.value)]) }
               }}

@@ -1,6 +1,6 @@
 import type { ExtraProps } from 'react-markdown'
 import { chatAttachment } from '@shared/chatAttachment'
-import { collectReplyAttachmentPaths, isInlineFilePath, plainPathTokens } from '@shared/replyAttachmentPaths'
+import { collectReplyAttachmentPaths, isInlineFilePath, plainPathTokens, stripLeadingPathDecoration } from '@shared/replyAttachmentPaths'
 
 type Element = NonNullable<ExtraProps['node']>
 type Child = Element['children'][number]
@@ -96,7 +96,7 @@ export function groupReplyAttachments(idPrefix: string) {
           case 'a': raw = String(child.properties.href ?? ''); break
           case 'img': raw = String(child.properties.src ?? ''); break
           case 'code':
-            raw = textLabel(child).trim()
+            raw = stripLeadingPathDecoration(textLabel(child).trim())
             if (!isInlineFilePath(raw)) continue
             break
           default: visit(child.children); continue

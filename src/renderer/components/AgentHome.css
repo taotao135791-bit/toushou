@@ -279,8 +279,7 @@
   from { transform: translateX(-14%); }
   to { transform: translateX(14%); }
 }
-/* Springy swap shared by picker labels and menu checkmarks (duang overshoot). */
-.picker-label-pop, .picker-check-pop {
+.picker-check-pop {
   animation: picker-pop 300ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 @keyframes picker-pop {
@@ -289,7 +288,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .effort-fill::before, .effort-fill::after, .effort-glow,
-  .picker-label-pop, .picker-check-pop { animation: none; }
+  .picker-check-pop { animation: none; }
 }
 .effort-slider {
   /* 新 Chromium 对 range 有内置"fluent"绘制层（黑轨道线 + 小白 thumb），

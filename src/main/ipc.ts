@@ -1816,27 +1816,32 @@ export function registerIpc() {
     }
   )
 
-  // Chat top bar "打开方式": reveal/open the granted workspace in Finder,
-  // a terminal, or VS Code. The renderer only ever sends the grant id and a
-  // target name; the real path is resolved here through the same grant
-  // authority as every other workspace-scoped channel.
+  // Resolve attachment capabilities in Main. Use the same journal identity
+  // for live sessions and history previews of the same conversation.
   async function dispatchAttachment(event: IpcMainInvokeEvent, grantId: unknown, target: unknown, action: unknown, sessionId: unknown, folder: boolean) {
     const workspace = requireGrant(grantId)
     if (!workspace) return 'unavailable'
     let readMessages: () => ReturnType<typeof readSessionTranscript> = async () => null
+    let attachmentSessionScope: string | undefined
     try {
       if (sessionId != null) {
         if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 512) return 'unavailable'
         if (sessionId.startsWith('preview:')) {
           const historyId = sessionId.slice(8)
           const context = { workspaceGrantId: workspace.grant.id, workspaceRealPath: workspace.realPath, ownerWebContentsId: event.sender.id }
-          if (!await historySessionGrantManager.resolve(historyId, context)) return 'unavailable'
+          const journal = await historySessionGrantManager.resolve(historyId, context)
+          if (!journal) return 'unavailable'
+          attachmentSessionScope = JSON.stringify([event.sender.id, 'journal', journal])
           readMessages = () => historySessionGrantManager.withResolved(historyId, context,
             journal => readSessionFileTranscript(journal, { hydrateImages: false }))
         } else {
           const live = getSession(sessionId)
           if (!live || canonicalExistingPath(live.cwd) !== workspace.realPath) return 'unavailable'
           const journal = live.sessionFile ?? live.resumeFrom
+          const canonicalJournal = journal ? await fs.promises.realpath(journal).catch(() => undefined) : undefined
+          attachmentSessionScope = canonicalJournal
+            ? JSON.stringify([event.sender.id, 'journal', canonicalJournal])
+            : JSON.stringify([event.sender.id, 'live', sessionId])
           readMessages = () => journal ? readSessionFileTranscript(journal, { hydrateImages: false }) : readSessionTranscript(sessionId)
         }
       }
@@ -1845,7 +1850,7 @@ export function registerIpc() {
         isReferenced: async (path: string, kind: 'file' | 'folder') => transcriptReferencesAttachment(await readMessages(), path, kind)
       }
       return folder ? await openChatAttachmentFolder(workspace.realPath, target, downloads)
-        : await handleChatAttachment(workspace.realPath, target, action, downloads)
+        : await handleChatAttachment(workspace.realPath, target, action, downloads, attachmentSessionScope)
     } catch { return 'unavailable' }
   }
   ipcMain.handle(IPC_CHANNELS.CHAT_ATTACHMENT, (event, grantId, target, action, sessionId) =>

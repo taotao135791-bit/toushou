@@ -19,6 +19,7 @@ type ChannelPolicy = 'single-route' | 'direct-only' | 'fallback'
 
 const CHANNEL_POLICIES: Record<string, ChannelPolicy> = {
   'tiktok-api': 'single-route',
+  'tiktok-oauth': 'single-route',
   // AF 的两个分区名：数据集客户端用 appsflyer-api，连接管理器（OAuth/探活）用 appsflyer。
   'appsflyer-api': 'direct-only',
   appsflyer: 'direct-only'

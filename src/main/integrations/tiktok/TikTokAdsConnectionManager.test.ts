@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // injected fakes and electron is stubbed with temp dirs.
 const paths = vi.hoisted(() => ({ documents: '', userData: '' }))
 const proxyFixture = vi.hoisted(() => ({
-  sessions: new Map<string, { setProxy: ReturnType<typeof vi.fn>; fetch: ReturnType<typeof vi.fn> }>(),
-  failNext: false
+  sessions: new Map<string, { setProxy: ReturnType<typeof vi.fn>; fetch: ReturnType<typeof vi.fn>; resolveProxy: ReturnType<typeof vi.fn> }>(),
+  failNext: false,
+  systemRoute: 'DIRECT',
+  fetchImpl: undefined as TikTokFetch | undefined
 }))
 
 vi.mock('electron', () => ({
@@ -19,7 +21,8 @@ vi.mock('electron', () => ({
     if (!existing) {
       existing = {
         setProxy: vi.fn(async () => { if (proxyFixture.failNext) { proxyFixture.failNext = false; throw new Error('proxy setup failed') } }),
-        fetch: vi.fn(async () => new Response('ok'))
+        fetch: vi.fn((url: string, init?: RequestInit) => proxyFixture.fetchImpl?.(url, init) ?? Promise.resolve(new Response('ok'))),
+        resolveProxy: vi.fn(async () => proxyFixture.systemRoute)
       }
       proxyFixture.sessions.set(partition, existing)
     }
@@ -94,6 +97,8 @@ let tempDirs: string[] = []
 beforeEach(async () => {
   proxyFixture.sessions.clear()
   proxyFixture.failNext = false
+  proxyFixture.systemRoute = 'DIRECT'
+  proxyFixture.fetchImpl = undefined
   paths.documents = await mkdtemp(path.join(os.tmpdir(), 'toushou-tt-docs-'))
   paths.userData = await mkdtemp(path.join(os.tmpdir(), 'toushou-tt-user-'))
   tempDirs = [paths.documents, paths.userData]
@@ -106,7 +111,7 @@ afterEach(async () => {
 })
 
 function makeManager(options: {
-  fetch: TikTokFetch
+  fetch?: TikTokFetch
   now?: () => number
 }): { manager: TikTokAdsConnectionManager; openedUrls: string[] } {
   const openedUrls: string[] = []
@@ -268,6 +273,45 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     expect(mcp.mcpServers['tiktok-ads']).toBeUndefined()
   })
 
+  it('waits for a pending refresh to commit before starting a new authorization', async () => {
+    const file = path.join(paths.userData, 'refresh-before-reconnect.bin')
+    const mcpJson = path.join(paths.userData, 'mcp.json')
+    const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
+    await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
+    let now = 0, release!: () => void, entered!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const started = new Promise<void>((resolve) => { entered = resolve })
+    const fixture = makeFetch({})
+    const manager = new TikTokAdsConnectionManager({
+      credentialStore: store,
+      fetchImpl: async (url, init) => {
+        if (url === `${ISSUER}/token` && new URLSearchParams(String(init?.body)).get('grant_type') === 'refresh_token') {
+          entered()
+          await gate
+          return jsonResponse({ access_token: 'rotated', refresh_token: 'new-refresh', expires_in: 3600 })
+        }
+        return fixture.fetch(url, init)
+      },
+      now: () => now,
+      openExternal: async () => {},
+      mcpPaths: { mcpJson, registry: path.join(paths.userData, 'mcp-registry.json') }
+    })
+    await manager.initialize()
+    now = 1_900_000
+    const refresh = manager.ensureFreshToken()
+    await started
+    const begin = manager.begin()
+    expect(fixture.log).toHaveLength(0)
+    release()
+    expect(await refresh).toBe(true)
+    expect((await begin).status).toBe('waiting_for_user')
+    expect((await manager.cancel()).status).toBe('connected')
+    expect((await store.load())?.refreshToken).toBe('new-refresh')
+    const mcp = JSON.parse(await readFile(mcpJson, 'utf8')) as { mcpServers: Record<string, { headers: { Authorization: string } }> }
+    expect(mcp.mcpServers['tiktok-ads'].headers.Authorization).toBe('Bearer rotated')
+    await manager.disconnect()
+  })
+
   it('stops repeated refresh attempts when saving renewed credentials fails', async () => {    const file = path.join(paths.userData, 'refresh.bin')
     let available = true
     const backend = { isAvailable: vi.fn(() => available), encrypt: (value: string) => Buffer.from(value), decrypt: (value: Buffer) => value.toString('utf8') }
@@ -318,34 +362,66 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     await manager.disconnect()
   })
 
-  it('a permanent OAuth renewal rejection never schedules a retry', async () => {
+  it('clears an explicitly rejected grant on cancel, then reconnects with a new grant', async () => {
     const file = path.join(paths.userData, 'refresh-permanent.bin')
     const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
     await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
-    let now = 0, tokenCalls = 0
+    let now = 0, renewalCalls = 0
+    const fixture = makeFetch({})
+    const openedUrls: string[] = []
+    const mcpJson = path.join(paths.userData, 'mcp.json')
     const manager = new TikTokAdsConnectionManager({
       credentialStore: store,
-      fetchImpl: async (url: string) => {
-        if (url === `${ISSUER}/token`) { tokenCalls++; return jsonResponse({ error: 'invalid_grant' }, 400) }
-        throw new Error('unexpected')
+      fetchImpl: async (url, init) => {
+        if (url === `${ISSUER}/token` && new URLSearchParams(String(init?.body)).get('grant_type') === 'refresh_token') {
+          renewalCalls++
+          return jsonResponse({ error: 'invalid_grant', error_description: 'sensitive provider text' }, 400)
+        }
+        return fixture.fetch(url, init)
       },
       now: () => now,
-      openExternal: async () => {},
-      mcpPaths: { mcpJson: path.join(paths.userData, 'mcp.json'), registry: path.join(paths.userData, 'mcp-registry.json') },
+      openExternal: async (url) => { openedUrls.push(url) },
+      mcpPaths: { mcpJson, registry: path.join(paths.userData, 'mcp-registry.json') },
       refreshRetryDelaysMs: [10]
     })
     await manager.initialize()
     now = 1_900_000
     expect(await manager.ensureFreshToken()).toBe(false)
     expect(manager.getSnapshot().lastError).toContain('请重新授权')
+    expect(manager.getSnapshot().lastError).toContain('invalid_grant')
+    expect(manager.getSnapshot().lastError).not.toContain('sensitive provider text')
     expect(await manager.keepAliveToken()).toBe(false)
-    expect(await manager.keepAliveToken()).toBe(false)
+    expect((await manager.loadFreshCredentials())?.accessToken).toBe('old')
+    now = 2_000_000
+    expect(await manager.loadFreshCredentials()).toBeNull()
     await new Promise(r => setTimeout(r, 30))
-    expect(tokenCalls).toBe(1)
+    expect(renewalCalls).toBe(1)
+
+    let release!: () => void
+    const clearing = new Promise<void>((resolve) => { release = resolve })
+    const clear = store.clear.bind(store)
+    const clearSpy = vi.spyOn(store, 'clear').mockRejectedValueOnce(new Error('write denied'))
+    expect(await manager.cancel()).toMatchObject({ status: 'degraded', lastError: expect.stringContaining('无法移除本地 TikTok 授权') })
+    expect((await store.load())?.accessToken).toBe('old')
+    clearSpy.mockImplementationOnce(async () => { await clearing; await clear() })
+    const cancel = manager.cancel()
+    const reconnect = manager.begin()
+    expect(await manager.loadFreshCredentials()).toBeNull()
+    expect(openedUrls).toEqual([])
+    release()
+    expect(await cancel).toMatchObject({ status: 'disconnected', lastError: undefined })
+    expect(await store.load()).toBeNull()
+    const mcp = JSON.parse(await readFile(mcpJson, 'utf8')) as { mcpServers: Record<string, unknown> }
+    expect(mcp.mcpServers['tiktok-ads']).toBeUndefined()
+
+    expect(await reconnect).toMatchObject({ status: 'waiting_for_user' })
+    await driveCallback(openedUrls[0])
+    await vi.waitFor(() => expect(manager.getSnapshot().status).toBe('connected'))
+    expect((await manager.loadFreshCredentials())?.accessToken).toBe('at-1')
     await manager.disconnect()
   })
 
-  it('a 429 rate limit on the token endpoint is transient: retry, not re-auth', async () => {
+  it.each([false, true])('a rate limit retries and preserves the grant (access token expired: %s)', async expired => {
     const file = path.join(paths.userData, 'refresh-429.bin')
     const store = new TikTokCredentialStore({ filePath: file, backend: fakeBackend() })
     await store.save({ clientId: 'client-1', accessToken: 'old', refreshToken: 'refresh', tokenEndpoint: `${ISSUER}/token`, expiresAt: 2_000_000 })
@@ -367,13 +443,14 @@ describe('TikTokAdsConnectionManager connect flow', () => {
       refreshRetryDelaysMs: [10]
     })
     await manager.initialize()
-    now = 1_900_000
+    now = expired ? 2_000_000 : 1_900_000
     expect(await manager.ensureFreshToken()).toBe(false)
     // Rate-limiting must read as "retrying", never as a dead grant demanding
     // a browser re-auth.
     expect(manager.getSnapshot().lastError).toContain('自动重试')
-    for (let i = 0; i < 100 && manager.getSnapshot().status !== 'connected'; i++) await new Promise(r => setTimeout(r, 5))
-    expect(manager.getSnapshot().status).toBe('connected')
+    expect((await manager.cancel()).status).toBe(expired ? 'degraded' : 'connected')
+    expect((await store.load())?.accessToken).toBe('old')
+    await vi.waitFor(async () => expect((await store.load())?.accessToken).toBe('new'))
     expect(tokenCalls).toBe(2)
     await manager.disconnect()
   })
@@ -615,15 +692,16 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     const snapshot = await manager.begin()
     expect(snapshot.status).toBe('failed')
     expect(snapshot.lastError ?? '').toContain('OAuth')
+    expect(await manager.cancel()).toMatchObject({ status: 'disconnected', lastError: undefined })
   })
 
-  it('tries both loopback redirect shapes when registration rejects the first', async () => {
+  it.each(['invalid_redirect_uri', 'invalid_client_metadata'])('tries both loopback redirect shapes after %s', async error => {
     let calls = 0
     const { fetch, log } = makeFetch({
       register: () => {
         calls += 1
         return calls === 1
-          ? jsonResponse({ error: 'invalid_redirect_uri', error_description: 'redirect uri not allowed' }, 400)
+          ? jsonResponse({ error, error_description: 'The redirection URI is not allowed' }, 400)
           : jsonResponse({ client_id: 'client-2' })
       }
     })
@@ -637,6 +715,19 @@ describe('TikTokAdsConnectionManager connect flow', () => {
     expect(registerBodies[0].redirect_uris[0]).toBe('http://127.0.0.1/callback')
     expect(registerBodies[1].redirect_uris[0]).toBe('http://localhost/callback')
     expect(new URL(openedUrls[0]).searchParams.get('client_id')).toBe('client-2')
+    await manager.cancel()
+  })
+
+  it.each([
+    [400, 'invalid_client_metadata', 'client name is too long'],
+    [429, 'rate_limit', 'please retry later'],
+    [500, 'server_error', 'request state unknown']
+  ])('does not replay client registration after HTTP %d', async (status, error, error_description) => {
+    const register = vi.fn(() => jsonResponse({ error, error_description }, status))
+    const { fetch } = makeFetch({ register })
+    const { manager } = makeManager({ fetch })
+    expect((await manager.begin()).status).toBe('failed')
+    expect(register).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -799,7 +890,7 @@ describe('TikTokAdsConnectionManager lifecycle', () => {
 
 describe('TikTok connection proxy sessions', () => {
   function proxyFetch(manager: TikTokAdsConnectionManager, url: string): Promise<Response> {
-    return (manager as unknown as { fetchViaProxySession: (url: string) => Promise<Response> }).fetchViaProxySession(url)
+    return (manager as unknown as { fetchImpl: TikTokFetch }).fetchImpl(url)
   }
 
   it('isolates concurrent direct, system and fixed-proxy requests and reuses configurations', async () => {
@@ -807,6 +898,7 @@ describe('TikTok connection proxy sessions', () => {
     vi.stubEnv('HTTP_PROXY', '')
     vi.stubEnv('http_proxy', '')
     vi.stubEnv('NO_PROXY', 'direct.example')
+    proxyFixture.systemRoute = 'PROXY pac.example:8080; DIRECT'
     const manager = new TikTokAdsConnectionManager()
     await Promise.all([
       proxyFetch(manager, 'https://direct.example/a'),
@@ -815,11 +907,14 @@ describe('TikTok connection proxy sessions', () => {
       proxyFetch(manager, 'https://through.example/b')
     ])
     const sessions = [...proxyFixture.sessions.values()]
-    expect(sessions).toHaveLength(3)
+    expect(sessions).toHaveLength(4)
     expect(sessions.map((s) => s.setProxy.mock.calls[0][0])).toEqual(expect.arrayContaining([
-      { mode: 'direct' }, { mode: 'system' }, { mode: 'fixed_servers', proxyRules: 'https://proxy.example:443' }
+      { mode: 'direct' },
+      { mode: 'system' },
+      { mode: 'fixed_servers', proxyRules: 'https://proxy.example:443', proxyBypassRules: '<-loopback>' },
+      { mode: 'fixed_servers', proxyRules: 'http://pac.example:8080', proxyBypassRules: '<-loopback>' }
     ]))
-    expect(sessions.map((s) => s.fetch.mock.calls.length).sort()).toEqual([1, 1, 2])
+    expect(sessions.map((s) => s.fetch.mock.calls.length).sort()).toEqual([0, 1, 1, 2])
     expect(sessions.every((s) => s.setProxy.mock.calls.length === 1)).toBe(true)
   })
 
@@ -833,5 +928,38 @@ describe('TikTok connection proxy sessions', () => {
     const [ses] = [...proxyFixture.sessions.values()]
     expect(ses.setProxy).toHaveBeenCalledTimes(2)
     expect(ses.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['discovery', 'oauth-protected-resource', 'OAuth 发现失败'],
+    ['registration', '/register', 'OAuth 客户端注册失败'],
+    ['exchange', '/token', '授权码交换失败']
+  ])('keeps %s on the selected proxy and reports the failing step', async (stage, endpoint, label) => {
+    vi.stubEnv('HTTPS_PROXY', `http://${stage}.proxy.example:8080`)
+    vi.stubEnv('NO_PROXY', '')
+    const fixture = makeFetch({})
+    proxyFixture.fetchImpl = async (url, init) => {
+      if (url.includes(endpoint)) throw new Error('net::ERR_CONNECTION_CLOSED')
+      return fixture.fetch(url, init)
+    }
+    const { manager, openedUrls } = makeManager({})
+    await manager.begin()
+    if (stage === 'exchange') {
+      await driveCallback(openedUrls[0])
+      await vi.waitFor(() => expect(manager.getSnapshot().status).toBe('failed'))
+    }
+    expect(manager.getSnapshot()).toMatchObject({ status: 'failed', connected: false })
+    expect(manager.getSnapshot().lastError).toContain(label)
+    expect(manager.getSnapshot().lastError).toContain('ERR_CONNECTION_CLOSED')
+    const [proxy] = [...proxyFixture.sessions.values()]
+    expect(proxyFixture.sessions.size).toBe(1)
+    expect(proxy.setProxy).toHaveBeenCalledWith({
+      mode: 'fixed_servers',
+      proxyRules: `${stage}.proxy.example:8080`,
+      proxyBypassRules: '<-loopback>'
+    })
+    const failed = proxy.fetch.mock.calls.filter(([url]) => typeof url === 'string' && url.includes(endpoint))
+    expect(failed).toHaveLength(1)
+    if (stage !== 'discovery') expect(failed[0][1].method).toBe('POST')
   })
 })

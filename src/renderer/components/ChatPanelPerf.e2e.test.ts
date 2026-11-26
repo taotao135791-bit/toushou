@@ -34,7 +34,7 @@ describe('ChatPanel background metadata rendering', () => {
       expect(data.effortInteraction).toEqual({
         insetMenu: true, themed: true, hiddenAuto: true, blueDrifts: true, peakDrifts: true,
         idleDrifts: true, sharedBluePalette: true, ordinaryInkStaysBlue: true, violetOnlyAtPeak: true, distinctPeakPalette: true,
-        alwaysRound: true, particlesOnRailOnly: true
+        alwaysRound: true, levelOnly: true, particlesOnRailOnly: true
       })
       expect(data.homeMenusBelow).toEqual([true, true, true, true])
       expect(data.deepSeekThinking).toEqual(['Off', 'Low', 'High', 'Max', 'Auto'])

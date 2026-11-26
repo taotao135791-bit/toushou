@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, symlink, readFile, rm, rename, link, stat, readdir } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, symlink, readFile, rm, rename, link, stat, readdir, realpath } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -179,5 +179,86 @@ describe('chat attachments', () => {
       }
       expect(shell.openPath).toHaveBeenCalledTimes(1)
     } finally { await rm(root, {recursive:true, force:true}) }
+  })
+
+  it('uses the last saved copy only for the original workspace, conversation and attachment', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'ts-attachment-copy-scope-'))
+    try {
+      const first = path.join(root, 'first'), second = path.join(root, 'second')
+      const name = 'report.csv', initial = path.join(root, 'first-copy.csv'), latest = path.join(root, 'last-copy.csv')
+      await Promise.all([mkdir(first), mkdir(second)])
+      await Promise.all([writeFile(path.join(first, name), 'first'), writeFile(path.join(second, name), 'second')])
+      await writeFile(latest, 'previous file')
+      vi.mocked(dialog.showSaveDialog)
+        .mockResolvedValueOnce({ canceled: false, filePath: initial })
+        .mockResolvedValueOnce({ canceled: false, filePath: latest })
+        .mockResolvedValueOnce({ canceled: true, filePath: '' })
+      expect(await handleChatAttachment(first, name, 'save', undefined, 'one')).toBe('ok')
+      expect(await handleChatAttachment(first, name, 'save', undefined, 'one')).toBe('ok')
+      expect(await handleChatAttachment(first, name, 'save', undefined, 'one')).toBe('cancelled')
+      expect(await handleChatAttachment(first, './' + name, 'open', undefined, 'one')).toBe('ok')
+      expect(shell.openPath).toHaveBeenLastCalledWith(await realpath(latest))
+      expect(await handleChatAttachment(first, name, 'open', undefined, 'two')).toBe('ok')
+      expect(shell.openPath).toHaveBeenLastCalledWith(await realpath(path.join(first, name)))
+      expect(await handleChatAttachment(second, name, 'open', undefined, 'one')).toBe('ok')
+      expect(shell.openPath).toHaveBeenLastCalledWith(await realpath(path.join(second, name)))
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('reveals a saved HTML report without opening it or asking for a moved original', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'ts-attachment-copy-html-'))
+    try {
+      const source = path.join(root, 'report.html'), destination = path.join(root, 'saved.html')
+      await writeFile(source, '<p>Sample report</p>')
+      vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: false, filePath: destination })
+      expect(await handleChatAttachment(root, source, 'save', undefined, 'session')).toBe('ok')
+      await rename(source, path.join(root, 'moved.html'))
+      vi.mocked(dialog.showOpenDialog).mockClear()
+      vi.mocked(shell.openPath).mockClear()
+      expect(await handleChatAttachment(root, source, 'open', undefined, 'session')).toBe('ok')
+      expect(await handleChatAttachment(root, source, 'reveal', undefined, 'session')).toBe('ok')
+      expect(dialog.showOpenDialog).not.toHaveBeenCalled()
+      expect(shell.openPath).not.toHaveBeenCalled()
+      expect(shell.showItemInFolder).toHaveBeenLastCalledWith(await realpath(destination))
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('uses the copy of a sandbox attachment picked by the user without re-opening the picker', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'ts-attachment-copy-sandbox-'))
+    try {
+      const target = 'sandbox:/mnt/data/report.pdf'
+      const source = path.join(root, 'user-export.pdf'), destination = path.join(root, 'saved.pdf')
+      await writeFile(source, '%PDF-1.4')
+      vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [source] })
+      vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: false, filePath: destination })
+      expect(await handleChatAttachment(root, target, 'save', undefined, 'session')).toBe('ok')
+      vi.mocked(dialog.showOpenDialog).mockClear()
+      expect(await handleChatAttachment(root, target, 'open', undefined, 'session')).toBe('ok')
+      expect(dialog.showOpenDialog).not.toHaveBeenCalled()
+      expect(shell.openPath).toHaveBeenLastCalledWith(await realpath(destination))
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('returns to the original attachment when the source revision or saved file identity changes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'ts-attachment-copy-revision-'))
+    try {
+      const source = path.join(root, 'report.csv'), destination = path.join(root, 'saved.csv')
+      await writeFile(source, 'original')
+      vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: false, filePath: destination })
+      expect(await handleChatAttachment(root, source, 'save', undefined, 'session')).toBe('ok')
+      await writeFile(source, 'new revision with a different size')
+      expect(await handleChatAttachment(root, source, 'open', undefined, 'session')).toBe('ok')
+      expect(shell.openPath).toHaveBeenLastCalledWith(await realpath(source))
+
+      vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: false, filePath: destination })
+      expect(await handleChatAttachment(root, source, 'save', undefined, 'session')).toBe('ok')
+      const decoy = path.join(root, 'decoy.csv')
+      await rename(destination, decoy)
+      // Windows tests may lack permission to create file symlinks.
+      if (process.platform === 'win32') await writeFile(destination, 'replacement')
+      else await symlink(decoy, destination)
+      expect(await handleChatAttachment(root, source, 'open', undefined, 'session')).toBe('ok')
+      expect(shell.openPath).toHaveBeenLastCalledWith(await realpath(source))
+    } finally { await rm(root, { recursive: true, force: true }) }
   })
 })

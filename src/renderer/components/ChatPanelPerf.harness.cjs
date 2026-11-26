@@ -222,11 +222,15 @@ app.whenReady().then(async () => {
       const y = Math.round(rect.top + rect.height / 2)
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: x(start), y, button: 'left', buttons: 1, clickCount: 1 })
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x(end), y, button: 'left', buttons: 1 })
+      await waitFor(`document.querySelector('[data-thinking-level-label]').textContent === ${JSON.stringify(label)}`)
       dragSamples.push(await js(`(() => {
         const thumb = document.querySelector('.effort-thumb-live')
         const rect = thumb.getBoundingClientRect()
+        const input = ${slider}
+        const heading = document.querySelector('[data-thinking-level-label]')
         return {
           round: Math.abs(rect.width - rect.height) < 0.1,
+          levelOnly: heading.textContent === input.getAttribute('aria-valuetext'),
           railClips: getComputedStyle(document.querySelector('.effort-rail')).overflow === 'hidden',
           particlesOnRailOnly: !!document.querySelector('.effort-rail .effort-fill') &&
             !document.querySelector('.effort-burst')
@@ -265,6 +269,7 @@ app.whenReady().then(async () => {
       ordinaryInkStaysBlue: lowPalette[1] === highPalette[1],
       violetOnlyAtPeak: lowMorph === 0 && highMorph === 0,
       alwaysRound: dragSamples.every(sample => sample.round),
+      levelOnly: dragSamples.every(sample => sample.levelOnly),
       particlesOnRailOnly: dragSamples.every(sample => sample.railClips && sample.particlesOnRailOnly),
       distinctPeakPalette: lowPalette.every((value, index) => value !== peakPalette[index])
     }
