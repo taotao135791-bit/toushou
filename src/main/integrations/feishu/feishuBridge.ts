@@ -9,7 +9,8 @@ export const FEISHU_TOOLS_ENV_KEY = 'TOUSHOU_FEISHU'
 const ACTIONS = new Set<FeishuToolRequest['action']>([
   'message_send', 'message_reply', 'message_read', 'message_search',
   'doc_read', 'doc_create', 'doc_append', 'sheets_read', 'sheets_write', 'sheets_create',
-  'bitable_read', 'bitable_upsert', 'bitable_query'
+  'bitable_read', 'bitable_upsert', 'bitable_query',
+  'doc_blocks', 'doc_insert_blocks', 'doc_table_fill', 'doc_delete_block', 'doc_file_attach'
 ])
 
 export function parseFeishuToolRequest(raw: unknown): FeishuToolRequest | null {

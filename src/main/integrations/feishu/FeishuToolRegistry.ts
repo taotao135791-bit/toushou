@@ -246,8 +246,10 @@ export class FeishuToolRegistry {
         case 'doc_delete_block': {
           const documentId = string(request.documentId)
           const blockId = string(request.blockId)
+          // 顶层块父 = 文档 ID；嵌套块（表格格子等）需带 parentBlockId。
+          const parentBlockId = string(request.parentBlockId) || documentId
           if (!documentId || !blockId) return invalid('documentId 和 blockId 不能为空')
-          const response = await channel.rawClient.request({ method: 'DELETE', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(blockId)}/children/${encodeURIComponent(blockId)}` }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined)
+          const response = await channel.rawClient.request({ method: 'DELETE', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parentBlockId)}/children/${encodeURIComponent(blockId)}` }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined)
           const code = typeof response.code === 'number' ? response.code : 0
           if (code !== 0) return { ok: false, error: friendlyApiError(response) }
           return { ok: true }
