@@ -21,6 +21,8 @@ function sessionModelOf(state: SessionState | null): { provider: string; id: str
   return { provider: o.provider, id: o.id, name: typeof o.name === 'string' ? o.name : o.id }
 }
 
+const THUMB = 26
+
 /** All session thinking levels this GUI knows, least to most intensive. */
 const LEVEL_LABEL: Record<SessionThinkingLevel, I18nKey> = {
   off: 'composer.thinkingOff',
@@ -95,7 +97,7 @@ export default function ModelThinkingPicker({ sessionId, compact = false }: Mode
   const [failedSession, setFailedSession] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<{ sessionId: string; modelVersion: number; state: SessionState | null }>()
   const [stateRefresh, setStateRefresh] = useState(0)
-  const jelly = useJellyStretch({ knobSize: 26, maxStretch: 8 })
+  const jelly = useJellyStretch({ knobSize: THUMB, maxStretch: 8 })
   const thumbX = useMotionValue(13)
   const trackRef = useRef<HTMLDivElement>(null)
   const trackWidth = useRef(0)
@@ -267,7 +269,7 @@ export default function ModelThinkingPicker({ sessionId, compact = false }: Mode
     const width = trackWidth.current
     if (width <= 0) return
     // 拇指中心 = 填充条右缘：x 为左缘位置，须扣除半个拇指宽。
-    const target = (width - 26) * positionRef.current
+    const target = (width - THUMB) * positionRef.current
     if (springMove && !reducedMotion()) animate(thumbX, target, { type: 'spring', visualDuration: 0.35, bounce: 0.15 })
     else thumbX.set(target)
   }
@@ -439,9 +441,9 @@ export default function ModelThinkingPicker({ sessionId, compact = false }: Mode
               aria-hidden="true"
               className="effort-thumb-live pointer-events-none absolute top-1/2 left-0 z-10 rounded-full"
               style={{
-                width: 26,
-                height: 26,
-                marginTop: -13,
+                width: THUMB,
+                height: THUMB,
+                marginTop: -THUMB / 2,
                 background: '#fff',
                 border: '1px solid #dedce6',
                 boxShadow: '0 1px 3px rgb(24 45 71 / 0.18), 0 0 1px rgb(24 45 71 / 0.18)',

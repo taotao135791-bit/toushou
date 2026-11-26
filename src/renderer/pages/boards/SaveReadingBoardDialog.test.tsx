@@ -12,6 +12,8 @@ describe('saving reading boards', () => {
     expect(html).toMatch(/type="radio" name="reading-presentation" checked=""\/>Modular board/)
     expect(html).toContain('Full report')
     expect(html).toContain('Existing board')
-    expect(html).toMatch(/type="checkbox" checked=""\/>Include account spend visualization/)
+    // 图表开关已改为果冻开关（role=switch），文本在相邻 span 里
+    expect(html).toContain('Include account spend visualization')
+    expect(html).toMatch(/role="switch" aria-checked="(true|false)"/)
   })
 })
