@@ -40,7 +40,11 @@ const FEISHU_DEFINITION: ConnectionDefinition = {
 /** Every user-identity scope 投手 can consume — pre-filled on the one-click
  * registration/repair confirm page so the app is born (or patched) with the
  * full set; the OAuth consent page then never refuses a requested scope. */
-const ALL_USER_SCOPES = Object.values(FEISHU_CAPABILITY_SCOPES).map((meta) => meta.scope)
+const ALL_USER_SCOPES = [
+  ...Object.values(FEISHU_CAPABILITY_SCOPES).map((meta) => meta.scope),
+  // 媒体上传（文件块）需要云空间写权限；能力表里只有只读项，这里显式补齐。
+  'drive:drive'
+]
 
 export class FeishuConnectionManager {
   private readonly credentialStore = new FeishuCredentialStore()

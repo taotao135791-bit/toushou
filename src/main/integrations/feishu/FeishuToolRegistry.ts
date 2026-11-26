@@ -282,7 +282,12 @@ export class FeishuToolRegistry {
           if (!uploader?.uploadAll) return { ok: false, error: '当前飞书客户端不支持媒体上传接口' }
           const uploaded = await uploader.uploadAll({ file_name: name, parent_type: 'docx_file', parent_node: fileBlockId, size: bytes.length, file: bytes }, withUserAccessToken(userAccessToken as string)) as Record<string, unknown>
           const uploadCode = typeof uploaded.code === 'number' ? uploaded.code : 0
-          if (uploadCode !== 0) return { ok: false, error: friendlyApiError(uploaded) + '（上传失败：若提示权限不足，需要到飞书应用后台补云文档上传 scope 并重新授权）' }
+          if (uploadCode !== 0) {
+            // 错误必须带原始上下文（铁律）：400 可能是能力缺失/参数/父节点关系，
+            // 只报 friendly 文案无法定位。
+            const detail = JSON.stringify(uploaded).slice(0, 400)
+            return { ok: false, error: friendlyApiError(uploaded) + ' 详细：' + detail }
+          }
           const uploadData = uploaded.data as { token?: string } | undefined
           const fileToken = uploadData?.token
           if (!fileToken) return { ok: false, error: '媒体上传成功但未返回 file token' }
