@@ -57,6 +57,12 @@ export function AttachmentMention({ target, label, fallbackHref, children }: Att
     <a href={file.remote ? file.target : fallbackHref} aria-disabled={pending || undefined} title={target}
       onClick={event => { event.preventDefault(); void activate('open') }}
       onAuxClick={event => { if (event.button === 1) { event.preventDefault(); void activate('open') } }}
+      onContextMenu={event => {
+        // 右键 = 在本地资源管理器中显示（用户要求；沙箱/远程文件没有本地路径，走默认菜单）。
+        if (file.remote || file.sandbox) return
+        event.preventDefault()
+        void activate('reveal')
+      }}
       aria-label={children ? label || file.name : undefined} data-attachment-kind={file.kind}
       className="chat-attachment-mention focus-ring inline max-w-full rounded-sm text-left [overflow-wrap:anywhere]">
       {children ?? <><Icon size={14} aria-hidden="true" className="mr-1 inline-block align-[-2px]" />{label || file.name}</>}
@@ -69,6 +75,7 @@ export function AttachmentFolderMention({ target, label }: AttachmentProps) {
   const { t, pending, error, activate } = useAttachment(target)
   return <>
     <button type="button" disabled={pending} onClick={() => void activate('open-folder')}
+      onContextMenu={event => { event.preventDefault(); void activate('open-folder') }}
       aria-label={t('chat.attachmentOpenFolder') + ' · ' + (label || target)} title={target}
       className="chat-attachment-mention focus-ring inline max-w-full rounded-sm text-left align-baseline text-[#1973ca] [overflow-wrap:anywhere] dark:text-[#90bff0]">
       <FolderOpen size={14} aria-hidden="true" className="mr-1 inline-block align-[-2px]" />{label || target}
@@ -83,7 +90,9 @@ export function AttachmentFolderCard({ target, label }: AttachmentProps) {
   const platform = typeof window === 'undefined' ? undefined : window.electronAPI?.platform
   const open = t(platform === 'darwin' ? 'chat.attachmentOpenFolderFinder' : platform === 'win32' ? 'chat.attachmentOpenFolderExplorer' : 'chat.attachmentOpenFolder')
   return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
-    <button type="button" disabled={pending} onClick={() => void activate('open-folder')} aria-label={open + ' · ' + name}
+    <button type="button" disabled={pending} onClick={() => void activate('open-folder')}
+      onContextMenu={event => { event.preventDefault(); void activate('open-folder') }}
+      aria-label={open + ' · ' + name}
       title={target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">
       <FolderOpen size={26} aria-hidden="true" className="mx-[3px] shrink-0 text-cream-dim" />
       <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{name}</span>
@@ -104,7 +113,9 @@ export function AttachmentCard({ target, label }: AttachmentProps) {
   const platform = typeof window === 'undefined' ? undefined : window.electronAPI?.platform
   const revealTitle = platform === 'darwin' ? t('chat.openInFinder') : platform === 'win32' ? t('chat.attachmentShowInExplorer') : reveal
   return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center gap-1 rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
-    <button type="button" disabled={pending} onClick={() => void activate(revealOnly ? 'reveal' : 'open')} aria-label={open + ' · ' + file.name}
+    <button type="button" disabled={pending} onClick={() => void activate(revealOnly ? 'reveal' : 'open')}
+      onContextMenu={event => { event.preventDefault(); void activate('reveal') }}
+      aria-label={open + ' · ' + file.name}
       title={revealOnly ? revealTitle : target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">
       <img src={icons[file.kind]} alt="" width={30} height={30} className="m-0 h-8 w-8 shrink-0" />
       <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{label || file.name}</span>
