@@ -21,6 +21,7 @@ function stubApi(extra: Record<string, unknown> = {}): Record<string, ReturnType
   const api = {
     getSessionState: vi.fn().mockResolvedValue(null),
     getSubagents: vi.fn().mockResolvedValue(null),
+    sessionTranscript: vi.fn().mockResolvedValue([]),
     ...extra
   }
   vi.stubGlobal('window', { electronAPI: api })
@@ -204,7 +205,7 @@ describe('Feishu transcript backfill on open', () => {
     expect(useAppStore.getState().messages[emptyId]).toHaveLength(1)
   })
 
-  it('never fetches for sessions the GUI created itself', async () => {
+  it('never fetches for sessions whose transcript is already in the store', async () => {
     const api = stubApi()
     useAppStore.getState().addSession({
       id: 'session-local',
@@ -213,8 +214,28 @@ describe('Feishu transcript backfill on open', () => {
       createdAt: 1,
       status: 'idle'
     })
+    useAppStore.setState((s) => ({ messages: { ...s.messages, 'session-local': [] } }))
     useAppStore.getState().setCurrentSessionId('session-local')
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(api.sessionTranscript).toBeUndefined()
+    expect(api.sessionTranscript).not.toHaveBeenCalled()
+  })
+
+  it('hydrates a missing transcript once on first open', async () => {
+    const api = stubApi()
+    useAppStore.getState().addSession({
+      id: 'session-external',
+      cwd: '/tmp/project',
+      title: 'project',
+      createdAt: 1,
+      status: 'idle'
+    })
+    useAppStore.getState().setCurrentSessionId('session-external')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(api.sessionTranscript).toHaveBeenCalledTimes(1)
+    // 再次打开不重复取。
+    useAppStore.getState().setCurrentSessionId(null)
+    useAppStore.getState().setCurrentSessionId('session-external')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(api.sessionTranscript).toHaveBeenCalledTimes(1)
   })
 })

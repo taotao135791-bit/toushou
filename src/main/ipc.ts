@@ -170,7 +170,7 @@ import { defaultImportSourceDirectory, importSessionHistory } from './sessionImp
 import type { SessionImportResult } from '../shared/sessionImport'
 import { HistorySessionGrantManager } from './historySessionGrant'
 import { forkNumberedSessionFile, forkSessionFile } from './sessionFork'
-import { applyWindowTheme } from './windowTheme'
+import { applyWindowTheme, setThemeSourceMode } from './windowTheme'
 import { requestAiBoardWidget, type AiWidgetBoardContext } from './boardWidgetAi'
 import { PackageActionGrantManager, matchesPackageActionTarget } from './packageActionGrant'
 import { PackageLocalSourceGrantManager } from './packageLocalSourceGrant'
@@ -2912,6 +2912,8 @@ export function registerIpc() {
     // macOS exposes the native backdrop during rubber-band overscroll, so a
     // theme flip must repaint it too (see applyWindowTheme).
     if (key === 'theme') applyWindowTheme(value)
+    // 主题来源（manual/system）决定 nativeTheme 是钉死具体值还是跟随 OS。
+    if (key === 'themeSource') setThemeSourceMode(value === 'system' ? 'system' : 'manual')
     return true
   })
 

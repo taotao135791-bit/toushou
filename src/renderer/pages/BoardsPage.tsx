@@ -1818,7 +1818,7 @@ export default function BoardsPage() {
     )
   }
 
-  /** 看板页签的"三个点"二级菜单：锁定 / 复制 / 长按删除（悬浮浮现）。 */
+/** 看板页签的"三个点"二级菜单：锁定 / 复制 / 长按删除（悬浮浮现）。 */
 function BoardTabMenu({ locked, duplicating, itemClass, labels, onToggleLock, onDuplicate, onDelete, onRename }: {
   locked: boolean
   duplicating: boolean

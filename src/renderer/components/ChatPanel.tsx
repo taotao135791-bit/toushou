@@ -542,11 +542,18 @@ export default function ChatPanel() {
                 onClick={() => {
                   const text = instructionDraft.trim()
                   if (!text) return
-                  setSessionInstructions(currentSessionId, text)
-                  setInstructionOpen(false)
                   // 设定作为一条正式消息发送：立即生效、写入会话历史
                   // （resume 后模型依然可见），并复用排队/转向兼容链路。
-                  void handleSend(`【会话设定】此后所有回复遵守以下要求：\n${text}\n（本条为设定同步消息，无需逐条复述。）`)
+                  // busy/预览态/无运行时下 handleSend 会拒发——此时不保存不关闭，
+                  // 如实告知，避免"看起来已生效但模型根本没收到"。
+                  void handleSend(`【会话设定】此后所有回复遵守以下要求：\n${text}\n（本条为设定同步消息，无需逐条复述。）`).then((ok) => {
+                    if (ok) {
+                      setSessionInstructions(currentSessionId, text)
+                      setInstructionOpen(false)
+                    } else {
+                      showNotice('chat.instruction.busy')
+                    }
+                  })
                 }}
                 disabled={!instructionDraft.trim()}
                 title={t('chat.instruction.apply')}

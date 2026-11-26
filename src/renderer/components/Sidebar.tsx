@@ -1584,10 +1584,9 @@ export default function Sidebar() {
         {taiji && (
           <TaijiOverlay
             targetDark={taiji.targetDark}
-            onMid={() => {
-              setThemeSource('system')
-              setTaiji(null)
-            }}
+            /* onMid 只做真实切换；卸载留给 onDone（flood+fade 演完）——
+               提前卸载会把仪式拦腰截断，主题跳变暴露出来。 */
+            onMid={() => setThemeSource('system')}
             onDone={() => setTaiji(null)}
           />
         )}

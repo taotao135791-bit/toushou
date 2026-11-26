@@ -294,7 +294,7 @@ export interface ElectronAPI {
   memoryUpdate: (scope: 'global' | 'project', id: string, text: string, cwd?: string) => Promise<boolean>
   memoryMove: (id: string, from: 'global' | 'project', to: 'global' | 'project', cwd?: string) => Promise<boolean>
   /** Main → renderer：模型刚写入一条记忆（toast 撤回用）。 */
-  onMemorySaved: (handler: (event: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean }) => void) => () => void
+  onMemorySaved: (handler: (event: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean; cwd?: string }) => void) => () => void
   /** 记忆存储位置（默认/自定义 + 迁移）。 */
   memoryStorageGet: () => Promise<{ path: string; isDefault: boolean }>
   memoryStoragePick: () => Promise<string | null>
@@ -894,7 +894,7 @@ const api: ElectronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.MEMORY_UPDATE, scope, id, text, cwd),
   memoryMove: (id: string, from: 'global' | 'project', to: 'global' | 'project', cwd?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.MEMORY_MOVE, id, from, to, cwd),
-  onMemorySaved: (handler: (event: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean }) => void) => {
+  onMemorySaved: (handler: (event: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean; cwd?: string }) => void) => {
     const listener = (_event: unknown, payload: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean }) => handler(payload)
     ipcRenderer.on(IPC_CHANNELS.MEMORY_SAVED_EVENT, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.MEMORY_SAVED_EVENT, listener)

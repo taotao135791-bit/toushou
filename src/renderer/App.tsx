@@ -121,6 +121,12 @@ function App() {
     window.electronAPI.getStore('permissionMode').then((mode) => {
       useAppStore.getState().setPermissionMode(mode)
     })
+    // 会话设定：启动水合（留存于此供编辑和恢复）。
+    window.electronAPI.getStore('sessionInstructions').then((value) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        useAppStore.setState({ sessionInstructions: value })
+      }
+    })
     window.electronAPI.getStore('thinkingAutoExpand').then((value) => {
       if (typeof value === 'boolean') useAppStore.getState().setThinkingAutoExpand(value)
     })

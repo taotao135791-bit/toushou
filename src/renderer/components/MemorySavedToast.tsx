@@ -14,6 +14,7 @@ interface PendingMemory {
   id: string
   scope: 'global' | 'project'
   text: string
+  cwd?: string
   expiresAt: number
 }
 
@@ -38,9 +39,10 @@ export default function MemorySavedToast() {
 
   const undo = async () => {
     if (!pending) return
-    const { id, scope } = pending
+    const { id, scope, cwd } = pending
     setPending(null)
-    const done = await window.electronAPI.memoryDelete(scope, id, currentWorkspace?.realPath)
+    // 优先用写入来源会话的项目层（查看方可能已切到别的项目）。
+    const done = await window.electronAPI.memoryDelete(scope, id, cwd ?? currentWorkspace?.realPath)
     if (!done) showNotice('settings.memory.deleteFailed')
   }
 

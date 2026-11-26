@@ -1030,7 +1030,12 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
     if (get().messages[sessionId]) return
     transcriptBackfilled.add(sessionId)
     set((state) => ({ transcriptHydrating: { ...state.transcriptHydrating, [sessionId]: true } }))
-    const fetched = await window.electronAPI.sessionTranscript(sessionId).catch(() => null)
+    // 测试桩/极旧 preload 可能没有该 API——同步调用缺失会直接抛 TypeError
+    //（.catch 挂不上），必须先判存在。
+    const api = window.electronAPI as { sessionTranscript?: (id: string) => Promise<unknown> }
+    const fetched = typeof api.sessionTranscript === 'function'
+      ? ((await api.sessionTranscript(sessionId).catch(() => null)) as MessageLike[] | null)
+      : null
     set((state) => {
       const hydrating = { ...state.transcriptHydrating }
       delete hydrating[sessionId]

@@ -134,7 +134,16 @@ export function readMemoryLayer(scope: MemoryScope, projectKey: string | null): 
     }
     return { entries: [], corrupt: true }
   }
-  if (!isMemoryFile(parsed)) return { entries: [], corrupt: true }
+  if (!isMemoryFile(parsed)) {
+    // Schema-valid JSON but wrong shape — same contract as a parse error:
+    // keep a .corrupt copy so the next save cannot destroy the old notes.
+    try {
+      copyFileSync(file, `${file}.corrupt`)
+    } catch {
+      // Nothing worth preserving, or the copy failed — either way continue.
+    }
+    return { entries: [], corrupt: true }
+  }
   return { entries: parsed.entries, corrupt: false }
 }
 

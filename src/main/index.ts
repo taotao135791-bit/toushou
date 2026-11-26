@@ -27,7 +27,7 @@ import { dingTalkConnectionManager } from './integrations/dingtalk/DingTalkConne
 import { tiktokReportService } from './integrations/tiktok/TikTokRefreshService'
 import { tokenKeepAlive } from './tokenKeepAlive'
 import { installFileLogging } from './lib/logger'
-import { applyWindowTheme, themeBackgroundColor } from './windowTheme'
+import { applyWindowTheme, themeBackgroundColor, setThemeSourceMode } from './windowTheme'
 
 // File logging must be the first thing main does: it captures the console
 // output of the startup sequence below into userData/logs/main.log.
@@ -250,6 +250,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.warn('[bundled-packages] startup preparation failed', error)
   }
+  setThemeSourceMode(getStore('themeSource') === 'system' ? 'system' : 'manual')
   applyWindowTheme(getStore('theme'))
   registerIpc()
   createWindow()

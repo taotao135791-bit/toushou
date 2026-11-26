@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
-import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { BrowserWindow, dialog } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
@@ -41,6 +41,47 @@ const MAX_SCAN_FILES = 300
 const MAX_HITS = 8
 const MAX_SNIPPET_CHARS = 400
 const MAX_READ_CHARS = 12_000
+
+/** Read at most maxBytes from the START of a file (sync, bounded) — jsonl
+ * transcripts can embed base64 images and reach tens of MB; a full readFileSync
+ * on the main thread per candidate file would stall every window. */
+function readHead(file: string, maxBytes: number): string | null {
+  let fd: number | null = null
+  try {
+    fd = openSync(file, 'r')
+    const size = fstatSync(fd).size
+    const len = Math.min(maxBytes, size)
+    const buf = Buffer.alloc(len)
+    readSync(fd, buf, 0, len, 0)
+    return buf.toString('utf-8')
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd) } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Read the LAST maxBytes of a file (sync, bounded) — session activity appends at the tail. */
+function readTail(file: string, maxBytes: number): string | null {
+  let fd: number | null = null
+  try {
+    fd = openSync(file, 'r')
+    const size = fstatSync(fd).size
+    const start = Math.max(0, size - maxBytes)
+    const len = size - start
+    const buf = Buffer.alloc(len)
+    readSync(fd, buf, 0, len, start)
+    return buf.toString('utf-8')
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd) } catch { /* ignore */ }
+    }
+  }
+}
 
 /** Minimal session identity the bridge needs: id → cwd (+ title when known). */
 interface BridgeSession {
@@ -188,7 +229,9 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
               id: result.entry.id,
               scope,
               text: result.entry.text,
-              duplicate: result.duplicate
+              duplicate: result.duplicate,
+              // 来源会话 cwd：toast 撤销时按正确的项目层删除（查看方可能已切走）。
+              cwd
             })
           }
         }
@@ -285,7 +328,7 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
 /** Title lookup follows the same durable overlay the sidebar uses. */
 function titleForFile(file: string): string {
   try {
-    const head = readFileSync(file, 'utf-8').slice(0, 16_000)
+    const head = readHead(file, 16_000) ?? ''
     for (const line of head.split('\n')) {
       if (!line.trim()) continue
       try {
@@ -361,6 +404,7 @@ function searchSessions(request: Record<string, unknown>, session: BridgeSession
   const agentRoot = sessionsRoot(agentDir)
   const hits: SearchHit[] = []
   let scanned = 0
+  let scanBudget = 16 * 1024 * 1024
   for (const dir of dirs) {
     if (hits.length >= MAX_HITS || scanned >= MAX_SCAN_FILES) break
     let files: string[]
@@ -384,12 +428,12 @@ function searchSessions(request: Record<string, unknown>, session: BridgeSession
       let title = titleForFile(file)
       if (!title || title === name) title = name.replace(/^\d{4}-\d{2}-\d{2}T[\d-]+Z_/, '').replace(/\.jsonl$/, '')
       if (titleWords && !title.toLowerCase().includes(titleWords)) continue
-      let content: string
-      try {
-        content = readFileSync(file, 'utf-8')
-      } catch {
-        continue
-      }
+      // 有界读取：头 512KB + 尾 128KB，并消耗全局字节预算（防止大转写文件阻塞主进程）。
+      if (scanBudget <= 0) break
+      const head = readHead(file, 512_000) ?? ''
+      const tail = readTail(file, 128_000) ?? ''
+      scanBudget -= head.length + tail.length
+      const content = head + String.fromCharCode(10) + tail
       const matched = keywords.find((keyword) => content.toLowerCase().includes(keyword.toLowerCase()))
       if (!matched) continue
       hits.push({
@@ -444,7 +488,7 @@ function readSessionExcerpt(request: Record<string, unknown>, session: BridgeSes
       const file = path.join(dir, name)
       let content: string
       try {
-        content = readFileSync(file, 'utf-8')
+        content = readTail(file, MAX_READ_CHARS * 8) ?? ''
       } catch {
         continue
       }
