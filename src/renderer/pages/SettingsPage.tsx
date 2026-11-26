@@ -1,12 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Bell,
+  Brain,
   Check,
+  Cpu,
+  Database,
   Download,
   FolderCog,
+  Info,
   Languages,
+  Lightbulb,
   Monitor,
   Moon,
+  Palette,
   RefreshCw,
+  ShieldCheck,
   Sun,
   Trash2
 } from 'lucide-react'
@@ -25,9 +33,9 @@ import MemorySection from '../components/MemorySection'
 /** RPC protocol versions this GUI can drive (mirrors the main-process handshake). */
 const SUPPORTED_RPC_PROTOCOLS: readonly number[] = [1, 2]
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, navId }: { title: string; children: React.ReactNode; navId?: string }) {
   return (
-    <section className="overflow-hidden rounded-[16px] border border-line bg-ink-850 shadow-card">
+    <section id={navId} className="scroll-mt-3 overflow-hidden rounded-[16px] border border-line bg-ink-850 shadow-card">
       <div className="border-b border-line px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-cream-faint">
         {title}
       </div>
@@ -35,6 +43,17 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     </section>
   )
 }
+
+const SETTINGS_NAV = [
+  { id: 'settings-nav-runtime', label: 'Oh My Pi' as const, icon: Cpu },
+  { id: 'settings-nav-permissions', label: 'settings.permissions' as const, icon: ShieldCheck },
+  { id: 'settings-nav-memory', label: 'settings.memory.title' as const, icon: Brain },
+  { id: 'settings-nav-appearance', label: 'settings.appearance' as const, icon: Palette },
+  { id: 'settings-nav-notifications', label: 'settings.notifications' as const, icon: Bell },
+  { id: 'settings-nav-thinking', label: 'settings.thinkingDisplay' as const, icon: Lightbulb },
+  { id: 'settings-nav-data', label: 'settings.data' as const, icon: Database },
+  { id: 'settings-nav-about', label: 'settings.about' as const, icon: Info }
+]
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -428,14 +447,56 @@ export default function SettingsPage() {
     )
   }
 
+  // 左侧导航：锚点列表 + 滚动高亮（内容多了一屏放不下，学 dsh/kimi 的设置页）。
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const [activeNav, setActiveNav] = useState(SETTINGS_NAV[0].id)
+  const handleSettingsScroll = useCallback(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    const containerTop = container.getBoundingClientRect().top
+    let current = SETTINGS_NAV[0].id
+    for (const item of SETTINGS_NAV) {
+      const el = document.getElementById(item.id)
+      if (el && el.getBoundingClientRect().top - containerTop <= 40) current = item.id
+    }
+    setActiveNav(current)
+  }, [])
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id)
+    const container = scrollContainerRef.current
+    if (!el || !container) return
+    container.scrollTo({ top: el.offsetTop - 12, behavior: 'smooth' })
+    setActiveNav(id)
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <header className="app-drag flex h-12 shrink-0 items-center border-b border-line px-4">
         <span className="text-[13px] font-medium text-cream">{t('settings.title')}</span>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-5">
+      <div className="flex min-h-0 flex-1">
+        <nav aria-label={t('settings.nav')} className="hidden w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line p-3 min-[900px]:flex">
+          {SETTINGS_NAV.map((item) => {
+            const Icon = item.icon
+            const active = activeNav === item.id
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => scrollToSection(item.id)}
+                aria-current={active ? 'true' : undefined}
+                className={`focus-ring flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition ${active ? 'bg-overlay font-medium text-cream' : 'text-cream-dim hover:bg-overlay/60 hover:text-cream'}`}
+              >
+                <Icon size={13} className={active ? 'text-accent' : 'text-cream-faint'} aria-hidden="true" />
+                <span className="truncate">{item.label === 'Oh My Pi' ? item.label : t(item.label)}</span>
+              </button>
+            )
+          })}
+        </nav>
+        <div ref={scrollContainerRef} onScroll={handleSettingsScroll} className="relative min-w-0 flex-1 overflow-y-auto p-5">
         <div className="mx-auto max-w-[680px] space-y-4">
+          <div id="settings-nav-runtime">
           {isCurrent && !probingStaleOverview ? (
             <CurrentOmpSettings />
           ) : isLegacy ? (
@@ -467,7 +528,9 @@ export default function SettingsPage() {
             </Section>
           )}
 
-          <Section title={t('settings.permissions')}>
+          </div>
+
+          <Section navId="settings-nav-permissions" title={t('settings.permissions')}>
             <Row label={t('settings.permissionMode')}>
               <Segmented
                 ariaLabel={t('settings.permissionMode')}
@@ -479,9 +542,9 @@ export default function SettingsPage() {
             <Note>{t(PERMISSION_MODES.find((m) => m.value === permissionMode)?.note ?? 'settings.permissionsNote.ask')}</Note>
           </Section>
 
-          <MemorySection />
+          <div id="settings-nav-memory"><MemorySection /></div>
 
-          <Section title={t('settings.appearance')}>
+          <Section navId="settings-nav-appearance" title={t('settings.appearance')}>
             <Row label={`${t('settings.language')} / ${language === 'zh' ? 'Language' : '语言'}`}>
               <div className="flex items-center gap-2">
                 <Languages size={14} className="text-cream-faint" aria-hidden="true" />
@@ -533,7 +596,7 @@ export default function SettingsPage() {
             </Row>
           </Section>
 
-          <Section title={t('settings.notifications')}>
+          <Section navId="settings-nav-notifications" title={t('settings.notifications')}>
             <Row label={t('settings.notifyCompletion')}>
               <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
                 <button onClick={() => changeNotifications(true)} className={seg(notifications)}>
@@ -562,7 +625,7 @@ export default function SettingsPage() {
             <Note>{t('settings.compactLegacy')}</Note>
           </Section> : <AutoCompactSetting />}
 
-          <Section title={t('settings.thinkingDisplay')}>
+          <Section navId="settings-nav-thinking" title={t('settings.thinkingDisplay')}>
             <Row label={t('settings.thinkingAutoExpand')}>
               <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
                 <button onClick={() => useAppStore.getState().setThinkingAutoExpand(true)} className={seg(thinkingAutoExpand)}>
@@ -638,7 +701,7 @@ export default function SettingsPage() {
             {cliSettingsError && <Note>{t('settings.cliSettingsUnavailable')}</Note>}
           </Section>
 
-          <Section title={t('settings.data')}>
+          <Section navId="settings-nav-data" title={t('settings.data')}>
             <SessionImportRows />
             <Row label={t('settings.clearRecent')}>
               <button
@@ -665,7 +728,7 @@ export default function SettingsPage() {
             </Row>
           </Section>
 
-          <Section title={t('settings.about')}>
+          <Section navId="settings-nav-about" title={t('settings.about')}>
             <Row label={t('settings.version')}>
               <span className="font-mono text-xs text-cream-dim">{version || '—'}</span>
             </Row>
@@ -782,6 +845,7 @@ export default function SettingsPage() {
               </div>
             </Row>
           </Section>
+        </div>
         </div>
       </div>
     </div>
