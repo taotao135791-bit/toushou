@@ -43,9 +43,14 @@ export function groupReplyAttachments(idPrefix: string) {
     const files = new Map<string, Reference>()
 
     function mention(raw: string, offset: number, label: string, source: 'text' | 'code' | 'link', thumbnail?: Child[]): Element | undefined {
-      const folder = paths?.folderAt.get(offset)
-      if (folder) return referenceElement('reply-attachment-folder', folder, label || raw)
       const linked = source === 'link'
+      // 链接形式的绝对本地路径：无扩展名 = 文件夹（GFM autolink 会把 Agent 写的
+      // 本地路径变成 <a>，而文件夹没有 resolve 目标，必须在此兜底识别）。
+      const folder = paths?.folderAt.get(offset)
+        ?? (linked && /^(?:[a-z]:[\/]|\/(?!\/)|~[\/])/i.test(raw) && !/\.[a-z\d]{1,8}$/i.test(raw.replace(/[\/]+$/, ''))
+          ? raw.replace(/[\/]+$/, '')
+          : undefined)
+      if (folder) return referenceElement('reply-attachment-folder', folder, label || raw)
       const group = !linked && paths?.rangeFolder(raw, offset)
       if (group) {
         const key = 'folder:' + group

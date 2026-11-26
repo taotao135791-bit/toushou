@@ -60,22 +60,28 @@ function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino && a.birthtimeNs === b.birthtimeNs
 }
 
-async function saveAttachment(source: string, name: string, ext: string, expected: BigIntStats) {
+/**
+ * 每个附件最后一次“另存为”的实际位置（本应用运行期间有效）。
+ * “在文件夹中显示”优先打开这里记录的位置——用户保存到哪，就显示哪。
+ */
+const savedCopyLocations = new Map<string, string>()
+
+async function saveAttachment(source: string, name: string, ext: string, expected: BigIntStats): Promise<{ status: string; destination?: string }> {
   const input = await fs.open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
   try {
     const opened = await input.stat({ bigint: true })
-    if (!opened.isFile() || !sameFile(opened, expected) || path.relative(source, await fs.realpath(source)) !== '') return 'unavailable'
+    if (!opened.isFile() || !sameFile(opened, expected) || path.relative(source, await fs.realpath(source)) !== '') return { status: 'unavailable' }
     const save = await dialog.showSaveDialog({ defaultPath: name, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] })
-    if (save.canceled || !save.filePath) return 'cancelled'
+    if (save.canceled || !save.filePath) return { status: 'cancelled' }
     const destination = save.filePath
-    if (path.extname(destination).slice(1).toLowerCase() !== ext) return 'unavailable'
+    if (path.extname(destination).slice(1).toLowerCase() !== ext) return { status: 'unavailable' }
     const statDestination = async () => fs.stat(destination, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return null
       throw error
     })
     const existing = await statDestination()
-    if (existing && sameFile(existing, opened)) return 'ok'
-    if (existing && !existing.isFile()) return 'unavailable'
+    if (existing && sameFile(existing, opened)) return { status: 'ok', destination }
+    if (existing && !existing.isFile()) return { status: 'unavailable' }
 
     // Stage beside the destination and publish only a complete, consistent copy.
     // Neither the source path nor an existing destination is reopened for writing.
@@ -87,18 +93,18 @@ async function saveAttachment(source: string, name: string, ext: string, expecte
       while (remaining > 0n) {
         const length = remaining < BigInt(buffer.length) ? Number(remaining) : buffer.length
         const { bytesRead } = await input.read(buffer, 0, length)
-        if (!bytesRead) return 'unavailable'
+        if (!bytesRead) return { status: 'unavailable' }
         await output.writeFile(buffer.subarray(0, bytesRead))
         remaining -= BigInt(bytesRead)
       }
       await output.close()
       const after = await input.stat({ bigint: true })
-      if (after.size !== opened.size || after.mtimeNs !== opened.mtimeNs) return 'unavailable'
+      if (after.size !== opened.size || after.mtimeNs !== opened.mtimeNs) return { status: 'unavailable' }
       const current = await statDestination()
-      if (current && sameFile(current, opened)) return 'ok'
-      if (existing ? !current || !sameFile(existing, current) || existing.ctimeNs !== current.ctimeNs : current) return 'unavailable'
+      if (current && sameFile(current, opened)) return { status: 'ok', destination }
+      if (existing ? !current || !sameFile(existing, current) || existing.ctimeNs !== current.ctimeNs : current) return { status: 'unavailable' }
       await fs.rename(temp, destination)
-      return 'ok'
+      return { status: 'ok', destination }
     } finally {
       await output.close()
       await fs.unlink(temp).catch(() => {})
@@ -142,12 +148,38 @@ export async function handleChatAttachment(workspace: string, raw: unknown, acti
     if (path.extname(source).slice(1).toLowerCase() !== file.ext) return 'unavailable'
     const expected = await fs.stat(source, { bigint: true })
     if (!expected.isFile() || path.relative(source, await fs.realpath(source)) !== '') return 'unavailable'
+    if (action === 'reveal') {
+      // 用户保存过副本的位置优先——保存到哪，就显示哪（而不是重新解析或再弹窗）。
+      const remembered = savedCopyLocations.get(file.target)
+      if (remembered) {
+        const stat = await fs.stat(remembered).catch(() => undefined)
+        if (stat?.isFile()) {
+          shell.showItemInFolder(remembered)
+          return 'ok'
+        }
+        savedCopyLocations.delete(file.target)
+      }
+    }
+    if (action === 'open') {
+      // 打开也优先用户保存过的副本位置。
+      const remembered = savedCopyLocations.get(file.target)
+      if (remembered) {
+        const stat = await fs.stat(remembered).catch(() => undefined)
+        if (stat?.isFile()) {
+          const openError = await shell.openPath(remembered)
+          return openError === '' ? 'ok' : 'unavailable'
+        }
+        savedCopyLocations.delete(file.target)
+      }
+    }
     if (action === 'reveal' || (action === 'open' && file.revealOnly)) {
       shell.showItemInFolder(source)
       return 'ok'
     }
     if (action === 'open') return await shell.openPath(source) === '' ? 'ok' : 'unavailable'
-    return await saveAttachment(source, file.name, file.ext, expected)
+    const save = await saveAttachment(source, file.name, file.ext, expected)
+    if (save.status === 'ok' && save.destination) savedCopyLocations.set(file.target, save.destination)
+    return save.status
   } catch { return 'unavailable' }
 }
 
