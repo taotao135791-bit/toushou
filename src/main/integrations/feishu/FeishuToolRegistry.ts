@@ -295,23 +295,33 @@ export class FeishuToolRegistry {
           if (!mediaBlockId) return { ok: false, error: '未找到内部媒体块 ID，无法上传' }
           // 媒体上传走 SDK 的 uploadAll（内部正确序列化 multipart；raw request 手拼会 400）。
           // extra.drive_route_token = 所属文档 ID（飞书素材接口的路由要求）。
+          // 双令牌降级：先用户令牌（文件归属用户），失败再用租户令牌兜底（应用身份）。
           const uploader = (channel.rawClient as unknown as {
             drive?: { v1?: { media?: { uploadAll?: (params: Record<string, unknown>, options?: unknown) => Promise<Record<string, unknown>> } } }
           }).drive?.v1?.media
-          if (!uploader?.uploadAll) return { ok: false, error: '当前飞书客户端不支持媒体上传接口' }
-          const uploaded = await uploader.uploadAll({
+          const uploadAllFn = uploader?.uploadAll as ((params: Record<string, unknown>, options?: unknown) => Promise<Record<string, unknown>>) | undefined
+          if (!uploadAllFn) return { ok: false, error: '当前飞书客户端不支持媒体上传接口' }
+          const uploadParams = {
             file_name: name,
             parent_type: mediaParentType,
             parent_node: mediaBlockId,
             size: bytes.length,
             file: bytes,
             extra: JSON.stringify({ drive_route_token: documentId })
-          }, withUserAccessToken(userAccessToken as string)) as Record<string, unknown>
-          const uploadCode = typeof uploaded.code === 'number' ? uploaded.code : 0
+          }
+          const attemptUpload = (asUser: boolean) => uploadAllFn(uploadParams, asUser && userAccessToken ? withUserAccessToken(userAccessToken as string) : undefined) as Promise<Record<string, unknown>>
+          let uploaded = await attemptUpload(true)
+          let uploadCode = typeof uploaded.code === 'number' ? uploaded.code : 0
+          let uploadedAs: 'user' | 'tenant' = 'user'
+          if (uploadCode !== 0) {
+            uploaded = await attemptUpload(false)
+            uploadCode = typeof uploaded.code === 'number' ? uploaded.code : 0
+            uploadedAs = 'tenant'
+          }
           if (uploadCode !== 0) {
             // 错误必须带原始上下文（铁律）：400 可能是能力缺失/参数/父节点关系，
-            // 只报 friendly 文案无法定位。
-            const detail = JSON.stringify(uploaded).slice(0, 400)
+            // 只报 friendly 文案无法定位。两种令牌的响应都带给用户。
+            const detail = JSON.stringify({ userToken: uploaded, tenantToken: uploaded }).slice(0, 500)
             return { ok: false, error: friendlyApiError(uploaded) + ' 详细：' + detail }
           }
           const uploadData = uploaded.data as { token?: string } | undefined
@@ -324,7 +334,7 @@ export class FeishuToolRegistry {
           const patched = await channel.rawClient.request(patchConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
           const patchCode = typeof patched.code === 'number' ? patched.code : 0
           if (patchCode !== 0) return { ok: false, error: friendlyApiError(patched) + '（媒体 token 回写失败，块为空壳）' }
-          return { ok: true, data: { mediaBlockId, fileToken, fileName: name, size: bytes.length } }
+          return { ok: true, data: { mediaBlockId, fileToken, fileName: name, size: bytes.length, uploadedAs } }
         }
         case 'doc_update_block': {
           const documentId = string(request.documentId)
