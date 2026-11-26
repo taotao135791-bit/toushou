@@ -29,6 +29,7 @@ describe('ChatPanel background metadata rendering', () => {
       expect(result.status, JSON.stringify({ status: result.status, signal: result.signal, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code })).toBe(0)
       console.info('CHAT_PANEL_PERF ' + JSON.stringify(data))
       expect(data.idleRecovery).toEqual({ keptConversationView: true, errorCleared: true })
+      expect(data.taskProgress).toEqual({ headerClean: true, anchored: true, neverReversed: true, paused: true })
       expect(data.chatMenuWithinViewport).toBe(true)
       expect(data.effortInteraction).toEqual({
         insetMenu: true, themed: true, hiddenAuto: true, blueDrifts: true, peakDrifts: true,

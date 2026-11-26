@@ -185,17 +185,36 @@ app.whenReady().then(async () => {
       features: [{ name: 'prefers-reduced-motion', value }]
     })
     await setMotionPreference('no-preference')
-    // Compare two frames while the knob is at rest. The repeating tile may
-    // wrap between samples, so account for a full tile of leftward travel.
-    const particlesMoveLeft = () => js(`(async () => {
-      const read = () => getComputedStyle(${fill}, '::before')
-      const x = () => new DOMMatrix(read().transform).m41
-      const tile = parseFloat(read().getPropertyValue('--tile'))
-      const start = x()
-      await new Promise(resolve => setTimeout(resolve, 125))
-      const shift = (start - x() + tile) % tile
-      return read().backgroundImage.includes('radial-gradient') && shift > 0 && shift < tile / 2
-    })()`)
+    // Sample two points in the same cycle. A fixed wall-clock delay can
+    // cross a tile boundary or span a throttled compositor frame on CI.
+    const particlesMoveLeft = async () => {
+      await waitFor(`getComputedStyle(${fill}, '::before').animationName === 'effort-drift'`)
+      return js(`(async () => {
+        const railFill = ${fill}
+        const read = () => getComputedStyle(railFill, '::before')
+        const animation = railFill.getAnimations({ subtree: true }).find(candidate =>
+          candidate.animationName === 'effort-drift' && candidate.effect?.pseudoElement === '::before')
+        if (!animation || !read().backgroundImage.includes('radial-gradient')) return false
+        await animation.ready
+        if (animation.playState !== 'running') return false
+        const savedTime = animation.currentTime
+        const duration = animation.effect.getComputedTiming().duration
+        const atTime = async time => {
+          animation.currentTime = time
+          await new Promise(requestAnimationFrame)
+          return new DOMMatrix(read().transform).m41
+        }
+        try {
+          animation.pause()
+          await animation.ready
+          const start = await atTime(duration / 4)
+          return await atTime(duration / 2) < start
+        } finally {
+          animation.currentTime = savedTime
+          animation.play()
+        }
+      })()`)
+    }
     const dragSamples = []
     const drag = async (start, end, label) => {
       const rect = await js(`(${slider}).getBoundingClientRect().toJSON()`)
@@ -553,7 +572,28 @@ app.whenReady().then(async () => {
     await js('window.chatPerfFixture.returnToConversation()')
     await waitFor("document.body.textContent.includes('Recovered the existing conversation')")
     const idleRecovery = { keptConversationView, errorCleared: await js("!document.body.textContent.includes('The conversation could not be loaded.')") }
-    console.log('E2E_RESULT ' + JSON.stringify({ idleRecovery, chatMenuWithinViewport, menuHeight: menuPlacement.height, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
+    phase = 'advance a one-way task progress bar with an ETA'
+    await js("window.chatPerfFixture.updateEstimatedTurn('working')")
+    const runningProgress = `document.querySelector('[data-running-progress] [role="progressbar"]')`
+    const remainingTime = `document.querySelector('[data-progress-eta]')`
+    const progressValue = `Number(${runningProgress}?.getAttribute('aria-valuenow'))`
+    await waitFor(`${remainingTime}?.textContent.startsWith('Estimated time left: ')`)
+    const initialProgress = await js(progressValue)
+    await waitFor(`${progressValue} > ${initialProgress}`)
+    const headerClean = await js("!document.querySelector('header').textContent.includes('Running…') && !document.querySelector('header .bg-amber-400')")
+    const anchored = await js(`${runningProgress}.firstElementChild.getBoundingClientRect().left === ${runningProgress}.getBoundingClientRect().left && getComputedStyle(${runningProgress}.firstElementChild).animationName === 'none'`)
+    await js('window.chatPerfFixture.reviseMeasuredProgress(75)')
+    await waitFor(`${progressValue} === 75`)
+    await js('window.chatPerfFixture.reviseMeasuredProgress(35)')
+    await frame()
+    const neverReversed = await js(`${progressValue} === 75`)
+    await js("window.chatPerfFixture.updateEstimatedTurn('waiting_for_user')")
+    await waitFor(`!${remainingTime} && ${runningProgress}?.getAttribute('aria-label') === 'Awaiting your input'`)
+    const paused = await js(`${progressValue} === 75`)
+    await js("window.chatPerfFixture.updateEstimatedTurn('idle')")
+    await waitFor(`!${runningProgress}`)
+    const taskProgress = { headerClean, anchored, neverReversed, paused }
+    console.log('E2E_RESULT ' + JSON.stringify({ idleRecovery, taskProgress, chatMenuWithinViewport, menuHeight: menuPlacement.height, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

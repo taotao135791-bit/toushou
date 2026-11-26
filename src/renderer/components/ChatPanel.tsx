@@ -490,22 +490,12 @@ export default function ChatPanel() {
                 className="app-no-drag focus-ring rounded px-1 hover:text-cream disabled:opacity-50">{t('common.cancel')}</button>}
             </span>
           )}
-          {isStopping ? (
-            <>
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
-              <span role="status" className="font-medium text-amber-500">{t('chat.stopping')}</span>
-            </>
-          ) : statusError ? (
+          {statusError && !isStopping && (
             <>
               <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
               <span role="alert" className="font-medium text-red-500">{t(statusError)}</span>
             </>
-          ) : isBusy ? (
-            <>
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
-              <span role="status" className="font-medium text-amber-500">{t('chat.running')}</span>
-            </>
-          ) : null}
+          )}
         </span>
         </header>
       ) : (

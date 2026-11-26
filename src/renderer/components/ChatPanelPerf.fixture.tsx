@@ -75,6 +75,17 @@ const fixture = {
     useAppStore.getState().setBusy(current.id, false)
   },
   finishTurn() { useAppStore.getState().setBusy(current.id, false) },
+  updateEstimatedTurn(status: 'working' | 'waiting_for_user' | 'idle') {
+    useAppStore.getState().applySessionEvent({ type: 'status', sessionId: hydrationSessionId, status })
+  },
+  reviseMeasuredProgress(boardProgress: number) {
+    useAppStore.setState(state => {
+      const execution = state.executions[hydrationSessionId]
+      const id = execution.currentTurnId!
+      const turn = { ...execution.turns[id], boardProgress }
+      return { executions: { ...state.executions, [hydrationSessionId]: { ...execution, turns: { ...execution.turns, [id]: turn } } } }
+    })
+  },
   currentModel: deepSeekModel,
   currentThinkingLevel: 'auto',
   sentImages: [] as Array<{ data: string; mimeType: string }>,

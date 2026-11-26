@@ -763,15 +763,5 @@ html.board-grid-resizing .react-grid-layout iframe,
   }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .running-progress-indeterminate {
-    animation: running-progress-travel 2.4s ease-in-out infinite alternate;
-  }
-  @keyframes running-progress-travel {
-    from { transform: translateX(0); }
-    to { transform: translateX(233%); }
-  }
-}
-
 /* 长按删除按钮的秒数徽章（伪元素渲染，不进 textContent）。 */
 .hold-seconds::after { content: attr(data-seconds); }
