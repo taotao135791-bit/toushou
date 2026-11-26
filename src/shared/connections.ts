@@ -185,6 +185,11 @@ export interface FeishuToolRequest {
     | 'bitable_read'
     | 'bitable_upsert'
     | 'bitable_query'
+    | 'doc_blocks'
+    | 'doc_insert_blocks'
+    | 'doc_table_fill'
+    | 'doc_delete_block'
+    | 'doc_file_attach'
   [key: string]: unknown
 }
 
