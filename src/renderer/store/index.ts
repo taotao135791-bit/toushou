@@ -152,14 +152,6 @@ const STATUS_BUSY: Partial<Record<SessionRuntimeState, boolean>> = {
   failed: false
 }
 
-function commitPendingSessionActivity(sessions: Session[], activeSessionId: string | null): Session[] {
-  return sessions.map((session) =>
-    session.pendingActivityAt !== undefined && session.id !== activeSessionId
-      ? { ...session, lastActivityAt: session.pendingActivityAt, pendingActivityAt: undefined }
-      : session
-  )
-}
-
 /**
  * App and Settings can both refresh the runtime overview. Only the most
  * recently-started request may update the singleton store: otherwise an older
@@ -291,6 +283,8 @@ interface AppState {
    * preview readable instead of a blank chat.
    */
   sessionPreviews: Record<string, { title: string; failed: boolean }>
+  /** 会话内容装载中（首开从 durable 转写回填）；装载完成前聊天区不渲染 home hero。 */
+  transcriptHydrating: Record<string, boolean>
   /** Live session ids hidden by an in-flight optimistic delete (still running). */
   pendingDeleteLiveIds: Record<string, true>
   /** 点击历史行时按 uuid 种下的稳定时间：注册表行落地即用，消灭先顶到顶再落回的跳动。 */
@@ -357,7 +351,7 @@ interface AppState {
   /** Set the default permission mode for new sessions and persist it. */
   setPermissionMode: (mode: PermissionMode) => void
   /** Replace the active workspace grant (and sync the MRU real paths). */
-  setCurrentWorkspace: (grant: WorkspaceGrant | null) => void
+  setCurrentWorkspace: (grant: WorkspaceGrant | null, options?: { preserveSession?: boolean }) => void
   /** Activate a Main-listed recent workspace by opaque id. */
   activateRecentWorkspace: (recentId: string, navigationIntent?: number) => Promise<void>
   /** Show the native folder dialog and select the resulting grant. */
@@ -380,10 +374,12 @@ interface AppState {
   setCurrentSessionId: (id: string | null, navigationIntent?: number) => void
   setPendingOpenHistory: (target: { uuid: string; cwd: string } | null) => void
   /**
-   * One-time durable-transcript backfill for external (Feishu-origin)
-   * sessions on first open; no-op for everything else. See backfillExternalTranscript.
+   * First-open durable-transcript hydration for ANY session whose transcript
+   * is not in the store yet (externally created, task-spawned, …). Sessions
+   * already tracked in the store — including freshly created empty ones —
+   * are skipped.
    */
-  backfillExternalTranscript: (sessionId: string) => Promise<void>
+  ensureTranscript: (sessionId: string) => Promise<void>
   /** Hydrate the subagent roster for a session from `get_subagents` (live merge). */
   hydrateSubagents: (sessionId: string) => Promise<void>
   /** Fold durable historical agents (reconstructed on resume) into the projection. */
@@ -666,6 +662,7 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
   sessionErrors: {},
   compacting: {},
   sessionPreviews: {},
+  transcriptHydrating: {},
   pendingDeleteLiveIds: {},
   resumeRecencySeeds: {},
   stats: {},
@@ -737,12 +734,11 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
     set({ permissionMode })
     window.electronAPI.setStore('permissionMode', permissionMode)
   },
-  setCurrentWorkspace: (grant) =>
+  setCurrentWorkspace: (grant, options) =>
     set((state) => {
       if (!grant) return {
         currentWorkspace: null,
-        currentSessionId: null,
-        sessions: commitPendingSessionActivity(state.sessions, null)
+        currentSessionId: null
       }
       // The MRU stores the grant's canonical realPath — that is what Main
       // persists for sessions (session.cwd), so display-spelling variants of
@@ -755,13 +751,16 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
       // Grant ids are ephemeral. Workspace scope follows canonical realPath,
       // so re-activating the same project does not discard its current chat.
       const workspaceChanged = state.currentWorkspace?.realPath !== realPath
+      // preserveSession: the caller is mid-navigation and will select the
+      // target conversation right after this. Keeping the current session
+      // visible across the workspace swap avoids the new-chat flash (and the
+      // stuck-on-new-chat failure mode when the navigation is superseded) —
+      // 切换期间永远不经过空状态（学 dsh/kimi：旧内容保持到新内容就绪）。
+      const clearSession = workspaceChanged && !options?.preserveSession
       return {
         currentWorkspace: grant,
         recentProjects,
-        ...(workspaceChanged ? {
-          currentSessionId: null,
-          sessions: commitPendingSessionActivity(state.sessions, null)
-        } : {})
+        ...(clearSession ? { currentSessionId: null } : {})
       }
     }),
   activateRecentWorkspace: async (recentId, navigationIntent = beginNavigationIntent()) => {
@@ -881,8 +880,6 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
           previous?.lastActivityAt ??
           state.resumeRecencySeeds[sessionFileUuid(merged.resumeFrom ?? merged.sessionFile) ?? ''] ??
           merged.lastActivityAt,
-        // Renderer-owned pending stamp must also survive registry re-reports.
-        pendingActivityAt: previous?.pendingActivityAt
       }
       const same =
         previous &&
@@ -901,15 +898,12 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
         previous.readonly === guarded.readonly &&
         previous.nativePermissionMode === guarded.nativePermissionMode &&
         previous.nativePermissionMutable === guarded.nativePermissionMutable &&
-        previous.lastActivityAt === guarded.lastActivityAt &&
-        previous.pendingActivityAt === guarded.pendingActivityAt
+        previous.lastActivityAt === guarded.lastActivityAt
       const nextCurrentSessionId = select ? guarded.id : state.currentSessionId
       if (same && nextCurrentSessionId === state.currentSessionId) return state
       changed = true
       return {
-        sessions: commitPendingSessionActivity(
-          [guarded, ...state.sessions.filter((item) => item.id !== guarded.id)], nextCurrentSessionId
-        ),
+        sessions: [guarded, ...state.sessions.filter((item) => item.id !== guarded.id)],
         sessionRecords: upsertLiveSessionRecord(state.sessionRecords, guarded),
         composerDrafts: migrateComposerDraft(
           state.composerDrafts, previous ? sessionComposerDraftKey(previous) : guarded.id, sessionComposerDraftKey(guarded)
@@ -1005,13 +999,10 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
     // that spawned while the user was elsewhere).
     if (currentSessionId) {
       void get().hydrateSubagents(currentSessionId)
-      void get().backfillExternalTranscript(currentSessionId)
+      void get().ensureTranscript(currentSessionId)
     }
     set((state) => ({
       currentSessionId,
-      // Leaving a session commits its pending interaction stamp — the row
-      // re-floats to the top only now, never while the session is open.
-      sessions: commitPendingSessionActivity(state.sessions, currentSessionId),
       // Selecting a session marks it read
       unreadSessionIds:
         currentSessionId && state.unreadSessionIds[currentSessionId]
@@ -1023,19 +1014,28 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
     set({ pendingOpenHistory: target })
   },
   /**
-   * First-open transcript backfill for Feishu-origin sessions. The renderer
+   * First-open transcript hydration for ANY session whose transcript is not
+   * in the store yet (externally created, task-spawned, …). The renderer
    * only folded live events since this window started listening, so the
    * durable runtime transcript is authoritative once, fetched through
    * OMP_SESSION_TRANSCRIPT (Main-parsed). A guard set makes it once per
    * session per app run; the alignment merge (transcriptMerge) keeps any
    * streamed rows that landed while the fetch was in flight, so ordering
    * with concurrently-applied live events is preserved without a refetch.
+   * Sessions already tracked in the store — including freshly created
+   * empty ones — are skipped.
    */
-  backfillExternalTranscript: async (sessionId) => {
+  ensureTranscript: async (sessionId) => {
     if (transcriptBackfilled.has(sessionId)) return
-    if (get().sessions.find((s) => s.id === sessionId)?.origin !== 'feishu') return
+    if (get().messages[sessionId]) return
     transcriptBackfilled.add(sessionId)
+    set((state) => ({ transcriptHydrating: { ...state.transcriptHydrating, [sessionId]: true } }))
     const fetched = await window.electronAPI.sessionTranscript(sessionId).catch(() => null)
+    set((state) => {
+      const hydrating = { ...state.transcriptHydrating }
+      delete hydrating[sessionId]
+      return { transcriptHydrating: hydrating }
+    })
     if (!fetched || fetched.length === 0) return
     set((state) => {
       const current = state.messages[sessionId] ?? []
@@ -1594,13 +1594,8 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
       const current = state.sessions.find((session) => session.id === sessionId)
       if (!current) return state
       return {
-        // Defer the active row's reorder until switch-away; a background
-        // queue has already been left and must update immediately.
-        sessions: state.sessions.map((s) => s.id !== sessionId ? s : (
-          state.currentSessionId === sessionId
-            ? { ...s, pendingActivityAt: Date.now() }
-            : { ...s, lastActivityAt: Date.now(), pendingActivityAt: undefined }
-        ))
+        // 活动即浮顶：当前对话与后台对话都立即刷新 recency（Kimi/ChatGPT 行为）。
+        sessions: state.sessions.map((s) => s.id !== sessionId ? s : { ...s, lastActivityAt: Date.now() })
       }
     }),
   maybeNameSession: async (sessionId) => {

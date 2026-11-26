@@ -113,6 +113,7 @@ window.electronAPI = {
     }
   }),
   getSubagents: async () => [],
+  sessionTranscript: async () => [],
   getSessionState: async () => null,
   gitInfo: async () => null,
   getModelConfig: async () => ({ defaultThinkingLevel: 'auto' }), listModels: async () => [],

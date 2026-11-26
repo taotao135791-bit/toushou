@@ -83,6 +83,15 @@ app.whenReady().then(async () => {
       nativeKeyboardClicks.push(clicks.length)
       if (clicks.length !== 1 || !clicks[0].trusted) throw new Error(`${phase}: Enter must activate exactly once through native input: ${JSON.stringify(clicks)}`)
     }
+
+    // 长按删除：键盘 Enter 需按住超过 holdMs 才触发确认弹窗。
+    const holdEnter = async () => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
+      wc.sendInputEvent({ type: 'char', keyCode: '\r' })
+      await new Promise(resolve => setTimeout(resolve, 1700))
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+      await frame()
+    }
     const openActions = async n => {
       await focusElement(`${row('[data-all-conversations]', n)}.querySelector('[data-session-actions]')`)
       await enter()
@@ -137,7 +146,7 @@ app.whenReady().then(async () => {
     for (const n of [3, 4]) {
       await openActions(n)
       await focusElement(`document.querySelector('[data-session-action="delete"]')`)
-      await enter()
+      await holdEnter()
       await waitFor(`!!document.querySelector('[role="alertdialog"]')`)
       await js(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`)
       await waitFor(`!document.querySelector('[role="alertdialog"]')`)

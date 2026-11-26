@@ -69,7 +69,9 @@ describe('project conversations in the real Sidebar', () => {
       expect(data.resetArchive).toBe('Archive')
       expect(data.finalArchive).toEqual({ open: false, snapshot: { current: 'live-b', workspace: '/synthetic/client-b/project' }, kills: ['live-a'] })
       expect(data.fullTitle).toBe('Beta live conversation')
-      expect(data.nativeKeyboardClicks).toEqual(Array(15).fill(1))
+      // 13 次 Enter 原生激活（各有 1 次可信 click）；删除项的 2 次键盘操作
+      // 已改为长按手势（holdEnter，不产生原生 click）。
+      expect(data.nativeKeyboardClicks).toEqual(Array(13).fill(1))
       expect(data.lateFork).toEqual({ snapshot: { current: null, workspace: '/synthetic/client-b/project' }, calls: [{ grantId: 'grant-beta', liveSessionId: 'live-b' }] })
       expect(data.lockedLiveDelete).toEqual({ retained: true, kills: ['live-a'], deleteCalls: 0 })
       expect(data.liveDelete).toEqual({ beforeUndoKills: 1, kills: ['live-a', 'live-b'], retained: false, visible: false })

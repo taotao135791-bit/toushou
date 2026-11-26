@@ -288,12 +288,6 @@ export interface Session {
    * → fall back to createdAt.
    */
   lastActivityAt?: number
-  /**
-   * Interaction stamp waiting to be committed: the row only re-floats to the
-   * top when the user switches AWAY from the session, never while it is open.
-   * Committed into lastActivityAt by setCurrentSessionId.
-   */
-  pendingActivityAt?: number
   status: 'idle' | 'running' | 'error'
   /** Native adaptive effort is active for this session. */
   autoThinking?: boolean

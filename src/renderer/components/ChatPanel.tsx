@@ -420,7 +420,9 @@ export default function ChatPanel() {
   }
 
   const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
-  const showHero = sessionMessages.length === 0
+  // 转写装载中不渲染 home hero（学 dsh/kimi：切换期间不经过空状态）。
+  const transcriptHydrating = useAppStore((s) => currentSessionId ? Boolean(s.transcriptHydrating[currentSessionId]) : false)
+  const showHero = sessionMessages.length === 0 && !transcriptHydrating
   const showThinking =
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
 
@@ -563,8 +565,7 @@ export default function ChatPanel() {
         {showHero ? (
           <div className="agent-home flex min-h-full flex-col items-center">
             <div className="home-hero flex flex-col items-center">
-              <h1 className="home-heading">{t('home.heading')}</h1>
-              <div className="w-full">
+              <h1 className="home-heading">{t('home.heading')}</h1>              <div className="w-full">
                 {!currentWorkspace && unavailableDefault && <div className="mb-3 rounded-xl border border-line px-2 py-2 text-xs text-cream-dim">
                   <p className="px-2.5 pb-1">{t('projects.defaultUnavailable')}</p>
                   <p className="break-all px-2.5 pb-2 text-[11px] text-cream-faint">{unavailableDefault.path}</p>
@@ -611,6 +612,12 @@ export default function ChatPanel() {
         ) : (
           <div className="mx-auto max-w-[760px]">
             <MessageList messages={sessionMessages} sessionId={currentSessionId} onRetry={handleRetry} onBranch={forkCurrentSession} />
+            {transcriptHydrating && (
+              <div className="msg-in flex items-center gap-2 px-6 pb-2 text-[12px] text-cream-faint">
+                <Loader2 size={13} className="animate-spin" />
+                {t('chat.loadingTranscript')}
+              </div>
+            )}
             <ExecutionActivity sessionId={currentSessionId} />
             {showThinking && (
               <div className="msg-in flex items-center gap-1 px-6 pb-6">

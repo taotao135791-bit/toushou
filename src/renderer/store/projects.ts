@@ -11,7 +11,7 @@ interface ProjectsState {
   error: ProjectError | 'load-failed' | null
   errorProjectId: string | null
   refresh: () => Promise<void>
-  activate: (id: string, navigationIntent?: number) => Promise<boolean>
+  activate: (id: string, navigationIntent?: number, options?: { preserveSession?: boolean }) => Promise<boolean>
   create: (name: string) => Promise<boolean>
   importFolder: () => Promise<boolean>
   recover: (id: string) => Promise<boolean>
@@ -24,9 +24,9 @@ interface ProjectsState {
 /** One controller for both entry points: a mutation cannot be submitted twice. */
 export const useProjects = create<ProjectsState>((set, get) => {
   let readEpoch = 0
-  const adopt = async (grant: WorkspaceGrant) => {
+  const adopt = async (grant: WorkspaceGrant, options?: { preserveSession?: boolean }) => {
     const app = useAppStore.getState()
-    app.setCurrentWorkspace(grant)
+    app.setCurrentWorkspace(grant, options)
     try { app.setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces()) } catch { /* Project activation remains usable. */ }
   }
   const fallback = async (intent: number) => {
@@ -55,7 +55,7 @@ export const useProjects = create<ProjectsState>((set, get) => {
       if (epoch === readEpoch) set({ loading: false, error: 'load-failed', errorProjectId: null })
     }
   }
-  const run = async (key: string, operation: () => Promise<ProjectResult>, after?: (project: ProjectRecord, intent: number) => Promise<void>, navigationIntent?: number, projectId?: string) => {
+  const run = async (key: string, operation: () => Promise<ProjectResult>, after?: (project: ProjectRecord, intent: number) => Promise<void>, navigationIntent?: number, projectId?: string, options?: { preserveSession?: boolean }) => {
     if (get().pending) return false
     const intent = navigationIntent ?? beginNavigationIntent()
     if (!isCurrentNavigationIntent(intent)) return false
@@ -74,7 +74,7 @@ export const useProjects = create<ProjectsState>((set, get) => {
         }
         return false
       }
-      if (result.grant && isCurrentNavigationIntent(intent) && useAppStore.getState().currentWorkspace?.id === origin && useAppStore.getState().currentSessionId === session) await adopt(result.grant)
+      if (result.grant && isCurrentNavigationIntent(intent) && useAppStore.getState().currentWorkspace?.id === origin && useAppStore.getState().currentSessionId === session) await adopt(result.grant, options)
       if (after) await after(result.project, intent)
       await refresh()
       return true
@@ -89,7 +89,7 @@ export const useProjects = create<ProjectsState>((set, get) => {
     projects: [], loaded: false, loading: false, pending: null, error: null, errorProjectId: null,
     refresh,
     clearError: () => set({ error: null, errorProjectId: null }),
-    activate: (id, intent) => run(`activate:${id}`, () => window.electronAPI.activateProject(id), undefined, intent, id),
+    activate: (id, intent, options) => run(`activate:${id}`, () => window.electronAPI.activateProject(id), undefined, intent, id, options),
     create: name => run('create', () => window.electronAPI.createProject(name)),
     importFolder: () => run('import', () => window.electronAPI.importProject()),
     recover: id => run(`recover:${id}`, () => window.electronAPI.recoverProject(id), undefined, undefined, id),

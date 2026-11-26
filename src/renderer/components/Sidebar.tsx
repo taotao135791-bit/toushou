@@ -57,6 +57,8 @@ import Logo from './Logo'
 import BoardsIcon from './BoardsIcon'
 import MenuPortal from './MenuPortal'
 import SidebarProjects from './SidebarProjects'
+import JellyToggle from './effects/JellyToggle'
+import HoldToDelete, { HOLD_TO_DELETE_MS } from './effects/HoldToDelete'
 import SidebarList from './SidebarList'
 import { runtimeFilingKey, useFiledProjects } from './useFiledProjects'
 import { moveSidebarRow, useSidebarDrag, useSidebarOrder } from './sidebarOrder'
@@ -83,26 +85,26 @@ const clampSidebarWidth = (width: number): number => {
 }
 
 /** Registered projects must not fall back to the older path-only recent list. */
-export async function activateSidebarProject(cwd: string, intent: number): Promise<'registered' | 'legacy' | 'unavailable'> {
+export async function activateSidebarProject(cwd: string, intent: number, options?: { preserveSession?: boolean }): Promise<'registered' | 'legacy' | 'unavailable'> {
   if (!useProjects.getState().loaded) await useProjects.getState().refresh()
   if (!useProjects.getState().loaded || !isCurrentNavigationIntent(intent)) return 'unavailable'
   const project = useProjects.getState().projects.find(item => item.path === cwd)
   if (!project) return 'legacy'
   const current = useAppStore.getState().currentWorkspace
   if (current?.realPath === cwd && !project.missing && !project.archived) return 'registered'
-  if (!(await useProjects.getState().activate(project.id, intent))) return 'unavailable'
+  if (!(await useProjects.getState().activate(project.id, intent, options))) return 'unavailable'
   return isCurrentNavigationIntent(intent) && useAppStore.getState().currentWorkspace?.realPath === cwd ? 'registered' : 'unavailable'
 }
 
-async function resolveLiveWorkspace(cwd: string, intent: number) {
-  const target = await activateSidebarProject(cwd, intent)
+async function resolveLiveWorkspace(cwd: string, intent: number, options?: { preserveSession?: boolean }) {
+  const target = await activateSidebarProject(cwd, intent, options)
   if (target === 'unavailable') return null
   const before = useAppStore.getState()
   if (target === 'legacy' && before.currentWorkspace?.realPath !== cwd) {
     const recent = before.recentWorkspaces.find(item => item.displayPath === cwd)
     const grant = recent ? await window.electronAPI.activateRecentWorkspace(recent.id) : null
     const latest = useAppStore.getState()
-    if (grant && isCurrentNavigationIntent(intent) && latest.currentWorkspace?.id === before.currentWorkspace?.id && latest.currentSessionId === before.currentSessionId) latest.setCurrentWorkspace(grant)
+    if (grant && isCurrentNavigationIntent(intent) && latest.currentWorkspace?.id === before.currentWorkspace?.id && latest.currentSessionId === before.currentSessionId) latest.setCurrentWorkspace(grant, options)
   }
   if (!isCurrentNavigationIntent(intent)) return null
   const workspace = useAppStore.getState().currentWorkspace
@@ -435,7 +437,7 @@ export default function Sidebar() {
     }
     const targetWorkspace = expectedWorkspace ?? useAppStore.getState().currentWorkspace?.realPath
     const targetProject = useProjects.getState().projects.find(project => project.path === targetWorkspace)
-    if (targetProject && (targetProject.missing || targetProject.archived) && await activateSidebarProject(targetProject.path, epoch) === 'unavailable') return false
+    if (targetProject && (targetProject.missing || targetProject.archived) && await activateSidebarProject(targetProject.path, epoch, { preserveSession: true }) === 'unavailable') return false
     if (!isCurrentNavigationIntent(epoch)) return false
     const access = historyResumeGrant(useAppStore.getState(), info, expectedWorkspace)
     if (!access.ok) {
@@ -590,7 +592,7 @@ export default function Sidebar() {
     const intent = beginNavigationIntent()
     setForkingSessionId(session.id)
     try {
-      const workspace = await resolveLiveWorkspace(session.cwd, intent)
+      const workspace = await resolveLiveWorkspace(session.cwd, intent, { preserveSession: true })
       if (!workspace || !isCurrentNavigationIntent(intent)) return
       const result = await window.electronAPI.forkSession(workspace.id, {
         liveSessionId: session.id
@@ -675,7 +677,7 @@ export default function Sidebar() {
     resumingGlobalRef.current = true
     setResumingGlobalUuid(row.uuid)
     try {
-      if (await activateSidebarProject(row.cwd, epoch) === 'unavailable') return
+      if (await activateSidebarProject(row.cwd, epoch, { preserveSession: true }) === 'unavailable') return
       if (!isCurrentNavigationIntent(epoch)) return
       const result = await openGlobalHistory(row, {
         getState: useAppStore.getState,
@@ -708,7 +710,7 @@ export default function Sidebar() {
     }
     openingLiveRef.current = true
     try {
-      if (!(await resolveLiveWorkspace(session.cwd, epoch)) || !isCurrentNavigationIntent(epoch)) return
+      if (!(await resolveLiveWorkspace(session.cwd, epoch, { preserveSession: true })) || !isCurrentNavigationIntent(epoch)) return
       if (!useAppStore.getState().sessions.some(item => item.id === session.id)) return
       setCurrentSessionId(session.id, epoch)
       navigate('/')
@@ -1164,17 +1166,16 @@ export default function Sidebar() {
             {locked ? <Lock size={12} /> : <LockOpen size={12} />}
           </button>
         )}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            confirmDelete()
-          }}
-          title={locked ? t('sidebar.deleteLocked') : t('history.delete')}
-          className={`${iconBtn} ${locked ? 'cursor-not-allowed text-cream-faint/50' : 'hover:bg-red-500/15 hover:text-red-500'}`}
+        <HoldToDelete
+          onConfirm={confirmDelete}
+          disabled={locked}
+          ariaLabel={t('history.delete')}
+          title={locked ? t('sidebar.deleteLocked') : t('effects.hold.aria', { action: t('history.delete'), seconds: (HOLD_TO_DELETE_MS / 1000).toFixed(1) })}
+          ringRadius={6}
+          className={`${iconBtn} ${locked ? 'cursor-not-allowed text-cream-faint/50' : 'text-cream-faint hover:bg-red-500/15 hover:text-red-500'} data-[holding=true]:bg-red-500/10`}
         >
           {locked ? <Lock size={12} /> : <Trash2 size={12} />}
-        </button>
+        </HoldToDelete>
       </div>
     )
   }
@@ -1452,7 +1453,7 @@ export default function Sidebar() {
           open={sortMenuOpen}
           triggerRef={sortButtonRef}
           onClose={() => setSortMenuOpen(false)}
-          width={196}
+          width={236}
         >
           {(['recent', 'name', 'manual'] as const).map((sort) => (
             <button
@@ -1468,25 +1469,10 @@ export default function Sidebar() {
             </button>
           ))}
           <div className="my-1 border-t border-line" />
-          <button
-            role="switch"
-            aria-checked={showArchived}
-            onClick={() => setShowArchived((value) => !value)}
-            className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] text-cream transition hover:bg-overlay"
-          >
-            <span>{t('sidebar.showArchived')}</span>
-            <span
-              className={`relative h-3.5 w-6 shrink-0 rounded-full transition-colors ${
-                showArchived ? 'bg-accent' : 'bg-line-strong'
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 h-2.5 w-2.5 rounded-full transition-[left,background-color] ${
-                  showArchived ? 'left-[12px] bg-ink-950' : 'left-0.5 bg-cream'
-                }`}
-              />
-            </span>
-          </button>
+          <div className="flex items-center justify-between gap-2 px-1 py-1">
+            <span className="px-1.5 text-[12.5px] text-cream">{t('sidebar.showArchived')}</span>
+            <JellyToggle checked={showArchived} onChange={(value) => setShowArchived(value)} aria-label={t('sidebar.showArchived')} />
+          </div>
         </MenuPortal>
         {searchOpen && (
           <div className="px-2 pb-2">
@@ -1635,13 +1621,22 @@ export default function Sidebar() {
             requestArchiveSession(menuSession.id)
             if (!needsConfirm || confirmed) closeSessionMenu()
           }}><Archive size={13} />{t(archiveSessionConfirm.confirmingId === menuSession.id ? 'sidebar.archiveConfirm' : 'sidebar.archive')}</button>}
-          <button type="button" data-session-action="delete" className={`project-menu-action ${menuLocked ? 'cursor-not-allowed text-cream-faint/50' : 'text-red-500'}`} onClick={() => {
-            closeSessionMenu()
-            sessionMenuTrigger.current?.focus()
-            if (menuLocked) { showNotice('sidebar.deleteLocked'); return }
-            const id = menuEntry.kind === 'history' ? menuEntry.info.id : menuEntry.kind === 'global' ? menuEntry.row.uuid : menuEntry.session.id
-            setPendingDelete({ kind: menuEntry.kind, id, title: menuEntry.title })
-          }}><Trash2 size={13} />{t('sidebar.deleteSession')}</button>
+          <HoldToDelete
+            dataSessionAction="delete"
+            disabled={menuLocked}
+            onConfirm={() => {
+              closeSessionMenu()
+              sessionMenuTrigger.current?.focus()
+              const id = menuEntry.kind === 'history' ? menuEntry.info.id : menuEntry.kind === 'global' ? menuEntry.row.uuid : menuEntry.session.id
+              setPendingDelete({ kind: menuEntry.kind, id, title: menuEntry.title })
+            }}
+            ariaLabel={t('sidebar.deleteSession')}
+            label={t('sidebar.deleteSession')}
+            title={menuLocked ? t('sidebar.deleteLocked') : undefined}
+            className={`project-menu-action ${menuLocked ? 'text-cream-faint/50' : 'text-red-500 hover:bg-red-500/10'} data-[holding=true]:bg-red-500/10`}
+          >
+            <Trash2 size={13} />
+          </HoldToDelete>
         </div>}
       </MenuPortal>
 
