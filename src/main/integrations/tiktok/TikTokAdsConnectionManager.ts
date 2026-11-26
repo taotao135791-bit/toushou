@@ -9,7 +9,7 @@ import { normalizeTikTokAdvertiserIds } from '../../../shared/tiktokReport'
 import { McpStorePaths, defaultMcpStorePaths, removeMcpConnection, upsertManagedServer } from '../mcp/McpConnectionStore'
 import { TikTokCredentialStore, TikTokStoredCredentials } from './TikTokCredentialStore'
 import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
-import { resolveEnvProxyRules } from './envProxy'
+import { resolveEnvProxyRules, type EnvProxyConfig } from './envProxy'
 import { TIKTOK_ADS_SKILL_FILE_NAME, TIKTOK_ADS_SKILL_MARKDOWN } from './tiktokAdsSkill'
 
 /**
@@ -125,8 +125,22 @@ export class TikTokAdsConnectionManager {
    * an explicit NO_PROXY match forces direct, and otherwise fall back to the
    * OS proxy settings (any client's system-proxy toggle or PAC).
    */
-  private fetchViaProxySession(url: string, init?: RequestInit): Promise<Response> {
+  private async fetchViaProxySession(url: string, init?: RequestInit): Promise<Response> {
     const config = resolveEnvProxyRules(url)
+    try {
+      return await this.fetchViaSession(url, init, config)
+    } catch (error) {
+      // fixed_servers 下的连接类失败（当前节点 TLS 掐杀 TikTok 域名等）→
+      // 镜像 PAC 行为降级直连重试一次；直连也失败才抛原始代理错误。
+      const message = error instanceof Error ? error.message : String(error)
+      if (config.mode === 'fixed_servers' && /net::ERR_(CONNECTION|TIMED_OUT|NAME|INTERNET)/i.test(message)) {
+        return this.fetchViaSession(url, init, { mode: 'direct' })
+      }
+      throw error
+    }
+  }
+
+  private fetchViaSession(url: string, init: RequestInit | undefined, config: EnvProxyConfig): Promise<Response> {
     const key = JSON.stringify(config)
     let pending = this.fetchSessions.get(key)
     if (!pending) {
@@ -289,6 +303,14 @@ export class TikTokAdsConnectionManager {
   cancel(): TikTokAdsConnectionSnapshot {
     ++this.credentialGeneration
     this.closeFlow()
+    // 失败态取消 = 放弃这轮授权：内存里的旧凭据已经不可用，保留只会被
+    // 后台刷新立刻打回失败界面——清掉它们，回到"重新连接"入口。
+    if (this.state === 'failed' && !this.storageBlocked) {
+      this.credentials = null
+      this.state = 'idle'
+      this.emitState()
+      return this.getSnapshot()
+    }
     this.state = this.storageBlocked ? 'degraded' : this.credentials ? 'connected' : 'idle'
     this.emitState()
     return this.getSnapshot()
