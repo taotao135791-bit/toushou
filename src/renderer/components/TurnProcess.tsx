@@ -16,7 +16,9 @@ interface Props { entries: IndexedChatMessage[]; sessionId: string | null; activ
 function TurnProcess({ entries, sessionId, active, elapsedMs, lastUserIndex }: Props) {
   const language = useAppStore(state => state.language)
   const zh = language === 'zh'
-  const [expanded, setExpanded] = useState(false)
+  // 关键总结默认常驻（Claude Code 式步骤行）：每个工具步骤与中间解说各留一行
+  // 摘要，完成后不消失；用户可把整组手动收起成单行摘要。思维链仍走自己的折叠逻辑。
+  const [expanded, setExpanded] = useState(true)
   const id = useId()
   const { stepCount, failed, last, action, website, brands } = useMemo(() => {
     const calls = entries.flatMap(entry => entry.message.toolCall ? [entry.message.toolCall] : [])
@@ -33,11 +35,11 @@ function TurnProcess({ entries, sessionId, active, elapsedMs, lastUserIndex }: P
   return <section className="min-w-0" aria-label={zh ? '本轮执行过程' : 'Turn activity'}>
     <button type="button" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(value => !value)}
       className="focus-ring flex min-h-9 w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 py-1.5 text-left text-[12px] text-cream-dim transition-colors hover:bg-overlay">
-      {active ? <Loader2 size={14} className="shrink-0 animate-spin" aria-hidden="true" /> : failed ? <CircleAlert size={14} className="shrink-0 text-red-500" aria-hidden="true" /> : <ChevronRight size={14} className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden="true" />}
-      {website ? <WebsiteIcon url={website.url} hostname={website.hostname} size={16} /> : active && last ? <BrandIcon brand={toolBrandForCall(last)} size={16} /> :
-        brands.length > 0 && <span className="inline-flex shrink-0 items-center gap-1.5" aria-hidden="true">{brands.map(brand => <BrandIcon key={brand} brand={brand} size={16} />)}</span>}
-      <span className="min-w-0 flex-1 basis-[100px] truncate font-medium">{action ?? (zh ? '执行过程' : 'Activity')}</span>
-      {website && <span className="max-w-[180px] truncate text-cream-faint">{website.hostname}</span>}
+      {active && !expanded ? <Loader2 size={14} className="shrink-0 animate-spin" aria-hidden="true" /> : failed ? <CircleAlert size={14} className="shrink-0 text-red-500" aria-hidden="true" /> : <ChevronRight size={14} className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''} ${active ? 'text-accent' : ''}`} aria-hidden="true" />}
+      {!expanded && (website ? <WebsiteIcon url={website.url} hostname={website.hostname} size={16} /> : active && last ? <BrandIcon brand={toolBrandForCall(last)} size={16} /> :
+        brands.length > 0 && <span className="inline-flex shrink-0 items-center gap-1.5" aria-hidden="true">{brands.map(brand => <BrandIcon key={brand} brand={brand} size={16} />)}</span>)}
+      <span className="min-w-0 flex-1 basis-[100px] truncate font-medium">{!expanded && action ? action : (zh ? '执行过程' : 'Activity')}</span>
+      {!expanded && website && <span className="max-w-[180px] truncate text-cream-faint">{website.hostname}</span>}
       <span className="shrink-0 text-cream-faint">{zh ? `${stepCount} 个步骤` : `${stepCount} steps`}</span>
       {failed > 0 && <span className="shrink-0 text-red-500">{zh ? `${failed} 项失败` : `${failed} failed`}</span>}
       {elapsedMs !== undefined && !active && <span className="ml-auto shrink-0 tabular-nums text-cream-faint">{formatSeconds(elapsedMs)}s</span>}
