@@ -143,7 +143,11 @@ export async function handleChatAttachment(workspace: string, raw: unknown, acti
       if (resolved) {
         const stat = await fs.stat(resolved).catch(() => undefined)
         if (stat?.isFile()) {
-          if (action === 'reveal') { shell.showItemInFolder(resolved); return 'ok' }
+          // revealOnly 文件（HTML 等）：open 也走 showItemInFolder 而非 openPath。
+          if (action === 'reveal' || (action === 'open' && file.revealOnly)) {
+            shell.showItemInFolder(resolved)
+            return 'ok'
+          }
           const openError = await shell.openPath(resolved)
           return openError === '' ? 'ok' : 'unavailable'
         }
