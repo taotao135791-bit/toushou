@@ -1,12 +1,22 @@
 import {
+  Client,
   createLarkChannel,
   Domain,
   LoggerLevel,
   type LarkChannel,
+  type Logger,
   type NormalizedMessage,
   type SendResult
 } from '@larksuiteoapi/node-sdk'
 import { FeishuStoredCredentials } from './FeishuCredentialStore'
+
+// The SDK can include request and response bodies in transport logs. The
+// document tools give callers bounded diagnostics without logging payloads.
+const ignoreSdkDetails = () => undefined
+const DOCUMENT_LOGGER: Logger = {
+  error: ignoreSdkDetails, warn: ignoreSdkDetails, info: ignoreSdkDetails,
+  debug: ignoreSdkDetails, trace: ignoreSdkDetails
+}
 
 export interface FeishuMediaResource {
   type: 'image' | 'file'
@@ -151,6 +161,7 @@ export interface FeishuChannelHandlers {
 
 export class FeishuChannel {
   private readonly channel: LarkChannel
+  private documents: Client | undefined
 
   constructor(credentials: FeishuStoredCredentials, handlers: FeishuChannelHandlers) {
     const sdkDomain = credentials.brand === 'lark' ? Domain.Lark : Domain.Feishu
@@ -237,5 +248,13 @@ export class FeishuChannel {
 
   get rawClient() {
     return this.channel.rawClient
+  }
+
+  get documentClient(): Client {
+    const { appId, appSecret, domain, httpInstance } = this.rawClient
+    return this.documents ??= new Client({
+      appId, appSecret, domain, httpInstance, source: 'toushou',
+      disableTokenCache: true, logger: DOCUMENT_LOGGER
+    })
   }
 }

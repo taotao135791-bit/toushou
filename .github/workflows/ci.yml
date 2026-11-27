@@ -78,6 +78,17 @@ jobs:
           src/renderer/lib/transcriptScroll.e2e.test.ts
       - name: Windows OMP command shim detection
         run: pnpm exec vitest run src/main/__tests__/ompCliDetection.test.ts src/main/__tests__/command.test.ts
+      - name: Windows chat attachments and connector recovery
+        run: >-
+          pnpm exec vitest run
+          src/main/__tests__/chatAttachment.test.ts
+          src/shared/replyAttachmentPaths.test.ts
+          src/renderer/components/ChatAttachment.test.tsx
+          src/main/integrations/tiktok/TikTokAdsConnectionManager.test.ts
+          src/main/integrations/tiktok/proxyFetch.test.ts
+          src/main/integrations/tiktok/tiktokConnection.e2e.test.ts
+          src/main/integrations/dingtalk
+          src/main/integrations/feishu
 
   secret-scan:
     name: Secret scan

@@ -17,13 +17,17 @@ v0.4.0 的飞书连接位于 `src/main/integrations/feishu/`，主进程是唯�
 内置 `toushou-feishu-toolkit` 只暴露以下高层工具：
 
 - 消息：send、reply、read、search
-- 文档：read、create、append
+- 文档：读取正文或块结构、创建、追加、插入和编辑文字块、删除指定子块、填充原生表格、上传文档附件
 - 表格：read、write、create
 - 多维表：read、upsert、query
 
 OMP 工具进程只拿到一个随机 token 的本机桥接 URL（`127.0.0.1`），请求动作经过 Main 白名单校验。桥接不接受任意 URL、脚本、文件路径或凭据。
 
 消息使用机器人 App/tenant token。文档、表格和多维表在连接页按能力发起设备 OAuth；Main 使用 `withUserAccessToken` 将已授权用户令牌仅注入对应的用户范围 API 请求。授权不足时工具返回 `authorizationRequired`，不会自动打开浏览器或扩大权限。
+
+文档附件需要「编辑文档」与「上传文档附件」两项用户权限。桌面会话发起上传后，由用户在系统文件选择器中选择要上传的文件，目标文档会在选择时显示。自动任务和飞书远程会话不能发起本地文件选择。上传沿用用户授权身份。
+
+询问模式下，插入、编辑和填充表格前会显示目标文档并确认。删除文档块在任意模式下均需确认。
 
 ## 手动应用
 

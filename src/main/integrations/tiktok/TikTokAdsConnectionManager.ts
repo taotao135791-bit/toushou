@@ -2,14 +2,14 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { BrowserWindow, app, session, shell, type Session } from 'electron'
+import { BrowserWindow, app, shell } from 'electron'
 import { IPC_CHANNELS } from '../../../shared/constants'
 import { ConnectionDefinition, ConnectionStatus, TikTokAdsConnectionSnapshot } from '../../../shared/connections'
 import { normalizeTikTokAdvertiserIds } from '../../../shared/tiktokReport'
 import { McpStorePaths, defaultMcpStorePaths, removeMcpConnection, upsertManagedServer } from '../mcp/McpConnectionStore'
 import { TikTokCredentialStore, TikTokStoredCredentials } from './TikTokCredentialStore'
 import { TikTokCredentialStorageError } from './tiktokCredentialStorageError'
-import { resolveEnvProxyRules, type EnvProxyConfig } from './envProxy'
+import { proxyFetchFor } from './proxyFetch'
 import { TIKTOK_ADS_SKILL_FILE_NAME, TIKTOK_ADS_SKILL_MARKDOWN } from './tiktokAdsSkill'
 
 /**
@@ -72,6 +72,16 @@ export interface TikTokFetch {
   (url: string, init?: RequestInit): Promise<Response>
 }
 
+class TikTokTokenResponseError extends Error {
+  constructor(readonly status: number, readonly oauthCode?: string) {
+    super(oauthCode ? `HTTP ${status}: ${oauthCode}` : `HTTP ${status}`)
+  }
+
+  get rejectedGrant(): boolean {
+    return (this.status === 400 || this.status === 401) && this.oauthCode === 'invalid_grant'
+  }
+}
+
 export class TikTokAdsConnectionManager {
   private readonly credentialStore: TikTokCredentialStore
   private readonly mcpPaths: McpStorePaths
@@ -87,17 +97,17 @@ export class TikTokAdsConnectionManager {
   private refreshRetryTimer: ReturnType<typeof setTimeout> | null = null
   private refreshRetryAttempts = 0
   private automaticRefreshBlocked = false
+  private refreshGrantRejected = false
   private readonly refreshRetryDelays: number[]
   private authorizationSavePending: Promise<void> | null = null
   private disconnectPending: Promise<TikTokAdsConnectionSnapshot> | null = null
+  private authorizationGeneration = 0
   private credentialGeneration = 0
   private state: 'idle' | 'discovering' | 'waiting_for_user' | 'connected' | 'degraded' | 'failed' = 'idle'
   private lastError: string | undefined
   private lastConnectedAt: number | undefined
   /** Authorize URL while waiting for the browser round-trip (renderer shows a manual-open link). */
   private authorizationUrl: string | undefined
-  /** In-memory sessions isolate simultaneous requests using different proxy rules. */
-  private readonly fetchSessions = new Map<string, Promise<Session>>()
 
   constructor(options: {
     credentialStore?: TikTokCredentialStore
@@ -110,64 +120,29 @@ export class TikTokAdsConnectionManager {
   } = {}) {
     this.credentialStore = options.credentialStore ?? new TikTokCredentialStore()
     this.mcpPaths = options.mcpPaths ?? defaultMcpStorePaths()
-    this.fetchImpl = options.fetchImpl ?? ((url, init) => this.fetchViaProxySession(url, init))
+    this.fetchImpl = options.fetchImpl ?? (async (url, init) => {
+      // OAuth uses the configured TikTok route. A transport failure can occur
+      // after the provider consumes a code or rotates a token.
+      const fetch = await proxyFetchFor(url, 'tiktok-oauth')
+      return fetch(url, init)
+    })
     this.openExternal = options.openExternal ?? ((url) => shell.openExternal(url))
     this.now = options.now ?? Date.now
     this.refreshRetryDelays = options.refreshRetryDelaysMs ?? [60_000, 300_000, 900_000]
   }
 
-  /**
-   * Default fetch path for TikTok endpoints. The embedded Node 20 runtime
-   * ignores NODE_USE_ENV_PROXY (a Node 24 feature), so a plain fetch goes
-   * direct and dies wherever business-api.tiktok.com is unreachable without
-   * a proxy. Route through a dedicated Chromium session instead: explicit
-   * HTTPS_PROXY/HTTP_PROXY/NO_PROXY environment variables win when set;
-   * an explicit NO_PROXY match forces direct, and otherwise fall back to the
-   * OS proxy settings (any client's system-proxy toggle or PAC).
-   */
-  private async fetchViaProxySession(url: string, init?: RequestInit): Promise<Response> {
-    const config = resolveEnvProxyRules(url)
-    try {
-      return await this.fetchViaSession(url, init, config)
-    } catch (error) {
-      // fixed_servers 下的连接类失败（当前节点 TLS 掐杀 TikTok 域名等）→
-      // 镜像 PAC 行为降级直连重试一次；直连也失败才抛原始代理错误。
-      const message = error instanceof Error ? error.message : String(error)
-      if (config.mode === 'fixed_servers' && /net::ERR_(CONNECTION|TIMED_OUT|NAME|INTERNET)/i.test(message)) {
-        return this.fetchViaSession(url, init, { mode: 'direct' })
-      }
-      throw error
-    }
-  }
-
-  private fetchViaSession(url: string, init: RequestInit | undefined, config: EnvProxyConfig): Promise<Response> {
-    const key = JSON.stringify(config)
-    let pending = this.fetchSessions.get(key)
-    if (!pending) {
-      // Sessions are in-memory (no persist: prefix), and a given partition's
-      // proxy never changes while requests using it are in flight.
-      const partition = `tiktok-connect-${createHash('sha256').update(key).digest('hex')}`
-      const ses = session.fromPartition(partition)
-      const created = ses.setProxy(config).then(() => ses)
-      pending = created.catch((error) => {
-        if (this.fetchSessions.get(key) === pending) this.fetchSessions.delete(key)
-        throw error
-      })
-      this.fetchSessions.set(key, pending)
-    }
-    return pending.then((ses) => ses.fetch(url, init))
-  }
-
   /** App-start hook: restore a stored connection (self-healing the mcp entry). */
   async initialize(): Promise<void> {
     const generation = this.credentialGeneration
+    const authorizationGeneration = this.authorizationGeneration
+    const isCurrent = () => generation === this.credentialGeneration && authorizationGeneration === this.authorizationGeneration
     try {
       const credentials = await this.credentialStore.load()
-      if (generation !== this.credentialGeneration) return
+      if (!isCurrent()) return
       this.credentials = credentials
     }
     catch (error) {
-      if (generation !== this.credentialGeneration) return
+      if (!isCurrent()) return
       if (!(error instanceof TikTokCredentialStorageError)) throw error
       this.markStorageBlocked(error)
       return
@@ -176,6 +151,7 @@ export class TikTokAdsConnectionManager {
     this.state = 'connected'
     this.lastConnectedAt = this.now()
     if (!(await this.applyMcpEntry())) return
+    if (!isCurrent()) return
     void this.ensureFreshToken()
     this.emitState()
   }
@@ -216,24 +192,25 @@ export class TikTokAdsConnectionManager {
 
   /** Begin the browser authorization flow. Errors surface via the snapshot. */
   async begin(): Promise<TikTokAdsConnectionSnapshot> {
-    if (this.flow) return this.getSnapshot()
-    const generation = ++this.credentialGeneration
+    if (this.flow || (this.state === 'discovering' && !this.disconnectPending)) return this.getSnapshot()
+    const generation = ++this.authorizationGeneration
     const retryNewAuthorizationEpoch = this.credentialStore.sharedStorageBlockedEpoch()
     const recoveringStorage = this.storageBlocked
     if (this.disconnectPending) await this.disconnectPending
-    if (generation !== this.credentialGeneration) return this.getSnapshot()
+    if (generation !== this.authorizationGeneration) return this.getSnapshot()
     if (this.refreshPending) await this.refreshPending
     if (this.authorizationSavePending) await this.authorizationSavePending.catch(() => {})
-    if (generation !== this.credentialGeneration) return this.getSnapshot()
+    if (generation !== this.authorizationGeneration) return this.getSnapshot()
+    if (this.storageBlocked && !recoveringStorage) return this.getSnapshot()
     try {
       if (this.storageBlocked || !this.credentials) {
         const credentials = this.storageBlocked ? await this.credentialStore.retry(retryNewAuthorizationEpoch) : await this.credentialStore.load()
-        if (generation !== this.credentialGeneration) return this.getSnapshot()
+        if (generation !== this.authorizationGeneration) return this.getSnapshot()
         this.credentials = credentials
         this.storageBlocked = false
       }
     } catch (error) {
-      if (generation !== this.credentialGeneration) return this.getSnapshot()
+      if (generation !== this.authorizationGeneration) return this.getSnapshot()
       if (!(error instanceof TikTokCredentialStorageError)) throw error
       this.markStorageBlocked(error)
       return this.getSnapshot()
@@ -243,13 +220,13 @@ export class TikTokAdsConnectionManager {
         (!this.credentials.expiresAt || this.credentials.expiresAt > this.now() || this.credentials.refreshToken)) {
       if (this.credentials.refreshToken && (!this.credentials.expiresAt || this.credentials.expiresAt - this.now() <= REFRESH_MARGIN_MS)) {
         if (!(await this.ensureFreshToken())) return this.getSnapshot()
-        if (generation !== this.credentialGeneration) return this.getSnapshot()
+        if (generation !== this.authorizationGeneration) return this.getSnapshot()
       }
       this.state = 'connected'
       this.lastError = undefined
       this.lastConnectedAt = this.now()
       await this.applyMcpEntry()
-      if (generation !== this.credentialGeneration) return this.getSnapshot()
+      if (generation !== this.authorizationGeneration) return this.getSnapshot()
       if (this.state === 'connected') this.scheduleNextRefresh()
       this.emitState()
       return this.getSnapshot()
@@ -260,13 +237,13 @@ export class TikTokAdsConnectionManager {
     let startedFlow: PendingFlow | null = null
     try {
       const endpoints = await this.discover()
-      if (generation !== this.credentialGeneration) return this.getSnapshot()
+      if (generation !== this.authorizationGeneration) return this.getSnapshot()
       const registration = await this.registerClient(endpoints)
-      if (generation !== this.credentialGeneration) return this.getSnapshot()
+      if (generation !== this.authorizationGeneration) return this.getSnapshot()
       const { verifier, challenge } = pkcePair()
       const state = base64url(randomBytes(24))
       const loopback = await this.listenForCallback()
-      if (generation !== this.credentialGeneration) { loopback.server.close(); return this.getSnapshot() }
+      if (generation !== this.authorizationGeneration) { loopback.server.close(); return this.getSnapshot() }
       const redirectUri = `http://127.0.0.1:${loopback.port}/callback`
       const url = new URL(endpoints.authorizationEndpoint)
       url.searchParams.set('response_type', 'code')
@@ -294,29 +271,35 @@ export class TikTokAdsConnectionManager {
       this.emitState()
       await this.openExternal(this.authorizationUrl)
     } catch (error) {
-      if (generation !== this.credentialGeneration || (startedFlow && this.flow !== startedFlow)) return this.getSnapshot()
+      if (generation !== this.authorizationGeneration || (startedFlow && this.flow !== startedFlow)) return this.getSnapshot()
       this.failFlowFlowSafe(error)
     }
     return this.getSnapshot()
   }
 
-  cancel(): TikTokAdsConnectionSnapshot {
-    ++this.credentialGeneration
+  async cancel(): Promise<TikTokAdsConnectionSnapshot> {
+    if (this.disconnectPending) return this.disconnectPending
+    // The provider explicitly rejected the stored grant. Reuse disconnect
+    // so its encrypted envelope and managed MCP entry are removed together.
+    if (this.refreshGrantRejected) return this.disconnect()
+    ++this.authorizationGeneration
     this.closeFlow()
-    // 失败态取消 = 放弃这轮授权：内存里的旧凭据已经不可用，保留只会被
-    // 后台刷新立刻打回失败界面——清掉它们，回到"重新连接"入口。
-    if (this.state === 'failed' && !this.storageBlocked) {
-      this.credentials = null
-      this.state = 'idle'
-      this.emitState()
-      return this.getSnapshot()
+    const expiresAt = this.credentials?.expiresAt
+    if (this.storageBlocked) {
+      this.state = 'degraded'
+    } else if (expiresAt !== undefined && expiresAt <= this.now()) {
+      this.state = 'degraded'
+      this.lastError ??= 'TikTok 访问令牌已过期，请重试。'
+    } else {
+      this.state = this.credentials ? 'connected' : 'idle'
+      this.lastError = undefined
     }
-    this.state = this.storageBlocked ? 'degraded' : this.credentials ? 'connected' : 'idle'
     this.emitState()
     return this.getSnapshot()
   }
 
   async disconnect(): Promise<TikTokAdsConnectionSnapshot> {
+    ++this.authorizationGeneration
     ++this.credentialGeneration
     this.closeFlow()
     if (this.disconnectPending) return this.disconnectPending
@@ -333,8 +316,16 @@ export class TikTokAdsConnectionManager {
     this.clearRefreshRetry()
     if (this.refreshPending) await this.refreshPending
     if (this.authorizationSavePending) await this.authorizationSavePending.catch(() => {})
-    await this.credentialStore.clear()
+    try {
+      await this.credentialStore.clear()
+    } catch {
+      this.state = 'degraded'
+      this.lastError = '无法移除本地 TikTok 授权，请检查应用数据目录权限后重试。'
+      this.emitState()
+      return this.getSnapshot()
+    }
     this.credentials = null
+    this.refreshGrantRejected = false
     this.storageBlocked = false
     this.lastError = undefined
     removeMcpConnection(MCP_SERVER_NAME, this.mcpPaths)
@@ -362,7 +353,7 @@ export class TikTokAdsConnectionManager {
    * server behind an expired bearer.
    */
   async ensureFreshToken(): Promise<boolean> {
-    if (this.storageBlocked) return false
+    if (this.storageBlocked || this.refreshGrantRejected || this.disconnectPending || this.flow || this.state === 'discovering') return false
     if (this.refreshPending) return this.refreshPending
     const pending = this.refreshTokenOnce()
     this.refreshPending = pending
@@ -435,13 +426,13 @@ export class TikTokAdsConnectionManager {
       const permanent = !transient && /invalid|expired|unauthorized|forbidden|denied|revoked|HTTP 4\d\d/i.test(message)
       if (permanent) this.clearRefreshRetry()
       else this.scheduleRefreshRetry(generation)
+      this.refreshGrantRejected = error instanceof TikTokTokenResponseError && error.rejectedGrant
       this.automaticRefreshBlocked = permanent || !this.refreshRetryTimer
       this.state = 'degraded'
-      // "请重新授权" only when NO automatic retry is pending — saying it while
-      // the 15-minute retry still runs sends users through a needless re-auth.
-      this.lastError = permanent || !this.refreshRetryTimer
+      // Network and rate-limit failures can recover without discarding a grant.
+      this.lastError = permanent
         ? `令牌刷新失败：${friendlyError(error)}（请重新授权）`
-        : `令牌刷新失败：${friendlyError(error)}（正在自动重试）`
+        : `令牌刷新失败：${friendlyError(error)}（${this.refreshRetryTimer ? '正在自动重试' : '请检查网络后重试'}）`
       this.emitState()
       return false
     }
@@ -479,13 +470,13 @@ export class TikTokAdsConnectionManager {
    * Reading-path credential access (TT 读数 board module, the report
    * auto-refresh service): ensure the stored access token is refreshed when
    * it is inside the margin, then hand back a copy of the stored material —
-   * including the advertiser ids the grant covers. Returns null when no
-   * OAuth connection has ever completed. Never throws into the caller: a
-   * failed refresh keeps the last stored token (the API call will surface
-   * the auth error) and the connection state reports `degraded`.
+   * including the advertiser ids the grant covers. A failed refresh keeps
+   * the last stored token while the connection reports `degraded`. Once an
+   * explicitly rejected grant expires, callers must obtain a fresh grant.
    */
   async loadFreshCredentials(): Promise<TikTokStoredCredentials | null> {
     const generation = this.credentialGeneration
+    if (this.disconnectPending) return null
     if (this.storageBlocked) throw new TikTokCredentialStorageError()
     if (!this.credentials) {
       try {
@@ -502,7 +493,8 @@ export class TikTokAdsConnectionManager {
     if (this.credentials.refreshToken) await this.ensureFreshToken()
     if (generation !== this.credentialGeneration) return null
     if (this.storageBlocked) throw new TikTokCredentialStorageError()
-    return this.credentials ? { ...this.credentials } : null
+    if (!this.credentials || (this.refreshGrantRejected && (this.credentials.expiresAt ?? 0) <= this.now())) return null
+    return { ...this.credentials }
   }
 
   private markStorageBlocked(error: TikTokCredentialStorageError): void {
@@ -541,7 +533,9 @@ export class TikTokAdsConnectionManager {
     const servers = Array.isArray(resource.authorization_servers) ? resource.authorization_servers : []
     const issuer = typeof servers[0] === 'string' ? servers[0] : ''
     if (!/^https:\/\//.test(issuer)) throw new Error('TikTok OAuth 发现失败（authorization_servers 缺失）')
-    const metadata = await this.fetchJson(`${issuer}/.well-known/oauth-authorization-server`)
+    const metadata = await this.fetchJson(`${issuer}/.well-known/oauth-authorization-server`).catch((error) => {
+      throw new Error(`TikTok OAuth 授权服务器发现失败（${friendlyError(error)}）`)
+    })
     const authorizationEndpoint = typeof metadata.authorization_endpoint === 'string' ? metadata.authorization_endpoint : ''
     const tokenEndpoint = typeof metadata.token_endpoint === 'string' ? metadata.token_endpoint : ''
     const registrationEndpoint = typeof metadata.registration_endpoint === 'string' ? metadata.registration_endpoint : ''
@@ -583,17 +577,23 @@ export class TikTokAdsConnectionManager {
           token_endpoint_auth_method: 'none'
         }),
         signal: AbortSignal.timeout(15_000)
+      }).catch((error) => {
+        throw new Error(`TikTok OAuth 客户端注册失败（${friendlyError(error)}）`)
       })
-      const payload = await response.json().catch(() => ({})) as Record<string, unknown>
-      if (response.ok && typeof payload.client_id === 'string' && payload.client_id) {
+      const payload = await response.json().catch(() => null) as Record<string, unknown> | null
+      if (response.ok && typeof payload?.client_id === 'string' && payload.client_id) {
         return {
           clientId: payload.client_id,
           clientSecret: typeof payload.client_secret === 'string' && payload.client_secret ? payload.client_secret : undefined
         }
       }
-      lastError = typeof payload.error_description === 'string'
+      lastError = typeof payload?.error_description === 'string'
         ? payload.error_description
-        : typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`
+        : typeof payload?.error === 'string' ? payload.error : `HTTP ${response.status}`
+      // A second redirect shape is only meaningful after explicit rejection.
+      const redirectRejected = payload?.error === 'invalid_redirect_uri'
+        || (payload?.error === 'invalid_client_metadata' && /\bredirect(?:ion)?[ _-]?ur[il]s?\b/i.test(lastError))
+      if (response.status !== 400 || !redirectRejected) break
     }
     throw new Error(`动态客户端注册失败：${lastError}`)
   }
@@ -665,8 +665,8 @@ export class TikTokAdsConnectionManager {
   private async exchangeCode(code: string): Promise<void> {
     const flow = this.flow
     if (!flow) return
-    const generation = this.credentialGeneration
-    const isCurrent = () => this.flow === flow && this.credentialGeneration === generation
+    const generation = this.authorizationGeneration
+    const isCurrent = () => this.flow === flow && this.authorizationGeneration === generation
     let committed = false
     try {
       const body = new URLSearchParams({
@@ -693,13 +693,19 @@ export class TikTokAdsConnectionManager {
       const saving = this.credentialStore.save(nextCredentials, {
         retryNewAuthorizationEpoch: flow.retryNewAuthorizationEpoch,
         beforeCommit: isCurrent,
-        onCommitted: () => { committed = true; this.credentials = nextCredentials; this.closeFlow() }
+        onCommitted: () => {
+          committed = true
+          this.credentials = nextCredentials
+          this.refreshGrantRejected = false
+          ++this.credentialGeneration
+          this.closeFlow()
+        }
       })
       this.authorizationSavePending = saving
       try { await saving } finally { if (this.authorizationSavePending === saving) this.authorizationSavePending = null }
-      if (generation !== this.credentialGeneration) return
+      if (generation !== this.authorizationGeneration) return
       if (!(await this.applyMcpEntry())) return
-      if (generation !== this.credentialGeneration) return
+      if (generation !== this.authorizationGeneration) return
       this.installSkill()
       this.state = 'connected'
       this.lastError = undefined
@@ -708,7 +714,7 @@ export class TikTokAdsConnectionManager {
       this.scheduleNextRefresh()
       this.emitState()
     } catch (error) {
-      if (generation !== this.credentialGeneration || (!committed && this.flow !== flow)) return
+      if (generation !== this.authorizationGeneration || (!committed && this.flow !== flow)) return
       if (error instanceof TikTokCredentialStorageError) { this.closeFlow(); this.markStorageBlocked(error); return }
       this.failFlow(`授权码交换失败：${friendlyError(error)}`)
     }
@@ -730,12 +736,10 @@ export class TikTokAdsConnectionManager {
       body: body.toString(),
       signal: AbortSignal.timeout(15_000)
     })
-    const payload = await response.json().catch(() => ({})) as Record<string, unknown>
-    if (!response.ok || typeof payload.access_token !== 'string' || !payload.access_token) {
-      const detail = typeof payload.error_description === 'string'
-        ? payload.error_description
-        : typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`
-      throw new Error(detail === `HTTP ${response.status}` ? detail : `HTTP ${response.status}: ${detail}`)
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null
+    if (!response.ok || typeof payload?.access_token !== 'string' || !payload.access_token) {
+      const code = typeof payload?.error === 'string' && /^[a-z][a-z0-9_.-]{0,63}$/i.test(payload.error) ? payload.error : undefined
+      throw new TikTokTokenResponseError(response.status, code)
     }
     const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : undefined
     // TikTok echoes the granted advertiser ids back on the token response;
@@ -843,6 +847,9 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 function friendlyError(error: unknown): string {
-  if (error instanceof Error) return error.message.slice(0, 200)
-  return String(error).slice(0, 200)
+  const message = error instanceof Error ? error.message : String(error)
+  if (message === 'tiktok-route-unavailable') return '无法识别 TikTok 网络线路，请检查系统代理设置。'
+  const chromiumCode = /^net::(ERR_[A-Z0-9_]+)$/.exec(message)?.[1]
+  if (chromiumCode) return `${chromiumCode}，请检查当前网络或代理设置。`
+  return message.slice(0, 200)
 }

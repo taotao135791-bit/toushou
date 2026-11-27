@@ -15,6 +15,8 @@ const defaultProject: ProjectRecord = { id: 'default', name: 'TouShou workspace'
 const defaultGrant: WorkspaceGrant = { id: 'grant-default', realPath: defaultProject.path, displayPath: defaultProject.path, source: 'default', createdAt: 1 }
 const skill: SkillEntry = { id: 'synthetic.md', name: 'Synthetic team skill', author: '', description: '', kind: 'markdown', sizeBytes: 12, updatedAtMillis: 1 }
 const reviewSessionId = 'background-0'
+const hydrationSessionId = 'idle-transcript'
+let transcriptReady = false
 let resolveSkill: ((result: SkillReadResult) => void) | undefined
 const probeSessionId = 'projection-probe'
 const probeMessages: MessageLike[] = [
@@ -73,6 +75,17 @@ const fixture = {
     useAppStore.getState().setBusy(current.id, false)
   },
   finishTurn() { useAppStore.getState().setBusy(current.id, false) },
+  updateEstimatedTurn(status: 'working' | 'waiting_for_user' | 'idle') {
+    useAppStore.getState().applySessionEvent({ type: 'status', sessionId: hydrationSessionId, status })
+  },
+  reviseMeasuredProgress(boardProgress: number) {
+    useAppStore.setState(state => {
+      const execution = state.executions[hydrationSessionId]
+      const id = execution.currentTurnId!
+      const turn = { ...execution.turns[id], boardProgress }
+      return { executions: { ...state.executions, [hydrationSessionId]: { ...execution, turns: { ...execution.turns, [id]: turn } } } }
+    })
+  },
   currentModel: deepSeekModel,
   currentThinkingLevel: 'auto',
   sentImages: [] as Array<{ data: string; mimeType: string }>,
@@ -94,6 +107,14 @@ const fixture = {
     }
   },
   renameCurrent() { useAppStore.getState().setSessionTitle('current', 'Renamed current conversation') },
+  openIdleConversation() {
+    const idle = { ...current, id: hydrationSessionId, title: 'Idle conversation' }
+    useAppStore.setState(state => ({ currentSessionId: idle.id, sessions: [idle, ...state.sessions] }))
+  },
+  returnToConversation() {
+    transcriptReady = true
+    window.dispatchEvent(new Event('focus'))
+  },
   updateCurrentStatus() { useAppStore.getState().setSessions(useAppStore.getState().sessions.map(session => session.id === 'current' ? { ...session, status: 'error' } : session)) },
   updatePermission() { useAppStore.getState().setSessions(useAppStore.getState().sessions.map(session => session.id === 'current' ? { ...session, readonly: true } : session)) },
   addMessage() { useAppStore.getState().addMessage('current', { id: 'synthetic-message', role: 'user', content: 'Synthetic current message' }) },
@@ -142,6 +163,26 @@ const fixture = {
   },
   endBoardStream() {
     useAppStore.getState().applySessionEvent({ type: 'status', sessionId: 'current', status: 'idle', isTerminal: true })
+  },
+  startActivitySummaryTurn() {
+    const state = useAppStore.getState()
+    state.addMessage('current', { id: 'activity-summary-question', role: 'user', content: 'Verify activity rows' })
+    state.setBusy('current', true)
+    state.applySessionEvent({ type: 'message', sessionId: 'current', role: 'assistant', content: 'I will inspect the synthetic board first.' })
+    const steps = ['read', 'edit', 'write', 'find', 'find']
+    steps.forEach((tool, index) => {
+      const id = 'activity-step-' + index
+      state.applySessionEvent({ type: 'tool_call', sessionId: 'current', tool, id, input: { path: '/synthetic/hidden-argument' } })
+      state.applySessionEvent({ type: 'tool_result', sessionId: 'current', tool, id, output: { ok: index > 0, text: 'Synthetic diagnostic details' }, isError: index === 0 })
+    })
+    state.applySessionEvent({ type: 'message', sessionId: 'current', role: 'assistant', content: 'The sample data is ready. I will now refresh the board.' })
+    state.applySessionEvent({ type: 'tool_call', sessionId: 'current', id: 'activity-current', tool: 'toushou_board_refresh', input: {} })
+  },
+  finishActivitySummaryTurn() {
+    const state = useAppStore.getState()
+    state.applySessionEvent({ type: 'tool_result', sessionId: 'current', id: 'activity-current', tool: 'toushou_board_refresh', output: { ok: true }, isError: false })
+    state.applySessionEvent({ type: 'message', sessionId: 'current', role: 'assistant', content: 'The synthetic board is refreshed.' })
+    state.applySessionEvent({ type: 'status', sessionId: 'current', status: 'idle', isTerminal: true })
   },
   activityCommits: 0,
   messageListCommits: 0,
@@ -259,6 +300,9 @@ window.electronAPI = {
     useAppStore.getState().applySessionEvent({ type: 'thinking_level_changed', sessionId, level })
     return true
   },
+  sessionTranscript: async (id: string) => id !== hydrationSessionId ? [] : transcriptReady
+    ? [{ id: 'idle-history', role: 'assistant', content: 'Recovered the existing conversation' }]
+    : null,
   gitInfo: async () => null,
   compactSession: async () => {
     fixture.compactCalls++

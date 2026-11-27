@@ -50,7 +50,7 @@ describe('shared project controls in Electron', () => {
       }
       expect(data.pathMenu).toMatchObject({ complete: true, editable: false, copied: true })
       expect(data.pathMenu.bottom).toBeLessThanOrEqual(data.pathMenu.height - 8)
-      expect(data.missingPathVisible).toBe(true)
+      expect(data.missingPathVisible).toBe(false)
       expect(data.cancelledRecovery).toEqual({ missing: true, error: false })
       expect(data.wrongRecovery).toEqual({ open: true, target: 'unavailable', error: true, imports: 2 })
       expect(data.successfulRecovery).toEqual({ current: '/synthetic/unavailable', count: 1, missing: false, recoveryGone: true, errorsGone: true })

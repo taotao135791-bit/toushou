@@ -1,3 +1,4 @@
+import { composerHistoryCommand } from '../lib/platformShortcut'
 import { autosendForPrefill } from '../lib/composerAutosend'
 import { ComposerInvocation, planInvocation } from '../lib/composerInvocation'
 import { useState, useRef, useMemo, useEffect, useId, ClipboardEvent, DragEvent, KeyboardEvent, memo } from 'react'
@@ -244,6 +245,7 @@ export default memo(function Composer({
   const { info: gitInfo } = useGitInfo()
   const t = useT()
   const composerPrefill = useAppStore((s) => s.composerPrefill)
+  const composerSendMagnetism = useAppStore(s => s.composerSendMagnetism)
   const composerAutosend = useAppStore((s) => s.composerAutosend)
   const setComposerPrefill = useAppStore((s) => s.setComposerPrefill)
   const setComposerAutosend = useAppStore((s) => s.setComposerAutosend)
@@ -1020,8 +1022,8 @@ export default memo(function Composer({
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z' &&
-        document.execCommand(e.shiftKey ? 'redo' : 'undo')) {
+    const command = composerHistoryCommand(e)
+    if (command && document.execCommand(command)) {
       e.preventDefault()
       return
     }
@@ -1536,6 +1538,7 @@ export default memo(function Composer({
                   )}
                   <MagneticButton
                     onClick={onStop}
+                    enabled={composerSendMagnetism}
                     disabled={stopping}
                     title={stopLabel}
                     aria-label={stopLabel}
@@ -1548,6 +1551,7 @@ export default memo(function Composer({
               ) : (
                 <MagneticButton
                   onClick={handleSend}
+                  enabled={composerSendMagnetism}
                   disabled={!canSend}
                   title={t('composer.send')}
                   aria-label={t('composer.send')}

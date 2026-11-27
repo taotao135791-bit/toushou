@@ -1,58 +1,81 @@
 import { memo, useId, useMemo, useState } from 'react'
-import { ChevronRight, CircleAlert, Loader2 } from 'lucide-react'
+import { Brain, ChevronDown, CircleAlert, ListChecks, Loader2, Search, SquareTerminal } from 'lucide-react'
 import type { IndexedChatMessage } from '../lib/chatFlow'
 import { presentToolCall } from '../lib/toolPresentation'
-import { toolBrandForCall, websiteSourceForCall } from '../lib/toolBrand'
+import { toolBrandForCall } from '../lib/toolBrand'
 import { formatSeconds } from '../lib/time'
 import { useAppStore } from '../store'
 import MessageItem from './MessageItem'
 import ToolCallCard from './ToolCallCard'
 import BrandIcon from './BrandIcon'
-import WebsiteIcon from './WebsiteIcon'
 
-interface Props { entries: IndexedChatMessage[]; sessionId: string | null; active: boolean; elapsedMs?: number; lastUserIndex?: number }
+interface Props {
+  entries: IndexedChatMessage[]
+  sessionId: string | null
+  active: boolean
+  elapsedMs?: number
+  lastUserIndex?: number
+  streamingMessageIndex?: number
+}
 
-/** Keep the complete ordered process available without competing with the result. */
-function TurnProcess({ entries, sessionId, active, elapsedMs, lastUserIndex }: Props) {
+function summarizeActivity(entries: IndexedChatMessage[], language: 'zh' | 'en', active: boolean) {
+  const steps = entries.flatMap(({ message }) => {
+    const call = message.toolCall
+    if (!call || call.tool === 'toushou_session_topic') return []
+    const presentation = presentToolCall(call, language)
+    return [{ call, ...presentation, name: [presentation.label, presentation.summary].filter(Boolean).join(' · ') }]
+  })
+  const count = steps.length
+  const failed = steps.filter(step => step.status === 'failed').length
+  const running = active && steps.findLast(step => step.status === 'running')
+  const primary = running || steps.findLast(step => step.status === 'failed') || steps.at(-1)
+  const secondary = count > 1 && !running && steps.findLast(step => step.name !== primary?.name)
+  return { count, failed, primary, secondary, running: Boolean(running) }
+}
+
+/** Keep adjacent calls on one disclosure row at their original place in the reply. */
+function TurnProcess({ entries, sessionId, active, elapsedMs, lastUserIndex, streamingMessageIndex }: Props) {
   const language = useAppStore(state => state.language)
   const zh = language === 'zh'
-  // 关键总结默认常驻（Claude Code 式步骤行）：每个工具步骤与中间解说各留一行
-  // 摘要，完成后不消失；用户可把整组手动收起成单行摘要。思维链仍走自己的折叠逻辑。
-  const [expanded, setExpanded] = useState(true)
+  const [expanded, setExpanded] = useState(false)
   const id = useId()
-  const { stepCount, failed, last, action, website, brands } = useMemo(() => {
-    const calls = entries.flatMap(entry => entry.message.toolCall ? [entry.message.toolCall] : [])
-    const last = active ? calls.at(-1) : undefined
-    return {
-      stepCount: calls.length,
-      failed: calls.filter(call => presentToolCall(call, language).status === 'failed').length,
-      last,
-      action: last ? presentToolCall(last, language).label : null,
-      website: last ? websiteSourceForCall(last) : null,
-      brands: last ? [] : [...new Set(calls.map(toolBrandForCall).filter(brand => brand !== null))].slice(0, 3)
-    }
-  }, [entries, language, active])
+  const { count, failed, primary, secondary, running } = useMemo(() => summarizeActivity(entries, language, active), [entries, language, active])
+  const hasThinking = count === 0 && entries.some(({ message }) => Boolean(message.thinking))
+  if (!primary && !hasThinking && !entries.some(({ message }) => message.toolCall)) return null
+
+  const brand = primary && toolBrandForCall(primary.call)
+  const toolName = primary?.call.tool.toLowerCase() ?? ''
+  const Icon = failed && !running ? CircleAlert : hasThinking ? Brain :
+    count === 1 && toolName === 'bash' ? SquareTerminal :
+      count === 1 && /search|^(grep|glob|find)$/.test(toolName) ? Search : ListChecks
+  const title = primary ? [primary.name, secondary && secondary.name].filter(Boolean).join(zh ? '、' : ', ')
+    : hasThinking ? (zh ? '思考记录' : 'Thinking details') : (zh ? '执行详情' : 'Activity details')
+  const status = primary?.status === 'running' && !active ? (zh ? '无执行结果' : 'No result') : primary?.statusLabel
+
   return <section className="min-w-0" aria-label={zh ? '本轮执行过程' : 'Turn activity'}>
-    <button type="button" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(value => !value)}
-      className="focus-ring flex min-h-9 w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 py-1.5 text-left text-[12px] text-cream-dim transition-colors hover:bg-overlay">
-      {active && !expanded ? <Loader2 size={14} className="shrink-0 animate-spin" aria-hidden="true" /> : failed ? <CircleAlert size={14} className="shrink-0 text-red-500" aria-hidden="true" /> : <ChevronRight size={14} className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''} ${active ? 'text-accent' : ''}`} aria-hidden="true" />}
-      {!expanded && (website ? <WebsiteIcon url={website.url} hostname={website.hostname} size={16} /> : active && last ? <BrandIcon brand={toolBrandForCall(last)} size={16} /> :
-        brands.length > 0 && <span className="inline-flex shrink-0 items-center gap-1.5" aria-hidden="true">{brands.map(brand => <BrandIcon key={brand} brand={brand} size={16} />)}</span>)}
-      <span className="min-w-0 flex-1 basis-[100px] truncate font-medium">{!expanded && action ? action : (zh ? '执行过程' : 'Activity')}</span>
-      {!expanded && website && <span className="max-w-[180px] truncate text-cream-faint">{website.hostname}</span>}
-      <span className="shrink-0 text-cream-faint">{zh ? `${stepCount} 个步骤` : `${stepCount} steps`}</span>
-      {failed > 0 && <span className="shrink-0 text-red-500">{zh ? `${failed} 项失败` : `${failed} failed`}</span>}
-      {elapsedMs !== undefined && !active && <span className="ml-auto shrink-0 tabular-nums text-cream-faint">{formatSeconds(elapsedMs)}s</span>}
-      <span className="ml-auto shrink-0 text-cream-faint">{expanded ? (zh ? '收起' : 'Hide') : (zh ? '展开' : 'Show')}</span>
+    <button type="button" data-turn-activity-row aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(value => !value)}
+      className="focus-ring inline-flex min-h-8 max-w-full items-start gap-2 rounded-md py-1.5 text-left text-[13px] leading-5 text-cream-dim transition-colors hover:text-cream">
+      {running ? <Loader2 size={15} className="mt-0.5 shrink-0 motion-safe:animate-spin" aria-hidden="true" /> :
+        brand && !failed ? <BrandIcon brand={brand} size={15} className="mt-0.5" /> :
+          <Icon size={15} className={`mt-0.5 shrink-0 ${failed ? 'text-red-600 dark:text-red-300' : ''}`} aria-hidden="true" />}
+      <span className="min-w-0 break-words">
+        <span>{title}</span>
+        {(count === 1 || running) && status && <span> · {status}</span>}
+        {count > 1 && <span> · {zh ? `${count} 步` : `${count} steps`}</span>}
+        {failed > 0 && count > 1 && <span className="text-red-600 dark:text-red-300"> · {zh ? `${failed} 项失败` : `${failed} failed`}</span>}
+        {elapsedMs !== undefined && <span className="tabular-nums"> · {formatSeconds(elapsedMs)}s</span>}
+      </span>
+      <ChevronDown size={13} className={`mt-1 shrink-0 transition-transform motion-reduce:transition-none ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
     </button>
-    <div id={id} hidden={!expanded} className="mt-2 space-y-3 border-l border-line pl-3">
-      {expanded && entries.map(({ message, index }, entryIndex) => <div key={message.id} data-message-id={message.id} className="min-w-0">
-        {message.toolCall ? <ToolCallCard toolCall={message.toolCall} /> : <MessageItem message={message} index={index} lastUserIndex={lastUserIndex}
-          sessionId={sessionId} streaming={active && entryIndex === entries.length - 1} allowThinkingAutoExpand={false} showBoardAction={false} />}
+    <div id={id} hidden={!expanded} data-turn-activity-details className="ml-[7px] mt-1 space-y-2 border-l border-line pl-3">
+      {expanded && entries.map(({ message, index }) => <div key={message.id} data-message-id={message.id} className="min-w-0">
+        {message.toolCall ? <ToolCallCard toolCall={message.toolCall} active={active} /> : <MessageItem message={message} index={index} lastUserIndex={lastUserIndex}
+          sessionId={sessionId} streaming={index === streamingMessageIndex} allowThinkingAutoExpand={false} showReplyActions={false} />}
       </div>)}
     </div>
   </section>
 }
 
-export default memo(TurnProcess, (before, after) => before.sessionId === after.sessionId && before.active === after.active && before.elapsedMs === after.elapsedMs &&
+export default memo(TurnProcess, (before, after) => before.sessionId === after.sessionId && before.active === after.active &&
+  before.elapsedMs === after.elapsedMs && before.lastUserIndex === after.lastUserIndex && before.streamingMessageIndex === after.streamingMessageIndex &&
   before.entries.length === after.entries.length && before.entries.every((entry, index) => entry.index === after.entries[index].index && entry.message === after.entries[index].message))

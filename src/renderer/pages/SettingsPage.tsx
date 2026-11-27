@@ -24,11 +24,12 @@ import type { SessionImportResult, SessionImportSource } from '@shared/sessionIm
 import { subscribeUpdaterStatus } from '../lib/updaterStatus'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store'
-import { I18nKey, useT } from '../i18n'
+import { fileManagerRevealKey, I18nKey, useT } from '../i18n'
 import { runLanguageTransition, runThemeTransition } from '../lib/themeTransition'
 import CurrentOmpSettings from '../components/CurrentOmpSettings'
 import LegacyPiSettings from '../components/LegacyPiSettings'
 import MemorySection from '../components/MemorySection'
+import JellyToggle from '../components/effects/JellyToggle'
 
 /** RPC protocol versions this GUI can drive (mirrors the main-process handshake). */
 const SUPPORTED_RPC_PROTOCOLS: readonly number[] = [1, 2]
@@ -224,6 +225,8 @@ export default function SettingsPage() {
   )
   const thinkingAutoExpand = useAppStore((s) => s.thinkingAutoExpand)
   const thinkingCollapseTiming = useAppStore((s) => s.thinkingCollapseTiming)
+  const composerSendMagnetism = useAppStore(s => s.composerSendMagnetism)
+  const setComposerSendMagnetism = useAppStore(s => s.setComposerSendMagnetism)
   const t = useT()
   const [cli, setCli] = useState<CliInfo | null>(null)
   const [caps, setCaps] = useState<CliCapabilities | null>(null)
@@ -453,6 +456,10 @@ export default function SettingsPage() {
   const handleSettingsScroll = useCallback(() => {
     const container = scrollContainerRef.current
     if (!container) return
+    if (container.scrollTop > 0 && container.scrollHeight - container.scrollTop - container.clientHeight <= 2) {
+      setActiveNav(SETTINGS_NAV[SETTINGS_NAV.length - 1].id)
+      return
+    }
     const containerTop = container.getBoundingClientRect().top
     let current = SETTINGS_NAV[0].id
     for (const item of SETTINGS_NAV) {
@@ -465,7 +472,8 @@ export default function SettingsPage() {
     const el = document.getElementById(id)
     const container = scrollContainerRef.current
     if (!el || !container) return
-    container.scrollTo({ top: el.offsetTop - 12, behavior: 'smooth' })
+    const top = container.scrollTop + el.getBoundingClientRect().top - container.getBoundingClientRect().top - 12
+    container.scrollTo({ top, behavior: 'instant' })
     setActiveNav(id)
   }
 
@@ -581,6 +589,10 @@ export default function SettingsPage() {
                 </button>
               </div>
             </Row>
+            <Row label={t('settings.composerSendMagnetism')}>
+              <JellyToggle size="sm" checked={composerSendMagnetism} onChange={setComposerSendMagnetism}
+                aria-label={t('settings.composerSendMagnetism')} />
+            </Row>
             <Row label={t('settings.devChrome')}>
               <div className="flex items-center gap-2">
                 <div className="flex rounded-full border border-line bg-ink-800 p-0.5">
@@ -695,7 +707,7 @@ export default function SettingsPage() {
             >
               <button onClick={showCliSettings} disabled={!cli?.available} className={buttonCls}>
                 <FolderCog size={11} />
-                {t('settings.showInFinder')}
+                {t(fileManagerRevealKey())}
               </button>
             </Row>
             {cliSettingsError && <Note>{t('settings.cliSettingsUnavailable')}</Note>}

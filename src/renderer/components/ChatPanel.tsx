@@ -7,8 +7,6 @@ import {
   Loader2,
   ChevronDown,
   PanelRight,
-  ScrollText,
-  X,
   Clock3,
   Layers,
   Link2,
@@ -67,6 +65,7 @@ export default function ChatPanel() {
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const selectWorkspace = useProjects((s) => s.importFolder)
   const unavailableDefault = useProjects(s => s.projects.find(project => project.isDefault && project.missing))
+  const projectLabel = useProjects(s => s.projects.find(project => project.path === currentWorkspace?.realPath)?.name)
   // Per-session slices only: streaming deltas of OTHER sessions must not
   // re-render this chat, and unrelated store writes must not either.
   const sessionMessages = useAppStore((s) =>
@@ -82,17 +81,14 @@ export default function ChatPanel() {
   const pendingUi = useAppStore((s) =>
     currentSessionId ? (s.uiRequests[currentSessionId] ?? EMPTY_UI_REQUESTS)[0] : undefined
   )
-  const sessionError = useAppStore((s) =>
-    currentSessionId ? s.sessionErrors[currentSessionId] : undefined
-  )
+  const sessionError = useAppStore((s) => {
+    const error = currentSessionId ? s.sessionErrors[currentSessionId] : undefined
+    // Provider failures already have their own transcript row.
+    return error === 'chat.turnFailed' ? undefined : error
+  })
   const queuedCount = useAppStore((s) => currentSessionId ? s.queuedMessages[currentSessionId]?.length ?? 0 : 0)
   const queuePauseReason = useAppStore((s) => currentSessionId ? s.queuePauseReasons[currentSessionId] : undefined)
   const queueDispatching = useAppStore((s) => currentSessionId ? s.queueDispatching[currentSessionId] : undefined)
-  const sessionInstruction = useAppStore((s) => currentSessionId ? s.sessionInstructions[currentSessionId] : undefined)
-  const setSessionInstructions = useAppStore((s) => s.setSessionInstructions)
-  /** 会话设定编辑弹窗（学 kimi 的会话设定：手写长期指令）。 */
-  const [instructionOpen, setInstructionOpen] = useState(false)
-  const [instructionDraft, setInstructionDraft] = useState('')
   const { viewportRef: scrollRef, contentRef, onScroll: handleTranscriptScroll, showJump, jumpToBottom } = useTranscriptScroll(currentSessionId)
   const [commandResult, setCommandResult] = useState<{ sessionId: string; commands: SlashCommand[] } | null>(null)
   const slashCommands = commandResult?.sessionId === currentSessionId ? commandResult.commands : undefined
@@ -419,10 +415,26 @@ export default function ChatPanel() {
     setWorkspacePanel({ kind: 'office', grant: picked.grant, name: picked.name })
   }
 
-  const projectName = currentWorkspace ? basename(currentWorkspace.displayPath) || null : null
-  // 转写装载中不渲染 home hero（学 dsh/kimi：切换期间不经过空状态）。
-  const transcriptHydrating = useAppStore((s) => currentSessionId ? Boolean(s.transcriptHydrating[currentSessionId]) : false)
-  const showHero = sessionMessages.length === 0 && !transcriptHydrating
+  const projectName = currentWorkspace ? projectLabel || basename(currentWorkspace.displayPath) : null
+  const transcriptHydrating = useAppStore(s => Boolean(currentSessionId && s.transcriptHydrating[currentSessionId]))
+  const transcriptUnavailable = useAppStore(s => Boolean(currentSessionId && s.transcriptUnavailable[currentSessionId]))
+  const refreshTranscript = useCallback(() => {
+    const { currentSessionId, ensureTranscript } = useAppStore.getState()
+    if (currentSessionId && document.visibilityState !== 'hidden') void ensureTranscript(currentSessionId)
+  }, [])
+  useEffect(() => {
+    refreshTranscript()
+  }, [currentSessionId, refreshTranscript])
+  useEffect(() => {
+    window.addEventListener('focus', refreshTranscript)
+    document.addEventListener('visibilitychange', refreshTranscript)
+    return () => {
+      window.removeEventListener('focus', refreshTranscript)
+      document.removeEventListener('visibilitychange', refreshTranscript)
+    }
+  }, [refreshTranscript])
+
+  const showHero = !currentSessionId
   const showThinking =
     isBusy && sessionMessages.length > 0 && sessionMessages[sessionMessages.length - 1].role === 'user'
 
@@ -458,18 +470,6 @@ export default function ChatPanel() {
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-cream-dim">
-          {currentSessionId && (
-            <button
-              onClick={() => { setInstructionDraft(sessionInstruction ?? ''); setInstructionOpen(true) }}
-              aria-label={t('chat.instruction.open')}
-              title={sessionInstruction ? t('chat.instruction.hasOne') : t('chat.instruction.open')}
-              className={`focus-ring app-no-drag rounded-md p-1.5 transition-colors hover:bg-overlay hover:text-cream ${
-                sessionInstruction ? 'text-accent' : 'text-cream-faint'
-              }`}
-            >
-              <ScrollText size={14} />
-            </button>
-          )}
           {currentWorkspace && <OpenWithMenu workspaceId={currentWorkspace.id} compact={compact} />}
           <button
             onClick={toggleWorkspace}
@@ -490,80 +490,16 @@ export default function ChatPanel() {
                 className="app-no-drag focus-ring rounded px-1 hover:text-cream disabled:opacity-50">{t('common.cancel')}</button>}
             </span>
           )}
-          {isStopping ? (
-            <>
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
-              <span role="status" className="font-medium text-amber-500">{t('chat.stopping')}</span>
-            </>
-          ) : statusError ? (
+          {statusError && !isStopping && (
             <>
               <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
               <span role="alert" className="font-medium text-red-500">{t(statusError)}</span>
             </>
-          ) : isBusy ? (
-            <>
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
-              <span role="status" className="font-medium text-amber-500">{t('chat.running')}</span>
-            </>
-          ) : null}
+          )}
         </span>
         </header>
       ) : (
         <div className="app-drag h-12 shrink-0" />
-      )}
-
-      {instructionOpen && currentSessionId && (
-        <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div role="dialog" aria-modal="true" aria-label={t('chat.instruction.open')}
-            className="dialog-panel w-full max-w-[560px] rounded-2xl border border-line bg-ink-850 p-4 shadow-pop">
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-[13px] font-medium text-cream">{t('chat.instruction.title')}</h3>
-              <button onClick={() => setInstructionOpen(false)} aria-label={t('common.cancel')}
-                className="focus-ring rounded-md p-1 text-cream-faint hover:bg-overlay hover:text-cream"><X size={14} /></button>
-            </div>
-            <p className="mb-2 text-[11.5px] leading-4 text-cream-faint">{t('chat.instruction.hint')}</p>
-            <textarea
-              value={instructionDraft}
-              onChange={(e) => setInstructionDraft(e.target.value)}
-              rows={6}
-              placeholder={t('chat.instruction.placeholder')}
-              className="w-full resize-none rounded-lg border border-line bg-ink-900 px-2.5 py-2 text-[12.5px] leading-5 text-cream placeholder-cream-faint outline-none focus:border-accent/40"
-            />
-            <div className="mt-3 flex items-center justify-end gap-2">
-              {sessionInstruction && (
-                <button
-                  onClick={() => { setInstructionDraft(''); setSessionInstructions(currentSessionId, '') }}
-                  className="focus-ring rounded-lg border border-line px-2.5 py-1 text-[12px] text-cream-dim transition-colors hover:bg-overlay hover:text-cream"
-                >
-                  {t('chat.instruction.clear')}
-                </button>
-              )}
-              <button
-                onClick={() => {
-                  const text = instructionDraft.trim()
-                  if (!text) return
-                  // 设定作为一条正式消息发送：立即生效、写入会话历史
-                  // （resume 后模型依然可见），并复用排队/转向兼容链路。
-                  // busy/预览态/无运行时下 handleSend 会拒发——此时不保存不关闭，
-                  // 如实告知，避免"看起来已生效但模型根本没收到"。
-                  void handleSend(`【会话设定】此后所有回复遵守以下要求：\n${text}\n（本条为设定同步消息，无需逐条复述。）`).then((ok) => {
-                    if (ok) {
-                      setSessionInstructions(currentSessionId, text)
-                      setInstructionOpen(false)
-                    } else {
-                      showNotice('chat.instruction.busy')
-                    }
-                  })
-                }}
-                disabled={!instructionDraft.trim()}
-                title={t('chat.instruction.apply')}
-                className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-[rgb(var(--bg-app))] transition-colors hover:bg-accent-bright disabled:cursor-not-allowed disabled:bg-overlay-strong disabled:text-cream-faint"
-              >
-                {t('chat.instruction.apply')}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       <div className="relative min-h-0 flex-1">
@@ -623,6 +559,15 @@ export default function ChatPanel() {
               <div className="msg-in flex items-center gap-2 px-6 pb-2 text-[12px] text-cream-faint">
                 <Loader2 size={13} className="animate-spin" />
                 {t('chat.loadingTranscript')}
+              </div>
+            )}
+            {!transcriptHydrating && transcriptUnavailable && !sessionMessages.length && (
+              <div role="status" className="flex flex-wrap items-center gap-2 px-6 py-4 text-xs text-cream-dim">
+                <CircleAlert size={13} aria-hidden="true" />
+                {t('chat.transcriptUnavailable')}
+                <button type="button" onClick={refreshTranscript} className="focus-ring rounded-md px-2 py-1 font-medium text-cream hover:bg-overlay">
+                  {t('msg.retry')}
+                </button>
               </div>
             )}
             <ExecutionActivity sessionId={currentSessionId} />

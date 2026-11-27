@@ -127,6 +127,21 @@ describe('assistant reply attachment mentions and footer', () => {
     expect(elements(unknown.document, 'code').map(visibleText)).toEqual(['fig1-3.png', '.md'])
   })
 
+  it('renders the same Windows and macOS directory links recognized by transcript validation', () => {
+    const { document } = reply([
+      '[成果](/tmp/synthetic-results) · [旧目录](<C:\\Example Files\\Reports>) · [新目录](C:/Example%20Files/Archive) · [帮助](/help)',
+      '',
+      '输出至：\n📁/tmp/output-files。'
+    ].join('\n'))
+    const paragraphs = elements(document, 'p')
+    expect(elements(paragraphs[0], 'button').map(element => attr(element, 'title'))).toEqual([
+      '/tmp/synthetic-results', 'C:\\Example Files\\Reports', 'C:/Example Files/Archive'
+    ])
+    expect(elements(paragraphs[0], 'a').map(visibleText)).toEqual(['帮助'])
+    expect(elements(paragraphs[1], 'button').map(element => attr(element, 'title'))).toEqual(['/tmp/output-files'])
+    expect(visibleText(paragraphs[1])).toContain('📁/tmp/output-files')
+  })
+
   it('uses multiple locally named directories without guessing a destination for an earlier ambiguous name', () => {
     const { document, footers } = reply([
       '先看 `report.csv`。', '',

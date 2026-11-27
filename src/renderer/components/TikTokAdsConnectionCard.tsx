@@ -132,6 +132,7 @@ export default function TikTokAdsConnectionCard() {
   const t = useT()
   const [snapshot, setSnapshot] = useState<TikTokAdsConnectionSnapshot>(emptySnapshot)
   const [busy, setBusy] = useState(false)
+  const [actionFailed, setActionFailed] = useState(false)
   const [probe, setProbe] = useState<{ running: boolean; result: { ok: boolean; kind: string; detail?: string; checkedAt: number } | null }>({ running: false, result: null })
 
   useEffect(() => {
@@ -156,23 +157,21 @@ export default function TikTokAdsConnectionCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot.lastConnectedAt])
 
-  const begin = async () => {
+  const runConnectionAction = async (action: () => Promise<TikTokAdsConnectionSnapshot>) => {
     setBusy(true)
-    setSnapshot(await window.electronAPI.tiktokBegin())
-    setBusy(false)
+    setActionFailed(false)
+    try {
+      setSnapshot(await action())
+    } catch {
+      setActionFailed(true)
+    } finally {
+      setBusy(false)
+    }
   }
 
-  const cancel = async () => {
-    setBusy(true)
-    setSnapshot(await window.electronAPI.tiktokCancel())
-    setBusy(false)
-  }
-
-  const disconnect = async () => {
-    setBusy(true)
-    setSnapshot(await window.electronAPI.tiktokDisconnect())
-    setBusy(false)
-  }
+  const begin = () => runConnectionAction(() => window.electronAPI.tiktokBegin())
+  const cancel = () => runConnectionAction(() => window.electronAPI.tiktokCancel())
+  const disconnect = () => runConnectionAction(() => window.electronAPI.tiktokDisconnect())
 
   /** 真实连通检测：点一下做一次真实 MCP 握手，如实显示网络是否到得了 TikTok。 */
   const runProbe = async () => {
@@ -223,6 +222,9 @@ export default function TikTokAdsConnectionCard() {
         )}
       </div>
 
+      {actionFailed && !(isFailed || isDegraded) && (
+        <p role="alert" className="mt-3 text-[12px] text-red-600 dark:text-red-400">{t('connections.tiktokFailed')}</p>
+      )}
       {isConnecting && (
         <div role="status" className="mt-4 flex items-center gap-2 text-[12px] text-cream-dim">
           <LoaderCircle size={14} className="animate-spin text-accent" />
@@ -274,8 +276,11 @@ export default function TikTokAdsConnectionCard() {
               {probe.result.kind === 'network' && (
                 <span className="mt-0.5 block text-cream-faint">{t('connections.tiktokProbeNetworkHint')}</span>
               )}
-              {probe.result.kind === 'api' && probe.result.detail && (
-                <span className="mt-0.5 block text-cream-faint">{probe.result.detail}</span>
+              {probe.result.kind !== 'not-authorized' && probe.result.detail && (
+                <details className="mt-1 text-cream-faint">
+                  <summary className="focus-ring w-fit cursor-pointer rounded">{t('boards.reading.details')}</summary>
+                  <p className="mt-0.5 break-words">{probe.result.detail}</p>
+                </details>
               )}
             </div>
           )}

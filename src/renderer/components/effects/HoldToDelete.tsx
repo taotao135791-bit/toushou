@@ -203,7 +203,7 @@ export default function HoldToDelete({
           confirmRef.current?.()
         }
       }}
-      className={`relative inline-flex select-none items-center gap-1.5 outline-none focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-[#C9F45A] ${disabled ? 'cursor-not-allowed' : ''} ${className}`}
+      className={`relative inline-flex select-none items-center gap-1.5 focus-ring ${disabled ? 'cursor-not-allowed' : ''} ${className}`}
     >
       {!disabled && (
         <svg

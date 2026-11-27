@@ -51,8 +51,7 @@ const milestones: Record<string, number> = {
   board_refresh: 80, board_check: 90, board_build_preflight: 90, board_build_commit: 97
 }
 
-// Board tools define milestones, not a fixed step count. The UI labels the
-// resulting percentage as an estimate and leaves ordinary tools indeterminate.
+// Board tools report milestones rather than a fixed sequence of steps.
 export function boardMilestone(tool: string, previous?: number): number | undefined {
   const name = tool.replace(/^toushou_/, '')
   if (name === 'board_build_abort') return undefined
@@ -61,7 +60,32 @@ export function boardMilestone(tool: string, previous?: number): number | undefi
   return percent > 0 ? Math.max(previous ?? 0, percent) : previous
 }
 
-export function formatProgressTime(seconds: number) {
+/** Estimate a running turn from measured progress, a live plan ETA, or recent turn durations. */
+export function estimatedTurnProgress(
+  elapsedSeconds: number,
+  measuredPercent?: number,
+  planEtaSeconds?: number,
+  expectedDurationSeconds?: number
+): { percent: number; remainingSeconds?: number } {
+  const elapsed = Number.isFinite(elapsedSeconds) ? Math.max(0, elapsedSeconds) : 0
+  const planned = planEtaSeconds !== undefined && Number.isFinite(planEtaSeconds) && planEtaSeconds > 0 ? planEtaSeconds : undefined
+  const expected = expectedDurationSeconds !== undefined && Number.isFinite(expectedDurationSeconds) && expectedDurationSeconds > 0
+    ? Math.max(15, expectedDurationSeconds) : 45
+  const duration = planned === undefined ? expected : elapsed + planned
+  const estimatedPercent = 90 * Math.min(1, elapsed / duration)
+  const measured = measuredPercent !== undefined && Number.isFinite(measuredPercent)
+    ? Math.min(98, Math.max(0, measuredPercent)) : 0
+  const remaining = planned ?? (expected - elapsed)
+  return {
+    percent: Math.round(Math.max(measured, estimatedPercent)),
+    remainingSeconds: remaining > 0 ? Math.ceil(remaining) : undefined
+  }
+}
+
+export function formatProgressTime(seconds: number, language: 'en' | 'zh') {
   const value = Math.max(0, Math.floor(seconds))
-  return value >= 60 ? `${Math.floor(value / 60)}:${String(value % 60).padStart(2, '0')}` : `${value}s`
+  const minutes = Math.floor(value / 60)
+  const rest = value % 60
+  if (language === 'zh') return minutes ? `${minutes} 分 ${rest} 秒` : `${value} 秒`
+  return minutes ? `${minutes}:${String(rest).padStart(2, '0')}` : `${value}s`
 }

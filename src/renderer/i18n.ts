@@ -1,3 +1,4 @@
+import { shortcutPlatform } from './lib/platformShortcut'
 import { useCallback } from 'react'
 import { Language } from '../shared/types'
 import { useAppStore } from './store'
@@ -103,11 +104,13 @@ const en = {
   'chat.instruction.open': 'Session instructions',
   'chat.instruction.hasOne': 'Session instructions (active)',
   'chat.instruction.title': 'Session instructions',
-  'chat.instruction.hint': 'Standing instructions the assistant follows in every reply of this conversation. Applying sends them to the conversation immediately and they survive restarts.',
+  'chat.instruction.hint': 'Saved for this conversation and used from the next turn.',
   'chat.instruction.placeholder': 'e.g. Reply concisely; always show data in tables; ask before touching the boards…',
   'chat.instruction.apply': 'Apply to conversation',
-  'chat.instruction.busy': 'Session is busy — retry when the current reply finishes.',
+  'chat.instruction.busy': 'Could not save these instructions. Please reopen the conversation and try again.',
   'chat.instruction.clear': 'Clear',
+  'chat.instruction.loadFailed': 'Could not load these instructions. Reopen the settings to try again.',
+  'chat.instruction.readonly': 'Instructions can only be edited for writable conversations.',
   'sidebar.themeRightHint': 'Click to switch light/dark · Right-click to follow system',
   'sidebar.themeAutoHint': 'Following system (A) · Click to switch manually',
   'adsCopy.section.title': 'Ad-copy model pool',
@@ -253,8 +256,10 @@ const en = {
   'sidebar.sort': 'Sort sessions',
   'sidebar.sortRecent': 'Recent activity',
   'sidebar.sortManual': 'Manual order',
-  'sidebar.filedInProject': 'Filed in project. This conversation uses its original workspace.',
-  'sidebar.fileInProjectFailed': 'Could not save the conversation’s project. Please try again.',
+  'sidebar.filedInProject': 'Conversation moved to project.',
+  'sidebar.fileInProjectFailed': 'Could not move the conversation. Check that its history and the project folder are available.',
+  'sidebar.moveConversationBusy': 'The conversation or project is busy. Try again once it is idle.',
+  'sidebar.moveConversationConflict': 'Conflicting conversation files were found. Both copies were kept.',
   'sidebar.sortName': 'Name',
   'sidebar.showArchived': 'Show archived',
   'sidebar.showMore': 'Show {count} more',
@@ -263,7 +268,7 @@ const en = {
   'sidebar.status.running': 'Running',
   'sidebar.status.attention': 'Needs attention',
   'sidebar.status.error': 'Error',
-  'sidebar.status.unread': 'New',
+  'sidebar.status.unread': 'Completed, unread',
   'sidebar.status.idle': 'Idle',
   'sidebar.feishuSession': 'Feishu channel session',
   'sidebar.badge.feishu': 'Feishu',
@@ -367,12 +372,12 @@ const en = {
   'slash.tiktok': 'Update TikTok board',
   'slash.tiktokPrompt': '更新 TikTok 看板：拉取最近 7 天分活动报表并更新数据集，完成后给我简要摘要。',
   'chat.working': 'Working…',
-  'chat.running': 'Running…',
   'chat.jumpToBottom': 'Jump to latest',
   'chat.compacting': 'Compacting context…',
   'chat.autoCompacting': 'Compacting context automatically…',
   'chat.selectProject': 'Select project',
   'chat.sendFailed': 'Message failed to send.',
+  'chat.turnFailed': 'The task failed. See the conversation for details.',
   'chat.queueDeliveryUnknown': 'Delivery is unconfirmed. Review the conversation before trying again.',
   'chat.queueHeld': '{count} queued message(s) paused.',
   'chat.queueUnknownHeld': '{count} queued message(s) paused. Review delivery before retrying.',
@@ -390,17 +395,19 @@ const en = {
   'chat.compactFailed': "Couldn't compact this session. You can continue the conversation or try again.",
   'chat.steerComposerFailed': "Couldn't steer — the active turn was no longer available. Your draft was restored.",
   'chat.steerQueueFailed': "Couldn't steer — the active turn was no longer available. The message remains queued.",
-  'chat.sessionDead': 'Session ended — press ⌘N or type below to start a new chat.',
+  'chat.sessionDead': 'Session ended. Press {newChatShortcut} or type below to start a new chat.',
   'chat.createFailed': 'Couldn’t start chat. Check the workspace and retry.',
   'chat.creatingSession': 'Starting the session…',
   'chat.previewRestoring': 'Showing the conversation — restoring the live session in the background…',
   'chat.loadingTranscript': 'Loading conversation…',
+  'chat.transcriptUnavailable': 'The conversation could not be loaded.',
   'chat.previewFailed': 'Live restore failed. This conversation is read-only; reopen it from the list to retry.',
   'chat.stopping': 'Stopping…',
   'chat.stopFailed': 'Stop unconfirmed. Try again.',
   'chat.queueCleared': 'Cleared {count} queued message(s).',
   'chat.openIn': 'Open with',
   'chat.openInFinder': 'Reveal in Finder',
+  'chat.openInFileManager': 'Show in file manager',
   'chat.attachmentOpen': 'Open attachment',
   'chat.attachmentSave': 'Save a copy',
   'chat.attachmentLocate': 'Locate local copy',
@@ -412,6 +419,7 @@ const en = {
   'chat.attachmentFolderUnavailable': 'Folder unavailable',
   'chat.attachmentUnavailable': 'File unavailable',
   'chat.openInTerminal': 'Open in Terminal',
+  'chat.openInCommandPrompt': 'Open in Command Prompt',
   'chat.openInEditor': 'Open in VS Code',
   'chat.openInFailed': "Couldn't open — make sure the app is installed",
 
@@ -493,12 +501,12 @@ const en = {
   'composer.thinkingHigh': 'High',
   'composer.thinkingXhigh': 'X-High',
   'composer.thinkingMax': 'Max',
-  'composer.thinkingHintLight': 'Quicker responses',
-  'composer.thinkingHintHeavy': 'Deeper thinking, uses limits faster',
   'composer.stop': 'Stop generating',
   'composer.model': 'Model',
   'composer.modelNextSession': 'Model for the next session',
   'composer.modelAuto': 'Auto',
+  'composer.modelThinking': 'Model and thinking',
+  'composer.chooseModel': 'Choose model',
   'composer.noModels': 'No API keys yet — add one in Settings',
   'composer.modelFailed': "Couldn't switch model",
   'composer.thinkingFailed': "Couldn't switch thinking level",
@@ -804,6 +812,7 @@ const en = {
   'settings.machineSkillsNote': 'Skills other agents installed on this machine. Off by default so chats stay clean; applies to new chats.',
   'settings.machineSkillsNoteCount': '{count} machine skills detected (e.g. from other agents). Off by default so chats stay clean; applies to new chats.',
   'settings.appearance': 'Appearance',
+  'settings.composerSendMagnetism': 'Send button follows pointer',
   'settings.theme': 'Theme',
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
@@ -871,7 +880,6 @@ const en = {
   'settings.notifyPreviewsNote': 'Include the start of the agent reply in the notification. Off by default, so reply content never reaches the OS notification center.',
   'settings.cliSettingsFile': 'CLI settings file',
   'settings.ompConfigDirectory': 'Oh My Pi config folder',
-  'settings.showInFinder': 'Reveal in Finder',
   'settings.cliSettingsUnavailable': "Couldn't open the active CLI configuration location.",
   'settings.cliInstall': 'Install / re-run setup',
 
@@ -1827,7 +1835,6 @@ const en = {
   'author.install': 'Install to pi',
   'author.installing': 'Installing…',
   'author.installed': 'Installed',
-  'author.reveal': 'Show in Finder',
   'author.error.required': 'Fill in the package name, description and location.',
   'author.error.invalidName': 'Invalid package name — use lowercase npm name rules.',
   'author.error.invalidVersion': 'Invalid version — use semver like 0.1.0.',
@@ -2233,6 +2240,7 @@ const en = {
   'connections.scopeDocsRead': 'Read docs',
   'connections.scopeDrive': 'Browse cloud files',
   'connections.scopeDocsWrite': 'Edit docs',
+  'connections.scopeDocsMedia': 'Upload document attachments',
   'connections.scopeSheetsRead': 'Read sheets',
   'connections.scopeSheetsWrite': 'Edit sheets',
   'connections.scopeBitableRead': 'Read bitables',
@@ -2355,11 +2363,13 @@ const zh: Record<I18nKey, string> = {
   'chat.instruction.open': '会话设定',
   'chat.instruction.hasOne': '会话设定（已启用）',
   'chat.instruction.title': '会话设定',
-  'chat.instruction.hint': '写给这个对话的长期指令，之后每次回复都会遵守。点击「应用到对话」立即生效并写入对话历史，重启后依然有效。',
+  'chat.instruction.hint': '设定保存在此会话，从下一轮回复起生效。',
   'chat.instruction.placeholder': '例如：回复尽量简洁；数据一律用表格展示；改看板前先问我……',
   'chat.instruction.apply': '应用到对话',
-  'chat.instruction.busy': '会话忙线中，等当前回复结束后再应用。',
+  'chat.instruction.busy': '保存会话设定失败。请重新打开会话后重试。',
   'chat.instruction.clear': '清除',
+  'chat.instruction.loadFailed': '读取会话设定失败，请重新打开设定后重试。',
+  'chat.instruction.readonly': '只能为可编辑的会话修改设定。',
   'sidebar.themeRightHint': '左键切换深浅色 · 右键切换为跟随系统',
   'sidebar.themeAutoHint': '跟随系统中（A）· 左键恢复手动切换',
   'adsCopy.section.title': '文案模型池',
@@ -2505,8 +2515,10 @@ const zh: Record<I18nKey, string> = {
   'sidebar.sort': '排序会话',
   'sidebar.sortRecent': '最近活动',
   'sidebar.sortManual': '手动排序',
-  'sidebar.filedInProject': '已归入项目，继续对话时使用原工作区。',
-  'sidebar.fileInProjectFailed': '保存会话归属失败，请重试。',
+  'sidebar.filedInProject': '会话已迁入项目。',
+  'sidebar.fileInProjectFailed': '会话迁移失败。请确认会话已保存且项目目录可用。',
+  'sidebar.moveConversationBusy': '会话或项目正忙，请等操作完成后重试。',
+  'sidebar.moveConversationConflict': '发现冲突的会话文件，现有文件均已保留。',
   'sidebar.sortName': '名称',
   'sidebar.showArchived': '显示已归档',
   'sidebar.showMore': '展开显示（还有 {count} 条）',
@@ -2515,7 +2527,7 @@ const zh: Record<I18nKey, string> = {
   'sidebar.status.running': '运行中',
   'sidebar.status.attention': '需要处理',
   'sidebar.status.error': '运行错误',
-  'sidebar.status.unread': '新消息',
+  'sidebar.status.unread': '已完成，未读',
   'sidebar.status.idle': '空闲',
   'sidebar.feishuSession': '飞书渠道会话',
   'sidebar.badge.feishu': '飞书',
@@ -2616,12 +2628,12 @@ const zh: Record<I18nKey, string> = {
   'slash.tiktok': '更新 TikTok 看板',
   'slash.tiktokPrompt': '更新 TikTok 看板：拉取最近 7 天分活动报表并更新数据集，完成后给我简要摘要。',
   'chat.working': '正在工作…',
-  'chat.running': '运行中…',
   'chat.jumpToBottom': '回到最新消息',
   'chat.compacting': '正在压缩上下文…',
   'chat.autoCompacting': '正在自动压缩上下文…',
   'chat.selectProject': '选择项目',
   'chat.sendFailed': '消息发送失败',
+  'chat.turnFailed': '任务失败，详情见对话。',
   'chat.queueDeliveryUnknown': '发送结果未确认，请核对对话后重试。',
   'chat.queueHeld': '已暂停 {count} 条待发消息。',
   'chat.queueUnknownHeld': '已暂停 {count} 条待发消息，请先核对发送结果。',
@@ -2639,17 +2651,19 @@ const zh: Record<I18nKey, string> = {
   'chat.compactFailed': '压缩失败，可继续聊天或重试。',
   'chat.steerComposerFailed': '转向失败：当前任务已不可用，输入内容已恢复。',
   'chat.steerQueueFailed': '转向失败：当前任务已不可用，消息仍保留在队列中。',
-  'chat.sessionDead': '会话已结束，按 ⌘N 或直接输入开始新对话',
+  'chat.sessionDead': '会话已结束，按 {newChatShortcut} 或直接输入开始新对话',
   'chat.createFailed': '无法开始对话，请检查工作区后重试',
   'chat.creatingSession': '正在建立会话…',
   'chat.previewRestoring': '正在展示对话内容，后台恢复可交互会话…',
   'chat.loadingTranscript': '正在载入对话内容…',
+  'chat.transcriptUnavailable': '暂时无法载入对话内容。',
   'chat.previewFailed': '会话恢复失败，当前为只读预览；可从列表重新打开重试。',
   'chat.stopping': '正在停止…',
   'chat.stopFailed': '未确认已停止，请重试',
   'chat.queueCleared': '已清除 {count} 条排队消息',
   'chat.openIn': '打开方式',
   'chat.openInFinder': '在 Finder 中显示',
+  'chat.openInFileManager': '在文件管理器中显示',
   'chat.attachmentOpen': '打开附件',
   'chat.attachmentSave': '另存为',
   'chat.attachmentLocate': '选择本地副本',
@@ -2661,6 +2675,7 @@ const zh: Record<I18nKey, string> = {
   'chat.attachmentFolderUnavailable': '文件夹不可用',
   'chat.attachmentUnavailable': '文件不可用',
   'chat.openInTerminal': '在终端中打开',
+  'chat.openInCommandPrompt': '在命令提示符中打开',
   'chat.openInEditor': '在 VS Code 中打开',
   'chat.openInFailed': '未能打开，请确认应用已安装',
 
@@ -2741,12 +2756,12 @@ const zh: Record<I18nKey, string> = {
   'composer.thinkingHigh': '高',
   'composer.thinkingXhigh': '超高',
   'composer.thinkingMax': '最高',
-  'composer.thinkingHintLight': '更快响应',
-  'composer.thinkingHintHeavy': '更深思考，消耗额度更快',
   'composer.stop': '停止生成',
   'composer.model': '模型',
   'composer.modelNextSession': '下一个对话的模型',
   'composer.modelAuto': '自动',
+  'composer.modelThinking': '模型和思考强度',
+  'composer.chooseModel': '选择模型',
   'composer.noModels': '还没有 API 密钥，去设置里添加',
   'composer.modelFailed': '切换模型失败',
   'composer.thinkingFailed': '切换思考级别失败',
@@ -3049,6 +3064,7 @@ const zh: Record<I18nKey, string> = {
   'settings.machineSkillsNote': '本机上其它 agent 安装的技能。默认关闭，避免无关能力混入对话；对新对话生效。',
   'settings.machineSkillsNoteCount': '检测到 {count} 个本机技能（可能来自其它 agent）。默认关闭，避免无关能力混入对话；对新对话生效。',
   'settings.appearance': '外观',
+  'settings.composerSendMagnetism': '发送按钮跟随鼠标',
   'settings.theme': '主题',
   'settings.themeLight': '浅色',
   'settings.themeDark': '深色',
@@ -3116,7 +3132,6 @@ const zh: Record<I18nKey, string> = {
   'settings.notifyPreviewsNote': '在通知中显示 agent 回复的开头。默认关闭，避免回复内容出现在系统通知中心。',
   'settings.cliSettingsFile': 'CLI 设置文件',
   'settings.ompConfigDirectory': 'Oh My Pi 配置目录',
-  'settings.showInFinder': '在 Finder 中显示',
   'settings.cliSettingsUnavailable': '无法打开当前 CLI 的配置位置。',
   'settings.cliInstall': '安装 / 重新运行安装向导',
 
@@ -4053,7 +4068,6 @@ const zh: Record<I18nKey, string> = {
   'author.install': '安装到 pi',
   'author.installing': '安装中…',
   'author.installed': '已安装',
-  'author.reveal': '在 Finder 中显示',
   'author.error.required': '请填写包名、描述和目标目录。',
   'author.error.invalidName': '包名不合法 — 请使用小写 npm 包名规则。',
   'author.error.invalidVersion': '版本号不合法 — 请使用 0.1.0 这样的语义化版本。',
@@ -4448,6 +4462,7 @@ const zh: Record<I18nKey, string> = {
   'connections.scopeDocsRead': '读取文档',
   'connections.scopeDrive': '浏览云文档',
   'connections.scopeDocsWrite': '编辑文档',
+  'connections.scopeDocsMedia': '上传文档附件',
   'connections.scopeSheetsRead': '读取表格',
   'connections.scopeSheetsWrite': '编辑表格',
   'connections.scopeBitableRead': '读取多维表格',
@@ -4478,6 +4493,7 @@ export function translate(
   vars?: Record<string, string | number>
 ): string {
   let text = dictionaries[language][key] ?? dictionaries.en[key] ?? key
+  if (key === 'chat.sessionDead') text = text.replace('{newChatShortcut}', modShortcut('N'))
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
       text = text.replaceAll(`{${k}}`, String(v))
@@ -4488,13 +4504,20 @@ export function translate(
 
 /** React hook: const t = useT(); t('sidebar.newChat') */
 /** Platform-correct modifier label for shortcut hints (⌘ on macOS, Ctrl elsewhere). */
-export function modKeyLabel(): string {
-  return /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl'
+export function modKeyLabel(platform = shortcutPlatform()): string {
+  return platform === 'darwin' ? '⌘' : 'Ctrl'
 }
 
 /** Full shortcut hint, e.g. modShortcut('N') → "⌘N" / "Ctrl+N". */
-export function modShortcut(key: string): string {
-  return `${modKeyLabel()}${modKeyLabel() === '⌘' ? '' : '+'}${key}`
+export function modShortcut(key: string, platform = shortcutPlatform()): string {
+  const modifier = modKeyLabel(platform)
+  return `${modifier}${modifier === '⌘' ? '' : '+'}${key}`
+}
+
+export function fileManagerRevealKey(platform = shortcutPlatform()): I18nKey {
+  if (platform === 'darwin') return 'chat.openInFinder'
+  if (platform === 'win32') return 'chat.attachmentShowInExplorer'
+  return 'chat.openInFileManager'
 }
 
 export function useT() {

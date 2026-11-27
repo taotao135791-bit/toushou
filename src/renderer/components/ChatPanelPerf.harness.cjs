@@ -120,10 +120,10 @@ app.whenReady().then(async () => {
     await js('window.chatPerfFixture.finishImageTest()')
     await frame()
     phase = 'DeepSeek session thinking selector'
-    const modelTrigger = `document.querySelector('button[title="Model"]')`
-    const thinkingTrigger = `document.querySelector('button[title="Thinking"]')`
+    const modelTrigger = `document.querySelector('[data-model-thinking-toggle]')`
+    const thinkingTrigger = modelTrigger
     const thinkingMenu = `document.querySelector('[data-thinking-menu]')`
-    await waitFor(`${modelTrigger}?.ariaLabel === 'Model: DeepSeek-V4.1-Flash' && ${thinkingTrigger}?.ariaLabel === 'Thinking: Auto'`)
+    await waitFor(`${modelTrigger}?.dataset.modelLabel === 'DeepSeek-V4.1-Flash' && ${thinkingTrigger}?.dataset.effortLabel === 'Auto' && document.querySelectorAll('[data-model-thinking-toggle]').length === 1`)
     const showThinkingMenu = async () => {
       // 合并调整器：选完模型后弹窗保持打开（继续调强度）——仅在未打开时点击。
       await js(`(() => { const b = ${thinkingTrigger}; if (b.getAttribute('aria-expanded') !== 'true') b.click() })()`)
@@ -132,7 +132,7 @@ app.whenReady().then(async () => {
     const thinkingLabels = () => js(`[...(${thinkingMenu}).querySelectorAll('[data-thinking-choice]')].map(button => button.textContent.trim())`)
     const chooseThinking = async label => {
       await js(`[...(${thinkingMenu}).querySelectorAll('[data-thinking-choice]')].find(button => button.textContent.trim() === ${JSON.stringify(label)})?.click()`)
-      await waitFor(`${thinkingTrigger}.ariaLabel === ${JSON.stringify(`Thinking: ${label}`)}`)
+      await waitFor(`${thinkingTrigger}.dataset.effortLabel === ${JSON.stringify(label)}`)
     }
     await showThinkingMenu()
     const deepSeekThinking = await thinkingLabels()
@@ -157,7 +157,7 @@ app.whenReady().then(async () => {
     // 合并调整器：弹窗锚定模型药丸（左对齐），窄窗下不得溢出视口。
     const narrowMenuPosition = `(() => {
       const rect = (${thinkingMenu}).parentElement.getBoundingClientRect()
-      const trigger = document.querySelector('button[title="Model"]').getBoundingClientRect()
+      const trigger = document.querySelector('[data-model-thinking-toggle]').getBoundingClientRect()
       return rect.left >= 8 && rect.right <= innerWidth - 8 && rect.left <= trigger.left + 1
     })()`
     await waitFor(narrowMenuPosition)
@@ -185,25 +185,59 @@ app.whenReady().then(async () => {
       features: [{ name: 'prefers-reduced-motion', value }]
     })
     await setMotionPreference('no-preference')
-    // Compare two frames while the knob is at rest. The repeating tile may
-    // wrap between samples, so account for a full tile of leftward travel.
-    const particlesMoveLeft = () => js(`(async () => {
-      const read = () => getComputedStyle(${fill}, '::before')
-      const x = () => new DOMMatrix(read().transform).m41
-      const tile = parseFloat(read().getPropertyValue('--tile'))
-      const start = x()
-      await new Promise(resolve => setTimeout(resolve, 125))
-      const shift = (start - x() + tile) % tile
-      return read().backgroundImage.includes('radial-gradient') && shift > 0 && shift < tile / 2
-    })()`)
+    // Sample two points in the same cycle. A fixed wall-clock delay can
+    // cross a tile boundary or span a throttled compositor frame on CI.
+    const particlesMoveLeft = async () => {
+      await waitFor(`getComputedStyle(${fill}, '::before').animationName === 'effort-drift'`)
+      return js(`(async () => {
+        const railFill = ${fill}
+        const read = () => getComputedStyle(railFill, '::before')
+        const animation = railFill.getAnimations({ subtree: true }).find(candidate =>
+          candidate.animationName === 'effort-drift' && candidate.effect?.pseudoElement === '::before')
+        if (!animation || !read().backgroundImage.includes('radial-gradient')) return false
+        await animation.ready
+        if (animation.playState !== 'running') return false
+        const savedTime = animation.currentTime
+        const duration = animation.effect.getComputedTiming().duration
+        const atTime = async time => {
+          animation.currentTime = time
+          await new Promise(requestAnimationFrame)
+          return new DOMMatrix(read().transform).m41
+        }
+        try {
+          animation.pause()
+          await animation.ready
+          const start = await atTime(duration / 4)
+          return await atTime(duration / 2) < start
+        } finally {
+          animation.currentTime = savedTime
+          animation.play()
+        }
+      })()`)
+    }
+    const dragSamples = []
     const drag = async (start, end, label) => {
       const rect = await js(`(${slider}).getBoundingClientRect().toJSON()`)
       const x = fraction => Math.round(rect.left + 13 + (rect.width - 26) * fraction)
       const y = Math.round(rect.top + rect.height / 2)
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: x(start), y, button: 'left', buttons: 1, clickCount: 1 })
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x(end), y, button: 'left', buttons: 1 })
+      await waitFor(`document.querySelector('[data-thinking-level-label]').textContent === ${JSON.stringify(label)}`)
+      dragSamples.push(await js(`(() => {
+        const thumb = document.querySelector('.effort-thumb-live')
+        const rect = thumb.getBoundingClientRect()
+        const input = ${slider}
+        const heading = document.querySelector('[data-thinking-level-label]')
+        return {
+          round: Math.abs(rect.width - rect.height) < 0.1,
+          levelOnly: heading.textContent === input.getAttribute('aria-valuetext'),
+          railClips: getComputedStyle(document.querySelector('.effort-rail')).overflow === 'hidden',
+          particlesOnRailOnly: !!document.querySelector('.effort-rail .effort-fill') &&
+            !document.querySelector('.effort-burst')
+        }
+      })()`))
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x(end), y, button: 'left', buttons: 0, clickCount: 1 })
-      await waitFor(`${thinkingTrigger}.ariaLabel === ${JSON.stringify('Thinking: ' + label)}`)
+      await waitFor(`${thinkingTrigger}.dataset.effortLabel === ${JSON.stringify(label)}`)
       await checkMenu()
     }
     await drag(0, 1 / 3, 'Low')
@@ -216,7 +250,7 @@ app.whenReady().then(async () => {
     await js(`(${slider}).focus()`)
     wc.sendInputEvent({ type: 'keyDown', keyCode: 'End' })
     wc.sendInputEvent({ type: 'keyUp', keyCode: 'End' })
-    await waitFor(`${thinkingTrigger}.ariaLabel === 'Thinking: Max'`)
+    await waitFor(`${thinkingTrigger}.dataset.effortLabel === 'Max'`)
     await checkMenu()
     const peakPalette = await palette()
     const peakDrifts = await particlesMoveLeft()
@@ -232,17 +266,22 @@ app.whenReady().then(async () => {
     const effortInteraction = {
       insetMenu, themed: lightEffort !== darkEffort, hiddenAuto, blueDrifts, peakDrifts, idleDrifts,
       sharedBluePalette: lowPalette[0] === highPalette[0],
-      inkClimbs: lowPalette[1] !== highPalette[1],
-      fillMorphs: highMorph > lowMorph,
+      ordinaryInkStaysBlue: lowPalette[1] === highPalette[1],
+      violetOnlyAtPeak: lowMorph === 0 && highMorph === 0,
+      alwaysRound: dragSamples.every(sample => sample.round),
+      levelOnly: dragSamples.every(sample => sample.levelOnly),
+      particlesOnRailOnly: dragSamples.every(sample => sample.railClips && sample.particlesOnRailOnly),
       distinctPeakPalette: lowPalette.every((value, index) => value !== peakPalette[index])
     }
     phase = 'switch model thinking capabilities'
     const chooseModel = async name => {
-      await js(`${modelTrigger}.click()`)
-      const option = `[...document.querySelectorAll('body > div button')].find(button => button.firstElementChild?.firstElementChild?.textContent === ${JSON.stringify(name)})`
+      await showThinkingMenu()
+      await js(`document.querySelector('[data-open-model-list]').click()`)
+      await waitFor(`document.querySelector('[data-model-list]') && !(${thinkingMenu})`)
+      const option = `[...document.querySelectorAll('[data-model-option]')].find(button => button.firstElementChild?.firstElementChild?.textContent === ${JSON.stringify(name)})`
       await waitFor(`!!(${option})`)
       await js(`(${option}).click()`)
-      await waitFor(`${modelTrigger}.ariaLabel === ${JSON.stringify(`Model: ${name}`)}`)
+      await waitFor(`${modelTrigger}.dataset.modelLabel === ${JSON.stringify(name)} && !!(${thinkingMenu})`)
       await frame()
     }
     await chooseModel('Synthetic budget model')
@@ -250,7 +289,7 @@ app.whenReady().then(async () => {
     const mediumOnlyThinking = await thinkingLabels()
     await chooseThinking('Medium')
     await js(`document.querySelector('button[aria-label="Set thinking level automatically"]').click()`)
-    await waitFor(`${thinkingTrigger}.ariaLabel === 'Thinking: Auto'`)
+    await waitFor(`${thinkingTrigger}.dataset.effortLabel === 'Auto'`)
     await checkMenu()
     // A visible point in the editor is a real outside click. (4, 4) falls
     // in native window chrome on Windows and never reaches the DOM there.
@@ -358,6 +397,54 @@ app.whenReady().then(async () => {
     const afterPunctuation = await layout()
     await js('window.chatPerfFixture.endBoardStream()')
     await frame()
+    phase = 'inline turn activity order and keyboard disclosure'
+    const activityTurn = 'document.querySelector(\'[data-chat-turn="activity-summary-question"]\')'
+    const activityRows = `[...(${activityTurn}?.querySelectorAll('[data-turn-activity-row]') ?? [])]`
+    const activityButton = `${activityRows}[0]`
+    const activitySnapshot = () => js(`(() => {
+      const turn = ${activityTurn}, rows = ${activityRows};
+      const paragraphs = [...turn.querySelectorAll('.assistant-reply p')];
+      const intro = paragraphs.find(p => p.textContent.includes('I will inspect the synthetic board first.'));
+      const middle = paragraphs.find(p => p.textContent.includes('The sample data is ready.'));
+      const final = paragraphs.find(p => p.textContent.includes('The synthetic board is refreshed.'));
+      const before = (first, second) => Boolean(first && second && (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING));
+      const hasActions = paragraph => Boolean(paragraph?.closest('.assistant-reply').querySelector('button[aria-label="Copy"]'));
+      return {
+        order: before(intro, rows[0]) && before(rows[0], middle) && before(middle, rows[1]) && (!final || before(rows[1], final)),
+        showsFailure: rows[0]?.textContent.includes('Read file') && /failed/i.test(rows[0].textContent),
+        showsRunning: rows[1]?.textContent.includes('Refresh board data') && /in progress/i.test(rows[1].textContent),
+        showsCompletion: rows[1]?.textContent.includes('Refresh board data') && /completed/i.test(rows[1].textContent),
+        expanded: rows.map(row => row.getAttribute('aria-expanded') === 'true'),
+        details: rows.map(row => document.getElementById(row.getAttribute('aria-controls'))?.querySelectorAll('button[aria-expanded]').length ?? 0),
+        hidesPrivateData: !/hidden-argument|diagnostic details/.test(turn.textContent),
+        noStackedSummary: !turn.querySelector('[data-turn-activity-summary]'),
+        intermediateActions: hasActions(intro) || hasActions(middle),
+        finalActions: hasActions(final)
+      };
+    })()`)
+    await js('window.chatPerfFixture.startActivitySummaryTurn()')
+    await waitFor(`${activityRows}.length === 2 && /in progress/i.test(${activityRows}[1].textContent)`)
+    const runningActivity = await activitySnapshot()
+    await js('window.chatPerfFixture.finishActivitySummaryTurn()')
+    await waitFor(`${activityTurn}.textContent.includes('The synthetic board is refreshed.') && /completed/i.test(${activityRows}[1].textContent)`)
+    const finishedActivity = await activitySnapshot()
+    if (process.platform === 'darwin') app.focus({ steal: true })
+    win.focus()
+    wc.focus()
+    await js(`${activityButton}.focus({preventScroll:true})`)
+    const pressEnter = () => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
+      wc.sendInputEvent({ type: 'char', keyCode: '\r' })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+    }
+    pressEnter()
+    await waitFor(`${activityButton}.getAttribute('aria-expanded') === 'true'`)
+    const openedActivity = await activitySnapshot()
+    const keyboardFocus = await js(`document.activeElement === ${activityButton}`)
+    pressEnter()
+    await waitFor(`${activityButton}.getAttribute('aria-expanded') === 'false'`)
+    const closedActivity = await activitySnapshot()
+    const inlineActivity = { runningActivity, finishedActivity, openedActivity, keyboardFocus, closedActivity }
     phase = 'execution updates with no worker or closed activity'
     const probeActivity = "document.querySelector('#projection-probe-activity')"
     const probeCounters = () => js(`({
@@ -464,7 +551,7 @@ app.whenReady().then(async () => {
     }
     phase = 'home menus open below the composer'
     const homeMenusBelow = []
-    for (const selector of ['button[aria-label="Add content"]', 'button[aria-label="Permissions"]', '.composer-model-control button:first-child[title]', 'button[title="Thinking"]', '.composer-tray button[aria-haspopup="menu"]']) {
+    for (const selector of ['button[aria-label="Add content"]', 'button[aria-label="Permissions"]', '[data-model-thinking-toggle]', '.composer-tray button[aria-haspopup="menu"]']) {
       const trigger = `document.querySelector(${JSON.stringify('.home-hero ' + selector)})`
       await click(trigger)
       const portal = `document.querySelector('body > div.shadow-pop')`
@@ -531,7 +618,35 @@ app.whenReady().then(async () => {
     await js('window.chatPerfFixture.finishReadingSkill()')
     await frame()
     const composerSwitch = await js(`({drafts:window.chatPerfFixture.composerDrafts(),text:${field}.value})`)
-    console.log('E2E_RESULT ' + JSON.stringify({ chatMenuWithinViewport, menuHeight: menuPlacement.height, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
+    phase = 'recover an existing conversation after returning to the window'
+    await js('window.chatPerfFixture.openIdleConversation()')
+    await waitFor("document.body.textContent.includes('The conversation could not be loaded.')")
+    const keptConversationView = await js("!document.querySelector('.home-hero') && document.querySelector('header').textContent.includes('Idle conversation') && Boolean(document.querySelector('textarea'))")
+    await js('window.chatPerfFixture.returnToConversation()')
+    await waitFor("document.body.textContent.includes('Recovered the existing conversation')")
+    const idleRecovery = { keptConversationView, errorCleared: await js("!document.body.textContent.includes('The conversation could not be loaded.')") }
+    phase = 'advance a one-way task progress bar with an ETA'
+    await js("window.chatPerfFixture.updateEstimatedTurn('working')")
+    const runningProgress = `document.querySelector('[data-running-progress] [role="progressbar"]')`
+    const remainingTime = `document.querySelector('[data-progress-eta]')`
+    const progressValue = `Number(${runningProgress}?.getAttribute('aria-valuenow'))`
+    await waitFor(`${remainingTime}?.textContent.startsWith('Estimated time left: ')`)
+    const initialProgress = await js(progressValue)
+    await waitFor(`${progressValue} > ${initialProgress}`)
+    const headerClean = await js("!document.querySelector('header').textContent.includes('Running…') && !document.querySelector('header .bg-amber-400')")
+    const anchored = await js(`${runningProgress}.firstElementChild.getBoundingClientRect().left === ${runningProgress}.getBoundingClientRect().left && getComputedStyle(${runningProgress}.firstElementChild).animationName === 'none'`)
+    await js('window.chatPerfFixture.reviseMeasuredProgress(75)')
+    await waitFor(`${progressValue} === 75`)
+    await js('window.chatPerfFixture.reviseMeasuredProgress(35)')
+    await frame()
+    const neverReversed = await js(`${progressValue} === 75`)
+    await js("window.chatPerfFixture.updateEstimatedTurn('waiting_for_user')")
+    await waitFor(`!${remainingTime} && ${runningProgress}?.getAttribute('aria-label') === 'Awaiting your input'`)
+    const paused = await js(`${progressValue} === 75`)
+    await js("window.chatPerfFixture.updateEstimatedTurn('idle')")
+    await waitFor(`!${runningProgress}`)
+    const taskProgress = { headerClean, anchored, neverReversed, paused }
+    console.log('E2E_RESULT ' + JSON.stringify({ idleRecovery, taskProgress, chatMenuWithinViewport, menuHeight: menuPlacement.height, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, inlineActivity, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

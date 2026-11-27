@@ -13,7 +13,13 @@ interface MarkdownNode {
 interface Candidate { raw: string; offset: number; linked: boolean }
 const MAX_SOURCE = 512_000
 const absolute = /^(?:\/(?!\/)|[a-z]:[\\/]|~[\\/]|file:\/\/)/i
-const folderCue = /(?:目录|文件夹|文件都在|保存在|保存到|输出到|folder|directory|files? (?:are )?in)\s*[：:为是在]*\s*[*_\x60[(]*$/iu
+const folderCue = /(?:目录|文件夹|文件都在|材料都在|归档到|保存在|保存至|保存到|输出至|输出到|folder|directory|files? (?:are )?in|saved (?:in|to)|outputs? (?:are )?in)[\s：:为是在*_\x60[(\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0E\uFE0F\u200D]*$/iu
+const leadingPathDecoration = /^[\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0E\uFE0F\u200D]+\s*/u
+
+export function stripLeadingPathDecoration(value: string): string {
+  const path = value.replace(leadingPathDecoration, '')
+  return absolute.test(path) ? path : value
+}
 
 export function isInlineFilePath(value: string): boolean {
   return pictureRange(value) || /^(?:[./~][\\/]|\/|[a-z]:[\\/]|sandbox:|file:)/i.test(value)
@@ -25,18 +31,25 @@ export function isInlineFilePath(value: string): boolean {
 // with spaces are handled by Markdown itself.
 export function* plainPathTokens(text: string) {
   for (const match of text.matchAll(/[^\s\x60<>()\[\]{},;!，。！？；：“”‘’、【】（）「」|*]+/gu)) {
-    const raw = match[0].replace(/[.,;!]+$/, '')
-    if (raw && (absolute.test(raw) || raw.includes('.'))) yield { raw, offset: match.index }
+    const path = stripLeadingPathDecoration(match[0])
+    const raw = path.replace(/[.,;!]+$/, '')
+    if (raw && (absolute.test(raw) || raw.includes('.'))) yield { raw, offset: match.index + match[0].length - path.length }
   }
 }
 
-function folderPath(raw: string, explicit: boolean): string | undefined {
-  if (!absolute.test(raw) || !(/[\\/]$/.test(raw) || explicit) || chatAttachment(raw)) return
+function folderPath(raw: string, explicit: boolean, linked: boolean): string | undefined {
+  if (!absolute.test(raw) || (!explicit && !linked) || chatAttachment(raw)) return
   // The file parser checks URL authority, traversal, control characters and decoding.
   const prefix = raw.replace(/[\\/]+$/, '')
   if (!prefix || /^[a-z]:$/i.test(prefix)) return
   const probe = chatAttachment(prefix + '/__folder_probe__.txt')
-  return probe && !probe.remote ? probe.target.slice(0, -'/__folder_probe__.txt'.length) : undefined
+  if (!probe || probe.remote) return
+  const folder = probe.target.slice(0, -'/__folder_probe__.txt'.length)
+  // A lone root-relative slug can be an ordinary web route. Require an
+  // explicit cue for that shape and for paths whose last segment has a suffix.
+  const singleRouteSegment = !/^file:\/\//i.test(raw) && /^\/[^/]+$/.test(folder)
+  if (!explicit && (singleRouteSegment || /[?#]/.test(raw) || /\.[^\\/]+$/.test(folder))) return
+  return folder
 }
 
 function key(path: string): string {
@@ -57,18 +70,26 @@ export function collectReplyAttachmentPaths(tree: MarkdownNode, source: string) 
   const folderAt = new Map<number, string>()
   const byBasename = new Map<string, string | null>()
   const declarations: Array<{ offset: number; folder: string; scopeEnd: number; lineStart: number }> = []
+  const declaredFolders = new Set<string>()
   const candidates: Candidate[] = []
   const definitions = new Map<string, string>()
   let scopeEnd = 0
 
-  function register(raw: string, offset: number, linked = false, folderLabel = false) {
-    const folder = folderPath(raw, folderLabel || folderCue.test(source.slice(Math.max(0, offset - 80), offset)))
+  function register(raw: string, offset: number, kind: 'text' | 'link' | 'image' = 'text', folderLabel = false) {
+    const explicit = folderLabel || /[\\/]$/.test(raw) || folderCue.test(source.slice(Math.max(0, offset - 80), offset))
+    const folder = folderPath(raw, explicit, kind === 'link')
     if (folder) {
       folders.add(folder)
       folderAt.set(offset, folder)
-      declarations.push({ offset, folder, scopeEnd, lineStart: source.lastIndexOf('\n', offset) + 1 })
+      // A linked directory is clickable on its own. Only a delivery cue
+      // makes it the base path for other file references in this reply.
+      if (explicit) {
+        declaredFolders.add(folder)
+        declarations.push({ offset, folder, scopeEnd, lineStart: source.lastIndexOf('\n', offset) + 1 })
+      }
       return
     }
+    const linked = kind !== 'text'
     const file = chatAttachment(raw)
     if (!file || file.remote || file.sandbox || !linked && pictureRange(raw)) return
     candidates.push({ raw, offset, linked })
@@ -83,12 +104,15 @@ export function collectReplyAttachmentPaths(tree: MarkdownNode, source: string) 
     const offset = node.position?.start.offset ?? 0
     switch (node.type) {
       case 'code': case 'html': case 'definition': return
-      case 'inlineCode':
-        if (node.value && isInlineFilePath(node.value)) register(node.value.trim(), offset)
+      case 'inlineCode': {
+        const value = stripLeadingPathDecoration(node.value?.trim() ?? '')
+        if (value && isInlineFilePath(value)) register(value, offset)
         return
+      }
       case 'link': case 'image': case 'linkReference': case 'imageReference': {
         const raw = node.url ?? definitions.get(node.identifier ?? '')
-        if (raw) register(raw, offset, true, /(?:目录|文件夹|folder|directory)/iu.test(displayLabel(node)))
+        const kind = node.type === 'link' || node.type === 'linkReference' ? 'link' : 'image'
+        if (raw) register(raw, offset, kind, /(?:目录|文件夹|\b(?:folder|directory)\b)/iu.test(displayLabel(node)))
         return
       }
       case 'text':
@@ -114,7 +138,7 @@ export function collectReplyAttachmentPaths(tree: MarkdownNode, source: string) 
       visit(block)
     }
   }
-  const singleFolder = folders.size === 1 ? declarations[0].folder : undefined
+  const singleFolder = declaredFolders.size === 1 ? declarations[0].folder : undefined
 
   function contextualFolder(offset: number): string | undefined {
     if (singleFolder || !declarations.length) return singleFolder
@@ -146,7 +170,7 @@ export function collectReplyAttachmentPaths(tree: MarkdownNode, source: string) 
       return chatAttachment(target) ? target : undefined
     }
     if (!/[\\/]/.test(raw) && byBasename.has(file.name)) return byBasename.get(file.name) ?? undefined
-    return folders.size > 1 ? undefined : raw
+    return declaredFolders.size > 1 ? undefined : raw
   }
 
   function rangeFolder(raw: string, offset: number): string | undefined {

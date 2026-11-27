@@ -11,6 +11,7 @@ const confirmState = vi.hoisted(() => ({ allowed: true }))
 const sentEvents = vi.hoisted(() => [] as unknown[])
 vi.mock('electron', () => ({
   BrowserWindow: {
+    getFocusedWindow: () => null,
     getAllWindows: () => [{
       isDestroyed: () => false,
       isVisible: () => true,
@@ -19,7 +20,7 @@ vi.mock('electron', () => ({
   },
   app: { getPath: () => stableUserData },
   dialog: {
-    showMessageBoxSync: () => (confirmState.allowed ? 0 : 1)
+    showMessageBox: async () => ({ response: confirmState.allowed ? 0 : 1 })
   }
 }))
 // NOTE: path relative to THIS test file — a wrong relative path silently
@@ -36,7 +37,7 @@ function writeSession(cwd: string, uuid: string, title: string, body: string): v
   const dir = sessionDirFor(cwd, agentDir)
   mkdirSync(dir, { recursive: true })
   const lines = [
-    JSON.stringify({ type: 'session', id: uuid, title }),
+    JSON.stringify({ type: 'session', id: uuid, title, cwd }),
     JSON.stringify({ type: 'title', title }),
     JSON.stringify({ type: 'message', message: { role: 'user', content: body } })
   ]
@@ -55,6 +56,7 @@ async function call(session: { id: string; cwd: string; title?: string }, payloa
 }
 
 beforeEach(() => {
+  confirmState.allowed = true
   rmSync(path.join(agentDir, 'sessions'), { recursive: true, force: true })
 })
 
@@ -63,7 +65,7 @@ describe('memory bridge (project isolation enforced server-side)', () => {
     writeSession(PROJECT_A, 'aaaaaaaa-1111-4000-8000-00000000000a', '产品视频脚本', '客户预算是每天五百美元')
     writeSession(PROJECT_B, 'bbbbbbbb-2222-4000-8000-00000000000b', '地图引导视频', '客户预算是每天三百美元')
     await initMemoryBridge((sessionId) =>
-      sessionId === 's-a' ? { id: 's-a', cwd: PROJECT_A, title: '产品视频脚本' } : { id: 's-b', cwd: PROJECT_B, title: '地图引导视频' }
+      sessionId === 's-a' ? { id: 's-a', mode: 'full', cwd: PROJECT_A, title: '产品视频脚本' } : { id: 's-b', mode: 'full', cwd: PROJECT_B, title: '地图引导视频' }
     )
 
     const fromA = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'session_search', keywords: ['预算'] })
@@ -79,7 +81,7 @@ describe('memory bridge (project isolation enforced server-side)', () => {
 
   it('narrows by titleWords and days, returns bounded snippets, and misses cleanly', async () => {
     writeSession(PROJECT_A, 'cccccccc-3333-4000-8000-00000000000c', '投放日报', '英语素材的点击率提升了三倍')
-    await initMemoryBridge((sessionId) => (sessionId === 's-a' ? { id: 's-a', cwd: PROJECT_A, title: '投放日报' } : undefined))
+    await initMemoryBridge((sessionId) => (sessionId === 's-a' ? { id: 's-a', mode: 'full', cwd: PROJECT_A, title: '投放日报' } : undefined))
 
     const byTitle = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'session_search', keywords: ['点击率'], titleWords: '投放' })
     expect(byTitle.hits).toHaveLength(1)
@@ -92,7 +94,7 @@ describe('memory bridge (project isolation enforced server-side)', () => {
 
   it('reads a hit back by uuid with a bounded excerpt around the keyword', async () => {
     writeSession(PROJECT_A, 'dddddddd-4444-4000-8000-00000000000d', '素材需求文档', '前置上下文。重点结论：广告预算每天五百。后置上下文补充说明。')
-    await initMemoryBridge((sessionId) => (sessionId === 's-a' ? { id: 's-a', cwd: PROJECT_A, title: '素材需求文档' } : undefined))
+    await initMemoryBridge((sessionId) => (sessionId === 's-a' ? { id: 's-a', mode: 'full', cwd: PROJECT_A, title: '素材需求文档' } : undefined))
 
     const read = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'session_read', uuid: 'dddddddd-4444-4000-8000-00000000000d', keyword: '预算' })
     expect(read.ok).toBe(true)
@@ -105,8 +107,8 @@ describe('memory bridge (project isolation enforced server-side)', () => {
 
   it('refuses unknown tokens and saves memory under the SESSION project, not the caller claim', async () => {
     await initMemoryBridge((sessionId) => {
-      if (sessionId === 's-a') return { id: 's-a', cwd: PROJECT_A, title: 'A' }
-      if (sessionId === 's-b') return { id: 's-b', cwd: PROJECT_B, title: 'B' }
+      if (sessionId === 's-a') return { id: 's-a', mode: 'full', cwd: PROJECT_A, title: 'A' }
+      if (sessionId === 's-b') return { id: 's-b', mode: 'full', cwd: PROJECT_B, title: 'B' }
       return undefined
     })
     const saved = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_save', text: 'A 项目的口径：只投印尼', scope: 'project' })
@@ -125,13 +127,37 @@ describe('memory bridge (project isolation enforced server-side)', () => {
     expect(fromBAllowed.ok).toBe(true)
   })
 
+  it('enforces read-only access at the bridge and confirms writes in Ask mode', async () => {
+    await initMemoryBridge(id => ({
+      id, cwd: PROJECT_A,
+      mode: id === 'ask' ? 'ask' : 'readonly',
+      remoteReadonly: id === 'remote'
+    }))
+    const write = { action: 'memory_save', text: 'Synthetic permission check' }
+    confirmState.allowed = false
+    expect(await call({ id: 'ask', cwd: PROJECT_A }, write)).toEqual({ ok: false, error: 'permission-denied' })
+    confirmState.allowed = true
+    expect(await call({ id: 'readonly', cwd: PROJECT_A }, write)).toEqual({ ok: false, error: 'permission-denied' })
+    expect(await call({ id: 'remote', cwd: PROJECT_A }, { action: 'prompt_context' })).toEqual({ ok: false, error: 'permission-denied' })
+    expect(await call({ id: 'ask', cwd: PROJECT_A }, write)).toMatchObject({ ok: true })
+  })
+
+  it('reads the current instructions each time the runtime starts a turn', async () => {
+    let instruction = 'Synthetic session instructions'
+    await initMemoryBridge(id => ({ id, cwd: PROJECT_A, mode: 'full', instruction }))
+    const from = { id: 'context', cwd: PROJECT_A }
+    expect((await call(from, { action: 'prompt_context' })).prompt).toContain(instruction)
+    instruction = ''
+    expect((await call(from, { action: 'prompt_context' })).prompt).not.toContain('Synthetic session instructions')
+  })
+
   describe('cross-project memory access (manual gate)', () => {
     beforeEach(async () => {
       writeSession(PROJECT_A, 'aaaaaaaa-1111-4000-8000-00000000000a', '产品视频脚本', '客户预算是每天五百美元')
       writeSession(PROJECT_B, 'bbbbbbbb-2222-4000-8000-00000000000b', '地图引导视频', '客户预算是每天三百美元')
       await initMemoryBridge((sessionId) => {
-        if (sessionId === 's-a') return { id: 's-a', cwd: PROJECT_A, title: '产品视频脚本' }
-        if (sessionId === 's-b') return { id: 's-b', cwd: PROJECT_B, title: '地图引导视频' }
+        if (sessionId === 's-a') return { id: 's-a', mode: 'full', cwd: PROJECT_A, title: '产品视频脚本' }
+        if (sessionId === 's-b') return { id: 's-b', mode: 'full', cwd: PROJECT_B, title: '地图引导视频' }
         return undefined
       })
       confirmState.allowed = true
@@ -176,7 +202,7 @@ describe('memory bridge (project isolation enforced server-side)', () => {
       )
       expect(unknown.ok).toBe(false)
       expect(unknown.error).toBe('project-not-found')
-      expect(Array.isArray(unknown.knownProjects)).toBe(true)
+      expect(unknown.knownProjects).toBeUndefined()
     })
 
     it('session_search crosses projects ONLY with projectName AND user consent', async () => {
@@ -206,7 +232,7 @@ describe('memory bridge (project isolation enforced server-side)', () => {
   describe('memory mutation (agent update/delete gated by user confirmation)', () => {
     beforeEach(async () => {
       await initMemoryBridge((sessionId) =>
-        sessionId === 's-a' ? { id: 's-a', cwd: PROJECT_A, title: 'A' } : { id: 's-b', cwd: PROJECT_B, title: 'B' }
+        sessionId === 's-a' ? { id: 's-a', cwd: PROJECT_A, title: 'A', mode: 'full' as const } : { id: 's-b', cwd: PROJECT_B, title: 'B', mode: 'full' as const }
       )
       confirmState.allowed = true
     })

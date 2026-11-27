@@ -1,3 +1,4 @@
+import { isSessionMoving } from './sessionProjectMove'
 import { isSessionUuid } from './sessionHistory'
 
 export interface SessionDeletionGuard {
@@ -30,11 +31,12 @@ export function createSessionDeletionLocks(read: () => unknown, write: (ids: str
         return false
       }
     },
+    isDeleting(uuid: string): boolean { return pending.has(uuid) },
     async runDeletion<T>(uuids: readonly unknown[], operation: () => Promise<T>): Promise<T | 'locked'> {
       const ids = new Set(uuids.filter(isSessionUuid))
       if (ids.size > 0) {
         const locked = new Set(readIds())
-        if ([...ids].some(id => locked.has(id))) return 'locked'
+        if ([...ids].some(id => locked.has(id) || isSessionMoving(id))) return 'locked'
       }
       for (const id of ids) pending.set(id, (pending.get(id) ?? 0) + 1)
       try {

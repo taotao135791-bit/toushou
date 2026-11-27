@@ -7,7 +7,7 @@ import { sessionsRoot, sessionDirCandidatesFor } from './sessionHistory'
 export interface ProjectSessionFile { path: string; dev: number; ino: number; uuid: string }
 
 /** Find transcript copies by their own workspace header, never by renderer data. */
-export async function discoverProjectSessionFiles(projectPath: string, agentDir = defaultPiAgentDir()): Promise<ProjectSessionFile[]> {
+export async function discoverProjectSessionFiles(projectPath: string, agentDir = defaultPiAgentDir(), uuid?: string): Promise<ProjectSessionFile[]> {
   let root: string
   try { root = canonicalExistingPath(sessionsRoot(agentDir)) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error }
   const expected = new Set(sessionDirCandidatesFor(projectPath, agentDir).map(p => path.join(root, path.relative(sessionsRoot(agentDir), p))))
@@ -31,7 +31,7 @@ export async function discoverProjectSessionFiles(projectPath: string, agentDir 
       const file = path.join(dir, child.name)
       let handle: fs.promises.FileHandle | undefined
       try {
-        handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0))
+        handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0))
         const stat = await handle.stat()
         if (!stat.isFile() || canonicalExistingPath(file) !== file) throw new Error('unsafe-session-file')
         const bytes = Buffer.alloc(64 * 1024)
@@ -39,10 +39,11 @@ export async function discoverProjectSessionFiles(projectPath: string, agentDir 
         const lines = bytes.subarray(0, bytesRead).toString('utf8').split('\n').slice(0, 5)
         let header: { type?: unknown; cwd?: unknown; id?: unknown } | undefined
         for (const line of lines) { try { const parsed = JSON.parse(line); if (parsed?.type === 'session') { header = parsed; break } } catch { /* tolerate title padding */ } }
-        if (!header || typeof header.cwd !== 'string' || typeof header.id !== 'string') {
+        if (!header || typeof header.cwd !== 'string' || !path.isAbsolute(header.cwd) || typeof header.id !== 'string') {
           if (expected.has(path.resolve(dir))) throw new Error('unreadable-session-header')
           continue
         }
+        if (uuid && header.id !== uuid) continue
         let cwd: string
         try { cwd = canonicalExistingPath(header.cwd) } catch { continue }
         if (cwd === projectPath) files.push({ path: file, dev: stat.dev, ino: stat.ino, uuid: header.id })

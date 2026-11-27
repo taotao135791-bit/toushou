@@ -9,7 +9,7 @@ beforeEach(() => {
 
 afterEach(() => {
   flushStreamQueueForTest()
-  useAppStore.setState({ messages: {}, executions: {}, sessions: [], resumeRecencySeeds: {}, compacting: {} })
+  useAppStore.setState({ messages: {}, executions: {}, sessions: [], resumeRecencySeeds: {}, compacting: {}, busy: {}, sessionErrors: {}, unreadSessionIds: {} })
   vi.unstubAllGlobals()
 })
 
@@ -56,6 +56,29 @@ describe('session message events', () => {
       { role: 'assistant', content: 'Partial reply' },
       { role: 'system', content: 'Error: Connection failed' }
     ])
+  })
+
+  it('flags failed active provider turns, leaves diagnostics unmarked, and clears the failure on retry', () => {
+    const store = useAppStore.getState()
+    store.applySessionEvent({ type: 'error', sessionId, message: 'Extension diagnostic' })
+    expect(useAppStore.getState().sessionErrors[sessionId]).toBeUndefined()
+    store.setBusy(sessionId, true)
+    store.applySessionEvent({ type: 'error', sessionId, message: 'Provider failed', turnFailed: true })
+    expect(useAppStore.getState().sessionErrors[sessionId]).toBe('chat.turnFailed')
+    expect(useAppStore.getState().busy[sessionId]).toBe(false)
+    store.applySessionEvent({ type: 'status', sessionId, status: 'working' })
+    expect(useAppStore.getState().sessionErrors[sessionId]).toBeUndefined()
+  })
+
+  it('marks only completed background turns as unread', () => {
+    const store = useAppStore.getState()
+    const abortedSessionId = 'aborted-background'
+    store.setBusy(abortedSessionId, true)
+    store.applySessionEvent({ type: 'status', sessionId: abortedSessionId, status: 'idle', aborted: true })
+    store.setBusy(sessionId, true)
+    store.applySessionEvent({ type: 'status', sessionId, status: 'idle' })
+    flushStreamQueueForTest()
+    expect(useAppStore.getState().unreadSessionIds).toEqual({ [sessionId]: true })
   })
 })
 

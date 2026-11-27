@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -18,6 +18,7 @@ const PROJECT_A = 'D:\\工作\\组内协作开发'
 const PROJECT_B = 'D:\\Documents\\投手工作区'
 
 beforeEach(() => {
+  settings.memoryStoragePath = ''
   rmSync(path.join(userData, 'memory'), { recursive: true, force: true })
 })
 
@@ -88,6 +89,14 @@ describe('memory store (global/project layers)', () => {
 
     expect(deleteMemoryEntry('global', id)).toBe(true)
     expect(readMemoryLayer('global', null).entries).toHaveLength(0)
+  })
+
+  it('preserves the source when the destination is unavailable', () => {
+    const saved = saveMemoryEntry({ text: 'Synthetic memory', scope: 'project', cwd: PROJECT_A })
+    if (!saved.ok) throw new Error(saved.error)
+    mkdirSync(path.join(userData, 'memory', 'global.json'))
+    expect(moveMemoryEntry(saved.entry.id, 'project', 'global', PROJECT_A)).toBe(false)
+    expect(readMemoryLayer('project', projectMemoryKey(PROJECT_A)).entries.map(item => item.id)).toEqual([saved.entry.id])
   })
 
   it('degrades a corrupt file to empty entries and keeps the bytes for recovery', () => {

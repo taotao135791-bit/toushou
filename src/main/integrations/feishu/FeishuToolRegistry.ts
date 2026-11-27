@@ -1,7 +1,7 @@
-import { readFile } from 'node:fs/promises'
 import { FeishuCapability, FeishuToolRequest, FeishuToolResult } from '../../../shared/connections'
 import { withUserAccessToken } from '@larksuiteoapi/node-sdk'
 import { FeishuChannel } from './FeishuChannel'
+import { FeishuDocumentTools, type FeishuAttachment, type FeishuAttachmentTarget } from './FeishuDocumentTools'
 
 type RawClient = FeishuChannel['rawClient']
 
@@ -27,7 +27,8 @@ export class FeishuToolRegistry {
   constructor(
     private readonly getChannel: () => FeishuChannel | null,
     private readonly isCapabilityAuthorized: (capability: FeishuCapability) => boolean,
-    private readonly getUserAccessToken?: (capability: FeishuCapability) => Promise<string | null>
+    private readonly getUserAccessToken?: (capability: FeishuCapability) => Promise<string | null>,
+    private readonly pickAttachment?: (sessionId: string, target: FeishuAttachmentTarget, signal?: AbortSignal) => Promise<FeishuAttachment | null>
   ) {}
 
   /**
@@ -35,11 +36,12 @@ export class FeishuToolRegistry {
    * per-session circuit breaker so a model that ignores error text cannot
    * keep hammering a failing integration forever.
    */
-  async executeForSession(sessionId: string, request: FeishuToolRequest): Promise<FeishuToolResult> {
+  async executeForSession(sessionId: string, request: FeishuToolRequest, signal?: AbortSignal, canExecute?: () => boolean): Promise<FeishuToolResult> {
     const blocked = this.breaker.check(sessionId)
     if (blocked) return blocked
-    const result = await this.execute(request)
-    this.breaker.note(sessionId, result)
+    const result = await this.execute(request, sessionId, signal, canExecute)
+    const data = result.data as { outcome?: string } | undefined
+    if (data?.outcome !== 'cancelled') this.breaker.note(sessionId, result)
     return result
   }
 
@@ -49,7 +51,7 @@ export class FeishuToolRegistry {
     return !!until && this.breaker.now() < until
   }
 
-  async execute(request: FeishuToolRequest): Promise<FeishuToolResult> {
+  async execute(request: FeishuToolRequest, sessionId?: string, signal?: AbortSignal, canExecute?: () => boolean): Promise<FeishuToolResult> {
     const capability = capabilityFor(request.action)
     if (!this.isCapabilityAuthorized(capability)) {
       return authorizationRefused(capability)
@@ -90,29 +92,57 @@ export class FeishuToolRegistry {
         case 'doc_list':
           // Root folder listing ordered by last edit — the closest thing to
           // "my recent documents" the drive API offers without a folder token.
-          return await this.request(channel.rawClient, 'GET', '/open-apis/drive/v1/files', {
+          return await this.request(channel.documentClient, 'GET', '/open-apis/drive/v1/files', {
             params: { page_size: 50, order_by: 'EditedTime', direction: 'DESC' }
           }, userAccessToken)
         case 'doc_search': {
           const query = string(request.query)
           if (!query) return invalid('query 不能为空')
-          return await this.request(channel.rawClient, 'POST', '/open-apis/suite/docs-api/search/object', {
+          return await this.request(channel.documentClient, 'POST', '/open-apis/suite/docs-api/search/object', {
             data: { search_key: query.slice(0, 100), count: 20, offset: 0 }
           }, userAccessToken)
         }
         case 'doc_read': {
           const documentId = string(request.documentId)
           if (!documentId) return invalid('documentId 不能为空')
-          return await this.request(channel.rawClient, 'GET', `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/raw_content`, {}, userAccessToken)
+          return await this.request(channel.documentClient, 'GET', `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/raw_content`, {}, userAccessToken)
         }
         case 'doc_create':
-          return await this.request(channel.rawClient, 'POST', '/open-apis/docx/v1/documents', { data: { title: string(request.title).slice(0, 100) } }, userAccessToken)
+          return await this.request(channel.documentClient, 'POST', '/open-apis/docx/v1/documents', { data: { title: string(request.title).slice(0, 100) } }, userAccessToken)
         case 'doc_append': {
           const documentId = string(request.documentId)
           if (!documentId) return invalid('documentId 不能为空')
-          return await this.request(channel.rawClient, 'POST', `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`, {
+          return await this.request(channel.documentClient, 'POST', `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`, {
             data: { children: [{ block_type: 2, text: { elements: [{ text_run: { content: string(request.content).slice(0, 20_000) } }] } }] }
           }, userAccessToken)
+        }
+        case 'doc_blocks':
+        case 'doc_insert_blocks':
+        case 'doc_update_block':
+        case 'doc_delete_block':
+        case 'doc_table_fill': {
+          if (!userAccessToken) return authorizationRefused(capability)
+          return await new FeishuDocumentTools(channel.documentClient, userAccessToken, signal, canExecute).execute(request)
+        }
+        case 'doc_file_attach': {
+          if ('localPath' in request) return invalid('请使用投手的附件选择器。')
+          if (!userAccessToken) return authorizationRefused(capability)
+          if (!this.isCapabilityAuthorized('docs.write')) return authorizationRefused('docs.write')
+          const pickAttachment = this.pickAttachment
+          if (!sessionId || !pickAttachment) return invalid('请从本机投手对话选择要上传的附件。')
+          const writeToken = await this.getUserAccessToken?.('docs.write')
+          if (writeToken !== userAccessToken) return authorizationRefused('docs.write')
+          return await new FeishuDocumentTools(channel.documentClient, userAccessToken, signal, canExecute).execute(request, async (target, pickerSignal) => {
+            const file = await pickAttachment(sessionId, target, pickerSignal)
+            if (!file) return null
+            pickerSignal?.throwIfAborted()
+            const mediaToken = await this.getUserAccessToken?.('docs.media')
+            const latestWriteToken = await this.getUserAccessToken?.('docs.write')
+            if (this.getChannel() !== channel || mediaToken !== userAccessToken || latestWriteToken !== userAccessToken) {
+              throw new Error('选择附件期间飞书授权已变化，请重新发起上传。')
+            }
+            return file
+          })
         }
         case 'sheets_read': {
           const spreadsheetToken = string(request.spreadsheetToken)
@@ -144,218 +174,6 @@ export class FeishuToolRegistry {
           const guard = bitableParams(request)
           if (guard) return guard
           return await this.request(channel.rawClient, 'POST', `/open-apis/bitable/v1/apps/${encodeURIComponent(string(request.appToken))}/tables/${encodeURIComponent(string(request.tableId))}/records/search`, { data: { filter: request.filter, page_size: 100 } }, userAccessToken)
-        }
-        /* ---------- 原生文档块操作（结构化写入 + 回读验证） ---------- */
-        case 'doc_blocks': {
-          const documentId = string(request.documentId)
-          if (!documentId) return invalid('documentId 不能为空')
-          const parent = string(request.parentBlockId) || documentId
-          const blocks: Array<Record<string, unknown>> = []
-          let pageToken = ''
-          // 分页拉取子块清单（回读验证用：块类型/块 ID/纯文本）。
-          for (let page = 0; page < 10; page += 1) {
-            const params: Record<string, unknown> = { page_size: 200 }
-            if (pageToken) params.page_token = pageToken
-            const response = await channel.rawClient.request({ method: 'GET', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parent)}/children`, params }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-            const code = typeof response.code === 'number' ? response.code : 0
-            if (code !== 0) return { ok: false, error: friendlyApiError(response) }
-            const data = response.data as { items?: Array<Record<string, unknown>>; page_token?: string; has_more?: boolean } | undefined
-            for (const item of data?.items ?? []) {
-              const texts: string[] = []
-              for (const key of ['text', 'heading1', 'heading2', 'heading3', 'heading4', 'heading5', 'heading6', 'heading7', 'heading8', 'heading9', 'bullet', 'number', 'quote', 'todo']) {
-                const segment = item[key] as { elements?: Array<{ text_run?: { content?: string } }> } | undefined
-                for (const element of segment?.elements ?? []) {
-                  const content = element.text_run?.content
-                  if (content) texts.push(content)
-                }
-              }
-              blocks.push({ block_id: item.block_id, block_type: item.block_type, text: texts.join('') })
-            }
-            if (data?.has_more && data.page_token) { pageToken = data.page_token; continue }
-            break
-          }
-          return { ok: true, data: { blocks } }
-        }
-        case 'doc_insert_blocks': {
-          const documentId = string(request.documentId)
-          if (!documentId) return invalid('documentId 不能为空')
-          const blocks = Array.isArray(request.blocks) ? request.blocks : null
-          if (!blocks || blocks.length === 0 || blocks.length > 50) return invalid('blocks 必须是 1-50 个块的数组')
-          const children: Array<Record<string, unknown>> = []
-          for (const block of blocks) {
-            const spec = block as { type?: unknown; text?: unknown; level?: unknown }
-            const text = typeof spec.text === 'string' ? spec.text : ''
-            const level = typeof spec.level === 'number' ? Math.min(9, Math.max(1, Math.floor(spec.level))) : 0
-            if (spec.type === 'heading' && level >= 1) {
-              children.push({ block_type: 2 + level, ['heading' + level]: { elements: [{ text_run: { content: text } }] } })
-            } else if (spec.type === 'bullet') {
-              children.push({ block_type: 12, bullet: { elements: [{ text_run: { content: text } }] } })
-            } else if (spec.type === 'number') {
-              children.push({ block_type: 13, number: { elements: [{ text_run: { content: text } }] } })
-            } else if (spec.type === 'quote') {
-              children.push({ block_type: 15, quote: { elements: [{ text_run: { content: text } }] } })
-            } else {
-              children.push({ block_type: 2, text: { elements: [{ text_run: { content: text } }] } })
-            }
-          }
-          const parent = string(request.parentBlockId) || documentId
-          const data: Record<string, unknown> = { children }
-          if (typeof request.index === 'number') data.index = Math.max(0, Math.floor(request.index))
-          const response = await channel.rawClient.request({ method: 'POST', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parent)}/children`, data }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-          const code = typeof response.code === 'number' ? response.code : 0
-          if (code !== 0) return { ok: false, error: friendlyApiError(response) }
-          return { ok: true, data: response.data ?? response }
-        }
-        case 'doc_table_fill': {
-          const documentId = string(request.documentId)
-          const cells = Array.isArray(request.cells) ? request.cells : null
-          if (!documentId || !cells || cells.length === 0) return invalid('documentId 和 cells（二维字符串数组）不能为空')
-          const rowCount = cells.length
-          const columnCount = Array.isArray(cells[0]) ? (cells[0] as unknown[]).length : 0
-          if (rowCount > 100 || columnCount > 20 || columnCount === 0) return invalid('表格行列超出限制')
-          const parent = string(request.parentBlockId) || documentId
-          const createData: Record<string, unknown> = { children: [{ block_type: 31, table: { property: { row_size: rowCount, column_size: columnCount } } }] }
-          if (typeof request.index === 'number') createData.index = Math.max(0, Math.floor(request.index))
-          const created = await channel.rawClient.request({ method: 'POST', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parent)}/children`, data: createData }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-          const createCode = typeof created.code === 'number' ? created.code : 0
-          if (createCode !== 0) return { ok: false, error: friendlyApiError(created) }
-          const createdData = created.data as { children?: Array<{ block_id?: string }> } | undefined
-          const tableBlockId = createdData?.children?.[0]?.block_id
-          if (!tableBlockId) return { ok: false, error: '表格块创建成功但未返回块 ID，无法填充单元格' }
-          // 表格块创建后每格是空 block：查询格子块 ID，再逐格写入文字。
-          const cellsResponse = await channel.rawClient.request({ method: 'GET', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(tableBlockId)}/children`, params: { page_size: 500 } }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-          const cellsData = cellsResponse.data as { items?: Array<{ block_id?: string }> } | undefined
-          const cellIds = (cellsData?.items ?? []).map(item => item.block_id ?? '').filter(Boolean)
-          if (cellIds.length < rowCount * columnCount) return { ok: false, error: `表格格子数量不足（期望 ${rowCount * columnCount}，实际 ${cellIds.length}）` }
-          let filled = 0
-          for (let row = 0; row < rowCount; row += 1) {
-            const line = cells[row] as string[]
-            for (let column = 0; column < columnCount; column += 1) {
-              const cellBlockId = cellIds[row * columnCount + column]
-              const content = typeof line[column] === 'string' ? line[column] : ''
-              if (!content) { filled += 1; continue }
-              const fillConfig = { method: 'POST', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(cellBlockId)}/children`, data: { children: [{ block_type: 2, text: { elements: [{ text_run: { content } }] } }] } }
-              const fillResponse = await channel.rawClient.request(fillConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-              const fillCode = typeof fillResponse.code === 'number' ? fillResponse.code : 0
-              if (fillCode !== 0) return { ok: false, error: friendlyApiError(fillResponse) + `（第 ${row + 1} 行第 ${column + 1} 列）` }
-              filled += 1
-            }
-          }
-          return { ok: true, data: { tableBlockId, rows: rowCount, columns: columnCount, filled } }
-        }
-        case 'doc_delete_block': {
-          const documentId = string(request.documentId)
-          const blockId = string(request.blockId)
-          // 顶层块父 = 文档 ID；嵌套块（表格格子等）需带 parentBlockId。
-          const parentBlockId = string(request.parentBlockId) || documentId
-          if (!documentId || !blockId) return invalid('documentId 和 blockId 不能为空')
-          const response = await channel.rawClient.request({ method: 'DELETE', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parentBlockId)}/children/${encodeURIComponent(blockId)}` }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined)
-          const code = typeof response.code === 'number' ? response.code : 0
-          if (code !== 0) return { ok: false, error: friendlyApiError(response) }
-          return { ok: true }
-        }
-        case 'doc_file_attach': {
-          const documentId = string(request.documentId)
-          const localPath = string(request.localPath)
-          if (!documentId || !localPath) return invalid('documentId 和 localPath 不能为空')
-          const parent = string(request.parentBlockId) || documentId
-          let bytes: Buffer
-          try {
-            bytes = await readFile(localPath)
-          } catch {
-            return { ok: false, error: '本地文件不存在或不可读取：' + localPath.slice(0, 200) }
-          }
-          if (bytes.length === 0) return { ok: false, error: '本地文件是空的（0 字节），无法上传' }
-          const name = localPath.split(/[\\/]/).pop() ?? 'attachment'
-          const ext = (name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : 'txt').toLowerCase()
-          // 图片素材 → 原生图片块（27，直接显示）；其余（txt/mp4/pdf 等）→ 文件块（23，附件+播放器）。
-          const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)
-          const isVideo = ['mp4', 'mov', 'm4v', 'webm'].includes(ext)
-          const blockType = isImage ? 27 : 23
-          const mediaParentType = isImage ? 'docx_image' : 'docx_file'
-          // 文件块带 view_type 2（内嵌播放器，教程 3.2）；图片块不需要。
-          const emptyElement = isImage
-            ? { image: {} }
-            : isVideo ? { file: { view_type: 2 } } : { file: {} }
-          // 兼容流程：先建空媒体块 → 从嵌套结构取内部文件块 ID → 以它为 parent_node 上传 → replace 回写。
-          const createConfig = { method: 'POST', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(parent)}/children`, data: { children: [{ block_type: blockType, ...(emptyElement as Record<string, unknown>) }] } }
-          const created = await channel.rawClient.request(createConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-          const createCode = typeof created.code === 'number' ? created.code : 0
-          if (createCode !== 0) return { ok: false, error: friendlyApiError(created) }
-          // 创建响应通常返回外层 view 块；内部媒体块 ID 从嵌套 children 取，取不到再 GET 兜底。
-          const createdData = created.data as { children?: Array<{ block_id?: string; children?: Array<{ block_id?: string; block_type?: number }> }> } | undefined
-          let mediaBlockId = createdData?.children?.[0]?.children?.[0]?.block_id
-          if (!mediaBlockId) {
-            const outerBlockId = createdData?.children?.[0]?.block_id
-            if (!outerBlockId) return { ok: false, error: '媒体块创建成功但未返回块 ID' }
-            const inner = await channel.rawClient.request({ method: 'GET', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(outerBlockId)}/children` }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-            const innerData = inner.data as { items?: Array<{ block_id?: string; block_type?: number }> } | undefined
-            mediaBlockId = innerData?.items?.[0]?.block_id
-          }
-          if (!mediaBlockId) return { ok: false, error: '未找到内部媒体块 ID，无法上传' }
-          // 媒体上传走 SDK 的 uploadAll（内部正确序列化 multipart；raw request 手拼会 400）。
-          // extra.drive_route_token = 所属文档 ID（飞书素材接口的路由要求）。
-          // 双令牌降级：先用户令牌（文件归属用户），失败再用租户令牌兜底（应用身份）。
-          const uploader = (channel.rawClient as unknown as {
-            drive?: { v1?: { media?: { uploadAll?: (params: Record<string, unknown>, options?: unknown) => Promise<Record<string, unknown>> } } }
-          }).drive?.v1?.media
-          const uploadAllFn = uploader?.uploadAll as ((params: Record<string, unknown>, options?: unknown) => Promise<Record<string, unknown>>) | undefined
-          if (!uploadAllFn) return { ok: false, error: '当前飞书客户端不支持媒体上传接口' }
-          const uploadParams = {
-            file_name: name,
-            parent_type: mediaParentType,
-            parent_node: mediaBlockId,
-            size: bytes.length,
-            file: bytes,
-            extra: JSON.stringify({ drive_route_token: documentId })
-          }
-          const attemptUpload = (asUser: boolean) => uploadAllFn(uploadParams, asUser && userAccessToken ? withUserAccessToken(userAccessToken as string) : undefined) as Promise<Record<string, unknown>>
-          let uploaded = await attemptUpload(true)
-          let uploadCode = typeof uploaded.code === 'number' ? uploaded.code : 0
-          let uploadedAs: 'user' | 'tenant' = 'user'
-          if (uploadCode !== 0) {
-            uploaded = await attemptUpload(false)
-            uploadCode = typeof uploaded.code === 'number' ? uploaded.code : 0
-            uploadedAs = 'tenant'
-          }
-          if (uploadCode !== 0) {
-            // 错误必须带原始上下文（铁律）：400 可能是能力缺失/参数/父节点关系，
-            // 只报 friendly 文案无法定位。两种令牌的响应都带给用户。
-            const detail = JSON.stringify({ userToken: uploaded, tenantToken: uploaded }).slice(0, 500)
-            return { ok: false, error: friendlyApiError(uploaded) + ' 详细：' + detail }
-          }
-          const uploadData = uploaded.data as { token?: string } | undefined
-          const fileToken = uploadData?.token
-          if (!fileToken) return { ok: false, error: '媒体上传成功但未返回 file token' }
-          // 回写：图片块 replace_image；文件块 replace_file——都用创建时返回的同一个块 ID。
-          const patchConfig = isImage
-            ? { method: 'PATCH', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(mediaBlockId)}`, data: { replace_image: { token: fileToken } } }
-            : { method: 'PATCH', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(mediaBlockId)}`, data: { replace_file: { token: fileToken } } }
-          const patched = await channel.rawClient.request(patchConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-          const patchCode = typeof patched.code === 'number' ? patched.code : 0
-          if (patchCode !== 0) return { ok: false, error: friendlyApiError(patched) + '（媒体 token 回写失败，块为空壳）' }
-          return { ok: true, data: { mediaBlockId, fileToken, fileName: name, size: bytes.length, uploadedAs } }
-        }
-        case 'doc_update_block': {
-          const documentId = string(request.documentId)
-          const blockId = string(request.blockId)
-          const text = typeof request.text === 'string' ? request.text : ''
-          if (!documentId || !blockId) return invalid('documentId 和 blockId 不能为空')
-          // 先读原块保留其 block_type（只改文字元素，不动块类型）。
-          const readResponse = await channel.rawClient.request({ method: 'GET', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(blockId)}` }, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-          const readCode = typeof readResponse.code === 'number' ? readResponse.code : 0
-          if (readCode !== 0) return { ok: false, error: friendlyApiError(readResponse) }
-          const block = (readResponse.data as { block?: Record<string, unknown> } | undefined)?.block
-          if (!block || typeof block.block_type !== 'number') return { ok: false, error: '目标块不存在或不可编辑（仅支持文字类块）' }
-          const blockType = block.block_type as number
-          const textFamilies = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17]
-          if (!textFamilies.includes(blockType)) return { ok: false, error: `block_type ${blockType} 不是文字类块，不能这样修改` }
-          const familyName = ([, 'text', 'heading1', 'heading2', 'heading3', 'heading4', 'heading5', 'heading6', 'heading7', 'heading8', 'heading9', 'bullet', 'number', , , 'quote', , , 'todo'])[blockType] ?? 'text'
-          const patchConfig = { method: 'PATCH', url: `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(blockId)}`, data: { update_all_fields: true, block_type: blockType, [familyName]: { elements: [{ text_run: { content: text } }] } } }
-          const patched = await channel.rawClient.request(patchConfig, userAccessToken ? withUserAccessToken(userAccessToken) : undefined) as Record<string, unknown>
-          const patchCode = typeof patched.code === 'number' ? patched.code : 0
-          if (patchCode !== 0) return { ok: false, error: friendlyApiError(patched) }
-          return { ok: true }
         }
       }
     } catch (error) {
@@ -443,7 +261,8 @@ export function capabilityFor(action: FeishuToolRequest['action']): FeishuCapabi
   if (action === 'doc_list' || action === 'doc_search') return 'drive'
   if (action === 'doc_read' || action === 'doc_blocks') return 'docs.read'
   if (action === 'doc_create' || action === 'doc_append') return 'docs.write'
-  if (action === 'doc_insert_blocks' || action === 'doc_table_fill' || action === 'doc_delete_block' || action === 'doc_file_attach' || action === 'doc_update_block') return 'docs.write'
+  if (action === 'doc_file_attach') return 'docs.media'
+  if (action === 'doc_insert_blocks' || action === 'doc_update_block' || action === 'doc_delete_block' || action === 'doc_table_fill') return 'docs.write'
   if (action === 'sheets_read') return 'sheets.read'
   if (action === 'sheets_write' || action === 'sheets_create') return 'sheets.write'
   if (action === 'bitable_read' || action === 'bitable_query') return 'bitable.read'

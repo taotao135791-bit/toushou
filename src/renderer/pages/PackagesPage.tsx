@@ -42,6 +42,7 @@ import { useT, I18nKey } from '../i18n'
 import { ConfirmDialog, type ConfirmDialogRequest } from '../components/ConfirmDialog'
 import { showNotice } from '../lib/notice'
 import { launchTool } from '../lib/launchTool'
+import { shortcutPlatform } from '../lib/platformShortcut'
 import Logo from '../components/Logo'
 import { PluginStudioDialog } from '../components/PluginStudioDialog'
 import { PluginGuideDialog } from '../components/PluginGuideDialog'
@@ -111,6 +112,7 @@ export default function PackagesPage() {
   const setPackages = useAppStore((s) => s.setPackages)
   const t = useT()
   const navigate = useNavigate()
+  const supportsKimiBridge = shortcutPlatform() === 'darwin'
   const [toolCommandByPackage, setToolCommandByPackage] = useState<Record<string, string>>({})
   const [source, setSource] = useState('')
   const [sourceMode, setSourceMode] = useState<SourceMode>('github')
@@ -202,6 +204,7 @@ export default function PackagesPage() {
   }, [])
 
   const refreshKimiStatus = useCallback(async () => {
+    if (!supportsKimiBridge) return
     const generation = ++kimiRefreshGeneration.current
     setKimiPending(true)
     setKimiError(null)
@@ -216,7 +219,7 @@ export default function PackagesPage() {
     } finally {
       if (generation === kimiRefreshGeneration.current) setKimiPending(false)
     }
-  }, [])
+  }, [supportsKimiBridge])
 
   useEffect(() => {
     refresh()
@@ -681,13 +684,13 @@ export default function PackagesPage() {
                 )}
               </section>
 
-              <KimiComputerUseCard
+              {supportsKimiBridge && <KimiComputerUseCard
                 status={kimiStatus}
                 pending={kimiPending}
                 error={kimiError}
                 onRefresh={() => void refreshKimiStatus()}
                 onToggle={() => void toggleKimiBridge()}
-              />
+              />}
 
               {canUseAssemblyLayout ? (
                 <>

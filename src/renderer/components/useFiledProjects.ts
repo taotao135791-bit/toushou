@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { MoveConversationResult } from '@shared/types'
 import type { SidebarConversation } from '../lib/sidebarConversations'
 
 export function runtimeFilingKey(entry: SidebarConversation): string | undefined {
@@ -30,5 +31,22 @@ export function useFiledProjects() {
     queue.current = request
     return request
   }, [])
-  return { assignments, file }
+  const move = useCallback((grantId: string, entry: SidebarConversation, projectId: string) => {
+    const request = queue.current.then(async (): Promise<MoveConversationResult> => {
+      const result = await window.electronAPI.moveSidebarConversation(grantId, entry.key, projectId, entry.kind === 'live' ? entry.session.id : undefined)
+      if (result.ok) {
+        const keys = [entry.key, JSON.stringify([entry.workspacePath, result.row.uuid]), JSON.stringify([result.row.cwd, result.row.uuid]), ...result.retiredSessionIds.map(id => JSON.stringify([entry.workspacePath, `runtime:${id}`]))]
+        setAssignments(current => {
+          if (!keys.some(key => Object.hasOwn(current, key))) return current
+          const next = { ...current }
+          for (const key of keys) delete next[key]
+          return next
+        })
+      }
+      return result
+    }).catch((): MoveConversationResult => ({ ok: false, error: 'failed' }))
+    queue.current = request
+    return request
+  }, [])
+  return { assignments, file, move }
 }

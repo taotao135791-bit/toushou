@@ -33,6 +33,7 @@ export type FeishuCapability =
   | 'search'
   | 'docs.read'
   | 'docs.write'
+  | 'docs.media'
   | 'sheets.read'
   | 'sheets.write'
   | 'bitable.read'
@@ -51,6 +52,7 @@ export const FEISHU_CAPABILITY_SCOPES: Record<
 > = {
   'docs.read': { scope: 'docx:document:readonly', label: '查看新版文档' },
   'docs.write': { scope: 'docx:document', label: '创建及编辑新版文档' },
+  'docs.media': { scope: 'docs:document.media:upload', label: '上传并插入新版文档附件' },
   'sheets.read': { scope: 'sheets:spreadsheet:readonly', label: '查看、评论和导出电子表格' },
   'sheets.write': { scope: 'sheets:spreadsheet', label: '查看、评论、编辑和管理电子表格' },
   'bitable.read': { scope: 'bitable:app:readonly', label: '查看、评论和导出多维表格' },
@@ -179,6 +181,12 @@ export interface FeishuToolRequest {
     | 'doc_read'
     | 'doc_create'
     | 'doc_append'
+    | 'doc_blocks'
+    | 'doc_insert_blocks'
+    | 'doc_update_block'
+    | 'doc_delete_block'
+    | 'doc_table_fill'
+    | 'doc_file_attach'
     | 'sheets_read'
     | 'sheets_write'
     | 'sheets_create'

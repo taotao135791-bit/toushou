@@ -20,6 +20,18 @@ const SCOPE_BY_CAPABILITY: Partial<Record<FeishuCapability, string>> = Object.fr
   Object.entries(FEISHU_CAPABILITY_SCOPES).map(([capability, meta]) => [capability, meta.scope])
 )
 
+const DOCUMENT_EDIT_SCOPE = FEISHU_CAPABILITY_SCOPES['docs.write'].scope
+const KNOWN_SCOPE_ENTRIES = Object.entries(SCOPE_BY_CAPABILITY) as [FeishuCapability, string][]
+
+function parseScopes(scope: string | undefined): Set<string> {
+  return new Set((scope ?? '').split(/[\s,]+/).filter(Boolean))
+}
+
+function hasCapability(scopes: Set<string>, capability: FeishuCapability): boolean {
+  const scope = SCOPE_BY_CAPABILITY[capability]
+  return !!scope && scopes.has(scope) && (capability !== 'docs.media' || scopes.has(DOCUMENT_EDIT_SCOPE))
+}
+
 /** On-demand user OAuth kept entirely in Main; tokens live in the secure store. */
 export class FeishuOAuthManager {
   private pending: PendingOAuth | null = null
@@ -33,9 +45,9 @@ export class FeishuOAuthManager {
     const credentials = await this.store.load()
     const capabilities: FeishuCapability[] = ['messaging']
     if (!credentials?.accessToken || !credentials.expiresAt || credentials.expiresAt <= Date.now()) return capabilities
-    const scopes = new Set((credentials.scope ?? '').split(/[\s,]+/).filter(Boolean))
-    for (const [capability, scope] of Object.entries(SCOPE_BY_CAPABILITY)) {
-      if (scope && scopes.has(scope)) capabilities.push(capability as FeishuCapability)
+    const scopes = parseScopes(credentials.scope)
+    for (const [capability] of KNOWN_SCOPE_ENTRIES) {
+      if (hasCapability(scopes, capability)) capabilities.push(capability)
     }
     return capabilities
   }
@@ -90,20 +102,20 @@ export class FeishuOAuthManager {
   async accessTokenFor(capability: FeishuCapability): Promise<string | null> {
     if (!(await this.ensureFreshToken())) return null
     const credentials = await this.store.load()
-    if (!credentials?.accessToken) return null
-    const scope = SCOPE_BY_CAPABILITY[capability]
-    const scopes = new Set((credentials.scope ?? '').split(/[\s,]+/).filter(Boolean))
-    return scope && scopes.has(scope) ? credentials.accessToken : null
+    if (!credentials?.accessToken || !credentials.expiresAt || credentials.expiresAt <= Date.now()) return null
+    return hasCapability(parseScopes(credentials.scope), capability) ? credentials.accessToken : null
   }
 
-  /** 'all' 一次性申请全部可选权限；其余按单个能力申请。 */
+  /** Request existing known grants too because consent replaces the stored token. */
   async begin(capability: FeishuCapability | 'all'): Promise<FeishuOAuthAuthorization> {
     const credentials = await this.store.load()
     if (!credentials) throw new Error('飞书尚未连接')
-    const scope =
-      capability === 'all'
-        ? `${Object.values(SCOPE_BY_CAPABILITY).join(' ')} offline_access`
-        : `${SCOPE_BY_CAPABILITY[capability] ?? ''} offline_access`.trim()
+    const existing = parseScopes(credentials.scope)
+    const requested = KNOWN_SCOPE_ENTRIES
+      .filter(([name, scope]) => capability === 'all' || name === capability || existing.has(scope)
+        || (capability === 'docs.media' && scope === DOCUMENT_EDIT_SCOPE))
+      .map(([, scope]) => scope)
+    const scope = [...new Set([...requested, 'offline_access'])].join(' ')
     const response = await this.fetchImpl(`${accountsBase(credentials.brand)}/oauth/v1/device_authorization`, {
       method: 'POST',
       headers: {

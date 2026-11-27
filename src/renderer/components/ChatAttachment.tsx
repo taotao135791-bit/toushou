@@ -1,10 +1,12 @@
-import { Fragment, memo, type ReactNode, useEffect, useRef, useState } from 'react'
+import { Fragment, memo, type KeyboardEvent, type MouseEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, FileText, FolderOpen, Image as ImageIcon, Sheet, X } from 'lucide-react'
 import type { PromptImage } from '@shared/types'
 import { chatAttachment, type AttachmentKind } from '@shared/chatAttachment'
 import { useAppStore } from '../store'
-import { useT } from '../i18n'
+import { fileManagerRevealKey, useT } from '../i18n'
+import { shortcutPlatform } from '../lib/platformShortcut'
+import MenuPortal from './MenuPortal'
 import audio from '../assets/file-types/audio.svg'
 import docx from '../assets/file-types/docx.svg'
 import pdf from '../assets/file-types/pdf.svg'
@@ -20,12 +22,20 @@ const mentionIcons: Partial<Record<AttachmentKind, typeof FileText>> = { photo: 
 
 interface AttachmentProps { target: string; label?: string }
 
-function useAttachment(target: string) {
+function folderOpenKey() {
+  const platform = shortcutPlatform()
+  return platform === 'darwin' ? 'chat.attachmentOpenFolderFinder' : platform === 'win32' ? 'chat.attachmentOpenFolderExplorer' : 'chat.attachmentOpenFolder'
+}
+
+function useAttachment(target: string, folder = false) {
   const file = chatAttachment(target)
   const t = useT()
   const [error, setError] = useState(false)
   const [pending, setPending] = useState(false)
   const inFlight = useRef(false)
+  const menuTrigger = useRef<HTMLElement | null>(null)
+  const menuItem = useRef<HTMLButtonElement>(null)
+  const [menu, setMenu] = useState<{ target: string; workspaceId: string; sessionId: string | null } | null>(null)
   const activate = async (action: 'open' | 'save' | 'reveal' | 'open-folder') => {
     if (inFlight.current || (!file && action !== 'open-folder') || (file?.remote && action !== 'open')) return
     inFlight.current = true
@@ -46,82 +56,110 @@ function useAttachment(target: string) {
     } catch { setError(true) }
     finally { inFlight.current = false; setPending(false) }
   }
-  return { file, t, pending, error, activate }
+  const canReveal = folder || Boolean(file && !file.remote && !file.sandbox)
+  const closeMenu = () => setMenu(null)
+  const showMenu = (event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
+    const { currentWorkspace, currentSessionId } = useAppStore.getState()
+    if (!currentWorkspace || inFlight.current) return
+    event.preventDefault()
+    menuTrigger.current = event.currentTarget
+    setMenu({ target, workspaceId: currentWorkspace.id, sessionId: currentSessionId })
+  }
+  const contextProps = canReveal ? {
+    onContextMenu: showMenu,
+    onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) showMenu(event)
+    },
+    'aria-keyshortcuts': 'Shift+F10'
+  } : undefined
+  const contextLabel = menu && t(folder ? folderOpenKey() : fileManagerRevealKey())
+  const contextMenu = menu?.target === target && canReveal && contextLabel &&
+    <MenuPortal open triggerRef={menuTrigger} onClose={closeMenu} placement="bottom" width={224} initialFocusRef={menuItem}>
+      <div role="menu" aria-label={contextLabel}>
+        <button ref={menuItem} type="button" role="menuitem" className="project-menu-action focus-ring" onKeyDown={event => {
+          if (event.key === 'Tab') { closeMenu(); menuTrigger.current?.focus() }
+        }} onClick={() => {
+          closeMenu()
+          menuTrigger.current?.focus()
+          const { currentWorkspace, currentSessionId } = useAppStore.getState()
+          if (currentWorkspace?.id === menu.workspaceId && currentSessionId === menu.sessionId) void activate(folder ? 'open-folder' : 'reveal')
+        }}><FolderOpen size={14} aria-hidden="true" />{contextLabel}</button>
+      </div>
+    </MenuPortal>
+  return { file, t, pending, error, activate, contextProps, contextMenu }
 }
 
 export function AttachmentMention({ target, label, fallbackHref, children }: AttachmentProps & { fallbackHref?: string; children?: ReactNode }) {
-  const { file, t, pending, error, activate } = useAttachment(target)
+  const { file, t, pending, error, activate, contextProps, contextMenu } = useAttachment(target)
   if (!file) return <>{children ?? (label || target)}</>
   const Icon = mentionIcons[file.kind] ?? FileText
+  const href = file.remote ? file.target : fallbackHref
+  const open = () => void activate(file.revealOnly ? 'reveal' : 'open')
   return <>
-    <a href={file.remote ? file.target : fallbackHref} aria-disabled={pending || undefined} title={target}
-      onClick={event => { event.preventDefault(); void activate('open') }}
-      onAuxClick={event => { if (event.button === 1) { event.preventDefault(); void activate('open') } }}
-      onContextMenu={event => {
-        // 右键 = 在本地资源管理器中显示（用户要求；沙箱/远程文件没有本地路径，走默认菜单）。
-        if (file.remote || file.sandbox) return
-        event.preventDefault()
-        void activate('reveal')
+    <a href={href} role={href ? undefined : 'link'} tabIndex={href ? undefined : 0} aria-disabled={pending || undefined} title={target}
+      {...contextProps}
+      onClick={event => { event.preventDefault(); open() }}
+      onAuxClick={event => { if (event.button === 1) { event.preventDefault(); open() } }}
+      onKeyDown={event => {
+        if (!href && event.key === 'Enter') { event.preventDefault(); open() }
+        else contextProps?.onKeyDown(event)
       }}
       aria-label={children ? label || file.name : undefined} data-attachment-kind={file.kind}
       className="chat-attachment-mention focus-ring inline max-w-full rounded-sm text-left [overflow-wrap:anywhere]">
       {children ?? <><Icon size={14} aria-hidden="true" className="mr-1 inline-block align-[-2px]" />{label || file.name}</>}
     </a>
+    {contextMenu}
     {error && <span role="status" className="px-1 text-xs text-amber-700">{t('chat.attachmentUnavailable')}</span>}
   </>
 }
 
 export function AttachmentFolderMention({ target, label }: AttachmentProps) {
-  const { t, pending, error, activate } = useAttachment(target)
+  const { t, pending, error, activate, contextProps, contextMenu } = useAttachment(target, true)
   return <>
-    <button type="button" disabled={pending} onClick={() => void activate('open-folder')}
-      onContextMenu={event => { event.preventDefault(); void activate('open-folder') }}
+    <button type="button" disabled={pending} onClick={() => void activate('open-folder')} {...contextProps}
       aria-label={t('chat.attachmentOpenFolder') + ' · ' + (label || target)} title={target}
       className="chat-attachment-mention focus-ring inline max-w-full rounded-sm text-left align-baseline text-[#1973ca] [overflow-wrap:anywhere] dark:text-[#90bff0]">
       <FolderOpen size={14} aria-hidden="true" className="mr-1 inline-block align-[-2px]" />{label || target}
     </button>
+    {contextMenu}
     {error && <span role="status" className="px-1 text-xs text-amber-700">{t('chat.attachmentFolderUnavailable')}</span>}
   </>
 }
 
 export function AttachmentFolderCard({ target, label }: AttachmentProps) {
-  const { t, pending, error, activate } = useAttachment(target)
+  const { t, pending, error, activate, contextProps, contextMenu } = useAttachment(target, true)
   const name = label || target.split(/[\\/]/).filter(Boolean).pop() || target
-  const platform = typeof window === 'undefined' ? undefined : window.electronAPI?.platform
-  const open = t(platform === 'darwin' ? 'chat.attachmentOpenFolderFinder' : platform === 'win32' ? 'chat.attachmentOpenFolderExplorer' : 'chat.attachmentOpenFolder')
+  const open = t(folderOpenKey())
   return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
-    <button type="button" disabled={pending} onClick={() => void activate('open-folder')}
-      onContextMenu={event => { event.preventDefault(); void activate('open-folder') }}
-      aria-label={open + ' · ' + name}
+    <button type="button" disabled={pending} onClick={() => void activate('open-folder')} {...contextProps} aria-label={open + ' · ' + name}
       title={target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">
       <FolderOpen size={26} aria-hidden="true" className="mx-[3px] shrink-0 text-cream-dim" />
       <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{name}</span>
         <span className="block truncate text-[11px] text-cream-faint">{open}</span>
       </span>
     </button>
+    {contextMenu}
     {error && <span role="status" className="px-1 text-xs text-amber-700">{t('chat.attachmentFolderUnavailable')}</span>}
   </span>
 }
 
 export function AttachmentCard({ target, label }: AttachmentProps) {
-  const { file, t, pending, error, activate } = useAttachment(target)
+  const { file, t, pending, error, activate, contextProps, contextMenu } = useAttachment(target)
   if (!file) return <>{label ?? target}</>
   const reveal = t('chat.attachmentShowInFolder')
   const { revealOnly } = file
   const open = revealOnly ? reveal : t(file.sandbox ? 'chat.attachmentLocate' : 'chat.attachmentOpen')
   const save = t('chat.attachmentSave')
-  const platform = typeof window === 'undefined' ? undefined : window.electronAPI?.platform
-  const revealTitle = platform === 'darwin' ? t('chat.openInFinder') : platform === 'win32' ? t('chat.attachmentShowInExplorer') : reveal
+  const revealTitle = t(fileManagerRevealKey())
   return <span className="chat-attachment-card my-1 inline-flex max-w-full items-center gap-1 rounded-xl border border-line bg-ink-850 px-2 align-middle text-cream">
-    <button type="button" disabled={pending} onClick={() => void activate(revealOnly ? 'reveal' : 'open')}
-      onContextMenu={event => { event.preventDefault(); void activate('reveal') }}
-      aria-label={open + ' · ' + file.name}
+    <button type="button" disabled={pending} onClick={() => void activate(revealOnly ? 'reveal' : 'open')} {...contextProps} aria-label={open + ' · ' + file.name}
       title={revealOnly ? revealTitle : target} className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-2 pl-1 pr-2 text-left hover:bg-overlay">
       <img src={icons[file.kind]} alt="" width={30} height={30} className="m-0 h-8 w-8 shrink-0" />
       <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{label || file.name}</span>
         <span className="block truncate text-[11px] text-cream-faint">{file.ext.toUpperCase()}{(file.sandbox || revealOnly) && ' · ' + open}{label && label !== file.name ? ' · ' + file.name : ''}</span>
       </span>
     </button>
+    {contextMenu}
     {!file.remote && !revealOnly && <button type="button" disabled={pending} onClick={() => void activate('reveal')}
       title={revealTitle} aria-label={reveal + ' · ' + file.name}
       className="focus-ring inline-flex min-h-8 shrink-0 items-center gap-1 rounded-lg px-1.5 text-[11px] text-cream-dim hover:bg-overlay">

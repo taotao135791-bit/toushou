@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { parseFeishuMessage } from './FeishuChannel'
+import { withUserAccessToken, type HttpInstance } from '@larksuiteoapi/node-sdk'
+import { describe, expect, it, vi } from 'vitest'
+import { FeishuChannel, parseFeishuMessage } from './FeishuChannel'
 
 describe('parseFeishuMessage', () => {
   it('normalizes a text mention and preserves thread identity', () => {
@@ -37,4 +38,29 @@ describe('parseFeishuMessage', () => {
     expect(image?.resources).toEqual([{ type: 'image', fileKey: 'img_key', fileName: undefined }])
     expect(file?.resources).toEqual([{ type: 'file', fileKey: 'file_key', fileName: 'report.csv' }])
   })
+})
+
+it('keeps document SDK diagnostics out of logs and disables implicit tenant authentication', async () => {
+  const channel = new FeishuChannel({
+    appId: 'synthetic-app', appSecret: 'synthetic-secret', brand: 'lark', savedAt: 0
+  }, { onMessage: () => {} })
+  const failure = new Error('synthetic sensitive diagnostic')
+  const httpInstance = { request: vi.fn(async () => { throw failure }) } as unknown as HttpInstance
+  channel.rawClient.httpInstance = httpInstance
+  const documents = channel.documentClient
+  expect(channel.documentClient).toBe(documents)
+  expect(documents.domain).toBe(channel.rawClient.domain)
+  const access = vi.spyOn(documents.tokenManager, 'getTenantAccessToken')
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  try {
+    expect((await documents.formatPayload()).headers).not.toHaveProperty('Authorization')
+    await expect(documents.docx.v1.document.get(
+      { path: { document_id: 'synthetic-doc' } }, withUserAccessToken('fixture-token')
+    )).rejects.toBe(failure)
+    expect(access).not.toHaveBeenCalled()
+    expect(consoleError).not.toHaveBeenCalled()
+  } finally {
+    access.mockRestore()
+    consoleError.mockRestore()
+  }
 })

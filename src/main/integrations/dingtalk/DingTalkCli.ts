@@ -63,6 +63,7 @@ export type DingTalkCliErrorCode =
   | 'cli-unavailable'
   | 'install-failed'
   | 'authorization-failed'
+  | 'profile-reauthorization-required'
   | 'organization-access-required'
   | 'network'
   | 'not-authorized'
@@ -213,6 +214,11 @@ function readError(result: ProcessResult, fallback: DingTalkCliErrorCode): DingT
   const detail = result.stdout + '\n' + result.stderr
   if (/org[._-]?(?:no[._-]?access|cli[._-]?access|not[._-]?enabled)|cli.{0,12}access.{0,24}(?:disabled|not enabled)|管理员.{0,20}(?:开通|审批)|组织.{0,16}(?:未开通|未开启|未启用)|请申请.{0,12}(?:权限|访问)/i.test(detail)) {
     return new DingTalkCliError('organization-access-required')
+  }
+  // DWS can report an authenticated local profile while its MCP token exchange
+  // refuses the saved grant. The CLI asks to renew that exact profile.
+  if (/\binvalidParameter\.authCode\.notFound\b|MCP token exchange failed:[^\r\n]{0,180}不合法的临时授权码/i.test(detail)) {
+    return new DingTalkCliError('profile-reauthorization-required')
   }
   if (/\b(?:Unauthorized|not_authorized|NOT_LOGGED_IN|token_expired|invalid_token|AUTH_REQUIRED)\b|未登录|授权已过期/i.test(detail)) {
     return new DingTalkCliError('not-authorized')
@@ -514,11 +520,15 @@ export class DingTalkCli {
     return selected
   }
 
-  async login(cli: DingTalkCliInstallation, signal?: AbortSignal): Promise<DingTalkCliIdentity | null> {
-    // Explicit JSON mode keeps the official browser OAuth flow and disables post-login terminal menus.
-    const value = record(parseResult(await this.invoke(cli, ['auth', 'login', '--format=json'], 5 * 60_000, signal), 'authorization-failed'))
+  async login(cli: DingTalkCliInstallation, signal?: AbortSignal, profile?: string): Promise<DingTalkCliIdentity | null> {
+    // JSON mode keeps browser OAuth and disables post-login terminal menus.
+    const args = ['auth', 'login', '--format=json']
+    if (profile !== undefined) args.push(this.profileArgument(profile))
+    const value = record(parseResult(await this.invoke(cli, args, 5 * 60_000, signal), 'authorization-failed'))
     if (value?.success !== true) throw new DingTalkCliError('authorization-failed')
-    return identity(value, 'authorization-failed')
+    const selected = identity(value, 'authorization-failed')
+    if (profile !== undefined && selected.profile !== profile) throw new DingTalkCliError('not-authorized')
+    return selected
   }
 
   currentUser(cli: DingTalkCliInstallation, profile: string, signal?: AbortSignal): Promise<unknown> {

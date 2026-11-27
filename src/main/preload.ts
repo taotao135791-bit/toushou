@@ -1,4 +1,4 @@
-import type { ReplyForkTarget } from '../shared/types'
+import type { MoveConversationResult, ReplyForkTarget } from '../shared/types'
 import type { MetaReadingResult, MetaReadingSummary, MetaReadingAccount, MetaReadingRange } from '../shared/metaReading'
 import type { AppsFlyerDatasetRefreshRequest, AppsFlyerDatasetRefreshResult } from '../shared/appsflyerDataset'
 import type { BoardRefreshRequest, BoardRefreshResult } from '../shared/boardRefresh'
@@ -194,6 +194,7 @@ export interface ElectronAPI {
   /** Flat relative-path file list of a project under a workspace grant. */
   listProjectFiles: (grantId: string) => Promise<string[]>
   fileSidebarConversation: (key: string, projectId: string | null, previousKey?: string, migrateOnly?: boolean) => Promise<boolean>
+  moveSidebarConversation: (grantId: string, key: string, projectId: string, liveSessionId?: string) => Promise<MoveConversationResult>
   listProjects: () => Promise<ProjectRecord[]>
   createProject: (name: string) => Promise<ProjectResult>
   importProject: () => Promise<ProjectResult>
@@ -297,8 +298,9 @@ export interface ElectronAPI {
   onMemorySaved: (handler: (event: { id: string; scope: 'global' | 'project'; text: string; duplicate?: boolean; cwd?: string }) => void) => () => void
   /** 记忆存储位置（默认/自定义 + 迁移）。 */
   memoryStorageGet: () => Promise<{ path: string; isDefault: boolean }>
-  memoryStoragePick: () => Promise<string | null>
-  memoryStorageSet: (dir: string, migrate: boolean) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+  memoryStorageChange: (migrate: boolean) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+  sessionInstruction: (id: string) => Promise<string>
+  setSessionInstruction: (id: string, text: string) => Promise<boolean>
   memoryStorageReset: (migrate: boolean) => Promise<{ ok: true } | { ok: false; error: string }>
   /** Kanban boards (local-only, validated in main on every read/write). */
   listBoards: () => Promise<KanbanBoard[]>
@@ -781,6 +783,7 @@ const api: ElectronAPI = {
   listProjectFiles: (grantId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.FS_LIST_PROJECT_FILES, grantId),
   fileSidebarConversation: (key: string, projectId: string | null, previousKey?: string, migrateOnly?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_FILE_CONVERSATION, key, projectId, previousKey, migrateOnly),
+  moveSidebarConversation: (grantId, key, projectId, liveSessionId) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_MOVE_CONVERSATION, grantId, key, projectId, liveSessionId),
   listProjects: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_LIST),
   createProject: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, name),
   importProject: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_IMPORT),
@@ -900,8 +903,9 @@ const api: ElectronAPI = {
     return () => ipcRenderer.removeListener(IPC_CHANNELS.MEMORY_SAVED_EVENT, listener)
   },
   memoryStorageGet: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_GET),
-  memoryStoragePick: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_PICK),
-  memoryStorageSet: (dir: string, migrate: boolean) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_SET, dir, migrate),
+  memoryStorageChange: (migrate: boolean) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_CHANGE, migrate),
+  sessionInstruction: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SESSION_INSTRUCTION_GET, id),
+  setSessionInstruction: (id: string, text: string) => ipcRenderer.invoke(IPC_CHANNELS.SESSION_INSTRUCTION_SET, id, text),
   memoryStorageReset: (migrate: boolean) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_STORAGE_RESET, migrate),
   listBoards: () => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_LIST),
   boardRefresh: (request: BoardRefreshRequest) => ipcRenderer.invoke(IPC_CHANNELS.BOARDS_REFRESH, request),

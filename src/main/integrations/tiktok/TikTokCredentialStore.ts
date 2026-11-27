@@ -163,11 +163,11 @@ export class TikTokCredentialStore {
   async clear(): Promise<void> {
     try {
       await unlink(this.filePath)
-      this.failure = null
-      this.verified = false
-      this.verifiedEnvelope = null
-    } catch {
-      // Already absent is the desired outcome.
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
+    this.failure = null
+    this.verified = false
+    this.verifiedEnvelope = null
   }
 }

@@ -28,12 +28,15 @@ describe('ChatPanel background metadata rendering', () => {
       expect(data, `${result.stdout}\n${result.stderr}`).not.toHaveProperty('fatal')
       expect(result.status, JSON.stringify({ status: result.status, signal: result.signal, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code })).toBe(0)
       console.info('CHAT_PANEL_PERF ' + JSON.stringify(data))
+      expect(data.idleRecovery).toEqual({ keptConversationView: true, errorCleared: true })
+      expect(data.taskProgress).toEqual({ headerClean: true, anchored: true, neverReversed: true, paused: true })
       expect(data.chatMenuWithinViewport).toBe(true)
       expect(data.effortInteraction).toEqual({
         insetMenu: true, themed: true, hiddenAuto: true, blueDrifts: true, peakDrifts: true,
-        idleDrifts: true, sharedBluePalette: true, inkClimbs: true, fillMorphs: true, distinctPeakPalette: true
+        idleDrifts: true, sharedBluePalette: true, ordinaryInkStaysBlue: true, violetOnlyAtPeak: true, distinctPeakPalette: true,
+        alwaysRound: true, levelOnly: true, particlesOnRailOnly: true
       })
-      expect(data.homeMenusBelow).toEqual([true, true, true, true, true])
+      expect(data.homeMenusBelow).toEqual([true, true, true, true])
       expect(data.deepSeekThinking).toEqual(['Off', 'Low', 'High', 'Max', 'Auto'])
       expect(data.mediumOnlyThinking).toEqual(['Off', 'Medium', 'Auto'])
       expect(data.plainThinking).toEqual(['Off', 'Auto'])
@@ -63,6 +66,16 @@ describe('ChatPanel background metadata rendering', () => {
       expect(processAutoOpened).toBe(false)
       expect(processManuallyOpened).toBe(true)
       expect(punctuation).toEqual({ inProcess: true, separate: false, boardAction: false })
+      const { runningActivity, finishedActivity, openedActivity, keyboardFocus, closedActivity } = data.inlineActivity
+      const collapsedActivity = {
+        order: true, showsFailure: true, expanded: [false, false], details: [0, 0],
+        hidesPrivateData: true, noStackedSummary: true, intermediateActions: false
+      }
+      expect(runningActivity).toEqual({ ...collapsedActivity, showsRunning: true, showsCompletion: false, finalActions: false })
+      expect(finishedActivity).toEqual({ ...collapsedActivity, showsRunning: false, showsCompletion: true, finalActions: true })
+      expect(openedActivity).toEqual({ ...finishedActivity, expanded: [true, false], details: [5, 0] })
+      expect(keyboardFocus).toBe(true)
+      expect(closedActivity).toEqual(finishedActivity)
       expect(data.projectionWork.noAgent).toEqual({ activity: 0, messages: 0, empty: true })
       expect(data.projectionWork.closedAgent).toEqual({ activity: 0, messages: 0, countVisible: true })
       expect(data.projectionWork.openAgent).toEqual({ activity: 1, messages: 0, workerVisible: true })

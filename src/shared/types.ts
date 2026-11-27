@@ -367,12 +367,13 @@ export type SessionEvent =
    * `isTerminal` is only meaningful on agent_end-derived idle events: pi
    * 0.80.3 has no such field (agent_end is always terminal → true); a future
    * upstream may send explicit `false` for non-terminal ends.
+   * Main marks a terminal idle caused by a user stop as `aborted`.
    */
-  | { type: 'status'; sessionId: string; status: SessionRuntimeState; isTerminal?: boolean }
+  | { type: 'status'; sessionId: string; status: SessionRuntimeState; isTerminal?: boolean; aborted?: boolean }
   | { type: 'compaction'; sessionId: string; phase: 'start' | 'end'; source?: 'manual' | 'auto';
       outcome?: 'compacted' | 'skipped' | 'aborted' | 'failed'; reason?: 'too_small' | 'already_compacted' }
-  /** `recoverable` is false when the session process died (crash/exit). */
-  | { type: 'error'; sessionId: string; message: string; recoverable?: boolean }
+  /** `recoverable: false` marks a dead process. `turnFailed` marks a failed provider reply. */
+  | { type: 'error'; sessionId: string; message: string; recoverable?: boolean; turnFailed?: boolean }
   | {
       type: 'ui_request'
       sessionId: string
@@ -884,6 +885,10 @@ export interface HistorySessionRow {
   origin?: 'feishu' | 'task'
   importedFrom?: import('./sessionImport').SessionImportSource
 }
+
+export type MoveConversationResult =
+  | { ok: true; row: HistorySessionRow; retiredSessionIds: string[] }
+  | { ok: false; error: 'not-found' | 'conflict' | 'busy' | 'failed'; retiredSessionIds?: string[] }
 
 export interface HistorySessionDescriptor {
   /** Opaque Main-issued capability id for resume/delete operations. */
@@ -1624,7 +1629,13 @@ export type Language = 'zh' | 'en'
 /** Sidebar session-list ordering preference. */
 export type SessionSortOrder = 'recent' | 'name' | 'manual'
 
+export interface RecentChatPreferences {
+  model: string | null
+  thinking: SessionThinkingSelection | null
+}
+
 export interface AppSettings {
+  recentChatPreferences: RecentChatPreferences
   autoCompactThresholdPercent: number
   /** Settings-file schema version; bumped only when a migration is required. */
   schemaVersion: number
@@ -1644,6 +1655,8 @@ export interface AppSettings {
   notifications: boolean
   /** Show a preview of the assistant response in turn-finished notifications. */
   notificationPreviews: boolean
+  /** Let the composer's send control follow a nearby mouse pointer. */
+  composerSendMagnetism: boolean
   /** 思维链展示策略：模型思考时自动展开推理内容（默认开）。 */
   thinkingAutoExpand: boolean
   /** 思维链折叠时机：本轮结束即折（默认）或保留到下一条用户消息。 */
@@ -1829,6 +1842,7 @@ export type ReadFileResult =
   | { ok: false; error: string }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  recentChatPreferences: { model: null, thinking: null },
   autoCompactThresholdPercent: AUTO_COMPACT_THRESHOLD_DEFAULT,
   schemaVersion: 1,
   theme: 'light',
@@ -1842,6 +1856,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   machineSkills: false,
   notifications: true,
   notificationPreviews: false,
+  composerSendMagnetism: true,
   thinkingAutoExpand: true,
   thinkingCollapseTiming: 'on-complete',
   pinnedSessionIds: [],

@@ -1,3 +1,4 @@
+import { hasPrimaryModifier } from './lib/platformShortcut'
 import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Routes, Route, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { HistorySessionDescriptor, SessionEvent } from '@shared/types'
@@ -104,31 +105,25 @@ function App() {
       setLanguage, setCliAvailable, setSetupComplete, applySessionEvent,
       registerSessions, setScheduledTasks, setWorkspacePanel
     } = useAppStore.getState()
-    window.electronAPI.getStore('theme').then((theme) => {
-      // 启动水合不走 setTheme（那会把主题来源覆盖成 manual）。
-      if (theme === 'dark' || theme === 'light') {
+    void Promise.all([window.electronAPI.getStore('theme'), window.electronAPI.getStore('themeSource')]).then(([theme, source]) => {
+      if (source === 'system') useAppStore.getState().setThemeSource('system')
+      else if (theme === 'dark' || theme === 'light') {
         useAppStore.setState({ theme })
         document.documentElement.classList.toggle('dark', theme === 'dark')
       }
     })
-    window.electronAPI.getStore('themeSource').then((source) => {
-      // system：挂监听并按系统深浅色立即解析实际主题。
-      if (source === 'system') useAppStore.getState().setThemeSource('system')
-    })
+    void useAppStore.getState().loadChatPreferences()
     window.electronAPI.getStore('language').then((language) => {
       setLanguage(language)
     })
     window.electronAPI.getStore('permissionMode').then((mode) => {
       useAppStore.getState().setPermissionMode(mode)
     })
-    // 会话设定：启动水合（留存于此供编辑和恢复）。
-    window.electronAPI.getStore('sessionInstructions').then((value) => {
-      if (value && typeof value === 'object' && !Array.isArray(value)) {
-        useAppStore.setState({ sessionInstructions: value })
-      }
-    })
     window.electronAPI.getStore('thinkingAutoExpand').then((value) => {
       if (typeof value === 'boolean') useAppStore.getState().setThinkingAutoExpand(value)
+    })
+    window.electronAPI.getStore('composerSendMagnetism').then(value => {
+      if (typeof value === 'boolean') useAppStore.setState({ composerSendMagnetism: value })
     })
     window.electronAPI.getStore('thinkingCollapseTiming').then((value) => {
       if (value === 'on-complete' || value === 'until-next-input') useAppStore.getState().setThinkingCollapseTiming(value)
@@ -333,7 +328,7 @@ function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       // Same modifier policy as the ⌘K palette below: Ctrl on Windows/Linux,
       // ⌘ on macOS (the sidebar hint is platform-aware via modKeyLabel).
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && !e.repeat && e.key.toLowerCase() === 'n') {
+      if (hasPrimaryModifier(e) && !e.isComposing && !e.shiftKey && !e.altKey && !e.repeat && e.key.toLowerCase() === 'n') {
         e.preventDefault()
         setPaletteOpen(false)
         useAppStore.getState().setCurrentSessionId(null)
@@ -347,7 +342,7 @@ function App() {
   // ⌘K / Ctrl+K toggles the global command palette from anywhere.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.metaKey && !e.ctrlKey) return
+      if (!hasPrimaryModifier(e) || e.isComposing) return
       if (e.shiftKey || e.altKey || e.repeat) return
       if (e.key.toLowerCase() !== 'k') return
       e.preventDefault()

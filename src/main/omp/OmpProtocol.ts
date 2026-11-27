@@ -280,6 +280,7 @@ export function normalizeRpcFrame(
           event: {
             type: 'error',
             sessionId,
+            turnFailed: true,
             // First line only — provider errors often append a raw JSON body.
             message: msg.errorMessage.split('\n')[0].slice(0, 300)
           }

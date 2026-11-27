@@ -17,7 +17,8 @@ export default function MemorySection() {
   const [globalEntries, setGlobalEntries] = useState<MemoryEntry[] | null>(null)
   const [projectEntries, setProjectEntries] = useState<MemoryEntry[] | null>(null)
   const [draft, setDraft] = useState('')
-  const [draftScope, setDraftScope] = useState<MemoryScope>('project')
+  const [selectedScope, setDraftScope] = useState<MemoryScope>('project')
+  const draftScope = cwd ? selectedScope : 'global'
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
   const [storage, setStorage] = useState<{ path: string; isDefault: boolean } | null>(null)
@@ -45,10 +46,8 @@ export default function MemorySection() {
     if (storageBusy) return
     setStorageBusy(true)
     try {
-      const picked = await window.electronAPI.memoryStoragePick()
-      if (!picked) return
-      const migrate = await askMigrate()
-      const result = await window.electronAPI.memoryStorageSet(picked, migrate)
+      const result = await window.electronAPI.memoryStorageChange(askMigrate())
+      if (!result.ok && result.error === 'cancelled') return
       if (!result.ok) {
         showNotice(
           result.error === 'not-empty' ? 'settings.memory.storageNotEmpty'
@@ -221,7 +220,7 @@ export default function MemorySection() {
         <p className="mb-1.5 break-all px-0.5 font-mono text-[11px] leading-4 text-cream-dim" title={storage?.path}>
           {storage?.path ?? t('settings.memory.storageLoading')}
         </p>
-        <div className="flex gap-1.5">
+        <div className="flex flex-wrap gap-1.5">
           <button
             onClick={() => void changeLocation()}
             disabled={storageBusy}
@@ -242,11 +241,13 @@ export default function MemorySection() {
           )}
         </div>
       </div>
-      <div className="mb-2.5 flex items-center gap-1.5">
+      <div className="mb-2.5 flex flex-wrap items-center gap-2">
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           rows={2}
+          maxLength={4000}
+          aria-label={t('settings.memory.placeholder')}
           placeholder={t('settings.memory.placeholder')}
           className="min-w-0 flex-1 resize-none rounded-lg border border-line bg-ink-900 px-2.5 py-1.5 text-[12px] text-cream placeholder-cream-faint outline-none focus:border-accent/40"
         />
@@ -255,6 +256,8 @@ export default function MemorySection() {
             {(['project', 'global'] as MemoryScope[]).map((scope) => (
               <button
                 key={scope}
+                aria-pressed={draftScope === scope}
+                disabled={scope === 'project' && !cwd}
                 onClick={() => setDraftScope(scope)}
                 className={`focus-ring rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
                   draftScope === scope ? 'bg-ink-850 text-cream' : 'text-cream-faint hover:text-cream-dim'

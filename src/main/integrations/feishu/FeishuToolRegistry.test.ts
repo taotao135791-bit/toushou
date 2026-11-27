@@ -215,7 +215,7 @@ describe('FeishuToolRegistry', () => {
 
   it('marks permission-class API errors with the connect guide', async () => {
     const request = vi.fn(async () => ({ code: 99991663, msg: 'invalid access token for authorization' }))
-    const channel = { rawClient: { request } }
+    const channel = { documentClient: { request } }
     const registry = new FeishuToolRegistry(
       () => channel as never,
       () => true,
@@ -228,7 +228,7 @@ describe('FeishuToolRegistry', () => {
 
   it('marks 401/403 transport failures with the connect guide', async () => {
     const request = vi.fn(async () => { throw new Error('Request failed with status code 401') })
-    const channel = { rawClient: { request } }
+    const channel = { documentClient: { request } }
     const registry = new FeishuToolRegistry(
       () => channel as never,
       () => true,
@@ -241,7 +241,7 @@ describe('FeishuToolRegistry', () => {
 
   it('passes user OAuth tokens only to user-scoped API requests', async () => {
     const request = vi.fn(async () => ({ code: 0, data: { title: 'brief' } }))
-    const channel = { rawClient: { request } }
+    const channel = { documentClient: { request } }
     const registry = new FeishuToolRegistry(
       () => channel as never,
       () => true,
@@ -256,7 +256,7 @@ describe('FeishuToolRegistry', () => {
 
   it('lists recent drive files with the drive capability token', async () => {
     const request = vi.fn(async () => ({ code: 0, data: { files: [{ name: 'a', token: 't' }] } }))
-    const channel = { rawClient: { request } }
+    const channel = { documentClient: { request } }
     const registry = new FeishuToolRegistry(
       () => channel as never,
       () => true,
@@ -275,7 +275,7 @@ describe('FeishuToolRegistry', () => {
 
   it('searches docs with a bounded keyword', async () => {
     const request = vi.fn(async () => ({ code: 0, data: { entities: [] } }))
-    const channel = { rawClient: { request } }
+    const channel = { documentClient: { request } }
     const registry = new FeishuToolRegistry(
       () => channel as never,
       () => true,
@@ -294,7 +294,7 @@ describe('FeishuToolRegistry', () => {
 
   it('pauses a session after repeated hard failures via executeForSession', async () => {
     const request = vi.fn(async () => { throw new Error('Request failed with status code 400') })
-    const channel = { rawClient: { request } }
+    const channel = { documentClient: { request } }
     const registry = new FeishuToolRegistry(
       () => channel as never,
       () => true,

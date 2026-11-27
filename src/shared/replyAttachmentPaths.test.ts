@@ -32,6 +32,29 @@ describe('file evidence in one assistant reply', () => {
     expect([...files]).toEqual(['C:\\Example Files\\Reports\\Report.html', 'C:\\Example Files\\Reports\\Summary Q4.xlsx'])
   })
 
+  it('recognizes local directory links on both platforms without using them as an implicit delivery base', async () => {
+    const source = [
+      '[outputs](/tmp/synthetic-results)', '[backslash](<C:\\Example Files\\Reports>)',
+      '[slash](C:/Example%20Files/Archive)', '[file URL](file:///tmp)',
+      '[web route](/help)', '[web query](/help/topic?q=folder)', '[unknown file](/tmp/report.bin)',
+      '[network](<\\\\host\\share\\reports>)', '[unsupported URI](file://host/share/reports)',
+      '[traversal](/tmp/../results)', '[relative report](report.csv)'
+    ].join('\n')
+    const { folders, files } = await replyAttachmentPaths(source)
+    expect([...folders]).toEqual(['/tmp/synthetic-results', 'C:\\Example Files\\Reports', 'C:/Example Files/Archive', '/tmp'])
+    expect([...files]).toEqual(['report.csv'])
+  })
+
+  it('uses a delivery cue with an emoji or line break for a bare or code-formatted directory', async () => {
+    const bare = await replyAttachmentPaths('输出至：\n📁/tmp/example-results\n\n明细见 [表格](report.csv)。')
+    expect([...bare.folders]).toEqual(['/tmp/example-results'])
+    expect([...bare.files]).toEqual(['/tmp/example-results/report.csv'])
+
+    const code = await replyAttachmentPaths('材料都在：\n\x60🗂️ C:\\Example Files\\Reports\x60。见 [表格](report.csv)。')
+    expect([...code.folders]).toEqual(['C:\\Example Files\\Reports'])
+    expect([...code.files]).toEqual(['C:\\Example Files\\Reports\\report.csv'])
+  })
+
   it('keeps a later section separate when different destinations have been specified', async () => {
     const source = ['Directory: \x60/tmp/Example-A/\x60', '', '- \x60report.csv\x60', '', 'Directory: \x60/tmp/Example-B/\x60',
       '', '- \x60report.csv\x60', '', '## Other', '', '\x60unrelated.csv\x60'].join('\n')
