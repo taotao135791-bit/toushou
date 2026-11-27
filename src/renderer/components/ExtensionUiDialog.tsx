@@ -111,7 +111,7 @@ export default function ExtensionUiDialog({
       if (e.key === 'Tab') {
         const focusable = Array.from(
           dialogRef.current?.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), summary, [href]'
+            'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), summary, [href], [tabindex="0"]'
           ) ?? []
         )
         if (focusable.length === 0) return
@@ -289,7 +289,7 @@ export default function ExtensionUiDialog({
 
           {request.method === 'confirm' && (
             <>
-              {!display && <p className="mb-4 max-h-32 overflow-auto whitespace-pre-wrap break-all text-[13px] leading-6 text-cream-dim">
+              {!display && <p tabIndex={0} className="focus-ring mb-4 max-h-32 overflow-auto whitespace-pre-wrap break-all text-[13px] leading-6 text-cream-dim">
                 {request.message}
               </p>}
               <div className="flex justify-end gap-2">

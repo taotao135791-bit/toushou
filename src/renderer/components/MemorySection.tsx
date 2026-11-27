@@ -4,6 +4,7 @@ import type { MemoryEntry, MemoryScope } from '@shared/memory'
 import { useAppStore } from '../store'
 import { useT } from '../i18n'
 import { showNotice } from '../lib/notice'
+import JellyToggle from './effects/JellyToggle'
 
 /**
  * 长期记忆管理区（设置页）：全局记忆与当前项目的记忆分列展示，支持
@@ -23,6 +24,9 @@ export default function MemorySection() {
   const [editText, setEditText] = useState('')
   const [storage, setStorage] = useState<{ path: string; isDefault: boolean } | null>(null)
   const [storageBusy, setStorageBusy] = useState(false)
+  const [memoryEnabled, setMemoryEnabled] = useState<boolean | null>(null)
+  const [savingMemory, setSavingMemory] = useState(false)
+  const [memorySettingError, setMemorySettingError] = useState(false)
 
   const refresh = useCallback(() => {
     void window.electronAPI.memoryList(cwd).then((layers) => {
@@ -38,6 +42,30 @@ export default function MemorySection() {
   useEffect(() => {
     refresh()
   }, [refresh])
+
+  useEffect(() => {
+    let active = true
+    void window.electronAPI.getStore('memoryEnabled').then(value => {
+      if (active) setMemoryEnabled(value !== false)
+    }).catch(() => {
+      if (active) setMemorySettingError(true)
+    })
+    return () => { active = false }
+  }, [])
+
+  const changeMemoryEnabled = async (next: boolean) => {
+    if (memoryEnabled === null || next === memoryEnabled || savingMemory) return
+    const previous = memoryEnabled
+    setMemoryEnabled(next)
+    setSavingMemory(true)
+    setMemorySettingError(false)
+    const saved = await window.electronAPI.setStore('memoryEnabled', next).catch(() => false)
+    if (!saved) {
+      setMemoryEnabled(previous)
+      setMemorySettingError(true)
+    }
+    setSavingMemory(false)
+  }
 
   /** 迁移询问：换位置时是否把现有记忆带过去（弹窗按钮写动词）。 */
   const askMigrate = (): boolean => window.confirm(t('settings.memory.storageMigrateAsk'))
@@ -128,7 +156,9 @@ export default function MemorySection() {
         <span className="text-[11px] text-cream-faint">{entries?.length ?? '…'}</span>
       </div>
       {entries !== null && entries.length === 0 && (
-        <p className="px-1 py-1 text-[11.5px] text-cream-faint">{t('settings.memory.empty')}</p>
+        <p className="px-1 py-1 text-[11.5px] text-cream-faint">
+          {t(memoryEnabled === false ? 'settings.memory.emptyManual' : 'settings.memory.empty')}
+        </p>
       )}
       <div className="space-y-1">
         {(entries ?? []).map((entry) => (
@@ -208,6 +238,24 @@ export default function MemorySection() {
     <div role="group" aria-labelledby="settings-memory-heading" className="py-2.5">
       <h3 id="settings-memory-heading" className="mb-1 text-[13px] font-medium text-cream">{t('settings.memory.title')}</h3>
       <p className="mb-2 text-[11.5px] leading-4 text-cream-faint">{t('settings.memory.hint')}</p>
+      <div className="mb-2.5 rounded-xl border border-line p-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h4 className="text-[12px] font-medium text-cream">{t('settings.memory.agentEnabled')}</h4>
+            <p id="settings-memory-agent-description" className="mt-0.5 text-[11.5px] leading-4 text-cream-faint">
+              {t('settings.memory.agentEnabledHint')}
+            </p>
+          </div>
+          {memoryEnabled !== null && (
+            <JellyToggle size="sm" checked={memoryEnabled} disabled={savingMemory}
+              aria-label={t('settings.memory.agentEnabled')} aria-describedby="settings-memory-agent-description"
+              onChange={next => void changeMemoryEnabled(next)} />
+          )}
+        </div>
+        {memorySettingError && (
+          <p role="alert" className="mt-1 text-[11.5px] text-red-500">{t('settings.memory.agentSettingFailed')}</p>
+        )}
+      </div>
       <div className="mb-2.5 rounded-xl border border-line p-2.5">
         <div className="flex items-center gap-2">
           <h4 className="text-[12px] font-medium text-cream">{t('settings.memory.storageTitle')}</h4>

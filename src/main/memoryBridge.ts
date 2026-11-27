@@ -2,13 +2,14 @@ import { randomBytes } from 'node:crypto'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { closeSync, constants, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { BrowserWindow, dialog } from 'electron'
+import { BrowserWindow, dialog, type WebContents } from 'electron'
 import { IPC_CHANNELS } from '../shared/constants'
-import { buildMemoryPrompt, listProjectMemoryKeys, projectMemoryKey, readMemoryLayer, saveMemoryEntry } from './memoryStore'
+import { buildMemoryPrompt, deleteMemoryEntry, listProjectMemoryKeys, projectMemoryKey, readMemoryLayer, saveMemoryEntry, updateMemoryText } from './memoryStore'
 import { isSessionFilePath, sessionDirCandidatesFor, sessionsRoot } from './sessionHistory'
 import { defaultPiAgentDir } from './piSettings'
 import { getStore } from './store'
-import type { PermissionMode } from '../shared/types'
+import type { PermissionMode, SessionEvent } from '../shared/types'
+import type { MemoryScope } from '../shared/memory'
 
 function projectLabel(cwd: string): string {
   return cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? cwd
@@ -52,6 +53,13 @@ const MAX_SCAN_FILES = 300
 const MAX_HITS = 8
 const MAX_SNIPPET_CHARS = 400
 const MAX_READ_CHARS = 12_000
+const MEMORY_APPROVAL_TIMEOUT = 120_000
+const MEMORY_APPROVAL_PREFIX = 'memory-mutation:'
+const MEMORY_ACTIONS = new Set<unknown>(['memory_save', 'memory_list', 'memory_all_projects', 'memory_search_projects', 'memory_update', 'memory_delete'])
+const MEMORY_INSTRUCTIONS = {
+  zh: '长期记忆已开启。用户要求记住内容，或对话出现值得长期保留的纠正、项目事实或规则时，用 toushou_memory_save 保存并如实说明。默认本项目，通用规则才保存到全局。拿不准时先问用户。需要更正或删除时，按关键词用 toushou_memory_list 定位条目，再调用 toushou_memory_update 或 toushou_memory_delete。变更由用户确认。操作未获批准、已取消或结果未知时，停止重试并如实说明。跨项目查询使用 toushou_memory_all_projects 或 toushou_memory_search_projects。工具不可用时，不要声称已保存或修改。',
+  en: 'Long-term memory is enabled. Use toushou_memory_save when asked to remember or when a lasting correction, project fact, or rule emerges. Default to project scope and use global for general rules. Ask the user when unsure. To correct or remove an entry, find it by keyword with toushou_memory_list, then use toushou_memory_update or toushou_memory_delete. The user approves changes. Report denied, cancelled or unknown results without retrying. Use toushou_memory_all_projects or toushou_memory_search_projects for cross-project recall. If a tool is unavailable, do not claim to have saved or changed memory.'
+}
 
 /** Read at most maxBytes from the START of a file (sync, bounded) — jsonl
  * transcripts can embed base64 images and reach tens of MB; a full readFileSync
@@ -113,6 +121,33 @@ let lookup: ((sessionId: string) => BridgeSession | undefined) | null = null
 let port: number | null = null
 let ready: Promise<void> | null = null
 const tokens = new Map<string, string>()
+const desktopTurns = new Map<string, WebContents>()
+const memoryRequests = new Map<AbortController, string>()
+const pendingApprovals = new Map<string, { id: string; owner: WebContents; finish: (answer: boolean | null) => void }>()
+
+export function cancelPendingMemoryMutations(sessionId?: string): void {
+  for (const [controller, owner] of memoryRequests) {
+    if (sessionId === undefined || sessionId === owner) controller.abort()
+  }
+}
+
+/** Only prompts accepted from a desktop window can own a memory edit approval. */
+export function setMemoryTurnOwner(sessionId: string, owner?: WebContents, startsTurn = true): void {
+  cancelPendingMemoryMutations(sessionId)
+  if (owner && !owner.isDestroyed() && (startsTurn || desktopTurns.get(sessionId) === owner)) desktopTurns.set(sessionId, owner)
+  else desktopTurns.delete(sessionId)
+}
+
+export function respondMemoryMutation(sessionId: string, requestId: string, answer: unknown, sender: WebContents): boolean | undefined {
+  if (!requestId.startsWith(MEMORY_APPROVAL_PREFIX)) return undefined
+  const pending = pendingApprovals.get(sessionId)
+  if (!pending || pending.id !== requestId || pending.owner !== sender || sender.isDestroyed()) return false
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer) || Object.keys(answer).length !== 1) return false
+  if ('confirmed' in answer && typeof answer.confirmed === 'boolean') pending.finish(answer.confirmed)
+  else if ('cancelled' in answer && answer.cancelled === true) pending.finish(null)
+  else return false
+  return true
+}
 
 export function initMemoryBridge(sessionLookup: (sessionId: string) => BridgeSession | undefined): Promise<void> {
   lookup = sessionLookup
@@ -147,12 +182,14 @@ export function memoryBridgeEnv(sessionId: string): Record<string, string> {
 }
 
 export function revokeMemoryBridgeTokens(sessionId: string): void {
+  setMemoryTurnOwner(sessionId)
   for (const [token, owner] of tokens) {
     if (owner === sessionId) tokens.delete(token)
   }
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
+  if (response.destroyed) return
   response.writeHead(status, { 'content-type': 'application/json' })
   response.end(JSON.stringify(body))
 }
@@ -162,7 +199,7 @@ function json(response: ServerResponse, status: number, body: unknown): void {
  * 访问"的手动闸门：模型声称用户要求跨项目时，必须用户在弹窗里点头，
  * Main 才放行。拒绝/无窗口时一律不放行。
  */
-async function confirmCrossProject(targetLabel: string): Promise<boolean> {
+async function confirmCrossProject(targetLabel: string, signal?: AbortSignal): Promise<boolean> {
   const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.isVisible())
   if (!win) return false
   const { response } = await dialog.showMessageBox(win, {
@@ -173,9 +210,10 @@ async function confirmCrossProject(targetLabel: string): Promise<boolean> {
     buttons: ['允许本次查看', '拒绝'],
     defaultId: 1,
     cancelId: 1,
-    noLink: true
+    noLink: true,
+    signal
   })
-  return response === 0
+  return !signal?.aborted && response === 0
 }
 
 /** 按名称模糊匹配项目（basename 优先，其次全路径包含）。 */
@@ -188,13 +226,13 @@ function findProjectByName(name: string): { key: string; path: string } | null {
   return matches.length === 1 ? matches[0] : null
 }
 
-async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  const token = (request.url ?? '').replace(/^\//, '')
+async function handle(incoming: IncomingMessage, response: ServerResponse): Promise<void> {
+  const token = (incoming.url ?? '').replace(/^\//, '')
   const sessionId = tokens.get(token)
-  if (request.method !== 'POST' || !sessionId) return json(response, 403, { ok: false, error: 'forbidden' })
+  if (incoming.method !== 'POST' || !sessionId) return json(response, 403, { ok: false, error: 'forbidden' })
   const chunks: Buffer[] = []
   let size = 0
-  for await (const chunk of request) {
+  for await (const chunk of incoming) {
     const buffer = chunk as Buffer
     size += buffer.length
     if (size > MAX_BODY_BYTES) return json(response, 413, { ok: false, error: 'request-too-large' })
@@ -209,10 +247,30 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   const session = lookup?.(sessionId)
   if (!session) return json(response, 410, { ok: false, error: 'session-gone' })
   if (tokens.get(token) !== sessionId || session.remoteReadonly) return json(response, 403, { ok: false, error: 'permission-denied' })
+  const request = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+  if (!request) return json(response, 400, { ok: false, error: 'invalid-request' })
+  const isMemory = MEMORY_ACTIONS.has(request.action)
+  if (isMemory && getStore('memoryEnabled') === false) return json(response, 200, { ok: false, error: 'memory-disabled' })
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (response.destroyed || incoming.aborted) return
+  response.once('close', abort)
+  if (isMemory) memoryRequests.set(controller, sessionId)
+  const revalidate = (write = false): string | null => {
+    if (isMemory && getStore('memoryEnabled') === false) return 'memory-disabled'
+    if (controller.signal.aborted || response.destroyed) return 'cancelled'
+    const current = lookup?.(sessionId)
+    if (tokens.get(token) !== sessionId || !current || current.cwd !== session.cwd || current.remoteReadonly ||
+        (write && (current.mode === 'readonly' || current.mode !== session.mode))) return 'permission-denied'
+    return null
+  }
   try {
-    return json(response, 200, await dispatch(body, session))
-  } catch (error) {
-    return json(response, 200, { ok: false, error: 'memory-action-failed', detail: String((error as Error)?.message ?? error).slice(0, 300) })
+    return json(response, 200, await dispatch(request, session, controller.signal, revalidate))
+  } catch {
+    return json(response, 200, { ok: false, error: revalidate() ?? 'memory-action-failed' })
+  } finally {
+    response.removeListener('close', abort)
+    memoryRequests.delete(controller)
   }
 }
 
@@ -224,9 +282,97 @@ interface SearchHit {
   snippet: string
 }
 
-async function dispatch(body: unknown, session: BridgeSession): Promise<unknown> {
-  if (typeof body !== 'object' || body === null) return { ok: false, error: 'invalid-request' }
-  const request = body as Record<string, unknown>
+type RevalidateMemoryRequest = (write?: boolean) => string | null
+
+function listMemoryEntries(request: Record<string, unknown>, cwd: string) {
+  const scope = request.scope ?? 'all'
+  const limit = request.limit ?? 10
+  const cursor = request.cursor ?? '0'
+  const query = request.query ?? ''
+  if ((scope !== 'all' && scope !== 'global' && scope !== 'project') ||
+      typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 20 ||
+      typeof cursor !== 'string' || !/^\d{1,4}$/.test(cursor) ||
+      typeof query !== 'string' || query.length > 120) return { ok: false, error: 'invalid-query' }
+  const offset = Number(cursor)
+  const keyword = query.trim().toLowerCase()
+  const scopes: MemoryScope[] = scope === 'all' ? ['global', 'project'] : [scope]
+  const matches = scopes.flatMap(layer => readMemoryLayer(layer, layer === 'project' ? projectMemoryKey(cwd) : null).entries
+    .filter(entry => entry.text.toLowerCase().includes(keyword))
+    .map(entry => ({ ...entry, scope: layer })))
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+  const entries = matches.slice(offset, offset + limit).map(({ id, scope, text, updatedAt }) => {
+    const characters = Array.from(text)
+    return { id, scope, text: characters.slice(0, 300).join(''), updatedAt, truncated: characters.length > 300 }
+  })
+  return { ok: true, entries, nextCursor: offset + limit < matches.length ? String(offset + limit) : null }
+}
+
+function askToChangeMemory(sessionId: string, owner: WebContents, title: string, message: string, signal: AbortSignal): Promise<boolean | null> {
+  const id = MEMORY_APPROVAL_PREFIX + randomBytes(16).toString('hex')
+  const { promise, resolve } = Promise.withResolvers<boolean | null>()
+  const send = (event: SessionEvent) => {
+    if (!owner.isDestroyed()) owner.send(IPC_CHANNELS.OMP_SESSION_EVENT, event)
+  }
+  const abort = () => finish(null)
+  const timer = setTimeout(abort, MEMORY_APPROVAL_TIMEOUT)
+  timer.unref()
+  const finish = (choice: boolean | null) => {
+    if (pendingApprovals.get(sessionId)?.id !== id) return
+    pendingApprovals.delete(sessionId)
+    clearTimeout(timer)
+    signal.removeEventListener('abort', abort)
+    owner.removeListener('destroyed', abort)
+    resolve(choice)
+    try { send({ type: 'ui_cancel', sessionId, id }) } catch { /* Window is closing. */ }
+  }
+  pendingApprovals.set(sessionId, { id, owner, finish })
+  signal.addEventListener('abort', abort, { once: true })
+  owner.once('destroyed', abort)
+  if (signal.aborted || owner.isDestroyed()) abort()
+  else {
+    try { send({ type: 'ui_request', sessionId, id, method: 'confirm', title, message, timeout: MEMORY_APPROVAL_TIMEOUT }) }
+    catch { abort() }
+  }
+  return promise
+}
+
+async function changeMemory(request: Record<string, unknown>, session: BridgeSession, signal: AbortSignal, revalidate: RevalidateMemoryRequest) {
+  const { scope, id } = request
+  const update = request.action === 'memory_update'
+  const nextText = typeof request.text === 'string' ? request.text.trim() : ''
+  if ((scope !== 'global' && scope !== 'project') || typeof id !== 'string' || !id.length || id.length > 64) return { ok: false, error: 'invalid-entry' }
+  if (update && (!nextText || typeof request.text !== 'string' || request.text.length > 2_000)) return { ok: false, error: 'invalid-text' }
+  const owner = desktopTurns.get(session.id)
+  const invalid = revalidate(true)
+  if (invalid) return { ok: false, error: invalid }
+  if (!owner || owner.isDestroyed()) return { ok: false, error: 'permission-denied' }
+  if (pendingApprovals.has(session.id)) return { ok: false, error: 'approval-pending' }
+
+  const key = scope === 'project' ? projectMemoryKey(session.cwd) : null
+  const find = () => readMemoryLayer(scope, key).entries.find(entry => entry.id === id)
+  const before = find()
+  if (!before) return { ok: false, error: 'not-found' }
+  const storagePath = getStore('memoryStoragePath')
+  const en = getStore('language') === 'en'
+  const destination = scope === 'global' ? (en ? 'All projects' : '所有项目') : projectLabel(session.cwd)
+  const title = update ? (en ? 'Rewrite saved memory' : '改写长期记忆') : (en ? 'Delete saved memory' : '删除长期记忆')
+  const message = [destination, session.title?.slice(0, 120), '', en ? 'Current text' : '原文', before.text,
+    ...(update ? ['', en ? 'Replacement' : '改为', nextText] : [])].filter(line => line !== undefined).join('\n')
+  const approved = await askToChangeMemory(session.id, owner, title, message, signal)
+  const invalidAfter = revalidate(true)
+  if (invalidAfter) return { ok: false, error: invalidAfter }
+  if (approved === null || owner.isDestroyed() || desktopTurns.get(session.id) !== owner) return { ok: false, error: 'cancelled' }
+  if (!approved) return { ok: false, error: 'user-declined' }
+  if (getStore('memoryStoragePath') !== storagePath) return { ok: false, error: 'stale-entry' }
+  const current = find()
+  if (!current || current.text !== before.text || current.createdAt !== before.createdAt || current.updatedAt !== before.updatedAt) {
+    return { ok: false, error: 'stale-entry' }
+  }
+  const committed = update ? updateMemoryText(scope, id, nextText, session.cwd) : deleteMemoryEntry(scope, id, session.cwd)
+  return committed ? { ok: true, id, scope } : { ok: false, error: 'storage-unavailable' }
+}
+
+async function dispatch(request: Record<string, unknown>, session: BridgeSession, signal: AbortSignal, revalidate: RevalidateMemoryRequest): Promise<unknown> {
   const cwd = session.cwd
   switch (request.action) {
     case 'memory_save': {
@@ -243,12 +389,10 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
           type: 'question', title: en ? 'Save memory' : '保存记忆',
           message: destination, detail: text.slice(0, 500),
           buttons: en ? ['Save memory', 'Cancel'] : ['保存记忆', '取消'],
-          defaultId: 1, cancelId: 1, noLink: true
+          defaultId: 1, cancelId: 1, noLink: true, signal
         })
-        const current = lookup?.(session.id)
-        if (response !== 0 || !current || current.remoteReadonly || current.mode === 'readonly' || current.cwd !== cwd) {
-          return { ok: false, error: 'permission-denied' }
-        }
+        const invalid = revalidate(true)
+        if (invalid || response !== 0) return { ok: false, error: invalid ?? 'permission-denied' }
       }
       // 来源自动记录当前对话（管理界面可追溯），不依赖模型自报。
       const source = { sessionTitle: (session.title ?? '').slice(0, 120) || undefined }
@@ -276,14 +420,11 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
       }
       return { ok: false, error: result.error }
     }
-    case 'memory_list': {
-      const projectKey = projectMemoryKey(cwd)
-      return {
-        ok: true,
-        global: readMemoryLayer('global', null).entries,
-        project: readMemoryLayer('project', projectKey).entries
-      }
-    }
+    case 'memory_list':
+      return listMemoryEntries(request, cwd)
+    case 'memory_update':
+    case 'memory_delete':
+      return changeMemory(request, session, signal, revalidate)
     case 'memory_all_projects': {
       // 「你还记得之前记过什么」：全局 + 全部项目的记忆，一次给全。
       // 跨项目部分弹用户确认（隔离闸门），拒绝则只返回全局和本项目。
@@ -293,7 +434,9 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
         const label = others.length === 1
           ? projectLabel(others[0].path)
           : `${others.length} 个项目的记忆`
-        if (await confirmCrossProject(label)) allowedOthers = others
+        if (await confirmCrossProject(label, signal)) allowedOthers = others
+        const invalid = revalidate()
+        if (invalid) return { ok: false, error: invalid }
       }
       return {
         ok: true,
@@ -326,7 +469,9 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
         return { ok: true, project: projectLabel(target.path), entries: filterEntriesByKeywords(entries, keywords) }
       }
       const label = projectLabel(target.path)
-      if (!await confirmCrossProject(label)) return { ok: false, error: 'user-declined' }
+      const approved = await confirmCrossProject(label, signal)
+      const invalid = revalidate()
+      if (invalid || !approved) return { ok: false, error: invalid ?? 'user-declined' }
       const entries = readMemoryLayer('project', target.key).entries
       return { ok: true, confirmedByUser: true, project: label, entries: filterEntriesByKeywords(entries, keywords) }
     }
@@ -335,7 +480,9 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
       const instruction = session.instruction
         ? (language === 'en' ? '## Conversation instructions' : '## 本会话设定') + '\n' + session.instruction
         : ''
-      return { ok: true, prompt: [buildMemoryPrompt(cwd, language), instruction].filter(Boolean).join('\n\n') }
+      const enabled = getStore('memoryEnabled') !== false
+      const guidance = enabled && session.mode !== 'readonly' ? MEMORY_INSTRUCTIONS[language] : ''
+      return { ok: true, prompt: [guidance, enabled ? buildMemoryPrompt(cwd, language) : '', instruction].filter(Boolean).join('\n\n') }
     }
     case 'session_search': {
       return searchSessions(request, session)

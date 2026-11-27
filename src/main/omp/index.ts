@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { existsSync } from 'node:fs'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, type WebContents } from 'electron'
 import { IPC_CHANNELS } from '../../shared/constants'
 import { cleanSessionName } from '../../shared/promptTitle'
 import {
@@ -40,6 +40,7 @@ import { extensionExternalLinkMessage } from './extensionLinks'
 import { cancelBoardEditTargets, getBoardBuildSession, registerBoardBuildTurn, respondBoardEditTargets, revokeBoardBuildSession, type BoardTargetUiEvent } from '../boardBuilds'
 import { BoardBuildThinking } from './boardBuildThinking'
 import { isUiAnswer } from '../uiAnswer'
+import { cancelPendingMemoryMutations, setMemoryTurnOwner } from '../memoryBridge'
 import { isRuntimePreparing } from '../runtimePreparationGate'
 import { listMcpConnections } from '../integrations/mcp/McpConnectionStore'
 import { mcpTurnPrompt } from './mcpMentions'
@@ -307,11 +308,13 @@ export function createSession(
         if (event.type === 'thinking_level_changed') session.autoThinking = event.level === 'auto'
         if (event.type === 'status' && event.status === 'idle' && event.isTerminal !== false) {
           if (event.isTerminal === true) cancelBoardEditTargets(id)
+          setMemoryTurnOwner(id)
           stopThinkingForCurrentDraft(id)
         }
+        if (event.type === 'error' && event.recoverable !== true) setMemoryTurnOwner(id)
         onEvent(event)
       },
-      onGone: () => { retireProjectChild(); sessions.delete(id); sessionBridgePermissions.remove(id); boardThinking.close(id); revokeBoardBuildSession(id); onSessionGone?.(id) },
+      onGone: () => { retireProjectChild(); sessions.delete(id); sessionBridgePermissions.remove(id); boardThinking.close(id); revokeBoardBuildSession(id); setMemoryTurnOwner(id); onSessionGone?.(id) },
       onHandshake: (outcome) => {
         noteHandshake(outcome)
         // Current Oh My Pi: enable subagent progress subscription + roster
@@ -353,13 +356,16 @@ export function sendMessage(
   sessionId: string,
   text: string,
   images?: PromptImage[],
-  streamingBehavior?: StreamingBehavior
+  streamingBehavior?: StreamingBehavior,
+  owner?: WebContents
 ): boolean {
   const entry = sessions.get(sessionId)
   if (!entry || isProjectDeletionInProgress(entry.session.cwd)) return false
   // Put the restore on the RPC stream before the next prompt.
   boardThinking.finish(sessionId)
+  const startsTurn = entry.runtimeState === 'idle' && !entry.hasPendingWork
   if (!entry.sendPrompt(mcpTurnPrompt(text, listMcpConnections), images, streamingBehavior)) return false
+  setMemoryTurnOwner(sessionId, owner, startsTurn)
   // Capture accepted user input in Main before yielding to runtime tool calls.
   // Generation constraints cannot be replaced by model-supplied check options.
   registerBoardBuildTurn(sessionId, entry.session.cwd, text)
@@ -453,6 +459,7 @@ export function killSession(sessionId: string): boolean {
 }
 
 export function abortSession(sessionId: string): boolean {
+  setMemoryTurnOwner(sessionId)
   const session = sessions.get(sessionId)
   const aborted = session?.abort() ?? false
   if (aborted && !session?.isManuallyCompacting) {
@@ -594,6 +601,7 @@ export async function steer(
 ): Promise<boolean> {
   const session = getSession(sessionId)
   if (session && isProjectDeletionInProgress(session.cwd)) return false
+  cancelPendingMemoryMutations(sessionId)
   stopThinkingForCurrentDraft(sessionId)
   if (session) onUserTurn?.(sessionId)
   const res = await querySession(sessionId, {
@@ -612,6 +620,7 @@ export async function followUp(
 ): Promise<boolean> {
   const session = getSession(sessionId)
   if (session && isProjectDeletionInProgress(session.cwd)) return false
+  cancelPendingMemoryMutations(sessionId)
   stopThinkingForCurrentDraft(sessionId)
   if (session) onUserTurn?.(sessionId)
   const res = await querySession(sessionId, {

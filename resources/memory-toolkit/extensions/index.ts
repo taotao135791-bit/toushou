@@ -2,6 +2,7 @@
  * 投手长期记忆工具。只调用 Main 拥有的回环桥（TOUSHOU_MEMORY）：
  * 记忆的存取与项目隔离全部由 Main 裁决，工具层看不到别的项目的数据。
  * - toushou_memory_save：把用户让"记住"的内容落盘（scope 默认本项目）；
+ * - toushou_memory_list / update / delete：查询本项目和全局记忆，确认后改写或删除；
  * - toushou_session_search / toushou_session_read：在当前项目的历史对话里检索。
  */
 
@@ -17,9 +18,18 @@ interface ToolHostApi {
 }
 
 const bridge = process.env.TOUSHOU_MEMORY
+const entryId = { type: 'string', minLength: 1, maxLength: 64, description: '记忆查询返回的条目 ID' }
+const entryScope = { type: 'string', enum: ['project', 'global'], description: '以记忆查询返回的 scope 为准' }
+const mutationResultGuidance =
+  '等待投手主进程显示并取得用户确认，只在返回 ok:true 时报告成功。' +
+  '若返回 user-declined、cancelled 或 memory-disabled，如实告知并停止；' +
+  '若返回 stale-entry，告知条目已变更，重新查询供用户核对；' +
+  '若返回 result-unknown，说明结果未确认，可查询当前状态。以上情况均不要自动重试写入。'
 
 async function call(params: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
   if (!bridge) return JSON.stringify({ ok: false, error: '记忆工具只在投手桌面端内可用' })
+  const isMutation = params.action === 'memory_update' || params.action === 'memory_delete'
+  if (isMutation && signal?.aborted) return JSON.stringify({ ok: false, error: 'cancelled' })
   try {
     const response = await fetch(bridge, {
       method: 'POST',
@@ -29,6 +39,7 @@ async function call(params: Record<string, unknown>, signal?: AbortSignal): Prom
     })
     return JSON.stringify(await response.json())
   } catch {
+    if (isMutation) return JSON.stringify({ ok: false, error: 'result-unknown' })
     return JSON.stringify({ ok: false, error: '记忆服务暂时不可用' })
   }
 }
@@ -53,6 +64,72 @@ export default function memoryTools(api: ToolHostApi): void {
     approval: 'write',
     execute: async (_id, params, signal) => ({
       content: [{ type: 'text', text: await call({ action: 'memory_save', text: params.text, scope: params.scope ?? 'project' }, signal) }]
+    })
+  })
+
+  api.registerTool({
+    name: 'toushou_memory_list',
+    label: '查找长期记忆',
+    description:
+      '查询全局和当前项目的长期记忆，可按内容关键词和范围筛选。返回条目 ID、范围、文字预览和更新时间。' +
+      '改写或删除前先用它定位条目；翻页时把返回的 nextCursor 原样传入，保持原查询和范围。memory-disabled 表示长期记忆已关闭。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', maxLength: 120, description: '可选：要查找的文字关键词' },
+        scope: { type: 'string', enum: ['all', 'project', 'global'], description: '可选：all 为全局和当前项目（默认）' },
+        cursor: { type: 'string', minLength: 1, maxLength: 256, description: '可选：上一页返回的 nextCursor' },
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: '可选：每页最多返回的条目数量' }
+      },
+      additionalProperties: false
+    },
+    approval: 'read',
+    execute: async (_id, params, signal) => ({
+      content: [{ type: 'text', text: await call({
+        action: 'memory_list', query: params.query, scope: params.scope ?? 'all', cursor: params.cursor, limit: params.limit
+      }, signal) }]
+    })
+  })
+
+  api.registerTool({
+    name: 'toushou_memory_update',
+    label: '改写长期记忆',
+    description:
+      '用户要求纠正一条长期记忆时，先用 toushou_memory_list 核对条目，再传原条目的 ID、范围和完整替换文字。' +
+      mutationResultGuidance,
+    parameters: {
+      type: 'object',
+      properties: {
+        id: entryId,
+        scope: entryScope,
+        text: { type: 'string', minLength: 1, maxLength: 2000, description: '完整的新记忆文字' }
+      },
+      required: ['id', 'scope', 'text'],
+      additionalProperties: false
+    },
+    approval: 'write',
+    execute: async (_id, params, signal) => ({
+      content: [{ type: 'text', text: await call({
+        action: 'memory_update', id: params.id, scope: params.scope, text: params.text
+      }, signal) }]
+    })
+  })
+
+  api.registerTool({
+    name: 'toushou_memory_delete',
+    label: '删除长期记忆',
+    description:
+      '用户明确要删除一条长期记忆时，先用 toushou_memory_list 核对条目，再传该条目的 ID 和范围。' +
+      mutationResultGuidance,
+    parameters: {
+      type: 'object',
+      properties: { id: entryId, scope: entryScope },
+      required: ['id', 'scope'],
+      additionalProperties: false
+    },
+    approval: 'write',
+    execute: async (_id, params, signal) => ({
+      content: [{ type: 'text', text: await call({ action: 'memory_delete', id: params.id, scope: params.scope }, signal) }]
     })
   })
 
@@ -120,7 +197,7 @@ export default function memoryTools(api: ToolHostApi): void {
     label: '跨项目搜记忆',
     description:
       '按项目名在另一个项目的记忆里找条目（如用户说「去投手工作区的记忆里找预算那条」）。' +
-      '会向用户弹确认（项目记忆默认隔离，用户点头才返回）。搜索当前项目记忆请改用 toushou_memory_all_projects 的 currentProject 部分。',
+      '会向用户弹确认（项目记忆默认隔离，用户点头才返回）。搜索当前项目记忆请用 toushou_memory_list。',
     parameters: {
       type: 'object',
       properties: {
