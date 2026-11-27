@@ -1,6 +1,6 @@
 {
   "name": "toushou-memory-toolkit",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "投手长期记忆：让助手跨对话记住用户的规矩与偏好（全局/项目分层，项目间隔离），并在当前项目的历史对话中检索信息",
   "displayName": "长期记忆",
   "author": "投手团队",

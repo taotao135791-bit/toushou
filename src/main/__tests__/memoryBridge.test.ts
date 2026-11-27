@@ -202,4 +202,59 @@ describe('memory bridge (project isolation enforced server-side)', () => {
       expect(declined).toEqual({ ok: false, error: 'user-declined' })
     })
   })
+
+  describe('memory mutation (agent update/delete gated by user confirmation)', () => {
+    beforeEach(async () => {
+      await initMemoryBridge((sessionId) =>
+        sessionId === 's-a' ? { id: 's-a', cwd: PROJECT_A, title: 'A' } : { id: 's-b', cwd: PROJECT_B, title: 'B' }
+      )
+      confirmState.allowed = true
+    })
+
+    it('rewrites an entry only after the user approves; a decline leaves the text untouched', async () => {
+      const saved = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_save', text: '旧结论：日报每天九点发', scope: 'project' })
+      expect(saved.ok).toBe(true)
+
+      confirmState.allowed = false
+      const declined = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_update', id: saved.id, text: '新结论：日报改成十点发', scope: 'project' })
+      expect(declined).toEqual({ ok: false, error: 'user-declined' })
+
+      const unchanged = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_list' })
+      expect(unchanged.project.find((e: any) => e.id === saved.id)?.text).toBe('旧结论：日报每天九点发')
+
+      confirmState.allowed = true
+      const updated = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_update', id: saved.id, text: '新结论：日报改成十点发', scope: 'project' })
+      expect(updated.ok).toBe(true)
+
+      const after = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_list' })
+      expect(after.project.find((e: any) => e.id === saved.id)?.text).toBe('新结论：日报改成十点发')
+      // 清场：这条测试记忆不留到别的用例。
+      await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_delete', id: saved.id, scope: 'project' })
+    })
+
+    it('deletes only after approval and reports not-found for unknown or foreign ids', async () => {
+      const saved = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_save', text: '将被删除的临时记忆', scope: 'project' })
+      expect(saved.ok).toBe(true)
+
+      // 项目隔离先行验证：B 的会话改写/删除 A 的条目，在 B 看来就是不存在。
+      const crossUpdate = await call({ id: 's-b', cwd: PROJECT_B }, { action: 'memory_update', id: saved.id, text: '越权改写', scope: 'project' })
+      expect(crossUpdate).toEqual({ ok: false, error: 'not-found' })
+      const crossDelete = await call({ id: 's-b', cwd: PROJECT_B }, { action: 'memory_delete', id: saved.id, scope: 'project' })
+      expect(crossDelete).toEqual({ ok: false, error: 'not-found' })
+
+      confirmState.allowed = false
+      const declined = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_delete', id: saved.id, scope: 'project' })
+      expect(declined).toEqual({ ok: false, error: 'user-declined' })
+
+      confirmState.allowed = true
+      const removed = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_delete', id: saved.id, scope: 'project' })
+      expect(removed.ok).toBe(true)
+
+      const after = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_list' })
+      expect(after.project.find((e: any) => e.id === saved.id)).toBeUndefined()
+
+      const unknown = await call({ id: 's-a', cwd: PROJECT_A }, { action: 'memory_delete', id: 'does-not-exist', scope: 'project' })
+      expect(unknown).toEqual({ ok: false, error: 'not-found' })
+    })
+  })
 })

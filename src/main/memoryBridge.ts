@@ -171,6 +171,49 @@ function findProjectByName(name: string): { key: string; path: string } | null {
   return byBasename ?? projects.find((p) => p.path.toLowerCase().includes(needle)) ?? null
 }
 
+/**
+ * 改写/删除长期记忆的用户确认（原生弹窗，按钮写动词）。Agent 默认只能
+ * 追加；顺着对话修正记忆必须走这里——用户在弹窗里看到原文（和改后的
+ * 新文）并点头才放行。拒绝/无窗口时一律不改。
+ */
+function confirmMemoryMutation(kind: 'update' | 'delete', scope: 'global' | 'project', currentText: string, nextText?: string): boolean {
+  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.isVisible())
+  if (!win) return false
+  const scopeLabel = scope === 'global' ? '全局' : '本项目'
+  const oldText = currentText.slice(0, 200)
+  if (kind === 'delete') {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      title: '删除长期记忆',
+      message: `助手请求删除${scopeLabel}的一条记忆`,
+      detail: `「${oldText}」\n\n删除后不可恢复。`,
+      buttons: ['删掉这条记忆', '保留不动'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true
+    })
+    return choice === 0
+  }
+  const choice = dialog.showMessageBoxSync(win, {
+    type: 'question',
+    title: '改写长期记忆',
+    message: `助手请求改写${scopeLabel}的一条记忆`,
+    detail: `原文：${oldText}\n\n改为：${(nextText ?? '').slice(0, 200)}`,
+    buttons: ['改成新内容', '保留原样'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  })
+  return choice === 0
+}
+
+/** 找一条记忆的当前文本（改写/删除前先核实存在，弹窗要展示原文）。 */
+function memoryEntryText(scope: 'global' | 'project', id: string, cwd: string): string | null {
+  const key = scope === 'global' ? null : projectMemoryKey(cwd)
+  const entry = readMemoryLayer(scope, key).entries.find((e) => e.id === id)
+  return entry ? entry.text : null
+}
+
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const token = (request.url ?? '').replace(/^\//, '')
   const sessionId = tokens.get(token)
@@ -301,7 +344,11 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
     }
     case 'memory_delete': {
       const scope = request.scope === 'global' ? 'global' : 'project'
-      const removed = deleteMemoryEntry(scope, typeof request.id === 'string' ? request.id : '', cwd)
+      const id = typeof request.id === 'string' ? request.id : ''
+      const text = memoryEntryText(scope, id, cwd)
+      if (text === null) return { ok: false, error: 'not-found' }
+      if (!confirmMemoryMutation('delete', scope, text)) return { ok: false, error: 'user-declined' }
+      const removed = deleteMemoryEntry(scope, id, cwd)
       return { ok: removed }
     }
     case 'memory_move': {
@@ -311,7 +358,12 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
     }
     case 'memory_update': {
       const scope = request.scope === 'global' ? 'global' : 'project'
-      const updated = updateMemoryText(scope, typeof request.id === 'string' ? request.id : '', typeof request.text === 'string' ? request.text : '', cwd)
+      const id = typeof request.id === 'string' ? request.id : ''
+      const nextText = typeof request.text === 'string' ? request.text : ''
+      const text = memoryEntryText(scope, id, cwd)
+      if (text === null) return { ok: false, error: 'not-found' }
+      if (!confirmMemoryMutation('update', scope, text, nextText)) return { ok: false, error: 'user-declined' }
+      const updated = updateMemoryText(scope, id, nextText, cwd)
       return { ok: updated }
     }
     case 'session_search': {

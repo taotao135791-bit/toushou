@@ -1,7 +1,10 @@
 /**
  * 投手长期记忆工具。只调用 Main 拥有的回环桥（TOUSHOU_MEMORY）：
  * 记忆的存取与项目隔离全部由 Main 裁决，工具层看不到别的项目的数据。
+/**
  * - toushou_memory_save：把用户让"记住"的内容落盘（scope 默认本项目）；
+ * - toushou_memory_list / update / delete：查看、改写、删除已有记忆
+ *   （改写/删除会向用户弹确认，展示原文）；
  * - toushou_session_search / toushou_session_read：在当前项目的历史对话里检索。
  */
 
@@ -53,6 +56,61 @@ export default function memoryTools(api: ToolHostApi): void {
     approval: 'write',
     execute: async (_id, params, signal) => ({
       content: [{ type: 'text', text: await call({ action: 'memory_save', text: params.text, scope: params.scope ?? 'project' }, signal) }]
+    })
+  })
+
+  api.registerTool({
+    name: 'toushou_memory_list',
+    label: '查看记忆清单',
+    description:
+      '查看当前生效的长期记忆（全局 + 本项目，每条含 id、内容、时间）。改写或删除某条记忆前，先用它拿到该条的准确 id 和所在 scope。只读，不弹确认。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    approval: 'read',
+    execute: async (_id, _params, signal) => ({
+      content: [{ type: 'text', text: await call({ action: 'memory_list' }, signal) }]
+    })
+  })
+
+  api.registerTool({
+    name: 'toushou_memory_update',
+    label: '改写记忆',
+    description:
+      '把一条已有记忆改写成新内容（用户说「那条不对了/以后改成…」时用）。必须先用 toushou_memory_list 拿到该条的 id 和 scope。' +
+      '会向用户弹确认（展示原文与新文）；用户拒绝则如实转告，不要重试。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 80, description: 'toushou_memory_list 返回的条目 id' },
+        text: { type: 'string', maxLength: 2000, description: '改写后的完整新内容（一句话结论）' },
+        scope: { type: 'string', enum: ['project', 'global'], description: '该条所在的层（以 list 返回为准，默认 project）' }
+      },
+      required: ['id', 'text'],
+      additionalProperties: false
+    },
+    approval: 'write',
+    execute: async (_id, params, signal) => ({
+      content: [{ type: 'text', text: await call({ action: 'memory_update', id: params.id, text: params.text, scope: params.scope ?? 'project' }, signal) }]
+    })
+  })
+
+  api.registerTool({
+    name: 'toushou_memory_delete',
+    label: '删除记忆',
+    description:
+      '删除一条已有记忆（用户明确说「忘掉那条/删了它」时用）。必须先用 toushou_memory_list 拿到该条的 id 和 scope。' +
+      '会向用户弹确认（展示将删除的原文）；用户拒绝则如实转告，不要重试。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', maxLength: 80, description: 'toushou_memory_list 返回的条目 id' },
+        scope: { type: 'string', enum: ['project', 'global'], description: '该条所在的层（以 list 返回为准，默认 project）' }
+      },
+      required: ['id'],
+      additionalProperties: false
+    },
+    approval: 'write',
+    execute: async (_id, params, signal) => ({
+      content: [{ type: 'text', text: await call({ action: 'memory_delete', id: params.id, scope: params.scope ?? 'project' }, signal) }]
     })
   })
 
