@@ -77,10 +77,9 @@ async function confirmDocumentMutation(request: FeishuToolRequest, action: strin
  * registration/repair confirm page so the app is born (or patched) with the
  * full set; the OAuth consent page then never refuses a requested scope. */
 const ALL_USER_SCOPES = [
-  ...Object.values(FEISHU_CAPABILITY_SCOPES).map((meta) => meta.scope),
-  // 媒体上传（文件块）的专用用户权限——能力表里没有这一项，显式补齐。
-  // （drive:drive 不是本场景的正确 scope：GPT 侧实测 docx 文件块上传走的是这个专用权限。）
-  'docs:document.media:upload'
+  // docs.media（文件块上传）已并入能力表，无需再手工补齐；去重防重复 scope
+  // 出现在授权确认页。
+  ...new Set(Object.values(FEISHU_CAPABILITY_SCOPES).map((meta) => meta.scope))
 ]
 
 export class FeishuConnectionManager {

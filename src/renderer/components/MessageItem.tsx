@@ -148,13 +148,15 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
     if (thinkingDisclosure === 'preview' && !showThinkingPreview) setThinkingDisclosure('closed')
   }, [thinkingDisclosure, showThinkingPreview])
   const toggleThinking = () => setThinkingDisclosure(thinkingOpen ? 'manual-closed' : 'manual-open')
-  // 流式跟随尾部（DSH/Kimi 行为）：思维文字追加时视口钉在最新内容上，
-  // 用户随时可以上翻回看；结束后松开，恢复自由滚动。
+  // 流式跟随尾部（DSH/Kimi 行为）：思维文字追加时视口跟随最新内容；
+  // 只在本来就贴着底部时才跟——用户上翻回看时不抢滚动位置，回到底部后恢复跟随。
   const thinkingPreRef = useRef<HTMLPreElement>(null)
   useEffect(() => {
     if (!thinkingStreaming) return
     const el = thinkingPreRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    if (nearBottom) el.scrollTop = el.scrollHeight
   }, [message.thinking, thinkingStreaming, thinkingOpen])
   const now = useActivityClock(thinkingStreaming)
   const thinkingEnd = message.thinkingEndTs ?? (thinkingStreaming ? now : 0)

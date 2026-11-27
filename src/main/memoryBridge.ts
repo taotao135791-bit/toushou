@@ -230,11 +230,24 @@ interface SearchHit {
  * 追加；顺着对话修正记忆必须走这里——用户在弹窗里看到原文（和改后的
  * 新文）并点头才放行。拒绝/无窗口时一律不改。
  */
-async function confirmMemoryMutation(kind: 'update' | 'delete', scope: 'global' | 'project', currentText: string, nextText?: string): Promise<boolean> {
+async function confirmMemoryMutation(kind: 'update' | 'delete' | 'move', scope: 'global' | 'project', currentText: string, nextText?: string, moveTo?: 'global' | 'project'): Promise<boolean> {
   const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.isVisible())
   if (!win) return false
   const scopeLabel = scope === 'global' ? '全局' : '本项目'
   const oldText = currentText.slice(0, 200)
+  if (kind === 'move') {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'question',
+      title: '移动长期记忆',
+      message: `助手请求把${scopeLabel}的一条记忆${moveTo === 'global' ? '提升为全局' : '收回到本项目'}`,
+      detail: `「${oldText}」\n\n${moveTo === 'global' ? '提升后所有项目都能看到这条记忆。' : '移动后只有本项目能看到这条记忆。'}`,
+      buttons: [moveTo === 'global' ? '提升为全局记忆' : '移入本项目', '留在原层'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true
+    })
+    return response === 0
+  }
   if (kind === 'delete') {
     const { response } = await dialog.showMessageBox(win, {
       type: 'warning',
@@ -270,6 +283,12 @@ function memoryEntryText(scope: 'global' | 'project', id: string, cwd: string): 
   const key = scope === 'global' ? null : projectMemoryKey(cwd)
   const entry = readMemoryLayer(scope, key).entries.find((e) => e.id === id)
   return entry ? entry.text : null
+}
+
+/** 弹窗期间会话状态可能变化（切只读/被吊销/换目录）；落盘前按最新状态复核。 */
+function sessionStillWritable(session: BridgeSession): boolean {
+  const current = lookup?.(session.id)
+  return !!current && current.cwd === session.cwd && current.mode !== 'readonly' && !current.remoteReadonly
 }
 
 async function dispatch(body: unknown, session: BridgeSession): Promise<unknown> {
@@ -379,28 +398,43 @@ async function dispatch(body: unknown, session: BridgeSession): Promise<unknown>
       return { ok: true, confirmedByUser: true, project: label, entries: filterEntriesByKeywords(entries, keywords) }
     }
     case 'memory_delete': {
+      // 与 memory_save 同一套纪律：只读会话直接拒；弹窗确认期间会话状态
+      // 可能变化（切只读/被吊销），批准后重查再落盘。
+      if (session.mode === 'readonly') return { ok: false, error: 'permission-denied' }
       const scope = request.scope === 'global' ? 'global' : 'project'
       const id = typeof request.id === 'string' ? request.id : ''
       const text = memoryEntryText(scope, id, cwd)
       if (text === null) return { ok: false, error: 'not-found' }
       if (!(await confirmMemoryMutation('delete', scope, text))) return { ok: false, error: 'user-declined' }
+      if (!sessionStillWritable(session)) return { ok: false, error: 'permission-denied' }
       const removed = deleteMemoryEntry(scope, id, cwd)
-      return { ok: removed }
+      return removed ? { ok: true } : { ok: false, error: 'not-found' }
     }
     case 'memory_move': {
+      // 跨层移动也是改动（project↔global 影响可见范围），同样弹确认。
+      if (session.mode === 'readonly') return { ok: false, error: 'permission-denied' }
       const to = request.to === 'global' ? 'global' : 'project'
-      const moved = moveMemoryEntry(typeof request.id === 'string' ? request.id : '', to === 'global' ? 'project' : 'global', to, cwd)
-      return { ok: moved }
+      const id = typeof request.id === 'string' ? request.id : ''
+      const from = to === 'global' ? 'project' : 'global'
+      const text = memoryEntryText(from, id, cwd)
+      if (text === null) return { ok: false, error: 'not-found' }
+      if (!(await confirmMemoryMutation('move', from, text, undefined, to))) return { ok: false, error: 'user-declined' }
+      if (!sessionStillWritable(session)) return { ok: false, error: 'permission-denied' }
+      const moved = moveMemoryEntry(id, from, to, cwd)
+      return moved ? { ok: true } : { ok: false, error: 'move-failed' }
     }
     case 'memory_update': {
+      if (session.mode === 'readonly') return { ok: false, error: 'permission-denied' }
       const scope = request.scope === 'global' ? 'global' : 'project'
       const id = typeof request.id === 'string' ? request.id : ''
-      const nextText = typeof request.text === 'string' ? request.text : ''
+      const nextText = typeof request.text === 'string' ? request.text.trim() : ''
+      if (!nextText || nextText.length > 4_000) return { ok: false, error: 'invalid-text' }
       const text = memoryEntryText(scope, id, cwd)
       if (text === null) return { ok: false, error: 'not-found' }
       if (!(await confirmMemoryMutation('update', scope, text, nextText))) return { ok: false, error: 'user-declined' }
+      if (!sessionStillWritable(session)) return { ok: false, error: 'permission-denied' }
       const updated = updateMemoryText(scope, id, nextText, cwd)
-      return { ok: updated }
+      return updated ? { ok: true } : { ok: false, error: 'update-failed' }
     }
     case 'prompt_context': {
       const language = getStore('language') === 'en' ? 'en' : 'zh'

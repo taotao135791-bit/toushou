@@ -44,12 +44,10 @@ export function groupReplyAttachments(idPrefix: string) {
 
     function mention(raw: string, offset: number, label: string, source: 'text' | 'code' | 'link', thumbnail?: Child[]): Element | undefined {
       const linked = source === 'link'
-      // 链接形式的绝对本地路径：无扩展名 = 文件夹（GFM autolink 会把 Agent 写的
-      // 本地路径变成 <a>，而文件夹没有 resolve 目标，必须在此兜底识别）。
+      // 文件夹判定只信共享层收集器的 folderAt（它在源头按路径形状/线索分类，
+      // 有测试覆盖）；渲染层不再自行猜测"无扩展名=文件夹"——猜测会把
+      // Makefile 这类无扩展名文件变成打不开的文件夹卡片。
       const folder = paths?.folderAt.get(offset)
-        ?? (linked && /^(?:[a-z]:[\/]|\/(?!\/)|~[\/])/i.test(raw) && !/\.[a-z\d]{1,8}$/i.test(raw.replace(/[\/]+$/, ''))
-          ? raw.replace(/[\/]+$/, '')
-          : undefined)
       if (folder) return referenceElement('reply-attachment-folder', folder, label || raw)
       const group = !linked && paths?.rangeFolder(raw, offset)
       if (group) {
