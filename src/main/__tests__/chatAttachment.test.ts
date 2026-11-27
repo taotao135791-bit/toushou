@@ -46,11 +46,12 @@ describe('chat attachments', () => {
       expect(await handleChatAttachment(project, file, 'reveal', grant)).toBe('ok')
       expect(shell.showItemInFolder).toHaveBeenCalledTimes(2)
       expect(path.basename(vi.mocked(shell.showItemInFolder).mock.calls[0][0])).toBe(name)
-      // open 走 shell.openPath（新行为），不再走 showItemInFolder
-      expect(shell.openPath).toHaveBeenCalledTimes(2)
+      // revealOnly（HTML）的 open 与 reveal 都走 showItemInFolder，不走 openPath
+      expect(shell.openPath).not.toHaveBeenCalled()
       expect(await handleChatAttachment(project, decoy, 'reveal', grant)).toBe('ok')
       expect(await handleChatAttachment(project, path.join(dated, 'fig1.png'), 'reveal', grant)).toBe('cancelled')
-      expect(shell.showItemInFolder).toHaveBeenCalledTimes(2)
+      // 直接路径真实存在就信任（DSH/Kimi 原则）：decoy 是确实存在的文件，按用户给的路径显示
+      expect(shell.showItemInFolder).toHaveBeenCalledTimes(3)
       expect(await openChatAttachmentFolder(project, dated, grant)).toBe('ok')
       expect(await openChatAttachmentFolder(project, other, grant)).toBe('unavailable')
       expect(await openChatAttachmentFolder(project, file, grant)).toBe('unavailable')
@@ -169,7 +170,7 @@ describe('chat attachments', () => {
     try {
       await mkdir(dir); await writeFile(file, 'a,b')
       expect(await handleChatAttachment(dir, './report.csv', 'open')).toBe('ok')
-      expect(shell.openPath).toHaveBeenCalledTimes(2)
+      expect(shell.openPath).toHaveBeenCalledTimes(1)
       vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({canceled:false, filePath:dest})
       expect(await handleChatAttachment(dir, file, 'save')).toBe('ok')
       expect(await readFile(dest, 'utf8')).toBe('a,b')
