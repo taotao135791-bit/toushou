@@ -2,7 +2,7 @@ import type { MessageLike } from '../store'
 
 export interface IndexedChatMessage { message: MessageLike; index: number }
 export type ChatFlowNode =
-  | { kind: 'message'; entry: IndexedChatMessage; showBoardAction: boolean }
+  | { kind: 'message'; entry: IndexedChatMessage; showReplyActions: boolean }
   | { kind: 'process'; entries: IndexedChatMessage[] }
 export interface ChatTurn {
   id: string
@@ -15,6 +15,8 @@ export interface ChatTurn {
 function startsTurn(message: MessageLike): boolean {
   return message.role === 'user' && message.kind !== 'steer'
 }
+
+const hasNarrative = (content: string): boolean => /[^\p{P}\s]/u.test(content)
 
 /** A presentation only projection: no transcript records or indices are changed. */
 export function projectChatTurns(messages: MessageLike[], previousTurns: ChatTurn[] = [], streaming = false): ChatTurn[] {
@@ -59,7 +61,7 @@ export function projectChatTurns(messages: MessageLike[], previousTurns: ChatTur
     for (let i = lastTool + 1; i < turn.entries.length; i++) {
       const message = turn.entries[i].message
       if (message.role !== 'assistant' || message.toolCall || !message.content.trim()) continue
-      if (/[^\p{P}\s]/u.test(message.content)) answer = i
+      if (hasNarrative(message.content)) answer = i
       else if (!turn.streaming) punctuationOnlyAnswer = i
     }
     if (answer === -1) answer = punctuationOnlyAnswer
@@ -70,13 +72,13 @@ export function projectChatTurns(messages: MessageLike[], previousTurns: ChatTur
     }
     turn.entries.forEach((entry, i) => {
       const { message } = entry
-      if (lastTool >= 0 && message.role === 'assistant' && !message.replyKey && i !== answer) {
+      if (lastTool >= 0 && message.role === 'assistant' && !message.replyKey && i !== answer &&
+          (message.toolCall || !hasNarrative(message.content))) {
         process.push(entry)
       } else {
-        // System errors and user steering stay visible in their original
-        // position, never inside a collapsed activity section.
+        // Narration, errors and steering break adjacent tool runs and stay in transcript order.
         flush()
-        turn.nodes.push({ kind: 'message', entry, showBoardAction: Boolean(message.replyKey) || lastTool < 0 || i === answer })
+        turn.nodes.push({ kind: 'message', entry, showReplyActions: Boolean(message.replyKey) || lastTool < 0 || i === answer })
       }
     })
     flush()

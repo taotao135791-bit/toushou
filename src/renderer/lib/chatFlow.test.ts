@@ -6,15 +6,16 @@ const msg = (id: string, role: MessageLike['role'], content = ''): MessageLike =
 const tool = (id: string, isError = false): MessageLike => ({ ...msg(id, 'assistant'), toolCall: { tool: 'synthetic_tool', input: {}, output: '{}', isError } })
 
 describe('chat turn presentation', () => {
-  it('keeps interleaved commentary and all tools in one inspectable process before the answer', () => {
-    const input = [msg('u', 'user', 'Synthetic report'), msg('intro', 'assistant', 'Checking'), tool('a'), msg('dot', 'assistant', '.'), tool('b'), msg('answer', 'assistant', 'Report ready')]
+  it('shows commentary in order and groups adjacent calls into their own disclosures', () => {
+    const input = [msg('u', 'user', 'Synthetic report'), msg('intro', 'assistant', 'Checking'), tool('a'), msg('dot', 'assistant', '.'), tool('b'), msg('update', 'assistant', 'Report drafted'), tool('c'), msg('answer', 'assistant', 'Report ready')]
     const turns = projectChatTurns(input)
     expect(turns).toHaveLength(1)
-    expect(turns[0].nodes.map(node => node.kind)).toEqual(['message', 'process', 'message'])
-    const process = turns[0].nodes[1]
-    expect(process.kind === 'process' && process.entries.map(entry => entry.message.id)).toEqual(['intro', 'a', 'dot', 'b'])
+    expect(turns[0].nodes.map(node => node.kind === 'message'
+      ? [node.entry.message.id, node.showReplyActions]
+      : node.entries.map(entry => entry.message.id)))
+      .toEqual([['u', false], ['intro', false], ['a', 'dot', 'b'], ['update', false], ['c'], ['answer', true]])
     expect(turns[0].entries.map(entry => entry.message)).toEqual(input)
-    expect(turns[0].entries.map(entry => entry.index)).toEqual([0, 1, 2, 3, 4, 5])
+    expect(turns[0].entries.map(entry => entry.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
   })
   it('does not hide system errors or steering, split turn ownership, or offer board actions for process fragments', () => {
     const turns = projectChatTurns([msg('u', 'user', 'Report'), tool('a', true), msg('error', 'system', 'Synthetic failure'), { ...msg('steer', 'user', 'Keep going'), kind: 'steer' }, msg('dot', 'assistant', '.'), tool('b')])
@@ -28,7 +29,7 @@ describe('chat turn presentation', () => {
     expect(turns.map(turn => turn.ownerIndex)).toEqual([0, 2])
     expect(turns[0].nodes.every(node => node.kind === 'message')).toBe(true)
     const final = turns[1].nodes.at(-1)
-    expect(final?.kind === 'message' && final.showBoardAction).toBe(true)
+    expect(final?.kind === 'message' && final.showReplyActions).toBe(true)
   })
   it.each(['.', '…', '。'])('keeps live punctuation %s inside the process until the turn settles', (content) => {
     const punctuation = msg('punctuation', 'assistant', content)
@@ -43,7 +44,7 @@ describe('chat turn presentation', () => {
     expect(nextProcess.kind === 'process' && nextProcess.entries.map(entry => entry.message.id)).toEqual(['a', 'punctuation', 'b'])
 
     const settled = projectChatTurns(records, live)
-    expect(settled[0].nodes.at(-1)).toEqual({ kind: 'message', entry: { message: punctuation, index: 2 }, showBoardAction: true })
+    expect(settled[0].nodes.at(-1)).toEqual({ kind: 'message', entry: { message: punctuation, index: 2 }, showReplyActions: true })
   })
   it('shows a substantive response while it streams and keeps it visible through trailing punctuation', () => {
     const answer = msg('answer', 'assistant', '看板已保存')

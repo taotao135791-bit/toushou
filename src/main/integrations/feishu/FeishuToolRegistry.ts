@@ -1,6 +1,7 @@
 import { FeishuCapability, FeishuToolRequest, FeishuToolResult } from '../../../shared/connections'
 import { withUserAccessToken } from '@larksuiteoapi/node-sdk'
 import { FeishuChannel } from './FeishuChannel'
+import { FeishuDocumentTools, type FeishuAttachment, type FeishuAttachmentTarget } from './FeishuDocumentTools'
 
 type RawClient = FeishuChannel['rawClient']
 
@@ -26,7 +27,8 @@ export class FeishuToolRegistry {
   constructor(
     private readonly getChannel: () => FeishuChannel | null,
     private readonly isCapabilityAuthorized: (capability: FeishuCapability) => boolean,
-    private readonly getUserAccessToken?: (capability: FeishuCapability) => Promise<string | null>
+    private readonly getUserAccessToken?: (capability: FeishuCapability) => Promise<string | null>,
+    private readonly pickAttachment?: (sessionId: string, target: FeishuAttachmentTarget, signal?: AbortSignal) => Promise<FeishuAttachment | null>
   ) {}
 
   /**
@@ -34,11 +36,12 @@ export class FeishuToolRegistry {
    * per-session circuit breaker so a model that ignores error text cannot
    * keep hammering a failing integration forever.
    */
-  async executeForSession(sessionId: string, request: FeishuToolRequest): Promise<FeishuToolResult> {
+  async executeForSession(sessionId: string, request: FeishuToolRequest, signal?: AbortSignal, canExecute?: () => boolean): Promise<FeishuToolResult> {
     const blocked = this.breaker.check(sessionId)
     if (blocked) return blocked
-    const result = await this.execute(request)
-    this.breaker.note(sessionId, result)
+    const result = await this.execute(request, sessionId, signal, canExecute)
+    const data = result.data as { outcome?: string } | undefined
+    if (data?.outcome !== 'cancelled') this.breaker.note(sessionId, result)
     return result
   }
 
@@ -48,7 +51,7 @@ export class FeishuToolRegistry {
     return !!until && this.breaker.now() < until
   }
 
-  async execute(request: FeishuToolRequest): Promise<FeishuToolResult> {
+  async execute(request: FeishuToolRequest, sessionId?: string, signal?: AbortSignal, canExecute?: () => boolean): Promise<FeishuToolResult> {
     const capability = capabilityFor(request.action)
     if (!this.isCapabilityAuthorized(capability)) {
       return authorizationRefused(capability)
@@ -89,29 +92,57 @@ export class FeishuToolRegistry {
         case 'doc_list':
           // Root folder listing ordered by last edit — the closest thing to
           // "my recent documents" the drive API offers without a folder token.
-          return await this.request(channel.rawClient, 'GET', '/open-apis/drive/v1/files', {
+          return await this.request(channel.documentClient, 'GET', '/open-apis/drive/v1/files', {
             params: { page_size: 50, order_by: 'EditedTime', direction: 'DESC' }
           }, userAccessToken)
         case 'doc_search': {
           const query = string(request.query)
           if (!query) return invalid('query 不能为空')
-          return await this.request(channel.rawClient, 'POST', '/open-apis/suite/docs-api/search/object', {
+          return await this.request(channel.documentClient, 'POST', '/open-apis/suite/docs-api/search/object', {
             data: { search_key: query.slice(0, 100), count: 20, offset: 0 }
           }, userAccessToken)
         }
         case 'doc_read': {
           const documentId = string(request.documentId)
           if (!documentId) return invalid('documentId 不能为空')
-          return await this.request(channel.rawClient, 'GET', `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/raw_content`, {}, userAccessToken)
+          return await this.request(channel.documentClient, 'GET', `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/raw_content`, {}, userAccessToken)
         }
         case 'doc_create':
-          return await this.request(channel.rawClient, 'POST', '/open-apis/docx/v1/documents', { data: { title: string(request.title).slice(0, 100) } }, userAccessToken)
+          return await this.request(channel.documentClient, 'POST', '/open-apis/docx/v1/documents', { data: { title: string(request.title).slice(0, 100) } }, userAccessToken)
         case 'doc_append': {
           const documentId = string(request.documentId)
           if (!documentId) return invalid('documentId 不能为空')
-          return await this.request(channel.rawClient, 'POST', `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`, {
+          return await this.request(channel.documentClient, 'POST', `/open-apis/docx/v1/documents/${encodeURIComponent(documentId)}/blocks/${encodeURIComponent(documentId)}/children`, {
             data: { children: [{ block_type: 2, text: { elements: [{ text_run: { content: string(request.content).slice(0, 20_000) } }] } }] }
           }, userAccessToken)
+        }
+        case 'doc_blocks':
+        case 'doc_insert_blocks':
+        case 'doc_update_block':
+        case 'doc_delete_block':
+        case 'doc_table_fill': {
+          if (!userAccessToken) return authorizationRefused(capability)
+          return await new FeishuDocumentTools(channel.documentClient, userAccessToken, signal, canExecute).execute(request)
+        }
+        case 'doc_file_attach': {
+          if ('localPath' in request) return invalid('请使用投手的附件选择器。')
+          if (!userAccessToken) return authorizationRefused(capability)
+          if (!this.isCapabilityAuthorized('docs.write')) return authorizationRefused('docs.write')
+          const pickAttachment = this.pickAttachment
+          if (!sessionId || !pickAttachment) return invalid('请从本机投手对话选择要上传的附件。')
+          const writeToken = await this.getUserAccessToken?.('docs.write')
+          if (writeToken !== userAccessToken) return authorizationRefused('docs.write')
+          return await new FeishuDocumentTools(channel.documentClient, userAccessToken, signal, canExecute).execute(request, async (target, pickerSignal) => {
+            const file = await pickAttachment(sessionId, target, pickerSignal)
+            if (!file) return null
+            pickerSignal?.throwIfAborted()
+            const mediaToken = await this.getUserAccessToken?.('docs.media')
+            const latestWriteToken = await this.getUserAccessToken?.('docs.write')
+            if (this.getChannel() !== channel || mediaToken !== userAccessToken || latestWriteToken !== userAccessToken) {
+              throw new Error('选择附件期间飞书授权已变化，请重新发起上传。')
+            }
+            return file
+          })
         }
         case 'sheets_read': {
           const spreadsheetToken = string(request.spreadsheetToken)
@@ -228,8 +259,10 @@ export function capabilityFor(action: FeishuToolRequest['action']): FeishuCapabi
   // Search runs as the user (their visibility), never as the tenant.
   if (action === 'message_search') return 'search'
   if (action === 'doc_list' || action === 'doc_search') return 'drive'
-  if (action === 'doc_read') return 'docs.read'
+  if (action === 'doc_read' || action === 'doc_blocks') return 'docs.read'
   if (action === 'doc_create' || action === 'doc_append') return 'docs.write'
+  if (action === 'doc_file_attach') return 'docs.media'
+  if (action === 'doc_insert_blocks' || action === 'doc_update_block' || action === 'doc_delete_block' || action === 'doc_table_fill') return 'docs.write'
   if (action === 'sheets_read') return 'sheets.read'
   if (action === 'sheets_write' || action === 'sheets_create') return 'sheets.write'
   if (action === 'bitable_read' || action === 'bitable_query') return 'bitable.read'

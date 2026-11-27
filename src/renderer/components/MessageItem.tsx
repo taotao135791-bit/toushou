@@ -45,7 +45,7 @@ interface MessageItemProps {
   turnActive?: boolean
   allowThinkingAutoExpand?: boolean
   /** Intermediate process messages keep their details but do not offer result actions. */
-  showBoardAction?: boolean
+  showReplyActions?: boolean
 }
 
 /** Collapsible card for a skill message: the full SOP still rides in the
@@ -91,7 +91,7 @@ function SkillMessageCard({
 
 const THINKING_PREVIEW_DELAY_MS = 1_000
 
-function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null, onRetry, onBranch, streaming = false, turnActive = streaming, allowThinkingAutoExpand = true, showBoardAction = true }: MessageItemProps) {
+function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null, onRetry, onBranch, streaming = false, turnActive = streaming, allowThinkingAutoExpand = true, showReplyActions = true }: MessageItemProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
   const copyRequest = useRef(0)
   const copyBusy = useRef(false)
@@ -466,7 +466,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
       )}
       <Markdown content={guideSplit.clean} replyAttachments />
       <ConnectionGuideCard kinds={guideSplit.guides} />
-      {hasActionText && (
+      {hasActionText && showReplyActions && (
         <div className="mt-2 flex flex-wrap items-center gap-1">
           <button
             onClick={copyContent}
@@ -479,14 +479,14 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
             {copyState === 'copying' ? <Loader2 size={12} className="animate-spin" /> : copyState === 'copied' ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
             {copyState === 'copied' ? t('msg.copied') : t('msg.copy')}
           </button>
-          {showBoardAction && <button
+          <button
             onClick={() => setBoardDialogOpen(true)}
             title={t('boards.chat.saveToBoard')}
             className="focus-ring flex min-h-8 items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-cream-faint transition-colors hover:bg-overlay hover:text-cream"
           >
             <BoardsIcon size={12} />
             {t('boards.chat.saveToBoard')}
-          </button>}
+          </button>
           {sessionId && message.replyKey && onBranch && <button
             type="button"
             disabled={branching}

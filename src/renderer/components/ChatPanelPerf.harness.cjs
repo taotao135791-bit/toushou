@@ -397,6 +397,54 @@ app.whenReady().then(async () => {
     const afterPunctuation = await layout()
     await js('window.chatPerfFixture.endBoardStream()')
     await frame()
+    phase = 'inline turn activity order and keyboard disclosure'
+    const activityTurn = 'document.querySelector(\'[data-chat-turn="activity-summary-question"]\')'
+    const activityRows = `[...(${activityTurn}?.querySelectorAll('[data-turn-activity-row]') ?? [])]`
+    const activityButton = `${activityRows}[0]`
+    const activitySnapshot = () => js(`(() => {
+      const turn = ${activityTurn}, rows = ${activityRows};
+      const paragraphs = [...turn.querySelectorAll('.assistant-reply p')];
+      const intro = paragraphs.find(p => p.textContent.includes('I will inspect the synthetic board first.'));
+      const middle = paragraphs.find(p => p.textContent.includes('The sample data is ready.'));
+      const final = paragraphs.find(p => p.textContent.includes('The synthetic board is refreshed.'));
+      const before = (first, second) => Boolean(first && second && (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING));
+      const hasActions = paragraph => Boolean(paragraph?.closest('.assistant-reply').querySelector('button[aria-label="Copy"]'));
+      return {
+        order: before(intro, rows[0]) && before(rows[0], middle) && before(middle, rows[1]) && (!final || before(rows[1], final)),
+        showsFailure: rows[0]?.textContent.includes('Read file') && /failed/i.test(rows[0].textContent),
+        showsRunning: rows[1]?.textContent.includes('Refresh board data') && /in progress/i.test(rows[1].textContent),
+        showsCompletion: rows[1]?.textContent.includes('Refresh board data') && /completed/i.test(rows[1].textContent),
+        expanded: rows.map(row => row.getAttribute('aria-expanded') === 'true'),
+        details: rows.map(row => document.getElementById(row.getAttribute('aria-controls'))?.querySelectorAll('button[aria-expanded]').length ?? 0),
+        hidesPrivateData: !/hidden-argument|diagnostic details/.test(turn.textContent),
+        noStackedSummary: !turn.querySelector('[data-turn-activity-summary]'),
+        intermediateActions: hasActions(intro) || hasActions(middle),
+        finalActions: hasActions(final)
+      };
+    })()`)
+    await js('window.chatPerfFixture.startActivitySummaryTurn()')
+    await waitFor(`${activityRows}.length === 2 && /in progress/i.test(${activityRows}[1].textContent)`)
+    const runningActivity = await activitySnapshot()
+    await js('window.chatPerfFixture.finishActivitySummaryTurn()')
+    await waitFor(`${activityTurn}.textContent.includes('The synthetic board is refreshed.') && /completed/i.test(${activityRows}[1].textContent)`)
+    const finishedActivity = await activitySnapshot()
+    if (process.platform === 'darwin') app.focus({ steal: true })
+    win.focus()
+    wc.focus()
+    await js(`${activityButton}.focus({preventScroll:true})`)
+    const pressEnter = () => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
+      wc.sendInputEvent({ type: 'char', keyCode: '\r' })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+    }
+    pressEnter()
+    await waitFor(`${activityButton}.getAttribute('aria-expanded') === 'true'`)
+    const openedActivity = await activitySnapshot()
+    const keyboardFocus = await js(`document.activeElement === ${activityButton}`)
+    pressEnter()
+    await waitFor(`${activityButton}.getAttribute('aria-expanded') === 'false'`)
+    const closedActivity = await activitySnapshot()
+    const inlineActivity = { runningActivity, finishedActivity, openedActivity, keyboardFocus, closedActivity }
     phase = 'execution updates with no worker or closed activity'
     const probeActivity = "document.querySelector('#projection-probe-activity')"
     const probeCounters = () => js(`({
@@ -598,7 +646,7 @@ app.whenReady().then(async () => {
     await js("window.chatPerfFixture.updateEstimatedTurn('idle')")
     await waitFor(`!${runningProgress}`)
     const taskProgress = { headerClean, anchored, neverReversed, paused }
-    console.log('E2E_RESULT ' + JSON.stringify({ idleRecovery, taskProgress, chatMenuWithinViewport, menuHeight: menuPlacement.height, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
+    console.log('E2E_RESULT ' + JSON.stringify({ idleRecovery, taskProgress, chatMenuWithinViewport, menuHeight: menuPlacement.height, effortInteraction, homeMenusBelow, deepSeekThinking, mediumOnlyThinking, plainThinking, thinkingSelections, background, renamed, status, permission, content, busyError, restoredThinking, activeThinking, interruptedThinking, boardStream: { shortReasoning, longReasoning, collapsedReasoning, processAutoOpened, processManuallyOpened, punctuation, afterPunctuation }, inlineActivity, projectionWork: { noAgent, closedAgent, openAgent, completedElapsed }, defaultRecovery, defaultRecovered, homeTray, pickerAutoFocus, pickerUndo, mentionUndo, composerSwitch }))
   } catch (error) { console.log('E2E_RESULT ' + JSON.stringify({ fatal: String(error), phase, dimensions: await dimensions() })); process.exitCode = 1 }
   finally { clearTimeout(deadline); win?.destroy(); app.quit() }
 })

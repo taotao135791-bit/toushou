@@ -88,16 +88,16 @@ const ChatTurnView = memo(function ChatTurnView({ turn, sessionId, streaming, ca
       return reference && !savedIds.has(reference.boardId) ? [reference] : []
     }))
   }, [turn, savedBoards])
-  const lastProcess = turn.nodes.findLastIndex(node => node.kind === 'process')
+  const lastProcess = turn.nodes.findLastIndex(node => node.kind === 'process' && node.entries.some(entry => entry.message.toolCall))
   const streamingMessageIndex = streaming ? turn.entries.at(-1)?.index : undefined
   return <section className="group/turn min-w-0 space-y-4" data-chat-turn={turn.id}>
     {turn.nodes.map((node, index) => node.kind === 'message' ?
       <div key={node.entry.message.id} data-message-id={node.entry.message.id} className="msg-row min-w-0">
         <MessageItem message={node.entry.message} index={node.entry.index} lastUserIndex={lastUserIndex} sessionId={sessionId} onRetry={onRetry}
-          streaming={node.entry.index === streamingMessageIndex} turnActive={streaming} showBoardAction={node.showBoardAction} onBranch={onBranch} />
+          streaming={node.entry.index === streamingMessageIndex} turnActive={streaming} showReplyActions={node.showReplyActions} onBranch={onBranch} />
       </div> :
       <TurnProcess key={node.entries[0].message.id} entries={node.entries} sessionId={sessionId} lastUserIndex={lastUserIndex}
-        active={streaming && index === turn.nodes.length - 1}
+        active={streaming} streamingMessageIndex={node.entries.at(-1)?.index === streamingMessageIndex ? streamingMessageIndex : undefined}
         elapsedMs={!streaming && index === lastProcess ? elapsedMs : undefined} />
     )}
     {sessionId && references.map(group => <BoardChatPreview key={`${sessionId}-${group.boardId}`} sessionId={sessionId} boardId={group.boardId} widgetId={group.widgetIds[0]} widgetIds={group.widgetIds} revision={group.revision} />)}

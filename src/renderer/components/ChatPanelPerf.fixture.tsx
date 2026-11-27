@@ -164,6 +164,26 @@ const fixture = {
   endBoardStream() {
     useAppStore.getState().applySessionEvent({ type: 'status', sessionId: 'current', status: 'idle', isTerminal: true })
   },
+  startActivitySummaryTurn() {
+    const state = useAppStore.getState()
+    state.addMessage('current', { id: 'activity-summary-question', role: 'user', content: 'Verify activity rows' })
+    state.setBusy('current', true)
+    state.applySessionEvent({ type: 'message', sessionId: 'current', role: 'assistant', content: 'I will inspect the synthetic board first.' })
+    const steps = ['read', 'edit', 'write', 'find', 'find']
+    steps.forEach((tool, index) => {
+      const id = 'activity-step-' + index
+      state.applySessionEvent({ type: 'tool_call', sessionId: 'current', tool, id, input: { path: '/synthetic/hidden-argument' } })
+      state.applySessionEvent({ type: 'tool_result', sessionId: 'current', tool, id, output: { ok: index > 0, text: 'Synthetic diagnostic details' }, isError: index === 0 })
+    })
+    state.applySessionEvent({ type: 'message', sessionId: 'current', role: 'assistant', content: 'The sample data is ready. I will now refresh the board.' })
+    state.applySessionEvent({ type: 'tool_call', sessionId: 'current', id: 'activity-current', tool: 'toushou_board_refresh', input: {} })
+  },
+  finishActivitySummaryTurn() {
+    const state = useAppStore.getState()
+    state.applySessionEvent({ type: 'tool_result', sessionId: 'current', id: 'activity-current', tool: 'toushou_board_refresh', output: { ok: true }, isError: false })
+    state.applySessionEvent({ type: 'message', sessionId: 'current', role: 'assistant', content: 'The synthetic board is refreshed.' })
+    state.applySessionEvent({ type: 'status', sessionId: 'current', status: 'idle', isTerminal: true })
+  },
   activityCommits: 0,
   messageListCommits: 0,
   resetProjectionCounters() { fixture.activityCommits = 0; fixture.messageListCommits = 0 },

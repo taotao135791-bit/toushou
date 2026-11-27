@@ -66,6 +66,16 @@ describe('ChatPanel background metadata rendering', () => {
       expect(processAutoOpened).toBe(false)
       expect(processManuallyOpened).toBe(true)
       expect(punctuation).toEqual({ inProcess: true, separate: false, boardAction: false })
+      const { runningActivity, finishedActivity, openedActivity, keyboardFocus, closedActivity } = data.inlineActivity
+      const collapsedActivity = {
+        order: true, showsFailure: true, expanded: [false, false], details: [0, 0],
+        hidesPrivateData: true, noStackedSummary: true, intermediateActions: false
+      }
+      expect(runningActivity).toEqual({ ...collapsedActivity, showsRunning: true, showsCompletion: false, finalActions: false })
+      expect(finishedActivity).toEqual({ ...collapsedActivity, showsRunning: false, showsCompletion: true, finalActions: true })
+      expect(openedActivity).toEqual({ ...finishedActivity, expanded: [true, false], details: [5, 0] })
+      expect(keyboardFocus).toBe(true)
+      expect(closedActivity).toEqual(finishedActivity)
       expect(data.projectionWork.noAgent).toEqual({ activity: 0, messages: 0, empty: true })
       expect(data.projectionWork.closedAgent).toEqual({ activity: 0, messages: 0, countVisible: true })
       expect(data.projectionWork.openAgent).toEqual({ activity: 1, messages: 0, workerVisible: true })

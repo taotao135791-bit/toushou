@@ -190,6 +190,7 @@ export default function ConnectionsPage() {
   const capabilityLabel: Record<FeishuCapability, I18nKey> = {
     'docs.read': 'connections.scopeDocsRead',
     'docs.write': 'connections.scopeDocsWrite',
+    'docs.media': 'connections.scopeDocsMedia',
     'drive': 'connections.scopeDrive',
     'sheets.read': 'connections.scopeSheetsRead',
     'sheets.write': 'connections.scopeSheetsWrite',
@@ -310,6 +311,7 @@ export default function ConnectionsPage() {
                     {([
                       ['docs.read', 'connections.scopeDocsRead'],
                       ['docs.write', 'connections.scopeDocsWrite'],
+                      ['docs.media', 'connections.scopeDocsMedia'],
                       ['drive', 'connections.scopeDrive'],
                       ['sheets.read', 'connections.scopeSheetsRead'],
                       ['sheets.write', 'connections.scopeSheetsWrite'],
@@ -381,6 +383,7 @@ export default function ConnectionsPage() {
                     <select aria-label={t('connections.extraAccess')} value={oauthCapability} onChange={(event) => setOauthCapability(event.target.value as FeishuCapability)} className="focus-ring h-8 max-w-full rounded-lg border border-line bg-ink-800 px-2 text-[12px] text-cream">
                       <option value="docs.read">{t('connections.scopeDocsRead')}</option>
                       <option value="docs.write">{t('connections.scopeDocsWrite')}</option>
+                      <option value="docs.media">{t('connections.scopeDocsMedia')}</option>
                       <option value="drive">{t('connections.scopeDrive')}</option>
                       <option value="sheets.read">{t('connections.scopeSheetsRead')}</option>
                       <option value="sheets.write">{t('connections.scopeSheetsWrite')}</option>

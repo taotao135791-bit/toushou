@@ -8,13 +8,17 @@ export const FEISHU_TOOLS_ENV_KEY = 'TOUSHOU_FEISHU'
 
 const ACTIONS = new Set<FeishuToolRequest['action']>([
   'message_send', 'message_reply', 'message_read', 'message_search',
-  'doc_read', 'doc_create', 'doc_append', 'sheets_read', 'sheets_write', 'sheets_create',
+  'doc_list', 'doc_search', 'doc_read', 'doc_create', 'doc_append', 'doc_blocks', 'doc_insert_blocks', 'doc_update_block',
+  'doc_delete_block', 'doc_table_fill', 'doc_file_attach', 'sheets_read', 'sheets_write', 'sheets_create',
   'bitable_read', 'bitable_upsert', 'bitable_query'
 ])
+const ATTACHMENT_FIELDS = new Set(['action', 'documentId', 'parentBlockId', 'index', 'documentRevision'])
 
 export function parseFeishuToolRequest(raw: unknown): FeishuToolRequest | null {
   if (!raw || typeof raw !== 'object') return null
   const value = raw as Record<string, unknown>
+  // Local paths, bytes and upload URLs are never part of the tool contract.
+  if (value.action === 'doc_file_attach' && Object.keys(value).some(key => !ATTACHMENT_FIELDS.has(key))) return null
   return typeof value.action === 'string' && ACTIONS.has(value.action as FeishuToolRequest['action'])
     ? { ...value, action: value.action as FeishuToolRequest['action'] }
     : null
@@ -62,13 +66,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   const token = (request.url ?? '').replace(/^\//, '')
   const sessionId = tokens.get(token)
   if (request.method !== 'POST' || !sessionId) return json(response, 403, { ok: false, error: 'forbidden' })
+  const closed = new AbortController()
+  response.once('close', () => { if (!response.writableEnded) closed.abort() })
   const chunks: Buffer[] = []
   let size = 0
-  for await (const chunk of request) {
-    const buffer = chunk as Buffer
-    size += buffer.length
-    if (size > MAX_BODY_BYTES) return json(response, 413, { ok: false, error: 'request-too-large' })
-    chunks.push(buffer)
+  try {
+    for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+      const buffer = chunk as Buffer
+      size += buffer.length
+      if (size > MAX_BODY_BYTES) {
+        response.setHeader('connection', 'close')
+        return json(response, 413, { ok: false, error: 'request-too-large' })
+      }
+      chunks.push(buffer)
+    }
+  } catch {
+    return json(response, 400, { ok: false, error: 'incomplete-request' })
   }
   let raw: unknown
   try {
@@ -80,12 +93,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (!tool) return json(response, 400, { ok: false, error: 'unsupported-action' })
   // Load the manager only for an actual call so OmpProcess can import the
   // bridge environment without creating an OMP ↔ integration cycle.
-  const { feishuConnectionManager } = await import('./FeishuConnectionManager')
-  const result = await feishuConnectionManager.executeTool(sessionId, tool)
-  return json(response, 200, result)
+  try {
+    const { feishuConnectionManager } = await import('./FeishuConnectionManager')
+    const result = await feishuConnectionManager.executeTool(sessionId, tool, closed.signal)
+    return json(response, 200, result)
+  } catch {
+    return json(response, 200, { ok: false, error: '飞书工具暂时不可用' })
+  }
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
+  if (response.destroyed) return
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-  response.end(serializeBoundedJson(body, 30_000))
+  response.end(serializeBoundedJson(body))
 }

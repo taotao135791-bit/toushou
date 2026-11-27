@@ -88,6 +88,7 @@ jobs:
           src/main/integrations/tiktok/proxyFetch.test.ts
           src/main/integrations/tiktok/tiktokConnection.e2e.test.ts
           src/main/integrations/dingtalk
+          src/main/integrations/feishu
 
   secret-scan:
     name: Secret scan

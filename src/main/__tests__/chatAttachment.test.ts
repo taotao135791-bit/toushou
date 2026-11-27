@@ -103,6 +103,28 @@ describe('chat attachments', () => {
       expect(await handleChatAttachment(project, 'sandbox:/mnt/data/report.pdf', 'open', grant)).toBe('ok')
     } finally { await rm(base, { recursive: true, force: true }) }
   })
+  it('requires a native selection to reveal generated files outside a workspace on either desktop platform', async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'ts-attachment-selection-'))
+    try {
+      const project = path.join(base, 'project')
+      const external = path.join(base, 'external')
+      await Promise.all([mkdir(project), mkdir(external)])
+      const file = path.join(external, 'report.csv')
+      await writeFile(file, 'impressions,clicks')
+      const linked = path.join(project, 'delivery')
+      await symlink(external, linked, process.platform === 'win32' ? 'junction' : 'dir')
+      vi.mocked(dialog.showOpenDialog).mockClear()
+      vi.mocked(shell.showItemInFolder).mockClear()
+      expect(await handleChatAttachment(project, path.join(linked, 'report.csv'), 'reveal')).toBe('cancelled')
+      expect(dialog.showOpenDialog).toHaveBeenCalledTimes(1)
+      expect(shell.showItemInFolder).not.toHaveBeenCalled()
+
+      vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+      expect(await handleChatAttachment(project, file, 'reveal')).toBe('ok')
+      expect(shell.showItemInFolder).toHaveBeenCalledTimes(1)
+      expect(shell.showItemInFolder).toHaveBeenCalledWith(await realpath(file))
+    } finally { await rm(base, { recursive: true, force: true }) }
+  })
   it('opens a delivered download only for a matching transcript and download directory', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'ts-delivery-'))
     try {

@@ -943,7 +943,7 @@ export function registerIpc() {
     return typeof url === 'string' ? feishuConnectionManager.openUrl(url) : false
   })
   ipcMain.handle(IPC_CHANNELS.FEISHU_OAUTH_BEGIN, async (_event, capability: unknown) => {
-    const capabilities: FeishuCapability[] = ['docs.read', 'docs.write', 'sheets.read', 'sheets.write', 'bitable.read', 'bitable.write']
+    const capabilities: FeishuCapability[] = ['docs.read', 'docs.write', 'docs.media', 'sheets.read', 'sheets.write', 'bitable.read', 'bitable.write']
     const allowed = capability === 'all' || capabilities.includes(capability as FeishuCapability)
     return allowed
       ? feishuConnectionManager.beginOAuth(capability as FeishuCapability | 'all')

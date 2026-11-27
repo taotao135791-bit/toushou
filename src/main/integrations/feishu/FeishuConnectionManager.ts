@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, dialog, shell } from 'electron'
 import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../../../shared/constants'
@@ -19,7 +19,7 @@ import {
   FEISHU_CAPABILITY_SCOPES
 } from '../../../shared/connections'
 import { Session, SessionEvent, ExternalSessionDescriptor, TaskFeishuTarget } from '../../../shared/types'
-import { createSession, getSession, getSessionState, killSession, resumeSession, sendMessage } from '../../omp'
+import { createSession, getSession, getSessionBridgeAccess, getSessionState, killSession, resumeSession, sendMessage } from '../../omp'
 import { getStore } from '../../store'
 import { getWorkspaceSystemPaths } from '../../workspaceSystemPaths'
 import { FeishuChannel } from './FeishuChannel'
@@ -28,13 +28,49 @@ import { PersonalAgentRegistrationProvider, RegistrationSession } from './Feishu
 import { FeishuOAuthManager } from './FeishuOAuthManager'
 import { FeishuSessionContext, FeishuSessionRouter } from './FeishuSessionRouter'
 import { FeishuToolRegistry } from './FeishuToolRegistry'
+import { pickFeishuAttachment } from './feishuAttachmentPicker'
 
 const FEISHU_DEFINITION: ConnectionDefinition = {
   id: 'feishu',
   kind: 'channel',
   label: '飞书',
   description: '把投手接入你的飞书工作空间。',
-  capabilities: ['messaging', 'docs.read', 'docs.write', 'sheets.read', 'sheets.write', 'bitable.read', 'bitable.write']
+  capabilities: ['messaging', 'docs.read', 'docs.write', 'docs.media', 'sheets.read', 'sheets.write', 'bitable.read', 'bitable.write']
+}
+
+const DOCUMENT_BLOCK_MUTATIONS: Partial<Record<FeishuToolRequest['action'], string>> = {
+  doc_insert_blocks: '插入文档块',
+  doc_update_block: '替换文档块文字',
+  doc_delete_block: '删除文档块',
+  doc_table_fill: '插入原生表格'
+}
+
+function confirmationId(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : null
+}
+
+async function confirmDocumentMutation(request: FeishuToolRequest, action: string, signal?: AbortSignal): Promise<boolean> {
+  const documentId = confirmationId(request.documentId)
+  const needsBlock = request.action === 'doc_update_block' || request.action === 'doc_delete_block'
+  const blockId = needsBlock ? confirmationId(request.blockId) : null
+  const parent = request.parentBlockId === undefined ? null : confirmationId(request.parentBlockId)
+  if (!documentId || (needsBlock && !blockId) || (request.parentBlockId !== undefined && !parent)) return false
+  const detail = [
+    '文档 ID  ' + documentId,
+    blockId ? '文档块 ID  ' + blockId : undefined,
+    parent ? '父块 ID  ' + parent : undefined
+  ].filter(Boolean).join('\n')
+  try {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win || win.isDestroyed() || signal?.aborted) return false
+    const result = await dialog.showMessageBox(win, {
+      type: 'question', title: '确认飞书文档操作', message: '允许投手' + action + '？',
+      detail, buttons: ['取消', '允许一次'], defaultId: 0, cancelId: 0, noLink: true, signal
+    })
+    return result.response === 1 && !win.isDestroyed() && !signal?.aborted
+  } catch {
+    return false
+  }
 }
 
 /** Every user-identity scope 投手 can consume — pre-filled on the one-click
@@ -50,6 +86,7 @@ export class FeishuConnectionManager {
   private readonly routesFile = path.join(app.getPath('userData'), 'feishu-routes.json')
   private readonly router: FeishuSessionRouter
   private readonly tools: FeishuToolRegistry
+  private pickingAttachment = false
   private channel: FeishuChannel | null = null
   private credentials: FeishuStoredCredentials | null = null
   private registration: RegistrationSession | null = null
@@ -146,8 +183,28 @@ export class FeishuConnectionManager {
     this.tools = new FeishuToolRegistry(
       () => this.channel,
       (capability) => this.authorizedCapabilities.includes(capability),
-      (capability) => this.oauthManager.accessTokenFor(capability)
+      (capability) => this.oauthManager.accessTokenFor(capability),
+      (sessionId, { documentId }, signal) => this.pickDocumentAttachment(sessionId, documentId, signal)
     )
+  }
+
+  private async pickDocumentAttachment(sessionId: string, documentId: string, signal?: AbortSignal) {
+    const session = getSession(sessionId)
+    const access = getSessionBridgeAccess(sessionId)
+    const channel = this.channel
+    if (!session || session.origin || !access || access.mode === 'readonly' || access.remoteReadonly
+        || !channel || this.pickingAttachment || signal?.aborted) return null
+    const stillAllowed = () => {
+      const current = getSessionBridgeAccess(sessionId)
+      return getSession(sessionId) === session && !session.origin && this.channel === channel
+        && !!current && !current.remoteReadonly && current.mode === access.mode && current.cwd === access.cwd
+    }
+    this.pickingAttachment = true
+    try {
+      return await pickFeishuAttachment(documentId, stillAllowed, signal)
+    } finally {
+      this.pickingAttachment = false
+    }
   }
 
   setSessionEventSink(sink: (event: SessionEvent) => void): void {
@@ -449,11 +506,33 @@ export class FeishuConnectionManager {
     }
   }
 
-  async executeTool(sessionId: string, request: FeishuToolRequest): Promise<FeishuToolResult> {
+  async executeTool(sessionId: string, request: FeishuToolRequest, signal?: AbortSignal): Promise<FeishuToolResult> {
+    const documentAction = DOCUMENT_BLOCK_MUTATIONS[request.action]
+    const blockWrite = Boolean(documentAction) || request.action === 'doc_file_attach'
+    const access = blockWrite ? getSessionBridgeAccess(sessionId) : null
+    const session = blockWrite ? getSession(sessionId) : null
+    const channel = this.channel
+    const canExecute = () => {
+      if (signal?.aborted) return false
+      if (!blockWrite) return true
+      if (!session || !access || access.mode === 'readonly' || access.remoteReadonly || this.channel !== channel) return false
+      if (request.action === 'doc_file_attach' && session.origin) return false
+      const current = getSessionBridgeAccess(sessionId)
+      return getSession(sessionId) === session && !!current && !current.remoteReadonly
+        && current.cwd === access.cwd && current.mode === access.mode
+    }
+    if (!canExecute()) return { ok: false, error: '当前会话无法执行这项飞书文档操作。' }
+    // Ask-mode mutations have a Main-owned confirmation. Deletion is explicit
+    // in every mode. The native picker already authorizes a media attachment.
+    if (channel && documentAction && (access?.mode === 'ask' || request.action === 'doc_delete_block')) {
+      if (!await confirmDocumentMutation(request, documentAction, signal)) return { ok: false, error: '未允许这项飞书文档操作。', data: { outcome: 'cancelled' } }
+      if (!canExecute()) return { ok: false, error: '当前会话无法执行这项飞书文档操作。' }
+    }
     await this.oauthManager.ensureFreshToken().catch(() => false)
     this.authorizedCapabilities = await this.oauthManager.authorizedCapabilities()
+    if (!canExecute()) return { ok: false, error: '当前会话无法执行这项飞书文档操作。' }
     // executeForSession wraps execute() with the per-session failure breaker.
-    const result = await this.tools.executeForSession(sessionId, request)
+    const result = await this.tools.executeForSession(sessionId, request, signal, canExecute)
     // Guidance must not depend on the model relaying the tool error: push the
     // permission gap (and the breaker pause) into the session directly.
     if (result.authorizationRequired) {

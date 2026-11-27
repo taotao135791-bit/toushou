@@ -2,18 +2,25 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Session, SessionState } from '../../../shared/types'
+import { PermissionMode, Session, SessionState } from '../../../shared/types'
 import { NormalizedFeishuMessage } from './FeishuChannel'
+import type { FeishuOAuthManager } from './FeishuOAuthManager'
+import type { FeishuToolRegistry } from './FeishuToolRegistry'
 
 // FeishuConnectionManager touches electron (paths, windows) and Main's live
 // omp registry; both are stubbed so the test only exercises routing + sinks.
 const paths = vi.hoisted(() => ({ documents: '', userData: '' }))
 const secureStorage = vi.hoisted(() => ({ isEncryptionAvailable: vi.fn(() => false), encryptString: vi.fn((value: string): Buffer => Buffer.from(value)), decryptString: vi.fn((_value: Buffer): string => '') }))
+const native = vi.hoisted(() => {
+  const window = { isDestroyed: () => false }
+  return { window, getFocusedWindow: vi.fn((): typeof window | null => window), showMessageBox: vi.fn() }
+})
 
 vi.mock('electron', () => ({
   app: { getPath: (key: string) => paths[key as keyof typeof paths] ?? '/tmp/toushou-feishu-fallback' },
   safeStorage: secureStorage,
-  BrowserWindow: { getAllWindows: () => [] },
+  BrowserWindow: { getAllWindows: () => [], getFocusedWindow: native.getFocusedWindow },
+  dialog: { showMessageBox: native.showMessageBox },
   shell: { openExternal: vi.fn() }
 }))
 
@@ -22,6 +29,7 @@ vi.mock('../../omp', () => ({
   resumeSession: vi.fn(),
   sendMessage: vi.fn(() => true),
   getSession: vi.fn(),
+  getSessionBridgeAccess: vi.fn(),
   getSessionState: vi.fn(async () => null),
   killSession: vi.fn(() => true)
 }))
@@ -31,7 +39,7 @@ vi.mock('../../store', () => ({
   rememberRecentProject: vi.fn()
 }))
 
-import { createSession, getSession, getSessionState, resumeSession } from '../../omp'
+import { createSession, getSession, getSessionBridgeAccess, getSessionState, resumeSession } from '../../omp'
 import { FeishuConnectionManager } from './FeishuConnectionManager'
 import { resetWorkspaceSystemPathsForTest } from '../../workspaceSystemPaths'
 import { secureStorageCoordinator } from '../secureStorageCoordinator'
@@ -351,5 +359,112 @@ describe('FeishuConnectionManager auth-gap guidance', () => {
     await manager.executeTool('session-2', { action: 'doc_read', documentId: 'doc_1' })
     expect(sink).toHaveBeenCalledTimes(6)
     expect(sink).toHaveBeenLastCalledWith('session-2', { kind: 'paused' })
+  })
+})
+
+describe('native Feishu document tool authority', () => {
+  it('allows an interactive local attachment request to reach its authorization check', async () => {
+    const manager = new FeishuConnectionManager()
+    const live = session('local-session', 1)
+    vi.mocked(getSession).mockReturnValue(live)
+    vi.mocked(getSessionBridgeAccess).mockReturnValue({ cwd: live.cwd, mode: 'ask', remoteReadonly: false })
+    const request = { action: 'doc_file_attach', documentId: 'doc_1' } as const
+    expect(await manager.executeTool(live.id, request)).toMatchObject({
+      ok: false, authorizationRequired: 'docs.media'
+    })
+  })
+
+  it('rejects attachment selection from scheduled, remote, readonly and dead sessions', async () => {
+    const manager = new FeishuConnectionManager()
+    const sink = vi.fn()
+    manager.setAuthGapSink(sink)
+    const request = { action: 'doc_file_attach', documentId: 'doc_1' } as const
+    for (const origin of ['task', 'feishu'] as const) {
+      const live = { ...session(origin, 1), origin }
+      vi.mocked(getSession).mockReturnValue(live)
+      vi.mocked(getSessionBridgeAccess).mockReturnValue({ cwd: live.cwd, mode: 'full', remoteReadonly: false })
+      expect(await manager.executeTool(live.id, request)).toMatchObject({ ok: false })
+    }
+    const live = session('readonly', 1)
+    vi.mocked(getSession).mockReturnValue(live)
+    vi.mocked(getSessionBridgeAccess).mockReturnValue({ cwd: live.cwd, mode: 'readonly', remoteReadonly: false })
+    expect(await manager.executeTool(live.id, request)).toMatchObject({ ok: false })
+    expect(await manager.executeTool(live.id, {
+      action: 'doc_delete_block', documentId: 'doc_1', blockId: 'block_1'
+    })).toMatchObject({ ok: false })
+    vi.mocked(getSession).mockReturnValue(undefined)
+    vi.mocked(getSessionBridgeAccess).mockReturnValue(null)
+    expect(await manager.executeTool('dead', request)).toMatchObject({ ok: false })
+    expect(sink).not.toHaveBeenCalled()
+  })
+})
+
+describe('Main confirmation for Feishu document mutations', () => {
+  function setup(mode: PermissionMode) {
+    const manager = new FeishuConnectionManager()
+    const live = session('local-mutation', 1)
+    const access = { cwd: live.cwd, mode, remoteReadonly: false }
+    vi.mocked(getSession).mockReturnValue(live)
+    vi.mocked(getSessionBridgeAccess).mockReturnValue(access)
+    native.getFocusedWindow.mockReset().mockReturnValue(native.window)
+    native.showMessageBox.mockReset().mockResolvedValue({ response: 0 })
+    const internals = manager as unknown as { channel: unknown; oauthManager: FeishuOAuthManager; tools: FeishuToolRegistry }
+    internals.channel = {}
+    const refresh = vi.spyOn(internals.oauthManager, 'ensureFreshToken').mockResolvedValue(true)
+    const execute = vi.spyOn(internals.tools, 'executeForSession').mockResolvedValue({ ok: true })
+    return { manager, live, access, execute, refresh }
+  }
+
+  it('gates inserts, edits and native tables behind one-use approval in ask mode', async () => {
+    const { manager, live, execute } = setup('ask')
+    for (const action of ['doc_insert_blocks', 'doc_update_block', 'doc_table_fill'] as const) {
+      native.showMessageBox.mockResolvedValueOnce({ response: 1 })
+      const request = { action, documentId: 'doc_target', parentBlockId: 'block_parent', blockId: 'block_target' }
+      expect(await manager.executeTool(live.id, request)).toEqual({ ok: true })
+      expect(native.showMessageBox).toHaveBeenLastCalledWith(native.window, expect.objectContaining({
+        cancelId: 0, defaultId: 0, detail: expect.stringContaining('doc_target')
+      }))
+      expect(execute).toHaveBeenLastCalledWith(live.id, request, undefined, expect.any(Function))
+    }
+    expect(native.showMessageBox).toHaveBeenCalledTimes(3)
+    expect(execute).toHaveBeenCalledTimes(3)
+  })
+
+  it('requires explicit approval to delete even in full mode and does not dispatch when denied', async () => {
+    const { manager, live, execute, refresh } = setup('full')
+    const request = { action: 'doc_delete_block', documentId: 'doc_target', blockId: 'block_target', parentBlockId: 'block_parent' } as const
+    expect(await manager.executeTool(live.id, request)).toMatchObject({ ok: false, data: { outcome: 'cancelled' } })
+    expect(native.showMessageBox).toHaveBeenCalledWith(native.window, expect.objectContaining({
+      message: expect.stringContaining('删除'), detail: expect.stringMatching(/doc_target[\s\S]*block_target[\s\S]*block_parent/)
+    }))
+    expect(refresh).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+    expect(await manager.executeTool(live.id, { action: 'doc_insert_blocks', documentId: 'doc_target' })).toEqual({ ok: true })
+    expect(native.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed when confirmation cannot be shown or the session changes before dispatch', async () => {
+    const { manager, live, access, execute, refresh } = setup('ask')
+    const request = { action: 'doc_insert_blocks', documentId: 'doc_target' } as const
+    native.getFocusedWindow.mockReturnValueOnce(null)
+    expect(await manager.executeTool(live.id, request)).toMatchObject({ ok: false })
+    expect(native.showMessageBox).not.toHaveBeenCalled()
+    expect(await manager.executeTool(live.id, { ...request, documentId: 'invalid\ninput' })).toMatchObject({ ok: false })
+    expect(native.showMessageBox).not.toHaveBeenCalled()
+    native.showMessageBox.mockImplementationOnce(async () => {
+      vi.mocked(getSessionBridgeAccess).mockReturnValue({ ...access, mode: 'readonly' })
+      return { response: 1 }
+    })
+    expect(await manager.executeTool(live.id, request)).toMatchObject({ ok: false })
+    vi.mocked(getSessionBridgeAccess).mockReturnValue(access)
+    const controller = new AbortController()
+    native.showMessageBox.mockImplementationOnce(async () => {
+      controller.abort()
+      return { response: 1 }
+    })
+    expect(await manager.executeTool(live.id, request, controller.signal)).toMatchObject({ ok: false })
+    expect(refresh).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
   })
 })
