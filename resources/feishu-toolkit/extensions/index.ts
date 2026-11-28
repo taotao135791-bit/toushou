@@ -77,7 +77,6 @@ export default function feishuTools(api: ToolHostApi): void {
   register(api, 'feishu_doc_update_block', '更新飞书文档块文字', '修改已知块的文字，保留原块类型。适用于标题、段落、列表或引用。', {
     documentId: { type: 'string' }, blockId: { type: 'string' }, text: { type: 'string' }, documentRevision
   }, ['documentId', 'blockId', 'text'], 'write', 'doc_update_block')
-  register(api, 'feishu_doc_delete_block', '删除飞书文档块', '删除明确指定的一个块。先读取块结构，核对目标 ID 和所在父块。', {
     ...documentParent, blockId: { type: 'string' }, documentRevision
   }, ['documentId', 'blockId'], 'write', 'doc_delete_block')
   register(api, 'feishu_doc_table_fill', '插入飞书原生表格', '在指定父块和位置插入可编辑的飞书表格。cells 必须是每行列数相同的二维字符串数组。', {
@@ -90,4 +89,5 @@ export default function feishuTools(api: ToolHostApi): void {
   register(api, 'feishu_bitable_read', '读取多维表格记录', '读取飞书多维表格记录。', { appToken: { type: 'string' }, tableId: { type: 'string' } }, ['appToken', 'tableId'], 'read', 'bitable_read')
   register(api, 'feishu_bitable_upsert', '写入多维表格记录', '创建一条飞书多维表格记录。', { appToken: { type: 'string' }, tableId: { type: 'string' }, fields: { type: 'object' } }, ['appToken', 'tableId', 'fields'], 'write', 'bitable_upsert')
   register(api, 'feishu_bitable_query', '查询多维表格', '按过滤条件查询飞书多维表格。', { appToken: { type: 'string' }, tableId: { type: 'string' }, filter: { type: 'object' } }, ['appToken', 'tableId'], 'read', 'bitable_query')
+  register(api, 'feishu_doc_blocks', '读取文档块结构', '读取飞书文档的子块清单（块 ID/类型/文本）。两用：写入后回读验证结构；写入前先读旧结构定位插入位置（新批次应插在旧批次一级标题之前，用 index 控制）。首次在陌生文档写入前，建议先插入一条小测试内容并回读，确认块级接口可用再批量写入。', { documentId: { type: 'string' }, parentBlockId: { type: 'string' } }, ['documentId'], 'read', 'doc_blocks')
 }

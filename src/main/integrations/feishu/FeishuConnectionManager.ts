@@ -76,7 +76,11 @@ async function confirmDocumentMutation(request: FeishuToolRequest, action: strin
 /** Every user-identity scope 投手 can consume — pre-filled on the one-click
  * registration/repair confirm page so the app is born (or patched) with the
  * full set; the OAuth consent page then never refuses a requested scope. */
-const ALL_USER_SCOPES = Object.values(FEISHU_CAPABILITY_SCOPES).map((meta) => meta.scope)
+const ALL_USER_SCOPES = [
+  // docs.media（文件块上传）已并入能力表，无需再手工补齐；去重防重复 scope
+  // 出现在授权确认页。
+  ...new Set(Object.values(FEISHU_CAPABILITY_SCOPES).map((meta) => meta.scope))
+]
 
 export class FeishuConnectionManager {
   private readonly credentialStore = new FeishuCredentialStore()

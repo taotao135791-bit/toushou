@@ -46,10 +46,12 @@ describe('chat attachments', () => {
       expect(await handleChatAttachment(project, file, 'reveal', grant)).toBe('ok')
       expect(shell.showItemInFolder).toHaveBeenCalledTimes(2)
       expect(path.basename(vi.mocked(shell.showItemInFolder).mock.calls[0][0])).toBe(name)
+      // revealOnly（HTML）的 open 与 reveal 都走 showItemInFolder，不走 openPath
       expect(shell.openPath).not.toHaveBeenCalled()
-      expect(await handleChatAttachment(project, decoy, 'reveal', grant)).toBe('cancelled')
+      expect(await handleChatAttachment(project, decoy, 'reveal', grant)).toBe('ok')
       expect(await handleChatAttachment(project, path.join(dated, 'fig1.png'), 'reveal', grant)).toBe('cancelled')
-      expect(shell.showItemInFolder).toHaveBeenCalledTimes(2)
+      // 直接路径真实存在就信任（DSH/Kimi 原则）：decoy 是确实存在的文件，按用户给的路径显示
+      expect(shell.showItemInFolder).toHaveBeenCalledTimes(3)
       expect(await openChatAttachmentFolder(project, dated, grant)).toBe('ok')
       expect(await openChatAttachmentFolder(project, other, grant)).toBe('unavailable')
       expect(await openChatAttachmentFolder(project, file, grant)).toBe('unavailable')
@@ -103,7 +105,7 @@ describe('chat attachments', () => {
       expect(await handleChatAttachment(project, 'sandbox:/mnt/data/report.pdf', 'open', grant)).toBe('ok')
     } finally { await rm(base, { recursive: true, force: true }) }
   })
-  it('requires a native selection to reveal generated files outside a workspace on either desktop platform', async () => {
+  it('reveals existing files outside a workspace directly (DSH/Kimi trust); the picker only covers missing paths', async () => {
     const base = await mkdtemp(path.join(os.tmpdir(), 'ts-attachment-selection-'))
     try {
       const project = path.join(base, 'project')
@@ -115,14 +117,15 @@ describe('chat attachments', () => {
       await symlink(external, linked, process.platform === 'win32' ? 'junction' : 'dir')
       vi.mocked(dialog.showOpenDialog).mockClear()
       vi.mocked(shell.showItemInFolder).mockClear()
-      expect(await handleChatAttachment(project, path.join(linked, 'report.csv'), 'reveal')).toBe('cancelled')
-      expect(dialog.showOpenDialog).toHaveBeenCalledTimes(1)
-      expect(shell.showItemInFolder).not.toHaveBeenCalled()
-
-      vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+      // 文件真实存在（含经 junction 落在工作区外的路径）：直接显示，不弹定位框。
+      expect(await handleChatAttachment(project, path.join(linked, 'report.csv'), 'reveal')).toBe('ok')
       expect(await handleChatAttachment(project, file, 'reveal')).toBe('ok')
-      expect(shell.showItemInFolder).toHaveBeenCalledTimes(1)
-      expect(shell.showItemInFolder).toHaveBeenCalledWith(await realpath(file))
+      expect(shell.showItemInFolder).toHaveBeenCalledTimes(2)
+      expect(shell.showItemInFolder).toHaveBeenLastCalledWith(await realpath(file))
+      expect(dialog.showOpenDialog).not.toHaveBeenCalled()
+      // 路径不存在（文件被移走/删除）：仍回落到定位框，取消即取消。
+      expect(await handleChatAttachment(project, path.join(external, 'moved.csv'), 'reveal')).toBe('cancelled')
+      expect(dialog.showOpenDialog).toHaveBeenCalledTimes(1)
     } finally { await rm(base, { recursive: true, force: true }) }
   })
   it('opens a delivered download only for a matching transcript and download directory', async () => {
@@ -139,7 +142,7 @@ describe('chat attachments', () => {
       const before = vi.mocked(shell.openPath).mock.calls.length
       expect(await handleChatAttachment(project, file, 'open', { directory: downloads, isReferenced: reference })).toBe('ok')
       expect(vi.mocked(shell.openPath).mock.calls.length).toBe(before + 1)
-      expect(await handleChatAttachment(project, file, 'open', { directory: downloads, isReferenced: async () => false })).toBe('cancelled')
+      expect(await handleChatAttachment(project, file, 'open', { directory: downloads, isReferenced: async () => false })).toBe('ok')
     } finally { await rm(root, { recursive: true, force: true }) }
   })
   it('saves the selected source revision when another report takes its name during the dialog', async () => {
@@ -194,12 +197,12 @@ describe('chat attachments', () => {
       vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({canceled:false, filePath:dest})
       expect(await handleChatAttachment(dir, file, 'save')).toBe('ok')
       expect(await readFile(dest, 'utf8')).toBe('a,b')
-      expect(await handleChatAttachment(dir, dest, 'open')).toBe('cancelled')
+      expect(await handleChatAttachment(dir, dest, 'open')).toBe('ok')
       if (process.platform !== 'win32') {
         await symlink(dest, path.join(dir,'link.csv'))
         expect(await handleChatAttachment(dir, './link.csv', 'open')).toBe('cancelled')
       }
-      expect(shell.openPath).toHaveBeenCalledTimes(1)
+      expect(shell.openPath).toHaveBeenCalledTimes(2)
     } finally { await rm(root, {recursive:true, force:true}) }
   })
 

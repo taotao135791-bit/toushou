@@ -289,7 +289,9 @@ function copyMemoryData(current: string, target: string): void {
     return /^global\.json(?:\.corrupt)?$/.test(relative) ||
       /^projects[/\\](?:index|[a-f0-9]{16})\.json(?:\.corrupt)?$/.test(relative)
   }
-  cpSync(current, target, { recursive: true, filter, force: false, errorOnExist: true })
+  // 目标目录由上方 mkdirSync 预先创建（再带 errorOnExist 会在 Windows 上自炸 EEXIST）；
+  // 「不覆盖既有文件」由 changeMemoryStorage 的空目录检查负责。
+  cpSync(current, target, { recursive: true, filter, force: false })
 }
 
 export function resetMemoryStorageToDefault(migrate: boolean): { ok: true } | { ok: false; error: 'not-empty' | 'not-writable' } {

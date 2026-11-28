@@ -184,6 +184,22 @@ export async function handleChatAttachment(workspace: string, raw: unknown, acti
       if (copy) return await openAttachmentFile(copy, reveal)
     }
 
+    /* 查看/调用不受工作区限制（DSH/Kimi 原则）：Agent（omp）本身有全盘文件
+     * 读写能力——它创建的文件用户就能打开。只要路径真实存在且是文件，
+     * 就直接 open/reveal，不做路径守卫。写入（另存为）仍走原安全流程。
+     * 打开仍核对"标签扩展名 = 目标实际扩展名"：防止 report.pdf 实为指向
+     * .exe 的链接这种标签替换（reveal 只开资源管理器，无此风险）。 */
+    if (action !== 'save' && !file.sandbox) {
+      const resolved = await fs.realpath(candidate).catch(() => undefined)
+      if (resolved) {
+        const stat = await fs.stat(resolved).catch(() => undefined)
+        if (stat?.isFile() && (reveal || path.extname(resolved).slice(1).toLowerCase() === file.ext)) {
+          return await openAttachmentFile(resolved, reveal)
+        }
+      }
+      // 文件不在 candidate 路径（或扩展名对不上）→ 落入下方 grantedSource + dialog 原流程
+    }
+
     const granted = file.sandbox ? undefined : await grantedSource(workspace, file.target, candidate, downloads)
     let source = granted
     if (!source) {

@@ -148,6 +148,16 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
     if (thinkingDisclosure === 'preview' && !showThinkingPreview) setThinkingDisclosure('closed')
   }, [thinkingDisclosure, showThinkingPreview])
   const toggleThinking = () => setThinkingDisclosure(thinkingOpen ? 'manual-closed' : 'manual-open')
+  // 流式跟随尾部（DSH/Kimi 行为）：思维文字追加时视口跟随最新内容；
+  // 只在本来就贴着底部时才跟——用户上翻回看时不抢滚动位置，回到底部后恢复跟随。
+  const thinkingPreRef = useRef<HTMLPreElement>(null)
+  useEffect(() => {
+    if (!thinkingStreaming) return
+    const el = thinkingPreRef.current
+    if (!el) return
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    if (nearBottom) el.scrollTop = el.scrollHeight
+  }, [message.thinking, thinkingStreaming, thinkingOpen])
   const now = useActivityClock(thinkingStreaming)
   const thinkingEnd = message.thinkingEndTs ?? (thinkingStreaming ? now : 0)
   const thinkingElapsed =
@@ -458,7 +468,7 @@ function MessageItem({ message, index = -1, lastUserIndex = -1, sessionId = null
             {thinkingOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
           {thinkingOpen && (
-            <pre className={`mt-1 overflow-y-auto whitespace-pre-wrap rounded-lg bg-overlay px-3 py-2 font-mono text-[12px] leading-5 text-cream-dim ${showThinkingPreview ? 'h-24 shrink-0' : 'max-h-64'}`}>
+            <pre ref={thinkingPreRef} className={`mt-1 overflow-y-auto whitespace-pre-wrap rounded-lg bg-overlay px-3 py-2 font-mono text-[12px] leading-5 text-cream-dim ${showThinkingPreview ? 'h-40 shrink-0' : 'max-h-64'}`}>
               {message.thinking}
             </pre>
           )}

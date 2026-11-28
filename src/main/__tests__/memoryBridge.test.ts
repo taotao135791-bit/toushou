@@ -363,4 +363,5 @@ describe('memory bridge (project isolation enforced server-side)', () => {
       expect(declined).toEqual({ ok: false, error: 'user-declined' })
     })
   })
+
 })

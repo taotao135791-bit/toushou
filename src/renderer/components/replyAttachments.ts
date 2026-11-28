@@ -43,9 +43,12 @@ export function groupReplyAttachments(idPrefix: string) {
     const files = new Map<string, Reference>()
 
     function mention(raw: string, offset: number, label: string, source: 'text' | 'code' | 'link', thumbnail?: Child[]): Element | undefined {
+      const linked = source === 'link'
+      // 文件夹判定只信共享层收集器的 folderAt（它在源头按路径形状/线索分类，
+      // 有测试覆盖）；渲染层不再自行猜测"无扩展名=文件夹"——猜测会把
+      // Makefile 这类无扩展名文件变成打不开的文件夹卡片。
       const folder = paths?.folderAt.get(offset)
       if (folder) return referenceElement('reply-attachment-folder', folder, label || raw)
-      const linked = source === 'link'
       const group = !linked && paths?.rangeFolder(raw, offset)
       if (group) {
         const key = 'folder:' + group
