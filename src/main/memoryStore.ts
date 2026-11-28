@@ -351,13 +351,14 @@ export function buildMemoryPrompt(cwd: string, language: 'zh' | 'en' = 'zh'): st
   const cost = (list: MemoryEntry[]) =>
     Buffer.byteLength(list.map((entry) => `- ${entry.text.replace(/\s+/g, ' ').trim()}`).join('\n') + 40, 'utf8')
   // Newest first, keep while the budget holds; then re-render oldest-last.
-  const newestFirst = [...globalLayer.entries].reverse()
+  const newest = (entries: MemoryEntry[]) => [...entries].reverse().sort((a, b) => b.updatedAt - a.updatedAt)
+  const newestFirst = newest(globalLayer.entries)
   for (const entry of newestFirst) {
     const candidate = [...keptGlobal, entry]
     if (cost(candidate) + cost(keptProject) > budget) break
     keptGlobal.push(entry)
   }
-  for (const entry of [...projectLayer.entries].reverse()) {
+  for (const entry of newest(projectLayer.entries)) {
     const candidate = [...keptProject, entry]
     if (cost(keptGlobal) + cost(candidate) > budget) break
     keptProject.push(entry)

@@ -49,6 +49,7 @@ interface JellyToggleProps {
   onChange?: (checked: boolean) => void
   /** 无障碍名称。 */
   'aria-label'?: string
+  'aria-describedby'?: string
   /** 规格档：lg=规格原版，sm=紧凑行小号。 */
   size?: JellyToggleSize
   /** 禁用交互：保持可聚焦，仅屏蔽切换并降透明度。 */
@@ -68,7 +69,7 @@ interface JellyGesture {
   startedAt: number
 }
 
-export default function JellyToggle({ checked, defaultChecked = false, onChange, 'aria-label': ariaLabel, size = 'lg', disabled = false, title }: JellyToggleProps) {
+export default function JellyToggle({ checked, defaultChecked = false, onChange, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, size = 'lg', disabled = false, title }: JellyToggleProps) {
   const geo = SIZES[size]
   const travel = geo.width - geo.knob - geo.inset * 2
   const controlled = checked !== undefined
@@ -217,6 +218,7 @@ export default function JellyToggle({ checked, defaultChecked = false, onChange,
       aria-checked={isChecked}
       aria-disabled={disabled || undefined}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       title={title}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

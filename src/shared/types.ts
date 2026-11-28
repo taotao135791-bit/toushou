@@ -1671,6 +1671,8 @@ export interface AppSettings {
    * state; the enforcement is server-side of the renderer.
    */
   lockedSessionIds: string[]
+  /** Enable the assistant's use of long-term memory. */
+  memoryEnabled: boolean
   /**
    * 长期记忆的存储根目录；空串 = 默认（userData/memory）。自定义目录由
    * 用户在设置页指定，切换时 Main 负责迁移既有记忆文件。
@@ -1865,6 +1867,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sidebarSessionProjects: {},
   sidebarProjectOrder: [],
   sidebarSessionOrder: [],
+  memoryEnabled: true,
   memoryStoragePath: '',
   themeSource: 'manual',
   sessionSort: 'recent',

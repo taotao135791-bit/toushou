@@ -184,7 +184,7 @@ import { AdsCopyModelStore, MAX_PROVIDERS, validateAdsCopyModelInput, type AdsCo
 import { SecureStorageUnavailableError } from './integrations/secureStorageCoordinator'
 import { adsCopyModelStore, discoverAdsCopyModels, revokeAdsCopyBridgeTokens, setAdsCopyMode, testAdsCopyProviderById } from './adsCopyBridge'
 import { revokeBoardsBridgeTokens } from './boardsBridge'
-import { revokeMemoryBridgeTokens } from './memoryBridge'
+import { cancelPendingMemoryMutations, respondMemoryMutation, revokeMemoryBridgeTokens } from './memoryBridge'
 import { revokeDingTalkBridgeTokens } from './dingTalkBridge'
 import { refreshBoard } from './boardRefresh'
 import { parseBoardRefreshRequest } from '../shared/boardRefresh'
@@ -1233,7 +1233,8 @@ export function registerIpc() {
         sessionId,
         text,
         validated,
-        sanitizeStreamingBehavior(streamingBehavior)
+        sanitizeStreamingBehavior(streamingBehavior),
+        _event.sender
       )
     }
   )
@@ -1256,6 +1257,8 @@ export function registerIpc() {
     IPC_CHANNELS.OMP_RESPOND_UI,
     async (_event: IpcMainInvokeEvent, sessionId: string, requestId: string, answer: unknown) => {
       if (typeof sessionId !== 'string' || typeof requestId !== 'string' || !requestId) return false
+      const memoryAnswer = respondMemoryMutation(sessionId, requestId, answer, _event.sender)
+      if (memoryAnswer !== undefined) return memoryAnswer
       return respondExtensionUi(sessionId, requestId, answer)
     }
   )
@@ -2984,7 +2987,7 @@ export function registerIpc() {
     // The store holds plain settings data only — a renderer must not persist
     // functions, class instances, or oversized blobs through this channel.
     if (!isPlainStorableValue(value)) return false
-    if (key === 'composerSendMagnetism' && typeof value !== 'boolean') return false
+    if ((key === 'composerSendMagnetism' || key === 'memoryEnabled') && typeof value !== 'boolean') return false
     if (key === 'recentChatPreferences') {
       if (!value || typeof value !== 'object' || Array.isArray(value)) return false
       const { model, thinking } = value as Record<string, unknown>
@@ -2998,6 +3001,7 @@ export function registerIpc() {
       writeContextPolicy(value)
     }
     setStore(key, value as never)
+    if (key === 'memoryEnabled' && value === false) cancelPendingMemoryMutations()
     // Transitional: the settings UI still writes the legacy toolAccess tier;
     // mirror it into permissionMode until the renderer exposes 'ask' itself.
     if (key === 'toolAccess' && (value === 'full' || value === 'no-bash' || value === 'readonly')) {
