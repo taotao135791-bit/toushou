@@ -197,6 +197,13 @@ export interface OfficeEditHandoff {
   baseRevision?: number
 }
 
+interface SessionPreview {
+  title: string
+  failed: boolean
+  cwd: string
+  uuid: string
+}
+
 interface AppState {
   theme: 'dark' | 'light'
   /** 主题来源：manual 手动选；system 跟随系统深浅色（theme 是解析后的实际值）。 */
@@ -279,12 +286,12 @@ interface AppState {
   /** sessionId -> whether context compaction is running */
   compacting: Record<string, boolean>
   /**
-   * Instant read-only previews of history rows (preview:<historyId> → title &
-   * failure flag). The conversation renders from the peeked transcript while
+   * Instant read-only previews of history rows (preview:<historyId>).
+   * The conversation renders from the peeked transcript while
    * the runtime resume continues in the background; a failed resume keeps the
    * preview readable instead of a blank chat.
    */
-  sessionPreviews: Record<string, { title: string; failed: boolean }>
+  sessionPreviews: Record<string, SessionPreview>
   /** 会话内容装载中（首开从 durable 转写回填）；装载完成前聊天区不渲染 home hero。 */
   transcriptHydrating: Record<string, boolean>
   transcriptUnavailable: Record<string, boolean>
@@ -361,7 +368,7 @@ interface AppState {
   selectWorkspace: () => Promise<void>
   createProjectWorkspace: (name: string) => Promise<boolean>
   selectDefaultWorkspace: (navigationIntent?: number) => Promise<void>
-  setSessions: (sessions: Session[]) => void
+  setSessions: (sessions: Session[], moved?: { uuid: string; retiredIds: ReadonlySet<string> }) => void
   /** Merge Main's live registry without clobbering a session created concurrently. */
   registerSessions: (sessions: Session[]) => void
   addSession: (session: Session, select?: boolean) => void
@@ -445,7 +452,7 @@ interface AppState {
   resumeQueuedMessages: (sessionId: string) => boolean
   moveClosedQueue: (from: string, to: string) => boolean
   setCompacting: (sessionId: string, compacting: boolean) => void
-  setSessionPreview: (previewId: string, preview: { title: string; failed: boolean }) => void
+  setSessionPreview: (previewId: string, preview: SessionPreview) => void
   seedResumeRecency: (uuid: string, timestamp: number) => void
   clearSessionPreview: (previewId: string) => void
   setStats: (sessionId: string, stats: SessionStats) => void
@@ -478,7 +485,7 @@ interface AppState {
   /** Drop one path from the recent-projects list and persist the new list. */
   removeRecentProject: (path: string) => void
   /** (Re)load the persisted session history of the current workspace; null clears the list. */
-  loadHistorySessions: (grantId: string | null) => Promise<void>
+  loadHistorySessions: (grantId: string | null, options?: { refresh?: boolean }) => Promise<void>
   loadAllHistorySessions: () => Promise<void>
   setScheduledTasks: (tasks: ScheduledTask[]) => void
   /** Drop one entry from the history list (after its opaque capability was deleted). */
@@ -799,7 +806,7 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
       get().setRecentWorkspaces(await window.electronAPI.listRecentWorkspaces())
     }
   },
-  setSessions: (sessions) =>
+  setSessions: (sessions, moved) =>
     set((state) => {
       // Prune pin/unread entries of sessions that no longer exist. Archived
       // ids are deliberately NOT pruned here: they are durable uuids (plus a
@@ -814,9 +821,18 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
       const unreadSessionIds = Object.fromEntries(
         Object.entries(state.unreadSessionIds).filter(([id]) => ids.has(id))
       )
-      const composerDrafts = pruneComposerDrafts(state.composerDrafts, ids)
-      if (composerDrafts !== state.composerDrafts) {
-        for (const key of Object.keys(state.composerDrafts)) {
+      let drafts = state.composerDrafts
+      if (moved) {
+        const durableKey = historyComposerDraftKey(moved.uuid)
+        const activeId = state.currentSessionId
+        const sourceId = activeId && moved.retiredIds.has(activeId) && drafts[activeId]
+          ? activeId
+          : Array.from(moved.retiredIds).find(id => drafts[id])
+        if (sourceId && !drafts[durableKey]) drafts = migrateComposerDraft(drafts, sourceId, durableKey)
+      }
+      const composerDrafts = pruneComposerDrafts(drafts, ids)
+      if (composerDrafts !== drafts) {
+        for (const key of Object.keys(drafts)) {
           if (!(key in composerDrafts)) queueComposerDraftChange(key, null)
         }
       }
@@ -1492,8 +1508,8 @@ export const useAppStore = create<AppState>((set, get) => ({  theme: 'light',
       // Keep the previous list on failure — an empty sidebar reads as data loss.
     }
   },
-  loadHistorySessions: async (grantId) => {
-    if (grantId && scopedHistoryInFlight?.grantId === grantId && scopedHistoryInFlight.epoch === scopedHistoryReadEpoch) return scopedHistoryInFlight.promise
+  loadHistorySessions: async (grantId, options) => {
+    if (!options?.refresh && grantId && scopedHistoryInFlight?.grantId === grantId && scopedHistoryInFlight.epoch === scopedHistoryReadEpoch) return scopedHistoryInFlight.promise
     const epoch = ++scopedHistoryReadEpoch
     if (!grantId) {
       scopedHistoryInFlight = null

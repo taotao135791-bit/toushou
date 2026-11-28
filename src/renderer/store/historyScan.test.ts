@@ -39,6 +39,20 @@ describe('history scan ordering', () => {
     expect(useAppStore.getState().historyLoading).toBe(false)
   })
 
+  it('does not restore a moved conversation from a scan started before the move', async () => {
+    const stale = deferred<HistorySessionDescriptor[]>()
+    const list = vi.fn().mockReturnValueOnce(stale.promise).mockResolvedValueOnce([])
+    vi.stubGlobal('window', { electronAPI: { listSessionHistory: list } })
+    const store = useAppStore.getState()
+    const first = store.loadHistorySessions('grant')
+    await store.loadHistorySessions('grant', { refresh: true })
+    stale.resolve([{ id: 'old-grant', uuid: 'moved-session', title: 'Moved history', timestamp: 1 }])
+    await first
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(useAppStore.getState().sessionRecords).toEqual([])
+    expect(useAppStore.getState().historyLoading).toBe(false)
+  })
+
   it('starts a fresh A scan after A → B → A instead of reviving an obsolete promise', async () => {
     const oldA = deferred<HistorySessionDescriptor[]>(), oldB = deferred<HistorySessionDescriptor[]>(), freshA = deferred<HistorySessionDescriptor[]>()
     const list = vi.fn().mockReturnValueOnce(oldA.promise).mockReturnValueOnce(oldB.promise).mockReturnValueOnce(freshA.promise)

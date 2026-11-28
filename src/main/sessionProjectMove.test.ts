@@ -51,6 +51,46 @@ describe('workspace conversation move', () => {
     expect(await listAllSessions(f.agentDir)).toMatchObject([{ uuid: f.uuid, cwd: f.target }])
   })
 
+  it('moves the requested journal even when either project has unrelated damaged journals', async () => {
+    const f = fixture()
+    const damaged = [f.source, f.target].map(project => {
+      const [directory] = ompSessionDirCandidatesFor(project, f.agentDir, canonicalExistingPath)
+      fs.mkdirSync(directory, { recursive: true })
+      const file = path.join(directory, 'unrelated.jsonl')
+      fs.writeFileSync(file, 'invalid journal')
+      return file
+    })
+    const result = await moveSessionJournal(f)
+    expect(result.ok).toBe(true)
+    expect(fs.existsSync(f.file)).toBe(false)
+    expect(damaged.map(file => fs.readFileSync(file, 'utf8'))).toEqual(['invalid journal', 'invalid journal'])
+  })
+
+  it('preserves both files when a second journal matches the UUID in any source or target layout', async () => {
+    const f = fixture()
+    const duplicate = path.join(path.dirname(f.file), 'legacy-filename.jsonl')
+    const original = fs.readFileSync(f.file)
+    for (const cwd of [f.source, f.target]) {
+      const copy = JSON.stringify({ ...f.header, cwd }) + '\n'
+      fs.writeFileSync(duplicate, copy)
+      await expect(moveSessionJournal(f)).resolves.toEqual({ ok: false, error: 'conflict' })
+      expect(fs.readFileSync(duplicate, 'utf8')).toBe(copy)
+      expect(fs.readFileSync(f.file)).toEqual(original)
+    }
+    expect(f.prepare).not.toHaveBeenCalled()
+  })
+
+  it('refuses to move past an unreadable journal whose filename matches the UUID', async () => {
+    const f = fixture()
+    const damaged = path.join(path.dirname(f.file), `${f.uuid}.jsonl`)
+    fs.writeFileSync(damaged, 'invalid journal')
+    const original = fs.readFileSync(f.file)
+    await expect(moveSessionJournal(f)).resolves.toEqual({ ok: false, error: 'failed' })
+    expect(fs.readFileSync(f.file)).toEqual(original)
+    expect(fs.readFileSync(damaged, 'utf8')).toBe('invalid journal')
+    expect(f.prepare).not.toHaveBeenCalled()
+  })
+
   it('leaves a busy journal and an existing destination file byte-for-byte unchanged', async () => {
     const f = fixture()
     const original = fs.readFileSync(f.file)
@@ -67,16 +107,53 @@ describe('workspace conversation move', () => {
     expect(fs.readdirSync(directory)).toEqual([path.basename(f.file)])
   })
 
-  it('preserves a journal changed by another writer while the runtime is stopping', async () => {
+  it('migrates records flushed during runtime shutdown', async () => {
     const f = fixture()
     const suffix = '{"type":"custom","data":"late journal record"}\n'
-    const recent = fs.readFileSync(f.file, 'utf8') + suffix
-    await expect(moveSessionJournal({ ...f, prepare: async file => {
+    const result = await moveSessionJournal({ ...f, prepare: async file => {
       fs.appendFileSync(file, suffix)
       return true
-    } })).resolves.toEqual({ ok: false, error: 'busy' })
+    } })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(fs.readFileSync(result.filePath, 'utf8')).toBe(f.titleLine + JSON.stringify({ ...f.header, cwd: f.target }) + '\r\n' + f.body + suffix)
+    expect(fs.existsSync(f.file)).toBe(false)
+  })
+
+  it('keeps the source if another writer appends after staging', async () => {
+    const f = fixture()
+    const [directory] = ompSessionDirCandidatesFor(f.target, f.agentDir, canonicalExistingPath)
+    const suffix = '{"type":"custom","data":"concurrent journal record"}\n'
+    const recent = fs.readFileSync(f.file, 'utf8') + suffix
+    let wrote = false
+    const result = await moveSessionJournal({ ...f, available: () => {
+      if (!wrote && fs.existsSync(directory) && fs.readdirSync(directory).some(name => name.startsWith('.move-'))) {
+        fs.appendFileSync(f.file, suffix)
+        wrote = true
+      }
+      return true
+    } })
+    expect(result).toEqual({ ok: false, error: 'busy' })
     expect(fs.readFileSync(f.file, 'utf8')).toBe(recent)
     expect(await listSessionHistory(f.target, f.agentDir)).toEqual([])
+  })
+
+  it('does not stage the journal through a destination redirected during shutdown', async () => {
+    const f = fixture()
+    const [directory] = ompSessionDirCandidatesFor(f.target, f.agentDir, canonicalExistingPath)
+    const outside = path.join(f.target, 'unrelated-files')
+    fs.mkdirSync(outside)
+    const timestamp = new Date('2026-10-01T00:00:00Z')
+    fs.utimesSync(outside, timestamp, timestamp)
+    const modified = fs.statSync(outside).mtimeMs
+    const result = await moveSessionJournal({ ...f, prepare: async () => {
+      fs.renameSync(directory, directory + '.original')
+      fs.symlinkSync(outside, directory, process.platform === 'win32' ? 'junction' : 'dir')
+      return true
+    } })
+    expect(result).toEqual({ ok: false, error: 'busy' })
+    expect(fs.statSync(outside).mtimeMs).toBe(modified)
+    expect(fs.readFileSync(f.file, 'utf8')).toBe(f.titleLine + JSON.stringify(f.header) + '\r\n' + f.body)
   })
 
   it('rejects a different source workspace and serializes duplicate moves against deletion', async () => {

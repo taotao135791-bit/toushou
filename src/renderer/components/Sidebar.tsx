@@ -463,6 +463,7 @@ export default function Sidebar() {
     // A failed or slow resume then degrades to a readable preview instead
     // of a blank chat.
     const previewId = `preview:${info.id}`
+    const preview = { title: info.title, cwd: grant.realPath, uuid: info.uuid }
     // Seed the stable recency BEFORE any registry push can land: the runtime's
     // 'connected' sync adds the row with createdAt = spawn time, which sorted
     // it to the top for one frame before the resume response repositioned it
@@ -474,7 +475,7 @@ export default function Sidebar() {
       if (peek?.ok && isCurrentNavigationIntent(epoch)) {
         const store = useAppStore.getState()
         store.setMessages(previewId, peek.messages)
-        store.setSessionPreview(previewId, { title: info.title, failed: false })
+        store.setSessionPreview(previewId, { ...preview, failed: false })
         store.setCurrentSessionId(previewId, epoch)
         navigate('/', { state: historyPreviewRouteState })
         previewShown = true
@@ -490,7 +491,7 @@ export default function Sidebar() {
         // chat that reads as data loss. The peeked preview (if any) stays
         // readable with a failed marker.
         if (isCurrentNavigationIntent(epoch)) {
-          if (previewShown) useAppStore.getState().setSessionPreview(previewId, { title: info.title, failed: true })
+          if (previewShown) useAppStore.getState().setSessionPreview(previewId, { ...preview, failed: true })
           setRestoreFailedHistoryId(info.id)
           showNotice('history.transcriptUnavailable')
         }
@@ -498,7 +499,7 @@ export default function Sidebar() {
       }
       if (!result) {
         if (!isCurrentNavigationIntent(epoch)) return false
-        if (previewShown) useAppStore.getState().setSessionPreview(previewId, { title: info.title, failed: true })
+        if (previewShown) useAppStore.getState().setSessionPreview(previewId, { ...preview, failed: true })
         setRestoreFailedHistoryId(info.id)
         showNotice('history.restoreFailed')
         // A dead row (file rewritten in place or removed) must not linger as
@@ -538,7 +539,7 @@ export default function Sidebar() {
     } catch {
       if (isCurrentNavigationIntent(epoch)) {
         if (previewShown && useAppStore.getState().currentSessionId === previewId) {
-          useAppStore.getState().setSessionPreview(previewId, { title: info.title, failed: true })
+          useAppStore.getState().setSessionPreview(previewId, { ...preview, failed: true })
         }
         setRestoreFailedHistoryId(info.id)
         showNotice('history.restoreFailed')
@@ -923,18 +924,26 @@ export default function Sidebar() {
       showNotice('sidebar.moveConversationBusy')
       return false
     }
-    const sourceId = entry.kind === 'live' ? entry.session.id : entry.kind === 'history' ? `preview:${entry.info.id}` : undefined
-    const selected = Boolean(sourceId) && before.currentSessionId === sourceId
-    const intent = selected ? beginNavigationIntent() : undefined
+    const activeId = before.currentSessionId
+    const preview = activeId ? before.sessionPreviews[activeId] : undefined
+    const selectedLive = entry.kind === 'live' && activeId === entry.session.id
+    const selectedPreview = preview !== undefined && key === JSON.stringify([preview.cwd, preview.uuid])
+    // A selected history row can become a live session while the journal moves.
+    // Keep its open intent valid and only follow the move if the user stays there.
+    const intent = selectedLive || selectedPreview ? currentNavigationIntent() : undefined
     const result = await move(before.currentWorkspace.id, entry, project.id)
     const retired = new Set(result.retiredSessionIds)
+    const uuid = result.ok ? result.row.uuid
+      : entry.kind === 'live' ? entry.session.draftSessionUuid ?? sessionFileUuid(entry.session.sessionFile ?? entry.session.resumeFrom)
+        : entry.kind === 'history' ? entry.info.uuid : entry.row.uuid
     const current = useAppStore.getState()
-    if (retired.size) current.setSessions(current.sessions.filter(session => !retired.has(session.id)))
-    const reopen = intent !== undefined && isCurrentNavigationIntent(intent) && current.currentSessionId === sourceId
+    if (retired.size) {
+      current.setSessions(current.sessions.filter(session => !retired.has(session.id)), uuid ? { uuid, retiredIds: retired } : undefined)
+    }
+    const reopen = intent !== undefined && isCurrentNavigationIntent(intent)
     if (!result.ok) {
-      if (reopen && sourceId && retired.has(sourceId)) {
-        const uuid = entry.kind === 'live' ? entry.session.draftSessionUuid ?? sessionFileUuid(entry.session.sessionFile ?? entry.session.resumeFrom) : undefined
-        if (uuid) await handleOpenGlobal({ cwd: entry.workspacePath, uuid, title: entry.title, timestamp: entry.timestamp }, intent)
+      if (uuid && reopen && ((selectedLive && activeId && retired.has(activeId)) || (selectedPreview && retired.size > 0))) {
+        await handleOpenGlobal({ cwd: entry.workspacePath, uuid, title: entry.title, timestamp: entry.timestamp }, intent)
       }
       if (result.error === 'busy') showNotice('sidebar.moveConversationBusy')
       else if (result.error === 'conflict') showNotice('sidebar.moveConversationConflict')
@@ -951,10 +960,12 @@ export default function Sidebar() {
     showNotice('sidebar.filedInProject')
     void useAppStore.getState().loadAllHistorySessions()
     if (reopen) {
-      if (row.cwd !== entry.workspacePath || retired.size > 0) await handleOpenGlobal(row, intent)
+      if (row.cwd !== entry.workspacePath || retired.size > 0) {
+        await handleOpenGlobal(row, intent, selectedPreview && activeId ? () => useAppStore.getState().clearSessionPreview(activeId) : undefined)
+      }
     } else {
       const workspace = useAppStore.getState().currentWorkspace
-      if (workspace && (workspace.realPath === entry.workspacePath || workspace.realPath === row.cwd)) void loadHistorySessions(workspace.id)
+      if (workspace && (workspace.realPath === entry.workspacePath || workspace.realPath === row.cwd)) void loadHistorySessions(workspace.id, { refresh: true })
     }
     return true
   }

@@ -24,7 +24,6 @@ import { I18nKey, useT } from '../i18n'
 import { showNotice } from '../lib/notice'
 import { createSessionForCurrentProject } from '../lib/session'
 import { captureSessionSnapshot } from '../lib/runtimeSnapshot'
-import { basename } from '../lib/path'
 import MessageList from './MessageList'
 import ExecutionActivity from './ExecutionActivity'
 import Composer from './Composer'
@@ -65,7 +64,8 @@ export default function ChatPanel() {
   const setWorkspacePanel = useAppStore((s) => s.setWorkspacePanel)
   const selectWorkspace = useProjects((s) => s.importFolder)
   const unavailableDefault = useProjects(s => s.projects.find(project => project.isDefault && project.missing))
-  const projectLabel = useProjects(s => s.projects.find(project => project.path === currentWorkspace?.realPath)?.name)
+  const conversationCwd = sessionPreview?.cwd ?? currentSession?.cwd
+  const conversationProject = useProjects(s => s.projects.find(project => !project.isDefault && project.path === conversationCwd))
   // Per-session slices only: streaming deltas of OTHER sessions must not
   // re-render this chat, and unrelated store writes must not either.
   const sessionMessages = useAppStore((s) =>
@@ -415,7 +415,6 @@ export default function ChatPanel() {
     setWorkspacePanel({ kind: 'office', grant: picked.grant, name: picked.name })
   }
 
-  const projectName = currentWorkspace ? projectLabel || basename(currentWorkspace.displayPath) : null
   const transcriptHydrating = useAppStore(s => Boolean(currentSessionId && s.transcriptHydrating[currentSessionId]))
   const transcriptUnavailable = useAppStore(s => Boolean(currentSessionId && s.transcriptUnavailable[currentSessionId]))
   const refreshTranscript = useCallback(() => {
@@ -449,13 +448,14 @@ export default function ChatPanel() {
         </span>
         {/* project pill: full path on hover; collapses to icon-only when the
             column is squeezed (browser panel open) */}
-        {projectName && currentWorkspace && (
+        {conversationProject && (
           <span
-            title={currentWorkspace.displayPath}
+            data-session-project={conversationProject.id}
+            title={conversationProject.path}
             className="flex shrink-0 items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[12px] font-medium whitespace-nowrap text-cream-faint"
           >
-            <FolderOpen size={12} className="shrink-0 text-accent" />
-            {!compact && <span className="max-w-[160px] truncate">{projectName}</span>}
+            <FolderOpen size={12} aria-hidden="true" className="shrink-0 text-accent" />
+            <span className={compact ? 'sr-only' : 'max-w-[160px] truncate'}>{conversationProject.name}</span>
           </span>
         )}
         {/* branch pill: always on for git workspaces; GitChip hides itself

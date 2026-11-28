@@ -5,7 +5,7 @@ import path from 'node:path'
 import { canonicalExistingPath } from './canonicalPath'
 import { defaultPiAgentDir } from './piSettings'
 import { isSessionUuid, ompSessionDirCandidatesFor, sessionsRoot } from './sessionHistory'
-import { discoverProjectSessionFiles } from './projectSessionFiles'
+import { discoverSessionMoveFiles } from './projectSessionFiles'
 
 const HEADER_BYTES = 64 * 1024
 const moving = new Set<string>()
@@ -62,12 +62,12 @@ export async function moveSessionJournal(options: {
   if (!isSessionUuid(uuid)) return { ok: false, error: 'not-found' }
   try {
     if (!available() || canonicalExistingPath(source) !== source || canonicalExistingPath(target) !== target) return { ok: false, error: 'busy' }
-    const sources = await discoverProjectSessionFiles(source, agentDir, uuid)
+    const { sources, destinations } = await discoverSessionMoveFiles(source, target, uuid, agentDir)
     if (!sources.length) return { ok: false, error: 'not-found' }
     if (sources.length > 1) return { ok: false, error: 'conflict' }
     const [{ path: sourceFile }] = sources
     if (source === target) return { ok: true, sourceFile, filePath: sourceFile }
-    if ((await discoverProjectSessionFiles(target, agentDir, uuid)).length) return { ok: false, error: 'conflict' }
+    if (destinations.length) return { ok: false, error: 'conflict' }
     if (!available()) return { ok: false, error: 'busy' }
 
     const root = canonicalExistingPath(sessionsRoot(agentDir))
@@ -82,6 +82,10 @@ export async function moveSessionJournal(options: {
       return null
     })
     if (existing) return { ok: false, error: 'conflict' }
+
+    // OMP can flush more records as it stops. Stage the final journal only
+    // after the writer exits so that normal shutdown writes are included.
+    if (!available() || !await prepare(sourceFile) || !available()) return { ok: false, error: 'busy' }
     const temporary = path.join(directory, `.move-${randomUUID()}.tmp`)
     const input = await open(sourceFile, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
     let published = false
@@ -93,6 +97,7 @@ export async function moveSessionJournal(options: {
       const { bytesRead } = await input.read(head, 0, head.length, 0)
       const header = rewriteHeader(head.subarray(0, bytesRead), uuid, source, target)
       if (!header) return { ok: false, error: 'not-found' }
+      if (canonicalExistingPath(directory) !== directory) return { ok: false, error: 'busy' }
       const output = await open(temporary, 'wx', before.mode > 0n ? Number(before.mode & 0o777n) : 0o600)
       try {
         await output.writeFile(header.prefix)
@@ -109,7 +114,6 @@ export async function moveSessionJournal(options: {
         await output.sync()
       } finally { await output.close() }
       await input.close()
-      if (!available() || !unchanged(before, await lstat(sourceFile, { bigint: true })) || !await prepare(sourceFile)) return { ok: false, error: 'busy' }
       if (!available() || canonicalExistingPath(directory) !== directory || canonicalExistingPath(sourceFile) !== sourceFile || !unchanged(before, await lstat(sourceFile, { bigint: true }))) return { ok: false, error: 'busy' }
       // Link publishes the finished journal atomically and never overwrites an existing conversation.
       await link(temporary, filePath)

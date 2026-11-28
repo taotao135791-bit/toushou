@@ -393,10 +393,13 @@ export async function closeIdleProjectSessions(projectPath: string): Promise<boo
 }
 
 /** Retire only runtimes writing this journal before migrating it to another project. */
-export async function closeIdleSessionsForMove(uuid: string, filePath: string, workspace: string, liveSessionId?: string): Promise<string[] | null> {
+export async function closeIdleSessionsForMove(uuid: string, filePath: string, workspace: string, liveSessionId?: string): Promise<{
+  stopped: boolean
+  retiredSessionIds: string[]
+} | null> {
   if (liveSessionId && getSession(liveSessionId)) {
-    // OMP can fork on the first turn after resume. Confirm the staged journal
-    // still belongs to the runtime immediately before testing whether it is idle.
+    // OMP can fork on the first turn after resume. Confirm the journal still
+    // belongs to the runtime before testing whether it is idle.
     const current = await liveSessionJournal(liveSessionId)
     if (!current || current.filePath !== filePath || current.uuid !== uuid) return null
   }
@@ -410,7 +413,11 @@ export async function closeIdleSessionsForMove(uuid: string, filePath: string, w
     try { return canonicalExistingPath(file) === filePath } catch { return false }
   })
   if (relevant.some(entry => entry.runtimeState !== 'idle' || entry.hasPendingWork || entry.session.status === 'running')) return null
-  return await terminateIdleSessions(relevant) ? relevant.map(entry => entry.session.id) : null
+  const stopped = await terminateIdleSessions(relevant)
+  // kill() retires the runtime from the registry before the child exits. A
+  // timeout still leaves the renderer needing to reopen the original journal.
+  const retiredSessionIds = relevant.map(entry => entry.session.id).filter(id => !getSession(id))
+  return { stopped, retiredSessionIds }
 }
 
 async function terminateIdleSessions(relevant: OmpSession[]): Promise<boolean> {
@@ -710,9 +717,12 @@ export async function liveSessionJournal(sessionId: string): Promise<{ filePath:
   const state = await getSessionState(sessionId)
   if (!state || getSession(sessionId) !== session) return null
   const candidate = [state.sessionFile, session.sessionFile, session.resumeFrom].find(file => file && existsSync(file))
-  if (!candidate || !isSessionFilePath(candidate)) return null
+  if (!candidate) return null
   try {
     const filePath = canonicalExistingPath(candidate)
+    // OMP may report the Windows drive letter or directory alias differently
+    // from Main. Check containment on the real journal path.
+    if (!isSessionFilePath(filePath)) return null
     const uuid = await readSessionUuid(filePath)
     return isSessionUuid(uuid) && getSession(sessionId) === session ? { filePath, uuid } : null
   } catch { return null }
@@ -833,5 +843,7 @@ export async function resumeSession(
   // agent history even though the live roster is empty. Running state is NEVER
   // claimed from a stale durable progress snapshot.
   const historicalAgents = await reconstructHistoricalAgents(filePath)
+  // A project move can retire this runtime while the transcript is loading.
+  if (getSession(session.id) !== session) return null
   return { session, messages, historicalAgents }
 }

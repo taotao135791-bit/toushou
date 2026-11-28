@@ -2225,6 +2225,8 @@ export function registerIpc() {
         if (session.cwd !== source) return { ok: false, error: 'not-found' }
         const journal = await liveSessionJournal(liveSessionId)
         if (!journal) return { ok: false, error: 'not-found' }
+        markSessionFile(liveSessionId, journal.filePath)
+        nameSessionDurally.fileAvailable(liveSessionId, journal.filePath)
         uuid = journal.uuid
         knownSource = true
       }
@@ -2251,7 +2253,8 @@ export function registerIpc() {
         prepare: async file => {
           const retired = await closeIdleSessionsForMove(uuid, file, source, liveSessionId)
           if (retired === null) return false
-          retiredSessionIds = retired
+          retiredSessionIds = retired.retiredSessionIds
+          if (!retired.stopped) return false
           savedFileMetadata = fileMetadata(file)
           return true
         }

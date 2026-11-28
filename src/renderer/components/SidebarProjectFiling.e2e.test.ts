@@ -6,13 +6,13 @@ import path from 'node:path'
 import { expect, it } from 'vitest'
 
 const require_ = createRequire(import.meta.url)
-it('moves live and historical journals and reopens them in the target project after restart', { timeout: 45000 }, async () => {
+it('moves complete journals into projects, keeps the selected chat in sync, and reopens after restart', { timeout: 45000 }, async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'sidebar-project-filing-'))
   try {
     let esbuild: { buildSync(options: Record<string, unknown>): void }
     try { esbuild = require_('esbuild') } catch { esbuild = require_(path.join(path.dirname(require_.resolve('vite/package.json')), '..', 'esbuild')) }
     esbuild.buildSync({ entryPoints: [path.join(__dirname, 'SidebarProjectFiling.fixture.tsx')], outfile: path.join(dir, 'fixture.js'), bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl', '.svg': 'dataurl' }, alias: { '@shared': path.resolve(__dirname, '../../shared') } })
-    esbuild.buildSync({ stdin: { contents: "export { fileSidebarConversation } from './sessionProjectFiling'; export { getStore } from './store'; export { moveSessionJournal } from './sessionProjectMove'; export { listAllSessions } from './sessionHistory'", resolveDir: path.resolve(__dirname, '../../main') }, outfile: path.join(dir, 'filing.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron', require_.resolve('electron-store')], alias: { 'electron-store': require_.resolve('electron-store') } })
+    esbuild.buildSync({ stdin: { contents: "export { fileSidebarConversation } from './sessionProjectFiling'; export { getStore } from './store'; export { moveSessionJournal } from './sessionProjectMove'; export { listAllSessions, ompSessionDirCandidatesFor } from './sessionHistory'", resolveDir: path.resolve(__dirname, '../../main') }, outfile: path.join(dir, 'filing.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron', require_.resolve('electron-store')], alias: { 'electron-store': require_.resolve('electron-store') } })
     const sourceCss = path.resolve(__dirname, '../index.css')
     const css = await require_('postcss')([require_('tailwindcss')(), require_('autoprefixer')()]).process(readFileSync(sourceCss, 'utf8'), { from: sourceCss })
     writeFileSync(path.join(dir, 'app.css'), css.css)
